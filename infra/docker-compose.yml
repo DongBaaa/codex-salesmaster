@@ -1,0 +1,40 @@
+name: salesmaster
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: salesmaster
+      POSTGRES_USER: sm_user
+      POSTGRES_PASSWORD: CHANGE_THIS_LOCAL_POSTGRES_PASSWORD
+    ports:
+      - "5432:5432"
+    volumes:
+      - salesmaster_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U sm_user -d salesmaster" ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: Server/SalesMaster.Server.Api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Default: Host=postgres;Port=5432;Database=salesmaster;Username=sm_user;Password=CHANGE_THIS_LOCAL_POSTGRES_PASSWORD
+      Jwt__Issuer: SalesMaster
+      Jwt__Audience: SalesMasterDesktop
+      Jwt__SigningKey: SalesMaster_ChangeThisSigningKeyForProduction_AtLeast32Chars
+      Jwt__ExpirationMinutes: 480
+    ports:
+      - "8080:8080"
+
+volumes:
+  salesmaster_pg_data:
