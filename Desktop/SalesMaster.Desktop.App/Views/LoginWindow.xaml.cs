@@ -18,7 +18,19 @@ public partial class LoginWindow : Window
             DialogResult = true;
             Close();
         };
-        Loaded += (_, _) => UsernameBox.Focus();
+        Loaded += (_, _) =>
+        {
+            PasswordBox.Password = _vm.Password;
+            if (string.IsNullOrWhiteSpace(_vm.Username))
+                UsernameBox.Focus();
+            else
+                PasswordBox.Focus();
+        };
+    }
+
+    private void PasswordBox_PasswordChanged(object sender, RoutedEventArgs e)
+    {
+        _vm.Password = PasswordBox.Password;
     }
 
     private void PasswordBox_KeyDown(object sender, KeyEventArgs e)

@@ -1,4 +1,6 @@
 using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SalesMaster.Desktop.App.Services;
@@ -7,6 +9,11 @@ namespace SalesMaster.Desktop.App.ViewModels;
 
 public sealed partial class LoginViewModel : ObservableObject
 {
+    private const string RememberUsernameSettingKey = "Login.RememberUsername";
+    private const string RememberPasswordSettingKey = "Login.RememberPassword";
+    private const string SavedUsernameSettingKey = "Login.SavedUsername";
+    private const string SavedPasswordSettingKey = "Login.SavedPasswordProtected";
+
     private readonly ErpApiClient _api;
     private readonly SessionState _session;
     private readonly LocalStateService _local;
@@ -16,6 +23,8 @@ public sealed partial class LoginViewModel : ObservableObject
     [ObservableProperty] private string _errorMessage = string.Empty;
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private bool _showOfflineButton;
+    [ObservableProperty] private bool _rememberUsername;
+    [ObservableProperty] private bool _rememberPassword;
 
     public event Action? LoginSucceeded;
 
@@ -24,6 +33,29 @@ public sealed partial class LoginViewModel : ObservableObject
         _api = api;
         _session = session;
         _local = local;
+    }
+
+    public async Task InitializeAsync()
+    {
+        RememberUsername = string.Equals(
+            await _local.GetSettingAsync(RememberUsernameSettingKey),
+            "1",
+            StringComparison.Ordinal);
+
+        RememberPassword = string.Equals(
+            await _local.GetSettingAsync(RememberPasswordSettingKey),
+            "1",
+            StringComparison.Ordinal);
+
+        if (RememberUsername)
+        {
+            Username = await _local.GetSettingAsync(SavedUsernameSettingKey) ?? string.Empty;
+        }
+
+        if (RememberPassword)
+        {
+            Password = DecryptPassword(await _local.GetSettingAsync(SavedPasswordSettingKey));
+        }
     }
 
     [RelayCommand(CanExecute = nameof(CanLogin))]
@@ -43,6 +75,7 @@ public sealed partial class LoginViewModel : ObservableObject
             // Cache session for offline fallback
             await _local.SaveSessionCacheAsync(
                 result.User.Username, result.User.Role, result.User.Permissions);
+            await SaveRememberOptionsAsync();
             _session.SetSession(result.Token, result.User);
             LoginSucceeded?.Invoke();
         }
@@ -81,6 +114,7 @@ public sealed partial class LoginViewModel : ObservableObject
             return;
         }
         _session.SetOfflineSession(cached);
+        await SaveRememberOptionsAsync();
         LoginSucceeded?.Invoke();
     }
 
@@ -95,6 +129,68 @@ public sealed partial class LoginViewModel : ObservableObject
     }
     partial void OnIsLoadingChanged(bool value) => LoginCommand.NotifyCanExecuteChanged();
     partial void OnShowOfflineButtonChanged(bool value) => OfflineLoginCommand.NotifyCanExecuteChanged();
+
+    partial void OnRememberUsernameChanged(bool value)
+    {
+        if (!value && RememberPassword)
+            RememberPassword = false;
+    }
+
+    partial void OnRememberPasswordChanged(bool value)
+    {
+        if (value && !RememberUsername)
+            RememberUsername = true;
+    }
+
+    private async Task SaveRememberOptionsAsync()
+    {
+        await _local.SetSettingAsync(RememberUsernameSettingKey, RememberUsername ? "1" : "0");
+        await _local.SetSettingAsync(RememberPasswordSettingKey, RememberPassword ? "1" : "0");
+
+        if (RememberUsername && !string.IsNullOrWhiteSpace(Username))
+            await _local.SetSettingAsync(SavedUsernameSettingKey, Username);
+        else
+            await _local.SetSettingAsync(SavedUsernameSettingKey, string.Empty);
+
+        if (RememberPassword && !string.IsNullOrEmpty(Password))
+            await _local.SetSettingAsync(SavedPasswordSettingKey, EncryptPassword(Password));
+        else
+            await _local.SetSettingAsync(SavedPasswordSettingKey, string.Empty);
+    }
+
+    private static string EncryptPassword(string plainText)
+    {
+        if (string.IsNullOrEmpty(plainText))
+            return string.Empty;
+
+        try
+        {
+            var bytes = Encoding.UTF8.GetBytes(plainText);
+            var protectedBytes = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
+            return Convert.ToBase64String(protectedBytes);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string DecryptPassword(string? protectedText)
+    {
+        if (string.IsNullOrWhiteSpace(protectedText))
+            return string.Empty;
+
+        try
+        {
+            var protectedBytes = Convert.FromBase64String(protectedText);
+            var bytes = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.CurrentUser);
+            return Encoding.UTF8.GetString(bytes);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
 
     private static bool IsConnectionError(Exception ex)
     {

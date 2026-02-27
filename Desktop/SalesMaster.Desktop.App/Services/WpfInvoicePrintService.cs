@@ -246,9 +246,10 @@ public sealed class WpfInvoicePrintService : IPrintService
         FixedPage.SetTop(root, (A4Height - ContentHeight) / 2d);
         page.Children.Add(root);
 
-        root.Measure(new Size(ContentWidth, ContentHeight));
-        root.Arrange(new Rect(0, 0, ContentWidth, ContentHeight));
-        root.UpdateLayout();
+        // FixedPage 전체를 Measure/Arrange하여 모든 하위 레이아웃이 올바르게 계산되도록 함
+        page.Measure(new Size(A4Width, A4Height));
+        page.Arrange(new Rect(0, 0, A4Width, A4Height));
+        page.UpdateLayout();
         return page;
     }
 
@@ -466,6 +467,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             BorderThickness = GetInnerCellBorderThickness(grid, rowIndex, 0),
             Background = HeaderFill,
             Padding = new Thickness(4, 2, 4, 2),
+            UseLayoutRounding = true,
             Child = new TextBlock
             {
                 Text = label,
@@ -486,6 +488,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             BorderBrush = accent,
             BorderThickness = GetInnerCellBorderThickness(grid, rowIndex, 1),
             Padding = new Thickness(5, 2, 5, 2),
+            UseLayoutRounding = true,
             Child = new TextBlock
             {
                 Text = value ?? string.Empty,
@@ -508,21 +511,20 @@ public sealed class WpfInvoicePrintService : IPrintService
     {
         var table = new Grid
         {
-            Margin = new Thickness(0, 0, 0, 4),
             UseLayoutRounding = true,
             SnapsToDevicePixels = true
         };
         table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
-        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(194) });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // 품명: 남은 너비 자동 채움
         table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(124) });
         table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(56) });
         table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(70) });
         table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
         table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
 
-        table.RowDefinitions.Add(new RowDefinition { Height = new GridLength(22) });
+        table.RowDefinitions.Add(new RowDefinition { Height = new GridLength(22) }); // 헤더 고정
         for (var i = 0; i < RowsPerSlip; i++)
-            table.RowDefinitions.Add(new RowDefinition { Height = new GridLength(22) });
+            table.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // 바디: 남은 높이 균등 분배
 
         AddHeaderCell(table, 0, 0, "순번", accent);
         AddHeaderCell(table, 0, 1, "품   명", accent);
@@ -563,6 +565,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         {
             BorderBrush = accent,
             BorderThickness = new Thickness(1),
+            Margin = new Thickness(0, 0, 0, 4), // Border 바깥에 여백 적용 (내부 공백 제거)
             UseLayoutRounding = true,
             SnapsToDevicePixels = true,
             Child = table
@@ -577,6 +580,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             BorderThickness = GetInnerCellBorderThickness(grid, row, column),
             Background = HeaderFill,
             Padding = new Thickness(3, 1, 3, 1),
+            UseLayoutRounding = true,
             Child = new TextBlock
             {
                 Text = text,
@@ -606,6 +610,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             BorderBrush = accent,
             BorderThickness = GetInnerCellBorderThickness(grid, row, column),
             Padding = new Thickness(3, 1, 3, 1),
+            UseLayoutRounding = true,
             Child = new TextBlock
             {
                 Text = text ?? string.Empty,
@@ -626,7 +631,6 @@ public sealed class WpfInvoicePrintService : IPrintService
     {
         var grid = new Grid
         {
-            Margin = new Thickness(0, 0, 0, 3),
             UseLayoutRounding = true,
             SnapsToDevicePixels = true
         };
@@ -656,6 +660,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         {
             BorderBrush = accent,
             BorderThickness = new Thickness(1),
+            Margin = new Thickness(0, 0, 0, 3), // Border 바깥에 여백 적용
             UseLayoutRounding = true,
             SnapsToDevicePixels = true,
             Child = grid
@@ -678,6 +683,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             BorderThickness = GetInnerCellBorderThickness(grid, row, labelColumn),
             Background = HeaderFill,
             Padding = new Thickness(3, 1, 3, 1),
+            UseLayoutRounding = true,
             Child = new TextBlock
             {
                 Text = label,
@@ -698,6 +704,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             BorderBrush = accent,
             BorderThickness = GetInnerCellBorderThickness(grid, row, labelColumn + 1),
             Padding = new Thickness(4, 1, 4, 1),
+            UseLayoutRounding = true,
             Child = new TextBlock
             {
                 Text = value ?? string.Empty,

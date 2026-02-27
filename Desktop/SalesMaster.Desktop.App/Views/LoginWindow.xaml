@@ -24,7 +24,18 @@
             <PasswordBox x:Name="PasswordBox"
                          Background="White" Foreground="Black" BorderBrush="#4FC3F7"
                          Padding="8,6" FontSize="14" Margin="0,0,0,4"
+                         PasswordChanged="PasswordBox_PasswordChanged"
                          KeyDown="PasswordBox_KeyDown"/>
+
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
+                <CheckBox Content="아이디 저장"
+                          IsChecked="{Binding RememberUsername}"
+                          Foreground="#B0BEC5"
+                          Margin="0,0,14,0"/>
+                <CheckBox Content="비밀번호 저장"
+                          IsChecked="{Binding RememberPassword}"
+                          Foreground="#B0BEC5"/>
+            </StackPanel>
 
             <TextBlock Text="{Binding ErrorMessage}" Foreground="#EF9A9A"
                        FontSize="11" Margin="0,6,0,10" TextWrapping="Wrap"/>

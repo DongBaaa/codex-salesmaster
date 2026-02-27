@@ -60,6 +60,7 @@ public partial class App : Application
 
             // 로그인
             var loginVm = _services.GetRequiredService<LoginViewModel>();
+            await loginVm.InitializeAsync();
             var loginWin = new LoginWindow(loginVm);
             var loggedIn = loginWin.ShowDialog();
 
