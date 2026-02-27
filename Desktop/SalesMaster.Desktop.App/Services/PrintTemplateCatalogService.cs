@@ -44,24 +44,11 @@ public sealed class PrintTemplateCatalogService
         var templateDirectory = ResolveTemplateDirectory();
         if (!string.IsNullOrWhiteSpace(templateDirectory))
         {
-            var frxFiles = Directory.EnumerateFiles(templateDirectory, "*.frx", SearchOption.TopDirectoryOnly)
-                .Where(IsValidFrxTemplate)
-                .ToList();
-            var frxBaseNames = new HashSet<string>(
-                frxFiles.Select(Path.GetFileNameWithoutExtension)
-                    .Where(static name => !string.IsNullOrWhiteSpace(name))
-                    .Select(static name => name!),
-                StringComparer.CurrentCultureIgnoreCase);
-
-            var fr3Files = Directory.EnumerateFiles(templateDirectory, "*.fr3", SearchOption.TopDirectoryOnly)
-                .Where(file => !frxBaseNames.Contains(Path.GetFileNameWithoutExtension(file)))
-                .ToList();
-
-            var files = frxFiles
-                .Concat(fr3Files)
+            var files = Directory.EnumerateFiles(templateDirectory, "*.*", SearchOption.TopDirectoryOnly)
+                .Where(IsTemplateCandidate)
                 .OrderBy(path => GetLegacyTemplateSortOrder(Path.GetFileNameWithoutExtension(path) ?? string.Empty))
                 .ThenBy(Path.GetFileNameWithoutExtension, StringComparer.CurrentCultureIgnoreCase)
-                .ThenBy(path => Path.GetExtension(path).Equals(".frx", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(path => Path.GetExtension(path).Equals(".fr3", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
                 .ToList();
 
             foreach (var filePath in files)
@@ -249,16 +236,46 @@ public sealed class PrintTemplateCatalogService
                 list.Add(full);
         }
 
-        AddCandidate(set, candidates, Path.Combine(AppContext.BaseDirectory, "양식"));
-        AddCandidate(set, candidates, Path.Combine(Environment.CurrentDirectory, "양식"));
-        AddCandidate(set, candidates, Path.Combine(AppContext.BaseDirectory, "REPO_출력물"));
-        AddCandidate(set, candidates, Path.Combine(Environment.CurrentDirectory, "REPO_출력물"));
+        static void AddTemplateRootCandidates(HashSet<string> seen, List<string> list, string? root)
+        {
+            if (string.IsNullOrWhiteSpace(root))
+                return;
+
+            AddCandidate(seen, list, root);
+            AddCandidate(seen, list, Path.Combine(root, "양식"));
+            AddCandidate(seen, list, Path.Combine(root, "REPO_출력물"));
+        }
+
+        static void AddTempOverlayCandidates(HashSet<string> seen, List<string> list, string? parentRoot)
+        {
+            if (string.IsNullOrWhiteSpace(parentRoot))
+                return;
+
+            AddTemplateRootCandidates(seen, list, Path.Combine(parentRoot, "Temp"));
+
+            if (!Directory.Exists(parentRoot))
+                return;
+
+            var overlays = Directory.EnumerateDirectories(parentRoot, "Temp_*", SearchOption.TopDirectoryOnly)
+                .OrderByDescending(path => new DirectoryInfo(path).LastWriteTimeUtc)
+                .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var overlay in overlays)
+                AddTemplateRootCandidates(seen, list, overlay);
+        }
+
+        AddTempOverlayCandidates(set, candidates, AppContext.BaseDirectory);
+        AddTempOverlayCandidates(set, candidates, Environment.CurrentDirectory);
+
+        AddTemplateRootCandidates(set, candidates, AppContext.BaseDirectory);
+        AddTemplateRootCandidates(set, candidates, Environment.CurrentDirectory);
 
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         for (var i = 0; i < 10 && dir is not null; i++)
         {
-            AddCandidate(set, candidates, Path.Combine(dir.FullName, "양식"));
-            AddCandidate(set, candidates, Path.Combine(dir.FullName, "REPO_출력물"));
+            AddTempOverlayCandidates(set, candidates, dir.FullName);
+            AddTemplateRootCandidates(set, candidates, dir.FullName);
             dir = dir.Parent;
         }
 
@@ -270,8 +287,27 @@ public sealed class PrintTemplateCatalogService
         if (!Directory.Exists(path))
             return false;
 
-        return Directory.EnumerateFiles(path, "*.fr3", SearchOption.TopDirectoryOnly).Any()
-            || Directory.EnumerateFiles(path, "*.frx", SearchOption.TopDirectoryOnly).Any();
+        return Directory.EnumerateFiles(path, "*.*", SearchOption.TopDirectoryOnly)
+            .Any(IsTemplateCandidate);
+    }
+
+    private static bool IsTemplateCandidate(string path)
+    {
+        var ext = Path.GetExtension(path);
+        if (!ext.Equals(".fr3", StringComparison.OrdinalIgnoreCase) &&
+            !ext.Equals(".frx", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var name = Path.GetFileNameWithoutExtension(path) ?? string.Empty;
+        if (name.StartsWith("_", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (ext.Equals(".frx", StringComparison.OrdinalIgnoreCase))
+            return IsValidFrxTemplate(path);
+
+        return true;
     }
 
     private static bool IsValidFrxTemplate(string path)

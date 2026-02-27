@@ -90,17 +90,7 @@ public static class PrintPreviewHelper
 
                 var paginator = ((IDocumentPaginatorSource)document).DocumentPaginator;
                 paginator.PageSize = new Size(A4Width, A4Height);
-
-                var printableSize = new Size(
-                    Math.Max(1, dlg.PrintableAreaWidth),
-                    Math.Max(1, dlg.PrintableAreaHeight));
-
-                var toPrint = (DocumentPaginator)new ScalingDocumentPaginator(
-                    paginator,
-                    new Size(A4Width, A4Height),
-                    printableSize);
-
-                dlg.PrintDocument(toPrint, jobName);
+                dlg.PrintDocument(paginator, jobName);
                 printed = true;
                 previewWindow.Close();
             }
@@ -144,67 +134,4 @@ public static class PrintPreviewHelper
         document.ColumnGap = 0;
     }
 
-    private sealed class ScalingDocumentPaginator : DocumentPaginator
-    {
-        private readonly DocumentPaginator _source;
-        private readonly Size _targetPageSize;
-        private readonly double _scale;
-        private readonly double _offsetX;
-        private readonly double _offsetY;
-
-        public ScalingDocumentPaginator(DocumentPaginator source, Size sourcePageSize, Size targetPageSize)
-        {
-            _source = source;
-            _targetPageSize = targetPageSize;
-
-            var sx = targetPageSize.Width / sourcePageSize.Width;
-            var sy = targetPageSize.Height / sourcePageSize.Height;
-            _scale = Math.Min(1d, Math.Min(sx, sy));
-
-            _offsetX = (targetPageSize.Width - (sourcePageSize.Width * _scale)) / 2d;
-            _offsetY = (targetPageSize.Height - (sourcePageSize.Height * _scale)) / 2d;
-        }
-
-        public override bool IsPageCountValid => _source.IsPageCountValid;
-        public override int PageCount => _source.PageCount;
-        public override IDocumentPaginatorSource Source => _source.Source;
-
-        public override Size PageSize
-        {
-            get => _targetPageSize;
-            set => _source.PageSize = value;
-        }
-
-        public override DocumentPage GetPage(int pageNumber)
-        {
-            var page = _source.GetPage(pageNumber);
-            var sourceContent = page.ContentBox.IsEmpty
-                ? new Rect(new Point(0, 0), page.Size)
-                : page.ContentBox;
-            var sourceBleed = page.BleedBox.IsEmpty
-                ? new Rect(new Point(0, 0), page.Size)
-                : page.BleedBox;
-
-            var container = new ContainerVisual();
-            container.Children.Add(page.Visual);
-            container.Transform = new MatrixTransform(
-                _scale, 0,
-                0, _scale,
-                _offsetX, _offsetY);
-
-            var contentBox = new Rect(
-                _offsetX + (sourceContent.X * _scale),
-                _offsetY + (sourceContent.Y * _scale),
-                sourceContent.Width * _scale,
-                sourceContent.Height * _scale);
-
-            var bleedBox = new Rect(
-                _offsetX + (sourceBleed.X * _scale),
-                _offsetY + (sourceBleed.Y * _scale),
-                sourceBleed.Width * _scale,
-                sourceBleed.Height * _scale);
-
-            return new DocumentPage(container, _targetPageSize, bleedBox, contentBox);
-        }
-    }
 }

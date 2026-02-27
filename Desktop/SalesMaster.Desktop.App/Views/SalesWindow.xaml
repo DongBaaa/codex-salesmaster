@@ -295,7 +295,7 @@
                         <CheckBox Content="날짜인쇄함" IsChecked="{Binding PrintWithDate}" Foreground="#EAF2FF" Margin="0,0,0,4"/>
                         <CheckBox Content="단가인쇄함" IsChecked="{Binding PrintWithPrice}" Foreground="#EAF2FF" Margin="0,0,0,6"/>
                         <TextBlock Text="[인쇄 종류]" Foreground="#EAF2FF" Margin="0,0,0,4"/>
-                        <ComboBox ItemsSource="{Binding PrintTypes}" SelectedItem="{Binding PrintType}"/>
+                        <ComboBox ItemsSource="{Binding PrintTypes}" SelectedItem="{Binding PrintType}" Margin="0,0,0,6"/>
                     </StackPanel>
                 </Border>
             </Grid>

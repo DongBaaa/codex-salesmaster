@@ -1,5 +1,4 @@
 using System.Data;
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net;
@@ -8,7 +7,6 @@ using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
 using 외부 리포팅 도구;
-using 외부 리포팅 도구.Export.PdfSimple;
 using SalesMaster.Desktop.App.Data;
 
 namespace SalesMaster.Desktop.App.Services;
@@ -95,26 +93,14 @@ public sealed class 외부 리포팅 도구TemplatePrintService
                 }
 
                 RegisterData(report, dataSet, metadata);
+                EnsureDataBandsCanRenderWithoutRows(report);
 
                 var prepared = report.Prepare();
                 if (!prepared || report.PreparedPages is null || report.PreparedPages.Count <= 0)
                     throw new InvalidOperationException("양식 준비(Prepare)에 실패했습니다. 템플릿 데이터 바인딩을 확인하세요.");
 
-                var outputPath = BuildOutputPdfPath(jobName);
-                using (var export = new PDFSimpleExport())
-                {
-                    report.Export(export, outputPath);
-                }
-
-                var pdfInfo = new FileInfo(outputPath);
-                if (!pdfInfo.Exists || pdfInfo.Length <= 0)
-                    throw new InvalidOperationException("PDF 파일 생성에 실패했습니다. 생성된 파일 크기가 0바이트입니다.");
-
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = outputPath,
-                    UseShellExecute = true
-                });
+                // Keep preview/print inside 외부 리포팅 도구 and avoid opening external PDF files.
+                report.ShowPrepared();
 
                 return true;
             }
@@ -127,20 +113,6 @@ public sealed class 외부 리포팅 도구TemplatePrintService
         throw new InvalidOperationException(
             "양식 준비(Prepare)에 실패했습니다. 템플릿 스크립트/필드 매핑을 확인하세요.",
             lastException);
-    }
-
-    private static string BuildOutputPdfPath(string jobName)
-    {
-        var safeName = string.Join("_", (jobName ?? "statement")
-            .Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries))
-            .Trim();
-
-        if (string.IsNullOrWhiteSpace(safeName))
-            safeName = "statement";
-
-        var dir = Path.Combine(Path.GetTempPath(), "SalesMaster", "PrintPreview");
-        Directory.CreateDirectory(dir);
-        return Path.Combine(dir, $"{safeName}_{DateTime.Now:yyyyMMdd_HHmmssfff}.pdf");
     }
 
     private static IEnumerable<string> GetTemplateLoadCandidates(string templatePath)
@@ -162,19 +134,16 @@ public sealed class 외부 리포팅 도구TemplatePrintService
             list.Add(path);
         }
 
+        // Use the selected template first and avoid synthetic conversion fallbacks
+        // that may generate blank previews.
+        AddCandidate(candidates, templatePath);
+
+        // If a user-maintained sibling .frx exists, allow it as explicit secondary fallback.
         if (string.Equals(Path.GetExtension(templatePath), ".fr3", StringComparison.OrdinalIgnoreCase))
         {
             var frxPath = Path.ChangeExtension(templatePath, ".frx");
             AddCandidate(candidates, frxPath);
-
-            var convertedFrxPath = TryConvertLegacyFr3TemplateToFrx(templatePath);
-            AddCandidate(candidates, convertedFrxPath);
         }
-
-        AddCandidate(candidates, templatePath);
-
-        var scriptlessTemplatePath = CreateScriptlessTemplateCopy(templatePath);
-        AddCandidate(candidates, scriptlessTemplatePath);
 
         return candidates;
     }
@@ -777,6 +746,19 @@ public sealed class 외부 리포팅 도구TemplatePrintService
             {
                 dataSource.Alias = aliasName;
             }
+        }
+    }
+
+    private static void EnsureDataBandsCanRenderWithoutRows(Report report)
+    {
+        foreach (var obj in report.AllObjects)
+        {
+            if (obj is not DataBand dataBand)
+                continue;
+
+            dataBand.PrintIfDatasourceEmpty = true;
+            if (dataBand.DataSource is null && dataBand.RowCount <= 0)
+                dataBand.RowCount = 1;
         }
     }
 

@@ -305,21 +305,8 @@
                     <StackPanel Grid.Row="0" Margin="0,0,0,10">
                         <WrapPanel Margin="0,0,0,6">
                             <Button Content="거래명세서 인쇄[F9]" Background="#1E88E5" FontSize="14" FontWeight="Bold" Padding="22,10" Command="{Binding PrintStatementCommand}" Margin="0,0,10,0"/>
-                            <CheckBox Content="출력물편집" IsChecked="{Binding EditTemplateOnPrint}" Foreground="#9FB3C8" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <TextBlock Text="양식" VerticalAlignment="Center" Foreground="#9FB3C8" Margin="0,0,6,0"/>
-                            <ComboBox Width="330"
-                                      ItemsSource="{Binding StatementTemplates}"
-                                      SelectedItem="{Binding SelectedStatementTemplate}"
-                                      DisplayMemberPath="DisplayName"
-                                      Margin="0,0,6,0"/>
-                            <Button Content="다시읽기" Background="#37474F" Command="{Binding ReloadStatementTemplatesCommand}" Margin="0,0,6,0"/>
-                            <Button Content="양식편집(FR)" Background="#6D4C41" Command="{Binding EditStatementTemplateCommand}" Margin="0,0,6,0"/>
-                            <Button Content="수동변환 준비" Background="#8E24AA" Command="{Binding PrepareManualConversionCommand}" Margin="0,0,6,0"/>
-                            <Button Content="디자이너 경로 설정" Background="#5E35B1" Command="{Binding Select외부 리포팅 도구DesignerPathCommand}" Margin="0,0,6,0"/>
-                            <Button Content="전환가이드 열기" Background="#546E7A" Command="{Binding OpenMigrationGuideCommand}" Margin="0,0,6,0"/>
-                            <Button Content="양식폴더 열기" Background="#455A64" Command="{Binding OpenTemplateFolderCommand}" Margin="0,0,6,0"/>
+                            <TextBlock Text="기본 내장 양식으로 인쇄합니다." VerticalAlignment="Center" Foreground="#9FB3C8"/>
                         </WrapPanel>
-                        <TextBlock Text="{Binding 외부 리포팅 도구DesignerPath}" Foreground="#9FB3C8" FontSize="11"/>
                     </StackPanel>
                     <Border Grid.Row="1" Background="#1A2B4A" CornerRadius="6">
                         <DataGrid ItemsSource="{Binding InvoiceRows}" SelectedItem="{Binding SelectedInvoiceRow}" IsReadOnly="True" BorderThickness="0" MouseDoubleClick="InvoiceRowsDataGrid_MouseDoubleClick">

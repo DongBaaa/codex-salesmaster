@@ -157,6 +157,32 @@ public sealed partial class SalesViewModel : ObservableObject
             await _local.SetSettingAsync(PrintTemplateCatalogService.DefaultStatementTemplateSettingKey, selected.Id);
     }
 
+    [RelayCommand]
+    private async Task EditStatementTemplateAsync()
+    {
+        var template = ResolveRuntimeTemplateForPrintType(SelectedStatementTemplate) ?? SelectedStatementTemplate;
+        if (template is null)
+        {
+            System.Windows.MessageBox.Show("편집할 양식이 없습니다.", "알림", System.Windows.MessageBoxButton.OK);
+            return;
+        }
+
+        if (template.IsBuiltIn)
+        {
+            System.Windows.MessageBox.Show("내장 양식은 편집할 수 없습니다. 외부 .fr3/.frx 양식을 선택하세요.", "알림", System.Windows.MessageBoxButton.OK);
+            return;
+        }
+
+        if (!await TryOpenTemplateDesignerAsync(template))
+        {
+            System.Windows.MessageBox.Show(
+                "외부 리포팅 도구 Designer 실행 파일을 찾지 못했습니다. 디자이너 경로를 확인하세요.",
+                "알림",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Information);
+        }
+    }
+
     public void NewInvoice()
     {
         InvoiceId = Guid.NewGuid();
@@ -559,32 +585,6 @@ public sealed partial class SalesViewModel : ObservableObject
                 return;
             }
 
-            var selectedTemplate = SelectedStatementTemplate;
-            var runtimeTemplate = ResolveRuntimeTemplateForPrintType(selectedTemplate);
-            if (runtimeTemplate is { IsBuiltIn: false })
-            {
-                try
-                {
-                    var opened = _fastReportTemplatePrint.ShowPreviewAndPrint(
-                        runtimeTemplate.TemplatePath,
-                        inv,
-                        SelectedCustomer,
-                        company,
-                        PrintWithDate,
-                        PrintWithPrice,
-                        $"세금계산서_{WorkDate:yyyyMMdd}_{SelectedCustomer.NameOriginal}");
-                    if (opened)
-                    {
-                        StatusMessage = $"세금계산서 PDF 미리보기를 열었습니다. ({runtimeTemplate.DisplayName})";
-                        return;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    StatusMessage = $"양식 인쇄 실패로 기본 양식으로 전환합니다. ({ex.Message})";
-                }
-            }
-
             var document = BuildTaxInvoicePrintDocument(inv, SelectedCustomer, company);
             var printed = PrintPreviewHelper.ShowPreviewAndPrint(
                 document,
@@ -631,16 +631,98 @@ public sealed partial class SalesViewModel : ObservableObject
         return PrintTemplateCatalogService.ResolveBuiltInLayoutFromPrintType(PrintType);
     }
 
+    private enum StatementTemplateGroup
+    {
+        Unknown = 0,
+        TradeHalf = 1,
+        TradeA4 = 2,
+        Receipt = 3
+    }
+
+    private StatementTemplateGroup ResolveExpectedTemplateGroup()
+    {
+        if (PrintType.Contains("영수", StringComparison.OrdinalIgnoreCase))
+            return StatementTemplateGroup.Receipt;
+
+        if (PrintType.Contains("A4", StringComparison.OrdinalIgnoreCase))
+            return StatementTemplateGroup.TradeA4;
+
+        return StatementTemplateGroup.TradeHalf;
+    }
+
+    private static StatementTemplateGroup ResolveTemplateGroup(PrintTemplateOption? template)
+    {
+        if (template is null)
+            return StatementTemplateGroup.Unknown;
+
+        if (template.BuiltInLayout is { } layout)
+        {
+            return layout switch
+            {
+                NativeStatementLayoutType.TradeA4 => StatementTemplateGroup.TradeA4,
+                NativeStatementLayoutType.Receipt => StatementTemplateGroup.Receipt,
+                _ => StatementTemplateGroup.TradeHalf
+            };
+        }
+
+        var templateName = Path.GetFileNameWithoutExtension(template.TemplatePath);
+        if (string.IsNullOrWhiteSpace(templateName))
+            templateName = template.DisplayName;
+
+        var normalized = (templateName ?? string.Empty).ToLowerInvariant();
+        if (normalized.Contains("영수", StringComparison.OrdinalIgnoreCase))
+            return StatementTemplateGroup.Receipt;
+
+        if (normalized.Contains("a4", StringComparison.OrdinalIgnoreCase))
+            return StatementTemplateGroup.TradeA4;
+
+        if (normalized.Contains("명세", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("거래", StringComparison.OrdinalIgnoreCase))
+        {
+            return StatementTemplateGroup.TradeHalf;
+        }
+
+        return StatementTemplateGroup.Unknown;
+    }
+
     private PrintTemplateOption? ResolveRuntimeTemplateForPrintType(PrintTemplateOption? selectedTemplate)
     {
         var templates = StatementTemplates.ToList();
         if (templates.Count == 0)
             templates = _templateCatalog.GetStatementTemplates().ToList();
 
-        if (selectedTemplate is { IsBuiltIn: false })
-            return selectedTemplate;
+        var expectedGroup = ResolveExpectedTemplateGroup();
 
-        return PrintTemplateCatalogService.ResolveLegacyTemplateForPrintType(templates, PrintType) ?? selectedTemplate;
+        if (selectedTemplate is not null)
+        {
+            var selectedGroup = ResolveTemplateGroup(selectedTemplate);
+            if (selectedGroup == expectedGroup || selectedGroup == StatementTemplateGroup.Unknown)
+                return selectedTemplate;
+        }
+
+        var preferred = PrintTemplateCatalogService.ResolveLegacyTemplateForPrintType(templates, PrintType);
+        if (preferred is not null)
+            return preferred;
+
+        return selectedTemplate ?? templates.FirstOrDefault();
+    }
+
+    private async Task SynchronizeSelectedTemplateAsync(PrintTemplateOption? runtimeTemplate)
+    {
+        if (runtimeTemplate is null)
+            return;
+
+        if (SelectedStatementTemplate is not null &&
+            string.Equals(SelectedStatementTemplate.Id, runtimeTemplate.Id, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _suppressTemplateSettingWrite = true;
+        SelectedStatementTemplate = runtimeTemplate;
+        _suppressTemplateSettingWrite = false;
+
+        await _local.SetSettingAsync(PrintTemplateCatalogService.DefaultStatementTemplateSettingKey, runtimeTemplate.Id);
     }
 
     private async Task<InvoicePrintModel> LoadOrCreateInvoicePrintModelAsync(

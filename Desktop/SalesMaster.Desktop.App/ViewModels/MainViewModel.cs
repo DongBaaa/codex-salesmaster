@@ -819,42 +819,6 @@ public sealed partial class MainViewModel : ObservableObject
             }
 
             var selectedTemplate = SelectedStatementTemplate ?? await ResolveDefaultStatementTemplateAsync();
-            var runtimeTemplate = ResolveRuntimeStatementTemplate(selectedTemplate);
-
-            if (runtimeTemplate is { IsBuiltIn: false } && EditTemplateOnPrint)
-            {
-                var openedDesigner = await OpenTemplateInDesignerAsync(runtimeTemplate);
-                if (openedDesigner)
-                {
-                    SyncStatus = $"외부 리포팅 도구 디자이너를 열었습니다. 저장 후 다시 인쇄하세요. ({runtimeTemplate.DisplayName})";
-                    return;
-                }
-            }
-
-            if (runtimeTemplate is { IsBuiltIn: false })
-            {
-                try
-                {
-                    _fastReportTemplatePrint.ShowPreviewAndPrint(
-                        runtimeTemplate.TemplatePath,
-                        inv,
-                        customer,
-                        company,
-                        printWithDate: true,
-                        printWithPrice: true,
-                        jobName: $"거래명세서_{inv.InvoiceDate:yyyyMMdd}_{customer.NameOriginal}");
-                    return;
-                }
-                catch (Exception templateEx)
-                {
-                    System.Windows.MessageBox.Show(
-                        $"선택된 외부 리포팅 도구 양식 인쇄에 실패하여 내장 양식으로 출력합니다.\n{templateEx.Message}",
-                        "알림",
-                        System.Windows.MessageBoxButton.OK,
-                        System.Windows.MessageBoxImage.Warning);
-                }
-            }
-
             var layout = ResolveLayoutForStatementTab(selectedTemplate);
             var document = BuildStatementPrintDocument(
                 inv,

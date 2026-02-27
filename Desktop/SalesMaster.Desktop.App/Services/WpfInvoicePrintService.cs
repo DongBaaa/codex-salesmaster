@@ -14,6 +14,10 @@ public sealed class WpfInvoicePrintService : IPrintService
     private const double A4Width = 793.7;   // 210mm @ 96dpi
     private const double A4Height = 1122.5; // 297mm @ 96dpi
     private const int RowsPerSlip = 12;
+    private const double ContentMarginX = 28;
+    private const double ContentMarginY = 24;
+    private const double ContentWidth = A4Width - (ContentMarginX * 2d);
+    private const double ContentHeight = A4Height - (ContentMarginY * 2d);
 
     private static readonly Brush RedAccent = new SolidColorBrush(Color.FromRgb(211, 47, 47));
     private static readonly Brush BlueAccent = new SolidColorBrush(Color.FromRgb(46, 83, 193));
@@ -137,17 +141,7 @@ public sealed class WpfInvoicePrintService : IPrintService
 
             var paginator = ((IDocumentPaginatorSource)document).DocumentPaginator;
             paginator.PageSize = new Size(A4Width, A4Height);
-
-            var printableSize = new Size(
-                Math.Max(1, dialog.PrintableAreaWidth),
-                Math.Max(1, dialog.PrintableAreaHeight));
-
-            var scaledPaginator = new ScalingDocumentPaginator(
-                paginator,
-                new Size(A4Width, A4Height),
-                printableSize);
-
-            dialog.PrintDocument(scaledPaginator, string.IsNullOrWhiteSpace(jobName) ? "거래명세서" : jobName);
+            dialog.PrintDocument(paginator, string.IsNullOrWhiteSpace(jobName) ? "거래명세서" : jobName);
             return true;
         }
         catch (PrintQueueException ex)
@@ -215,12 +209,17 @@ public sealed class WpfInvoicePrintService : IPrintService
         {
             Width = A4Width,
             Height = A4Height,
-            Background = Brushes.White
+            Background = Brushes.White,
+            UseLayoutRounding = true,
+            SnapsToDevicePixels = true
         };
 
         var root = new Grid
         {
-            Margin = new Thickness(20, 14, 20, 14)
+            Width = ContentWidth,
+            Height = ContentHeight,
+            UseLayoutRounding = true,
+            SnapsToDevicePixels = true
         };
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(10) });
@@ -243,12 +242,12 @@ public sealed class WpfInvoicePrintService : IPrintService
         Grid.SetRow(buyerSlip, 2);
         root.Children.Add(buyerSlip);
 
-        FixedPage.SetLeft(root, 0);
-        FixedPage.SetTop(root, 0);
+        FixedPage.SetLeft(root, (A4Width - ContentWidth) / 2d);
+        FixedPage.SetTop(root, (A4Height - ContentHeight) / 2d);
         page.Children.Add(root);
 
-        root.Measure(new Size(A4Width, A4Height));
-        root.Arrange(new Rect(new Size(A4Width, A4Height)));
+        root.Measure(new Size(ContentWidth, ContentHeight));
+        root.Arrange(new Rect(0, 0, ContentWidth, ContentHeight));
         root.UpdateLayout();
         return page;
     }
@@ -447,6 +446,8 @@ public sealed class WpfInvoicePrintService : IPrintService
         {
             BorderBrush = accent,
             BorderThickness = new Thickness(1),
+            UseLayoutRounding = true,
+            SnapsToDevicePixels = true,
             Child = grid
         };
     }
@@ -462,7 +463,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         var labelBorder = new Border
         {
             BorderBrush = accent,
-            BorderThickness = new Thickness(0, 0, 1, 1),
+            BorderThickness = GetInnerCellBorderThickness(grid, rowIndex, 0),
             Background = HeaderFill,
             Padding = new Thickness(4, 2, 4, 2),
             Child = new TextBlock
@@ -483,7 +484,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         var valueBorder = new Border
         {
             BorderBrush = accent,
-            BorderThickness = new Thickness(0, 0, 0, 1),
+            BorderThickness = GetInnerCellBorderThickness(grid, rowIndex, 1),
             Padding = new Thickness(5, 2, 5, 2),
             Child = new TextBlock
             {
@@ -505,7 +506,12 @@ public sealed class WpfInvoicePrintService : IPrintService
         IReadOnlyList<InvoicePrintLineModel> pageLines,
         Brush accent)
     {
-        var table = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+        var table = new Grid
+        {
+            Margin = new Thickness(0, 0, 0, 4),
+            UseLayoutRounding = true,
+            SnapsToDevicePixels = true
+        };
         table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
         table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(194) });
         table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(124) });
@@ -557,6 +563,8 @@ public sealed class WpfInvoicePrintService : IPrintService
         {
             BorderBrush = accent,
             BorderThickness = new Thickness(1),
+            UseLayoutRounding = true,
+            SnapsToDevicePixels = true,
             Child = table
         };
     }
@@ -566,7 +574,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         var border = new Border
         {
             BorderBrush = accent,
-            BorderThickness = new Thickness(0, 0, 1, 1),
+            BorderThickness = GetInnerCellBorderThickness(grid, row, column),
             Background = HeaderFill,
             Padding = new Thickness(3, 1, 3, 1),
             Child = new TextBlock
@@ -596,7 +604,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         var border = new Border
         {
             BorderBrush = accent,
-            BorderThickness = new Thickness(0, 0, 1, 1),
+            BorderThickness = GetInnerCellBorderThickness(grid, row, column),
             Padding = new Thickness(3, 1, 3, 1),
             Child = new TextBlock
             {
@@ -616,7 +624,12 @@ public sealed class WpfInvoicePrintService : IPrintService
 
     private static UIElement BuildTotalsSection(InvoicePrintModel model, Brush accent)
     {
-        var grid = new Grid { Margin = new Thickness(0, 0, 0, 3) };
+        var grid = new Grid
+        {
+            Margin = new Thickness(0, 0, 0, 3),
+            UseLayoutRounding = true,
+            SnapsToDevicePixels = true
+        };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(76) });
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(64) });
@@ -643,6 +656,8 @@ public sealed class WpfInvoicePrintService : IPrintService
         {
             BorderBrush = accent,
             BorderThickness = new Thickness(1),
+            UseLayoutRounding = true,
+            SnapsToDevicePixels = true,
             Child = grid
         };
     }
@@ -660,7 +675,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         var labelBorder = new Border
         {
             BorderBrush = accent,
-            BorderThickness = new Thickness(0, 0, 1, 1),
+            BorderThickness = GetInnerCellBorderThickness(grid, row, labelColumn),
             Background = HeaderFill,
             Padding = new Thickness(3, 1, 3, 1),
             Child = new TextBlock
@@ -681,7 +696,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         var valueBorder = new Border
         {
             BorderBrush = accent,
-            BorderThickness = new Thickness(0, 0, 1, 1),
+            BorderThickness = GetInnerCellBorderThickness(grid, row, labelColumn + 1),
             Padding = new Thickness(4, 1, 4, 1),
             Child = new TextBlock
             {
@@ -749,63 +764,11 @@ public sealed class WpfInvoicePrintService : IPrintService
         return $"{value:0.##}";
     }
 
-    private sealed class ScalingDocumentPaginator : DocumentPaginator
+    private static Thickness GetInnerCellBorderThickness(Grid grid, int row, int column)
     {
-        private readonly DocumentPaginator _source;
-        private readonly Size _targetPageSize;
-        private readonly double _scale;
-        private readonly double _offsetX;
-        private readonly double _offsetY;
-
-        public ScalingDocumentPaginator(DocumentPaginator source, Size sourcePageSize, Size targetPageSize)
-        {
-            _source = source;
-            _targetPageSize = targetPageSize;
-
-            var sx = targetPageSize.Width / sourcePageSize.Width;
-            var sy = targetPageSize.Height / sourcePageSize.Height;
-            _scale = Math.Min(1d, Math.Min(sx, sy));
-            _offsetX = (targetPageSize.Width - (sourcePageSize.Width * _scale)) / 2d;
-            _offsetY = (targetPageSize.Height - (sourcePageSize.Height * _scale)) / 2d;
-        }
-
-        public override bool IsPageCountValid => _source.IsPageCountValid;
-        public override int PageCount => _source.PageCount;
-        public override IDocumentPaginatorSource Source => _source.Source;
-
-        public override Size PageSize
-        {
-            get => _targetPageSize;
-            set => _source.PageSize = value;
-        }
-
-        public override DocumentPage GetPage(int pageNumber)
-        {
-            var page = _source.GetPage(pageNumber);
-            var sourceContent = page.ContentBox.IsEmpty
-                ? new Rect(new Point(0, 0), page.Size)
-                : page.ContentBox;
-            var sourceBleed = page.BleedBox.IsEmpty
-                ? new Rect(new Point(0, 0), page.Size)
-                : page.BleedBox;
-
-            var container = new ContainerVisual();
-            container.Children.Add(page.Visual);
-            container.Transform = new MatrixTransform(_scale, 0, 0, _scale, _offsetX, _offsetY);
-
-            var contentBox = new Rect(
-                _offsetX + (sourceContent.X * _scale),
-                _offsetY + (sourceContent.Y * _scale),
-                sourceContent.Width * _scale,
-                sourceContent.Height * _scale);
-
-            var bleedBox = new Rect(
-                _offsetX + (sourceBleed.X * _scale),
-                _offsetY + (sourceBleed.Y * _scale),
-                sourceBleed.Width * _scale,
-                sourceBleed.Height * _scale);
-
-            return new DocumentPage(container, _targetPageSize, bleedBox, contentBox);
-        }
+        var right = column < grid.ColumnDefinitions.Count - 1 ? 1d : 0d;
+        var bottom = row < grid.RowDefinitions.Count - 1 ? 1d : 0d;
+        return new Thickness(0, 0, right, bottom);
     }
+
 }
