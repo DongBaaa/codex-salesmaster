@@ -1,6 +1,8 @@
-﻿using System.Linq;
+using System.Linq;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using SalesMaster.Desktop.App.Services;
 using SalesMaster.Desktop.App.ViewModels;
 using SalesMaster.Desktop.App.Views;
@@ -34,37 +36,53 @@ public partial class MainWindow : Window
         await _vm.LoadAsync();
     }
 
-    // F9 -> 거래명세서 인쇄
-    private void Window_KeyDown(object sender, KeyEventArgs e)
+    // F9: 거래명세서 인쇄, F6: 신규 판매작성
+    // Ctrl+Shift+C: 거래처등록, Ctrl+Shift+I: 재고관리, Ctrl+Shift+P: 수금지불
+    private async void Window_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.F9)
         {
             if (_vm.PrintStatementCommand.CanExecute(null))
                 _vm.PrintStatementCommand.Execute(null);
             e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.F6)
+        {
+            await OpenSalesWindowAsync(preselectSelectedCustomer: true);
+            e.Handled = true;
+            return;
+        }
+
+        if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+        {
+            if (e.Key == Key.C)
+            {
+                await OpenCustomerEditorAsync();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.I)
+            {
+                await OpenInventoryWindowAsync();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.P)
+            {
+                await OpenPaymentPopupAsync();
+                e.Handled = true;
+            }
         }
     }
 
     // 판매작성 (리스트 툴바 버튼)
     private async void SalesToolbarButton_Click(object sender, RoutedEventArgs e)
     {
-        var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session);
-        await vm.LoadAsync();
-        vm.NewInvoice();
-
-        // 현재 선택 거래처가 있으면 미리 세팅
-        if (_vm.SelectedCustomerFilter is not null)
-            vm.SetCustomer(_vm.SelectedCustomerFilter);
-
-        var win = new SalesWindow(vm) { Owner = this };
-        win.Closed += async (_, _) => await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
-        win.Show();
-    }
-
-    // 전표 수정 버튼
-    private async void EditInvoiceButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenSelectedInvoiceEditorAsync();
+        await OpenSalesWindowAsync(preselectSelectedCustomer: true);
     }
 
     // 전표 목록 더블클릭 수정
@@ -98,42 +116,141 @@ public partial class MainWindow : Window
     {
         var customer = _vm.SelectedCustomerFilter;
         if (customer is null) return;
+        await OpenCustomerEditorAsync(customer);
+    }
 
-        var vm = new CustomerEditViewModel(_local);
-        await vm.LoadAsync(customer);
-        var win = new CustomerEditWindow(vm) { Owner = this };
-        if (win.ShowDialog() == true)
-            await _vm.RefreshCustomersCommand.ExecuteAsync(null);
+    // 거래처 우클릭 -> 거래처 삭제
+    private async void CustomerDeleteContextMenu_Click(object sender, RoutedEventArgs e)
+    {
+        await DeleteSelectedCustomerAsync();
+    }
+
+    // 거래처 더블클릭 -> 거래처 수정창 열기
+    private async void CustomerListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        var customer = _vm.SelectedCustomerFilter;
+        if (customer is null)
+            return;
+
+        await OpenCustomerEditorAsync(customer);
+    }
+
+    private void CustomerListBox_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not ListBox listBox)
+            return;
+
+        var source = e.OriginalSource as DependencyObject;
+        var item = FindAncestor<ListBoxItem>(source);
+        if (item?.DataContext is Data.LocalCustomer customer)
+            listBox.SelectedItem = customer;
+    }
+
+    private async Task DeleteSelectedCustomerAsync()
+    {
+        var customer = _vm.SelectedCustomerFilter;
+        if (customer is null)
+        {
+            MessageBox.Show("삭제할 거래처를 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var activeInvoices = await _local.GetInvoicesAsync(customerId: customer.Id);
+        if (activeInvoices.Count > 0)
+        {
+            MessageBox.Show(
+                $"해당 거래처 전표가 {activeInvoices.Count:N0}건 남아 있어 삭제할 수 없습니다.\n먼저 전표를 모두 삭제한 뒤 거래처를 삭제하세요.",
+                "거래처 삭제",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            $"거래처 '{customer.NameOriginal}'를 삭제하시겠습니까?",
+            "거래처 삭제 확인",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+
+        if (confirm != MessageBoxResult.OK)
+            return;
+
+        await _local.DeleteCustomerAsync(customer.Id);
+        await _vm.RefreshCustomersCommand.ExecuteAsync(null);
     }
 
     // 재고관리 버튼
     private async void InventoryButton_Click(object sender, RoutedEventArgs e)
     {
-        var vm = new InventoryViewModel(_local);
-        await vm.LoadAsync();
-        var win = new InventoryWindow(vm) { Owner = this };
-        win.Show();
+        await OpenInventoryWindowAsync();
     }
 
     // 거래처등록 버튼
     private async void CustomerEditButton_Click(object sender, RoutedEventArgs e)
     {
-        var vm = new CustomerEditViewModel(_local);
-        await vm.LoadAsync();
-        var win = new CustomerEditWindow(vm) { Owner = this };
-        if (win.ShowDialog() == true)
-            await _vm.RefreshCustomersCommand.ExecuteAsync(null);
+        await OpenCustomerEditorAsync();
+    }
+
+    // 거래처삭제 버튼
+    private async void CustomerDeleteButton_Click(object sender, RoutedEventArgs e)
+    {
+        await DeleteSelectedCustomerAsync();
+    }
+
+    private async void DeleteSelectedInvoicesContextMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var rows = GetSelectedInvoiceRows(sender).ToList();
+        if (rows.Count == 0)
+        {
+            MessageBox.Show("삭제할 전표를 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            "선택한 전표를 삭제하시겠습니까?",
+            "전표 삭제 확인",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+
+        if (confirm != MessageBoxResult.OK)
+            return;
+
+        foreach (var rowId in rows.Select(r => r.Id).Distinct())
+            await _local.DeleteInvoiceAsync(rowId);
+
+        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+    }
+
+    private static IEnumerable<InvoiceListRow> GetSelectedInvoiceRows(object sender)
+    {
+        if (sender is not MenuItem menuItem)
+            return Enumerable.Empty<InvoiceListRow>();
+
+        if (menuItem.Parent is not ContextMenu contextMenu)
+            return Enumerable.Empty<InvoiceListRow>();
+
+        if (contextMenu.PlacementTarget is not DataGrid grid)
+            return Enumerable.Empty<InvoiceListRow>();
+
+        return grid.SelectedItems.OfType<InvoiceListRow>();
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T found)
+                return found;
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
     }
 
     // 판매작성 버튼(헤더)
     private async void SalesButton_Click(object sender, RoutedEventArgs e)
     {
-        var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session);
-        await vm.LoadAsync();
-        vm.NewInvoice();
-        var win = new SalesWindow(vm) { Owner = this };
-        win.Closed += async (_, _) => await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
-        win.Show();
+        await OpenSalesWindowAsync(preselectSelectedCustomer: false);
     }
 
     // 수금지불 버튼(헤더)
@@ -146,6 +263,38 @@ public partial class MainWindow : Window
     private async void PaymentEntryButton_Click(object sender, RoutedEventArgs e)
     {
         await OpenPaymentPopupAsync();
+    }
+
+    private async Task OpenSalesWindowAsync(bool preselectSelectedCustomer)
+    {
+        var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session);
+        await vm.LoadAsync();
+        vm.NewInvoice();
+
+        if (preselectSelectedCustomer && _vm.SelectedCustomerFilter is not null)
+            vm.SetCustomer(_vm.SelectedCustomerFilter);
+
+        var win = new SalesWindow(vm) { Owner = this };
+        win.Closed += async (_, _) => await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+        win.Show();
+    }
+
+    private async Task OpenCustomerEditorAsync(Data.LocalCustomer? customer = null)
+    {
+        var vm = new CustomerEditViewModel(_local);
+        await vm.LoadAsync(customer);
+
+        var win = new CustomerEditWindow(vm) { Owner = this };
+        if (win.ShowDialog() == true)
+            await _vm.RefreshCustomersCommand.ExecuteAsync(null);
+    }
+
+    private async Task OpenInventoryWindowAsync()
+    {
+        var vm = new InventoryViewModel(_local);
+        await vm.LoadAsync();
+        var win = new InventoryWindow(vm) { Owner = this };
+        win.Show();
     }
 
     private async Task OpenPaymentPopupAsync()

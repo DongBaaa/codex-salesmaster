@@ -9,6 +9,7 @@ namespace SalesMaster.Desktop.App.Services;
 public static class StatementDocumentBuilder
 {
     private const string FontName = "맑은 고딕";
+    private const double ContentWidth = 744;
 
     private static readonly SolidColorBrush RedAccentBrush = new(Color.FromRgb(229, 57, 53));
     private static readonly SolidColorBrush BlueAccentBrush = new(Color.FromRgb(63, 81, 181));
@@ -124,7 +125,7 @@ public static class StatementDocumentBuilder
             Padding = new Thickness(0)
         };
 
-        section.Blocks.Add(new Paragraph(new Bold(new Run("거   래   명   세   서")))
+        section.Blocks.Add(new Paragraph(new Bold(new Run("거 래 명 세 서")))
         {
             Margin = new Thickness(0, 0, 0, 0),
             TextAlignment = TextAlignment.Center,
@@ -156,8 +157,8 @@ public static class StatementDocumentBuilder
             CellSpacing = 0,
             Margin = new Thickness(0, 0, 0, 2)
         };
-        table.Columns.Add(new TableColumn());
-        table.Columns.Add(new TableColumn { Width = GridLength.Auto });
+        table.Columns.Add(new TableColumn { Width = new GridLength(ContentWidth - 120) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(120) });
 
         var rows = new TableRowGroup();
         table.RowGroups.Add(rows);
@@ -185,16 +186,17 @@ public static class StatementDocumentBuilder
             Margin = new Thickness(0, 0, 0, 2)
         };
 
-        table.Columns.Add(new TableColumn { Width = new GridLength(16) }); // 공급자 세로
-        table.Columns.Add(new TableColumn { Width = new GridLength(58) });
-        table.Columns.Add(new TableColumn { Width = new GridLength(1, GridUnitType.Star) });
+        // 총 744
+        table.Columns.Add(new TableColumn { Width = new GridLength(16) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(60) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(170) });
         table.Columns.Add(new TableColumn { Width = new GridLength(44) });
-        table.Columns.Add(new TableColumn { Width = new GridLength(84) });
-        table.Columns.Add(new TableColumn { Width = new GridLength(16) }); // 공급받는자 세로
-        table.Columns.Add(new TableColumn { Width = new GridLength(58) });
-        table.Columns.Add(new TableColumn { Width = new GridLength(1, GridUnitType.Star) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(82) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(16) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(60) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(170) });
         table.Columns.Add(new TableColumn { Width = new GridLength(44) });
-        table.Columns.Add(new TableColumn { Width = new GridLength(84) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(82) });
 
         var rows = new TableRowGroup();
         table.RowGroups.Add(rows);
@@ -248,19 +250,20 @@ public static class StatementDocumentBuilder
             Margin = new Thickness(0, 0, 0, 2)
         };
 
-        table.Columns.Add(new TableColumn { Width = new GridLength(34) }); // 순번
-        table.Columns.Add(new TableColumn { Width = new GridLength(1, GridUnitType.Star) }); // 품명/규격
-        table.Columns.Add(new TableColumn { Width = new GridLength(46) }); // 단위
-        table.Columns.Add(new TableColumn { Width = new GridLength(58) }); // 수량
-        table.Columns.Add(new TableColumn { Width = new GridLength(88) }); // 단가
-        table.Columns.Add(new TableColumn { Width = new GridLength(88) }); // 금액
+        // 총 744
+        table.Columns.Add(new TableColumn { Width = new GridLength(40) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(350) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(62) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(80) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(106) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(106) });
 
         var rows = new TableRowGroup();
         table.RowGroups.Add(rows);
 
         var header = new TableRow();
         header.Cells.Add(CreateLabelCell("순번", accent, center: true));
-        header.Cells.Add(CreateLabelCell("품   명   /   규   격", accent, center: true));
+        header.Cells.Add(CreateLabelCell("품 명 / 규 격", accent, center: true));
         header.Cells.Add(CreateLabelCell("단위", accent, center: true));
         header.Cells.Add(CreateLabelCell("수량", accent, center: true));
         header.Cells.Add(CreateLabelCell("단가", accent, center: true));
@@ -278,7 +281,7 @@ public static class StatementDocumentBuilder
             {
                 var line = lines[i];
                 row.Cells.Add(CreateValueCell((i + 1).ToString(), accent, align: TextAlignment.Center));
-                row.Cells.Add(CreateValueCell(FormatItemText(line), accent));
+                row.Cells.Add(CreateValueCell(FormatItemText(line), accent, wrap: true));
                 row.Cells.Add(CreateValueCell(line.Unit, accent, align: TextAlignment.Center));
                 row.Cells.Add(CreateValueCell($"{line.Quantity:N0}", accent, align: TextAlignment.Right));
                 row.Cells.Add(CreateValueCell(
@@ -334,14 +337,15 @@ public static class StatementDocumentBuilder
             Margin = new Thickness(0, 0, 0, 1)
         };
 
-        table.Columns.Add(new TableColumn { Width = new GridLength(64) });
-        table.Columns.Add(new TableColumn { Width = new GridLength(1, GridUnitType.Star) });
+        // 총 744
+        table.Columns.Add(new TableColumn { Width = new GridLength(70) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(246) });
         table.Columns.Add(new TableColumn { Width = new GridLength(56) });
-        table.Columns.Add(new TableColumn { Width = new GridLength(86) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(82) });
         table.Columns.Add(new TableColumn { Width = new GridLength(56) });
-        table.Columns.Add(new TableColumn { Width = new GridLength(86) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(82) });
         table.Columns.Add(new TableColumn { Width = new GridLength(56) });
-        table.Columns.Add(new TableColumn { Width = new GridLength(86) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(96) });
 
         var rows = new TableRowGroup();
         table.RowGroups.Add(rows);
@@ -381,8 +385,9 @@ public static class StatementDocumentBuilder
             CellSpacing = 0,
             Margin = new Thickness(0, 1, 0, 0)
         };
-        table.Columns.Add(new TableColumn());
-        table.Columns.Add(new TableColumn { Width = GridLength.Auto });
+
+        table.Columns.Add(new TableColumn { Width = new GridLength(520) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(224) });
 
         var rows = new TableRowGroup();
         table.RowGroups.Add(rows);
@@ -395,7 +400,7 @@ public static class StatementDocumentBuilder
         var footerRow = new TableRow();
         footerRow.Cells.Add(CreateNoBorderCell(accountText, TextAlignment.Left, accent));
         footerRow.Cells.Add(CreateNoBorderCell(
-            $"수량합 {quantitySum:N0}   * 개발회사:www.hkdb.co.kr ☎ 1566-1186",
+            $"수량합 {quantitySum:N0}   * 개발회사:www.hkdb.co.kr  1566-1186",
             TextAlignment.Right,
             accent));
         rows.Rows.Add(footerRow);
@@ -416,7 +421,7 @@ public static class StatementDocumentBuilder
             Padding = new Thickness(0)
         };
 
-        section.Blocks.Add(new Paragraph(new Bold(new Run("영   수   증")))
+        section.Blocks.Add(new Paragraph(new Bold(new Run("영 수 증")))
         {
             FontSize = 22,
             TextAlignment = TextAlignment.Center,
@@ -430,8 +435,8 @@ public static class StatementDocumentBuilder
         });
 
         var table = new Table { CellSpacing = 0, Margin = new Thickness(0, 0, 0, 4) };
-        table.Columns.Add(new TableColumn { Width = new GridLength(40) });
-        table.Columns.Add(new TableColumn());
+        table.Columns.Add(new TableColumn { Width = new GridLength(42) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(542) });
         table.Columns.Add(new TableColumn { Width = new GridLength(70) });
         table.Columns.Add(new TableColumn { Width = new GridLength(90) });
 
@@ -454,7 +459,7 @@ public static class StatementDocumentBuilder
             {
                 var line = lines[i];
                 row.Cells.Add(CreateValueCell((i + 1).ToString(), BlueAccentBrush, align: TextAlignment.Center));
-                row.Cells.Add(CreateValueCell(FormatItemText(line), BlueAccentBrush));
+                row.Cells.Add(CreateValueCell(FormatItemText(line), BlueAccentBrush, wrap: true));
                 row.Cells.Add(CreateValueCell($"{line.Quantity:N0}", BlueAccentBrush, align: TextAlignment.Right));
                 row.Cells.Add(CreateValueCell(
                     printWithPrice ? $"{line.LineAmount:N0}" : string.Empty,
@@ -578,11 +583,13 @@ public static class StatementDocumentBuilder
         var paragraph = new Paragraph(new Run(text ?? string.Empty))
         {
             Margin = new Thickness(0),
-            TextAlignment = align
+            TextAlignment = align,
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+            LineHeight = 11.4
         };
 
-        if (wrap)
-            paragraph.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
+        if (!wrap)
+            paragraph.TextIndent = 0;
 
         var cell = new TableCell(paragraph)
         {

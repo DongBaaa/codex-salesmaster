@@ -72,6 +72,9 @@ public sealed partial class SalesViewModel : ObservableObject
     // ?? ?몄뇙 ?듭뀡 ?????????????????????????????????????????????????????????
     [ObservableProperty] private bool _printWithDate = true;
     [ObservableProperty] private bool _printWithPrice = true;
+    [ObservableProperty] private bool _printStatementDocument = true;
+    [ObservableProperty] private bool _printEstimateDocument;
+    [ObservableProperty] private bool _printPaymentClaimDocument;
     [ObservableProperty] private bool _editTemplateOnPrint;
     [ObservableProperty] private string _printType = "거래명1/2";
     public string[] PrintTypes { get; } = ["거래명1/2", "거래명A4", "영수증출력", "출고증A4"];
@@ -509,6 +512,17 @@ public sealed partial class SalesViewModel : ObservableObject
     {
         try
         {
+            if (!PrintStatementDocument && !PrintEstimateDocument && !PrintPaymentClaimDocument)
+            {
+                StatusMessage = "출력할 서류를 1개 이상 선택하세요.";
+                System.Windows.MessageBox.Show(
+                    "인쇄옵션에서 출력할 서류를 1개 이상 선택하세요.",
+                    "알림",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Information);
+                return;
+            }
+
             if (SelectedCustomer is null)
             {
                 StatusMessage = "거래처를 선택하세요.";
@@ -529,15 +543,49 @@ public sealed partial class SalesViewModel : ObservableObject
                 return;
             }
 
-            var printModel = await LoadOrCreateInvoicePrintModelAsync(invoice, SelectedCustomer, company);
-            printModel.PrintWithDate = PrintWithDate;
-            printModel.PrintWithPrice = PrintWithPrice;
+            var selectedCodes = new List<string>();
+            if (PrintPaymentClaimDocument)
+            {
+                var selectedFromDialog = await SelectPaymentClaimAttachmentsAsync(SelectedCustomer);
+                if (selectedFromDialog is null)
+                {
+                    StatusMessage = "첨부서류 선택이 취소되어 인쇄를 중단했습니다.";
+                    return;
+                }
 
-            var previewDocument = _invoicePrintService.BuildFixedDocument(printModel);
+                selectedCodes.AddRange(selectedFromDialog);
+            }
+            else
+            {
+                if (PrintStatementDocument) selectedCodes.Add(AttachmentDocumentCatalog.Statement);
+                if (PrintEstimateDocument) selectedCodes.Add(AttachmentDocumentCatalog.Estimate);
+            }
+
+            if (selectedCodes.Count == 0)
+            {
+                StatusMessage = "출력할 서류를 선택하세요.";
+                return;
+            }
+
+            var documents = await BuildDocumentsForCodesAsync(
+                selectedCodes,
+                invoice,
+                SelectedCustomer,
+                company);
+
+            if (documents.Count == 0)
+            {
+                StatusMessage = "출력 가능한 문서가 없습니다.";
+                return;
+            }
+
+            var previewDocument = documents.Count == 1
+                ? documents[0]
+                : SupplementDocumentBuilder.MergeDocuments(documents);
             var previewViewModel = new PrintPreviewViewModel(
                 previewDocument,
                 _invoicePrintService,
-                $"거래명세서_{invoice.InvoiceDate:yyyyMMdd}_{SelectedCustomer.NameOriginal}");
+                $"출력물_{invoice.InvoiceDate:yyyyMMdd}_{SelectedCustomer.NameOriginal}");
             var previewWindow = new PrintPreviewWindow(previewViewModel)
             {
                 Owner = GetActiveWindow()
@@ -546,7 +594,10 @@ public sealed partial class SalesViewModel : ObservableObject
             previewWindow.ShowDialog();
             if (previewViewModel.WasPrinted)
             {
-                StatusMessage = "프린터 선택 후 인쇄를 완료했습니다.";
+                var completed = selectedCodes
+                    .Select(AttachmentDocumentCatalog.GetDisplayName)
+                    .ToList();
+                StatusMessage = $"인쇄 완료: {string.Join(", ", completed)}";
             }
         }
         catch (Exception ex)
@@ -764,6 +815,231 @@ public sealed partial class SalesViewModel : ObservableObject
         await _local.SaveInvoicePrintPayloadAsync(model.InvoiceId, payload);
     }
 
+    private async Task<List<string>?> SelectPaymentClaimAttachmentsAsync(LocalCustomer customer)
+    {
+        var customerKey = BuildAttachmentCustomerKey(customer);
+        var loadedStates = await _local.GetAttachmentSelectionsAsync(customerKey);
+        var defaultStates = BuildDefaultAttachmentSelections();
+        var initialStates = loadedStates.Count == 0 ? defaultStates : MergeAttachmentStates(defaultStates, loadedStates);
+        EnforceMainPrintOptionSelections(initialStates);
+        var lockedCodes = BuildLockedAttachmentCodes();
+
+        var dialogViewModel = new AttachmentSelectionDialogViewModel(
+            AttachmentDocumentCatalog.OrderedDocuments,
+            initialStates,
+            AttachmentDocumentCatalog.PaymentClaim,
+            lockedCodes);
+        var window = new AttachmentSelectionWindow(dialogViewModel)
+        {
+            Owner = GetActiveWindow()
+        };
+
+        var dialogResult = window.ShowDialog();
+        if (dialogResult != true || !dialogViewModel.WasConfirmed)
+            return null;
+
+        var finalStates = dialogViewModel.GetSelectionStates();
+        await _local.SaveAttachmentSelectionsAsync(customerKey, finalStates);
+
+        return dialogViewModel.GetCheckedStatesInOrder()
+            .Select(s => s.DocCode)
+            .ToList();
+    }
+
+    private async Task<List<System.Windows.Documents.FixedDocument>> BuildDocumentsForCodesAsync(
+        IReadOnlyList<string> codes,
+        LocalInvoice invoice,
+        LocalCustomer customer,
+        LocalCompanyProfile company)
+    {
+        var documents = new List<System.Windows.Documents.FixedDocument>();
+        InvoicePrintModel? statementPrintModel = null;
+        var orderedAttachmentNames = codes
+            .Select(AttachmentDocumentCatalog.GetDisplayName)
+            .ToList();
+
+        foreach (var code in codes)
+        {
+            switch (code)
+            {
+                case AttachmentDocumentCatalog.Statement:
+                    statementPrintModel ??= await LoadOrCreateInvoicePrintModelAsync(invoice, customer, company);
+                    statementPrintModel.PrintWithDate = PrintWithDate;
+                    statementPrintModel.PrintWithPrice = PrintWithPrice;
+                    documents.Add(_invoicePrintService.BuildFixedDocument(statementPrintModel));
+                    break;
+                case AttachmentDocumentCatalog.Estimate:
+                    documents.Add(SupplementDocumentBuilder.BuildEstimateDocument(invoice, customer, company));
+                    break;
+                case AttachmentDocumentCatalog.PaymentClaim:
+                    documents.Add(SupplementDocumentBuilder.BuildPaymentClaimDocument(
+                        invoice,
+                        customer,
+                        company,
+                        orderedAttachmentNames));
+                    break;
+                default:
+                    // Non-core attachments are metadata only (printed in payment-claim attachment list).
+                    // They are not generated as separate print pages.
+                    break;
+            }
+        }
+
+        return documents;
+    }
+
+    private List<AttachmentSelectionState> BuildDefaultAttachmentSelections()
+    {
+        var states = AttachmentDocumentCatalog.OrderedDocuments
+            .Select(d => new AttachmentSelectionState
+            {
+                DocCode = d.Code,
+                IsChecked = false,
+                OrderIndex = null
+            })
+            .ToList();
+
+        var order = 1;
+        if (PrintStatementDocument)
+            SetAttachmentState(states, AttachmentDocumentCatalog.Statement, true, order++);
+        if (PrintEstimateDocument)
+            SetAttachmentState(states, AttachmentDocumentCatalog.Estimate, true, order++);
+
+        // Policy: payment claim is required in this flow and always placed last.
+        SetAttachmentState(states, AttachmentDocumentCatalog.PaymentClaim, true, order);
+        return states;
+    }
+
+    private static List<AttachmentSelectionState> MergeAttachmentStates(
+        IReadOnlyList<AttachmentSelectionState> defaults,
+        IReadOnlyList<AttachmentSelectionState> loaded)
+    {
+        var loadedByCode = loaded.ToDictionary(s => s.DocCode, StringComparer.OrdinalIgnoreCase);
+        var merged = defaults
+            .Select(d =>
+            {
+                if (loadedByCode.TryGetValue(d.DocCode, out var fromSaved))
+                {
+                    return new AttachmentSelectionState
+                    {
+                        DocCode = d.DocCode,
+                        IsChecked = fromSaved.IsChecked,
+                        OrderIndex = fromSaved.OrderIndex
+                    };
+                }
+
+                return new AttachmentSelectionState
+                {
+                    DocCode = d.DocCode,
+                    IsChecked = d.IsChecked,
+                    OrderIndex = d.OrderIndex
+                };
+            })
+            .ToList();
+
+        var claimState = merged.First(s =>
+            string.Equals(s.DocCode, AttachmentDocumentCatalog.PaymentClaim, StringComparison.OrdinalIgnoreCase));
+        claimState.IsChecked = true;
+
+        if (!claimState.OrderIndex.HasValue)
+        {
+            var maxOrder = merged.Where(s => s.OrderIndex.HasValue).Select(s => s.OrderIndex!.Value).DefaultIfEmpty(0).Max();
+            claimState.OrderIndex = maxOrder + 1;
+        }
+
+        return merged;
+    }
+
+    private static void SetAttachmentState(
+        List<AttachmentSelectionState> states,
+        string code,
+        bool isChecked,
+        int? orderIndex)
+    {
+        var state = states.First(s => string.Equals(s.DocCode, code, StringComparison.OrdinalIgnoreCase));
+        state.IsChecked = isChecked;
+        state.OrderIndex = isChecked ? orderIndex : null;
+    }
+
+    private void EnforceMainPrintOptionSelections(List<AttachmentSelectionState> states)
+    {
+        var byCode = states.ToDictionary(s => s.DocCode, StringComparer.OrdinalIgnoreCase);
+
+        EnsureState(byCode, AttachmentDocumentCatalog.Statement);
+        EnsureState(byCode, AttachmentDocumentCatalog.Estimate);
+        EnsureState(byCode, AttachmentDocumentCatalog.PaymentClaim);
+
+        if (PrintStatementDocument)
+            byCode[AttachmentDocumentCatalog.Statement].IsChecked = true;
+        if (PrintEstimateDocument)
+            byCode[AttachmentDocumentCatalog.Estimate].IsChecked = true;
+
+        byCode[AttachmentDocumentCatalog.PaymentClaim].IsChecked = true;
+
+        var ordered = byCode.Values
+            .Where(s => s.IsChecked &&
+                        !string.Equals(s.DocCode, AttachmentDocumentCatalog.Statement, StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(s.DocCode, AttachmentDocumentCatalog.Estimate, StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(s.DocCode, AttachmentDocumentCatalog.PaymentClaim, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(s => s.OrderIndex ?? int.MaxValue)
+            .ThenBy(s => s.DocCode)
+            .ToList();
+
+        var order = 1;
+        if (byCode[AttachmentDocumentCatalog.Statement].IsChecked)
+            byCode[AttachmentDocumentCatalog.Statement].OrderIndex = order++;
+        else
+            byCode[AttachmentDocumentCatalog.Statement].OrderIndex = null;
+
+        if (byCode[AttachmentDocumentCatalog.Estimate].IsChecked)
+            byCode[AttachmentDocumentCatalog.Estimate].OrderIndex = order++;
+        else
+            byCode[AttachmentDocumentCatalog.Estimate].OrderIndex = null;
+
+        byCode[AttachmentDocumentCatalog.PaymentClaim].OrderIndex = order++;
+
+        foreach (var extra in ordered)
+            extra.OrderIndex = order++;
+
+        states.Clear();
+        states.AddRange(byCode.Values);
+    }
+
+    private static void EnsureState(
+        Dictionary<string, AttachmentSelectionState> byCode,
+        string code)
+    {
+        if (byCode.ContainsKey(code))
+            return;
+
+        byCode[code] = new AttachmentSelectionState
+        {
+            DocCode = code,
+            IsChecked = false,
+            OrderIndex = null
+        };
+    }
+
+    private List<string> BuildLockedAttachmentCodes()
+    {
+        var locked = new List<string> { AttachmentDocumentCatalog.PaymentClaim };
+        if (PrintStatementDocument)
+            locked.Add(AttachmentDocumentCatalog.Statement);
+        if (PrintEstimateDocument)
+            locked.Add(AttachmentDocumentCatalog.Estimate);
+
+        return locked;
+    }
+
+    private static string BuildAttachmentCustomerKey(LocalCustomer customer)
+    {
+        if (customer.Id != Guid.Empty)
+            return $"customer-id:{customer.Id:N}";
+
+        var nameKey = (customer.NameOriginal ?? string.Empty).Trim();
+        return $"customer-name:{nameKey}";
+    }
+
     private static System.Windows.Window? GetActiveWindow()
     {
         return System.Windows.Application.Current?.Windows
@@ -894,7 +1170,9 @@ public sealed partial class SalesViewModel : ObservableObject
         var document = new System.Windows.Documents.FlowDocument
         {
             FontFamily = new System.Windows.Media.FontFamily("맑은 고딕"),
-            FontSize = 10.5
+            FontSize = 10.5,
+            Background = System.Windows.Media.Brushes.White,
+            Foreground = System.Windows.Media.Brushes.Black
         };
 
         document.Blocks.Add(new System.Windows.Documents.Paragraph(
@@ -1131,6 +1409,7 @@ public sealed partial class SalesViewModel : ObservableObject
             })
         {
             Padding = new System.Windows.Thickness(6, 4, 6, 4),
+            Background = System.Windows.Media.Brushes.White,
             BorderBrush = new System.Windows.Media.SolidColorBrush(
                 (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#A3B1C2")),
             BorderThickness = new System.Windows.Thickness(0.8)
@@ -1168,6 +1447,7 @@ public sealed partial class SalesViewModel : ObservableObject
         {
             Padding = new System.Windows.Thickness(6, 4, 6, 4),
             TextAlignment = align,
+            Background = System.Windows.Media.Brushes.White,
             BorderBrush = new System.Windows.Media.SolidColorBrush(
                 (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#B7C5D5")),
             BorderThickness = new System.Windows.Thickness(0.6)

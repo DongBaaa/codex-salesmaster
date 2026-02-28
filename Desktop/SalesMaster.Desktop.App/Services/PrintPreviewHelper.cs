@@ -22,14 +22,17 @@ public static class PrintPreviewHelper
             Width = 980,
             Height = 760,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#151F2E"))
+            Background = Brushes.White
         };
 
         var owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive);
         if (owner is not null && owner != previewWindow)
             previewWindow.Owner = owner;
 
-        var root = new Grid();
+        var root = new Grid
+        {
+            Background = Brushes.White
+        };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
@@ -114,6 +117,7 @@ public static class PrintPreviewHelper
             Document = document,
             Margin = new Thickness(10),
             Background = Brushes.White,
+            Foreground = Brushes.Black,
             IsToolBarVisible = true,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };

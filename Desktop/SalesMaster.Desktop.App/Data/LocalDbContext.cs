@@ -18,6 +18,7 @@ public sealed class LocalDbContext : DbContext
     public DbSet<LocalPrintTemplateVersion> PrintTemplateVersions => Set<LocalPrintTemplateVersion>();
     public DbSet<LocalSetting> Settings => Set<LocalSetting>();
     public DbSet<LocalRecentSelection> RecentSelections => Set<LocalRecentSelection>();
+    public DbSet<LocalAttachmentSelection> AttachmentSelections => Set<LocalAttachmentSelection>();
     public DbSet<LocalTransaction> Transactions => Set<LocalTransaction>();
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -70,6 +71,11 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalRecentSelection>()
             .HasIndex(r => new { r.EntityType, r.EntityId })
             .IsUnique();
+
+        model.Entity<LocalAttachmentSelection>()
+            .HasKey(s => new { s.CustomerKey, s.DocCode });
+        model.Entity<LocalAttachmentSelection>()
+            .HasIndex(s => s.CustomerKey);
 
         // Transactions
         model.Entity<LocalTransaction>().HasQueryFilter(e => !e.IsDeleted);

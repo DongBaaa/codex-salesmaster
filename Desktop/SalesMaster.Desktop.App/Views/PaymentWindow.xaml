@@ -91,7 +91,7 @@
                     </Grid.RowDefinitions>
 
                     <Label Grid.Row="0" Grid.Column="0" Content="고객/거래처"/>
-                    <Button Grid.Row="0" Grid.Column="1" Content="{Binding CustomerName}" Background="White" HorizontalAlignment="Stretch" FontWeight="Bold" Foreground="#1A237E" Click="CustomerSelectButton_Click"/>
+                    <Button Grid.Row="0" Grid.Column="1" Content="{Binding CustomerName}" Background="#D9E6F5" HorizontalAlignment="Stretch" FontWeight="Bold" Foreground="Black" Click="CustomerSelectButton_Click"/>
                     <Label Grid.Row="0" Grid.Column="2" Content="고객분류"/>
                     <TextBox Grid.Row="0" Grid.Column="3" TextAlignment="Left"/>
 

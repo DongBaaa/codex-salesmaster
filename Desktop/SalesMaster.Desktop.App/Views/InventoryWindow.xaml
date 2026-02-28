@@ -13,10 +13,10 @@
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
         <Style TargetType="TextBox">
-            <Setter Property="Background" Value="White"/>
+            <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
-            <Setter Property="BorderBrush" Value="#2E4060"/>
-            <Setter Property="Padding" Value="5,3"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="Padding" Value="6,4"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="CaretBrush" Value="Black"/>
         </Style>
@@ -142,7 +142,7 @@
 
                         <Label Grid.Row="0" Grid.Column="0" Content="품 명"/>
                         <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EditName, UpdateSourceTrigger=PropertyChanged}"
-                                 Background="White" Foreground="Black" FontWeight="Bold"/>
+                                 Background="#D9E6F5" Foreground="Black" FontWeight="Bold"/>
                         <Label Grid.Row="0" Grid.Column="2" Content="품목분류"/>
                         <TextBox Grid.Row="0" Grid.Column="3" Text="{Binding EditCategoryName, UpdateSourceTrigger=PropertyChanged}"/>
 

@@ -187,6 +187,15 @@ public sealed class LocalRecentSelection
     public bool IsFavorite { get; set; }
 }
 
+public sealed class LocalAttachmentSelection
+{
+    public string CustomerKey { get; set; } = string.Empty;
+    public string DocCode { get; set; } = string.Empty;
+    public bool IsChecked { get; set; }
+    public int? OrderIndex { get; set; }
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
 /// <summary>
 /// 고객/거래처 수금·지불 독립 전표 (인보이스에 귀속되지 않는 현금/카드/통장 거래)
 /// </summary>

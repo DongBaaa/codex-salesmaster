@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using SalesMaster.Desktop.App.Data;
+using SalesMaster.Desktop.App.Printing;
 using SalesMaster.Shared.Contracts;
 
 namespace SalesMaster.Desktop.App.Services;
@@ -242,6 +243,94 @@ public sealed class LocalStateService
 
     private static string BuildInvoicePrintSettingKey(Guid invoiceId)
         => $"InvoicePrint:{invoiceId:N}";
+
+    public async Task<List<AttachmentSelectionState>> GetAttachmentSelectionsAsync(
+        string customerKey,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(customerKey))
+            return [];
+
+        try
+        {
+            return await _db.AttachmentSelections
+                .AsNoTracking()
+                .Where(s => s.CustomerKey == customerKey)
+                .OrderBy(s => s.OrderIndex ?? int.MaxValue)
+                .ThenBy(s => s.DocCode)
+                .Select(s => new AttachmentSelectionState
+                {
+                    DocCode = s.DocCode,
+                    IsChecked = s.IsChecked,
+                    OrderIndex = s.OrderIndex
+                })
+                .ToListAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("AttachmentSelection", $"Failed to load attachment selections for key '{customerKey}'.", ex);
+            return [];
+        }
+    }
+
+    public async Task SaveAttachmentSelectionsAsync(
+        string customerKey,
+        IReadOnlyCollection<AttachmentSelectionState> selections,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(customerKey))
+            return;
+
+        try
+        {
+            var incoming = selections ?? [];
+            var now = DateTime.UtcNow;
+            var incomingByCode = incoming
+                .Where(s => !string.IsNullOrWhiteSpace(s.DocCode))
+                .GroupBy(s => s.DocCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
+
+            var existing = await _db.AttachmentSelections
+                .Where(s => s.CustomerKey == customerKey)
+                .ToListAsync(ct);
+
+            foreach (var row in existing)
+            {
+                if (!incomingByCode.TryGetValue(row.DocCode, out var state))
+                {
+                    _db.AttachmentSelections.Remove(row);
+                    continue;
+                }
+
+                row.IsChecked = state.IsChecked;
+                row.OrderIndex = state.OrderIndex;
+                row.UpdatedAtUtc = now;
+            }
+
+            foreach (var state in incomingByCode.Values)
+            {
+                var exists = existing.Any(e =>
+                    string.Equals(e.DocCode, state.DocCode, StringComparison.OrdinalIgnoreCase));
+                if (exists)
+                    continue;
+
+                _db.AttachmentSelections.Add(new LocalAttachmentSelection
+                {
+                    CustomerKey = customerKey,
+                    DocCode = state.DocCode,
+                    IsChecked = state.IsChecked,
+                    OrderIndex = state.OrderIndex,
+                    UpdatedAtUtc = now
+                });
+            }
+
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("AttachmentSelection", $"Failed to save attachment selections for key '{customerKey}'.", ex);
+        }
+    }
 
     // ── Session cache (offline fallback) ─────────────────────────────────────
     public async Task SaveSessionCacheAsync(string username, string role, IEnumerable<string> permissions, CancellationToken ct = default)

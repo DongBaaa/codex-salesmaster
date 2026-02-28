@@ -130,6 +130,7 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Content="재고관리" Background="#1B5E20" Margin="0,0,6,0" Click="InventoryButton_Click"/>
                     <Button Content="거래처등록" Background="#8E24AA" Margin="0,0,6,0" Click="CustomerEditButton_Click"/>
+                    <Button Content="거래처삭제" Background="#C62828" Margin="0,0,6,0" Click="CustomerDeleteButton_Click"/>
                     <Button Content="판매작성" Background="#1565C0" Margin="0,0,6,0" Click="SalesButton_Click"/>
                     <Button Content="수금지불" Background="#00897B" Margin="0,0,10,0" Click="PaymentButton_Click"/>
                     <TextBlock Text="{Binding CurrentUserDisplay}" Foreground="#9FB3C8" VerticalAlignment="Center" Margin="0,0,10,0"/>
@@ -140,11 +141,44 @@
         </Border>
 
         <Border DockPanel.Dock="Top" Background="#122038" Padding="12,10" BorderBrush="#2E4060" BorderThickness="0,0,0,1">
-            <UniformGrid Columns="4">
-                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10"><StackPanel><TextBlock Text="이번달 매출" Foreground="#9FB3C8" FontSize="11"/><TextBlock Text="{Binding DashboardMonthlySales, StringFormat={}{0:N0} 원}" Foreground="#4FC3F7" FontWeight="Bold" FontSize="17"/></StackPanel></Border>
-                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10"><StackPanel><TextBlock Text="미수금" Foreground="#9FB3C8" FontSize="11"/><TextBlock Text="{Binding DashboardReceivable, StringFormat={}{0:N0} 원}" Foreground="#EF9A9A" FontWeight="Bold" FontSize="17"/></StackPanel></Border>
-                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10"><StackPanel><TextBlock Text="거래처 수" Foreground="#9FB3C8" FontSize="11"/><TextBlock Text="{Binding DashboardCustomerCount, StringFormat={}{0:N0} 곳}" Foreground="White" FontWeight="Bold" FontSize="17"/></StackPanel></Border>
-                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10"><StackPanel><TextBlock Text="안전재고 경고" Foreground="#9FB3C8" FontSize="11"/><TextBlock Text="{Binding DashboardSafetyStockAlerts, StringFormat={}{0:N0} 건}" Foreground="#EF9A9A" FontWeight="Bold" FontSize="17"/></StackPanel></Border>
+            <UniformGrid Columns="6">
+                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
+                    <StackPanel>
+                        <TextBlock Text="이번달 매출" Foreground="#9FB3C8" FontSize="11"/>
+                        <TextBlock Text="{Binding DashboardMonthlySales, StringFormat={}{0:N0} 원}" Foreground="#4FC3F7" FontWeight="Bold" FontSize="17"/>
+                        <TextBlock Text="{Binding DashboardSalesTrendPercent, StringFormat=전월 대비 {0:+0.0;-0.0;0.0}%}" Foreground="#90CAF9" FontSize="10" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Border>
+                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
+                    <StackPanel>
+                        <TextBlock Text="미수금" Foreground="#9FB3C8" FontSize="11"/>
+                        <TextBlock Text="{Binding DashboardReceivable, StringFormat={}{0:N0} 원}" Foreground="#EF9A9A" FontWeight="Bold" FontSize="17"/>
+                    </StackPanel>
+                </Border>
+                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
+                    <StackPanel>
+                        <TextBlock Text="거래처 수" Foreground="#9FB3C8" FontSize="11"/>
+                        <TextBlock Text="{Binding DashboardCustomerCount, StringFormat={}{0:N0} 곳}" Foreground="White" FontWeight="Bold" FontSize="17"/>
+                    </StackPanel>
+                </Border>
+                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
+                    <StackPanel>
+                        <TextBlock Text="안전재고 경고" Foreground="#9FB3C8" FontSize="11"/>
+                        <TextBlock Text="{Binding DashboardSafetyStockAlerts, StringFormat={}{0:N0} 건}" Foreground="#EF9A9A" FontWeight="Bold" FontSize="17"/>
+                    </StackPanel>
+                </Border>
+                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
+                    <StackPanel>
+                        <TextBlock Text="월 전표수" Foreground="#9FB3C8" FontSize="11"/>
+                        <TextBlock Text="{Binding DashboardMonthlyInvoiceCount, StringFormat={}{0:N0} 건}" Foreground="#A5D6A7" FontWeight="Bold" FontSize="17"/>
+                    </StackPanel>
+                </Border>
+                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
+                    <StackPanel>
+                        <TextBlock Text="월 평균 전표" Foreground="#9FB3C8" FontSize="11"/>
+                        <TextBlock Text="{Binding DashboardMonthlyAverageSales, StringFormat={}{0:N0} 원}" Foreground="#90CAF9" FontWeight="Bold" FontSize="17"/>
+                    </StackPanel>
+                </Border>
             </UniformGrid>
         </Border>
 
@@ -158,10 +192,27 @@
                             <TextBlock Text="기간" VerticalAlignment="Center" Margin="0,0,6,0"/>
                             <DatePicker SelectedDate="{Binding FilterFrom, Converter={StaticResource DateOnlyConverter}}" Width="140" Margin="0,0,6,0"/>
                             <TextBlock Text="~" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                            <DatePicker SelectedDate="{Binding FilterTo, Converter={StaticResource DateOnlyConverter}}" Width="140" Margin="0,0,12,0"/>
-                            <Button Content="조회" Background="#37474F" Command="{Binding LoadInvoiceListCommand}" Margin="0,0,16,0"/>
+                            <DatePicker SelectedDate="{Binding FilterTo, Converter={StaticResource DateOnlyConverter}}" Width="140" Margin="0,0,10,0"/>
+
+                            <TextBlock Text="거래처명" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBox Text="{Binding FilterCustomerName, UpdateSourceTrigger=PropertyChanged}" Width="150" Margin="0,0,10,0"/>
+
+                            <TextBlock Text="유형" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <ComboBox ItemsSource="{Binding VoucherTypeFilterOptions}" SelectedItem="{Binding SelectedVoucherTypeFilter}" Width="100" Margin="0,0,10,0"/>
+
+                            <TextBlock Text="금액" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBox Text="{Binding FilterMinAmountText, UpdateSourceTrigger=PropertyChanged}" Width="90" Margin="0,0,4,0"/>
+                            <TextBlock Text="~" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                            <TextBox Text="{Binding FilterMaxAmountText, UpdateSourceTrigger=PropertyChanged}" Width="90" Margin="0,0,10,0"/>
+
+                            <Button Content="조회" Background="#37474F" Command="{Binding LoadInvoiceListCommand}" Margin="0,0,6,0"/>
+                            <Button Content="필터초기화" Background="#455A64" Command="{Binding ResetInvoiceFiltersCommand}" Margin="0,0,6,0"/>
+                            <Button Content="최근 전표" Background="#546E7A" Command="{Binding SelectRecentInvoiceCommand}" Margin="0,0,6,0"/>
+                            <ComboBox ItemsSource="{Binding FavoriteInvoices}" SelectedItem="{Binding SelectedFavoriteInvoice}" DisplayMemberPath="DisplayText" Width="260" Margin="0,0,6,0"/>
+                            <Button Content="즐겨찾기 이동" Background="#546E7A" Command="{Binding OpenFavoriteInvoiceCommand}" Margin="0,0,6,0"/>
+                            <Button Content="즐겨찾기 추가/해제" Background="#6D4C41" Command="{Binding ToggleInvoiceFavoriteCommand}" Margin="0,0,16,0"/>
+
                             <Button Content="판매작성" Background="#1565C0" Click="SalesToolbarButton_Click" Margin="0,0,6,0"/>
-                            <Button Content="수정" Background="#8E24AA" Click="EditInvoiceButton_Click" Margin="0,0,6,0"/>
                             <Button Content="삭제" Background="#E53935" Command="{Binding DeleteInvoiceCommand}" Margin="0,0,6,0"/>
                             <Button Content="수금 입력" Background="#00897B" Click="PaymentEntryButton_Click" Margin="0,0,6,0"/>
                             <Button Content="거래명세서 인쇄[F9]" Background="#1E88E5" Command="{Binding PrintStatementCommand}"/>
@@ -185,9 +236,12 @@
                                         <Button Content="전체 보기" Background="#2E4158" Command="{Binding ClearCustomerFilterCommand}" Margin="0,8,0,0"/>
                                     </StackPanel>
                                 </Border>
-                                <ListBox ItemsSource="{Binding FilteredCustomers}" SelectedItem="{Binding SelectedCustomerFilter}" Background="Transparent" BorderThickness="0">
+                                <ListBox ItemsSource="{Binding FilteredCustomers}" SelectedItem="{Binding SelectedCustomerFilter}" Background="Transparent" BorderThickness="0" PreviewMouseRightButtonDown="CustomerListBox_PreviewMouseRightButtonDown" MouseDoubleClick="CustomerListBox_MouseDoubleClick">
                                     <ListBox.ContextMenu>
-                                        <ContextMenu><MenuItem Header="거래처 수정" Click="CustomerEditContextMenu_Click"/></ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="거래처 수정" Click="CustomerEditContextMenu_Click"/>
+                                            <MenuItem Header="거래처 삭제" Click="CustomerDeleteContextMenu_Click"/>
+                                        </ContextMenu>
                                     </ListBox.ContextMenu>
                                     <ListBox.ItemContainerStyle>
                                         <Style TargetType="ListBoxItem">
@@ -217,7 +271,12 @@
                             </Grid.RowDefinitions>
 
                             <Border Grid.Row="0" Background="#1A2B4A" CornerRadius="6">
-                                <DataGrid ItemsSource="{Binding InvoiceRows}" SelectedItem="{Binding SelectedInvoiceRow}" IsReadOnly="True" BorderThickness="0" MouseDoubleClick="InvoiceRowsDataGrid_MouseDoubleClick">
+                                <DataGrid ItemsSource="{Binding InvoiceRows}" SelectedItem="{Binding SelectedInvoiceRow}" IsReadOnly="True" BorderThickness="0" MouseDoubleClick="InvoiceRowsDataGrid_MouseDoubleClick" SelectionMode="Extended" SelectionUnit="FullRow">
+                                    <DataGrid.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="선택한 전표 삭제" Click="DeleteSelectedInvoicesContextMenu_Click"/>
+                                        </ContextMenu>
+                                    </DataGrid.ContextMenu>
                                     <DataGrid.Columns>
                                         <DataGridTextColumn Header="일자" Binding="{Binding InvoiceDateDisplay}" Width="110"/>
                                         <DataGridTextColumn Header="세금계산서" Binding="{Binding TaxInvoiceDisplay}" Width="110"/>
@@ -309,7 +368,12 @@
                         </WrapPanel>
                     </StackPanel>
                     <Border Grid.Row="1" Background="#1A2B4A" CornerRadius="6">
-                        <DataGrid ItemsSource="{Binding InvoiceRows}" SelectedItem="{Binding SelectedInvoiceRow}" IsReadOnly="True" BorderThickness="0" MouseDoubleClick="InvoiceRowsDataGrid_MouseDoubleClick">
+                        <DataGrid ItemsSource="{Binding InvoiceRows}" SelectedItem="{Binding SelectedInvoiceRow}" IsReadOnly="True" BorderThickness="0" MouseDoubleClick="InvoiceRowsDataGrid_MouseDoubleClick" SelectionMode="Extended" SelectionUnit="FullRow">
+                            <DataGrid.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="선택한 전표 삭제" Click="DeleteSelectedInvoicesContextMenu_Click"/>
+                                </ContextMenu>
+                            </DataGrid.ContextMenu>
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="일자" Binding="{Binding InvoiceDateDisplay}" Width="110"/>
                                 <DataGridTextColumn Header="세금계산서" Binding="{Binding TaxInvoiceDisplay}" Width="110"/>
@@ -365,6 +429,53 @@
                                 </StackPanel>
                             </Grid>
                             <Button Content="저장" Background="#1E88E5" FontSize="14" FontWeight="Bold" Padding="24,10" HorizontalAlignment="Left" Command="{Binding SaveCompanyProfileCommand}" Margin="0,12,0,0"/>
+
+                            <Border Background="#102039" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,16,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="외부 레거시 데이터 추출/가져오기" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
+
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="원본 DB(FDB)" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Column="1" Text="{Binding LegacySourceDbPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
+                                        <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacySourceDbPathCommand}" MinWidth="70"/>
+                                    </Grid>
+
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="거래처 엑셀" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Column="1" Text="{Binding LegacyCustomerExcelPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
+                                        <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacyCustomerExcelPathCommand}" MinWidth="70"/>
+                                    </Grid>
+
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="제품 엑셀" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Column="1" Text="{Binding LegacyItemExcelPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
+                                        <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacyItemExcelPathCommand}" MinWidth="70"/>
+                                    </Grid>
+
+                                    <WrapPanel Margin="0,4,0,0">
+                                        <Button Content="1) 원본 DB → 엑셀 추출" Background="#00796B" Command="{Binding ExportLegacyDataCommand}" Margin="0,0,8,0"/>
+                                        <Button Content="2) 엑셀 → 코덱스 DB 반영" Background="#1565C0" Command="{Binding ImportLegacyExcelDataCommand}" Margin="0,0,8,0"/>
+                                        <Button Content="추출 + 반영 한번에" Background="#6D4C41" Command="{Binding ExportAndImportLegacyDataCommand}"/>
+                                    </WrapPanel>
+
+                                    <TextBlock Text="{Binding LegacyMigrationStatus}" Foreground="#90CAF9" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
                     </Border>
                 </ScrollViewer>

@@ -1,4 +1,8 @@
+﻿using System.Threading;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using SalesMaster.Desktop.App.Configuration;
@@ -12,13 +16,26 @@ namespace SalesMaster.Desktop.App;
 public partial class App : Application
 {
     private ServiceProvider? _services;
+    private bool _shutdownInProgress;
+    private readonly SemaphoreSlim _saveCycleLock = new(1, 1);
+    private DispatcherTimer? _autoSaveTimer;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
-        // ── 로그인 창이 닫혀도 앱이 종료되지 않도록 ──────────────────────────
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        DispatcherUnhandledException += (_, args) =>
+        {
+            AppLogger.Error("APP", "UI Thread Unhandled Exception", args.Exception);
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            if (args.ExceptionObject is Exception ex)
+                AppLogger.Error("APP", "AppDomain Unhandled Exception", ex);
+            else
+                AppLogger.Error("APP", "AppDomain Unhandled Exception (non-exception payload)");
+        };
 
         try
         {
@@ -51,14 +68,12 @@ public partial class App : Application
 
             _services = services.BuildServiceProvider();
 
-            // DB 초기화
             await using (var scope = _services.CreateAsyncScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
                 await LocalDbInitializer.InitializeAsync(db);
             }
 
-            // 로그인
             var loginVm = _services.GetRequiredService<LoginViewModel>();
             await loginVm.InitializeAsync();
             var loginWin = new LoginWindow(loginVm);
@@ -70,30 +85,37 @@ public partial class App : Application
                 return;
             }
 
-            // 미동기화 백업 안내
-            await using (var scope = _services.CreateAsyncScope())
+            // Startup policy: try one immediate sync; on failure auto-backup only (no blocking popup).
+            await using (var startupScope = _services.CreateAsyncScope())
             {
-                var localState = scope.ServiceProvider.GetRequiredService<LocalStateService>();
-                var dirtyCount = await localState.CountDirtyAsync();
-                if (dirtyCount > 0)
+                var session = startupScope.ServiceProvider.GetRequiredService<SessionState>();
+                var localState = startupScope.ServiceProvider.GetRequiredService<LocalStateService>();
+                var dirtyBefore = await localState.CountDirtyAsync();
+
+                if (!session.IsOfflineMode)
                 {
-                    var res = MessageBox.Show(
-                        $"미동기화 데이터 {dirtyCount}건이 있습니다. 백업 후 시작하시겠습니까?",
-                        "미동기화 데이터 감지", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                    if (res == MessageBoxResult.Yes)
+                    var sync = startupScope.ServiceProvider.GetRequiredService<SyncService>();
+                    var syncOk = await sync.TrySyncAsync();
+
+                    if (!syncOk)
                     {
-                        var backup = scope.ServiceProvider.GetRequiredService<BackupService>();
-                        var ok = await backup.BackupNowAsync();
-                        MessageBox.Show(ok ? "백업 완료." : "백업 실패.", "백업", MessageBoxButton.OK);
+                        var dirtyAfter = await localState.CountDirtyAsync();
+                        if (dirtyBefore > 0 || dirtyAfter > 0)
+                        {
+                            var backup = startupScope.ServiceProvider.GetRequiredService<BackupService>();
+                            var backupOk = await backup.BackupNowAsync();
+                            AppLogger.Warn(
+                                "APP",
+                                $"Startup sync failed with {dirtyAfter} dirty rows. Auto-backup {(backupOk ? "succeeded" : "failed")}.");
+                        }
                     }
                 }
             }
 
-            // 메인 창: 단일 스코프로 수명 관리
             var mainScope = _services.CreateScope();
             var sp = mainScope.ServiceProvider;
-            var mainVm   = sp.GetRequiredService<MainViewModel>();
-            var mainWin  = new MainWindow(
+            var mainVm = sp.GetRequiredService<MainViewModel>();
+            var mainWin = new MainWindow(
                 mainVm,
                 sp.GetRequiredService<LocalStateService>(),
                 sp.GetRequiredService<StatementPrintService>(),
@@ -101,27 +123,184 @@ public partial class App : Application
                 sp.GetRequiredService<SessionState>());
 
             MainWindow = mainWin;
-            // 메인 창이 닫히면 앱 종료
+
+            StartAutoSaveTimer(sp, mainVm);
+
+            // Shutdown policy: save/sync before final close.
+            mainWin.Closing += async (_, args) =>
+            {
+                if (_shutdownInProgress)
+                    return;
+
+                args.Cancel = true;
+                _shutdownInProgress = true;
+                _autoSaveTimer?.Stop();
+
+                mainVm.SyncStatus = "종료 시 저장중입니다. 데이터를 저장한 뒤 종료합니다.";
+                var savingPopup = ShowShutdownSavingPopup(mainWin);
+                mainWin.IsEnabled = false;
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+
+                try
+                {
+                    await RunSaveCycleAsync(sp, mainVm, isShutdown: true);
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Error("APP", "Shutdown sync/backup failure", ex);
+                }
+                finally
+                {
+                    try
+                    {
+                        savingPopup.Close();
+                    }
+                    catch
+                    {
+                        // ignored
+                    }
+
+                    mainWin.Close();
+                }
+            };
+
             mainWin.Closed += (_, _) =>
             {
+                _autoSaveTimer?.Stop();
                 mainScope.Dispose();
                 Shutdown();
             };
-            ShutdownMode = ShutdownMode.OnExplicitShutdown; // 명시적 종료 유지
+
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
             mainWin.Show();
             await mainWin.InitAsync();
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"시작 오류:\n{ex.Message}\n\n{ex.InnerException?.Message}",
-                "코덱스 레거시 판매관리 오류", MessageBoxButton.OK, MessageBoxImage.Error);
+            AppLogger.Error("APP", "Startup failure", ex);
+            MessageBox.Show(
+                $"시작 오류:\n{ex.Message}\n\n{ex.InnerException?.Message}",
+                "코덱스 레거시 판매관리 오류",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
             Shutdown(1);
         }
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _autoSaveTimer?.Stop();
+        _saveCycleLock.Dispose();
         _services?.Dispose();
         base.OnExit(e);
+    }
+
+    private void StartAutoSaveTimer(IServiceProvider sp, MainViewModel mainVm)
+    {
+        _autoSaveTimer?.Stop();
+        _autoSaveTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMinutes(15)
+        };
+
+        _autoSaveTimer.Tick += async (_, _) =>
+        {
+            try
+            {
+                await RunSaveCycleAsync(sp, mainVm, isShutdown: false);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("APP", "Periodic save cycle failure", ex);
+            }
+        };
+
+        _autoSaveTimer.Start();
+    }
+
+    private async Task RunSaveCycleAsync(IServiceProvider sp, MainViewModel mainVm, bool isShutdown)
+    {
+        if (isShutdown)
+        {
+            await _saveCycleLock.WaitAsync();
+        }
+        else
+        {
+            if (!await _saveCycleLock.WaitAsync(0))
+                return;
+        }
+
+        try
+        {
+            if (!isShutdown)
+                mainVm.SyncStatus = "자동 저장중입니다...";
+
+            var session = sp.GetRequiredService<SessionState>();
+            if (isShutdown && !session.IsOfflineMode)
+            {
+                var sync = sp.GetRequiredService<SyncService>();
+                await sync.TrySyncAsync();
+            }
+
+            var backup = sp.GetRequiredService<BackupService>();
+            var backupOk = await backup.BackupNowAsync();
+
+            if (isShutdown)
+                mainVm.SyncStatus = backupOk ? "저장 완료. 종료합니다." : "저장 완료(백업 실패). 종료합니다.";
+            else
+                mainVm.SyncStatus = backupOk
+                    ? $"자동 저장 완료 {DateTime.Now:HH:mm:ss}"
+                    : $"자동 저장 완료(백업 실패) {DateTime.Now:HH:mm:ss}";
+        }
+        finally
+        {
+            _saveCycleLock.Release();
+        }
+    }
+
+    private static Window ShowShutdownSavingPopup(Window owner)
+    {
+        var text = new TextBlock
+        {
+            Text = "종료 시 저장중입니다.\n데이터를 저장하고 있습니다...",
+            FontFamily = new FontFamily("맑은 고딕"),
+            FontSize = 15,
+            Foreground = Brushes.Black,
+            TextAlignment = TextAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 14)
+        };
+
+        var progress = new ProgressBar
+        {
+            Height = 14,
+            IsIndeterminate = true,
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#1565C0")),
+            Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#D9E6F5"))
+        };
+
+        var root = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Margin = new Thickness(20),
+            Width = 340,
+            Children = { text, progress }
+        };
+
+        var popup = new Window
+        {
+            Title = "레거시 판매관리",
+            Content = root,
+            Owner = owner,
+            ShowInTaskbar = false,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            WindowStyle = WindowStyle.ToolWindow,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            Background = Brushes.White,
+            Topmost = true
+        };
+
+        popup.Show();
+        return popup;
     }
 }

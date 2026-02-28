@@ -23,6 +23,7 @@ public sealed class InvoicePrintModel
     public string Memo { get; set; } = string.Empty;
     public string FooterText { get; set; } = string.Empty;
     public string BankAccountText { get; set; } = string.Empty;
+    public byte[]? SupplierStampImage { get; set; }
 
     public bool PrintWithDate { get; set; } = true;
     public bool PrintWithPrice { get; set; } = true;

@@ -1,9 +1,11 @@
 using System.Printing;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Markup;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using SalesMaster.Desktop.App.Data;
 using SalesMaster.Desktop.App.Printing;
 
@@ -73,6 +75,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             Memo = invoice.Memo ?? string.Empty,
             FooterText = string.Empty,
             BankAccountText = company.BankAccountText ?? string.Empty,
+            SupplierStampImage = company.StampImage,
             PrintWithDate = printWithDate,
             PrintWithPrice = printWithPrice,
             SupplyAmount = invoice.SupplyAmount,
@@ -401,6 +404,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             model.SupplierPhone,
             model.SupplierRepresentative,
             model.SupplierAddress,
+            model.SupplierStampImage,
             accent);
         Grid.SetColumn(supplier, 0);
         section.Children.Add(supplier);
@@ -412,6 +416,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             model.BuyerPhone,
             model.BuyerRepresentative,
             model.BuyerAddress,
+            null,
             accent);
         Grid.SetColumn(buyer, 2);
         section.Children.Add(buyer);
@@ -426,6 +431,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         string phone,
         string representative,
         string address,
+        byte[]? stampImage,
         Brush accent)
     {
         var grid = new Grid();
@@ -443,7 +449,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         AddLabeledCell(grid, 3, "대표자", representative, accent);
         AddLabeledCell(grid, 4, "주소", address, accent, true);
 
-        return new Border
+        var frame = new Border
         {
             BorderBrush = accent,
             BorderThickness = new Thickness(1),
@@ -451,6 +457,29 @@ public sealed class WpfInvoicePrintService : IPrintService
             SnapsToDevicePixels = true,
             Child = grid
         };
+
+        if (stampImage is not { Length: > 0 })
+            return frame;
+
+        var stamp = TryCreateStampImage(stampImage);
+        if (stamp is null)
+            return frame;
+
+        var root = new Grid();
+        root.Children.Add(frame);
+        root.Children.Add(new Image
+        {
+            Source = stamp,
+            Width = 62,
+            Height = 54,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 46, 8, 0),
+            Stretch = Stretch.Uniform,
+            SnapsToDevicePixels = true
+        });
+
+        return root;
     }
 
     private static void AddLabeledCell(
@@ -776,6 +805,25 @@ public sealed class WpfInvoicePrintService : IPrintService
         var right = column < grid.ColumnDefinitions.Count - 1 ? 1d : 0d;
         var bottom = row < grid.RowDefinitions.Count - 1 ? 1d : 0d;
         return new Thickness(0, 0, right, bottom);
+    }
+
+    private static BitmapImage? TryCreateStampImage(byte[] stampBytes)
+    {
+        try
+        {
+            using var memory = new MemoryStream(stampBytes);
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.StreamSource = memory;
+            bitmap.EndInit();
+            bitmap.Freeze();
+            return bitmap;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
 }

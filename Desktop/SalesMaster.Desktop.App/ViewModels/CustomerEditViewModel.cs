@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SalesMaster.Desktop.App.Data;
@@ -10,10 +11,9 @@ public sealed partial class CustomerEditViewModel : ObservableObject
 {
     private readonly LocalStateService _local;
 
-    public event Action? SavedAndNew;   // 연속입력 F6
-    public event Action? SavedAndClose; // 저장 후 닫기
+    public event Action? SavedAndNew;
+    public event Action? SavedAndClose;
 
-    // ── 거래처 기본 정보 ──────────────────────────────────────────────────
     [ObservableProperty] private Guid _customerId = Guid.NewGuid();
     [ObservableProperty] private string _name = string.Empty;
     [ObservableProperty] private Guid? _categoryId;
@@ -24,34 +24,29 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     [ObservableProperty] private string _department = string.Empty;
     [ObservableProperty] private string _contactPerson = string.Empty;
 
-    // ── 사업자 정보 ───────────────────────────────────────────────────────
     [ObservableProperty] private string _businessNumber = string.Empty;
     [ObservableProperty] private string _businessType = string.Empty;
     [ObservableProperty] private string _businessItem = string.Empty;
 
-    // ── 주소 ─────────────────────────────────────────────────────────────
     [ObservableProperty] private string _address = string.Empty;
     [ObservableProperty] private string _detailAddress = string.Empty;
 
-    // ── 온라인 정보 ───────────────────────────────────────────────────────
     [ObservableProperty] private string _recipient = string.Empty;
     [ObservableProperty] private string _email = string.Empty;
     [ObservableProperty] private string _homePage = string.Empty;
 
-    // ── 거래 조건 ─────────────────────────────────────────────────────────
     [ObservableProperty] private string _priceGrade = "매출단가";
     [ObservableProperty] private DateOnly _registerDate = DateOnly.FromDateTime(DateTime.Today);
 
-    // ── 메모 ─────────────────────────────────────────────────────────────
     [ObservableProperty] private string _notes = string.Empty;
 
-    // ── 상태 ─────────────────────────────────────────────────────────────
     [ObservableProperty] private bool _isNew = true;
-    [ObservableProperty][NotifyPropertyChangedFor(nameof(HasStatus))]
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasStatus))]
     private string _statusMessage = string.Empty;
+
     public bool HasStatus => !string.IsNullOrEmpty(StatusMessage);
 
-    // ── 목록 ─────────────────────────────────────────────────────────────
     public ObservableCollection<LocalCustomerCategory> Categories { get; } = new();
     public string[] PriceGrades { get; } = ["매출단가", "A_단가 적용", "B_단가 적용", "C_단가 적용", "소매단가"];
 
@@ -64,7 +59,8 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     {
         var cats = await _local.GetCategoriesAsync();
         Categories.Clear();
-        foreach (var c in cats) Categories.Add(c);
+        foreach (var c in cats)
+            Categories.Add(c);
 
         if (customer is null)
         {
@@ -76,65 +72,100 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             PriceGrade = "매출단가";
             RegisterDate = DateOnly.FromDateTime(DateTime.Today);
             CategoryId = null;
+            return;
         }
-        else
-        {
-            IsNew = false;
-            CustomerId = customer.Id;
-            Name = customer.NameOriginal;
-            Phone = customer.Phone;
-            MobilePhone = customer.MobilePhone;
-            FaxNumber = customer.FaxNumber;
-            Representative = customer.Representative;
-            Department = customer.Department;
-            ContactPerson = customer.ContactPerson;
-            BusinessNumber = customer.BusinessNumber;
-            BusinessType = customer.BusinessType;
-            BusinessItem = customer.BusinessItem;
-            Address = customer.Address;
-            DetailAddress = customer.DetailAddress;
-            Recipient = customer.Recipient;
-            Email = customer.Email;
-            HomePage = customer.HomePage;
-            PriceGrade = customer.PriceGrade;
-            Notes = customer.Notes;
-            CategoryId = customer.CategoryId;
-        }
+
+        IsNew = false;
+        CustomerId = customer.Id;
+        Name = customer.NameOriginal;
+        Phone = customer.Phone;
+        MobilePhone = customer.MobilePhone;
+        FaxNumber = customer.FaxNumber;
+        Representative = customer.Representative;
+        Department = customer.Department;
+        ContactPerson = customer.ContactPerson;
+        BusinessNumber = customer.BusinessNumber;
+        BusinessType = customer.BusinessType;
+        BusinessItem = customer.BusinessItem;
+        Address = customer.Address;
+        DetailAddress = customer.DetailAddress;
+        Recipient = customer.Recipient;
+        Email = customer.Email;
+        HomePage = customer.HomePage;
+        PriceGrade = customer.PriceGrade;
+        Notes = customer.Notes;
+        CategoryId = customer.CategoryId;
     }
 
     [RelayCommand]
     private async Task SaveAsync()
     {
-        if (string.IsNullOrWhiteSpace(Name))
-        {
-            StatusMessage = "거래처명을 입력하세요.";
+        if (!await ValidateBeforeSaveAsync())
             return;
-        }
+
         await DoSaveAsync();
         SavedAndClose?.Invoke();
     }
 
-    // 연속입력 (F6): 저장 후 새 폼
     [RelayCommand]
     private async Task SaveAndNewAsync()
+    {
+        if (!await ValidateBeforeSaveAsync())
+            return;
+
+        await DoSaveAsync();
+        await LoadAsync();
+        SavedAndNew?.Invoke();
+    }
+
+    private async Task<bool> ValidateBeforeSaveAsync()
     {
         if (string.IsNullOrWhiteSpace(Name))
         {
             StatusMessage = "거래처명을 입력하세요.";
-            return;
+            return false;
         }
-        await DoSaveAsync();
-        await LoadAsync();          // 새 폼으로 초기화
-        SavedAndNew?.Invoke();
+
+        var normalizedName = Name.Trim();
+        var customers = await _local.GetCustomersAsync();
+
+        var duplicatedName = customers.Any(c =>
+            c.Id != CustomerId &&
+            string.Equals(c.NameOriginal.Trim(), normalizedName, StringComparison.OrdinalIgnoreCase));
+
+        if (duplicatedName)
+        {
+            StatusMessage = "동일한 거래처명이 이미 존재합니다. 거래처명을 확인하세요.";
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(BusinessNumber))
+        {
+            var normalizedBizNumber = BusinessNumber.Trim();
+            var duplicatedBizNumber = customers.Any(c =>
+                c.Id != CustomerId &&
+                !string.IsNullOrWhiteSpace(c.BusinessNumber) &&
+                string.Equals(c.BusinessNumber.Trim(), normalizedBizNumber, StringComparison.OrdinalIgnoreCase));
+
+            if (duplicatedBizNumber)
+            {
+                StatusMessage = "동일한 사업자번호가 이미 존재합니다.";
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private async Task DoSaveAsync()
     {
+        var normalizedName = Name.Trim();
+
         var c = new LocalCustomer
         {
             Id = CustomerId,
-            NameOriginal = Name,
-            NameMatchKey = Name.ToUpperInvariant(),
+            NameOriginal = normalizedName,
+            NameMatchKey = normalizedName.ToUpperInvariant(),
             CategoryId = CategoryId,
             Phone = Phone,
             MobilePhone = MobilePhone,
@@ -153,6 +184,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             PriceGrade = PriceGrade,
             Notes = Notes,
         };
+
         await _local.UpsertCustomerAsync(c);
         StatusMessage = "저장되었습니다.";
     }

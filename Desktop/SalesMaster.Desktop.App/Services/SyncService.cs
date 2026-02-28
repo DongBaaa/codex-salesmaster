@@ -1,3 +1,4 @@
+﻿using System.Net.Http;
 using Microsoft.EntityFrameworkCore;
 using SalesMaster.Desktop.App.Data;
 using SalesMaster.Shared.Contracts;
@@ -5,12 +6,13 @@ using SalesMaster.Shared.Contracts;
 namespace SalesMaster.Desktop.App.Services;
 
 /// <summary>
-/// Background service that syncs local SQLite with the server every RetryMinutes.
-/// Push dirty → Pull new → Mark clean.
-/// Conflict resolution: server wins (server data overwrites local).
+/// Background sync service: push local dirty rows, then pull latest rows.
 /// </summary>
 public sealed class SyncService : IDisposable
 {
+    private const int MaxRetryCount = 3;
+    private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(2);
+
     private readonly LocalDbContext _db;
     private readonly LocalStateService _local;
     private readonly ErpApiClient _api;
@@ -28,27 +30,49 @@ public sealed class SyncService : IDisposable
         _session = session;
     }
 
-    public void Start(int intervalMinutes = 3)
+    public void Start(int intervalMinutes = 3, bool runImmediately = false)
     {
-        _timer = new Timer(async _ => await TrySyncAsync(), null,
-            TimeSpan.Zero, TimeSpan.FromMinutes(intervalMinutes));
+        _timer?.Dispose();
+        var due = runImmediately ? TimeSpan.Zero : TimeSpan.FromMinutes(intervalMinutes);
+        _timer = new Timer(_ => _ = TrySyncAsync(), null,
+            due, TimeSpan.FromMinutes(intervalMinutes));
     }
 
-    public async Task TrySyncAsync(CancellationToken ct = default)
+    public async Task<bool> TrySyncAsync(CancellationToken ct = default)
     {
-        if (!_session.IsLoggedIn) return;
-        if (_syncInProgress) return;
+        if (!_session.IsLoggedIn)
+            return false;
+        if (_syncInProgress)
+            return false;
+
         _syncInProgress = true;
         try
         {
-            SyncStatusChanged?.Invoke("동기화 중...");
-            await PushDirtyAsync(ct);
-            await PullNewAsync(ct);
-            SyncStatusChanged?.Invoke($"동기화 완료 {DateTime.Now:HH:mm:ss}");
+            SetStatus("동기화 중...");
+            AppLogger.Info("SYNC", "동기화 시작");
+
+            await ExecuteWithRetryAsync(PushDirtyAsync, "업로드", ct);
+            await ExecuteWithRetryAsync(PullNewAsync, "다운로드", ct);
+
+            await _local.SetSettingAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
+            SetStatus($"동기화 완료 {DateTime.Now:HH:mm:ss}");
+            AppLogger.Info("SYNC", "동기화 완료");
+            return true;
         }
         catch (Exception ex)
         {
-            SyncStatusChanged?.Invoke($"동기화 오류: {ex.Message}");
+            var detail = ex.InnerException?.Message ?? ex.Message;
+            if (detail.Length > 220)
+                detail = detail[..220] + "...";
+
+            await _local.SetSettingAsync(
+                "Sync.LastError",
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {detail}",
+                CancellationToken.None);
+
+            SetStatus($"동기화 오류: {detail}");
+            AppLogger.Error("SYNC", "동기화 실패", ex);
+            return false;
         }
         finally
         {
@@ -56,7 +80,55 @@ public sealed class SyncService : IDisposable
         }
     }
 
-    // ── Push ──────────────────────────────────────────────────────────────────
+    private static bool IsTransient(Exception ex, CancellationToken ct)
+    {
+        if (ex is TaskCanceledException && !ct.IsCancellationRequested)
+            return true;
+
+        if (ex is TimeoutException)
+            return true;
+
+        if (ex is HttpRequestException httpEx)
+            return httpEx.StatusCode is null;
+
+        return false;
+    }
+
+    private async Task ExecuteWithRetryAsync(
+        Func<CancellationToken, Task> operation,
+        string operationName,
+        CancellationToken ct)
+    {
+        var delay = InitialRetryDelay;
+
+        for (var attempt = 1; attempt <= MaxRetryCount; attempt++)
+        {
+            try
+            {
+                await operation(ct);
+                if (attempt > 1)
+                {
+                    var recoveredMessage = $"?숆린??{operationName} 蹂듦뎄??({attempt}/{MaxRetryCount})";
+                    SetStatus(recoveredMessage);
+                    AppLogger.Info("SYNC", recoveredMessage);
+                }
+                return;
+            }
+            catch (Exception ex) when (IsTransient(ex, ct) && attempt < MaxRetryCount)
+            {
+                var retryMessage = $"동기화 {operationName} 실패 ({attempt}/{MaxRetryCount}), {delay.TotalSeconds:0}초 후 재시도";
+                SetStatus(retryMessage);
+                AppLogger.Warn("SYNC", $"{retryMessage}: {ex.Message}");
+                await Task.Delay(delay, ct);
+                delay += delay;
+            }
+        }
+
+        await operation(ct);
+    }
+
+    private void SetStatus(string message) => SyncStatusChanged?.Invoke(message);
+
     private async Task PushDirtyAsync(CancellationToken ct)
     {
         var req = new SyncPushRequest
@@ -86,12 +158,13 @@ public sealed class SyncService : IDisposable
 
         var hasDirty = req.CompanyProfiles.Count + req.Customers.Count +
                        req.Items.Count + req.Invoices.Count + req.Payments.Count > 0;
-        if (!hasDirty) return;
+        if (!hasDirty)
+            return;
 
         var result = await _api.PushAsync(req, ct);
-        if (result is null) return;
+        if (result is null)
+            return;
 
-        // Apply server-assigned invoice numbers
         foreach (var assigned in result.AssignedInvoiceNumbers)
         {
             var inv = await _db.Invoices.IgnoreQueryFilters()
@@ -103,7 +176,6 @@ public sealed class SyncService : IDisposable
             }
         }
 
-        // Mark all pushed entities as clean
         await MarkCleanAsync<LocalCompanyProfile>(ct);
         await MarkCleanAsync<LocalCustomer>(ct);
         await MarkCleanAsync<LocalItem>(ct);
@@ -127,14 +199,14 @@ public sealed class SyncService : IDisposable
             .ExecuteUpdateAsync(s => s.SetProperty(e => e.IsDirty, false), ct);
     }
 
-    // ── Pull ──────────────────────────────────────────────────────────────────
     private async Task PullNewAsync(CancellationToken ct)
     {
         var revStr = await _local.GetSettingAsync("LastSyncRevision", ct) ?? "0";
         var sinceRev = long.TryParse(revStr, out var r) ? r : 0L;
 
         var pull = await _api.PullAsync(sinceRev, ct);
-        if (pull is null) return;
+        if (pull is null)
+            return;
 
         await UpsertPulledAsync(pull.CompanyProfiles, _db.CompanyProfiles, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.Units, _db.Units, LocalMappings.ToLocal, ct);
@@ -162,10 +234,11 @@ public sealed class SyncService : IDisposable
             local.IsDirty = false;
             var existing = await set.IgnoreQueryFilters().FirstOrDefaultAsync(e => e.Id == local.Id, ct);
             if (existing is null)
+            {
                 set.Add(local);
+            }
             else
             {
-                // Server wins: only overwrite if not locally dirty
                 if (!existing.IsDirty)
                     _db.Entry(existing).CurrentValues.SetValues(local);
             }
@@ -193,23 +266,25 @@ public sealed class SyncService : IDisposable
             {
                 _db.Entry(existing).CurrentValues.SetValues(local);
 
-                // Sync lines
                 foreach (var line in local.Lines)
                 {
                     var exLine = existing.Lines.FirstOrDefault(l => l.Id == line.Id);
-                    if (exLine is null) existing.Lines.Add(line);
-                    else _db.Entry(exLine).CurrentValues.SetValues(line);
+                    if (exLine is null)
+                        existing.Lines.Add(line);
+                    else
+                        _db.Entry(exLine).CurrentValues.SetValues(line);
                 }
-                foreach (var exLine in existing.Lines
-                    .Where(l => !local.Lines.Any(ll => ll.Id == l.Id)))
+
+                foreach (var exLine in existing.Lines.Where(l => !local.Lines.Any(ll => ll.Id == l.Id)))
                     exLine.IsDeleted = true;
 
-                // Sync payments
                 foreach (var pay in local.Payments)
                 {
                     var exPay = existing.Payments.FirstOrDefault(p => p.Id == pay.Id);
-                    if (exPay is null) existing.Payments.Add(pay);
-                    else _db.Entry(exPay).CurrentValues.SetValues(pay);
+                    if (exPay is null)
+                        existing.Payments.Add(pay);
+                    else
+                        _db.Entry(exPay).CurrentValues.SetValues(pay);
                 }
             }
         }
@@ -218,3 +293,4 @@ public sealed class SyncService : IDisposable
 
     public void Dispose() => _timer?.Dispose();
 }
+
