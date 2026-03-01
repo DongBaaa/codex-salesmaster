@@ -133,6 +133,7 @@
                     <Button Content="거래처삭제" Background="#C62828" Margin="0,0,6,0" Click="CustomerDeleteButton_Click"/>
                     <Button Content="판매작성" Background="#1565C0" Margin="0,0,6,0" Click="SalesButton_Click"/>
                     <Button Content="수금지불" Background="#00897B" Margin="0,0,10,0" Click="PaymentButton_Click"/>
+                    <Button Content="자료집계" Background="#6A1B9A" Margin="0,0,10,0" Click="PeriodLedgerButton_Click"/>
                     <TextBlock Text="{Binding CurrentUserDisplay}" Foreground="#9FB3C8" VerticalAlignment="Center" Margin="0,0,10,0"/>
                     <Button Content="동기화" Background="#37474F" Command="{Binding ForceSyncCommand}" Margin="0,0,6,0"/>
                     <Button Content="백업" Background="#455A64" Command="{Binding BackupNowCommand}"/>

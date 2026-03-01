@@ -259,6 +259,19 @@ public partial class MainWindow : Window
         await OpenPaymentPopupAsync();
     }
 
+    // 자료기간별 집계 버튼(헤더)
+    private async void PeriodLedgerButton_Click(object sender, RoutedEventArgs e)
+    {
+        var vm = new PeriodLedgerViewModel(
+            _local,
+            new PeriodLedgerAggregationService(_local),
+            new PeriodLedgerExcelExportService());
+
+        await vm.InitializeAsync();
+        var win = new PeriodLedgerWindow(vm) { Owner = this };
+        win.ShowDialog();
+    }
+
     // 전표 목록 탭의 수금 입력 버튼
     private async void PaymentEntryButton_Click(object sender, RoutedEventArgs e)
     {

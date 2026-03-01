@@ -367,6 +367,25 @@ public sealed class LocalStateService
             .OrderByDescending(t => t.TransactionDate)
             .ToListAsync(ct);
 
+    public Task<List<LocalTransaction>> GetTransactionsAsync(
+        DateOnly from,
+        DateOnly to,
+        Guid? customerId = null,
+        CancellationToken ct = default)
+    {
+        var query = _db.Transactions
+            .AsNoTracking()
+            .Where(t => t.TransactionDate >= from && t.TransactionDate <= to);
+
+        if (customerId.HasValue)
+            query = query.Where(t => t.CustomerId == customerId.Value);
+
+        return query
+            .OrderByDescending(t => t.TransactionDate)
+            .ThenByDescending(t => t.CreatedAtUtc)
+            .ToListAsync(ct);
+    }
+
     public async Task<LocalTransaction> SaveTransactionAsync(LocalTransaction t, CancellationToken ct = default)
     {
         t.IsDirty = true;

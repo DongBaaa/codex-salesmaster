@@ -42,6 +42,7 @@ public static class LocalDbInitializer
     private static async Task MigrateColumnsAsync(LocalDbContext db)
     {
         await TryCreateAttachmentSelectionsTableAsync(db);
+        await TryCreateTransactionsTableAsync(db);
 
         var customerCols = new (string col, string def)[]
         {
@@ -77,6 +78,30 @@ public static class LocalDbInitializer
         };
         foreach (var (col, def) in itemCols)
             await TryAddColumnAsync(db, "Items", col, def);
+
+        var transactionCols = new (string col, string def)[]
+        {
+            ("CashReceipt", "REAL NOT NULL DEFAULT 0"),
+            ("CardReceipt", "REAL NOT NULL DEFAULT 0"),
+            ("BankReceipt", "REAL NOT NULL DEFAULT 0"),
+            ("DiscountApplied", "REAL NOT NULL DEFAULT 0"),
+            ("ReceiptTotal", "REAL NOT NULL DEFAULT 0"),
+            ("CashPayment", "REAL NOT NULL DEFAULT 0"),
+            ("CardPayment", "REAL NOT NULL DEFAULT 0"),
+            ("BankPayment", "REAL NOT NULL DEFAULT 0"),
+            ("DiscountReceived", "REAL NOT NULL DEFAULT 0"),
+            ("PaymentTotal", "REAL NOT NULL DEFAULT 0"),
+            ("Note", "TEXT NOT NULL DEFAULT ''"),
+            ("Memo", "TEXT NOT NULL DEFAULT ''"),
+            ("IsDeleted", "INTEGER NOT NULL DEFAULT 0"),
+            ("CreatedAtUtc", "TEXT NOT NULL DEFAULT ''"),
+            ("UpdatedAtUtc", "TEXT NOT NULL DEFAULT ''"),
+            ("Revision", "INTEGER NOT NULL DEFAULT 0"),
+            ("IsDirty", "INTEGER NOT NULL DEFAULT 1"),
+        };
+
+        foreach (var (col, def) in transactionCols)
+            await TryAddColumnAsync(db, "Transactions", col, def);
     }
 
     private static async Task TryAddColumnAsync(LocalDbContext db, string table, string column, string definition)
@@ -109,6 +134,46 @@ public static class LocalDbInitializer
             await db.Database.ExecuteSqlRawAsync(createTableSql);
             await db.Database.ExecuteSqlRawAsync(
                 "CREATE INDEX IF NOT EXISTS \"IX_AttachmentSelections_CustomerKey\" ON \"AttachmentSelections\" (\"CustomerKey\");");
+        }
+        catch
+        {
+            // Table creation should not block app startup.
+        }
+    }
+
+    private static async Task TryCreateTransactionsTableAsync(LocalDbContext db)
+    {
+        try
+        {
+            const string createTableSql = """
+                                          CREATE TABLE IF NOT EXISTS "Transactions" (
+                                              "Id" TEXT NOT NULL CONSTRAINT "PK_Transactions" PRIMARY KEY,
+                                              "CustomerId" TEXT NOT NULL,
+                                              "TransactionDate" TEXT NOT NULL,
+                                              "CashReceipt" REAL NOT NULL DEFAULT 0,
+                                              "CardReceipt" REAL NOT NULL DEFAULT 0,
+                                              "BankReceipt" REAL NOT NULL DEFAULT 0,
+                                              "DiscountApplied" REAL NOT NULL DEFAULT 0,
+                                              "ReceiptTotal" REAL NOT NULL DEFAULT 0,
+                                              "CashPayment" REAL NOT NULL DEFAULT 0,
+                                              "CardPayment" REAL NOT NULL DEFAULT 0,
+                                              "BankPayment" REAL NOT NULL DEFAULT 0,
+                                              "DiscountReceived" REAL NOT NULL DEFAULT 0,
+                                              "PaymentTotal" REAL NOT NULL DEFAULT 0,
+                                              "Note" TEXT NOT NULL DEFAULT '',
+                                              "Memo" TEXT NOT NULL DEFAULT '',
+                                              "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                                              "CreatedAtUtc" TEXT NOT NULL,
+                                              "UpdatedAtUtc" TEXT NOT NULL,
+                                              "Revision" INTEGER NOT NULL DEFAULT 0,
+                                              "IsDirty" INTEGER NOT NULL DEFAULT 1
+                                          );
+                                          """;
+            await db.Database.ExecuteSqlRawAsync(createTableSql);
+            await db.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_Transactions_CustomerId\" ON \"Transactions\" (\"CustomerId\");");
+            await db.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_Transactions_TransactionDate\" ON \"Transactions\" (\"TransactionDate\");");
         }
         catch
         {
