@@ -1,12 +1,11 @@
 ﻿using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Microsoft.Win32;
 using SalesMaster.Desktop.App.Data;
 using SalesMaster.Desktop.App.Printing;
 using SalesMaster.Desktop.App.Services;
@@ -21,28 +20,46 @@ public sealed partial class SalesViewModel : ObservableObject
     private readonly StatementPrintService _print;
     private readonly IPrintService _invoicePrintService;
     private readonly SessionState _session;
-    private readonly PrintTemplateCatalogService _templateCatalog = new();
-    private readonly 외부 리포팅 도구TemplatePrintService _fastReportTemplatePrint = new();
+    private readonly VoucherType _newInvoiceVoucherType;
     private List<LocalItem> _allItems = new();
     private List<LocalCustomer> _allCustomers = new();
-    private bool _suppressTemplateSettingWrite;
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
+    private string _baselineStateSignature = string.Empty;
 
     public event Action? InvoiceSaved;
 
     // ?? 怨좉컼 ?뺣낫 (?곷떒) ??????????????????????????????????????????????????
-    [ObservableProperty] private LocalCustomer? _selectedCustomer;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanLoadPreviousHistory))]
+    private LocalCustomer? _selectedCustomer;
     [ObservableProperty] private string _customerName = string.Empty;
     [ObservableProperty] private string _customerPhone = string.Empty;
     [ObservableProperty] private string _customerMobile = string.Empty;
     [ObservableProperty] private string _customerPriceGrade = string.Empty;
     [ObservableProperty] private string _customerNote = string.Empty;
     [ObservableProperty] private decimal _customerBalance;   // 珥?誘몄닔湲?
+    [ObservableProperty] private string _selectedResponsibleOfficeCode = DomainConstants.OfficeUznet;
+    [ObservableProperty] private string _selectedWarehouseCode = DomainConstants.WarehouseUznetMain;
     // ?? ?꾪몴 ?ㅻ뜑 ?????????????????????????????????????????????????????????
     [ObservableProperty] private Guid _invoiceId = Guid.NewGuid();
     [ObservableProperty] private DateOnly _workDate = DateOnly.FromDateTime(DateTime.Today);
     [ObservableProperty] private string _invoiceMemo = string.Empty;
-    [ObservableProperty] private VoucherType _voucherType = VoucherType.Sales;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsPurchaseDocument))]
+    [NotifyPropertyChangedFor(nameof(IsSalesDocument))]
+    [NotifyPropertyChangedFor(nameof(WindowTitleText))]
+    [NotifyPropertyChangedFor(nameof(HeaderTitleText))]
+    [NotifyPropertyChangedFor(nameof(HeaderSubtitleText))]
+    [NotifyPropertyChangedFor(nameof(CustomerSectionTitleText))]
+    [NotifyPropertyChangedFor(nameof(DocumentSectionTitleText))]
+    [NotifyPropertyChangedFor(nameof(DocumentDetailTitleText))]
+    [NotifyPropertyChangedFor(nameof(NewDocumentButtonText))]
+    [NotifyPropertyChangedFor(nameof(WarehouseLabelText))]
+    [NotifyPropertyChangedFor(nameof(ShowStatementOptions))]
+    [NotifyPropertyChangedFor(nameof(ShowPurchasePrintHint))]
+    [NotifyPropertyChangedFor(nameof(CanEditPrintOutput))]
+    [NotifyPropertyChangedFor(nameof(CanPrintTaxInvoice))]
+    private VoucherType _voucherType = VoucherType.Sales;
     public Array VoucherTypes => Enum.GetValues<VoucherType>();
 
     // ?? ?쇱씤 ?낅젰 (?④굔) ??????????????????????????????????????????????????
@@ -53,6 +70,7 @@ public sealed partial class SalesViewModel : ObservableObject
     [ObservableProperty] private decimal _inputUnitPrice;
     [ObservableProperty] private decimal _inputLineAmount;
     [ObservableProperty] private string _inputRemark = string.Empty;
+    [ObservableProperty] private string _inputSerialNumber = string.Empty;
     [ObservableProperty] private string _inputMaterialNo = string.Empty;
     [ObservableProperty] private LocalItem? _selectedInputItem;
 
@@ -75,26 +93,50 @@ public sealed partial class SalesViewModel : ObservableObject
     [ObservableProperty] private bool _printStatementDocument = true;
     [ObservableProperty] private bool _printEstimateDocument;
     [ObservableProperty] private bool _printPaymentClaimDocument;
-    [ObservableProperty] private bool _editTemplateOnPrint;
     [ObservableProperty] private string _printType = "거래명1/2";
     public string[] PrintTypes { get; } = ["거래명1/2", "거래명A4", "영수증출력", "출고증A4"];
-    public ObservableCollection<PrintTemplateOption> StatementTemplates { get; } = new();
-    [ObservableProperty] private PrintTemplateOption? _selectedStatementTemplate;
-    private const string 외부 리포팅 도구DesignerExeSettingKey = "Print.외부 리포팅 도구DesignerExePath";
 
     // ?? ?곹깭 ?????????????????????????????????????????????????????????????
     [ObservableProperty] private string _statusMessage = string.Empty;
+    [ObservableProperty] private string _lastSavedBy = string.Empty;
+    [ObservableProperty] private string _lastSavedAtDisplay = string.Empty;
+    [ObservableProperty] private string _versionDisplay = "v1";
+    [ObservableProperty] private string _currentConcurrencyStamp = string.Empty;
+
+    public ObservableCollection<LocalOffice> Offices { get; } = new();
+    public ObservableCollection<LocalWarehouse> Warehouses { get; } = new();
+    public ObservableCollection<LocalInvoice> InvoiceVersions { get; } = new();
+    public bool IsPurchaseDocument => VoucherType == VoucherType.Purchase;
+    public bool IsSalesDocument => !IsPurchaseDocument;
+    public bool CanLoadPreviousHistory => SelectedCustomer is not null;
+    public bool ShowStatementOptions => IsSalesDocument;
+    public bool ShowPurchasePrintHint => IsPurchaseDocument;
+    public bool CanEditPrintOutput => IsSalesDocument;
+    public bool CanPrintTaxInvoice => IsSalesDocument;
+    public string WindowTitleText => IsPurchaseDocument ? "구매(매입)" : "판매(매출)";
+    public string HeaderTitleText => IsPurchaseDocument ? "구매(매입)" : "판매(매출)";
+    public string HeaderSubtitleText => IsPurchaseDocument
+        ? "구매(매입) 전표작성/수정 - 유즈넷 재고 등록 및 매입명세서 출력"
+        : "판매(매출) 전표작성/수정/삭제 - 거래명세서, 세금계산서, 영수증 발행";
+    public string CustomerSectionTitleText => IsPurchaseDocument ? "매입처/거래처" : "고객/거래처";
+    public string DocumentSectionTitleText => IsPurchaseDocument ? "구매작성" : "전표작성";
+    public string DocumentDetailTitleText => IsPurchaseDocument ? "구매[매입] 세부내역" : "판매[매출] 세부내역";
+    public string NewDocumentButtonText => IsPurchaseDocument ? "신규구매(F6)" : "신규전표(F6)";
+    public string WarehouseLabelText => IsPurchaseDocument ? "입고창고" : "출고창고";
 
     public SalesViewModel(
         LocalStateService local,
         StatementPrintService print,
         IPrintService invoicePrintService,
-        SessionState session)
+        SessionState session,
+        VoucherType newInvoiceVoucherType = VoucherType.Sales)
     {
         _local = local;
         _print = print;
         _invoicePrintService = invoicePrintService;
         _session = session;
+        _newInvoiceVoucherType = newInvoiceVoucherType;
+        VoucherType = newInvoiceVoucherType;
         Lines.CollectionChanged += Lines_CollectionChanged;
     }
 
@@ -122,80 +164,71 @@ public sealed partial class SalesViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
-        _allCustomers = await _local.GetCustomersAsync();
+        _allCustomers = await _local.GetCustomersAsync(_session);
         _allItems = await _local.GetItemsAsync();
-        await LoadStatementTemplatesAsync();
+        await LoadOfficeWarehouseAsync();
         RefreshItemSearch();
+        InitializeOfficeAndWarehouseDefaults();
     }
 
-    partial void OnSelectedStatementTemplateChanged(PrintTemplateOption? value)
+    private async Task LoadOfficeWarehouseAsync()
     {
-        if (_suppressTemplateSettingWrite || value is null)
-            return;
+        Offices.Clear();
+        foreach (var office in await _local.GetOfficesAsync())
+            Offices.Add(office);
 
-        _ = _local.SetSettingAsync(PrintTemplateCatalogService.DefaultStatementTemplateSettingKey, value.Id);
+        Warehouses.Clear();
+        foreach (var warehouse in await _local.GetWarehousesAsync())
+            Warehouses.Add(warehouse);
     }
 
-    [RelayCommand]
-    private async Task ReloadStatementTemplatesAsync()
+    private void InitializeOfficeAndWarehouseDefaults()
     {
-        await LoadStatementTemplatesAsync();
+        var officeCode = string.IsNullOrWhiteSpace(_session.OfficeCode)
+            ? DomainConstants.OfficeUznet
+            : _session.OfficeCode.ToUpperInvariant();
+
+        SelectedResponsibleOfficeCode = officeCode;
+        SelectedWarehouseCode = officeCode == DomainConstants.OfficeYeonsu
+            ? DomainConstants.WarehouseYeonsuMain
+            : DomainConstants.WarehouseUznetMain;
     }
 
-    private async Task LoadStatementTemplatesAsync()
+    private async Task LoadInvoiceVersionsAsync(LocalInvoice invoice)
     {
-        var templates = _templateCatalog.GetStatementTemplates();
-        StatementTemplates.Clear();
-        foreach (var template in templates)
-            StatementTemplates.Add(template);
-
-        var savedTemplateId = await _local.GetSettingAsync(PrintTemplateCatalogService.DefaultStatementTemplateSettingKey);
-        var selected = PrintTemplateCatalogService.ResolvePreferredTemplate(templates, savedTemplateId, PrintType);
-
-        _suppressTemplateSettingWrite = true;
-        SelectedStatementTemplate = selected;
-        _suppressTemplateSettingWrite = false;
-
-        if (selected is not null && !string.Equals(savedTemplateId, selected.Id, StringComparison.OrdinalIgnoreCase))
-            await _local.SetSettingAsync(PrintTemplateCatalogService.DefaultStatementTemplateSettingKey, selected.Id);
-    }
-
-    [RelayCommand]
-    private async Task EditStatementTemplateAsync()
-    {
-        var template = ResolveRuntimeTemplateForPrintType(SelectedStatementTemplate) ?? SelectedStatementTemplate;
-        if (template is null)
-        {
-            System.Windows.MessageBox.Show("편집할 양식이 없습니다.", "알림", System.Windows.MessageBoxButton.OK);
-            return;
-        }
-
-        if (template.IsBuiltIn)
-        {
-            System.Windows.MessageBox.Show("내장 양식은 편집할 수 없습니다. 외부 .fr3/.frx 양식을 선택하세요.", "알림", System.Windows.MessageBoxButton.OK);
-            return;
-        }
-
-        if (!await TryOpenTemplateDesignerAsync(template))
-        {
-            System.Windows.MessageBox.Show(
-                "외부 리포팅 도구 Designer 실행 파일을 찾지 못했습니다. 디자이너 경로를 확인하세요.",
-                "알림",
-                System.Windows.MessageBoxButton.OK,
-                System.Windows.MessageBoxImage.Information);
-        }
+        InvoiceVersions.Clear();
+        var versionGroupId = invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
+        var versions = await _local.GetInvoiceVersionsAsync(versionGroupId, _session);
+        foreach (var version in versions.OrderByDescending(v => v.VersionNumber))
+            InvoiceVersions.Add(version);
     }
 
     public void NewInvoice()
     {
         InvoiceId = Guid.NewGuid();
+        SelectedCustomer = null;
+        CustomerName = string.Empty;
+        CustomerPhone = string.Empty;
+        CustomerMobile = string.Empty;
+        CustomerPriceGrade = string.Empty;
+        CustomerNote = string.Empty;
+        CustomerBalance = 0;
         InvoiceMemo = string.Empty;
         WorkDate = DateOnly.FromDateTime(DateTime.Today);
-        VoucherType = VoucherType.Sales;
+        VoucherType = _newInvoiceVoucherType;
+        CurrentConcurrencyStamp = string.Empty;
+        LastSavedBy = string.Empty;
+        LastSavedAtDisplay = string.Empty;
+        VersionDisplay = "v1";
+        InvoiceVersions.Clear();
         Lines.Clear();
         ClearLineInput();
+        InitializeOfficeAndWarehouseDefaults();
         RecalcTotals();
-        StatusMessage = "???꾪몴瑜??묒꽦?섏꽭??";
+        StatusMessage = IsPurchaseDocument
+            ? "구매 전표를 작성하세요."
+            : "판매 전표를 작성하세요.";
+        CaptureBaselineState();
     }
 
     // ?? 怨좉컼 ?ㅼ젙 ?????????????????????????????????????????????????????????
@@ -207,15 +240,19 @@ public sealed partial class SalesViewModel : ObservableObject
         CustomerMobile = customer.MobilePhone;
         CustomerPriceGrade = customer.PriceGrade;
         CustomerNote = customer.Notes;
+        SelectedResponsibleOfficeCode = string.IsNullOrWhiteSpace(customer.ResponsibleOfficeCode)
+            ? SelectedResponsibleOfficeCode
+            : customer.ResponsibleOfficeCode.ToUpperInvariant();
     }
 
     public LocalStateService LocalStateService => _local;
+    public SessionState SessionState => _session;
     public List<LocalCustomer> GetAllCustomers() => _allCustomers;
     public List<LocalItem> GetAllItems() => _allItems;
 
     public async Task ReloadCustomersAsync()
     {
-        _allCustomers = await _local.GetCustomersAsync();
+        _allCustomers = await _local.GetCustomersAsync(_session);
     }
 
     public async Task ReloadItemsAsync()
@@ -267,8 +304,34 @@ public sealed partial class SalesViewModel : ObservableObject
         RecalcInputAmount();
     }
 
+    partial void OnSelectedResponsibleOfficeCodeChanged(string value)
+    {
+        var officeCode = string.IsNullOrWhiteSpace(value)
+            ? DomainConstants.OfficeUznet
+            : value.Trim().ToUpperInvariant();
+
+        if (officeCode == DomainConstants.OfficeYeonsu &&
+            string.IsNullOrWhiteSpace(SelectedWarehouseCode))
+        {
+            SelectedWarehouseCode = DomainConstants.WarehouseYeonsuMain;
+        }
+        else if (officeCode == DomainConstants.OfficeUznet &&
+                 string.IsNullOrWhiteSpace(SelectedWarehouseCode))
+        {
+            SelectedWarehouseCode = DomainConstants.WarehouseUznetMain;
+        }
+    }
+
     private decimal ResolveUnitPrice(LocalItem item)
     {
+        if (IsPurchaseDocument)
+        {
+            if (item.PurchasePrice > 0) return item.PurchasePrice;
+            if (item.SalePrice > 0) return item.SalePrice;
+            if (item.RetailPrice > 0) return item.RetailPrice;
+            return 0;
+        }
+
         var grade = (CustomerPriceGrade ?? string.Empty).Trim().ToUpperInvariant();
         if (grade.StartsWith("A") && item.PriceGradeA > 0) return item.PriceGradeA;
         if (grade.StartsWith("B") && item.PriceGradeB > 0) return item.PriceGradeB;
@@ -291,6 +354,7 @@ public sealed partial class SalesViewModel : ObservableObject
             Quantity = InputQty,
             UnitPrice = InputUnitPrice,
             Remark = InputRemark,
+            SerialNumber = InputSerialNumber,
             MaterialNumber = InputMaterialNo,
         };
         Lines.Add(line);
@@ -308,6 +372,7 @@ public sealed partial class SalesViewModel : ObservableObject
         SelectedLine.Quantity = InputQty;
         SelectedLine.UnitPrice = InputUnitPrice;
         SelectedLine.Remark = InputRemark;
+        SelectedLine.SerialNumber = InputSerialNumber;
         RecalcTotals();
         ClearLineInput();
         SelectedLine = null;
@@ -331,13 +396,14 @@ public sealed partial class SalesViewModel : ObservableObject
         InputQty = value.Quantity;
         InputUnitPrice = value.UnitPrice;
         InputRemark = value.Remark;
+        InputSerialNumber = value.SerialNumber;
         InputMaterialNo = value.MaterialNumber;
         RecalcInputAmount();
     }
 
     private void ClearLineInput()
     {
-        InputItemName = InputSpec = InputUnit = InputRemark = InputMaterialNo = string.Empty;
+        InputItemName = InputSpec = InputUnit = InputRemark = InputSerialNumber = InputMaterialNo = string.Empty;
         InputQty = 1;
         InputUnitPrice = InputLineAmount = 0;
         SelectedInputItem = null;
@@ -345,7 +411,16 @@ public sealed partial class SalesViewModel : ObservableObject
 
     public void RecalcTotals()
     {
-        TotalAmount = Lines.Sum(l => l.LineAmount);
+        var lineAmountSum = Lines.Sum(l => l.LineAmount);
+        if (IsPurchaseDocument)
+        {
+            SupplyAmount = lineAmountSum;
+            VatAmount = Math.Round(SupplyAmount * 0.1m, 0, MidpointRounding.AwayFromZero);
+            TotalAmount = SupplyAmount + VatAmount;
+            return;
+        }
+
+        TotalAmount = lineAmountSum;
         SupplyAmount = Math.Round(TotalAmount / 1.1m, 0, MidpointRounding.AwayFromZero);
         VatAmount = TotalAmount - SupplyAmount;
     }
@@ -371,21 +446,186 @@ public sealed partial class SalesViewModel : ObservableObject
     private async Task SaveAsync()
         => await SaveCoreAsync();
 
-    public bool HasPendingChanges =>
-        !string.IsNullOrWhiteSpace(InputItemName) ||
-        !string.IsNullOrWhiteSpace(InputSpec) ||
-        !string.IsNullOrWhiteSpace(InputUnit) ||
-        !string.IsNullOrWhiteSpace(InputMaterialNo) ||
-        !string.IsNullOrWhiteSpace(InputRemark) ||
-        InputQty != 1 ||
-        InputUnitPrice > 0 ||
-        !string.IsNullOrWhiteSpace(InvoiceMemo) ||
-        Lines.Any(l => !string.IsNullOrWhiteSpace(l.ItemName));
+    public bool HasPendingChanges => !string.Equals(
+        _baselineStateSignature,
+        BuildStateSignature(),
+        StringComparison.Ordinal);
+
+    private string BuildStateSignature()
+    {
+        var builder = new StringBuilder();
+        builder.Append(SelectedCustomer?.Id.ToString("D") ?? string.Empty)
+            .Append('|').Append(WorkDate.ToString("yyyy-MM-dd"))
+            .Append('|').Append(VoucherType)
+            .Append('|').Append(SelectedResponsibleOfficeCode ?? string.Empty)
+            .Append('|').Append(SelectedWarehouseCode ?? string.Empty)
+            .Append('|').Append(InvoiceMemo ?? string.Empty)
+            .Append('|').Append(InputItemName ?? string.Empty)
+            .Append('|').Append(InputSpec ?? string.Empty)
+            .Append('|').Append(InputUnit ?? string.Empty)
+            .Append('|').Append(InputQty)
+            .Append('|').Append(InputUnitPrice)
+            .Append('|').Append(InputRemark ?? string.Empty)
+            .Append('|').Append(InputSerialNumber ?? string.Empty)
+            .Append('|').Append(InputMaterialNo ?? string.Empty);
+
+        foreach (var line in Lines)
+        {
+            builder.Append("||")
+                .Append(line.ItemId?.ToString("D") ?? string.Empty)
+                .Append('|').Append(line.ItemName ?? string.Empty)
+                .Append('|').Append(line.Specification ?? string.Empty)
+                .Append('|').Append(line.Unit ?? string.Empty)
+                .Append('|').Append(line.Quantity)
+                .Append('|').Append(line.UnitPrice)
+                .Append('|').Append(line.Remark ?? string.Empty)
+                .Append('|').Append(line.SerialNumber ?? string.Empty)
+                .Append('|').Append(line.MaterialNumber ?? string.Empty);
+        }
+
+        return builder.ToString();
+    }
+
+    private void CaptureBaselineState()
+    {
+        _baselineStateSignature = BuildStateSignature();
+    }
+
+    public async Task<IReadOnlyList<LocalInvoice>> GetPreviousInvoicesAsync()
+    {
+        if (SelectedCustomer is null)
+            return [];
+
+        var invoices = await _local.GetInvoicesAsync(
+            from: null,
+            to: null,
+            customerId: SelectedCustomer.Id,
+            session: _session);
+
+        return invoices
+            .Where(invoice => invoice.Id != InvoiceId)
+            .OrderByDescending(invoice => invoice.InvoiceDate)
+            .ThenByDescending(invoice => invoice.UpdatedAtUtc)
+            .ToList();
+    }
+
+    public void ImportPreviousInvoices(IEnumerable<LocalInvoice> invoices, bool replaceExistingLines)
+    {
+        var selectedInvoices = invoices
+            .Where(invoice => invoice is not null)
+            .OrderBy(invoice => invoice.InvoiceDate)
+            .ThenBy(invoice => string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
+                ? invoice.LocalTempNumber
+                : invoice.InvoiceNumber)
+            .ThenBy(invoice => invoice.UpdatedAtUtc)
+            .ToList();
+
+        if (selectedInvoices.Count == 0)
+            return;
+
+        if (replaceExistingLines)
+        {
+            Lines.Clear();
+        }
+
+        foreach (var invoice in selectedInvoices)
+        {
+            foreach (var line in invoice.Lines.Where(line => !line.IsDeleted))
+            {
+                Lines.Add(InvoiceLineEditModel.FromLocal(line));
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(InvoiceMemo) && selectedInvoices.Count == 1)
+            InvoiceMemo = selectedInvoices[0].Memo;
+
+        RecalcTotals();
+        StatusMessage = $"{selectedInvoices.Count}건의 이전 기록을 불러왔습니다.";
+    }
 
     public async Task<bool> TryAutoSaveOnCloseAsync()
     {
-        if (!HasPendingChanges) return true;
+        if (!HasPendingChanges || !HasMeaningfulDraftContent())
+            return true;
+
         return await SaveCoreAsync(showValidationFeedback: false, statusPrefix: "자동저장");
+    }
+
+    private bool HasMeaningfulDraftContent()
+    {
+        if (SelectedCustomer is not null)
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(InvoiceMemo))
+            return true;
+
+        if (HasMeaningfulLineInput())
+            return true;
+
+        return Lines.Any(IsMeaningfulLine);
+    }
+
+    private bool HasMeaningfulLineInput()
+    {
+        return SelectedInputItem is not null
+            || !string.IsNullOrWhiteSpace(InputItemName)
+            || !string.IsNullOrWhiteSpace(InputSpec)
+            || !string.IsNullOrWhiteSpace(InputUnit)
+            || !string.IsNullOrWhiteSpace(InputRemark)
+            || !string.IsNullOrWhiteSpace(InputSerialNumber)
+            || !string.IsNullOrWhiteSpace(InputMaterialNo)
+            || InputQty != 1m
+            || InputUnitPrice != 0
+            || InputLineAmount != 0;
+    }
+
+    private static bool IsMeaningfulLine(InvoiceLineEditModel line)
+    {
+        return !string.IsNullOrWhiteSpace(line.ItemName)
+            || !string.IsNullOrWhiteSpace(line.Specification)
+            || !string.IsNullOrWhiteSpace(line.Unit)
+            || !string.IsNullOrWhiteSpace(line.Remark)
+            || !string.IsNullOrWhiteSpace(line.SerialNumber)
+            || !string.IsNullOrWhiteSpace(line.MaterialNumber)
+            || !string.IsNullOrWhiteSpace(line.InstallLocation)
+            || line.RentalStartDate is not null
+            || line.RentalEndDate is not null
+            || line.Quantity != 1m
+            || line.UnitPrice != 0
+            || line.LineAmount != 0;
+    }
+
+    private async Task<LocalInvoice?> EnsureInvoiceReadyForOutputAsync(string actionName)
+    {
+        if (SelectedCustomer is null)
+        {
+            StatusMessage = "거래처를 선택하세요.";
+            System.Windows.MessageBox.Show(
+                StatusMessage,
+                "알림",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Information);
+            return null;
+        }
+
+        if (HasPendingChanges)
+        {
+            var saved = await SaveCoreAsync(showValidationFeedback: true, statusPrefix: "저장");
+            if (!saved)
+                return null;
+        }
+
+        var invoice = await _local.GetInvoiceAsync(InvoiceId, _session);
+        if (invoice is not null)
+            return invoice;
+
+        StatusMessage = $"{actionName}할 전표를 찾을 수 없습니다.";
+        System.Windows.MessageBox.Show(
+            StatusMessage,
+            "알림",
+            System.Windows.MessageBoxButton.OK,
+            System.Windows.MessageBoxImage.Warning);
+        return null;
     }
 
     private async Task<bool> SaveCoreAsync(bool showValidationFeedback = true, string statusPrefix = "저장")
@@ -405,6 +645,7 @@ public sealed partial class SalesViewModel : ObservableObject
                 System.Windows.MessageBox.Show(StatusMessage, "알림", System.Windows.MessageBoxButton.OK);
             return false;
         }
+
         var inv = new LocalInvoice
         {
             Id = InvoiceId,
@@ -412,13 +653,56 @@ public sealed partial class SalesViewModel : ObservableObject
             InvoiceDate = WorkDate,
             VoucherType = VoucherType,
             Memo = InvoiceMemo,
+            ResponsibleOfficeCode = SelectedResponsibleOfficeCode,
+            SourceWarehouseCode = SelectedWarehouseCode,
+            ConcurrencyStamp = CurrentConcurrencyStamp,
             Lines = validLines.Select(l => l.ToLocal(InvoiceId)).ToList()
         };
-        await _local.SaveInvoiceAsync(inv);
-        StatusMessage = $"{statusPrefix}되었습니다.";
+
+        var saveContext = new InvoiceSaveContext
+        {
+            Username = _session.User?.Username ?? "local-user",
+            Role = _session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = _session.OfficeCode,
+            ForceOverride = false,
+            ExpectedConcurrencyStamp = string.IsNullOrWhiteSpace(CurrentConcurrencyStamp)
+                ? null
+                : CurrentConcurrencyStamp
+        };
+
+        var saveResult = await _local.SaveInvoiceAsync(inv, saveContext, _session);
+        if (!saveResult.Success)
+        {
+            StatusMessage = saveResult.Message;
+            if (showValidationFeedback)
+            {
+                System.Windows.MessageBox.Show(
+                    saveResult.Message,
+                    saveResult.ConcurrencyConflict
+                        ? "동시 수정 충돌"
+                        : saveResult.PermissionDenied ? "권한 없음" : "저장 실패",
+                    System.Windows.MessageBoxButton.OK,
+                    saveResult.ConcurrencyConflict || saveResult.PermissionDenied
+                        ? System.Windows.MessageBoxImage.Warning
+                        : System.Windows.MessageBoxImage.Error);
+            }
+            return false;
+        }
+
+        var savedInvoice = await _local.GetInvoiceAsync(saveResult.SavedInvoiceId, _session);
+        if (savedInvoice is not null)
+        {
+            InvoiceId = savedInvoice.Id;
+            CurrentConcurrencyStamp = savedInvoice.ConcurrencyStamp;
+            LastSavedBy = savedInvoice.LastSavedByUsername;
+            LastSavedAtDisplay = savedInvoice.LastSavedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+            VersionDisplay = $"v{savedInvoice.VersionNumber}";
+            await LoadInvoiceVersionsAsync(savedInvoice);
+        }
+
+        StatusMessage = $"{statusPrefix}되었습니다. {saveResult.Message}".Trim();
+        CaptureBaselineState();
         InvoiceSaved?.Invoke();
-        // ???꾪몴 踰덊샇濡??댁뼱 ?낅젰 媛?ν븯?꾨줉
-        InvoiceId = Guid.NewGuid();
         return true;
     }
 
@@ -429,8 +713,21 @@ public sealed partial class SalesViewModel : ObservableObject
         WorkDate = inv.InvoiceDate;
         VoucherType = inv.VoucherType;
         InvoiceMemo = inv.Memo;
+        SelectedResponsibleOfficeCode = string.IsNullOrWhiteSpace(inv.ResponsibleOfficeCode)
+            ? SelectedResponsibleOfficeCode
+            : inv.ResponsibleOfficeCode.ToUpperInvariant();
+        SelectedWarehouseCode = string.IsNullOrWhiteSpace(inv.SourceWarehouseCode)
+            ? SelectedWarehouseCode
+            : inv.SourceWarehouseCode.ToUpperInvariant();
+        CurrentConcurrencyStamp = inv.ConcurrencyStamp;
+        LastSavedBy = inv.LastSavedByUsername;
+        LastSavedAtDisplay = inv.LastSavedAtUtc == default
+            ? string.Empty
+            : inv.LastSavedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+        VersionDisplay = $"v{Math.Max(1, inv.VersionNumber)}";
 
-        var customer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId);
+        var customer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId)
+            ?? _local.GetCustomerAsync(inv.CustomerId).GetAwaiter().GetResult();
         if (customer is not null) SetCustomer(customer);
 
         Lines.Clear();
@@ -446,11 +743,14 @@ public sealed partial class SalesViewModel : ObservableObject
                 Quantity = line.Quantity,
                 UnitPrice = line.UnitPrice,
                 Remark = line.Remark,
+                SerialNumber = line.SerialNumber,
                 MaterialNumber = line.MaterialNumber
             });
         }
         RecalcTotals();
-        StatusMessage = "?꾪몴 ?섏젙 以묒엯?덈떎.";
+        _ = LoadInvoiceVersionsAsync(inv);
+        StatusMessage = IsPurchaseDocument ? "구매 전표 수정 중입니다." : "판매 전표 수정 중입니다.";
+        CaptureBaselineState();
     }
 
     // ?? ?좉퇋 ?꾪몴 ?????????????????????????????????????????????????????????
@@ -462,27 +762,33 @@ public sealed partial class SalesViewModel : ObservableObject
     {
         try
         {
-            if (SelectedCustomer is null)
+            if (IsPurchaseDocument)
             {
-                StatusMessage = "거래처를 선택하세요.";
+                StatusMessage = "구매 전표는 고정 양식으로 바로 출력합니다.";
                 return;
             }
 
-            var invoice = await _local.GetInvoiceAsync(InvoiceId);
+            var invoice = await EnsureInvoiceReadyForOutputAsync("출력물 편집");
             if (invoice is null)
-            {
-                StatusMessage = "먼저 전표를 저장한 후 출력물을 편집하세요.";
                 return;
-            }
+
+            var customer = SelectedCustomer;
+            if (customer is null)
+                return;
 
             var company = await _local.GetCompanyProfileAsync();
             if (company is null)
             {
                 StatusMessage = "회사 정보를 먼저 등록하세요.";
+                System.Windows.MessageBox.Show(
+                    StatusMessage,
+                    "알림",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Information);
                 return;
             }
 
-            var model = await LoadOrCreateInvoicePrintModelAsync(invoice, SelectedCustomer, company);
+            var model = await LoadOrCreateInvoicePrintModelAsync(invoice, customer, company);
             var editorViewModel = new PrintEditViewModel(model, _invoicePrintService, SaveInvoicePrintModelAsync);
             var editorWindow = new PrintEditWindow(editorViewModel)
             {
@@ -512,6 +818,12 @@ public sealed partial class SalesViewModel : ObservableObject
     {
         try
         {
+            if (IsPurchaseDocument)
+            {
+                await PrintPurchaseAsync();
+                return;
+            }
+
             if (!PrintStatementDocument && !PrintEstimateDocument && !PrintPaymentClaimDocument)
             {
                 StatusMessage = "출력할 서류를 1개 이상 선택하세요.";
@@ -523,30 +835,30 @@ public sealed partial class SalesViewModel : ObservableObject
                 return;
             }
 
-            if (SelectedCustomer is null)
-            {
-                StatusMessage = "거래처를 선택하세요.";
-                return;
-            }
-
-            var invoice = await _local.GetInvoiceAsync(InvoiceId);
+            var invoice = await EnsureInvoiceReadyForOutputAsync("인쇄");
             if (invoice is null)
-            {
-                StatusMessage = "먼저 저장 후 인쇄하세요.";
                 return;
-            }
+
+            var customer = SelectedCustomer;
+            if (customer is null)
+                return;
 
             var company = await _local.GetCompanyProfileAsync();
             if (company is null)
             {
                 StatusMessage = "회사 정보를 먼저 등록하세요.";
+                System.Windows.MessageBox.Show(
+                    StatusMessage,
+                    "알림",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Information);
                 return;
             }
 
             var selectedCodes = new List<string>();
             if (PrintPaymentClaimDocument)
             {
-                var selectedFromDialog = await SelectPaymentClaimAttachmentsAsync(SelectedCustomer);
+                var selectedFromDialog = await SelectPaymentClaimAttachmentsAsync(customer);
                 if (selectedFromDialog is null)
                 {
                     StatusMessage = "첨부서류 선택이 취소되어 인쇄를 중단했습니다.";
@@ -570,7 +882,7 @@ public sealed partial class SalesViewModel : ObservableObject
             var documents = await BuildDocumentsForCodesAsync(
                 selectedCodes,
                 invoice,
-                SelectedCustomer,
+                customer,
                 company);
 
             if (documents.Count == 0)
@@ -585,7 +897,7 @@ public sealed partial class SalesViewModel : ObservableObject
             var previewViewModel = new PrintPreviewViewModel(
                 previewDocument,
                 _invoicePrintService,
-                $"출력물_{invoice.InvoiceDate:yyyyMMdd}_{SelectedCustomer.NameOriginal}");
+                $"출력물_{invoice.InvoiceDate:yyyyMMdd}_{customer.NameOriginal}");
             var previewWindow = new PrintPreviewWindow(previewViewModel)
             {
                 Owner = GetActiveWindow()
@@ -611,36 +923,80 @@ public sealed partial class SalesViewModel : ObservableObject
         }
     }
 
+    private async Task PrintPurchaseAsync()
+    {
+        var invoice = await EnsureInvoiceReadyForOutputAsync("인쇄");
+        if (invoice is null)
+            return;
+
+        var customer = SelectedCustomer;
+        if (customer is null)
+            return;
+
+        var company = await _local.GetCompanyProfileAsync();
+        if (company is null)
+        {
+            StatusMessage = "회사 정보를 먼저 등록하세요.";
+            System.Windows.MessageBox.Show(
+                StatusMessage,
+                "알림",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Information);
+            return;
+        }
+
+        var printModel = await LoadOrCreateInvoicePrintModelAsync(invoice, customer, company);
+        printModel.PrintWithDate = true;
+        printModel.PrintWithPrice = true;
+
+        var previewDocument = _invoicePrintService.BuildFixedDocument(printModel);
+        var previewViewModel = new PrintPreviewViewModel(
+            previewDocument,
+            _invoicePrintService,
+            $"구매명세서_{invoice.InvoiceDate:yyyyMMdd}_{customer.NameOriginal}");
+        var previewWindow = new PrintPreviewWindow(previewViewModel)
+        {
+            Owner = GetActiveWindow()
+        };
+
+        previewWindow.ShowDialog();
+        if (previewViewModel.WasPrinted)
+            StatusMessage = "매입 받은 명세서를 인쇄했습니다.";
+    }
+
     [RelayCommand]
     private async Task PrintTaxInvoiceAsync()
     {
         try
         {
-            if (SelectedCustomer is null)
-            {
-                StatusMessage = "거래처를 선택하세요.";
+            if (IsPurchaseDocument)
                 return;
-            }
 
-            var inv = await _local.GetInvoiceAsync(InvoiceId);
+            var inv = await EnsureInvoiceReadyForOutputAsync("세금계산서 인쇄");
             var company = await _local.GetCompanyProfileAsync();
             if (inv is null)
-            {
-                StatusMessage = "먼저 저장 후 인쇄하세요.";
                 return;
-            }
+
+            var customer = SelectedCustomer;
+            if (customer is null)
+                return;
 
             if (company is null)
             {
                 StatusMessage = "회사 정보를 먼저 등록하세요.";
+                System.Windows.MessageBox.Show(
+                    StatusMessage,
+                    "알림",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Information);
                 return;
             }
 
-            var document = BuildTaxInvoicePrintDocument(inv, SelectedCustomer, company);
+            var document = BuildTaxInvoicePrintDocument(inv, customer, company);
             var printed = PrintPreviewHelper.ShowPreviewAndPrint(
                 document,
                 "세금계산서 미리보기",
-                $"세금계산서_{WorkDate:yyyyMMdd}_{SelectedCustomer.NameOriginal}");
+                $"세금계산서_{WorkDate:yyyyMMdd}_{customer.NameOriginal}");
             if (printed)
             {
                 StatusMessage = "세금계산서를 인쇄했습니다.";
@@ -655,125 +1011,6 @@ public sealed partial class SalesViewModel : ObservableObject
                 System.Windows.MessageBoxButton.OK,
                 System.Windows.MessageBoxImage.Error);
         }
-    }
-
-    private static System.Windows.Documents.FlowDocument BuildStatementPrintDocument(
-        LocalInvoice invoice,
-        LocalCustomer customer,
-        LocalCompanyProfile company,
-        NativeStatementLayoutType layout,
-        bool printWithDate,
-        bool printWithPrice)
-    {
-        return StatementDocumentBuilder.BuildStatementPrintDocument(
-            invoice,
-            customer,
-            company,
-            layout,
-            printWithDate,
-            printWithPrice);
-    }
-
-    private NativeStatementLayoutType ResolveLayoutForCurrentPrint(PrintTemplateOption? selectedTemplate)
-    {
-        if (selectedTemplate?.BuiltInLayout is { } builtIn)
-            return builtIn;
-
-        return PrintTemplateCatalogService.ResolveBuiltInLayoutFromPrintType(PrintType);
-    }
-
-    private enum StatementTemplateGroup
-    {
-        Unknown = 0,
-        TradeHalf = 1,
-        TradeA4 = 2,
-        Receipt = 3
-    }
-
-    private StatementTemplateGroup ResolveExpectedTemplateGroup()
-    {
-        if (PrintType.Contains("영수", StringComparison.OrdinalIgnoreCase))
-            return StatementTemplateGroup.Receipt;
-
-        if (PrintType.Contains("A4", StringComparison.OrdinalIgnoreCase))
-            return StatementTemplateGroup.TradeA4;
-
-        return StatementTemplateGroup.TradeHalf;
-    }
-
-    private static StatementTemplateGroup ResolveTemplateGroup(PrintTemplateOption? template)
-    {
-        if (template is null)
-            return StatementTemplateGroup.Unknown;
-
-        if (template.BuiltInLayout is { } layout)
-        {
-            return layout switch
-            {
-                NativeStatementLayoutType.TradeA4 => StatementTemplateGroup.TradeA4,
-                NativeStatementLayoutType.Receipt => StatementTemplateGroup.Receipt,
-                _ => StatementTemplateGroup.TradeHalf
-            };
-        }
-
-        var templateName = Path.GetFileNameWithoutExtension(template.TemplatePath);
-        if (string.IsNullOrWhiteSpace(templateName))
-            templateName = template.DisplayName;
-
-        var normalized = (templateName ?? string.Empty).ToLowerInvariant();
-        if (normalized.Contains("영수", StringComparison.OrdinalIgnoreCase))
-            return StatementTemplateGroup.Receipt;
-
-        if (normalized.Contains("a4", StringComparison.OrdinalIgnoreCase))
-            return StatementTemplateGroup.TradeA4;
-
-        if (normalized.Contains("명세", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("거래", StringComparison.OrdinalIgnoreCase))
-        {
-            return StatementTemplateGroup.TradeHalf;
-        }
-
-        return StatementTemplateGroup.Unknown;
-    }
-
-    private PrintTemplateOption? ResolveRuntimeTemplateForPrintType(PrintTemplateOption? selectedTemplate)
-    {
-        var templates = StatementTemplates.ToList();
-        if (templates.Count == 0)
-            templates = _templateCatalog.GetStatementTemplates().ToList();
-
-        var expectedGroup = ResolveExpectedTemplateGroup();
-
-        if (selectedTemplate is not null)
-        {
-            var selectedGroup = ResolveTemplateGroup(selectedTemplate);
-            if (selectedGroup == expectedGroup || selectedGroup == StatementTemplateGroup.Unknown)
-                return selectedTemplate;
-        }
-
-        var preferred = PrintTemplateCatalogService.ResolveLegacyTemplateForPrintType(templates, PrintType);
-        if (preferred is not null)
-            return preferred;
-
-        return selectedTemplate ?? templates.FirstOrDefault();
-    }
-
-    private async Task SynchronizeSelectedTemplateAsync(PrintTemplateOption? runtimeTemplate)
-    {
-        if (runtimeTemplate is null)
-            return;
-
-        if (SelectedStatementTemplate is not null &&
-            string.Equals(SelectedStatementTemplate.Id, runtimeTemplate.Id, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        _suppressTemplateSettingWrite = true;
-        SelectedStatementTemplate = runtimeTemplate;
-        _suppressTemplateSettingWrite = false;
-
-        await _local.SetSettingAsync(PrintTemplateCatalogService.DefaultStatementTemplateSettingKey, runtimeTemplate.Id);
     }
 
     private async Task<InvoicePrintModel> LoadOrCreateInvoicePrintModelAsync(
@@ -1045,121 +1282,6 @@ public sealed partial class SalesViewModel : ObservableObject
         return System.Windows.Application.Current?.Windows
             .OfType<System.Windows.Window>()
             .FirstOrDefault(window => window.IsActive);
-    }
-
-    private async Task<bool> TryOpenTemplateDesignerAsync(PrintTemplateOption template)
-    {
-        if (string.IsNullOrWhiteSpace(template.TemplatePath) || !File.Exists(template.TemplatePath))
-            return false;
-
-        var designerPath = await ResolveDesignerExecutablePathAsync();
-        if (string.IsNullOrWhiteSpace(designerPath))
-            return false;
-
-        var openPath = ResolveTemplatePathForDesigner(template.TemplatePath);
-        if (TryOpenTemplateWithAssociation(openPath))
-            return true;
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = designerPath,
-            Arguments = $"\"{openPath}\"",
-            WorkingDirectory = Path.GetDirectoryName(openPath) ?? Path.GetDirectoryName(designerPath) ?? Environment.CurrentDirectory,
-            UseShellExecute = true
-        };
-
-        Process.Start(psi);
-        return true;
-    }
-
-    private static string ResolveTemplatePathForDesigner(string templatePath)
-    {
-        if (string.IsNullOrWhiteSpace(templatePath))
-            return templatePath;
-
-        if (string.Equals(Path.GetExtension(templatePath), ".fr3", StringComparison.OrdinalIgnoreCase))
-        {
-            var frxPath = Path.ChangeExtension(templatePath, ".frx");
-            if (File.Exists(frxPath))
-                return frxPath;
-        }
-
-        return templatePath;
-    }
-
-    private static bool TryOpenTemplateWithAssociation(string templatePath)
-    {
-        if (string.IsNullOrWhiteSpace(templatePath) || !File.Exists(templatePath))
-            return false;
-
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = templatePath,
-                WorkingDirectory = Path.GetDirectoryName(templatePath) ?? Environment.CurrentDirectory,
-                UseShellExecute = true
-            });
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private async Task<string?> ResolveDesignerExecutablePathAsync()
-    {
-        var savedPath = await _local.GetSettingAsync(외부 리포팅 도구DesignerExeSettingKey);
-        if (!string.IsNullOrWhiteSpace(savedPath) && File.Exists(savedPath))
-            return savedPath;
-
-        var detectedPath = TryDetect외부 리포팅 도구DesignerPath();
-        if (!string.IsNullOrWhiteSpace(detectedPath))
-        {
-            await _local.SetSettingAsync(외부 리포팅 도구DesignerExeSettingKey, detectedPath);
-            return detectedPath;
-        }
-
-        return null;
-    }
-
-    private static string? TryDetect외부 리포팅 도구DesignerPath()
-    {
-        var candidates = new List<string>();
-        var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-
-        if (!string.IsNullOrWhiteSpace(pf))
-        {
-            candidates.Add(Path.Combine(pf, "외부 리포팅 도구", "외부 리포팅 도구.Net", "Designer.exe"));
-            candidates.Add(Path.Combine(pf, "외부 리포팅 도구", "외부 리포팅 도구.Net Designer", "Designer.exe"));
-            candidates.Add(Path.Combine(pf, "외부 리포팅 도구.Net", "Designer.exe"));
-        }
-
-        if (!string.IsNullOrWhiteSpace(pf86))
-        {
-            candidates.Add(Path.Combine(pf86, "외부 리포팅 도구", "외부 리포팅 도구.Net", "Designer.exe"));
-            candidates.Add(Path.Combine(pf86, "외부 리포팅 도구", "외부 리포팅 도구.Net Designer", "Designer.exe"));
-            candidates.Add(Path.Combine(pf86, "외부 리포팅 도구.Net", "Designer.exe"));
-        }
-
-        var fixedPath = candidates.FirstOrDefault(File.Exists);
-        if (!string.IsNullOrWhiteSpace(fixedPath))
-            return fixedPath;
-
-        var localRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "외부 리포팅 도구");
-        if (Directory.Exists(localRoot))
-        {
-            var localPath = Directory.EnumerateFiles(localRoot, "Designer.exe", SearchOption.AllDirectories)
-                .FirstOrDefault();
-            if (!string.IsNullOrWhiteSpace(localPath))
-                return localPath;
-        }
-
-        return null;
     }
 
     private static System.Windows.Documents.FlowDocument BuildTaxInvoicePrintDocument(

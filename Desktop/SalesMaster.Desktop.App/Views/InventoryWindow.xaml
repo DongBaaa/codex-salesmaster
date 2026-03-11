@@ -2,9 +2,12 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:SalesMaster.Desktop.App.Converters"
-        Title="상품재고 재고관리" Height="680" Width="1080"
+        Title="상품/재고 관리"
+        Height="820"
+        Width="1320"
         WindowStartupLocation="CenterOwner"
-        Background="#151F2E" KeyDown="Window_KeyDown">
+        Background="#151F2E"
+        KeyDown="Window_KeyDown">
     <Window.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVisibility"/>
         <Style TargetType="TextBlock">
@@ -26,6 +29,7 @@
             <Setter Property="Padding" Value="10,5"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="MinWidth" Value="96"/>
         </Style>
         <Style TargetType="Label">
             <Setter Property="Foreground" Value="#B0BEC5"/>
@@ -56,7 +60,6 @@
     </Window.Resources>
 
     <DockPanel>
-        <!-- 헤더 -->
         <Border DockPanel.Dock="Top" Background="#1A2B4A" Padding="12,8">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -64,197 +67,373 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Orientation="Horizontal">
-                    <TextBlock Text="상품/재고 관리 - 등록, 수정, 삭제 및 조회"
-                               FontSize="14" FontWeight="Bold" Foreground="#4FC3F7"
-                               VerticalAlignment="Center"/>
+                    <TextBlock Text="상품/재고 관리 - 품목 정보는 공용, 재고 수량은 지점별 관리"
+                               FontSize="14"
+                               FontWeight="Bold"
+                               Foreground="#4FC3F7"/>
                     <TextBlock Text="{Binding TotalCount, StringFormat=' (전체 {0}건)'}"
-                               Foreground="#90CAF9" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                               Foreground="#90CAF9"
+                               Margin="8,0,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <Button Content="등록 (신규)" Background="#1B5E20" Margin="0,0,6,0"
+                    <Button Content="등록 (신규)"
+                            Background="#1B5E20"
+                            Margin="0,0,6,0"
                             Command="{Binding NewItemCommand}"/>
-                    <Button Content="저장" Background="#0D47A1" Margin="0,0,6,0"
+                    <Button Content="저장"
+                            Background="#0D47A1"
+                            Margin="0,0,6,0"
                             Command="{Binding SaveItemCommand}"/>
-                    <Button Content="삭제" Background="#B71C1C" Margin="0,0,16,0"
+                    <Button Content="삭제"
+                            Background="#B71C1C"
+                            Margin="0,0,6,0"
                             Command="{Binding DeleteItemCommand}"/>
-                    <Button Content="닫기 (F12)" Background="#37474F"
+                    <Rectangle Width="1" Height="20" Fill="#3E5875" Margin="4,0,10,0" VerticalAlignment="Center"/>
+                    <Button Content="닫기 (F12)"
+                            Background="#37474F"
                             Click="CloseButton_Click"/>
                 </StackPanel>
             </Grid>
         </Border>
 
-        <!-- 상태 바 -->
+        <Border DockPanel.Dock="Top"
+                Background="#1A2B4A"
+                Padding="10,6"
+                BorderBrush="#2E4060"
+                BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="검색:" Margin="0,0,6,0"/>
+                    <TextBox Width="220"
+                             Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                    <TextBlock Text="{Binding InventoryScopeMessage}"
+                               Foreground="#90CAF9"
+                               Margin="12,0,0,0"/>
+                    <TextBlock Text="{Binding TransferGuideMessage}"
+                               Foreground="#9FB3C8"
+                               Margin="18,0,0,0"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center"
+                            Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}">
+                    <Button Content="{Binding UznetTabText}"
+                            Background="#1565C0"
+                            BorderBrush="#1565C0"
+                            Margin="0,0,6,0"
+                            Command="{Binding ShowUznetOfficeCommand}"/>
+                    <Button Content="{Binding YeonsuTabText}"
+                            Background="#00897B"
+                            BorderBrush="#00897B"
+                            Command="{Binding ShowYeonsuOfficeCommand}"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
         <Border DockPanel.Dock="Bottom" Background="#0D1B2A" Padding="12,4">
             <TextBlock Text="{Binding StatusMessage}" FontSize="11" Foreground="#90CAF9"/>
         </Border>
 
-        <!-- 검색 바 -->
-        <Border DockPanel.Dock="Top" Background="#1A2B4A" Padding="8,5" BorderBrush="#2E4060" BorderThickness="0,0,0,1">
-            <StackPanel Orientation="Horizontal">
-                <TextBlock Text="검색:" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
-                         Width="200" Padding="6,4"/>
-                <TextBlock Text="{Binding TotalCount, StringFormat=' 총 {0}건'}"
-                           Foreground="#78909C" VerticalAlignment="Center" Margin="12,0,0,0" FontSize="11"/>
-            </StackPanel>
-        </Border>
-
-        <!-- 좌우 분할 레이아웃 -->
         <Grid>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="320" MinWidth="200"/>
+                <ColumnDefinition Width="390" MinWidth="280"/>
                 <ColumnDefinition Width="5"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- ── 왼쪽: 품목 목록 ─────────────────────────────────── -->
             <DataGrid Grid.Column="0"
                       ItemsSource="{Binding FilteredItems}"
                       SelectedItem="{Binding SelectedItem}"
-                      IsReadOnly="True">
+                      IsReadOnly="True"
+                      BorderThickness="0">
                 <DataGrid.Columns>
                     <DataGridTextColumn Header="품목명" Binding="{Binding NameOriginal}" Width="*"/>
-                    <DataGridTextColumn Header="규격" Binding="{Binding SpecificationOriginal}" Width="90"/>
-                    <DataGridTextColumn Header="수량" Binding="{Binding CurrentStock, StringFormat=N0}" Width="60"/>
+                    <DataGridTextColumn Header="규격" Binding="{Binding SpecificationOriginal}" Width="110"/>
+                    <DataGridTextColumn Header="선택 재고" Binding="{Binding DisplayedQuantity, StringFormat=N0}" Width="86"/>
                 </DataGrid.Columns>
             </DataGrid>
 
-            <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
-                          Background="#0D1B2A" Cursor="SizeWE"/>
+            <GridSplitter Grid.Column="1"
+                          Width="5"
+                          HorizontalAlignment="Stretch"
+                          Background="#0D1B2A"
+                          Cursor="SizeWE"/>
 
-            <!-- ── 오른쪽: 상품 상세 입력폼 ──────────────────────── -->
-            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
-                <StackPanel Margin="14,10">
+            <Grid Grid.Column="2" Margin="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="240"/>
+                </Grid.RowDefinitions>
 
-                    <!-- 품명 + 품목분류 -->
-                    <Grid Margin="0,0,0,4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="75"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="65"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="30"/>
-                            <RowDefinition Height="30"/>
-                            <RowDefinition Height="30"/>
-                        </Grid.RowDefinitions>
-
-                        <Label Grid.Row="0" Grid.Column="0" Content="품 명"/>
-                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EditName, UpdateSourceTrigger=PropertyChanged}"
-                                 Background="#D9E6F5" Foreground="Black" FontWeight="Bold"/>
-                        <Label Grid.Row="0" Grid.Column="2" Content="품목분류"/>
-                        <TextBox Grid.Row="0" Grid.Column="3" Text="{Binding EditCategoryName, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <Label Grid.Row="1" Grid.Column="0" Content="규 격"/>
-                        <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditSpec, UpdateSourceTrigger=PropertyChanged}"/>
-                        <Label Grid.Row="1" Grid.Column="2" Content="단 위"/>
-                        <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding EditUnit, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <Label Grid.Row="2" Grid.Column="0" Content="기본Box수량"/>
-                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding EditBoxQty, UpdateSourceTrigger=PropertyChanged}"/>
-                        <Label Grid.Row="2" Grid.Column="2" Content="보관위치"/>
-                        <TextBox Grid.Row="2" Grid.Column="3" Text="{Binding EditStorageLocation, UpdateSourceTrigger=PropertyChanged}"/>
-                    </Grid>
-
-                    <Separator Background="#2E4060" Margin="0,4"/>
-
-                    <!-- 재고 현황 -->
-                    <Grid Margin="0,0,0,4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="75"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="65"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="30"/>
-                            <RowDefinition Height="30"/>
-                            <RowDefinition Height="30"/>
-                        </Grid.RowDefinitions>
-
-                        <Label Grid.Row="0" Grid.Column="0" Content="현재고"/>
-                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EditCurrentStock, UpdateSourceTrigger=PropertyChanged}"/>
-                        <Label Grid.Row="0" Grid.Column="2" Content="안전재고"/>
-                        <TextBox Grid.Row="0" Grid.Column="3" Text="{Binding EditSafetyStock, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <Label Grid.Row="1" Grid.Column="0" Content="Box현재고"/>
-                        <TextBlock Grid.Row="1" Grid.Column="1"
-                                   Text="{Binding BoxCurrentStock, StringFormat=N0}"
-                                   Foreground="#4FC3F7" FontWeight="Bold" Margin="6,0"/>
-                        <Label Grid.Row="1" Grid.Column="2" Content="부재재고"/>
-                        <TextBlock Grid.Row="1" Grid.Column="3"
-                                   Text="{Binding ShortageStock, StringFormat=N0}"
-                                   Foreground="#EF9A9A" Margin="6,0"/>
-
-                        <Label Grid.Row="2" Grid.Column="0" Content="자산금액"/>
-                        <TextBlock Grid.Row="2" Grid.Column="1"
-                                   Text="{Binding AssetValue, StringFormat=N0}"
-                                   Foreground="#A5D6A7" FontWeight="Bold" Margin="6,0"/>
-                    </Grid>
-
-                    <Separator Background="#2E4060" Margin="0,4"/>
-
-                    <!-- 단가 정보 -->
-                    <Grid Margin="0,0,0,4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="75"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="65"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="30"/>
-                            <RowDefinition Height="30"/>
-                            <RowDefinition Height="30"/>
-                            <RowDefinition Height="30"/>
-                        </Grid.RowDefinitions>
-
-                        <Label Grid.Row="0" Grid.Column="0" Content="매입단가"/>
-                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EditPurchasePrice, UpdateSourceTrigger=PropertyChanged}"/>
-                        <Label Grid.Row="0" Grid.Column="2" Content="마지막구매"/>
-                        <TextBlock Grid.Row="0" Grid.Column="3"
-                                   Text="{Binding EditLastPurchaseDate}" Foreground="#90CAF9" Margin="6,0"/>
-
-                        <Label Grid.Row="1" Grid.Column="0" Content="매출단가"/>
-                        <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditSalePrice, UpdateSourceTrigger=PropertyChanged}"/>
-                        <Label Grid.Row="1" Grid.Column="2" Content="A단가"/>
-                        <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding EditPriceA, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <Label Grid.Row="2" Grid.Column="0" Content="소매단가"/>
-                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding EditRetailPrice, UpdateSourceTrigger=PropertyChanged}"/>
-                        <Label Grid.Row="2" Grid.Column="2" Content="B단가"/>
-                        <TextBox Grid.Row="2" Grid.Column="3" Text="{Binding EditPriceB, UpdateSourceTrigger=PropertyChanged}"/>
-
-                        <Label Grid.Row="3" Grid.Column="0" Content="마지막판매"/>
-                        <TextBlock Grid.Row="3" Grid.Column="1"
-                                   Text="{Binding EditLastSaleDate}" Foreground="#90CAF9" Margin="6,0"/>
-                        <Label Grid.Row="3" Grid.Column="2" Content="C단가"/>
-                        <TextBox Grid.Row="3" Grid.Column="3" Text="{Binding EditPriceC, UpdateSourceTrigger=PropertyChanged}"/>
-                    </Grid>
-
-                    <Separator Background="#2E4060" Margin="0,4"/>
-
-                    <!-- 간단메모 + 체크박스 -->
-                    <Grid Margin="0,0,0,4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="75"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-
-                        <Label Grid.Column="0" Content="간단메모"/>
-                        <TextBox Grid.Column="1" Text="{Binding EditSimpleMemo, UpdateSourceTrigger=PropertyChanged}"/>
-                        <StackPanel Grid.Column="2" Orientation="Vertical" Margin="12,0,0,0">
-                            <CheckBox Content="판매" IsChecked="{Binding EditIsSale}"
-                                      Foreground="#E0E0E0" FontFamily="맑은 고딕"/>
-                            <CheckBox Content="렌탈" IsChecked="{Binding EditIsRental}"
-                                      Foreground="#E0E0E0" FontFamily="맑은 고딕" Margin="0,4,0,0"/>
+                <Border Grid.Row="0"
+                        Margin="10,10,10,0"
+                        Background="#1A2B4A"
+                        Padding="12"
+                        CornerRadius="6"
+                        BorderBrush="#2E4060"
+                        BorderThickness="1">
+                    <DockPanel>
+                        <TextBlock Text="{Binding SelectedOfficeStockLabel}"
+                                   FontSize="15"
+                                   FontWeight="Bold"
+                                   Foreground="#4FC3F7"/>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <TextBlock Text="{Binding UznetTotalQuantity, StringFormat='유즈넷 합계 {0:N0}'}"
+                                       Foreground="#90CAF9"
+                                       Margin="0,0,12,0"
+                                       Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}"/>
+                            <TextBlock Text="{Binding YeonsuTotalQuantity, StringFormat='연수구 합계 {0:N0}'}"
+                                       Foreground="#A5D6A7"
+                                       Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}"/>
                         </StackPanel>
-                    </Grid>
+                    </DockPanel>
+                </Border>
 
-                </StackPanel>
-            </ScrollViewer>
+                <ScrollViewer Grid.Row="1" Margin="10,10,10,0" VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <Border Background="#16263D"
+                                Padding="14"
+                                CornerRadius="6"
+                                BorderBrush="#2E4060"
+                                BorderThickness="1">
+                            <StackPanel>
+                                <TextBlock Text="품목 기본 정보"
+                                           FontSize="14"
+                                           FontWeight="Bold"
+                                           Foreground="#4FC3F7"/>
+
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="80"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="80"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="32"/>
+                                        <RowDefinition Height="32"/>
+                                        <RowDefinition Height="32"/>
+                                    </Grid.RowDefinitions>
+
+                                    <Label Grid.Row="0" Grid.Column="0" Content="품명"/>
+                                    <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EditName, UpdateSourceTrigger=PropertyChanged}" FontWeight="Bold"/>
+                                    <Label Grid.Row="0" Grid.Column="2" Content="품목분류"/>
+                                    <TextBox Grid.Row="0" Grid.Column="3" Text="{Binding EditCategoryName, UpdateSourceTrigger=PropertyChanged}"/>
+
+                                    <Label Grid.Row="1" Grid.Column="0" Content="규격"/>
+                                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditSpec, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="1" Grid.Column="2" Content="단위"/>
+                                    <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding EditUnit, UpdateSourceTrigger=PropertyChanged}"/>
+
+                                    <Label Grid.Row="2" Grid.Column="0" Content="기본Box수량"/>
+                                    <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding EditBoxQty, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="2" Grid.Column="2" Content="보관위치"/>
+                                    <TextBox Grid.Row="2" Grid.Column="3" Text="{Binding EditStorageLocation, UpdateSourceTrigger=PropertyChanged}"/>
+                                </Grid>
+
+                                <Separator Background="#2E4060" Margin="0,10,0,10"/>
+
+                                <TextBlock Text="지점별 재고 현황"
+                                           FontSize="14"
+                                           FontWeight="Bold"
+                                           Foreground="#4FC3F7"/>
+                                <TextBlock Text="품목 등록 내용은 두 지점이 공유하고, 재고 개수만 유즈넷/연수구별로 따로 계산됩니다."
+                                           Foreground="#9FB3C8"
+                                           Margin="0,6,0,0"/>
+
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="110"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="110"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="30"/>
+                                        <RowDefinition Height="30"/>
+                                        <RowDefinition Height="30"/>
+                                        <RowDefinition Height="30"/>
+                                    </Grid.RowDefinitions>
+
+                                    <Label Grid.Row="0"
+                                           Grid.Column="0"
+                                           Content="유즈넷 재고"
+                                           Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="1"
+                                               Text="{Binding EditUznetStock, StringFormat=N0}"
+                                               Foreground="#90CAF9"
+                                               FontWeight="Bold"
+                                               Margin="6,0"
+                                               Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}"/>
+                                    <Label Grid.Row="0"
+                                           Grid.Column="2"
+                                           Content="연수구 재고"
+                                           Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="3"
+                                               Text="{Binding EditYeonsuStock, StringFormat=N0}"
+                                               Foreground="#A5D6A7"
+                                               FontWeight="Bold"
+                                               Margin="6,0"
+                                               Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}"/>
+
+                                    <Label Grid.Row="1" Grid.Column="0" Content="{Binding SelectedOfficeStockLabel}"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="1"
+                                               Text="{Binding EditSelectedOfficeStock, StringFormat=N0}"
+                                               Foreground="#4FC3F7"
+                                               FontWeight="Bold"
+                                               Margin="6,0"/>
+                                    <Label Grid.Row="1"
+                                           Grid.Column="2"
+                                           Content="전체 재고"
+                                           Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="3"
+                                               Text="{Binding EditTotalStock, StringFormat=N0}"
+                                               Foreground="#E6EE9C"
+                                               FontWeight="Bold"
+                                               Margin="6,0"
+                                               Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}"/>
+
+                                    <Label Grid.Row="2" Grid.Column="0" Content="선택 Box재고"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="1"
+                                               Text="{Binding BoxCurrentStock, StringFormat=N0}"
+                                               Foreground="#4FC3F7"
+                                               Margin="6,0"/>
+                                    <Label Grid.Row="2" Grid.Column="2" Content="선택 부족재고"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="3"
+                                               Text="{Binding ShortageStock, StringFormat=N0}"
+                                               Foreground="#EF9A9A"
+                                               Margin="6,0"/>
+
+                                    <Label Grid.Row="3" Grid.Column="0" Content="선택 재고자산"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="1"
+                                               Text="{Binding AssetValue, StringFormat=N0}"
+                                               Foreground="#A5D6A7"
+                                               FontWeight="Bold"
+                                               Margin="6,0"/>
+                                </Grid>
+
+                                <Grid Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="80"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <Label Grid.Column="0" Content="안전재고"/>
+                                    <TextBox Grid.Column="1" Text="{Binding EditSafetyStock, UpdateSourceTrigger=PropertyChanged}"/>
+                                </Grid>
+
+                                <Separator Background="#2E4060" Margin="0,10,0,10"/>
+
+                                <TextBlock Text="단가 및 메모"
+                                           FontSize="14"
+                                           FontWeight="Bold"
+                                           Foreground="#4FC3F7"/>
+
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="80"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="80"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="32"/>
+                                        <RowDefinition Height="32"/>
+                                        <RowDefinition Height="32"/>
+                                        <RowDefinition Height="32"/>
+                                    </Grid.RowDefinitions>
+
+                                    <Label Grid.Row="0" Grid.Column="0" Content="매입단가"/>
+                                    <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EditPurchasePrice, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="0" Grid.Column="2" Content="마지막구매"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="3" Text="{Binding EditLastPurchaseDate}" Foreground="#90CAF9" Margin="6,0"/>
+
+                                    <Label Grid.Row="1" Grid.Column="0" Content="매출단가"/>
+                                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditSalePrice, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="1" Grid.Column="2" Content="A단가"/>
+                                    <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding EditPriceA, UpdateSourceTrigger=PropertyChanged}"/>
+
+                                    <Label Grid.Row="2" Grid.Column="0" Content="소매단가"/>
+                                    <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding EditRetailPrice, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="2" Grid.Column="2" Content="B단가"/>
+                                    <TextBox Grid.Row="2" Grid.Column="3" Text="{Binding EditPriceB, UpdateSourceTrigger=PropertyChanged}"/>
+
+                                    <Label Grid.Row="3" Grid.Column="0" Content="마지막판매"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding EditLastSaleDate}" Foreground="#90CAF9" Margin="6,0"/>
+                                    <Label Grid.Row="3" Grid.Column="2" Content="C단가"/>
+                                    <TextBox Grid.Row="3" Grid.Column="3" Text="{Binding EditPriceC, UpdateSourceTrigger=PropertyChanged}"/>
+                                </Grid>
+
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="80"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Label Grid.Column="0" Content="간단메모"/>
+                                    <TextBox Grid.Column="1" Text="{Binding EditSimpleMemo, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <StackPanel Grid.Column="2" Orientation="Vertical" Margin="12,0,0,0">
+                                        <CheckBox Content="판매"
+                                                  IsChecked="{Binding EditIsSale}"
+                                                  Foreground="#E0E0E0"
+                                                  FontFamily="맑은 고딕"/>
+                                        <CheckBox Content="렌탈"
+                                                  IsChecked="{Binding EditIsRental}"
+                                                  Foreground="#E0E0E0"
+                                                  FontFamily="맑은 고딕"
+                                                  Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <Border Grid.Row="2"
+                        Margin="10,10,10,10"
+                        Background="#16263D"
+                        Padding="12"
+                        CornerRadius="6"
+                        BorderBrush="#2E4060"
+                        BorderThickness="1">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <DockPanel Grid.Row="0" Margin="0,0,0,8">
+                            <TextBlock Text="재고 이동 / 입출고 내역"
+                                       FontSize="14"
+                                       FontWeight="Bold"
+                                       Foreground="#4FC3F7"/>
+                            <TextBlock DockPanel.Dock="Right"
+                                       Text="선택한 품목의 지점 이동 내역을 확인합니다."
+                                       Foreground="#9FB3C8"/>
+                        </DockPanel>
+
+                        <DataGrid Grid.Row="1"
+                                  ItemsSource="{Binding SelectedItemMovements}"
+                                  IsReadOnly="True"
+                                  BorderThickness="0">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="일자" Binding="{Binding OccurredDate}" Width="95"/>
+                                <DataGridTextColumn Header="사무실" Binding="{Binding OfficeDisplay}" Width="110"/>
+                                <DataGridTextColumn Header="창고" Binding="{Binding WarehouseDisplay}" Width="120"/>
+                                <DataGridTextColumn Header="구분" Binding="{Binding MovementTypeDisplay}" Width="120"/>
+                                <DataGridTextColumn Header="수량" Binding="{Binding QuantityDelta, StringFormat={}{0:+#,0;-#,0;0}}" Width="80"/>
+                                <DataGridTextColumn Header="메모" Binding="{Binding Note}" Width="*"/>
+                                <DataGridTextColumn Header="저장자" Binding="{Binding CreatedByUsername}" Width="110"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </Border>
+            </Grid>
         </Grid>
     </DockPanel>
 </Window>

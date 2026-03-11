@@ -14,6 +14,7 @@ public sealed class PeriodLedgerAggregationService
 
     public async Task<PeriodLedgerBuildResult> BuildAsync(
         PeriodLedgerQuery query,
+        SessionState session,
         IProgress<string>? progress = null,
         CancellationToken ct = default)
     {
@@ -22,20 +23,24 @@ public sealed class PeriodLedgerAggregationService
 
         progress?.Report("조회 중...");
 
-        var customers = await _local.GetCustomersAsync(ct);
-        var customerMap = customers.ToDictionary(c => c.Id, c => c, EqualityComparer<Guid>.Default);
-
         var effectiveCustomerId = query.Scope == PeriodLedgerScope.AllCustomers
             ? (Guid?)null
             : query.CustomerId;
 
-        var invoices = await _local.GetInvoicesAsync(query.From, query.To, effectiveCustomerId, ct);
-        var transactions = await _local.GetTransactionsAsync(query.From, query.To, effectiveCustomerId, ct);
+        var invoices = await _local.GetInvoicesAsync(query.From, query.To, effectiveCustomerId, session, ct);
+        var transactions = await _local.GetTransactionsAsync(query.From, query.To, effectiveCustomerId, session, ct);
+        var customerIds = invoices.Select(invoice => invoice.CustomerId)
+            .Concat(transactions.Select(transaction => transaction.CustomerId))
+            .Concat(query.CustomerId.HasValue ? [query.CustomerId.Value] : Array.Empty<Guid>())
+            .Distinct()
+            .ToList();
+        var customerNameMap = await _local.GetCustomerNameMapAsync(customerIds, ct);
 
         return query.LedgerType switch
         {
-            PeriodLedgerType.ReceiptPayment => BuildPaymentLedgerResult(query, invoices, transactions, customerMap),
-            _ => BuildBlockLedgerResult(query, invoices, customerMap)
+            PeriodLedgerType.ReceiptPayment => BuildPaymentLedgerResult(query, invoices, transactions, customerNameMap),
+            PeriodLedgerType.YeonsuDelivery => await BuildYeonsuDeliveryResultAsync(query, session, ct),
+            _ => BuildBlockLedgerResult(query, invoices, customerNameMap)
         };
     }
 
@@ -49,6 +54,7 @@ public sealed class PeriodLedgerAggregationService
             PeriodLedgerType.SalesOnly => "기간내 판매/매출 거래원장",
             PeriodLedgerType.PurchaseOnly => "기간내 구매/매입 거래원장",
             PeriodLedgerType.ReceiptPayment => "기간내 수금/지불 거래원장",
+            PeriodLedgerType.YeonsuDelivery => "기간내 연수구 납품내역",
             _ => "거래원장"
         };
 
@@ -60,7 +66,7 @@ public sealed class PeriodLedgerAggregationService
     private PeriodLedgerBuildResult BuildBlockLedgerResult(
         PeriodLedgerQuery query,
         IReadOnlyList<LocalInvoice> invoices,
-        IReadOnlyDictionary<Guid, LocalCustomer> customerMap)
+        IReadOnlyDictionary<Guid, string> customerNameMap)
     {
         var filtered = invoices
             .Where(i => IsMatchLedgerType(query.LedgerType, i.VoucherType))
@@ -74,12 +80,10 @@ public sealed class PeriodLedgerAggregationService
 
         foreach (var invoice in filtered)
         {
-            if (!customerMap.TryGetValue(invoice.CustomerId, out var customer))
-                continue;
-
-            var customerName = string.IsNullOrWhiteSpace(customer.NameOriginal)
-                ? "(미지정 거래처)"
-                : customer.NameOriginal.Trim();
+            var customerName = customerNameMap.TryGetValue(invoice.CustomerId, out var resolvedCustomerName) &&
+                               !string.IsNullOrWhiteSpace(resolvedCustomerName)
+                ? resolvedCustomerName.Trim()
+                : "(미지정 거래처)";
 
             var lineRows = invoice.Lines
                 .Where(l => !l.IsDeleted)
@@ -140,8 +144,8 @@ public sealed class PeriodLedgerAggregationService
         var blocks = BuildCustomerBlocks(query, rawByCustomer);
         if (query.Scope == PeriodLedgerScope.SingleCustomer && query.CustomerId.HasValue && blocks.Count == 0)
         {
-            var name = customerMap.TryGetValue(query.CustomerId.Value, out var c)
-                ? c.NameOriginal
+            var name = customerNameMap.TryGetValue(query.CustomerId.Value, out var c)
+                ? c
                 : "(선택 거래처)";
             blocks.Add(new PeriodLedgerCustomerBlock
             {
@@ -161,6 +165,7 @@ public sealed class PeriodLedgerAggregationService
             ScopeLabel = ResolveScopeLabel(query.Scope),
             Blocks = blocks,
             PaymentRows = [],
+            YeonsuDeliveryRows = [],
             Totals = totals,
             ProfitWarningMessage = query.IncludeProfit && profitContext?.MissingCostDataFound == true
                 ? "일부 품목은 매입 데이터가 없어 순이익이 비어있습니다."
@@ -432,19 +437,17 @@ public sealed class PeriodLedgerAggregationService
         PeriodLedgerQuery query,
         IReadOnlyList<LocalInvoice> invoices,
         IReadOnlyList<LocalTransaction> transactions,
-        IReadOnlyDictionary<Guid, LocalCustomer> customerMap)
+        IReadOnlyDictionary<Guid, string> customerNameMap)
     {
         var allEvents = new List<PeriodPaymentEvent>();
         var dedup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var invoice in invoices)
         {
-            if (!customerMap.TryGetValue(invoice.CustomerId, out var customer))
-                continue;
-
-            var customerName = string.IsNullOrWhiteSpace(customer.NameOriginal)
-                ? "(미지정 거래처)"
-                : customer.NameOriginal.Trim();
+            var customerName = customerNameMap.TryGetValue(invoice.CustomerId, out var resolvedCustomerName) &&
+                               !string.IsNullOrWhiteSpace(resolvedCustomerName)
+                ? resolvedCustomerName.Trim()
+                : "(미지정 거래처)";
 
             var summary = BuildInvoiceSummary(invoice, invoice.Lines.Count(l => !l.IsDeleted));
 
@@ -499,12 +502,10 @@ public sealed class PeriodLedgerAggregationService
 
         foreach (var tx in transactions)
         {
-            if (!customerMap.TryGetValue(tx.CustomerId, out var customer))
-                continue;
-
-            var customerName = string.IsNullOrWhiteSpace(customer.NameOriginal)
-                ? "(미지정 거래처)"
-                : customer.NameOriginal.Trim();
+            var customerName = customerNameMap.TryGetValue(tx.CustomerId, out var resolvedCustomerName) &&
+                               !string.IsNullOrWhiteSpace(resolvedCustomerName)
+                ? resolvedCustomerName.Trim()
+                : "(미지정 거래처)";
 
             if (tx.ReceiptTotal > 0)
             {
@@ -620,9 +621,95 @@ public sealed class PeriodLedgerAggregationService
             ScopeLabel = ResolveScopeLabel(query.Scope),
             Blocks = [],
             PaymentRows = rows,
+            YeonsuDeliveryRows = [],
             Totals = totals,
             ProfitWarningMessage = null
         };
+    }
+
+    private async Task<PeriodLedgerBuildResult> BuildYeonsuDeliveryResultAsync(
+        PeriodLedgerQuery query,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var customerId = query.Scope == PeriodLedgerScope.AllCustomers
+            ? (Guid?)null
+            : query.CustomerId;
+
+        var invoices = await _local.GetYeonsuDeliveryInvoicesAsync(
+            query.From,
+            query.To,
+            customerId,
+            warehouseCode: null,
+            session,
+            ct);
+
+        var customerMap = await _local.GetCustomerNameMapAsync(
+            invoices.Select(invoice => invoice.CustomerId).Distinct(),
+            ct);
+
+        if (query.Scope == PeriodLedgerScope.AllCustomers && query.SortByCustomerName)
+        {
+            invoices = invoices
+                .OrderBy(invoice =>
+                {
+                    return customerMap.TryGetValue(invoice.CustomerId, out var name) && !string.IsNullOrWhiteSpace(name)
+                        ? name
+                        : string.Empty;
+                }, StringComparer.CurrentCultureIgnoreCase)
+                .ThenByDescending(invoice => invoice.InvoiceDate)
+                .ThenByDescending(invoice => invoice.LastSavedAtUtc)
+                .ToList();
+        }
+
+        var rows = invoices
+            .Select((invoice, index) => new PeriodLedgerYeonsuDeliveryRow
+            {
+                No = index + 1,
+                DeliveryDate = invoice.InvoiceDate,
+                CustomerName = customerMap.TryGetValue(invoice.CustomerId, out var name) && !string.IsNullOrWhiteSpace(name)
+                    ? name
+                    : "(거래처 미지정)",
+                ItemSummary = BuildInvoiceSummary(invoice, invoice.Lines.Count(line => !line.IsDeleted)),
+                TotalAmount = invoice.TotalAmount,
+                WarehouseName = ResolveWarehouseName(invoice.SourceWarehouseCode),
+                Note = invoice.Memo?.Trim() ?? string.Empty,
+                LastSavedBy = invoice.LastSavedByUsername ?? string.Empty,
+                LastSavedAtUtc = invoice.LastSavedAtUtc
+            })
+            .ToList();
+
+        return new PeriodLedgerBuildResult
+        {
+            Query = query,
+            Title = ResolveLedgerTitle(query.LedgerType),
+            ScopeLabel = ResolveScopeLabel(query.Scope),
+            Blocks = [],
+            PaymentRows = [],
+            YeonsuDeliveryRows = rows,
+            Totals = new PeriodLedgerTotals
+            {
+                TradeAmount = rows.Sum(row => row.TotalAmount),
+                ReceiptAmount = 0m,
+                PaymentAmount = 0m,
+                RunningBalance = rows.Sum(row => row.TotalAmount),
+                ReceivableBalance = 0m,
+                ProfitAmount = null
+            },
+            ProfitWarningMessage = null
+        };
+    }
+
+    private static string ResolveWarehouseName(string? warehouseCode)
+    {
+        var normalized = (warehouseCode ?? string.Empty).Trim().ToUpperInvariant();
+        if (string.Equals(normalized, DomainConstants.WarehouseUznetMain, StringComparison.OrdinalIgnoreCase))
+            return "유즈넷 창고";
+
+        if (string.Equals(normalized, DomainConstants.WarehouseYeonsuMain, StringComparison.OrdinalIgnoreCase))
+            return "연수구 창고";
+
+        return string.IsNullOrWhiteSpace(normalized) ? "-" : normalized;
     }
 
     private static string BuildDedupKey(

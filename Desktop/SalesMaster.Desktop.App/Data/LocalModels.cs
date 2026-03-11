@@ -1,3 +1,4 @@
+using SalesMaster.Desktop.App.Services;
 using SalesMaster.Shared.Contracts;
 
 namespace SalesMaster.Desktop.App.Data;
@@ -77,6 +78,7 @@ public sealed class LocalCustomer : LocalSyncEntity
     public string Recipient { get; set; } = string.Empty;
     public string PriceGrade { get; set; } = "매출단가";
     public string Notes { get; set; } = string.Empty;
+    public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUznet;
 }
 
 public sealed class LocalItem : LocalSyncEntity
@@ -121,6 +123,20 @@ public sealed class LocalInvoice : LocalSyncEntity
     public decimal SupplyAmount { get; set; }
     public decimal VatAmount { get; set; }
     public string Memo { get; set; } = string.Empty;
+    public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUznet;
+    public string SourceWarehouseCode { get; set; } = DomainConstants.WarehouseUznetMain;
+    public Guid? DeliveryGroupId { get; set; }
+    public Guid? ParentInvoiceId { get; set; }
+    public Guid VersionGroupId { get; set; }
+    public int VersionNumber { get; set; } = 1;
+    public Guid? PreviousVersionId { get; set; }
+    public bool IsLatestVersion { get; set; } = true;
+    public bool IsConfirmed { get; set; } = true;
+    public string CreatedByUsername { get; set; } = string.Empty;
+    public string LastSavedByUsername { get; set; } = string.Empty;
+    public DateTime LastSavedAtUtc { get; set; } = DateTime.UtcNow;
+    public string ConcurrencyStamp { get; set; } = Guid.NewGuid().ToString("N");
+    public string CostStatus { get; set; } = "Pending";
     public ICollection<LocalInvoiceLine> Lines { get; set; } = new List<LocalInvoiceLine>();
     public ICollection<LocalPayment> Payments { get; set; } = new List<LocalPayment>();
 }
@@ -155,22 +171,6 @@ public sealed class LocalPayment : LocalSyncEntity
     public string Note { get; set; } = string.Empty;
 }
 
-public sealed class LocalPrintTemplate : LocalSyncEntity
-{
-    public string Name { get; set; } = string.Empty;
-    public string Description { get; set; } = string.Empty;
-    public bool IsDefault { get; set; }
-}
-
-public sealed class LocalPrintTemplateVersion : LocalSyncEntity
-{
-    public Guid PrintTemplateId { get; set; }
-    public int VersionNumber { get; set; }
-    public string TemplateJson { get; set; } = string.Empty;
-    public bool IsLocked { get; set; }
-    public string CreatedByName { get; set; } = string.Empty;
-}
-
 public sealed class LocalSetting
 {
     public string Key { get; set; } = string.Empty;
@@ -196,12 +196,125 @@ public sealed class LocalAttachmentSelection
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
+public sealed class LocalOffice : LocalSyncEntity
+{
+    public string Code { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public bool IsHeadOffice { get; set; }
+}
+
+public sealed class LocalWarehouse : LocalSyncEntity
+{
+    public Guid OfficeId { get; set; }
+    public string OfficeCode { get; set; } = string.Empty;
+    public string Code { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class LocalInvoiceLineSerial
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid InvoiceId { get; set; }
+    public Guid InvoiceLineId { get; set; }
+    public Guid? ItemId { get; set; }
+    public string SerialNumber { get; set; } = string.Empty;
+}
+
+public sealed class LocalInventoryMovement
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid? InvoiceId { get; set; }
+    public Guid? InvoiceLineId { get; set; }
+    public Guid? ItemId { get; set; }
+    public string WarehouseCode { get; set; } = string.Empty;
+    public string MovementType { get; set; } = string.Empty;
+    public decimal QuantityDelta { get; set; }
+    public decimal UnitCost { get; set; }
+    public decimal Amount { get; set; }
+    public DateOnly OccurredDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    public bool IsSettledCost { get; set; } = true;
+    public bool IsActive { get; set; } = true;
+    public string Note { get; set; } = string.Empty;
+    public string CreatedByUsername { get; set; } = string.Empty;
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class LocalStockLayer
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid? ItemId { get; set; }
+    public string WarehouseCode { get; set; } = string.Empty;
+    public Guid? SourceInvoiceId { get; set; }
+    public Guid? SourceInvoiceLineId { get; set; }
+    public DateOnly ReceiptDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    public decimal UnitCost { get; set; }
+    public decimal OriginalQuantity { get; set; }
+    public decimal RemainingQuantity { get; set; }
+    public bool IsNegativePlaceholder { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class LocalCostAllocation
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid SalesInvoiceId { get; set; }
+    public Guid SalesInvoiceLineId { get; set; }
+    public Guid? PurchaseInvoiceId { get; set; }
+    public Guid? PurchaseInvoiceLineId { get; set; }
+    public string WarehouseCode { get; set; } = string.Empty;
+    public decimal Quantity { get; set; }
+    public decimal UnitCost { get; set; }
+    public decimal CostAmount { get; set; }
+    public bool IsUnsettled { get; set; }
+    public string Note { get; set; } = string.Empty;
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class LocalItemWarehouseStock
+{
+    public Guid ItemId { get; set; }
+    public string WarehouseCode { get; set; } = string.Empty;
+    public decimal Quantity { get; set; }
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class LocalSerialLedger
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string SerialNumber { get; set; } = string.Empty;
+    public Guid? ItemId { get; set; }
+    public string WarehouseCode { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public Guid? SourcePurchaseInvoiceId { get; set; }
+    public Guid? SourceSalesInvoiceId { get; set; }
+    public Guid? LastInvoiceId { get; set; }
+    public string LastMovementType { get; set; } = string.Empty;
+    public string Memo { get; set; } = string.Empty;
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class LocalAuditLog
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string EntityName { get; set; } = string.Empty;
+    public string EntityId { get; set; } = string.Empty;
+    public string Action { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string Role { get; set; } = string.Empty;
+    public string OfficeCode { get; set; } = string.Empty;
+    public string BeforeJson { get; set; } = string.Empty;
+    public string AfterJson { get; set; } = string.Empty;
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
 /// <summary>
 /// 고객/거래처 수금·지불 독립 전표 (인보이스에 귀속되지 않는 현금/카드/통장 거래)
 /// </summary>
 public sealed class LocalTransaction : LocalSyncEntity
 {
     public Guid CustomerId { get; set; }
+    public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUznet;
     public DateOnly TransactionDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
 
     // 수금처리내역

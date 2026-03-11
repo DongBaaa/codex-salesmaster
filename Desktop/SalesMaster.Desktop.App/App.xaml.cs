@@ -57,6 +57,7 @@ public partial class App : Application
             });
 
             services.AddSingleton<SessionState>();
+            services.AddSingleton<OfficeAccessService>();
             services.AddTransient<LocalStateService>();
             services.AddTransient<SyncService>();
             services.AddTransient<StatementPrintService>();
@@ -120,7 +121,8 @@ public partial class App : Application
                 sp.GetRequiredService<LocalStateService>(),
                 sp.GetRequiredService<StatementPrintService>(),
                 sp.GetRequiredService<IPrintService>(),
-                sp.GetRequiredService<SessionState>());
+                sp.GetRequiredService<SessionState>(),
+                sp.GetRequiredService<ErpApiClient>());
 
             MainWindow = mainWin;
 

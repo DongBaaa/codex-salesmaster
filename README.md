@@ -1,85 +1,86 @@
-# 코덱스 레거시 판매관리 (SalesMaster)
+﻿# 코덱스 레거시 판매관리 (SalesMaster)
 
-오프라인 우선(Offline-first) 소규모 사업자용 Windows ERP입니다.  
-데스크톱(.NET 8 WPF, MVVM) + 서버(ASP.NET Core API) + 로컬 SQLite 구조로 동작합니다.
+- 문서 기준시점: 2026-03-06
+- 반영 범위: 커밋 이력 + 현재 워킹트리 변경사항
+- 상태 태그: `[완료]`, `[작업중]`, `[검증필요]`, `[보류]`
 
-## 현재 핵심 상태
-- 앱 명칭: `코덱스 레거시 판매관리`
-- 데스크톱: `.NET 8 WPF + CommunityToolkit.Mvvm + EF Core(SQLite)`
-- 서버: `ASP.NET Core 8 Web API`
-- 인쇄(거래명세서): `WPF FixedDocument + DocumentViewer + PrintDialog`
-- 동작 정책: PDF 외부 자동 오픈 없이, 앱 내부 미리보기 후 프린터 선택 인쇄
+## 프로젝트 개요
+- 오프라인 우선 Windows ERP
+- 기술 스택: .NET 8 WPF(MVVM), SQLite, ASP.NET Core API, ClosedXML
+- 목표: 전표/거래처/인쇄/집계 업무를 레거시 흐름과 호환되게 안정 운영
 
-## 빠른 실행 (권장)
-배포 스크립트 1개로 Desktop/Server publish 후 실행합니다.
+## 현재 버전 상태
+### 릴리즈 반영 완료
+- `[완료]` 판매/거래처/수금 기본 업무 흐름
+- `[완료]` 거래명세서/세금계산서/견적서/대금청구서 미리보기 + 인쇄
+- `[완료]` 로그인 아이디/비밀번호 저장 옵션
+- `[완료]` 자료 기간별 집계(4종 원장) 엑셀 생성/저장/자동 열기
+- `[완료]` 시작/종료 동기화 및 자동 저장 기본 흐름
 
+### 개발 중
+- `[작업중]` 지점 운영(유즈넷/연수구) 권한 정책의 화면/도메인 연결
+- `[작업중]` 연수구 납품내역 전용 화면 및 집계 연동
+- `[작업중]` 환경설정(거래처 담당지점 등) 관리 화면 고도화
+
+### 검증 필요/보류
+- `[검증필요]` 프린터별 여백 오차/직인 이미지 예외 케이스
+- `[검증필요]` 자료기간별 집계의 실데이터 정합성(누적/중복 제거)
+- `[완료]` WPF 기본 인쇄 경로로 단일화
+
+## 실행 방법
+### 권장 실행
 ```powershell
-cd "d:\새 폴더\클로드 레거시 판매관리"
+cd "D:\새 폴더\클로드 레거시 판매관리"
 cmd /c "배포\전체실행.cmd"
 ```
 
-실행 후 확인:
-1. 서버 프로세스: `SalesMaster.Server.Api`
-2. 앱 프로세스: `SalesMaster.Desktop.App`
-3. 로그인 창 표시
-
-## 개발 모드 실행
-
-### 서버
+### 개발 모드 실행
+서버:
 ```powershell
-cd "d:\새 폴더\클로드 레거시 판매관리\Server\SalesMaster.Server.Api"
+cd "D:\새 폴더\클로드 레거시 판매관리\Server\SalesMaster.Server.Api"
 dotnet run
 ```
 
-### 데스크톱
+데스크톱:
 ```powershell
-cd "d:\새 폴더\클로드 레거시 판매관리\Desktop\SalesMaster.Desktop.App"
+cd "D:\새 폴더\클로드 레거시 판매관리\Desktop\SalesMaster.Desktop.App"
 dotnet run
 ```
 
-## 인쇄 흐름 (거래명세서)
-현재 판매(매출) 창의 거래명세서 인쇄는 아래 순서로 동작합니다.
-
-1. `출력물 편집` 클릭
-2. 편집창에서 내용 수정 후 `저장`
-3. 판매창 `인쇄하기[F9]` 클릭
-4. 미리보기 창(DocumentViewer) 표시
-5. 미리보기에서 `인쇄` 클릭
-6. Windows `PrintDialog`에서 프린터 선택 후 인쇄
-
-참고:
-- 전표별 출력 데이터는 로컬 DB `Settings`에 `InvoicePrint:{InvoiceId}` 키로 저장됩니다.
-- 외부 PDF 뷰어 자동 실행은 거래명세서 기본 경로에서 사용하지 않습니다.
-
-## 초기 계정
-| 아이디 | 비밀번호 | 권한 |
-|---|---|---|
-| `admin` | `CHANGE_THIS_ADMIN_PASSWORD` | 관리자 |
-| `user` | `CHANGE_THIS_USER_PASSWORD` | 일반 |
-
-## 빌드
+## 빌드/테스트
 ```powershell
-cd "d:\새 폴더\클로드 레거시 판매관리"
+cd "D:\새 폴더\클로드 레거시 판매관리"
 dotnet build "레거시 판매관리.sln" -c Release
 ```
 
-## 테스트
 ```powershell
-cd "d:\새 폴더\클로드 레거시 판매관리"
+cd "D:\새 폴더\클로드 레거시 판매관리"
 dotnet test "레거시 판매관리.sln" -c Release --no-build
 ```
 
-## 디렉터리
-```text
-클로드 레거시 판매관리/
-├── Desktop/SalesMaster.Desktop.App        # WPF 앱
-├── Server/SalesMaster.Server.Api           # ASP.NET Core API
-├── Shared/SalesMaster.Shared.Contracts     # 공유 계약(DTO)
-├── 배포/                                   # 실행/배포 스크립트
-├── 양식/                                   # 인쇄 양식/변환 스크립트
-└── 레거시 판매관리.sln
-```
+## 인쇄 기본 동작
+- `[완료]` 판매(매출) 창에서 `출력물 편집` 후 데이터 저장
+- `[완료]` `인쇄하기(F9)` 클릭 시 미리보기 창 우선 표시
+- `[완료]` 미리보기에서 인쇄 클릭 시 Windows PrintDialog 표시
+- `[완료]` 외부 PDF 자동 오픈 없이 앱 내부 미리보기 중심 동작
 
-## 참고 문서
-- 통합 기획/진행 내역: `기획.md`
-- Phase 2 TODO: `TODO_PHASE2.md`
+## 자료 기간별 집계(엑셀)
+- `[완료]` 지원 유형: 판매+구매, 판매/매출, 구매/매입, 수금/지불
+- `[완료]` 저장 경로: `내문서\SalesDoctor\Exports` (또는 설정 경로)
+- `[완료]` 파일명: `{From}~{To} 의 {원장종류} 거래원장_{yyyyMMdd_HHmmss}.xlsx`
+- `[검증필요]` 일부 실운영 데이터셋에서 산식 검증 필요
+
+## 변경 근거
+### 최근 커밋
+- `[완료]` `dc47549` docs update
+- `[완료]` `ead6e68` period ledger aggregation/export
+- `[완료]` `3698ef6` UI/인쇄/동기화/첨부서류 개선
+
+### 워킹트리 작업중(미커밋)
+- `[작업중]` `EnvironmentSettingsWindow*`, `EnvironmentSettingsViewModel`
+- `[작업중]` `YeonsuDeliveryWindow*`, `YeonsuDeliveryViewModel`
+- `[작업중]` `PeriodLedger*`, `LocalDb*`, `MainWindow*`, `SalesViewModel` 보강
+
+## 관련 문서
+- 통합 진행 문서: `D:\새 폴더\클로드 레거시 판매관리\기획.md`
+- 레거시 비교 문서: `D:\새 폴더\클로드 레거시 판매관리\외부 레거시.md`

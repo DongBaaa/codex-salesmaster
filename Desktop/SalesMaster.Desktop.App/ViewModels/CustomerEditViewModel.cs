@@ -10,6 +10,7 @@ namespace SalesMaster.Desktop.App.ViewModels;
 public sealed partial class CustomerEditViewModel : ObservableObject
 {
     private readonly LocalStateService _local;
+    private readonly SessionState _session;
 
     public event Action? SavedAndNew;
     public event Action? SavedAndClose;
@@ -36,6 +37,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     [ObservableProperty] private string _homePage = string.Empty;
 
     [ObservableProperty] private string _priceGrade = "매출단가";
+    [ObservableProperty] private string _responsibleOfficeCode = DomainConstants.OfficeUznet;
     [ObservableProperty] private DateOnly _registerDate = DateOnly.FromDateTime(DateTime.Today);
 
     [ObservableProperty] private string _notes = string.Empty;
@@ -48,28 +50,53 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     public bool HasStatus => !string.IsNullOrEmpty(StatusMessage);
 
     public ObservableCollection<LocalCustomerCategory> Categories { get; } = new();
+    public ObservableCollection<string> OfficeCodes { get; } = new();
     public string[] PriceGrades { get; } = ["매출단가", "A_단가 적용", "B_단가 적용", "C_단가 적용", "소매단가"];
 
-    public CustomerEditViewModel(LocalStateService local)
+    public CustomerEditViewModel(LocalStateService local, SessionState session)
     {
         _local = local;
+        _session = session;
     }
 
     public async Task LoadAsync(LocalCustomer? customer = null)
     {
-        var cats = await _local.GetCategoriesAsync();
+        await _local.EnsureCustomerCategoryIntegrityAsync();
+        var categories = await _local.GetCategoriesAsync();
         Categories.Clear();
-        foreach (var c in cats)
-            Categories.Add(c);
+        foreach (var category in categories)
+            Categories.Add(category);
+
+        var offices = await _local.GetOfficesAsync();
+        OfficeCodes.Clear();
+        foreach (var officeCode in offices
+                     .Select(office => office.Code)
+                     .Where(code => !string.IsNullOrWhiteSpace(code))
+                     .Distinct(StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(code => code, StringComparer.OrdinalIgnoreCase))
+        {
+            OfficeCodes.Add(officeCode);
+        }
+
+        if (OfficeCodes.Count == 0)
+        {
+            OfficeCodes.Add(DomainConstants.OfficeUznet);
+            OfficeCodes.Add(DomainConstants.OfficeYeonsu);
+        }
 
         if (customer is null)
         {
+            var defaultOfficeCode = string.IsNullOrWhiteSpace(_session.OfficeCode)
+                ? DomainConstants.OfficeUznet
+                : _session.OfficeCode.Trim().ToUpperInvariant();
+
             IsNew = true;
             CustomerId = Guid.NewGuid();
             Name = MobilePhone = FaxNumber = Phone = Representative = string.Empty;
             Department = ContactPerson = BusinessNumber = BusinessType = BusinessItem = string.Empty;
             Address = DetailAddress = Recipient = Email = HomePage = Notes = string.Empty;
             PriceGrade = "매출단가";
+            ResponsibleOfficeCode = defaultOfficeCode;
             RegisterDate = DateOnly.FromDateTime(DateTime.Today);
             CategoryId = null;
             return;
@@ -92,7 +119,12 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         Recipient = customer.Recipient;
         Email = customer.Email;
         HomePage = customer.HomePage;
-        PriceGrade = customer.PriceGrade;
+        PriceGrade = string.IsNullOrWhiteSpace(customer.PriceGrade) ? "매출단가" : customer.PriceGrade;
+        ResponsibleOfficeCode = string.IsNullOrWhiteSpace(customer.ResponsibleOfficeCode)
+            ? DomainConstants.OfficeUznet
+            : customer.ResponsibleOfficeCode.Trim().ToUpperInvariant();
+        if (!OfficeCodes.Contains(ResponsibleOfficeCode))
+            OfficeCodes.Add(ResponsibleOfficeCode);
         Notes = customer.Notes;
         CategoryId = customer.CategoryId;
     }
@@ -100,25 +132,29 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveAsync()
     {
-        if (!await ValidateBeforeSaveAsync())
+        if (!ValidateBeforeSave())
             return;
 
-        await DoSaveAsync();
+        if (!await DoSaveAsync())
+            return;
+
         SavedAndClose?.Invoke();
     }
 
     [RelayCommand]
     private async Task SaveAndNewAsync()
     {
-        if (!await ValidateBeforeSaveAsync())
+        if (!ValidateBeforeSave())
             return;
 
-        await DoSaveAsync();
+        if (!await DoSaveAsync())
+            return;
+
         await LoadAsync();
         SavedAndNew?.Invoke();
     }
 
-    private async Task<bool> ValidateBeforeSaveAsync()
+    private bool ValidateBeforeSave()
     {
         if (string.IsNullOrWhiteSpace(Name))
         {
@@ -126,42 +162,14 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             return false;
         }
 
-        var normalizedName = Name.Trim();
-        var customers = await _local.GetCustomersAsync();
-
-        var duplicatedName = customers.Any(c =>
-            c.Id != CustomerId &&
-            string.Equals(c.NameOriginal.Trim(), normalizedName, StringComparison.OrdinalIgnoreCase));
-
-        if (duplicatedName)
-        {
-            StatusMessage = "동일한 거래처명이 이미 존재합니다. 거래처명을 확인하세요.";
-            return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(BusinessNumber))
-        {
-            var normalizedBizNumber = BusinessNumber.Trim();
-            var duplicatedBizNumber = customers.Any(c =>
-                c.Id != CustomerId &&
-                !string.IsNullOrWhiteSpace(c.BusinessNumber) &&
-                string.Equals(c.BusinessNumber.Trim(), normalizedBizNumber, StringComparison.OrdinalIgnoreCase));
-
-            if (duplicatedBizNumber)
-            {
-                StatusMessage = "동일한 사업자번호가 이미 존재합니다.";
-                return false;
-            }
-        }
-
         return true;
     }
 
-    private async Task DoSaveAsync()
+    private async Task<bool> DoSaveAsync()
     {
         var normalizedName = Name.Trim();
 
-        var c = new LocalCustomer
+        var customer = new LocalCustomer
         {
             Id = CustomerId,
             NameOriginal = normalizedName,
@@ -182,10 +190,21 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             Email = Email,
             HomePage = HomePage,
             PriceGrade = PriceGrade,
+            ResponsibleOfficeCode = string.IsNullOrWhiteSpace(ResponsibleOfficeCode)
+                ? DomainConstants.OfficeUznet
+                : ResponsibleOfficeCode.Trim().ToUpperInvariant(),
             Notes = Notes,
         };
 
-        await _local.UpsertCustomerAsync(c);
-        StatusMessage = "저장되었습니다.";
+        if (_session.IsAdmin)
+        {
+            await _local.UpsertCustomerAsync(customer);
+            StatusMessage = "거래처를 저장했습니다.";
+            return true;
+        }
+
+        var result = await _local.UpsertCustomerAsync(customer, _session);
+        StatusMessage = result.Message;
+        return result.Success;
     }
 }

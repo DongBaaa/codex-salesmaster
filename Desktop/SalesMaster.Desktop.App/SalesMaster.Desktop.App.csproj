@@ -7,7 +7,6 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="ClosedXML" Version="0.104.2" />
     <PackageReference Include="FirebirdSql.Data.FirebirdClient" Version="10.3.3" />
-    <PackageReference Include="외부 리포팅 도구.Net.Demo" Version="2026.1.4" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.15" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="8.0.1" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
@@ -28,5 +27,10 @@
     <None Update="appsettings.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Page Remove="Views\Backup\**\*.xaml" />
+    <None Include="Views\Backup\**\*.xaml" />
   </ItemGroup>
 </Project>

@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace SalesMaster.Shared.Contracts;
 
+ [JsonConverter(typeof(VoucherTypeJsonConverter))]
 public enum VoucherType
 {
     Sales = 0,
@@ -10,6 +13,82 @@ public enum VoucherType
     Procurement = 2,
     Expense = 3,
     Collection = 4
+}
+
+public sealed class VoucherTypeJsonConverter : JsonConverter<VoucherType>
+{
+    public override VoucherType Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Number)
+        {
+            var numeric = reader.GetInt32();
+            if (Enum.IsDefined(typeof(VoucherType), numeric))
+                return (VoucherType)numeric;
+
+            throw new JsonException($"Unknown VoucherType numeric value: {numeric}");
+        }
+
+        if (reader.TokenType != JsonTokenType.String)
+            throw new JsonException("VoucherType must be a string or number.");
+
+        var raw = reader.GetString()?.Trim();
+        if (string.IsNullOrWhiteSpace(raw))
+            throw new JsonException("VoucherType cannot be empty.");
+
+        if (int.TryParse(raw, out var numericString) && Enum.IsDefined(typeof(VoucherType), numericString))
+            return (VoucherType)numericString;
+
+        if (TryMap(raw, out var value))
+            return value;
+
+        throw new JsonException($"Unknown VoucherType value: {raw}");
+    }
+
+    public override void Write(Utf8JsonWriter writer, VoucherType value, JsonSerializerOptions options)
+    {
+        writer.WriteStringValue(value switch
+        {
+            VoucherType.Sales => nameof(VoucherType.Sales),
+            VoucherType.Purchase => nameof(VoucherType.Purchase),
+            VoucherType.Procurement => nameof(VoucherType.Procurement),
+            VoucherType.Expense => nameof(VoucherType.Expense),
+            VoucherType.Collection => nameof(VoucherType.Collection),
+            _ => nameof(VoucherType.Sales)
+        });
+    }
+
+    private static bool TryMap(string raw, out VoucherType value)
+    {
+        switch (raw.Trim().ToUpperInvariant())
+        {
+            case "SALES":
+            case "SALE":
+            case "매출":
+            case "판매":
+                value = VoucherType.Sales;
+                return true;
+            case "PURCHASE":
+            case "매입":
+            case "구매":
+                value = VoucherType.Purchase;
+                return true;
+            case "PROCUREMENT":
+            case "발주":
+                value = VoucherType.Procurement;
+                return true;
+            case "EXPENSE":
+            case "경비":
+                value = VoucherType.Expense;
+                return true;
+            case "COLLECTION":
+            case "수금":
+                value = VoucherType.Collection;
+                return true;
+            default:
+                value = default;
+                return false;
+        }
+    }
 }
 
 public sealed class LoginRequest
@@ -45,6 +124,28 @@ public sealed class UserAccountDto : SyncEntityDto
 public sealed class UpdateUserPermissionsRequest
 {
     public List<string> Permissions { get; set; } = new();
+}
+
+public sealed class CreateUserRequest
+{
+    public string Username { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
+    public string Role { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+    public List<string> Permissions { get; set; } = new();
+}
+
+public sealed class UpdateUserRequest
+{
+    public string Username { get; set; } = string.Empty;
+    public string Role { get; set; } = string.Empty;
+    public bool IsActive { get; set; }
+    public List<string> Permissions { get; set; } = new();
+}
+
+public sealed class UpdateUserPasswordRequest
+{
+    public string Password { get; set; } = string.Empty;
 }
 
 public abstract class SyncEntityDto
@@ -164,22 +265,6 @@ public sealed class PaymentDto : SyncEntityDto
     public string Note { get; set; } = string.Empty;
 }
 
-public sealed class PrintTemplateDto : SyncEntityDto
-{
-    public string Name { get; set; } = string.Empty;
-    public string Description { get; set; } = string.Empty;
-    public bool IsDefault { get; set; }
-}
-
-public sealed class PrintTemplateVersionDto : SyncEntityDto
-{
-    public Guid PrintTemplateId { get; set; }
-    public int VersionNumber { get; set; }
-    public string TemplateJson { get; set; } = string.Empty;
-    public bool IsLocked { get; set; }
-    public string CreatedByName { get; set; } = string.Empty;
-}
-
 public sealed class AuditLogDto
 {
     public Guid Id { get; set; }
@@ -218,8 +303,6 @@ public sealed class SyncPullResponse
     public List<ItemDto> Items { get; set; } = new();
     public List<InvoiceDto> Invoices { get; set; } = new();
     public List<PaymentDto> Payments { get; set; } = new();
-    public List<PrintTemplateDto> PrintTemplates { get; set; } = new();
-    public List<PrintTemplateVersionDto> PrintTemplateVersions { get; set; } = new();
 }
 
 public sealed class SyncPushRequest
@@ -233,8 +316,6 @@ public sealed class SyncPushRequest
     public List<ItemDto> Items { get; set; } = new();
     public List<InvoiceDto> Invoices { get; set; } = new();
     public List<PaymentDto> Payments { get; set; } = new();
-    public List<PrintTemplateDto> PrintTemplates { get; set; } = new();
-    public List<PrintTemplateVersionDto> PrintTemplateVersions { get; set; } = new();
 }
 
 public sealed class SyncPushResult

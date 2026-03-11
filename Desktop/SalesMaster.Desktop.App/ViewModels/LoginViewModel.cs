@@ -74,7 +74,10 @@ public sealed partial class LoginViewModel : ObservableObject
             }
             // Cache session for offline fallback
             await _local.SaveSessionCacheAsync(
-                result.User.Username, result.User.Role, result.User.Permissions);
+                result.User.Username,
+                result.User.Role,
+                result.User.Permissions,
+                ResolveOfficeCodeFromRole(result.User.Role));
             await SaveRememberOptionsAsync();
             _session.SetSession(result.Token, result.User);
             LoginSucceeded?.Invoke();
@@ -114,6 +117,9 @@ public sealed partial class LoginViewModel : ObservableObject
             return;
         }
         _session.SetOfflineSession(cached);
+        var cachedOffice = await _local.GetCachedOfficeCodeAsync();
+        if (!string.IsNullOrWhiteSpace(cachedOffice))
+            _session.SetOfficeCode(cachedOffice);
         await SaveRememberOptionsAsync();
         LoginSucceeded?.Invoke();
     }
@@ -199,4 +205,9 @@ public sealed partial class LoginViewModel : ObservableObject
         if (ex.InnerException is System.Net.Sockets.SocketException) return true;
         return false;
     }
+
+    private static string ResolveOfficeCodeFromRole(string? role)
+        => DomainConstants.IsAdminRole(role)
+            ? DomainConstants.OfficeUznet
+            : DomainConstants.OfficeYeonsu;
 }

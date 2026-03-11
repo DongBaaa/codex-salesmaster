@@ -9,12 +9,15 @@ namespace SalesMaster.Desktop.App.ViewModels;
 public sealed partial class PaymentViewModel : ObservableObject
 {
     private readonly LocalStateService _local;
+    private readonly SessionState _session;
     private List<LocalCustomer> _allCustomers = new();
 
     [ObservableProperty] private LocalCustomer? _selectedCustomer;
-    [ObservableProperty] private string _customerName = string.Empty;
-    [ObservableProperty] private string _customerPhone = string.Empty;
-    [ObservableProperty] private string _customerCategory = string.Empty;
+    [ObservableProperty] private string _customerName = "거래처 선택";
+    [ObservableProperty] private string _customerPhone = "-";
+    [ObservableProperty] private string _customerCategory = "-";
+    [ObservableProperty] private string _customerDepartment = "-";
+    [ObservableProperty] private string _customerContactPerson = "-";
 
     [ObservableProperty] private DateOnly _receiptDate = DateOnly.FromDateTime(DateTime.Today);
     [ObservableProperty] private decimal _cashReceipt;
@@ -36,42 +39,60 @@ public sealed partial class PaymentViewModel : ObservableObject
 
     public ObservableCollection<LocalTransaction> History { get; } = new();
 
-    public PaymentViewModel(LocalStateService local)
+    public PaymentViewModel(LocalStateService local, SessionState session)
     {
         _local = local;
+        _session = session;
     }
 
     public async Task LoadAsync(LocalCustomer? preselect = null)
     {
-        _allCustomers = await _local.GetCustomersAsync();
+        _allCustomers = await _local.GetCustomersAsync(_session);
         if (preselect is not null)
             SetCustomer(preselect);
+        else
+            ResetCustomerDisplay();
 
         NewEntry();
     }
 
     public LocalStateService LocalStateService => _local;
+    public SessionState SessionState => _session;
     public List<LocalCustomer> GetAllCustomers() => _allCustomers;
 
     public async Task ReloadCustomersAsync()
     {
-        _allCustomers = await _local.GetCustomersAsync();
+        _allCustomers = await _local.GetCustomersAsync(_session);
     }
 
     public void SetCustomer(LocalCustomer c)
     {
         SelectedCustomer = c;
         CustomerName = c.NameOriginal;
-        CustomerPhone = c.Phone;
+        CustomerPhone = string.IsNullOrWhiteSpace(c.Phone) ? "-" : c.Phone;
+        CustomerCategory = string.IsNullOrWhiteSpace(c.PriceGrade) ? "-" : c.PriceGrade;
+        CustomerDepartment = string.IsNullOrWhiteSpace(c.Department) ? "-" : c.Department;
+        CustomerContactPerson = string.IsNullOrWhiteSpace(c.ContactPerson) ? "-" : c.ContactPerson;
         _ = LoadHistoryAsync(c.Id);
     }
 
     private async Task LoadHistoryAsync(Guid customerId)
     {
-        var list = await _local.GetTransactionsAsync(customerId);
+        var list = await _local.GetTransactionsAsync(customerId, _session);
         History.Clear();
-        foreach (var t in list)
+        foreach (var t in list
+                     .OrderByDescending(t => t.TransactionDate)
+                     .ThenByDescending(t => t.UpdatedAtUtc))
             History.Add(t);
+    }
+
+    private void ResetCustomerDisplay()
+    {
+        CustomerName = "거래처 선택";
+        CustomerPhone = "-";
+        CustomerCategory = "-";
+        CustomerDepartment = "-";
+        CustomerContactPerson = "-";
     }
 
     public void NewEntry()
@@ -143,9 +164,15 @@ public sealed partial class PaymentViewModel : ObservableObject
             Memo = Memo,
         };
 
-        await _local.SaveTransactionAsync(t);
+        var result = await _local.SaveTransactionAsync(t, _session);
+        if (!result.Success)
+        {
+            StatusMessage = result.Message;
+            return;
+        }
+
         await LoadHistoryAsync(SelectedCustomer.Id);
         NewEntry();
-        StatusMessage = "저장되었습니다.";
+        StatusMessage = result.Message;
     }
 }

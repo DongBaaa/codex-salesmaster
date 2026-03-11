@@ -1,6 +1,7 @@
 using SalesMaster.Server.Api.Domain;
 using SalesMaster.Server.Api.Security;
 using SalesMaster.Server.Api.Services;
+using SalesMaster.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
 
 namespace SalesMaster.Server.Api.Data;
@@ -51,14 +52,7 @@ public static class DbInitializer
             dbContext.Users.AddRange(admin, user);
         }
 
-        if (!await dbContext.CustomerCategories.IgnoreQueryFilters().AnyAsync(cancellationToken))
-        {
-            dbContext.CustomerCategories.AddRange(
-                new CustomerCategory { Name = "관공서", IsSystemDefault = true },
-                new CustomerCategory { Name = "학교", IsSystemDefault = true },
-                new CustomerCategory { Name = "기업", IsSystemDefault = true },
-                new CustomerCategory { Name = "개인", IsSystemDefault = true });
-        }
+        await EnsureDefaultCustomerCategoriesAsync(dbContext, cancellationToken);
 
         if (!await dbContext.Units.IgnoreQueryFilters().AnyAsync(cancellationToken))
         {
@@ -82,29 +76,8 @@ public static class DbInitializer
                 Address = string.Empty,
                 ContactNumber = string.Empty,
                 Email = string.Empty,
-                BankAccountText = "입금은행/계좌번호를 입력하세요"
+                BankAccountText = "입금용 계좌번호를 입력하세요."
             });
-        }
-
-        if (!await dbContext.PrintTemplates.IgnoreQueryFilters().AnyAsync(cancellationToken))
-        {
-            var template = new PrintTemplate
-            {
-                Name = "거래명세서 기본",
-                Description = "WPF 고정 레이아웃 1차 템플릿",
-                IsDefault = true
-            };
-
-            template.Versions.Add(new PrintTemplateVersion
-            {
-                PrintTemplateId = template.Id,
-                VersionNumber = 1,
-                TemplateJson = "{\"layout\":\"fixed-v1\",\"notes\":\"phase2-fastreport-ready\"}",
-                IsLocked = false,
-                CreatedByName = "system"
-            });
-
-            dbContext.PrintTemplates.Add(template);
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -122,9 +95,7 @@ public static class DbInitializer
             await dbContext.Customers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Items.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Invoices.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
-            await dbContext.Payments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
-            await dbContext.PrintTemplates.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
-            await dbContext.PrintTemplateVersions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0
+            await dbContext.Payments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0
         };
 
         return revisions.Max();
@@ -138,4 +109,101 @@ public static class DbInitializer
         PermissionNames.SettingsEdit,
         PermissionNames.DataBackupRestore
     ];
+
+    private static async Task EnsureDefaultCustomerCategoriesAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        var categories = await dbContext.CustomerCategories.IgnoreQueryFilters().ToListAsync(cancellationToken);
+
+        foreach (var definition in DefaultCustomerCategories.All)
+        {
+            var canonical = categories.FirstOrDefault(category => category.Id == definition.Id);
+            if (canonical is null)
+            {
+                canonical = new CustomerCategory
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    IsSystemDefault = true,
+                    IsDeleted = false,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                };
+
+                dbContext.CustomerCategories.Add(canonical);
+                categories.Add(canonical);
+            }
+            else
+            {
+                TouchCanonicalCategory(canonical, definition.Name, isSystemDefault: true);
+            }
+        }
+
+        var groups = categories
+            .Where(category => !string.IsNullOrWhiteSpace(category.Name))
+            .GroupBy(category => DefaultCustomerCategories.NormalizeName(category.Name), StringComparer.CurrentCultureIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .ToList();
+
+        foreach (var group in groups)
+        {
+            var canonical = ResolveCanonicalCategory(group);
+            TouchCanonicalCategory(canonical, DefaultCustomerCategories.NormalizeName(canonical.Name), canonical.IsSystemDefault);
+
+            var duplicateIds = group
+                .Where(category => category.Id != canonical.Id)
+                .Select(category => category.Id)
+                .Distinct()
+                .ToList();
+
+            if (duplicateIds.Count == 0)
+                continue;
+
+            var duplicateIdSet = duplicateIds.ToHashSet();
+
+            var customerMasters = await dbContext.CustomerMasters.IgnoreQueryFilters()
+                .Where(customer => customer.CategoryId.HasValue && duplicateIdSet.Contains(customer.CategoryId.Value))
+                .ToListAsync(cancellationToken);
+            foreach (var customerMaster in customerMasters)
+                customerMaster.CategoryId = canonical.Id;
+
+            var customers = await dbContext.Customers.IgnoreQueryFilters()
+                .Where(customer => customer.CategoryId.HasValue && duplicateIdSet.Contains(customer.CategoryId.Value))
+                .ToListAsync(cancellationToken);
+            foreach (var customer in customers)
+                customer.CategoryId = canonical.Id;
+
+            foreach (var duplicate in group.Where(category => category.Id != canonical.Id))
+                duplicate.IsDeleted = true;
+        }
+    }
+
+    private static CustomerCategory ResolveCanonicalCategory(IGrouping<string, CustomerCategory> group)
+    {
+        if (DefaultCustomerCategories.TryGetByName(group.Key, out var definition))
+        {
+            var fixedCategory = group.FirstOrDefault(category => category.Id == definition.Id);
+            if (fixedCategory is not null)
+                return fixedCategory;
+        }
+
+        return group
+            .OrderBy(category => category.IsDeleted)
+            .ThenByDescending(category => category.IsSystemDefault)
+            .ThenBy(category => category.CreatedAtUtc)
+            .ThenBy(category => category.Id)
+            .First();
+    }
+
+    private static void TouchCanonicalCategory(
+        CustomerCategory category,
+        string normalizedName,
+        bool isSystemDefault)
+    {
+        category.Name = normalizedName;
+        category.IsSystemDefault = category.IsSystemDefault || isSystemDefault;
+        category.IsDeleted = false;
+    }
 }

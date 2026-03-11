@@ -14,6 +14,7 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
     private readonly LocalStateService _local;
     private readonly PeriodLedgerAggregationService _aggregation;
     private readonly PeriodLedgerExcelExportService _exporter;
+    private readonly SessionState _session;
     private List<LocalCustomer> _allCustomers = [];
 
     [ObservableProperty] private DateTime _fromDate = DateTime.Today;
@@ -77,22 +78,33 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
             SelectedLedgerType = PeriodLedgerType.ReceiptPayment;
         }
     }
+    public bool IsYeonsuDeliverySelected
+    {
+        get => SelectedLedgerType == PeriodLedgerType.YeonsuDelivery;
+        set
+        {
+            if (!value) return;
+            SelectedLedgerType = PeriodLedgerType.YeonsuDelivery;
+        }
+    }
 
     public PeriodLedgerViewModel(
         LocalStateService local,
         PeriodLedgerAggregationService aggregation,
-        PeriodLedgerExcelExportService exporter)
+        PeriodLedgerExcelExportService exporter,
+        SessionState session)
     {
         _local = local;
         _aggregation = aggregation;
         _exporter = exporter;
+        _session = session;
 
         ApplyCurrentMonth();
     }
 
     public async Task InitializeAsync()
     {
-        _allCustomers = await _local.GetCustomersAsync();
+        _allCustomers = await _local.GetCustomersAsync(_session);
         RefreshCustomerList(_allCustomers);
         SelectedCustomer = Customers.FirstOrDefault();
     }
@@ -169,7 +181,7 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
             };
 
             var progress = new Progress<string>(message => StatusMessage = message);
-            var result = await _aggregation.BuildAsync(query, progress);
+            var result = await _aggregation.BuildAsync(query, _session, progress);
 
             if (!string.IsNullOrWhiteSpace(result.ProfitWarningMessage))
             {
@@ -206,6 +218,7 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
         OnPropertyChanged(nameof(IsSalesSelected));
         OnPropertyChanged(nameof(IsPurchaseSelected));
         OnPropertyChanged(nameof(IsReceiptPaymentSelected));
+        OnPropertyChanged(nameof(IsYeonsuDeliverySelected));
     }
 
     partial void OnSelectedScopeOptionChanged(string value)

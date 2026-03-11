@@ -17,10 +17,18 @@ public sealed class PeriodLedgerExcelExportService
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add("원장");
 
-        if (data.Query.LedgerType == PeriodLedgerType.ReceiptPayment)
-            FillPaymentLedgerSheet(sheet, data);
-        else
-            FillBlockLedgerSheet(sheet, data);
+        switch (data.Query.LedgerType)
+        {
+            case PeriodLedgerType.ReceiptPayment:
+                FillPaymentLedgerSheet(sheet, data);
+                break;
+            case PeriodLedgerType.YeonsuDelivery:
+                FillYeonsuDeliverySheet(sheet, data);
+                break;
+            default:
+                FillBlockLedgerSheet(sheet, data);
+                break;
+        }
 
         ApplyPrintSetup(sheet);
 
@@ -145,7 +153,7 @@ public sealed class PeriodLedgerExcelExportService
         ApplyRowBorder(ws, row, includeProfit);
         ApplyNumberFormats(ws, row, includeProfit);
 
-        SetCommonSheetStyles(ws, includeProfit ? 9 : 8, headerRow, row);
+        SetCommonSheetStyles(ws, includeProfit ? 9 : 8, headerRow, row, applyBlockDefaultWidths: true);
     }
 
     private static void FillPaymentLedgerSheet(IXLWorksheet ws, PeriodLedgerBuildResult data)
@@ -208,7 +216,67 @@ public sealed class PeriodLedgerExcelExportService
         ws.Range(row, 5, row, 9).Style.NumberFormat.Format = "#,##0";
 
         SetPaymentColumnWidths(ws);
-        SetCommonSheetStyles(ws, 11, headerRow, row);
+        SetCommonSheetStyles(ws, 11, headerRow, row, applyBlockDefaultWidths: false);
+    }
+
+    private static void FillYeonsuDeliverySheet(IXLWorksheet ws, PeriodLedgerBuildResult data)
+    {
+        ws.Cell(1, 1).Value = data.Title;
+        ws.Range(1, 1, 1, 9).Merge();
+        ws.Cell(1, 1).Style.Font.Bold = true;
+        ws.Cell(1, 1).Style.Font.FontSize = 16;
+        ws.Cell(1, 1).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+
+        ws.Cell(2, 1).Value = $"기간: {data.Query.From:yyyy-MM-dd} ~ {data.Query.To:yyyy-MM-dd}";
+        ws.Range(2, 1, 2, 9).Merge();
+
+        ws.Cell(3, 1).Value = $"구분: {data.ScopeLabel}  /  옵션: 가나다라순({(data.Query.SortByCustomerName ? "ON" : "OFF")})";
+        ws.Range(3, 1, 3, 9).Merge();
+
+        var row = 5;
+        var headers = new[]
+        {
+            "No", "납품일자", "거래처명", "품목요약", "합계금액", "출고창고", "비고", "마지막 저장자", "마지막 저장시간"
+        };
+        for (var i = 0; i < headers.Length; i++)
+            ws.Cell(row, i + 1).Value = headers[i];
+
+        var headerRow = row;
+        ws.Range(row, 1, row, 9).Style.Fill.BackgroundColor = XLColor.FromHtml("#E5E5E5");
+        ws.Range(row, 1, row, 9).Style.Font.Bold = true;
+        ws.Range(row, 1, row, 9).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+        ApplyRowBorder(ws, row, includeProfit: false, endColumnOverride: 9);
+        row++;
+
+        foreach (var entry in data.YeonsuDeliveryRows)
+        {
+            ws.Cell(row, 1).Value = entry.No;
+            ws.Cell(row, 2).Value = entry.DeliveryDate.ToString("yyyy-MM-dd");
+            ws.Cell(row, 3).Value = entry.CustomerName;
+            ws.Cell(row, 4).Value = entry.ItemSummary;
+            ws.Cell(row, 5).Value = entry.TotalAmount;
+            ws.Cell(row, 6).Value = entry.WarehouseName;
+            ws.Cell(row, 7).Value = entry.Note;
+            ws.Cell(row, 8).Value = entry.LastSavedBy;
+            ws.Cell(row, 9).Value = entry.LastSavedAtUtc == default
+                ? string.Empty
+                : entry.LastSavedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+
+            ApplyRowBorder(ws, row, includeProfit: false, endColumnOverride: 9);
+            ws.Cell(row, 5).Style.NumberFormat.Format = "#,##0";
+            ws.Cell(row, 5).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Right;
+            row++;
+        }
+
+        ws.Cell(row, 1).Value = "기간내 총 합계";
+        ws.Cell(row, 5).Value = data.Totals.TradeAmount;
+        ws.Range(row, 1, row, 9).Style.Font.Bold = true;
+        ws.Range(row, 1, row, 9).Style.Fill.BackgroundColor = XLColor.FromHtml("#EFEFEF");
+        ApplyRowBorder(ws, row, includeProfit: false, endColumnOverride: 9);
+        ws.Cell(row, 5).Style.NumberFormat.Format = "#,##0";
+
+        SetYeonsuColumnWidths(ws);
+        SetCommonSheetStyles(ws, 9, headerRow, row, applyBlockDefaultWidths: false);
     }
 
     private static void WriteBlockLedgerHeader(IXLWorksheet ws, int row, bool includeProfit)
@@ -247,7 +315,12 @@ public sealed class PeriodLedgerExcelExportService
         }
     }
 
-    private static void SetCommonSheetStyles(IXLWorksheet ws, int lastCol, int headerRow, int lastRow)
+    private static void SetCommonSheetStyles(
+        IXLWorksheet ws,
+        int lastCol,
+        int headerRow,
+        int lastRow,
+        bool applyBlockDefaultWidths)
     {
         ws.Style.Font.FontName = "맑은 고딕";
         ws.Style.Font.FontSize = 10;
@@ -265,7 +338,7 @@ public sealed class PeriodLedgerExcelExportService
         // hard minimum-like readability: do not drop below 9pt by avoiding workbook scaling over-compression.
         ws.PageSetup.Scale = 100;
 
-        if (lastCol <= 9)
+        if (applyBlockDefaultWidths && lastCol <= 9)
             SetBlockColumnWidths(ws, lastCol == 9);
     }
 
@@ -303,6 +376,21 @@ public sealed class PeriodLedgerExcelExportService
         ws.Column(11).Style.Alignment.WrapText = true;
     }
 
+    private static void SetYeonsuColumnWidths(IXLWorksheet ws)
+    {
+        ws.Column(1).Width = 6;
+        ws.Column(2).Width = 12;
+        ws.Column(3).Width = 24;
+        ws.Column(4).Width = 36;
+        ws.Column(5).Width = 15;
+        ws.Column(6).Width = 14;
+        ws.Column(7).Width = 24;
+        ws.Column(8).Width = 14;
+        ws.Column(9).Width = 20;
+        ws.Column(4).Style.Alignment.WrapText = true;
+        ws.Column(7).Style.Alignment.WrapText = true;
+    }
+
     private static void ApplyPrintSetup(IXLWorksheet ws)
     {
         ws.PageSetup.PaperSize = XLPaperSize.A4Paper;
@@ -334,6 +422,7 @@ public sealed class PeriodLedgerExcelExportService
             PeriodLedgerType.SalesOnly => "판매매출",
             PeriodLedgerType.PurchaseOnly => "구매매입",
             PeriodLedgerType.ReceiptPayment => "수금지불",
+            PeriodLedgerType.YeonsuDelivery => "연수구납품내역",
             _ => "거래원장"
         };
 

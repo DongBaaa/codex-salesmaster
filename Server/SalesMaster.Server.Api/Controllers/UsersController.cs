@@ -1,6 +1,7 @@
 using SalesMaster.Server.Api.Data;
 using SalesMaster.Server.Api.Domain;
 using SalesMaster.Server.Api.Mappings;
+using SalesMaster.Server.Api.Services;
 using SalesMaster.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -14,12 +15,82 @@ namespace SalesMaster.Server.Api.Controllers;
 public sealed class UsersController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
-    public UsersController(AppDbContext dbContext) => _dbContext = dbContext;
+    private readonly ICurrentUserContext _currentUserContext;
+
+    public UsersController(AppDbContext dbContext, ICurrentUserContext currentUserContext)
+    {
+        _dbContext = dbContext;
+        _currentUserContext = currentUserContext;
+    }
 
     [HttpGet]
     public async Task<ActionResult<List<UserAccountDto>>> GetAll(CancellationToken cancellationToken)
         => Ok(await _dbContext.Users.Include(x => x.Permissions).AsNoTracking()
             .Select(x => x.ToDto()).ToListAsync(cancellationToken));
+
+    [HttpPost]
+    public async Task<ActionResult<UserAccountDto>> Create(
+        [FromBody] CreateUserRequest request,
+        CancellationToken cancellationToken)
+    {
+        var username = request.Username.Trim();
+        if (string.IsNullOrWhiteSpace(username))
+            return BadRequest("Username is required.");
+
+        if (string.IsNullOrWhiteSpace(request.Password))
+            return BadRequest("Password is required.");
+
+        var exists = await _dbContext.Users
+            .IgnoreQueryFilters()
+            .AnyAsync(user => user.Username == username, cancellationToken);
+        if (exists)
+            return Conflict("Username already exists.");
+
+        var user = new UserAccount
+        {
+            Username = username,
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
+            Role = NormalizeRole(request.Role),
+            IsActive = request.IsActive
+        };
+
+        ApplyPermissions(user, request.Permissions);
+        _dbContext.Users.Add(user);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        return CreatedAtAction(nameof(GetAll), new { id = user.Id }, user.ToDto());
+    }
+
+    [HttpPut("{id:guid}")]
+    public async Task<ActionResult<UserAccountDto>> Update(
+        Guid id,
+        [FromBody] UpdateUserRequest request,
+        CancellationToken cancellationToken)
+    {
+        var user = await _dbContext.Users
+            .Include(x => x.Permissions)
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+        if (user is null)
+            return NotFound();
+
+        var username = request.Username.Trim();
+        if (string.IsNullOrWhiteSpace(username))
+            return BadRequest("Username is required.");
+
+        var duplicated = await _dbContext.Users
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.Id != id && current.Username == username, cancellationToken);
+        if (duplicated)
+            return Conflict("Username already exists.");
+
+        user.Username = username;
+        user.Role = NormalizeRole(request.Role);
+        user.IsActive = request.IsActive;
+        ApplyPermissions(user, request.Permissions);
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return Ok(user.ToDto());
+    }
 
     [HttpPut("{id:guid}/permissions")]
     public async Task<ActionResult<UserAccountDto>> UpdatePermissions(
@@ -37,5 +108,67 @@ public sealed class UsersController : ControllerBase
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(user.ToDto());
+    }
+
+    [HttpPut("{id:guid}/password")]
+    public async Task<ActionResult> UpdatePassword(
+        Guid id,
+        [FromBody] UpdateUserPasswordRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Password))
+            return BadRequest("Password is required.");
+
+        var user = await _dbContext.Users
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+        if (user is null)
+            return NotFound();
+
+        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return NoContent();
+    }
+
+    [HttpDelete("{id:guid}")]
+    public async Task<ActionResult> Delete(Guid id, CancellationToken cancellationToken)
+    {
+        var user = await _dbContext.Users
+            .Include(x => x.Permissions)
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+        if (user is null)
+            return NotFound();
+
+        if (_currentUserContext.UserId == id)
+            return BadRequest("You cannot delete the currently signed-in account.");
+
+        _dbContext.UserPermissions.RemoveRange(user.Permissions);
+        _dbContext.Users.Remove(user);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return NoContent();
+    }
+
+    private static string NormalizeRole(string? role)
+        => string.Equals(role, "admin", StringComparison.OrdinalIgnoreCase)
+            ? "Admin"
+            : "User";
+
+    private void ApplyPermissions(UserAccount user, IEnumerable<string> permissions)
+    {
+        var normalizedPermissions = permissions
+            .Where(permission => !string.IsNullOrWhiteSpace(permission))
+            .Select(permission => permission.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        _dbContext.UserPermissions.RemoveRange(user.Permissions);
+        user.Permissions.Clear();
+        foreach (var permission in normalizedPermissions)
+        {
+            user.Permissions.Add(new UserPermission
+            {
+                UserId = user.Id,
+                Permission = permission
+            });
+        }
     }
 }

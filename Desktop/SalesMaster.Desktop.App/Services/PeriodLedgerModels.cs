@@ -7,7 +7,8 @@ public enum PeriodLedgerType
     SalesPurchase = 0,
     SalesOnly = 1,
     PurchaseOnly = 2,
-    ReceiptPayment = 3
+    ReceiptPayment = 3,
+    YeonsuDelivery = 4
 }
 
 public enum PeriodLedgerScope
@@ -34,8 +35,22 @@ public sealed class PeriodLedgerBuildResult
     public required string ScopeLabel { get; init; }
     public required IReadOnlyList<PeriodLedgerCustomerBlock> Blocks { get; init; }
     public required IReadOnlyList<PeriodLedgerPaymentRow> PaymentRows { get; init; }
+    public required IReadOnlyList<PeriodLedgerYeonsuDeliveryRow> YeonsuDeliveryRows { get; init; }
     public required PeriodLedgerTotals Totals { get; init; }
     public string? ProfitWarningMessage { get; init; }
+}
+
+public sealed class PeriodLedgerYeonsuDeliveryRow
+{
+    public int No { get; init; }
+    public required DateOnly DeliveryDate { get; init; }
+    public required string CustomerName { get; init; }
+    public required string ItemSummary { get; init; }
+    public decimal TotalAmount { get; init; }
+    public required string WarehouseName { get; init; }
+    public required string Note { get; init; }
+    public required string LastSavedBy { get; init; }
+    public DateTime LastSavedAtUtc { get; init; }
 }
 
 public sealed class PeriodLedgerCustomerBlock

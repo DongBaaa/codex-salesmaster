@@ -34,8 +34,6 @@ public sealed class AppDbContext : DbContext
     public DbSet<Invoice> Invoices => Set<Invoice>();
     public DbSet<InvoiceLine> InvoiceLines => Set<InvoiceLine>();
     public DbSet<Payment> Payments => Set<Payment>();
-    public DbSet<PrintTemplate> PrintTemplates => Set<PrintTemplate>();
-    public DbSet<PrintTemplateVersion> PrintTemplateVersions => Set<PrintTemplateVersion>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<ConflictLog> ConflictLogs => Set<ConflictLog>();
 
@@ -55,9 +53,6 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<Invoice>()
             .HasMany(x => x.Payments).WithOne(x => x.Invoice)
             .HasForeignKey(x => x.InvoiceId).OnDelete(DeleteBehavior.Cascade);
-        modelBuilder.Entity<PrintTemplate>()
-            .HasMany(x => x.Versions).WithOne(x => x.PrintTemplate)
-            .HasForeignKey(x => x.PrintTemplateId).OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<Invoice>().Property(x => x.TotalAmount).HasPrecision(18, 2);
         modelBuilder.Entity<Invoice>().Property(x => x.SupplyAmount).HasPrecision(18, 2);
@@ -81,8 +76,6 @@ public sealed class AppDbContext : DbContext
         ApplySoftDeleteFilter<Item>(modelBuilder);
         ApplySoftDeleteFilter<Invoice>(modelBuilder);
         ApplySoftDeleteFilter<Payment>(modelBuilder);
-        ApplySoftDeleteFilter<PrintTemplate>(modelBuilder);
-        ApplySoftDeleteFilter<PrintTemplateVersion>(modelBuilder);
     }
 
     public override int SaveChanges()

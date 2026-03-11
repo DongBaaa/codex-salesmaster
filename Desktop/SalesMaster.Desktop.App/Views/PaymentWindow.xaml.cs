@@ -36,7 +36,7 @@ public partial class PaymentWindow : Window
             "거래처 등록",
             async () =>
             {
-                var customerVm = new CustomerEditViewModel(_vm.LocalStateService);
+                var customerVm = new CustomerEditViewModel(_vm.LocalStateService, _vm.SessionState);
                 await customerVm.LoadAsync();
                 var customerWindow = new CustomerEditWindow(customerVm) { Owner = this };
                 customerWindow.ShowDialog();

@@ -50,10 +50,6 @@ public sealed class SyncController : ControllerBase
                 .Where(x => x.Revision > sinceRev).OrderBy(x => x.CreatedAtUtc)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             Payments = await _dbContext.Payments.IgnoreQueryFilters().AsNoTracking()
-                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            PrintTemplates = await _dbContext.PrintTemplates.IgnoreQueryFilters().AsNoTracking()
-                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            PrintTemplateVersions = await _dbContext.PrintTemplateVersions.IgnoreQueryFilters().AsNoTracking()
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken)
         };
 
@@ -86,11 +82,6 @@ public sealed class SyncController : ControllerBase
         var validPayments = await FilterValidPaymentsAsync(request.Payments ?? [], result, cancellationToken);
         await UpsertEntitiesAsync(validPayments, _dbContext.Payments,
             (e, d) => e.Apply(d), d => new Payment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        await UpsertEntitiesAsync(request.PrintTemplates ?? [], _dbContext.PrintTemplates,
-            (e, d) => e.Apply(d), d => new PrintTemplate { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        var validPrintTemplateVersions = await FilterValidPrintTemplateVersionsAsync(request.PrintTemplateVersions ?? [], result, cancellationToken);
-        await UpsertEntitiesAsync(validPrintTemplateVersions, _dbContext.PrintTemplateVersions,
-            (e, d) => e.Apply(d), d => new PrintTemplateVersion { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         result.CurrentServerRevision = await GetCurrentRevisionAsync(cancellationToken);
@@ -268,27 +259,6 @@ public sealed class SyncController : ControllerBase
         return valid;
     }
 
-    private async Task<List<PrintTemplateVersionDto>> FilterValidPrintTemplateVersionsAsync(
-        IEnumerable<PrintTemplateVersionDto> payload, SyncPushResult result, CancellationToken cancellationToken)
-    {
-        var valid = new List<PrintTemplateVersionDto>();
-
-        foreach (var dto in payload)
-        {
-            if (dto.PrintTemplateId == Guid.Empty ||
-                !await ExistsOrTrackedAsync(_dbContext.PrintTemplates, dto.PrintTemplateId, cancellationToken))
-            {
-                AddClientConflict(dto, nameof(PrintTemplateVersion),
-                    $"Referenced print template was not found: {dto.PrintTemplateId}.", result);
-                continue;
-            }
-
-            valid.Add(dto);
-        }
-
-        return valid;
-    }
-
     private static void ApplyInvoiceLines(Invoice invoice, IEnumerable<InvoiceLineDto> lines)
     {
         foreach (var line in lines)
@@ -374,8 +344,6 @@ public sealed class SyncController : ControllerBase
         maxRevision = Math.Max(maxRevision, await _dbContext.Items.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Invoices.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Payments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.PrintTemplates.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.PrintTemplateVersions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         return maxRevision;
     }
 }

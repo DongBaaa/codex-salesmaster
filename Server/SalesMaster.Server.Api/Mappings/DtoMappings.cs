@@ -175,36 +175,6 @@ public static class DtoMappings
         entity.Amount = dto.Amount; entity.Note = dto.Note; entity.IsDeleted = dto.IsDeleted;
     }
 
-    public static PrintTemplateDto ToDto(this PrintTemplate entity) =>
-        new()
-        {
-            Id = entity.Id, IsDeleted = entity.IsDeleted,
-            CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
-            Name = entity.Name, Description = entity.Description, IsDefault = entity.IsDefault
-        };
-
-    public static void Apply(this PrintTemplate entity, PrintTemplateDto dto)
-    {
-        entity.Name = dto.Name; entity.Description = dto.Description;
-        entity.IsDefault = dto.IsDefault; entity.IsDeleted = dto.IsDeleted;
-    }
-
-    public static PrintTemplateVersionDto ToDto(this PrintTemplateVersion entity) =>
-        new()
-        {
-            Id = entity.Id, IsDeleted = entity.IsDeleted,
-            CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
-            PrintTemplateId = entity.PrintTemplateId, VersionNumber = entity.VersionNumber,
-            TemplateJson = entity.TemplateJson, IsLocked = entity.IsLocked, CreatedByName = entity.CreatedByName
-        };
-
-    public static void Apply(this PrintTemplateVersion entity, PrintTemplateVersionDto dto)
-    {
-        entity.PrintTemplateId = dto.PrintTemplateId; entity.VersionNumber = dto.VersionNumber;
-        entity.TemplateJson = dto.TemplateJson; entity.IsLocked = dto.IsLocked;
-        entity.CreatedByName = dto.CreatedByName; entity.IsDeleted = dto.IsDeleted;
-    }
-
     public static AuditLogDto ToDto(this AuditLog entity) =>
         new()
         {

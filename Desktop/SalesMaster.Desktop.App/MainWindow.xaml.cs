@@ -16,11 +16,13 @@ public partial class MainWindow : Window
     private readonly StatementPrintService _print;
     private readonly IPrintService _invoicePrintService;
     private readonly SessionState _session;
+    private readonly ErpApiClient _api;
 
     public MainWindow(MainViewModel vm, LocalStateService local,
                       StatementPrintService print,
                       IPrintService invoicePrintService,
-                      SessionState session)
+                      SessionState session,
+                      ErpApiClient api)
     {
         InitializeComponent();
         _vm = vm;
@@ -28,6 +30,7 @@ public partial class MainWindow : Window
         _print = print;
         _invoicePrintService = invoicePrintService;
         _session = session;
+        _api = api;
         DataContext = vm;
     }
 
@@ -85,6 +88,11 @@ public partial class MainWindow : Window
         await OpenSalesWindowAsync(preselectSelectedCustomer: true);
     }
 
+    private async void PurchaseToolbarButton_Click(object sender, RoutedEventArgs e)
+    {
+        await OpenPurchaseWindowAsync(preselectSelectedCustomer: true);
+    }
+
     // 전표 목록 더블클릭 수정
     private async void InvoiceRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
@@ -99,16 +107,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        var inv = await _local.GetInvoiceAsync(_vm.SelectedInvoiceRow.Id);
+        var inv = await _local.GetInvoiceAsync(_vm.SelectedInvoiceRow.Id, _session);
         if (inv is null) return;
 
-        var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session);
-        await vm.LoadAsync();
-        vm.LoadInvoice(inv);
-
-        var win = new SalesWindow(vm) { Owner = this };
-        win.Closed += async (_, _) => await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
-        win.Show();
+        await OpenInvoiceWindowAsync(inv);
     }
 
     // 거래처 우클릭 -> 거래처 수정
@@ -175,7 +177,13 @@ public partial class MainWindow : Window
         if (confirm != MessageBoxResult.OK)
             return;
 
-        await _local.DeleteCustomerAsync(customer.Id);
+        var deleteCustomerResult = await _local.DeleteCustomerAsync(customer.Id, _session);
+        if (!deleteCustomerResult.Success)
+        {
+            MessageBox.Show(deleteCustomerResult.Message, "거래처 삭제", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         await _vm.RefreshCustomersCommand.ExecuteAsync(null);
     }
 
@@ -197,6 +205,11 @@ public partial class MainWindow : Window
         await DeleteSelectedCustomerAsync();
     }
 
+    private async void CustomerManagementButton_Click(object sender, RoutedEventArgs e)
+    {
+        await OpenCustomerManagementWindowAsync();
+    }
+
     private async void DeleteSelectedInvoicesContextMenu_Click(object sender, RoutedEventArgs e)
     {
         var rows = GetSelectedInvoiceRows(sender).ToList();
@@ -216,7 +229,14 @@ public partial class MainWindow : Window
             return;
 
         foreach (var rowId in rows.Select(r => r.Id).Distinct())
-            await _local.DeleteInvoiceAsync(rowId);
+        {
+            var deleteInvoiceResult = await _local.DeleteInvoiceAsync(rowId, _session);
+            if (!deleteInvoiceResult.Success)
+            {
+                MessageBox.Show(deleteInvoiceResult.Message, "전표 삭제", MessageBoxButton.OK, MessageBoxImage.Warning);
+                break;
+            }
+        }
 
         await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
@@ -265,11 +285,22 @@ public partial class MainWindow : Window
         var vm = new PeriodLedgerViewModel(
             _local,
             new PeriodLedgerAggregationService(_local),
-            new PeriodLedgerExcelExportService());
+            new PeriodLedgerExcelExportService(),
+            _session);
 
         await vm.InitializeAsync();
         var win = new PeriodLedgerWindow(vm) { Owner = this };
         win.ShowDialog();
+    }
+
+    private async void YeonsuDeliveryButton_Click(object sender, RoutedEventArgs e)
+    {
+        await OpenYeonsuDeliveryWindowAsync();
+    }
+
+    private async void EnvironmentSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        await OpenEnvironmentSettingsWindowAsync();
     }
 
     // 전표 목록 탭의 수금 입력 버튼
@@ -280,7 +311,19 @@ public partial class MainWindow : Window
 
     private async Task OpenSalesWindowAsync(bool preselectSelectedCustomer)
     {
-        var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session);
+        await OpenNewInvoiceWindowAsync(SalesMaster.Shared.Contracts.VoucherType.Sales, preselectSelectedCustomer);
+    }
+
+    private async Task OpenPurchaseWindowAsync(bool preselectSelectedCustomer)
+    {
+        await OpenNewInvoiceWindowAsync(SalesMaster.Shared.Contracts.VoucherType.Purchase, preselectSelectedCustomer);
+    }
+
+    private async Task OpenNewInvoiceWindowAsync(
+        SalesMaster.Shared.Contracts.VoucherType voucherType,
+        bool preselectSelectedCustomer)
+    {
+        var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session, voucherType);
         await vm.LoadAsync();
         vm.NewInvoice();
 
@@ -292,9 +335,24 @@ public partial class MainWindow : Window
         win.Show();
     }
 
+    private async Task OpenInvoiceWindowAsync(Data.LocalInvoice invoice)
+    {
+        var entryType = invoice.VoucherType == SalesMaster.Shared.Contracts.VoucherType.Purchase
+            ? SalesMaster.Shared.Contracts.VoucherType.Purchase
+            : SalesMaster.Shared.Contracts.VoucherType.Sales;
+
+        var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session, entryType);
+        await vm.LoadAsync();
+        vm.LoadInvoice(invoice);
+
+        var win = new SalesWindow(vm) { Owner = this };
+        win.Closed += async (_, _) => await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+        win.Show();
+    }
+
     private async Task OpenCustomerEditorAsync(Data.LocalCustomer? customer = null)
     {
-        var vm = new CustomerEditViewModel(_local);
+        var vm = new CustomerEditViewModel(_local, _session);
         await vm.LoadAsync(customer);
 
         var win = new CustomerEditWindow(vm) { Owner = this };
@@ -304,7 +362,7 @@ public partial class MainWindow : Window
 
     private async Task OpenInventoryWindowAsync()
     {
-        var vm = new InventoryViewModel(_local);
+        var vm = new InventoryViewModel(_local, _session);
         await vm.LoadAsync();
         var win = new InventoryWindow(vm) { Owner = this };
         win.Show();
@@ -312,22 +370,53 @@ public partial class MainWindow : Window
 
     private async Task OpenPaymentPopupAsync()
     {
-        var vm = new PaymentViewModel(_local);
+        var vm = new PaymentViewModel(_local, _session);
 
         // 우선: 좌측 거래처 선택값, 없으면 선택 전표의 거래처를 사용
         var preselect = _vm.SelectedCustomerFilter;
         if (preselect is null && _vm.SelectedInvoiceRow is not null)
         {
-            var invoice = await _local.GetInvoiceAsync(_vm.SelectedInvoiceRow.Id);
+            var invoice = await _local.GetInvoiceAsync(_vm.SelectedInvoiceRow.Id, _session);
             if (invoice is not null)
-            {
-                var customers = await _local.GetCustomersAsync();
-                preselect = customers.FirstOrDefault(c => c.Id == invoice.CustomerId);
-            }
+                preselect = await _local.GetCustomerAsync(invoice.CustomerId, _session);
         }
 
         await vm.LoadAsync(preselect);
         var win = new PaymentWindow(vm) { Owner = this };
         win.Show();
+    }
+
+    private async Task OpenYeonsuDeliveryWindowAsync()
+    {
+        var vm = new YeonsuDeliveryViewModel(_local, _session);
+        await vm.InitializeAsync();
+        var win = new YeonsuDeliveryWindow(vm, _local, _print, _invoicePrintService, _session)
+        {
+            Owner = this
+        };
+        win.Show();
+    }
+
+    private async Task OpenEnvironmentSettingsWindowAsync()
+    {
+        var vm = new EnvironmentSettingsViewModel(_local, _session, _api);
+        await vm.InitializeAsync();
+        var win = new EnvironmentSettingsWindow(vm)
+        {
+            Owner = this
+        };
+        win.ShowDialog();
+    }
+
+    private async Task OpenCustomerManagementWindowAsync()
+    {
+        var vm = new CustomerManagementViewModel(_local, _session);
+        await vm.InitializeAsync();
+        var win = new CustomerManagementWindow(vm, _local, _session)
+        {
+            Owner = this
+        };
+        win.ShowDialog();
+        await _vm.RefreshCustomersCommand.ExecuteAsync(null);
     }
 }

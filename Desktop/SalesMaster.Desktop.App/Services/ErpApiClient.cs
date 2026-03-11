@@ -39,6 +39,73 @@ public sealed class ErpApiClient
         return await resp.Content.ReadFromJsonAsync<LoginResponse>(ct);
     }
 
+    public async Task<List<UserAccountDto>> GetUsersAsync(CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+                   operationName: "사용자 목록(users)",
+                   sendAsync: async token =>
+                   {
+                       SetAuthHeader();
+                       return await _http.GetAsync("users", token);
+                   },
+                   readAsync: static async (resp, token) =>
+                       await resp.Content.ReadFromJsonAsync<List<UserAccountDto>>(token) ?? new List<UserAccountDto>(),
+                   ct)
+               ?? new List<UserAccountDto>();
+    }
+
+    public async Task<UserAccountDto?> CreateUserAsync(CreateUserRequest request, CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "사용자 생성(users)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader();
+                return await _http.PostAsJsonAsync("users", request, token);
+            },
+            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<UserAccountDto>(token),
+            ct);
+    }
+
+    public async Task<UserAccountDto?> UpdateUserAsync(Guid userId, UpdateUserRequest request, CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "사용자 수정(users)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader();
+                return await _http.PutAsJsonAsync($"users/{userId}", request, token);
+            },
+            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<UserAccountDto>(token),
+            ct);
+    }
+
+    public async Task UpdateUserPasswordAsync(Guid userId, UpdateUserPasswordRequest request, CancellationToken ct = default)
+    {
+        await ExecuteWithRetryAsync(
+            operationName: "사용자 비밀번호 수정(users/password)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader();
+                return await _http.PutAsJsonAsync($"users/{userId}/password", request, token);
+            },
+            readAsync: static (_, _) => Task.FromResult<object?>(new object()),
+            ct);
+    }
+
+    public async Task DeleteUserAsync(Guid userId, CancellationToken ct = default)
+    {
+        await ExecuteWithRetryAsync(
+            operationName: "사용자 삭제(users)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader();
+                return await _http.DeleteAsync($"users/{userId}", token);
+            },
+            readAsync: static (_, _) => Task.FromResult<object?>(new object()),
+            ct);
+    }
+
     // ── Sync ──────────────────────────────────────────────────────────────────
     public async Task<SyncPullResponse?> PullAsync(long sinceRevision, CancellationToken ct = default)
     {

@@ -21,8 +21,6 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly SyncService _sync;
     private readonly BackupService _backup;
     private readonly SessionState _session;
-    private readonly PrintTemplateCatalogService _templateCatalog = new();
-    private readonly 외부 리포팅 도구TemplatePrintService _fastReportTemplatePrint = new();
     private readonly IPrintService _invoicePrintService = new WpfInvoicePrintService();
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
     private readonly LegacyDataMigrationService _legacyMigrationService;
@@ -84,7 +82,9 @@ public sealed partial class MainViewModel : ObservableObject
         customer.Address = EditCustAddress;
         customer.Notes = EditCustNotes;
         customer.NameMatchKey = customer.NameOriginal.ToUpperInvariant();
-        await _local.UpsertCustomerAsync(customer);
+        var result = await _local.UpsertCustomerAsync(customer, _session);
+        if (!result.Success)
+            SyncStatus = result.Message;
     }
 
     // ?? ?꾪몴 紐⑸줉 ?? Bottom panel (?좏깮???꾪몴 ?쇱씤 誘몃━蹂닿린) ???????????????
@@ -133,6 +133,7 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private decimal _editTotalAmount;
     [ObservableProperty] private decimal _editSupplyAmount;
     [ObservableProperty] private decimal _editVatAmount;
+    private string _editConcurrencyStamp = string.Empty;
     public ObservableCollection<InvoiceLineEditModel> EditLines { get; } = new();
     public Array VoucherTypes => Enum.GetValues<VoucherType>();
 
@@ -144,12 +145,6 @@ public sealed partial class MainViewModel : ObservableObject
 
     // ?? Statement tab (嫄곕옒紐낆꽭?? ?????????????????????????????????????????
     [ObservableProperty] private InvoiceListRow? _statementInvoice;
-    public ObservableCollection<PrintTemplateOption> StatementTemplates { get; } = new();
-    [ObservableProperty] private PrintTemplateOption? _selectedStatementTemplate;
-    private bool _suppressStatementTemplateSave;
-    [ObservableProperty] private bool _editTemplateOnPrint;
-    [ObservableProperty] private string _fastReportDesignerPath = "(미설정)";
-    private const string 외부 리포팅 도구DesignerExeSettingKey = "Print.외부 리포팅 도구DesignerExePath";
 
     // ?? Company settings (?뚯궗 ?ㅼ젙) ??????????????????????????????????????
     [ObservableProperty] private string _companyTradeName = string.Empty;
@@ -183,7 +178,7 @@ public sealed partial class MainViewModel : ObservableObject
 
         _sync.SyncStatusChanged += HandleSyncStatusChanged;
         var offlineTag = session.IsOfflineMode ? " [?ㅽ봽?쇱씤]" : string.Empty;
-        CurrentUserDisplay = $"{session.User?.Username} ({session.User?.Role}){offlineTag}";
+        CurrentUserDisplay = $"{session.User?.Username} ({session.User?.Role}/{session.OfficeCode}){offlineTag}";
     }
 
     private void HandleSyncStatusChanged(string status)
@@ -203,8 +198,6 @@ public sealed partial class MainViewModel : ObservableObject
         await LoadInvoiceFilterSettingsAsync();
         await LoadInvoiceListAsync();
         await LoadCompanyProfileAsync();
-        await LoadStatementTemplatesAsync();
-        await Load외부 리포팅 도구DesignerPathAsync();
         await LoadLegacyMigrationSettingsAsync();
         if (!_session.IsOfflineMode)
             _sync.Start(15);
@@ -212,359 +205,10 @@ public sealed partial class MainViewModel : ObservableObject
             SyncStatus = "?ㅽ봽?쇱씤 紐⑤뱶 ???쒕쾭 ?곌껐 ???먮룞 ?숆린?붾맗?덈떎";
     }
 
-    partial void OnSelectedStatementTemplateChanged(PrintTemplateOption? value)
-    {
-        if (_suppressStatementTemplateSave || value is null)
-            return;
-
-        _ = _local.SetSettingAsync(PrintTemplateCatalogService.DefaultStatementTemplateSettingKey, value.Id);
-    }
-
-    [RelayCommand]
-    private async Task ReloadStatementTemplatesAsync()
-    {
-        await LoadStatementTemplatesAsync();
-    }
-
-    private async Task LoadStatementTemplatesAsync()
-    {
-        var templates = _templateCatalog.GetStatementTemplates();
-        StatementTemplates.Clear();
-        foreach (var template in templates)
-            StatementTemplates.Add(template);
-
-        var savedTemplateId = await _local.GetSettingAsync(PrintTemplateCatalogService.DefaultStatementTemplateSettingKey);
-        var selected = PrintTemplateCatalogService.ResolvePreferredTemplate(templates, savedTemplateId, "거래명1/2");
-
-        _suppressStatementTemplateSave = true;
-        SelectedStatementTemplate = selected;
-        _suppressStatementTemplateSave = false;
-
-        if (selected is not null && !string.Equals(savedTemplateId, selected.Id, StringComparison.OrdinalIgnoreCase))
-            await _local.SetSettingAsync(PrintTemplateCatalogService.DefaultStatementTemplateSettingKey, selected.Id);
-    }
-
-    private async Task Load외부 리포팅 도구DesignerPathAsync()
-    {
-        var savedPath = await _local.GetSettingAsync(외부 리포팅 도구DesignerExeSettingKey);
-        if (!string.IsNullOrWhiteSpace(savedPath) && File.Exists(savedPath))
-        {
-            외부 리포팅 도구DesignerPath = savedPath;
-            return;
-        }
-
-        var detectedPath = TryDetect외부 리포팅 도구DesignerPath();
-        if (!string.IsNullOrWhiteSpace(detectedPath))
-        {
-            외부 리포팅 도구DesignerPath = detectedPath;
-            await _local.SetSettingAsync(외부 리포팅 도구DesignerExeSettingKey, detectedPath);
-            return;
-        }
-
-        외부 리포팅 도구DesignerPath = "(미설정)";
-    }
-
-    [RelayCommand]
-    private async Task Select외부 리포팅 도구DesignerPathAsync()
-    {
-        var dlg = new OpenFileDialog
-        {
-            Title = "외부 리포팅 도구 Designer 실행파일 선택",
-            Filter = "실행 파일|*.exe"
-        };
-
-        if (dlg.ShowDialog() != true)
-            return;
-
-        외부 리포팅 도구DesignerPath = dlg.FileName;
-        await _local.SetSettingAsync(외부 리포팅 도구DesignerExeSettingKey, dlg.FileName);
-    }
-
-    [RelayCommand]
-    private async Task EditStatementTemplateAsync()
-    {
-        var template = SelectedStatementTemplate ?? await ResolveDefaultStatementTemplateAsync();
-        if (template is null)
-        {
-            System.Windows.MessageBox.Show("편집할 양식이 없습니다.", "알림", System.Windows.MessageBoxButton.OK);
-            return;
-        }
-
-        if (template.IsBuiltIn)
-        {
-            System.Windows.MessageBox.Show("내장 양식은 편집할 수 없습니다. 외부 .fr3/.frx 양식을 선택하세요.", "알림", System.Windows.MessageBoxButton.OK);
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(template.TemplatePath) || !File.Exists(template.TemplatePath))
-        {
-            System.Windows.MessageBox.Show("선택한 양식 파일을 찾을 수 없습니다.", "오류", System.Windows.MessageBoxButton.OK);
-            return;
-        }
-
-        await OpenTemplateInDesignerAsync(template);
-    }
-
-    private async Task<bool> OpenTemplateInDesignerAsync(PrintTemplateOption template)
-    {
-        var designerPath = await ResolveDesignerExecutablePathAsync();
-        if (string.IsNullOrWhiteSpace(designerPath))
-        {
-            System.Windows.MessageBox.Show(
-                "외부 리포팅 도구 Designer 실행파일 경로가 필요합니다.\n[디자이너 경로 설정] 버튼으로 .exe 파일을 지정하세요.",
-                "알림",
-                System.Windows.MessageBoxButton.OK,
-                System.Windows.MessageBoxImage.Information);
-            return false;
-        }
-
-        var openPath = ResolveTemplatePathForDesigner(template.TemplatePath);
-        if (TryOpenTemplateWithAssociation(openPath))
-            return true;
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = designerPath,
-            Arguments = $"\"{openPath}\"",
-            WorkingDirectory = Path.GetDirectoryName(openPath) ?? Path.GetDirectoryName(designerPath) ?? Environment.CurrentDirectory,
-            UseShellExecute = true
-        };
-
-        Process.Start(psi);
-        return true;
-    }
-
-    [RelayCommand]
-    private void OpenTemplateFolder()
-    {
-        var templateDirectory = _templateCatalog.ResolveTemplateDirectory();
-        if (string.IsNullOrWhiteSpace(templateDirectory) || !Directory.Exists(templateDirectory))
-        {
-            System.Windows.MessageBox.Show("양식 폴더를 찾을 수 없습니다.", "알림", System.Windows.MessageBoxButton.OK);
-            return;
-        }
-
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = templateDirectory,
-            UseShellExecute = true
-        });
-    }
-
-    [RelayCommand]
-    private void OpenMigrationGuide()
-    {
-        var templateDirectory = _templateCatalog.ResolveTemplateDirectory();
-        var candidates = new List<string>();
-
-        if (!string.IsNullOrWhiteSpace(templateDirectory))
-        {
-            candidates.Add(Path.Combine(templateDirectory, "FR3_TO_FRX_전환_워크플로우.md"));
-            candidates.Add(Path.Combine(templateDirectory, "FR3_TO_FRX_수동변환_체크리스트.md"));
-        }
-
-        candidates.Add(Path.Combine(AppContext.BaseDirectory, "양식", "FR3_TO_FRX_전환_워크플로우.md"));
-
-        var guidePath = candidates.FirstOrDefault(File.Exists);
-        if (string.IsNullOrWhiteSpace(guidePath))
-        {
-            System.Windows.MessageBox.Show("전환 가이드 파일을 찾을 수 없습니다.", "알림", System.Windows.MessageBoxButton.OK);
-            return;
-        }
-
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = guidePath,
-            UseShellExecute = true
-        });
-    }
-
-    [RelayCommand]
-    private async Task PrepareManualConversionAsync()
-    {
-        var template = SelectedStatementTemplate ?? await ResolveDefaultStatementTemplateAsync();
-        if (template is null || template.IsBuiltIn)
-        {
-            System.Windows.MessageBox.Show("외부 양식(.fr3/.frx)을 먼저 선택하세요.", "알림", System.Windows.MessageBoxButton.OK);
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(template.TemplatePath) || !File.Exists(template.TemplatePath))
-        {
-            System.Windows.MessageBox.Show("선택한 양식 파일을 찾을 수 없습니다.", "오류", System.Windows.MessageBoxButton.OK);
-            return;
-        }
-
-        var templateDirectory = _templateCatalog.ResolveTemplateDirectory();
-        if (string.IsNullOrWhiteSpace(templateDirectory))
-        {
-            System.Windows.MessageBox.Show("양식 폴더를 찾을 수 없습니다.", "오류", System.Windows.MessageBoxButton.OK);
-            return;
-        }
-
-        var baseName = Path.GetFileNameWithoutExtension(template.TemplatePath);
-        var ext = Path.GetExtension(template.TemplatePath).ToLowerInvariant();
-        var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-
-        var workDir = Path.Combine(templateDirectory, "_manual_conversion", $"{baseName}_{stamp}");
-        Directory.CreateDirectory(workDir);
-
-        var sourceFileName = Path.GetFileName(template.TemplatePath);
-        var copiedSourcePath = Path.Combine(workDir, sourceFileName);
-        File.Copy(template.TemplatePath, copiedSourcePath, overwrite: true);
-
-        var targetFrxName = $"{baseName}.frx";
-        var checklistPath = Path.Combine(workDir, "CHECKLIST.md");
-        var checklist = $"""
-# FR3 -> FRX 수동 변환 체크리스트
-
-## 대상 양식
-- 원본: `{sourceFileName}`
-- 작업폴더: `{workDir}`
-- 목표 결과물: `{targetFrxName}`
-
-## 작업 순서
-1. 외부 리포팅 도구 Designer에서 `{sourceFileName}`를 엽니다.
-2. 데이터 밴드/필드 바인딩을 확인합니다.
-3. `Save As`로 `{targetFrxName}`를 저장합니다.
-4. 저장한 `.frx`를 `양식` 폴더 루트로 복사합니다.
-5. 앱에서 `양식 다시읽기` 후 해당 양식을 선택해 미리보기를 검증합니다.
-
-## 검증 항목
-- PDF가 0 byte가 아니다.
-- 거래처/품목/수량/금액/합계가 정상 위치에 출력된다.
-- 페이지 수/줄바꿈/표 경계가 무너지지 않는다.
-- 인쇄 미리보기와 실제 인쇄 결과가 동일하다.
-
-## 결과 기록
-- `FR3_TO_FRX_우선순위.csv`의 해당 행 `Status/Notes`를 업데이트합니다.
-""";
-        await File.WriteAllTextAsync(checklistPath, checklist);
-
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = workDir,
-            UseShellExecute = true
-        });
-
-        var designerPath = await ResolveDesignerExecutablePathAsync();
-        if (!string.IsNullOrWhiteSpace(designerPath))
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = designerPath,
-                Arguments = $"\"{copiedSourcePath}\"",
-                WorkingDirectory = workDir,
-                UseShellExecute = true
-            });
-        }
-
-        var modeLabel = ext == ".fr3" ? "FR3 수동 변환 작업" : "FRX 수동 편집 작업";
-        System.Windows.MessageBox.Show(
-            $"{modeLabel} 폴더를 준비했습니다.\n{workDir}",
-            "완료",
-            System.Windows.MessageBoxButton.OK,
-            System.Windows.MessageBoxImage.Information);
-    }
-
-    private async Task<string?> ResolveDesignerExecutablePathAsync()
-    {
-        if (!string.IsNullOrWhiteSpace(외부 리포팅 도구DesignerPath) &&
-            !string.Equals(외부 리포팅 도구DesignerPath, "(미설정)", StringComparison.OrdinalIgnoreCase) &&
-            File.Exists(외부 리포팅 도구DesignerPath))
-        {
-            return 외부 리포팅 도구DesignerPath;
-        }
-
-        await Load외부 리포팅 도구DesignerPathAsync();
-        if (!string.IsNullOrWhiteSpace(외부 리포팅 도구DesignerPath) &&
-            !string.Equals(외부 리포팅 도구DesignerPath, "(미설정)", StringComparison.OrdinalIgnoreCase) &&
-            File.Exists(외부 리포팅 도구DesignerPath))
-        {
-            return 외부 리포팅 도구DesignerPath;
-        }
-
-        return null;
-    }
-
-    private static string ResolveTemplatePathForDesigner(string templatePath)
-    {
-        if (string.IsNullOrWhiteSpace(templatePath))
-            return templatePath;
-
-        if (string.Equals(Path.GetExtension(templatePath), ".fr3", StringComparison.OrdinalIgnoreCase))
-        {
-            var frxPath = Path.ChangeExtension(templatePath, ".frx");
-            if (File.Exists(frxPath))
-                return frxPath;
-        }
-
-        return templatePath;
-    }
-
-    private static bool TryOpenTemplateWithAssociation(string templatePath)
-    {
-        if (string.IsNullOrWhiteSpace(templatePath) || !File.Exists(templatePath))
-            return false;
-
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = templatePath,
-                WorkingDirectory = Path.GetDirectoryName(templatePath) ?? Environment.CurrentDirectory,
-                UseShellExecute = true
-            });
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static string? TryDetect외부 리포팅 도구DesignerPath()
-    {
-        var candidates = new List<string>();
-        var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-
-        if (!string.IsNullOrWhiteSpace(pf))
-        {
-            candidates.Add(Path.Combine(pf, "외부 리포팅 도구", "외부 리포팅 도구.Net", "Designer.exe"));
-            candidates.Add(Path.Combine(pf, "외부 리포팅 도구", "외부 리포팅 도구.Net Designer", "Designer.exe"));
-            candidates.Add(Path.Combine(pf, "외부 리포팅 도구.Net", "Designer.exe"));
-        }
-
-        if (!string.IsNullOrWhiteSpace(pf86))
-        {
-            candidates.Add(Path.Combine(pf86, "외부 리포팅 도구", "외부 리포팅 도구.Net", "Designer.exe"));
-            candidates.Add(Path.Combine(pf86, "외부 리포팅 도구", "외부 리포팅 도구.Net Designer", "Designer.exe"));
-            candidates.Add(Path.Combine(pf86, "외부 리포팅 도구.Net", "Designer.exe"));
-        }
-
-        var fixedPath = candidates.FirstOrDefault(File.Exists);
-        if (!string.IsNullOrWhiteSpace(fixedPath))
-            return fixedPath;
-
-        var localRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "외부 리포팅 도구");
-        if (Directory.Exists(localRoot))
-        {
-            var localPath = Directory.EnumerateFiles(localRoot, "Designer.exe", SearchOption.AllDirectories)
-                .FirstOrDefault();
-            if (!string.IsNullOrWhiteSpace(localPath))
-                return localPath;
-        }
-
-        return null;
-    }
-
     // ?? Customer Filter (Left Panel) ???????????????????????????????????????
     private async Task LoadCustomersAsync()
     {
-        _allCustomers = await _local.GetCustomersAsync();
+        _allCustomers = await _local.GetCustomersAsync(_session);
         DashboardCustomerCount = _allCustomers.Count;
         ApplyCustomerFilter();
     }
@@ -671,7 +315,7 @@ public sealed partial class MainViewModel : ObservableObject
 
         if (targetRow is null)
         {
-            var invoice = await _local.GetInvoiceAsync(targetId);
+            var invoice = await _local.GetInvoiceAsync(targetId, _session);
             if (invoice is null)
             {
                 System.Windows.MessageBox.Show("선택한 즐겨찾기 전표를 찾을 수 없습니다.", "알림", System.Windows.MessageBoxButton.OK);
@@ -716,7 +360,7 @@ public sealed partial class MainViewModel : ObservableObject
 
         if (row is null) return;
 
-        var inv = await _local.GetInvoiceAsync(row.Id);
+        var inv = await _local.GetInvoiceAsync(row.Id, _session);
         if (inv is null) return;
 
         foreach (var line in inv.Lines.Where(l => !l.IsDeleted))
@@ -729,7 +373,8 @@ public sealed partial class MainViewModel : ObservableObject
         // 醫뚯륫 嫄곕옒泥섍? ?좏깮?섏? ?딆? 寃쎌슦?먮쭔 ?곗륫 ?⑤꼸 怨좉컼 ?뺣낫 ?낅뜲?댄듃
         if (SelectedCustomerFilter is null)
         {
-            var customer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId);
+            var customer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId)
+                ?? await _local.GetCustomerAsync(inv.CustomerId);
             if (customer is not null)
             {
                 PreviewCustomerName = customer.NameOriginal;
@@ -753,8 +398,8 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task LoadInvoiceListAsync()
     {
         Guid? customerId = SelectedCustomerFilter?.Id;
-        var invoices = await _local.GetInvoicesAsync(FilterFrom, FilterTo, customerId);
-        var customerMap = _allCustomers.ToDictionary(c => c.Id, c => c.NameOriginal);
+        var invoices = await _local.GetInvoicesAsync(FilterFrom, FilterTo, customerId, _session);
+        var customerMap = await _local.GetCustomerNameMapAsync(invoices.Select(invoice => invoice.CustomerId));
         IEnumerable<LocalInvoice> filteredInvoices = invoices;
 
         if (!string.IsNullOrWhiteSpace(FilterCustomerName))
@@ -808,7 +453,8 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task RefreshDashboardMetricsAsync(IEnumerable<LocalInvoice>? invoices = null)
     {
-        var sourceInvoices = invoices?.ToList() ?? await _local.GetInvoicesAsync();
+        var sourceInvoices = invoices?.ToList()
+            ?? await _local.GetInvoicesAsync(from: null, to: null, customerId: null, session: _session);
         var now = DateOnly.FromDateTime(DateTime.Today);
         var prevMonthDate = now.AddMonths(-1);
 
@@ -937,9 +583,9 @@ public sealed partial class MainViewModel : ObservableObject
     {
         var selectedId = SelectedFavoriteInvoice?.InvoiceId;
         var ids = await GetFavoriteInvoiceIdsAsync();
-        var allInvoices = await _local.GetInvoicesAsync();
+        var allInvoices = await _local.GetInvoicesAsync(from: null, to: null, customerId: null, session: _session);
         var invoiceMap = allInvoices.ToDictionary(i => i.Id);
-        var customerMap = _allCustomers.ToDictionary(c => c.Id, c => c.NameOriginal);
+        var customerMap = await _local.GetCustomerNameMapAsync(allInvoices.Select(invoice => invoice.CustomerId));
 
         FavoriteInvoices.Clear();
         foreach (var id in ids)
@@ -969,6 +615,7 @@ public sealed partial class MainViewModel : ObservableObject
     private void NewInvoice()
     {
         EditInvoiceId = Guid.NewGuid();
+        _editConcurrencyStamp = string.Empty;
         EditCustomer = null;
         EditCustomerName = string.Empty;
         EditInvoiceDate = DateOnly.FromDateTime(DateTime.Today);
@@ -985,10 +632,11 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task EditInvoiceAsync()
     {
         if (SelectedInvoiceRow is null) return;
-        var inv = await _local.GetInvoiceAsync(SelectedInvoiceRow.Id);
+        var inv = await _local.GetInvoiceAsync(SelectedInvoiceRow.Id, _session);
         if (inv is null) return;
 
         EditInvoiceId = inv.Id;
+        _editConcurrencyStamp = inv.ConcurrencyStamp;
         EditInvoiceDate = inv.InvoiceDate;
         EditVoucherType = inv.VoucherType;
         EditMemo = inv.Memo;
@@ -996,7 +644,8 @@ public sealed partial class MainViewModel : ObservableObject
         EditSupplyAmount = inv.SupplyAmount;
         EditVatAmount = inv.VatAmount;
 
-        EditCustomer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId);
+        EditCustomer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId)
+            ?? await _local.GetCustomerAsync(inv.CustomerId);
         EditCustomerName = EditCustomer?.NameOriginal ?? string.Empty;
 
         EditLines.Clear();
@@ -1024,7 +673,33 @@ public sealed partial class MainViewModel : ObservableObject
             Lines = lines.Select(l => l.ToLocal(EditInvoiceId)).ToList()
         };
 
-        await _local.SaveInvoiceAsync(inv);
+        var saveContext = new InvoiceSaveContext
+        {
+            Username = _session.User?.Username ?? "local-user",
+            Role = _session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = _session.OfficeCode,
+            ForceOverride = false,
+            ExpectedConcurrencyStamp = string.IsNullOrWhiteSpace(_editConcurrencyStamp)
+                ? null
+                : _editConcurrencyStamp
+        };
+
+        var saveResult = await _local.SaveInvoiceAsync(inv, saveContext, _session);
+        if (!saveResult.Success)
+        {
+            System.Windows.MessageBox.Show(
+                saveResult.Message,
+                saveResult.ConcurrencyConflict
+                    ? "동시 수정 충돌"
+                    : saveResult.PermissionDenied ? "권한 없음" : "저장 실패",
+                System.Windows.MessageBoxButton.OK,
+                saveResult.ConcurrencyConflict || saveResult.PermissionDenied
+                    ? System.Windows.MessageBoxImage.Warning
+                    : System.Windows.MessageBoxImage.Error);
+            return;
+        }
+
+        _editConcurrencyStamp = saveResult.SavedConcurrencyStamp;
         await LoadInvoiceListAsync();
         System.Windows.MessageBox.Show("??λ릺?덉뒿?덈떎.", "?뚮┝", System.Windows.MessageBoxButton.OK);
     }
@@ -1038,7 +713,19 @@ public sealed partial class MainViewModel : ObservableObject
             System.Windows.MessageBoxButton.YesNo);
         if (confirm != System.Windows.MessageBoxResult.Yes) return;
 
-        await _local.DeleteInvoiceAsync(SelectedInvoiceRow.Id);
+        var result = await _local.DeleteInvoiceAsync(SelectedInvoiceRow.Id, _session);
+        if (!result.Success)
+        {
+            System.Windows.MessageBox.Show(
+                result.Message,
+                result.PermissionDenied ? "권한 없음" : "삭제 실패",
+                System.Windows.MessageBoxButton.OK,
+                result.PermissionDenied
+                    ? System.Windows.MessageBoxImage.Warning
+                    : System.Windows.MessageBoxImage.Error);
+            return;
+        }
+
         await LoadInvoiceListAsync();
     }
 
@@ -1072,7 +759,7 @@ public sealed partial class MainViewModel : ObservableObject
         if (SelectedInvoiceRow is null) return;
         PaymentInvoice = SelectedInvoiceRow;
 
-        var inv = await _local.GetInvoiceAsync(SelectedInvoiceRow.Id);
+        var inv = await _local.GetInvoiceAsync(SelectedInvoiceRow.Id, _session);
         if (inv is null) return;
 
         PaymentRows.Clear();
@@ -1101,7 +788,7 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        var targetInvoice = await _local.GetInvoiceAsync(PaymentInvoice.Id);
+        var targetInvoice = await _local.GetInvoiceAsync(PaymentInvoice.Id, _session);
         if (targetInvoice is null)
             return;
 
@@ -1121,10 +808,21 @@ public sealed partial class MainViewModel : ObservableObject
         {
             if (row.Amount == 0) continue;
             row.InvoiceId = PaymentInvoice.Id;
-            await _local.SavePaymentAsync(row.ToLocal());
+            var result = await _local.SavePaymentAsync(row.ToLocal(), _session);
+            if (!result.Success)
+            {
+                System.Windows.MessageBox.Show(
+                    result.Message,
+                    result.PermissionDenied ? "권한 없음" : "저장 실패",
+                    System.Windows.MessageBoxButton.OK,
+                    result.PermissionDenied
+                        ? System.Windows.MessageBoxImage.Warning
+                        : System.Windows.MessageBoxImage.Error);
+                return;
+            }
         }
 
-        var inv = await _local.GetInvoiceAsync(PaymentInvoice.Id);
+        var inv = await _local.GetInvoiceAsync(PaymentInvoice.Id, _session);
         if (inv is not null) RecalcPaymentTotals(inv);
         await LoadInvoiceListAsync();
         System.Windows.MessageBox.Show("수금이 저장되었습니다.", "알림", System.Windows.MessageBoxButton.OK);
@@ -1149,7 +847,7 @@ public sealed partial class MainViewModel : ObservableObject
                 return;
             }
 
-            var inv = await _local.GetInvoiceAsync(target.Id);
+            var inv = await _local.GetInvoiceAsync(target.Id, _session);
             var company = await _local.GetCompanyProfileAsync();
 
             if (inv is null || company is null)
@@ -1158,7 +856,8 @@ public sealed partial class MainViewModel : ObservableObject
                 return;
             }
 
-            var customer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId);
+            var customer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId)
+                ?? await _local.GetCustomerAsync(inv.CustomerId);
             if (customer is null)
             {
                 System.Windows.MessageBox.Show("거래처 정보를 찾을 수 없습니다.", "오류", System.Windows.MessageBoxButton.OK);
@@ -1172,10 +871,13 @@ public sealed partial class MainViewModel : ObservableObject
                 printWithDate: true,
                 printWithPrice: true);
             var previewDocument = _invoicePrintService.BuildFixedDocument(printModel);
+            var printDocumentName = inv.VoucherType == VoucherType.Purchase
+                ? "매입명세서"
+                : "거래명세서";
             var previewViewModel = new PrintPreviewViewModel(
                 previewDocument,
                 _invoicePrintService,
-                $"거래명세서_{inv.InvoiceDate:yyyyMMdd}_{customer.NameOriginal}");
+                $"{printDocumentName}_{inv.InvoiceDate:yyyyMMdd}_{customer.NameOriginal}");
             var previewWindow = new PrintPreviewWindow(previewViewModel)
             {
                 Owner = GetActiveWindow()
@@ -1186,37 +888,11 @@ public sealed partial class MainViewModel : ObservableObject
         catch (Exception ex)
         {
             System.Windows.MessageBox.Show(
-                $"거래명세서 인쇄 중 오류가 발생했습니다.\n{ex.Message}",
+                $"전표 인쇄 중 오류가 발생했습니다.\n{ex.Message}",
                 "오류",
                 System.Windows.MessageBoxButton.OK,
                 System.Windows.MessageBoxImage.Error);
         }
-    }
-
-    private async Task<PrintTemplateOption?> ResolveDefaultStatementTemplateAsync()
-    {
-        if (SelectedStatementTemplate is not null)
-            return SelectedStatementTemplate;
-
-        var templates = _templateCatalog.GetStatementTemplates();
-        if (templates.Count == 0)
-            return null;
-
-        var savedTemplateId = await _local.GetSettingAsync(PrintTemplateCatalogService.DefaultStatementTemplateSettingKey);
-        return PrintTemplateCatalogService.ResolvePreferredTemplate(templates, savedTemplateId, "거래명1/2");
-    }
-
-    private PrintTemplateOption? ResolveRuntimeStatementTemplate(PrintTemplateOption? selectedTemplate)
-    {
-        var templates = StatementTemplates.ToList();
-        if (templates.Count == 0)
-            templates = _templateCatalog.GetStatementTemplates().ToList();
-
-        if (selectedTemplate is { IsBuiltIn: false })
-            return selectedTemplate;
-
-        return PrintTemplateCatalogService.ResolveLegacyTemplateForPrintType(templates, "거래명1/2")
-            ?? selectedTemplate;
     }
 
     private async Task<InvoicePrintModel> LoadOrCreateInvoicePrintModelAsync(

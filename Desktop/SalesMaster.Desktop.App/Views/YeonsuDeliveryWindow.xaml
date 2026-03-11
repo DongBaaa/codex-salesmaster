@@ -1,0 +1,245 @@
+<Window x:Class="SalesMaster.Desktop.App.Views.YeonsuDeliveryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:conv="clr-namespace:SalesMaster.Desktop.App.Converters"
+        Title="납품내역"
+        Height="760"
+        Width="1320"
+        WindowStartupLocation="CenterOwner"
+        Background="#151F2E"
+        KeyDown="Window_KeyDown">
+    <Window.Resources>
+        <conv:DateOnlyConverter x:Key="DateOnlyConverter"/>
+
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="FontSize" Value="14"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="FontSize" Value="14"/>
+        </Style>
+        <Style TargetType="DatePicker">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="MinWidth" Value="168"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="Padding" Value="14,7"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="MinWidth" Value="92"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="#5D7593"/>
+            <Setter Property="Background" Value="#435A72"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="14"/>
+        </Style>
+        <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#2D8DE0"/>
+            <Setter Property="BorderBrush" Value="#2D8DE0"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#47A1F1"/>
+                    <Setter Property="BorderBrush" Value="#47A1F1"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="#1E2D40"/>
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="BorderBrush" Value="#2E4060"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#2E4060"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="AlternatingRowBackground" Value="#223754"/>
+            <Setter Property="RowBackground" Value="#1E2D40"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="SelectionMode" Value="Single"/>
+            <Setter Property="SelectionUnit" Value="FullRow"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#1A2B4A"/>
+            <Setter Property="Foreground" Value="#4FC3F7"/>
+            <Setter Property="Padding" Value="10,7"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Background="#1A2B4A"
+                Padding="12"
+                CornerRadius="6"
+                BorderBrush="#2E4060"
+                BorderThickness="1">
+            <StackPanel>
+                <TextBlock Text="납품내역"
+                           FontSize="22"
+                           FontWeight="Bold"
+                           Foreground="#4FC3F7"/>
+                <TextBlock Text="연수구 최근 납품순으로 조회됩니다."
+                           Foreground="#9FB3C8"
+                           Margin="0,4,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Row="1"
+                Margin="0,10,0,0"
+                Background="#1A2B4A"
+                Padding="12"
+                CornerRadius="6"
+                BorderBrush="#2E4060"
+                BorderThickness="1">
+            <StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="340"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0"
+                               Text="거래처 검색"
+                               VerticalAlignment="Center"
+                               Margin="0,0,12,0"/>
+                    <TextBox Grid.Column="1"
+                             Text="{Binding CustomerSearchText, UpdateSourceTrigger=PropertyChanged}"
+                             Margin="0,0,10,0"/>
+                    <Button Grid.Column="2"
+                            Content="검색"
+                            Command="{Binding SearchCustomerCommand}"
+                            Margin="0,0,12,0"/>
+                    <ComboBox Grid.Column="3"
+                              ItemsSource="{Binding Customers}"
+                              SelectedItem="{Binding SelectedCustomer}"
+                              DisplayMemberPath="NameOriginal"/>
+                </Grid>
+
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="170"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="170"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="130"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0"
+                               Text="기간 / 창고"
+                               VerticalAlignment="Center"
+                               Margin="0,0,12,0"/>
+                    <DatePicker Grid.Column="1"
+                                SelectedDate="{Binding FromDate, Converter={StaticResource DateOnlyConverter}}"
+                                SelectedDateFormat="Short"/>
+                    <TextBlock Grid.Column="2"
+                               Text="~"
+                               VerticalAlignment="Center"
+                               Margin="10,0"/>
+                    <DatePicker Grid.Column="3"
+                                SelectedDate="{Binding ToDate, Converter={StaticResource DateOnlyConverter}}"
+                                SelectedDateFormat="Short"
+                                Margin="0,0,14,0"/>
+                    <ComboBox Grid.Column="5"
+                              ItemsSource="{Binding WarehouseOptions}"
+                              SelectedItem="{Binding SelectedWarehouseOption}"
+                              Margin="0,0,14,0"/>
+                    <Button Grid.Column="6"
+                            Content="조회"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Command="{Binding LoadDeliveriesCommand}"
+                            Margin="0,0,8,0"/>
+                    <Button Grid.Column="7"
+                            Content="초기화"
+                            Command="{Binding ResetFiltersCommand}"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Row="2"
+                Margin="0,10,0,0"
+                Background="#1A2B4A"
+                CornerRadius="6"
+                BorderBrush="#2E4060"
+                BorderThickness="1">
+            <DataGrid x:Name="DeliveryRowsDataGrid"
+                      ItemsSource="{Binding Deliveries}"
+                      SelectedItem="{Binding SelectedDelivery}"
+                      IsReadOnly="True"
+                      BorderThickness="0"
+                      MouseDoubleClick="DeliveryRowsDataGrid_MouseDoubleClick">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="납품일" Binding="{Binding DeliveryDateDisplay}" Width="110"/>
+                    <DataGridTextColumn Header="거래처" Binding="{Binding CustomerName}" Width="180"/>
+                    <DataGridTextColumn Header="품목 요약" Binding="{Binding ItemSummary}" Width="280"/>
+                    <DataGridTextColumn Header="합계금액" Binding="{Binding TotalAmount, StringFormat=N0}" Width="120"/>
+                    <DataGridTextColumn Header="출고창고" Binding="{Binding WarehouseDisplay}" Width="120"/>
+                    <DataGridTextColumn Header="메모" Binding="{Binding Memo}" Width="*"/>
+                    <DataGridTextColumn Header="마지막 저장자" Binding="{Binding LastSavedBy}" Width="120"/>
+                    <DataGridTextColumn Header="마지막 저장시각" Binding="{Binding LastSavedAtDisplay}" Width="170"/>
+                    <DataGridTextColumn Header="버전" Binding="{Binding VersionNumber}" Width="70"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Border>
+
+        <Border Grid.Row="3"
+                Margin="0,10,0,0"
+                Background="#122038"
+                BorderBrush="#2E4060"
+                BorderThickness="1"
+                CornerRadius="6"
+                Padding="10">
+            <DockPanel LastChildFill="False">
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+                    <ProgressBar Width="260"
+                                 Height="14"
+                                 IsIndeterminate="{Binding IsBusy}"
+                                 VerticalAlignment="Center"
+                                 Margin="0,0,12,0"/>
+                    <TextBlock Text="{Binding StatusMessage}"
+                               VerticalAlignment="Center"
+                               Foreground="#90CAF9"/>
+                </StackPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button Content="전표 열기"
+                            Width="110"
+                            Margin="0,0,8,0"
+                            Click="OpenInvoiceButton_Click"/>
+                    <Button Content="닫기"
+                            Width="110"
+                            Click="CloseButton_Click"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>

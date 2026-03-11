@@ -9,7 +9,7 @@
 - [ ] `PrintTemplate` + `PrintTemplateVersion` 엔티티 활용 (이미 DB 스키마 존재)
 - [ ] 드래그 앤 드롭 레이아웃 에디터 (WPF Canvas)
 - [ ] JSON 직렬화로 템플릿 저장/복원
-- [ ] 외부 리포팅 도구 또는 RDLC 통합 검토
+- [ ] WPF/QuestPDF 기반 인쇄 편집 고도화 검토
 
 ---
 

@@ -1,9 +1,0 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
-<Report ScriptLanguage="CSharp" ReportInfo.Created="02/27/2026 15:54:23" ReportInfo.Modified="02/27/2026 15:54:23" ReportInfo.CreatorVersion="2026.1.3.0">
-  <Dictionary/>
-  <ReportPage Name="Page1" Watermark.Font="Arial, 60pt">
-    <ReportTitleBand Name="ReportTitle1" Height="75.6">
-      <TextObject Name="Text1" Width="378" Height="37.8" Text="거래명세서" Font="Arial, 10pt"/>
-    </ReportTitleBand>
-  </ReportPage>
-</Report>

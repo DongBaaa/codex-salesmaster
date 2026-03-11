@@ -108,6 +108,7 @@
                         <RowDefinition Height="30"/>
                         <RowDefinition Height="30"/>
                         <RowDefinition Height="30"/>
+                        <RowDefinition Height="30"/>
                     </Grid.RowDefinitions>
 
                     <Label Grid.Row="0" Grid.Column="0" Content="거래처명"/>
@@ -136,6 +137,11 @@
                     <ComboBox Grid.Row="3" Grid.Column="3"
                               ItemsSource="{Binding PriceGrades}"
                               SelectedItem="{Binding PriceGrade}"/>
+
+                    <Label Grid.Row="4" Grid.Column="0" Content="담당지점"/>
+                    <ComboBox Grid.Row="4" Grid.Column="1"
+                              ItemsSource="{Binding OfficeCodes}"
+                              SelectedItem="{Binding ResponsibleOfficeCode}"/>
                 </Grid>
 
                 <Separator Background="#2E4060" Margin="0,6"/>

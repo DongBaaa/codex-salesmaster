@@ -1,9 +1,11 @@
-﻿<Window x:Class="SalesMaster.Desktop.App.Views.PeriodLedgerWindow"
+<Window x:Class="SalesMaster.Desktop.App.Views.PeriodLedgerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="자료 기간별 집계"
-        Height="760"
-        Width="860"
+        Width="1120"
+        Height="840"
+        MinWidth="1040"
+        MinHeight="760"
         WindowStartupLocation="CenterOwner"
         Background="#151F2E"
         ResizeMode="CanResize">
@@ -17,29 +19,41 @@
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Padding" Value="8,5"/>
-            <Setter Property="Height" Value="40"/>
+            <Setter Property="Height" Value="36"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="FontSize" Value="14"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderBrush" Value="#4A6382"/>
-            <Setter Property="Padding" Value="6,4"/>
-            <Setter Property="Height" Value="40"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="FontSize" Value="14"/>
         </Style>
         <Style TargetType="DatePicker">
             <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderBrush" Value="#4A6382"/>
-            <Setter Property="Height" Value="40"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Width" Value="220"/>
+        </Style>
+        <Style TargetType="{x:Type DatePickerTextBox}">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="8,0,48,0"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style x:Key="BaseButtonStyle" TargetType="Button">
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
-            <Setter Property="FontSize" Value="16"/>
-            <Setter Property="Padding" Value="14,8"/>
-            <Setter Property="Height" Value="40"/>
-            <Setter Property="MinWidth" Value="90"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Padding" Value="14,7"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="MinWidth" Value="96"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="BorderBrush" Value="#5D7593"/>
             <Setter Property="Background" Value="#435A72"/>
@@ -77,7 +91,7 @@
             <Setter Property="Background" Value="#2D8DE0"/>
             <Setter Property="BorderBrush" Value="#2D8DE0"/>
             <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="MinWidth" Value="140"/>
+            <Setter Property="MinWidth" Value="136"/>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter Property="Background" Value="#47A1F1"/>
@@ -92,15 +106,24 @@
         <Style TargetType="CheckBox">
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="FontSize" Value="13"/>
         </Style>
         <Style TargetType="RadioButton">
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
-            <Setter Property="Margin" Value="0,0,0,6"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+        <Style x:Key="CardBorderStyle" TargetType="Border">
+            <Setter Property="Background" Value="#1A2B4A"/>
+            <Setter Property="Padding" Value="14"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="BorderBrush" Value="#2E4060"/>
+            <Setter Property="BorderThickness" Value="1"/>
         </Style>
     </Window.Resources>
 
-    <Grid Margin="14">
+    <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -109,172 +132,304 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+        <Border Grid.Row="0" Style="{StaticResource CardBorderStyle}" Padding="24,20">
             <StackPanel>
-                <TextBlock Text="자료 기간별 집계" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
-                <TextBlock Text="전체자료 집계 - 거래처/판매/구매/수금지불 원장" Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                <TextBlock Text="자료 기간별 집계"
+                           FontSize="26"
+                           FontWeight="Bold"
+                           Foreground="#4FC3F7"/>
+                <TextBlock Text="거래처별 집계, 판매/구매/수금지불 원장, 연수구 납품내역을 한 화면에서 정리합니다."
+                           Foreground="#9FB3C8"
+                           Margin="0,6,0,0"
+                           FontSize="14"
+                           TextWrapping="Wrap"/>
             </StackPanel>
         </Border>
 
-        <Border Grid.Row="1" Margin="0,10,0,0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+        <Border Grid.Row="1"
+                Margin="0,14,0,0"
+                Style="{StaticResource CardBorderStyle}">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="260"/>
+                    <ColumnDefinition Width="2.2*"/>
+                    <ColumnDefinition Width="290"/>
                 </Grid.ColumnDefinitions>
 
-                <StackPanel Grid.Column="0">
-                    <TextBlock Text="고객(거래처) 찾기" Margin="0,0,0,6"/>
-                    <Grid Width="730">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,16,0">
+                    <TextBlock Text="고객(거래처) 선택"
+                               FontSize="18"
+                               FontWeight="Bold"
+                               Foreground="#90CAF9"/>
+                    <TextBlock Text="개별업체집계일 때는 거래처를 선택하고, 전체업체집계일 때는 검색 결과를 참고만 합니다."
+                               Margin="0,6,0,0"
+                               Foreground="#9FB3C8"
+                               TextWrapping="Wrap"/>
+
+                    <Grid Margin="0,14,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="116"/>
                         </Grid.ColumnDefinitions>
-
-                        <TextBox Grid.Row="0"
-                                 Grid.Column="0"
+                        <TextBox Grid.Column="0"
                                  Text="{Binding CustomerSearchText, UpdateSourceTrigger=PropertyChanged}"
                                  IsEnabled="{Binding CanSelectCustomer}"/>
-                        <Button Grid.Row="0"
-                                Grid.Column="1"
+                        <Button Grid.Column="1"
                                 Content="찾기"
                                 Style="{StaticResource OutlineButtonStyle}"
                                 Margin="10,0,0,0"
-                                Width="110"
                                 Command="{Binding SearchCustomerCommand}"
                                 IsEnabled="{Binding CanSelectCustomer}"/>
-                        <ComboBox Grid.Row="1"
-                                  Grid.Column="0"
-                                  Grid.ColumnSpan="2"
-                                  Margin="0,10,0,0"
-                                  IsEnabled="{Binding CanSelectCustomer}"
-                                  ItemsSource="{Binding Customers}"
-                                  SelectedItem="{Binding SelectedCustomer}"
-                                  DisplayMemberPath="NameOriginal"/>
                     </Grid>
+
+                    <ComboBox Margin="0,12,0,0"
+                              IsEnabled="{Binding CanSelectCustomer}"
+                              ItemsSource="{Binding Customers}"
+                              SelectedItem="{Binding SelectedCustomer}"
+                              DisplayMemberPath="NameOriginal"/>
                 </StackPanel>
 
-                <Border Grid.Column="1" Margin="10,0,0,0" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="4" Padding="10">
+                <Border Grid.Column="1"
+                        Background="#122038"
+                        BorderBrush="#2E4060"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="14">
                     <StackPanel>
-                        <TextBlock Text="[ 고객/거래처 정보 ]" Foreground="#90CAF9" FontWeight="Bold"/>
-                        <TextBlock Margin="0,10,0,0" Text="{Binding ScopeHintMessage}" Foreground="#EF9A9A" TextWrapping="Wrap"/>
-                        <TextBlock Margin="0,8,0,0" Text="선택거래처" Foreground="#9FB3C8"/>
-                        <TextBlock Text="{Binding SelectedCustomer.NameOriginal}" FontWeight="Bold"/>
+                        <TextBlock Text="[ 고객/거래처 정보 ]"
+                                   Foreground="#90CAF9"
+                                   FontWeight="Bold"
+                                   FontSize="17"/>
+                        <TextBlock Margin="0,12,0,0"
+                                   Text="{Binding ScopeHintMessage}"
+                                   Foreground="#EF9A9A"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock Margin="0,14,0,0"
+                                   Text="선택거래처"
+                                   Foreground="#9FB3C8"/>
+                        <TextBlock Text="{Binding SelectedCustomer.NameOriginal, TargetNullValue=선택된 거래처 없음}"
+                                   FontWeight="Bold"
+                                   FontSize="17"
+                                   Margin="0,4,0,0"
+                                   TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
             </Grid>
         </Border>
 
-        <Border Grid.Row="2" Margin="0,10,0,0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+        <Border Grid.Row="2"
+                Margin="0,14,0,0"
+                Style="{StaticResource CardBorderStyle}">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="2.2*"/>
                     <ColumnDefinition Width="260"/>
                 </Grid.ColumnDefinitions>
 
-                <StackPanel Grid.Column="0">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
+                <Grid Grid.Column="0" Margin="0,0,18,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="96"/>
+                        <ColumnDefinition Width="96"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="220"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="220"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
 
-                        <Button Grid.Row="0"
-                                Grid.Column="0"
-                                Content="전월"
-                                Style="{StaticResource SecondaryButtonStyle}"
-                                Width="88"
-                                Command="{Binding SetPreviousMonthCommand}"/>
-                        <Button Grid.Row="0"
-                                Grid.Column="1"
-                                Content="당월"
-                                Style="{StaticResource SecondaryButtonStyle}"
-                                Margin="8,0,14,0"
-                                Width="88"
-                                Command="{Binding SetCurrentMonthCommand}"/>
-                        <TextBlock Grid.Row="0" Grid.Column="2" Text="기간" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                        <DatePicker Grid.Row="0" Grid.Column="3" SelectedDate="{Binding FromDate}" Width="160" VerticalAlignment="Center"/>
-                        <TextBlock Grid.Row="0" Grid.Column="4" Text="~" Margin="8,0" VerticalAlignment="Center"/>
-                        <DatePicker Grid.Row="0" Grid.Column="5" SelectedDate="{Binding ToDate}" Width="160" VerticalAlignment="Center"/>
+                    <Button Grid.Row="0"
+                            Grid.Column="0"
+                            Content="전월"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Margin="0,0,8,0"
+                            Command="{Binding SetPreviousMonthCommand}"/>
+                    <Button Grid.Row="0"
+                            Grid.Column="1"
+                            Content="당월"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Margin="0,0,18,0"
+                            Command="{Binding SetCurrentMonthCommand}"/>
+                    <TextBlock Grid.Row="0"
+                               Grid.Column="2"
+                               Text="기간"
+                               VerticalAlignment="Center"
+                               FontSize="14"
+                               Margin="0,0,10,0"/>
+                    <DatePicker Grid.Row="0"
+                                Grid.Column="3"
+                                SelectedDate="{Binding FromDate}"
+                                SelectedDateFormat="Short"
+                                Margin="0,0,8,0"/>
+                    <TextBlock Grid.Row="0"
+                               Grid.Column="4"
+                               Text="~"
+                               VerticalAlignment="Center"
+                               FontSize="15"
+                               Margin="8,0"/>
+                    <DatePicker Grid.Row="0"
+                                Grid.Column="5"
+                                SelectedDate="{Binding ToDate}"
+                                SelectedDateFormat="Short"
+                                Margin="8,0,0,0"/>
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="구분" Margin="0,12,8,0" VerticalAlignment="Center"/>
-                        <ComboBox Grid.Row="1"
-                                  Grid.Column="1"
-                                  Grid.ColumnSpan="2"
-                                  Margin="0,12,0,0"
-                                  Width="210"
-                                  ItemsSource="{Binding ScopeOptions}"
-                                  SelectedItem="{Binding SelectedScopeOption}"/>
-                    </Grid>
-                </StackPanel>
+                    <TextBlock Grid.Row="1"
+                               Grid.Column="0"
+                               Text="구분"
+                               VerticalAlignment="Center"
+                               FontSize="14"
+                               Margin="0,16,10,0"/>
+                    <ComboBox Grid.Row="1"
+                              Grid.Column="1"
+                              Grid.ColumnSpan="5"
+                              Margin="0,14,0,0"
+                              MinWidth="260"
+                              ItemsSource="{Binding ScopeOptions}"
+                              SelectedItem="{Binding SelectedScopeOption}"/>
+                </Grid>
 
-                <StackPanel Grid.Column="1" Margin="10,0,0,0">
-                    <TextBlock Text="옵션" FontWeight="Bold" Foreground="#90CAF9" Margin="0,0,0,6"/>
-                    <CheckBox Content="순이익표시" IsChecked="{Binding ShowProfit}" Margin="0,0,0,4"/>
-                    <CheckBox Content="가나다라순 정렬" IsChecked="{Binding SortByCustomerName}"/>
-                </StackPanel>
+                <Border Grid.Column="1"
+                        Background="#122038"
+                        BorderBrush="#2E4060"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="14">
+                    <StackPanel>
+                        <TextBlock Text="옵션"
+                                   FontWeight="Bold"
+                                   Foreground="#90CAF9"
+                                   FontSize="17"/>
+                        <CheckBox Content="순이익 표시"
+                                  IsChecked="{Binding ShowProfit}"
+                                  Margin="0,14,0,8"/>
+                        <CheckBox Content="가나다라순 정렬"
+                                  IsChecked="{Binding SortByCustomerName}"/>
+                    </StackPanel>
+                </Border>
             </Grid>
         </Border>
 
-        <Border Grid.Row="3" Margin="0,10,0,0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
-            <Grid>
+        <Grid Grid.Row="3" Margin="0,14,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.25*"/>
+                <ColumnDefinition Width="18"/>
+                <ColumnDefinition Width="0.95*"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource CardBorderStyle}">
                 <StackPanel>
-                    <TextBlock Text="집계 종류" Foreground="#90CAF9" FontWeight="Bold" Margin="0,0,0,10"/>
+                    <TextBlock Text="집계 종류"
+                               Foreground="#90CAF9"
+                               FontWeight="Bold"
+                               FontSize="18"
+                               Margin="0,0,0,12"/>
                     <RadioButton Content="1. 기간내의 판매+구매 거래 원장" IsChecked="{Binding IsSalesPurchaseSelected}"/>
                     <RadioButton Content="2. 기간내의 판매/매출 거래 원장" IsChecked="{Binding IsSalesSelected}"/>
                     <RadioButton Content="3. 기간내의 구매/매입 거래 원장" IsChecked="{Binding IsPurchaseSelected}"/>
                     <RadioButton Content="4. 기간내의 수금/지불 거래 원장" IsChecked="{Binding IsReceiptPaymentSelected}"/>
+                    <RadioButton Content="5. 기간내의 연수구 납품내역" IsChecked="{Binding IsYeonsuDeliverySelected}"/>
+                </StackPanel>
+            </Border>
 
-                    <Border Margin="0,16,0,0" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="4" Padding="10">
+            <Border Grid.Column="2" Style="{StaticResource CardBorderStyle}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Text="진행 상태"
+                               Foreground="#90CAF9"
+                               FontWeight="Bold"
+                               FontSize="18"/>
+
+                    <Border Grid.Row="1"
+                            Margin="0,14,0,0"
+                            Padding="14"
+                            Background="#122038"
+                            BorderBrush="#2E4060"
+                            BorderThickness="1"
+                            CornerRadius="6">
                         <StackPanel>
-                            <TextBlock Text="진행 상태" Foreground="#90CAF9" FontWeight="Bold"/>
-                            <TextBlock Text="{Binding StatusMessage}" Margin="0,6,0,0" TextWrapping="Wrap"/>
-                            <TextBlock Text="{Binding LastExportPath}" Margin="0,6,0,0" Foreground="#A5D6A7" TextWrapping="Wrap"/>
+                            <TextBlock Text="{Binding StatusMessage}"
+                                       TextWrapping="Wrap"
+                                       FontSize="13"/>
+                            <TextBlock Text="{Binding LastExportPath}"
+                                       Margin="0,10,0,0"
+                                       Foreground="#A5D6A7"
+                                       TextWrapping="Wrap"
+                                       FontSize="12"/>
                         </StackPanel>
                     </Border>
-                </StackPanel>
-            </Grid>
-        </Border>
+
+                    <Border Grid.Row="2"
+                            Margin="0,14,0,0"
+                            Padding="14"
+                            Background="#122038"
+                            BorderBrush="#2E4060"
+                            BorderThickness="1"
+                            CornerRadius="6">
+                        <StackPanel>
+                            <TextBlock Text="안내"
+                                       Foreground="#90CAF9"
+                                       FontWeight="Bold"
+                                       FontSize="15"/>
+                            <TextBlock Text="전체업체집계는 거래처 선택 없이 바로 실행할 수 있습니다."
+                                       Margin="0,10,0,0"
+                                       TextWrapping="Wrap"/>
+                            <TextBlock Text="개별업체집계는 거래처를 선택해야 집계가 시작됩니다."
+                                       Margin="0,8,0,0"
+                                       TextWrapping="Wrap"/>
+                            <TextBlock Text="진행 중에는 하단 상태 막대가 움직이며 완료 파일 경로가 위 카드에 표시됩니다."
+                                       Margin="0,8,0,0"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+        </Grid>
 
         <Border Grid.Row="4"
-                Margin="0,10,0,0"
+                Margin="0,14,0,0"
                 Background="#122038"
                 BorderBrush="#2E4060"
                 BorderThickness="1"
-                CornerRadius="6"
-                Padding="10,10,14,10">
-            <DockPanel LastChildFill="False">
-                <ProgressBar DockPanel.Dock="Left"
-                             Width="360"
-                             Height="16"
+                CornerRadius="8"
+                Padding="14,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <ProgressBar Grid.Column="0"
+                             Width="240"
+                             Height="12"
+                             Margin="0,0,14,0"
+                             Background="#203454"
+                             Foreground="#48A8F3"
                              IsIndeterminate="{Binding IsBusy}"
-                             VerticalAlignment="Center"
-                             Margin="0,0,20,0"/>
-                <StackPanel DockPanel.Dock="Right"
-                            Orientation="Horizontal"
-                            HorizontalAlignment="Right">
-                    <Button Content="집계시작"
-                            Style="{StaticResource PrimaryButtonStyle}"
-                            Command="{Binding StartAggregationCommand}"
-                            Margin="0,0,10,0"/>
-                    <Button Content="닫기"
-                            Style="{StaticResource SecondaryButtonStyle}"
-                            Width="110"
-                            Click="CloseButton_Click"/>
-                </StackPanel>
-            </DockPanel>
+                             VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="1"
+                           Text="집계 실행 중에는 진행 표시가 활성화됩니다."
+                           Foreground="#8EA6C4"
+                           VerticalAlignment="Center"/>
+                <Button Grid.Column="2"
+                        Content="집계시작"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Command="{Binding StartAggregationCommand}"
+                        Margin="0,0,10,0"/>
+                <Button Grid.Column="3"
+                        Content="닫기"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        MinWidth="110"
+                        Click="CloseButton_Click"/>
+            </Grid>
         </Border>
     </Grid>
 </Window>

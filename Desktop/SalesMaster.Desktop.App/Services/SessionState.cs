@@ -10,34 +10,56 @@ public sealed class SessionState
 {
     public string? Token { get; private set; }
     public UserSessionDto? User { get; private set; }
+    public string OfficeCode { get; private set; } = DomainConstants.OfficeUznet;
     public bool IsOfflineMode { get; private set; }
+    public Guid SessionId { get; private set; } = Guid.NewGuid();
     public bool IsLoggedIn => User is not null;
+    public bool IsAdmin => DomainConstants.IsAdminRole(User?.Role);
 
     public void SetSession(string token, UserSessionDto user)
     {
+        SessionId = Guid.NewGuid();
         Token = token;
         User = user;
         IsOfflineMode = false;
+        OfficeCode = ResolveOfficeCode(user.Role);
     }
 
     public void SetOfflineSession(UserSessionDto user)
     {
+        SessionId = Guid.NewGuid();
         Token = null;
         User = user;
         IsOfflineMode = true;
+        OfficeCode = ResolveOfficeCode(user.Role);
+    }
+
+    public void SetOfficeCode(string? officeCode)
+    {
+        if (string.IsNullOrWhiteSpace(officeCode))
+            return;
+
+        OfficeCode = officeCode.Trim().ToUpperInvariant();
     }
 
     public void Clear()
     {
+        SessionId = Guid.NewGuid();
         Token = null;
         User = null;
         IsOfflineMode = false;
+        OfficeCode = DomainConstants.OfficeUznet;
     }
 
     public bool HasPermission(string permissionName)
     {
         if (User is null) return false;
-        if (User.Role == "Admin") return true;
+        if (IsAdmin) return true;
         return User.Permissions.Contains(permissionName);
     }
+
+    private static string ResolveOfficeCode(string? role)
+        => DomainConstants.IsAdminRole(role)
+            ? DomainConstants.OfficeUznet
+            : DomainConstants.OfficeYeonsu;
 }

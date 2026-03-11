@@ -151,24 +151,6 @@ public sealed class Payment : TrackedEntity
     public string Note { get; set; } = string.Empty;
 }
 
-public sealed class PrintTemplate : TrackedEntity
-{
-    public string Name { get; set; } = string.Empty;
-    public string Description { get; set; } = string.Empty;
-    public bool IsDefault { get; set; }
-    public ICollection<PrintTemplateVersion> Versions { get; set; } = new List<PrintTemplateVersion>();
-}
-
-public sealed class PrintTemplateVersion : TrackedEntity
-{
-    public Guid PrintTemplateId { get; set; }
-    public PrintTemplate? PrintTemplate { get; set; }
-    public int VersionNumber { get; set; }
-    public string TemplateJson { get; set; } = string.Empty;
-    public bool IsLocked { get; set; }
-    public string CreatedByName { get; set; } = string.Empty;
-}
-
 public sealed class AuditLog
 {
     public Guid Id { get; set; } = Guid.NewGuid();

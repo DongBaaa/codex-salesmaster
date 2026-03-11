@@ -41,6 +41,70 @@ public partial class SalesWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
 
+    private async void LoadPreviousHistoryButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_vm.SelectedCustomer is null)
+        {
+            MessageBox.Show("거래처를 먼저 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var invoices = await _vm.GetPreviousInvoicesAsync();
+        if (invoices.Count == 0)
+        {
+            MessageBox.Show("불러올 이전 기록이 없습니다.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var rows = invoices
+            .Select(invoice =>
+            {
+                var activeLines = invoice.Lines.Where(line => !line.IsDeleted).ToList();
+                var displayNumber = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
+                    ? invoice.LocalTempNumber
+                    : invoice.InvoiceNumber;
+                var summary = string.Join(", ", activeLines.Select(line => line.ItemNameOriginal).Where(name => !string.IsNullOrWhiteSpace(name)).Take(4));
+                if (activeLines.Count > 4)
+                    summary += " ...";
+
+                return new InvoiceHistorySelectionRow
+                {
+                    InvoiceId = invoice.Id,
+                    InvoiceDate = invoice.InvoiceDate,
+                    InvoiceNumber = displayNumber,
+                    TotalAmount = invoice.TotalAmount,
+                    LineCount = activeLines.Count,
+                    Summary = summary,
+                    Memo = invoice.Memo ?? string.Empty
+                };
+            })
+            .ToList();
+
+        var dialog = new InvoiceHistoryWindow(rows)
+        {
+            Owner = this
+        };
+
+        if (dialog.ShowDialog() != true)
+            return;
+
+        if (_vm.Lines.Any(line => !string.IsNullOrWhiteSpace(line.ItemName)))
+        {
+            var replaceExisting = MessageBox.Show(
+                "현재 입력된 항목을 선택한 이전 기록으로 교체합니다. 계속할까요?",
+                "이전기록불러오기",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (replaceExisting != MessageBoxResult.Yes)
+                return;
+        }
+
+        var selectedIds = dialog.SelectedInvoiceIds.ToHashSet();
+        var selectedInvoices = invoices.Where(invoice => selectedIds.Contains(invoice.Id)).ToList();
+        _vm.ImportPreviousInvoices(selectedInvoices, replaceExistingLines: true);
+    }
+
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
         if (_allowCloseWithoutSave) return;
@@ -81,7 +145,7 @@ public partial class SalesWindow : Window
             "거래처 등록",
             async () =>
             {
-                var customerVm = new CustomerEditViewModel(_vm.LocalStateService);
+                var customerVm = new CustomerEditViewModel(_vm.LocalStateService, _vm.SessionState);
                 await customerVm.LoadAsync();
                 var customerWindow = new CustomerEditWindow(customerVm) { Owner = this };
                 customerWindow.ShowDialog();
@@ -164,7 +228,7 @@ public partial class SalesWindow : Window
             registerButtonText = "상품 등록";
             registerAction = async () =>
             {
-                var inventoryVm = new InventoryViewModel(_vm.LocalStateService);
+                var inventoryVm = new InventoryViewModel(_vm.LocalStateService, _vm.SessionState);
                 await inventoryVm.LoadAsync();
                 inventoryVm.NewItemCommand.Execute(null);
 
