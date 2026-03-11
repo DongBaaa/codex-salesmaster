@@ -62,6 +62,7 @@ public sealed class LocalCustomer : LocalSyncEntity
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
     public Guid? CategoryId { get; set; }
+    public string TradeType { get; set; } = CustomerTradeTypes.Sales;
     public string Department { get; set; } = string.Empty;
     public string ContactPerson { get; set; } = string.Empty;
     public string BusinessNumber { get; set; } = string.Empty;
@@ -292,6 +293,33 @@ public sealed class LocalSerialLedger
     public string LastMovementType { get; set; } = string.Empty;
     public string Memo { get; set; } = string.Empty;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class LocalInventoryTransfer : LocalSyncEntity
+{
+    public string TransferNumber { get; set; } = string.Empty;
+    public DateOnly TransferDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    public string FromWarehouseCode { get; set; } = DomainConstants.WarehouseUznetMain;
+    public string ToWarehouseCode { get; set; } = DomainConstants.WarehouseYeonsuMain;
+    public string Memo { get; set; } = string.Empty;
+    public string CreatedByUsername { get; set; } = string.Empty;
+    public string LastSavedByUsername { get; set; } = string.Empty;
+    public DateTime LastSavedAtUtc { get; set; } = DateTime.UtcNow;
+    public ICollection<LocalInventoryTransferLine> Lines { get; set; } = new List<LocalInventoryTransferLine>();
+}
+
+public sealed class LocalInventoryTransferLine
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TransferId { get; set; }
+    public LocalInventoryTransfer? Transfer { get; set; }
+    public Guid? ItemId { get; set; }
+    public string ItemNameOriginal { get; set; } = string.Empty;
+    public string SpecificationOriginal { get; set; } = string.Empty;
+    public string Unit { get; set; } = string.Empty;
+    public decimal Quantity { get; set; } = 1m;
+    public string Remark { get; set; } = string.Empty;
+    public bool IsDeleted { get; set; }
 }
 
 public sealed class LocalAuditLog

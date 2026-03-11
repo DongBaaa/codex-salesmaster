@@ -159,6 +159,7 @@
                 <DataGrid.Columns>
                     <DataGridTextColumn Header="거래처명" Binding="{Binding NameOriginal, Mode=OneWay}" Width="2.3*" IsReadOnly="True"/>
                     <DataGridTextColumn Header="고객분류" Binding="{Binding CategoryName, Mode=OneWay}" Width="120" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="거래구분" Binding="{Binding TradeType, Mode=OneWay}" Width="120" IsReadOnly="True"/>
                     <DataGridTextColumn Header="사업자번호" Binding="{Binding BusinessNumber, Mode=OneWay}" Width="150" IsReadOnly="True"/>
                     <DataGridTextColumn Header="대표전화" Binding="{Binding Phone, Mode=OneWay}" Width="130" IsReadOnly="True"/>
                     <DataGridTemplateColumn Header="담당지점" Width="170">

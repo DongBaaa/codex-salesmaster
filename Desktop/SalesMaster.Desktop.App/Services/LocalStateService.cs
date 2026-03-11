@@ -1260,6 +1260,179 @@ public sealed class LocalStateService
         return OfficeMutationResult.Ok(transaction.Id, "수금/지불을 저장했습니다.");
     }
 
+    // Inventory transfers
+    public Task<List<LocalInventoryTransfer>> GetInventoryTransfersAsync(
+        DateOnly? from = null,
+        DateOnly? to = null,
+        CancellationToken ct = default)
+    {
+        var query = _db.InventoryTransfers
+            .Include(transfer => transfer.Lines.Where(line => !line.IsDeleted))
+            .AsNoTracking();
+
+        if (from.HasValue)
+            query = query.Where(transfer => transfer.TransferDate >= from.Value);
+
+        if (to.HasValue)
+            query = query.Where(transfer => transfer.TransferDate <= to.Value);
+
+        return query
+            .OrderByDescending(transfer => transfer.TransferDate)
+            .ThenByDescending(transfer => transfer.UpdatedAtUtc)
+            .ToListAsync(ct);
+    }
+
+    public Task<LocalInventoryTransfer?> GetInventoryTransferAsync(Guid transferId, CancellationToken ct = default)
+        => _db.InventoryTransfers
+            .Include(transfer => transfer.Lines.Where(line => !line.IsDeleted))
+            .AsNoTracking()
+            .FirstOrDefaultAsync(transfer => transfer.Id == transferId, ct);
+
+    public async Task<OfficeMutationResult> SaveInventoryTransferAsync(
+        LocalInventoryTransfer transfer,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (transfer is null)
+            throw new ArgumentNullException(nameof(transfer));
+
+        var now = DateTime.UtcNow;
+        var fromWarehouseCode = NormalizeWarehouseCode(
+            transfer.FromWarehouseCode,
+            session.OfficeCode,
+            DomainConstants.OfficeUznet);
+        var toWarehouseCode = NormalizeWarehouseCode(
+            transfer.ToWarehouseCode,
+            session.OfficeCode,
+            DomainConstants.OfficeYeonsu);
+
+        if (string.Equals(fromWarehouseCode, toWarehouseCode, StringComparison.OrdinalIgnoreCase))
+            return OfficeMutationResult.Denied("출발창고와 도착창고는 서로 달라야 합니다.");
+
+        var validLines = (transfer.Lines ?? new List<LocalInventoryTransferLine>())
+            .Where(line => !line.IsDeleted &&
+                           line.ItemId.HasValue &&
+                           !string.IsNullOrWhiteSpace(line.ItemNameOriginal) &&
+                           line.Quantity > 0m)
+            .ToList();
+
+        if (validLines.Count == 0)
+            return OfficeMutationResult.Denied("이동 품목을 1개 이상 입력하세요.");
+
+        var existing = await _db.InventoryTransfers
+            .IgnoreQueryFilters()
+            .Include(current => current.Lines)
+            .FirstOrDefaultAsync(current => current.Id == transfer.Id, ct);
+
+        var transferId = existing?.Id ?? (transfer.Id == Guid.Empty ? Guid.NewGuid() : transfer.Id);
+        var transferNumber = string.IsNullOrWhiteSpace(transfer.TransferNumber)
+            ? await GenerateTransferNumberAsync(transfer.TransferDate, ct)
+            : transfer.TransferNumber.Trim();
+
+        var entity = existing ?? new LocalInventoryTransfer
+        {
+            Id = transferId,
+            CreatedAtUtc = now
+        };
+
+        entity.TransferNumber = transferNumber;
+        entity.TransferDate = transfer.TransferDate;
+        entity.FromWarehouseCode = fromWarehouseCode;
+        entity.ToWarehouseCode = toWarehouseCode;
+        entity.Memo = transfer.Memo ?? string.Empty;
+        entity.CreatedByUsername = string.IsNullOrWhiteSpace(existing?.CreatedByUsername)
+            ? (session.User?.Username ?? "local-user")
+            : existing.CreatedByUsername;
+        entity.LastSavedByUsername = session.User?.Username ?? "local-user";
+        entity.LastSavedAtUtc = now;
+        entity.IsDeleted = false;
+        entity.IsDirty = true;
+        entity.UpdatedAtUtc = now;
+
+        if (existing is null)
+        {
+            entity.Lines = CloneTransferLines(validLines, transferId);
+            _db.InventoryTransfers.Add(entity);
+        }
+        else
+        {
+            _db.Entry(existing).CurrentValues.SetValues(entity);
+            _db.InventoryTransferLines.RemoveRange(existing.Lines);
+            existing.Lines.Clear();
+            foreach (var line in CloneTransferLines(validLines, transferId))
+                existing.Lines.Add(line);
+        }
+
+        _db.AuditLogs.Add(new LocalAuditLog
+        {
+            EntityName = nameof(LocalInventoryTransfer),
+            EntityId = transferId.ToString("D"),
+            Action = existing is null ? "Create" : "Update",
+            Username = session.User?.Username ?? "local-user",
+            Role = session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = session.OfficeCode,
+            BeforeJson = string.Empty,
+            AfterJson = string.Empty,
+            CreatedAtUtc = now
+        });
+
+        await _db.SaveChangesAsync(ct);
+
+        await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+        {
+            Username = session.User?.Username ?? "local-user",
+            Role = session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = session.OfficeCode,
+            ForceOverride = false
+        }, ct);
+
+        return OfficeMutationResult.Ok(
+            transferId,
+            existing is null ? "재고이동을 저장했습니다." : "재고이동을 수정했습니다.");
+    }
+
+    public async Task<OfficeMutationResult> DeleteInventoryTransferAsync(
+        Guid transferId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var transfer = await _db.InventoryTransfers
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == transferId, ct);
+        if (transfer is null)
+            return OfficeMutationResult.Missing("재고이동 기록을 찾을 수 없습니다.");
+
+        transfer.IsDeleted = true;
+        transfer.IsDirty = true;
+        transfer.UpdatedAtUtc = DateTime.UtcNow;
+        transfer.LastSavedAtUtc = transfer.UpdatedAtUtc;
+
+        _db.AuditLogs.Add(new LocalAuditLog
+        {
+            EntityName = nameof(LocalInventoryTransfer),
+            EntityId = transferId.ToString("D"),
+            Action = "Delete",
+            Username = session.User?.Username ?? "local-user",
+            Role = session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = session.OfficeCode,
+            BeforeJson = string.Empty,
+            AfterJson = string.Empty,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+
+        await _db.SaveChangesAsync(ct);
+
+        await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+        {
+            Username = session.User?.Username ?? "local-user",
+            Role = session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = session.OfficeCode,
+            ForceOverride = false
+        }, ct);
+
+        return OfficeMutationResult.Ok(transferId, "재고이동을 삭제했습니다.");
+    }
+
     // Inventory/Cost/Audit read models
     public Task<List<LocalItemWarehouseStock>> GetItemWarehouseStocksAsync(CancellationToken ct = default)
         => _db.ItemWarehouseStocks
@@ -1529,6 +1702,35 @@ public sealed class LocalStateService
         return $"{prefix}{(count + 1):D4}";
     }
 
+    private async Task<string> GenerateTransferNumberAsync(DateOnly transferDate, CancellationToken ct)
+    {
+        var yearMonth = transferDate.ToString("yyyyMM");
+        var prefix = $"TR{yearMonth}-";
+        var count = await _db.InventoryTransfers
+            .IgnoreQueryFilters()
+            .CountAsync(transfer => transfer.TransferNumber.StartsWith(prefix), ct);
+
+        return $"{prefix}{(count + 1):D4}";
+    }
+
+    private static List<LocalInventoryTransferLine> CloneTransferLines(
+        IEnumerable<LocalInventoryTransferLine> source,
+        Guid transferId)
+    {
+        return source.Select(line => new LocalInventoryTransferLine
+        {
+            Id = Guid.NewGuid(),
+            TransferId = transferId,
+            ItemId = line.ItemId,
+            ItemNameOriginal = line.ItemNameOriginal ?? string.Empty,
+            SpecificationOriginal = line.SpecificationOriginal ?? string.Empty,
+            Unit = line.Unit ?? string.Empty,
+            Quantity = line.Quantity,
+            Remark = line.Remark ?? string.Empty,
+            IsDeleted = false
+        }).ToList();
+    }
+
     private static object BuildAuditInvoice(LocalInvoice invoice)
     {
         return new
@@ -1594,257 +1796,44 @@ public sealed class LocalStateService
             .ThenBy(invoice => invoice.CreatedAtUtc)
             .ThenBy(invoice => invoice.VersionNumber)
             .ToListAsync(ct);
+        var transfers = await _db.InventoryTransfers
+            .Include(transfer => transfer.Lines.Where(line => !line.IsDeleted))
+            .Where(transfer => !transfer.IsDeleted)
+            .OrderBy(transfer => transfer.TransferDate)
+            .ThenBy(transfer => transfer.CreatedAtUtc)
+            .ToListAsync(ct);
 
         var stockMap = new Dictionary<(Guid ItemId, string WarehouseCode), decimal>();
         var layerMap = new Dictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>>();
         var serialMap = new Dictionary<string, LocalSerialLedger>(StringComparer.OrdinalIgnoreCase);
+        var timeline = invoices
+            .Select(invoice => new InventoryTimelineEntry(
+                invoice.InvoiceDate,
+                invoice.LastSavedAtUtc == default ? invoice.CreatedAtUtc : invoice.LastSavedAtUtc,
+                0,
+                invoice,
+                null))
+            .Concat(transfers.Select(transfer => new InventoryTimelineEntry(
+                transfer.TransferDate,
+                transfer.LastSavedAtUtc == default ? transfer.CreatedAtUtc : transfer.LastSavedAtUtc,
+                1,
+                null,
+                transfer)))
+            .OrderBy(entry => entry.OccurredDate)
+            .ThenBy(entry => entry.SortUtc)
+            .ThenBy(entry => entry.Sequence)
+            .ToList();
 
-        foreach (var invoice in invoices)
+        foreach (var entry in timeline)
         {
-            var warehouseCode = NormalizeWarehouseCode(
-                invoice.SourceWarehouseCode,
-                invoice.ResponsibleOfficeCode,
-                context.OfficeCode);
-
-            var invoiceHasUnsettledCost = false;
-
-            foreach (var line in invoice.Lines)
+            if (entry.Invoice is not null)
             {
-                if (line.ItemId is null)
-                    continue;
-
-                var quantity = Math.Abs(line.Quantity);
-                if (quantity <= 0)
-                    continue;
-
-                var itemId = line.ItemId.Value;
-                var key = (itemId, warehouseCode);
-                if (!stockMap.ContainsKey(key))
-                    stockMap[key] = 0m;
-
-                var serialTokens = ParseSerialTokens(line.SerialNumber);
-                foreach (var serial in serialTokens)
-                {
-                    _db.InvoiceLineSerials.Add(new LocalInvoiceLineSerial
-                    {
-                        Id = Guid.NewGuid(),
-                        InvoiceId = invoice.Id,
-                        InvoiceLineId = line.Id,
-                        ItemId = itemId,
-                        SerialNumber = serial
-                    });
-                }
-
-                if (invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement)
-                {
-                    var inboundUnitCost = ResolveUnitCost(line);
-                    var layer = new LocalStockLayer
-                    {
-                        Id = Guid.NewGuid(),
-                        ItemId = itemId,
-                        WarehouseCode = warehouseCode,
-                        SourceInvoiceId = invoice.Id,
-                        SourceInvoiceLineId = line.Id,
-                        ReceiptDate = invoice.InvoiceDate,
-                        UnitCost = inboundUnitCost,
-                        OriginalQuantity = quantity,
-                        RemainingQuantity = quantity,
-                        IsNegativePlaceholder = false,
-                        CreatedAtUtc = invoice.LastSavedAtUtc == default ? DateTime.UtcNow : invoice.LastSavedAtUtc
-                    };
-
-                    _db.StockLayers.Add(layer);
-                    if (!layerMap.TryGetValue(key, out var itemLayers))
-                    {
-                        itemLayers = new List<LocalStockLayer>();
-                        layerMap[key] = itemLayers;
-                    }
-
-                    itemLayers.Add(layer);
-                    stockMap[key] += quantity;
-
-                    _db.InventoryMovements.Add(new LocalInventoryMovement
-                    {
-                        Id = Guid.NewGuid(),
-                        InvoiceId = invoice.Id,
-                        InvoiceLineId = line.Id,
-                        ItemId = itemId,
-                        WarehouseCode = warehouseCode,
-                        MovementType = "PurchaseIn",
-                        QuantityDelta = quantity,
-                        UnitCost = inboundUnitCost,
-                        Amount = Math.Round(quantity * inboundUnitCost, 2, MidpointRounding.AwayFromZero),
-                        OccurredDate = invoice.InvoiceDate,
-                        IsSettledCost = true,
-                        IsActive = true,
-                        Note = line.ItemNameOriginal,
-                        CreatedByUsername = invoice.LastSavedByUsername,
-                        CreatedAtUtc = invoice.LastSavedAtUtc == default ? DateTime.UtcNow : invoice.LastSavedAtUtc
-                    });
-
-                    foreach (var serial in serialTokens)
-                    {
-                        var ledger = GetOrCreateSerialLedger(serialMap, serial);
-                        ledger.ItemId = itemId;
-                        ledger.WarehouseCode = warehouseCode;
-                        ledger.Status = "InStock";
-                        ledger.SourcePurchaseInvoiceId = invoice.Id;
-                        ledger.LastInvoiceId = invoice.Id;
-                        ledger.LastMovementType = "IN";
-                        ledger.SourceSalesInvoiceId = null;
-                        ledger.UpdatedAtUtc = DateTime.UtcNow;
-                    }
-                }
-                else if (invoice.VoucherType == VoucherType.Sales)
-                {
-                    var outboundQuantity = quantity;
-                    var remaining = outboundQuantity;
-                    var lineSettled = true;
-
-                    if (!layerMap.TryGetValue(key, out var itemLayers))
-                    {
-                        itemLayers = new List<LocalStockLayer>();
-                        layerMap[key] = itemLayers;
-                    }
-
-                    if (string.Equals(warehouseCode, DomainConstants.WarehouseYeonsuMain, StringComparison.OrdinalIgnoreCase))
-                    {
-                        var availableInYeonsu = itemLayers
-                            .Where(existingLayer => existingLayer.RemainingQuantity > 0)
-                            .Sum(existingLayer => existingLayer.RemainingQuantity);
-
-                        if (availableInYeonsu < remaining)
-                        {
-                            var requiredTransfer = remaining - availableInYeonsu;
-                            AutoTransferFromUznetToYeonsu(
-                                invoice,
-                                line,
-                                itemId,
-                                requiredTransfer,
-                                stockMap,
-                                layerMap);
-
-                            if (!layerMap.TryGetValue(key, out itemLayers))
-                            {
-                                itemLayers = new List<LocalStockLayer>();
-                                layerMap[key] = itemLayers;
-                            }
-                        }
-                    }
-
-                    foreach (var layer in itemLayers
-                                 .Where(existingLayer => existingLayer.RemainingQuantity > 0)
-                                 .OrderBy(existingLayer => existingLayer.ReceiptDate)
-                                 .ThenBy(existingLayer => existingLayer.CreatedAtUtc)
-                                 .ToList())
-                    {
-                        if (remaining <= 0)
-                            break;
-
-                        var consume = Math.Min(layer.RemainingQuantity, remaining);
-                        if (consume <= 0)
-                            continue;
-
-                        layer.RemainingQuantity -= consume;
-                        remaining -= consume;
-
-                        _db.CostAllocations.Add(new LocalCostAllocation
-                        {
-                            Id = Guid.NewGuid(),
-                            SalesInvoiceId = invoice.Id,
-                            SalesInvoiceLineId = line.Id,
-                            PurchaseInvoiceId = layer.SourceInvoiceId,
-                            PurchaseInvoiceLineId = layer.SourceInvoiceLineId,
-                            WarehouseCode = warehouseCode,
-                            Quantity = consume,
-                            UnitCost = layer.UnitCost,
-                            CostAmount = Math.Round(consume * layer.UnitCost, 2, MidpointRounding.AwayFromZero),
-                            IsUnsettled = false,
-                            Note = line.ItemNameOriginal,
-                            CreatedAtUtc = DateTime.UtcNow
-                        });
-
-                        _db.InventoryMovements.Add(new LocalInventoryMovement
-                        {
-                            Id = Guid.NewGuid(),
-                            InvoiceId = invoice.Id,
-                            InvoiceLineId = line.Id,
-                            ItemId = itemId,
-                            WarehouseCode = warehouseCode,
-                            MovementType = "SalesOut",
-                            QuantityDelta = -consume,
-                            UnitCost = layer.UnitCost,
-                            Amount = Math.Round(consume * layer.UnitCost, 2, MidpointRounding.AwayFromZero),
-                            OccurredDate = invoice.InvoiceDate,
-                            IsSettledCost = true,
-                            IsActive = true,
-                            Note = line.ItemNameOriginal,
-                            CreatedByUsername = invoice.LastSavedByUsername,
-                            CreatedAtUtc = invoice.LastSavedAtUtc == default ? DateTime.UtcNow : invoice.LastSavedAtUtc
-                        });
-                    }
-
-                    if (remaining > 0)
-                    {
-                        lineSettled = false;
-                        invoiceHasUnsettledCost = true;
-
-                        _db.CostAllocations.Add(new LocalCostAllocation
-                        {
-                            Id = Guid.NewGuid(),
-                            SalesInvoiceId = invoice.Id,
-                            SalesInvoiceLineId = line.Id,
-                            PurchaseInvoiceId = null,
-                            PurchaseInvoiceLineId = null,
-                            WarehouseCode = warehouseCode,
-                            Quantity = remaining,
-                            UnitCost = 0m,
-                            CostAmount = 0m,
-                            IsUnsettled = true,
-                            Note = "재고 부족(마이너스)으로 원가 미확정",
-                            CreatedAtUtc = DateTime.UtcNow
-                        });
-
-                        _db.InventoryMovements.Add(new LocalInventoryMovement
-                        {
-                            Id = Guid.NewGuid(),
-                            InvoiceId = invoice.Id,
-                            InvoiceLineId = line.Id,
-                            ItemId = itemId,
-                            WarehouseCode = warehouseCode,
-                            MovementType = "SalesOut",
-                            QuantityDelta = -remaining,
-                            UnitCost = 0m,
-                            Amount = 0m,
-                            OccurredDate = invoice.InvoiceDate,
-                            IsSettledCost = false,
-                            IsActive = true,
-                            Note = "재고 부족(마이너스)",
-                            CreatedByUsername = invoice.LastSavedByUsername,
-                            CreatedAtUtc = invoice.LastSavedAtUtc == default ? DateTime.UtcNow : invoice.LastSavedAtUtc
-                        });
-                    }
-
-                    stockMap[key] -= outboundQuantity;
-
-                    foreach (var serial in serialTokens)
-                    {
-                        var ledger = GetOrCreateSerialLedger(serialMap, serial);
-                        ledger.ItemId ??= itemId;
-                        ledger.WarehouseCode = warehouseCode;
-                        ledger.Status = lineSettled ? "Outbound" : "PendingInboundOutbound";
-                        ledger.SourceSalesInvoiceId = invoice.Id;
-                        ledger.LastInvoiceId = invoice.Id;
-                        ledger.LastMovementType = "OUT";
-                        ledger.UpdatedAtUtc = DateTime.UtcNow;
-                    }
-                }
+                ApplyInvoiceInventoryEntry(entry.Invoice, context, stockMap, layerMap, serialMap);
             }
-
-            if (invoice.VoucherType == VoucherType.Sales)
-                invoice.CostStatus = invoiceHasUnsettledCost ? "Unsettled" : "Settled";
-            else if (invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement)
-                invoice.CostStatus = "Settled";
+            else if (entry.Transfer is not null)
+            {
+                ApplyInventoryTransferEntry(entry.Transfer, stockMap, layerMap);
+            }
         }
 
         foreach (var stock in stockMap)
@@ -1877,6 +1866,432 @@ public sealed class LocalStateService
         }
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    private void ApplyInvoiceInventoryEntry(
+        LocalInvoice invoice,
+        InvoiceSaveContext context,
+        IDictionary<(Guid ItemId, string WarehouseCode), decimal> stockMap,
+        IDictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>> layerMap,
+        IDictionary<string, LocalSerialLedger> serialMap)
+    {
+        var warehouseCode = NormalizeWarehouseCode(
+            invoice.SourceWarehouseCode,
+            invoice.ResponsibleOfficeCode,
+            context.OfficeCode);
+
+        var invoiceHasUnsettledCost = false;
+
+        foreach (var line in invoice.Lines)
+        {
+            if (line.ItemId is null)
+                continue;
+
+            var quantity = Math.Abs(line.Quantity);
+            if (quantity <= 0)
+                continue;
+
+            var itemId = line.ItemId.Value;
+            var key = (itemId, warehouseCode);
+            EnsureStockKey(stockMap, key);
+
+            var serialTokens = ParseSerialTokens(line.SerialNumber);
+            foreach (var serial in serialTokens)
+            {
+                _db.InvoiceLineSerials.Add(new LocalInvoiceLineSerial
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoice.Id,
+                    InvoiceLineId = line.Id,
+                    ItemId = itemId,
+                    SerialNumber = serial
+                });
+            }
+
+            if (invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement)
+            {
+                var inboundUnitCost = ResolveUnitCost(line);
+                var layer = new LocalStockLayer
+                {
+                    Id = Guid.NewGuid(),
+                    ItemId = itemId,
+                    WarehouseCode = warehouseCode,
+                    SourceInvoiceId = invoice.Id,
+                    SourceInvoiceLineId = line.Id,
+                    ReceiptDate = invoice.InvoiceDate,
+                    UnitCost = inboundUnitCost,
+                    OriginalQuantity = quantity,
+                    RemainingQuantity = quantity,
+                    IsNegativePlaceholder = false,
+                    CreatedAtUtc = invoice.LastSavedAtUtc == default ? DateTime.UtcNow : invoice.LastSavedAtUtc
+                };
+
+                _db.StockLayers.Add(layer);
+                EnsureLayerList(layerMap, key).Add(layer);
+                stockMap[key] += quantity;
+
+                _db.InventoryMovements.Add(new LocalInventoryMovement
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoice.Id,
+                    InvoiceLineId = line.Id,
+                    ItemId = itemId,
+                    WarehouseCode = warehouseCode,
+                    MovementType = "PurchaseIn",
+                    QuantityDelta = quantity,
+                    UnitCost = inboundUnitCost,
+                    Amount = Math.Round(quantity * inboundUnitCost, 2, MidpointRounding.AwayFromZero),
+                    OccurredDate = invoice.InvoiceDate,
+                    IsSettledCost = true,
+                    IsActive = true,
+                    Note = line.ItemNameOriginal,
+                    CreatedByUsername = invoice.LastSavedByUsername,
+                    CreatedAtUtc = invoice.LastSavedAtUtc == default ? DateTime.UtcNow : invoice.LastSavedAtUtc
+                });
+
+                foreach (var serial in serialTokens)
+                {
+                    var ledger = GetOrCreateSerialLedger(serialMap, serial);
+                    ledger.ItemId = itemId;
+                    ledger.WarehouseCode = warehouseCode;
+                    ledger.Status = "InStock";
+                    ledger.SourcePurchaseInvoiceId = invoice.Id;
+                    ledger.LastInvoiceId = invoice.Id;
+                    ledger.LastMovementType = "IN";
+                    ledger.SourceSalesInvoiceId = null;
+                    ledger.UpdatedAtUtc = DateTime.UtcNow;
+                }
+            }
+            else if (invoice.VoucherType == VoucherType.Sales)
+            {
+                var outboundQuantity = quantity;
+                var remaining = outboundQuantity;
+                var lineSettled = true;
+
+                var itemLayers = EnsureLayerList(layerMap, key);
+
+                if (string.Equals(warehouseCode, DomainConstants.WarehouseYeonsuMain, StringComparison.OrdinalIgnoreCase))
+                {
+                    var availableInYeonsu = itemLayers
+                        .Where(existingLayer => existingLayer.RemainingQuantity > 0)
+                        .Sum(existingLayer => existingLayer.RemainingQuantity);
+
+                    if (availableInYeonsu < remaining)
+                    {
+                        var requiredTransfer = remaining - availableInYeonsu;
+                        AutoTransferFromUznetToYeonsu(
+                            invoice,
+                            line,
+                            itemId,
+                            requiredTransfer,
+                            stockMap,
+                            layerMap);
+
+                        itemLayers = EnsureLayerList(layerMap, key);
+                    }
+                }
+
+                foreach (var layer in itemLayers
+                             .Where(existingLayer => existingLayer.RemainingQuantity > 0)
+                             .OrderBy(existingLayer => existingLayer.ReceiptDate)
+                             .ThenBy(existingLayer => existingLayer.CreatedAtUtc)
+                             .ToList())
+                {
+                    if (remaining <= 0)
+                        break;
+
+                    var consume = Math.Min(layer.RemainingQuantity, remaining);
+                    if (consume <= 0)
+                        continue;
+
+                    layer.RemainingQuantity -= consume;
+                    remaining -= consume;
+
+                    _db.CostAllocations.Add(new LocalCostAllocation
+                    {
+                        Id = Guid.NewGuid(),
+                        SalesInvoiceId = invoice.Id,
+                        SalesInvoiceLineId = line.Id,
+                        PurchaseInvoiceId = layer.SourceInvoiceId,
+                        PurchaseInvoiceLineId = layer.SourceInvoiceLineId,
+                        WarehouseCode = warehouseCode,
+                        Quantity = consume,
+                        UnitCost = layer.UnitCost,
+                        CostAmount = Math.Round(consume * layer.UnitCost, 2, MidpointRounding.AwayFromZero),
+                        IsUnsettled = false,
+                        Note = line.ItemNameOriginal,
+                        CreatedAtUtc = DateTime.UtcNow
+                    });
+
+                    _db.InventoryMovements.Add(new LocalInventoryMovement
+                    {
+                        Id = Guid.NewGuid(),
+                        InvoiceId = invoice.Id,
+                        InvoiceLineId = line.Id,
+                        ItemId = itemId,
+                        WarehouseCode = warehouseCode,
+                        MovementType = "SalesOut",
+                        QuantityDelta = -consume,
+                        UnitCost = layer.UnitCost,
+                        Amount = Math.Round(consume * layer.UnitCost, 2, MidpointRounding.AwayFromZero),
+                        OccurredDate = invoice.InvoiceDate,
+                        IsSettledCost = true,
+                        IsActive = true,
+                        Note = line.ItemNameOriginal,
+                        CreatedByUsername = invoice.LastSavedByUsername,
+                        CreatedAtUtc = invoice.LastSavedAtUtc == default ? DateTime.UtcNow : invoice.LastSavedAtUtc
+                    });
+                }
+
+                if (remaining > 0)
+                {
+                    lineSettled = false;
+                    invoiceHasUnsettledCost = true;
+
+                    _db.CostAllocations.Add(new LocalCostAllocation
+                    {
+                        Id = Guid.NewGuid(),
+                        SalesInvoiceId = invoice.Id,
+                        SalesInvoiceLineId = line.Id,
+                        PurchaseInvoiceId = null,
+                        PurchaseInvoiceLineId = null,
+                        WarehouseCode = warehouseCode,
+                        Quantity = remaining,
+                        UnitCost = 0m,
+                        CostAmount = 0m,
+                        IsUnsettled = true,
+                        Note = "재고 부족(마이너스)으로 원가 미확정",
+                        CreatedAtUtc = DateTime.UtcNow
+                    });
+
+                    _db.InventoryMovements.Add(new LocalInventoryMovement
+                    {
+                        Id = Guid.NewGuid(),
+                        InvoiceId = invoice.Id,
+                        InvoiceLineId = line.Id,
+                        ItemId = itemId,
+                        WarehouseCode = warehouseCode,
+                        MovementType = "SalesOut",
+                        QuantityDelta = -remaining,
+                        UnitCost = 0m,
+                        Amount = 0m,
+                        OccurredDate = invoice.InvoiceDate,
+                        IsSettledCost = false,
+                        IsActive = true,
+                        Note = "재고 부족(마이너스)",
+                        CreatedByUsername = invoice.LastSavedByUsername,
+                        CreatedAtUtc = invoice.LastSavedAtUtc == default ? DateTime.UtcNow : invoice.LastSavedAtUtc
+                    });
+                }
+
+                stockMap[key] -= outboundQuantity;
+
+                foreach (var serial in serialTokens)
+                {
+                    var ledger = GetOrCreateSerialLedger(serialMap, serial);
+                    ledger.ItemId ??= itemId;
+                    ledger.WarehouseCode = warehouseCode;
+                    ledger.Status = lineSettled ? "Outbound" : "PendingInboundOutbound";
+                    ledger.SourceSalesInvoiceId = invoice.Id;
+                    ledger.LastInvoiceId = invoice.Id;
+                    ledger.LastMovementType = "OUT";
+                    ledger.UpdatedAtUtc = DateTime.UtcNow;
+                }
+            }
+        }
+
+        if (invoice.VoucherType == VoucherType.Sales)
+            invoice.CostStatus = invoiceHasUnsettledCost ? "Unsettled" : "Settled";
+        else if (invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement)
+            invoice.CostStatus = "Settled";
+    }
+
+    private void ApplyInventoryTransferEntry(
+        LocalInventoryTransfer transfer,
+        IDictionary<(Guid ItemId, string WarehouseCode), decimal> stockMap,
+        IDictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>> layerMap)
+    {
+        var fromWarehouseCode = NormalizeWarehouseCode(transfer.FromWarehouseCode, DomainConstants.OfficeUznet, DomainConstants.OfficeUznet);
+        var toWarehouseCode = NormalizeWarehouseCode(transfer.ToWarehouseCode, DomainConstants.OfficeYeonsu, DomainConstants.OfficeYeonsu);
+        if (string.Equals(fromWarehouseCode, toWarehouseCode, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        foreach (var line in transfer.Lines)
+        {
+            if (line.ItemId is null || line.Quantity <= 0m)
+                continue;
+
+            var itemId = line.ItemId.Value;
+            var fromKey = (itemId, fromWarehouseCode);
+            var toKey = (itemId, toWarehouseCode);
+            EnsureStockKey(stockMap, fromKey);
+            EnsureStockKey(stockMap, toKey);
+
+            var sourceLayers = EnsureLayerList(layerMap, fromKey);
+            var destinationLayers = EnsureLayerList(layerMap, toKey);
+            var remaining = line.Quantity;
+            var movementCreatedAt = transfer.LastSavedAtUtc == default ? DateTime.UtcNow : transfer.LastSavedAtUtc;
+            var movementNote = string.IsNullOrWhiteSpace(line.Remark)
+                ? $"{line.ItemNameOriginal} ({transfer.TransferNumber})"
+                : $"{line.ItemNameOriginal} | {line.Remark}";
+
+            foreach (var sourceLayer in sourceLayers
+                         .Where(layer => layer.RemainingQuantity > 0)
+                         .OrderBy(layer => layer.ReceiptDate)
+                         .ThenBy(layer => layer.CreatedAtUtc)
+                         .ToList())
+            {
+                if (remaining <= 0)
+                    break;
+
+                var moveQuantity = Math.Min(sourceLayer.RemainingQuantity, remaining);
+                if (moveQuantity <= 0)
+                    continue;
+
+                sourceLayer.RemainingQuantity -= moveQuantity;
+                remaining -= moveQuantity;
+                stockMap[fromKey] -= moveQuantity;
+                stockMap[toKey] += moveQuantity;
+
+                var destinationLayer = new LocalStockLayer
+                {
+                    Id = Guid.NewGuid(),
+                    ItemId = itemId,
+                    WarehouseCode = toWarehouseCode,
+                    SourceInvoiceId = sourceLayer.SourceInvoiceId,
+                    SourceInvoiceLineId = sourceLayer.SourceInvoiceLineId,
+                    ReceiptDate = transfer.TransferDate,
+                    UnitCost = sourceLayer.UnitCost,
+                    OriginalQuantity = moveQuantity,
+                    RemainingQuantity = moveQuantity,
+                    IsNegativePlaceholder = false,
+                    CreatedAtUtc = movementCreatedAt
+                };
+
+                _db.StockLayers.Add(destinationLayer);
+                destinationLayers.Add(destinationLayer);
+
+                var amount = Math.Round(moveQuantity * sourceLayer.UnitCost, 2, MidpointRounding.AwayFromZero);
+                AddInventoryTransferMovements(
+                    transfer,
+                    line,
+                    itemId,
+                    fromWarehouseCode,
+                    toWarehouseCode,
+                    moveQuantity,
+                    sourceLayer.UnitCost,
+                    amount,
+                    isSettledCost: true,
+                    movementNote,
+                    movementCreatedAt);
+            }
+
+            if (remaining > 0)
+            {
+                stockMap[fromKey] -= remaining;
+                stockMap[toKey] += remaining;
+
+                var placeholderLayer = new LocalStockLayer
+                {
+                    Id = Guid.NewGuid(),
+                    ItemId = itemId,
+                    WarehouseCode = toWarehouseCode,
+                    SourceInvoiceId = null,
+                    SourceInvoiceLineId = null,
+                    ReceiptDate = transfer.TransferDate,
+                    UnitCost = 0m,
+                    OriginalQuantity = remaining,
+                    RemainingQuantity = remaining,
+                    IsNegativePlaceholder = true,
+                    CreatedAtUtc = movementCreatedAt
+                };
+
+                _db.StockLayers.Add(placeholderLayer);
+                destinationLayers.Add(placeholderLayer);
+
+                AddInventoryTransferMovements(
+                    transfer,
+                    line,
+                    itemId,
+                    fromWarehouseCode,
+                    toWarehouseCode,
+                    remaining,
+                    0m,
+                    0m,
+                    isSettledCost: false,
+                    $"{movementNote} | 재고 부족(가이동)",
+                    movementCreatedAt);
+            }
+        }
+    }
+
+    private void AddInventoryTransferMovements(
+        LocalInventoryTransfer transfer,
+        LocalInventoryTransferLine line,
+        Guid itemId,
+        string fromWarehouseCode,
+        string toWarehouseCode,
+        decimal quantity,
+        decimal unitCost,
+        decimal amount,
+        bool isSettledCost,
+        string note,
+        DateTime createdAtUtc)
+    {
+        _db.InventoryMovements.Add(new LocalInventoryMovement
+        {
+            Id = Guid.NewGuid(),
+            ItemId = itemId,
+            WarehouseCode = fromWarehouseCode,
+            MovementType = "TransferOutManual",
+            QuantityDelta = -quantity,
+            UnitCost = unitCost,
+            Amount = amount,
+            OccurredDate = transfer.TransferDate,
+            IsSettledCost = isSettledCost,
+            IsActive = true,
+            Note = note,
+            CreatedByUsername = transfer.LastSavedByUsername,
+            CreatedAtUtc = createdAtUtc
+        });
+
+        _db.InventoryMovements.Add(new LocalInventoryMovement
+        {
+            Id = Guid.NewGuid(),
+            ItemId = itemId,
+            WarehouseCode = toWarehouseCode,
+            MovementType = "TransferInManual",
+            QuantityDelta = quantity,
+            UnitCost = unitCost,
+            Amount = amount,
+            OccurredDate = transfer.TransferDate,
+            IsSettledCost = isSettledCost,
+            IsActive = true,
+            Note = note,
+            CreatedByUsername = transfer.LastSavedByUsername,
+            CreatedAtUtc = createdAtUtc
+        });
+    }
+
+    private static void EnsureStockKey(
+        IDictionary<(Guid ItemId, string WarehouseCode), decimal> stockMap,
+        (Guid ItemId, string WarehouseCode) key)
+    {
+        if (!stockMap.ContainsKey(key))
+            stockMap[key] = 0m;
+    }
+
+    private static List<LocalStockLayer> EnsureLayerList(
+        IDictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>> layerMap,
+        (Guid ItemId, string WarehouseCode) key)
+    {
+        if (!layerMap.TryGetValue(key, out var layers))
+        {
+            layers = new List<LocalStockLayer>();
+            layerMap[key] = layers;
+        }
+
+        return layers;
     }
 
     private static decimal ResolveUnitCost(LocalInvoiceLine line)
@@ -2052,4 +2467,11 @@ public sealed class LocalStateService
 
         return tokens;
     }
+
+    private sealed record InventoryTimelineEntry(
+        DateOnly OccurredDate,
+        DateTime SortUtc,
+        int Sequence,
+        LocalInvoice? Invoice,
+        LocalInventoryTransfer? Transfer);
 }

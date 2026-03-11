@@ -17,5 +17,17 @@ public partial class InventoryWindow : Window
         if (e.Key == Key.F12) { Close(); e.Handled = true; }
     }
 
+    private async void InventoryTransferButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not InventoryViewModel vm)
+            return;
+
+        var transferVm = new InventoryTransferViewModel(vm.LocalStateService, vm.SessionState);
+        await transferVm.LoadAsync();
+        var window = new InventoryTransferWindow(transferVm) { Owner = this };
+        window.ShowDialog();
+        await vm.LoadAsync();
+    }
+
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
 }

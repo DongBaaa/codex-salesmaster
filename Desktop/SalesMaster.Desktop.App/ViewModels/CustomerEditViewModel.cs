@@ -38,6 +38,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
 
     [ObservableProperty] private string _priceGrade = "매출단가";
     [ObservableProperty] private string _responsibleOfficeCode = DomainConstants.OfficeUznet;
+    [ObservableProperty] private string _tradeType = CustomerTradeTypes.Sales;
     [ObservableProperty] private DateOnly _registerDate = DateOnly.FromDateTime(DateTime.Today);
 
     [ObservableProperty] private string _notes = string.Empty;
@@ -51,6 +52,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
 
     public ObservableCollection<LocalCustomerCategory> Categories { get; } = new();
     public ObservableCollection<string> OfficeCodes { get; } = new();
+    public IReadOnlyList<string> TradeTypes => CustomerTradeTypes.All;
     public string[] PriceGrades { get; } = ["매출단가", "A_단가 적용", "B_단가 적용", "C_단가 적용", "소매단가"];
 
     public CustomerEditViewModel(LocalStateService local, SessionState session)
@@ -97,6 +99,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             Address = DetailAddress = Recipient = Email = HomePage = Notes = string.Empty;
             PriceGrade = "매출단가";
             ResponsibleOfficeCode = defaultOfficeCode;
+            TradeType = CustomerTradeTypes.Sales;
             RegisterDate = DateOnly.FromDateTime(DateTime.Today);
             CategoryId = null;
             return;
@@ -123,6 +126,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         ResponsibleOfficeCode = string.IsNullOrWhiteSpace(customer.ResponsibleOfficeCode)
             ? DomainConstants.OfficeUznet
             : customer.ResponsibleOfficeCode.Trim().ToUpperInvariant();
+        TradeType = CustomerTradeTypes.Normalize(customer.TradeType);
         if (!OfficeCodes.Contains(ResponsibleOfficeCode))
             OfficeCodes.Add(ResponsibleOfficeCode);
         Notes = customer.Notes;
@@ -190,6 +194,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             Email = Email,
             HomePage = HomePage,
             PriceGrade = PriceGrade,
+            TradeType = CustomerTradeTypes.Normalize(TradeType),
             ResponsibleOfficeCode = string.IsNullOrWhiteSpace(ResponsibleOfficeCode)
                 ? DomainConstants.OfficeUznet
                 : ResponsibleOfficeCode.Trim().ToUpperInvariant(),

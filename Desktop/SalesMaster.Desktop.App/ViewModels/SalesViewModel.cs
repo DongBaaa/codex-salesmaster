@@ -232,8 +232,16 @@ public sealed partial class SalesViewModel : ObservableObject
     }
 
     // ?? 怨좉컼 ?ㅼ젙 ?????????????????????????????????????????????????????????
-    public void SetCustomer(LocalCustomer customer)
+    public void SetCustomer(LocalCustomer customer, bool ignoreTradeType = false)
     {
+        if (!ignoreTradeType && !CanSelectCustomer(customer))
+        {
+            StatusMessage = IsPurchaseDocument
+                ? "매입 가능한 거래처만 선택할 수 있습니다."
+                : "매출 가능한 거래처만 선택할 수 있습니다.";
+            return;
+        }
+
         SelectedCustomer = customer;
         CustomerName = customer.NameOriginal;
         CustomerPhone = customer.Phone;
@@ -248,7 +256,19 @@ public sealed partial class SalesViewModel : ObservableObject
     public LocalStateService LocalStateService => _local;
     public SessionState SessionState => _session;
     public List<LocalCustomer> GetAllCustomers() => _allCustomers;
+    public IReadOnlyList<LocalCustomer> GetSelectableCustomers()
+        => _allCustomers.Where(CanSelectCustomer).ToList();
     public List<LocalItem> GetAllItems() => _allItems;
+
+    public bool CanSelectCustomer(LocalCustomer? customer)
+    {
+        if (customer is null)
+            return false;
+
+        return IsPurchaseDocument
+            ? CustomerTradeTypes.AllowsPurchase(customer.TradeType)
+            : CustomerTradeTypes.AllowsSales(customer.TradeType);
+    }
 
     public async Task ReloadCustomersAsync()
     {
@@ -728,7 +748,7 @@ public sealed partial class SalesViewModel : ObservableObject
 
         var customer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId)
             ?? _local.GetCustomerAsync(inv.CustomerId).GetAwaiter().GetResult();
-        if (customer is not null) SetCustomer(customer);
+        if (customer is not null) SetCustomer(customer, ignoreTradeType: true);
 
         Lines.Clear();
         foreach (var line in inv.Lines.Where(l => !l.IsDeleted))

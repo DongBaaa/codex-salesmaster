@@ -27,6 +27,8 @@ public sealed class LocalDbContext : DbContext
     public DbSet<LocalItemWarehouseStock> ItemWarehouseStocks => Set<LocalItemWarehouseStock>();
     public DbSet<LocalSerialLedger> SerialLedgers => Set<LocalSerialLedger>();
     public DbSet<LocalAuditLog> AuditLogs => Set<LocalAuditLog>();
+    public DbSet<LocalInventoryTransfer> InventoryTransfers => Set<LocalInventoryTransfer>();
+    public DbSet<LocalInventoryTransferLine> InventoryTransferLines => Set<LocalInventoryTransferLine>();
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
     {
@@ -46,9 +48,11 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalPayment>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalOffice>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalWarehouse>().HasQueryFilter(e => !e.IsDeleted);
+        model.Entity<LocalInventoryTransfer>().HasQueryFilter(e => !e.IsDeleted);
 
         // InvoiceLine: no ILocalSyncEntity, filter inline
         model.Entity<LocalInvoiceLine>().HasQueryFilter(e => !e.IsDeleted);
+        model.Entity<LocalInventoryTransferLine>().HasQueryFilter(e => !e.IsDeleted);
 
         // Settings: key is PK
         model.Entity<LocalSetting>().HasKey(s => s.Key);
@@ -72,6 +76,12 @@ public sealed class LocalDbContext : DbContext
             .HasMany(i => i.Payments)
             .WithOne(p => p.Invoice)
             .HasForeignKey(p => p.InvoiceId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        model.Entity<LocalInventoryTransfer>()
+            .HasMany(t => t.Lines)
+            .WithOne(l => l.Transfer)
+            .HasForeignKey(l => l.TransferId)
             .OnDelete(DeleteBehavior.Cascade);
 
         // RecentSelections index
@@ -123,6 +133,14 @@ public sealed class LocalDbContext : DbContext
             .IsUnique();
         model.Entity<LocalAuditLog>()
             .HasIndex(a => new { a.EntityName, a.EntityId, a.CreatedAtUtc });
+        model.Entity<LocalInventoryTransfer>()
+            .HasIndex(t => t.TransferDate);
+        model.Entity<LocalInventoryTransfer>()
+            .HasIndex(t => t.TransferNumber);
+        model.Entity<LocalInventoryTransfer>()
+            .HasIndex(t => new { t.FromWarehouseCode, t.ToWarehouseCode });
+        model.Entity<LocalInventoryTransferLine>()
+            .HasIndex(l => new { l.TransferId, l.ItemId });
 
         // Transactions
         model.Entity<LocalTransaction>().HasQueryFilter(e => !e.IsDeleted);

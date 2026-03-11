@@ -1,3 +1,4 @@
+using SalesMaster.Desktop.App.Services;
 using SalesMaster.Shared.Contracts;
 
 namespace SalesMaster.Desktop.App.Data;
@@ -91,6 +92,7 @@ public static class LocalMappings
         NameOriginal = dto.NameOriginal,
         NameMatchKey = dto.NameMatchKey,
         CategoryId = dto.CategoryId,
+        TradeType = CustomerTradeTypes.Normalize(dto.TradeType),
         Department = dto.Department,
         ContactPerson = dto.ContactPerson,
         BusinessNumber = dto.BusinessNumber,
@@ -110,6 +112,7 @@ public static class LocalMappings
         NameOriginal = e.NameOriginal,
         NameMatchKey = e.NameMatchKey,
         CategoryId = e.CategoryId,
+        TradeType = CustomerTradeTypes.Normalize(e.TradeType),
         Department = e.Department,
         ContactPerson = e.ContactPerson,
         BusinessNumber = e.BusinessNumber,

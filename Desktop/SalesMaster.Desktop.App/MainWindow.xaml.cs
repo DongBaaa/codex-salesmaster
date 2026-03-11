@@ -327,8 +327,12 @@ public partial class MainWindow : Window
         await vm.LoadAsync();
         vm.NewInvoice();
 
-        if (preselectSelectedCustomer && _vm.SelectedCustomerFilter is not null)
+        if (preselectSelectedCustomer &&
+            _vm.SelectedCustomerFilter is not null &&
+            vm.CanSelectCustomer(_vm.SelectedCustomerFilter))
+        {
             vm.SetCustomer(_vm.SelectedCustomerFilter);
+        }
 
         var win = new SalesWindow(vm) { Owner = this };
         win.Closed += async (_, _) => await _vm.LoadInvoiceListCommand.ExecuteAsync(null);

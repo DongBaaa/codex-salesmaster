@@ -63,6 +63,7 @@ public static class LocalDbInitializer
         await TryCreateCostAllocationsTableAsync(db);
         await TryCreateItemWarehouseStocksTableAsync(db);
         await TryCreateSerialLedgersTableAsync(db);
+        await TryCreateInventoryTransfersTableAsync(db);
         await TryCreateAuditLogsTableAsync(db);
 
         var customerCols = new (string col, string def)[]
@@ -77,6 +78,7 @@ public static class LocalDbInitializer
             ("HomePage", "TEXT NOT NULL DEFAULT ''"),
             ("PriceGrade", "TEXT NOT NULL DEFAULT ''"),
             ("ResponsibleOfficeCode", "TEXT NOT NULL DEFAULT 'UZNET'"),
+            ("TradeType", "TEXT NOT NULL DEFAULT '매출'"),
         };
         foreach (var (col, def) in customerCols)
             await TryAddColumnAsync(db, "Customers", col, def);
@@ -153,6 +155,7 @@ public static class LocalDbInitializer
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_ResponsibleOfficeCode\" ON \"Invoices\" (\"ResponsibleOfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Transactions_ResponsibleOfficeCode\" ON \"Transactions\" (\"ResponsibleOfficeCode\");");
         await BackfillTransactionResponsibleOfficeCodeAsync(db);
+        await NormalizeCustomerTradeTypeAsync(db);
     }
 
     private static async Task SeedOfficeAndWarehouseAsync(LocalDbContext db)
@@ -322,7 +325,32 @@ public static class LocalDbInitializer
         await TryNormalizeDateTimeTextColumnAsync(db, "CostAllocations", "CreatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "ItemWarehouseStocks", "UpdatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "SerialLedgers", "UpdatedAtUtc");
+        await TryNormalizeDateTimeTextColumnAsync(db, "InventoryTransfers", "CreatedAtUtc");
+        await TryNormalizeDateTimeTextColumnAsync(db, "InventoryTransfers", "UpdatedAtUtc");
+        await TryNormalizeDateTimeTextColumnAsync(db, "InventoryTransfers", "LastSavedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "AuditLogs", "CreatedAtUtc");
+    }
+
+    private static async Task NormalizeCustomerTradeTypeAsync(LocalDbContext db)
+    {
+        const string sql = """
+            UPDATE "Customers"
+            SET "TradeType" = CASE
+                WHEN COALESCE(TRIM("TradeType"), '') IN ('', '판매', '매출처', '매출') THEN '매출'
+                WHEN COALESCE(TRIM("TradeType"), '') IN ('매입처', '매입') THEN '매입'
+                WHEN COALESCE(TRIM("TradeType"), '') IN ('판매/매입', '매출/매입', '매입/매출') THEN '매출/매입'
+                ELSE '매출'
+            END;
+            """;
+
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(sql);
+        }
+        catch
+        {
+            // ignore
+        }
     }
 
     private static async Task BackfillTransactionResponsibleOfficeCodeAsync(LocalDbContext db)
@@ -649,5 +677,53 @@ public static class LocalDbInitializer
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_AuditLogs_EntityAt\" ON \"AuditLogs\" (\"EntityName\", \"EntityId\", \"CreatedAtUtc\");");
         }
         catch { }
+    }
+
+    private static async Task TryCreateInventoryTransfersTableAsync(LocalDbContext db)
+    {
+        try
+        {
+            const string transferSql = """
+                               CREATE TABLE IF NOT EXISTS "InventoryTransfers" (
+                                   "Id" TEXT NOT NULL CONSTRAINT "PK_InventoryTransfers" PRIMARY KEY,
+                                   "TransferNumber" TEXT NOT NULL DEFAULT '',
+                                   "TransferDate" TEXT NOT NULL,
+                                   "FromWarehouseCode" TEXT NOT NULL,
+                                   "ToWarehouseCode" TEXT NOT NULL,
+                                   "Memo" TEXT NOT NULL DEFAULT '',
+                                   "CreatedByUsername" TEXT NOT NULL DEFAULT '',
+                                   "LastSavedByUsername" TEXT NOT NULL DEFAULT '',
+                                   "LastSavedAtUtc" TEXT NOT NULL,
+                                   "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                                   "CreatedAtUtc" TEXT NOT NULL,
+                                   "UpdatedAtUtc" TEXT NOT NULL,
+                                   "Revision" INTEGER NOT NULL DEFAULT 0,
+                                   "IsDirty" INTEGER NOT NULL DEFAULT 1
+                               );
+                               """;
+            await db.Database.ExecuteSqlRawAsync(transferSql);
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TransferDate\" ON \"InventoryTransfers\" (\"TransferDate\");");
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TransferNumber\" ON \"InventoryTransfers\" (\"TransferNumber\");");
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_Warehouses\" ON \"InventoryTransfers\" (\"FromWarehouseCode\", \"ToWarehouseCode\");");
+
+            const string lineSql = """
+                               CREATE TABLE IF NOT EXISTS "InventoryTransferLines" (
+                                   "Id" TEXT NOT NULL CONSTRAINT "PK_InventoryTransferLines" PRIMARY KEY,
+                                   "TransferId" TEXT NOT NULL,
+                                   "ItemId" TEXT NULL,
+                                   "ItemNameOriginal" TEXT NOT NULL DEFAULT '',
+                                   "SpecificationOriginal" TEXT NOT NULL DEFAULT '',
+                                   "Unit" TEXT NOT NULL DEFAULT '',
+                                   "Quantity" REAL NOT NULL DEFAULT 1,
+                                   "Remark" TEXT NOT NULL DEFAULT '',
+                                   "IsDeleted" INTEGER NOT NULL DEFAULT 0
+                               );
+                               """;
+            await db.Database.ExecuteSqlRawAsync(lineSql);
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransferLines_TransferItem\" ON \"InventoryTransferLines\" (\"TransferId\", \"ItemId\");");
+        }
+        catch
+        {
+        }
     }
 }

@@ -88,6 +88,11 @@
                             Background="#B71C1C"
                             Margin="0,0,6,0"
                             Command="{Binding DeleteItemCommand}"/>
+                    <Button Content="재고이동"
+                            Background="#6A1B9A"
+                            Margin="0,0,6,0"
+                            Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}"
+                            Click="InventoryTransferButton_Click"/>
                     <Rectangle Width="1" Height="20" Fill="#3E5875" Margin="4,0,10,0" VerticalAlignment="Center"/>
                     <Button Content="닫기 (F12)"
                             Background="#37474F"

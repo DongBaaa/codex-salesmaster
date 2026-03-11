@@ -2,6 +2,7 @@
 using System.Windows;
 using System.Windows.Input;
 using SalesMaster.Desktop.App.Data;
+using SalesMaster.Desktop.App.Services;
 using SalesMaster.Desktop.App.ViewModels;
 
 namespace SalesMaster.Desktop.App.Views;
@@ -163,12 +164,12 @@ public partial class SalesWindow : Window
 
     private List<LookupRow> BuildCustomerRows()
     {
-        return _vm.GetAllCustomers()
+        return _vm.GetSelectableCustomers()
             .Select(c => new LookupRow
             {
                 Id = c.Id,
                 PrimaryText = c.NameOriginal,
-                SecondaryText = c.Phone,
+                SecondaryText = $"{CustomerTradeTypes.Normalize(c.TradeType)} | {c.Phone}",
                 Tag = c
             })
             .ToList();

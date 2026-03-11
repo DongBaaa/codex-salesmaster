@@ -62,12 +62,16 @@ public sealed partial class InventoryViewModel : ObservableObject
     public string InventoryScopeMessage => _session.IsAdmin
         ? $"{SelectedOfficeDisplay} 재고를 보는 중입니다."
         : $"{SelectedOfficeDisplay} 재고만 조회할 수 있습니다.";
-    public string TransferGuideMessage => "재고 이동은 아래 이동 내역에서 자동이동 출고/입고로 확인합니다.";
+    public string TransferGuideMessage => IsAdmin
+        ? "상단 재고이동 버튼으로 지점간 이동을 입력하고 아래 이동 내역에서 출고/입고를 확인하세요."
+        : "아래 이동 내역에서 자동이동 출고/입고를 확인하세요.";
     public string UznetTabText => $"유즈넷 재고 ({UznetTotalQuantity:N0})";
     public string YeonsuTabText => $"연수구 재고 ({YeonsuTotalQuantity:N0})";
     public decimal BoxCurrentStock => EditBoxQty > 0 ? Math.Floor(EditSelectedOfficeStock / EditBoxQty) : 0;
     public decimal AssetValue => EditSelectedOfficeStock * EditPurchasePrice;
     public decimal ShortageStock => EditSelectedOfficeStock < EditSafetyStock ? EditSafetyStock - EditSelectedOfficeStock : 0;
+    public LocalStateService LocalStateService => _local;
+    public SessionState SessionState => _session;
 
     public InventoryViewModel(LocalStateService local, SessionState session)
     {
@@ -494,6 +498,8 @@ public sealed partial class InventoryViewModel : ObservableObject
             "SalesOut" => "출고",
             "TransferOutAuto" => "자동이동 출고",
             "TransferInAuto" => "자동이동 입고",
+            "TransferOutManual" => "재고이동 출고",
+            "TransferInManual" => "재고이동 입고",
             _ => string.IsNullOrWhiteSpace(movementType) ? "-" : movementType
         };
     }

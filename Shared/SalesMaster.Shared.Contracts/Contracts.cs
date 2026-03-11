@@ -196,6 +196,7 @@ public sealed class CustomerDto : SyncEntityDto
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
     public Guid? CategoryId { get; set; }
+    public string TradeType { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
     public string ContactPerson { get; set; } = string.Empty;
     public string BusinessNumber { get; set; } = string.Empty;

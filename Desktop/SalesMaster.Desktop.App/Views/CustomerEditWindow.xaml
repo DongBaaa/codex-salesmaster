@@ -109,6 +109,7 @@
                         <RowDefinition Height="30"/>
                         <RowDefinition Height="30"/>
                         <RowDefinition Height="30"/>
+                        <RowDefinition Height="30"/>
                     </Grid.RowDefinitions>
 
                     <Label Grid.Row="0" Grid.Column="0" Content="거래처명"/>
@@ -123,25 +124,29 @@
 
                     <Label Grid.Row="1" Grid.Column="0" Content="대표전화"/>
                     <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Phone, UpdateSourceTrigger=PropertyChanged}"/>
-                    <Label Grid.Row="1" Grid.Column="2" Content="담당자"/>
-                    <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding ContactPerson, UpdateSourceTrigger=PropertyChanged}"/>
+                    <Label Grid.Row="1" Grid.Column="2" Content="거래구분"/>
+                    <ComboBox Grid.Row="1" Grid.Column="3"
+                              ItemsSource="{Binding TradeTypes}"
+                              SelectedItem="{Binding TradeType}"/>
 
                     <Label Grid.Row="2" Grid.Column="0" Content="휴대폰"/>
                     <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding MobilePhone, UpdateSourceTrigger=PropertyChanged}"/>
-                    <Label Grid.Row="2" Grid.Column="2" Content="팩스번호"/>
-                    <TextBox Grid.Row="2" Grid.Column="3" Text="{Binding FaxNumber, UpdateSourceTrigger=PropertyChanged}"/>
+                    <Label Grid.Row="2" Grid.Column="2" Content="담당자"/>
+                    <TextBox Grid.Row="2" Grid.Column="3" Text="{Binding ContactPerson, UpdateSourceTrigger=PropertyChanged}"/>
 
                     <Label Grid.Row="3" Grid.Column="0" Content="부서"/>
                     <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Department, UpdateSourceTrigger=PropertyChanged}"/>
-                    <Label Grid.Row="3" Grid.Column="2" Content="가격등급"/>
-                    <ComboBox Grid.Row="3" Grid.Column="3"
-                              ItemsSource="{Binding PriceGrades}"
-                              SelectedItem="{Binding PriceGrade}"/>
+                    <Label Grid.Row="3" Grid.Column="2" Content="팩스번호"/>
+                    <TextBox Grid.Row="3" Grid.Column="3" Text="{Binding FaxNumber, UpdateSourceTrigger=PropertyChanged}"/>
 
                     <Label Grid.Row="4" Grid.Column="0" Content="담당지점"/>
                     <ComboBox Grid.Row="4" Grid.Column="1"
                               ItemsSource="{Binding OfficeCodes}"
                               SelectedItem="{Binding ResponsibleOfficeCode}"/>
+                    <Label Grid.Row="4" Grid.Column="2" Content="가격등급"/>
+                    <ComboBox Grid.Row="4" Grid.Column="3"
+                              ItemsSource="{Binding PriceGrades}"
+                              SelectedItem="{Binding PriceGrade}"/>
                 </Grid>
 
                 <Separator Background="#2E4060" Margin="0,6"/>

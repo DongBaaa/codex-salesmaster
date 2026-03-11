@@ -3,6 +3,7 @@ using SalesMaster.Server.Api.Security;
 using SalesMaster.Server.Api.Services;
 using SalesMaster.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 
 namespace SalesMaster.Server.Api.Data;
 
@@ -22,6 +23,8 @@ public static class DbInitializer
         {
             await dbContext.Database.MigrateAsync(cancellationToken);
         }
+
+        await EnsureCustomerTradeTypeColumnAsync(dbContext, cancellationToken);
 
         var maxRevision = await GetMaxRevisionAsync(dbContext, cancellationToken);
         revisionClock.Initialize(maxRevision);
@@ -81,6 +84,52 @@ public static class DbInitializer
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private static async Task EnsureCustomerTradeTypeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"Customers\" ADD COLUMN \"TradeType\" TEXT NOT NULL DEFAULT '매출';",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"Customers\" ADD COLUMN IF NOT EXISTS \"TradeType\" text NOT NULL DEFAULT '매출';",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+            // Existing databases may already contain the column.
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE "Customers"
+                SET "TradeType" = CASE
+                    WHEN COALESCE(TRIM("TradeType"), '') IN ('', '판매', '매출처', '매출') THEN '매출'
+                    WHEN COALESCE(TRIM("TradeType"), '') IN ('매입처', '매입') THEN '매입'
+                    WHEN COALESCE(TRIM("TradeType"), '') IN ('판매/매입', '매출/매입', '매입/매출') THEN '매출/매입'
+                    ELSE '매출'
+                END;
+                """,
+                cancellationToken);
+        }
+        catch
+        {
+            // Ignore if legacy schema does not yet expose the column for some reason.
+        }
     }
 
     private static async Task<long> GetMaxRevisionAsync(AppDbContext dbContext, CancellationToken cancellationToken)

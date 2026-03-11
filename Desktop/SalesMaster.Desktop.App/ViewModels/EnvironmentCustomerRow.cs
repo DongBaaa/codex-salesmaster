@@ -12,6 +12,7 @@ public sealed partial class EnvironmentCustomerRow : ObservableObject
     public Guid Id => Source.Id;
     public string NameOriginal => Source.NameOriginal;
     public string CategoryName { get; }
+    public string TradeType => CustomerTradeTypes.Normalize(Source.TradeType);
     public string BusinessNumber => Source.BusinessNumber;
     public string Phone => Source.Phone;
 

@@ -1,0 +1,358 @@
+<Window x:Class="SalesMaster.Desktop.App.Views.InventoryTransferWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:conv="clr-namespace:SalesMaster.Desktop.App.Converters"
+        Title="내부 재고이동"
+        Height="860"
+        Width="1480"
+        WindowStartupLocation="CenterOwner"
+        Background="#151F2E"
+        KeyDown="Window_KeyDown">
+    <Window.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVisibility"/>
+        <conv:DateOnlyConverter x:Key="DateOnlyConverter"/>
+
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="CaretBrush" Value="Black"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+        </Style>
+        <Style TargetType="DatePicker">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+        </Style>
+        <Style TargetType="{x:Type DatePickerTextBox}">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="4,2"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="10,5"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="MinWidth" Value="96"/>
+        </Style>
+        <Style TargetType="Label">
+            <Setter Property="Foreground" Value="#B0BEC5"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="Padding" Value="0,0,6,0"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="HorizontalContentAlignment" Value="Right"/>
+        </Style>
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="#1E2D40"/>
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="RowBackground" Value="#1E2D40"/>
+            <Setter Property="AlternatingRowBackground" Value="#243B55"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#2E4060"/>
+            <Setter Property="BorderBrush" Value="#2E4060"/>
+            <Setter Property="SelectionMode" Value="Single"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#1A2B4A"/>
+            <Setter Property="Foreground" Value="#4FC3F7"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Padding" Value="6,4"/>
+        </Style>
+    </Window.Resources>
+
+    <DockPanel>
+        <Border DockPanel.Dock="Top" Background="#1A2B4A" Padding="12,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <TextBlock Text="내부 재고이동 - 지점간 재고를 이동하면 출발/도착 창고 재고가 동시에 갱신됩니다."
+                               FontSize="14"
+                               FontWeight="Bold"
+                               Foreground="#4FC3F7"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Content="새 이동 (F6)"
+                            Background="#1B5E20"
+                            Margin="0,0,6,0"
+                            Command="{Binding NewTransferCommand}"/>
+                    <Button Content="저장 (F8)"
+                            Background="#0D47A1"
+                            Margin="0,0,6,0"
+                            Command="{Binding SaveTransferCommand}"/>
+                    <Button Content="삭제"
+                            Background="#B71C1C"
+                            Margin="0,0,6,0"
+                            IsEnabled="{Binding CanDeleteTransfer}"
+                            Click="DeleteTransferButton_Click"/>
+                    <Rectangle Width="1" Height="20" Fill="#3E5875" Margin="4,0,10,0" VerticalAlignment="Center"/>
+                    <Button Content="닫기 (F12)"
+                            Background="#37474F"
+                            Click="CloseButton_Click"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border DockPanel.Dock="Bottom"
+                Background="#0D1B2A"
+                Padding="12,4">
+            <DockPanel>
+                <TextBlock Text="{Binding StatusMessage}" FontSize="11" Foreground="#90CAF9"/>
+                <TextBlock DockPanel.Dock="Right"
+                           Text="저장 후 재고관리 화면 이동내역에 재고이동 출고/입고로 표시됩니다."
+                           FontSize="11"
+                           Foreground="#9FB3C8"/>
+            </DockPanel>
+        </Border>
+
+        <Grid Margin="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="350" MinWidth="280"/>
+                <ColumnDefinition Width="5"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0"
+                    Background="#16263D"
+                    Padding="12"
+                    CornerRadius="6"
+                    BorderBrush="#2E4060"
+                    BorderThickness="1">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <TextBlock Text="최근 재고이동 문서"
+                                   FontSize="14"
+                                   FontWeight="Bold"
+                                   Foreground="#4FC3F7"/>
+                        <TextBlock Text="목록에서 선택하면 해당 재고이동 문서를 다시 불러옵니다."
+                                   Foreground="#9FB3C8"
+                                   Margin="0,6,0,0"/>
+                    </StackPanel>
+
+                    <DataGrid ItemsSource="{Binding Transfers}"
+                              SelectedItem="{Binding SelectedTransfer}"
+                              IsReadOnly="True"
+                              BorderThickness="0">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="이동일" Binding="{Binding TransferDate}" Width="92"/>
+                            <DataGridTextColumn Header="이동번호" Binding="{Binding TransferNumber}" Width="118"/>
+                            <DataGridTextColumn Header="출발" Binding="{Binding FromWarehouseCode}" Width="98"/>
+                            <DataGridTextColumn Header="도착" Binding="{Binding ToWarehouseCode}" Width="98"/>
+                            <DataGridTextColumn Header="품목수" Binding="{Binding Lines.Count}" Width="64"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </Border>
+
+            <GridSplitter Grid.Column="1"
+                          Width="5"
+                          HorizontalAlignment="Stretch"
+                          Background="#0D1B2A"
+                          Cursor="SizeWE"/>
+
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0"
+                        Background="#16263D"
+                        Padding="14"
+                        CornerRadius="6"
+                        BorderBrush="#2E4060"
+                        BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="재고이동 기본 정보"
+                                   FontSize="14"
+                                   FontWeight="Bold"
+                                   Foreground="#4FC3F7"/>
+
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="95"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="95"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="34"/>
+                                <RowDefinition Height="34"/>
+                                <RowDefinition Height="34"/>
+                                <RowDefinition Height="80"/>
+                            </Grid.RowDefinitions>
+
+                            <Label Grid.Row="0" Grid.Column="0" Content="이동번호"/>
+                            <TextBox Grid.Row="0" Grid.Column="1"
+                                     IsReadOnly="True"
+                                     Text="{Binding TransferNumberDisplay}"
+                                     Background="#C4D7EA"/>
+                            <Label Grid.Row="0" Grid.Column="2" Content="이동일자"/>
+                            <DatePicker Grid.Row="0" Grid.Column="3"
+                                        SelectedDate="{Binding TransferDate, Converter={StaticResource DateOnlyConverter}}"/>
+
+                            <Label Grid.Row="1" Grid.Column="0" Content="출발창고"/>
+                            <ComboBox Grid.Row="1" Grid.Column="1"
+                                      ItemsSource="{Binding Warehouses}"
+                                      SelectedValuePath="Code"
+                                      SelectedValue="{Binding FromWarehouseCode}"
+                                      DisplayMemberPath="Name"/>
+                            <Label Grid.Row="1" Grid.Column="2" Content="도착창고"/>
+                            <ComboBox Grid.Row="1" Grid.Column="3"
+                                      ItemsSource="{Binding Warehouses}"
+                                      SelectedValuePath="Code"
+                                      SelectedValue="{Binding ToWarehouseCode}"
+                                      DisplayMemberPath="Name"/>
+
+                            <Label Grid.Row="2" Grid.Column="0" Content="이동경로"/>
+                            <TextBlock Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3"
+                                       Text="{Binding TransferRouteText}"
+                                       Foreground="#A5D6A7"
+                                       FontWeight="Bold"
+                                       Margin="6,0"/>
+
+                            <Label Grid.Row="3" Grid.Column="0" Content="메모"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="3"
+                                     Text="{Binding Memo, UpdateSourceTrigger=PropertyChanged}"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1"
+                        Margin="0,10,0,0"
+                        Background="#16263D"
+                        Padding="14"
+                        CornerRadius="6"
+                        BorderBrush="#2E4060"
+                        BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="이동 품목 입력"
+                                   FontSize="14"
+                                   FontWeight="Bold"
+                                   Foreground="#4FC3F7"/>
+                        <TextBlock Text="품목은 여러 줄로 계속 추가할 수 있습니다."
+                                   Foreground="#9FB3C8"
+                                   Margin="0,6,0,0"/>
+
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="90"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="180"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="34"/>
+                                <RowDefinition Height="34"/>
+                                <RowDefinition Height="40"/>
+                            </Grid.RowDefinitions>
+
+                            <Label Grid.Row="0" Grid.Column="0" Content="품목검색"/>
+                            <TextBox Grid.Row="0" Grid.Column="1"
+                                     x:Name="InputItemNameTextBox"
+                                     Text="{Binding InputItemName, UpdateSourceTrigger=PropertyChanged}"
+                                     KeyDown="InputItemNameTextBox_KeyDown"/>
+                            <Button Grid.Row="0" Grid.Column="2"
+                                    Content="찾기"
+                                    Background="#1565C0"
+                                    Margin="8,0,0,0"
+                                    Click="ItemLookupButton_Click"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3"
+                                       Text="{Binding AvailableStockText}"
+                                       Foreground="#90CAF9"
+                                       Margin="12,0,0,0"/>
+
+                            <Label Grid.Row="1" Grid.Column="0" Content="규격"/>
+                            <TextBox Grid.Row="1" Grid.Column="1"
+                                     Text="{Binding InputSpec, UpdateSourceTrigger=PropertyChanged}"/>
+                            <Label Grid.Row="1" Grid.Column="2" Content="단위/수량" Margin="8,0,6,0"/>
+                            <StackPanel Grid.Row="1" Grid.Column="3" Orientation="Horizontal">
+                                <TextBox Width="72"
+                                         Text="{Binding InputUnit, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Width="88"
+                                         Margin="8,0,0,0"
+                                         Text="{Binding InputQty, UpdateSourceTrigger=PropertyChanged}"/>
+                            </StackPanel>
+
+                            <Label Grid.Row="2" Grid.Column="0" Content="비고"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3"
+                                     Text="{Binding InputRemark, UpdateSourceTrigger=PropertyChanged}"/>
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0" HorizontalAlignment="Right">
+                            <Button Content="행 추가"
+                                    Background="#1B5E20"
+                                    Margin="0,0,6,0"
+                                    IsEnabled="{Binding CanAddLine}"
+                                    Command="{Binding AddLineCommand}"/>
+                            <Button Content="행 수정"
+                                    Background="#0D47A1"
+                                    Margin="0,0,6,0"
+                                    IsEnabled="{Binding CanUpdateLine}"
+                                    Command="{Binding UpdateLineCommand}"/>
+                            <Button Content="행 삭제"
+                                    Background="#B71C1C"
+                                    IsEnabled="{Binding CanDeleteLine}"
+                                    Command="{Binding DeleteLineCommand}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="2"
+                        Margin="0,10,0,0"
+                        Background="#16263D"
+                        Padding="14"
+                        CornerRadius="6"
+                        BorderBrush="#2E4060"
+                        BorderThickness="1">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top"
+                                   Text="이동 품목 목록"
+                                   FontSize="14"
+                                   FontWeight="Bold"
+                                   Foreground="#4FC3F7"
+                                   Margin="0,0,0,10"/>
+                        <DataGrid ItemsSource="{Binding Lines}"
+                                  SelectedItem="{Binding SelectedLine}"
+                                  BorderThickness="0">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="품목명" Binding="{Binding ItemName}" Width="*"/>
+                                <DataGridTextColumn Header="규격" Binding="{Binding Specification}" Width="180"/>
+                                <DataGridTextColumn Header="단위" Binding="{Binding Unit}" Width="80"/>
+                                <DataGridTextColumn Header="수량" Binding="{Binding Quantity, StringFormat=N0}" Width="90"/>
+                                <DataGridTextColumn Header="비고" Binding="{Binding Remark}" Width="220"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </Border>
+            </Grid>
+        </Grid>
+    </DockPanel>
+</Window>

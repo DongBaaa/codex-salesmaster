@@ -85,6 +85,7 @@ public static class DtoMappings
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
             CustomerMasterId = entity.CustomerMasterId, NameOriginal = entity.NameOriginal,
             NameMatchKey = entity.NameMatchKey, CategoryId = entity.CategoryId,
+            TradeType = entity.TradeType,
             Department = entity.Department, ContactPerson = entity.ContactPerson,
             BusinessNumber = entity.BusinessNumber, Address = entity.Address,
             Phone = entity.Phone, Email = entity.Email, Notes = entity.Notes
@@ -94,7 +95,8 @@ public static class DtoMappings
     {
         entity.CustomerMasterId = dto.CustomerMasterId; entity.NameOriginal = dto.NameOriginal;
         entity.NameMatchKey = string.IsNullOrWhiteSpace(dto.NameMatchKey) ? MatchKeyNormalizer.Normalize(dto.NameOriginal) : dto.NameMatchKey;
-        entity.CategoryId = dto.CategoryId; entity.Department = dto.Department;
+        entity.CategoryId = dto.CategoryId; entity.TradeType = dto.TradeType;
+        entity.Department = dto.Department;
         entity.ContactPerson = dto.ContactPerson; entity.BusinessNumber = dto.BusinessNumber;
         entity.Address = dto.Address; entity.Phone = dto.Phone; entity.Email = dto.Email;
         entity.Notes = dto.Notes; entity.IsDeleted = dto.IsDeleted;
