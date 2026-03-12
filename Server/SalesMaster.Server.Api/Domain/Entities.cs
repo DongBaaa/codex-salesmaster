@@ -25,6 +25,7 @@ public sealed class UserAccount : TrackedEntity
     public string Username { get; set; } = string.Empty;
     public string PasswordHash { get; set; } = string.Empty;
     public string Role { get; set; } = "User";
+    public string OfficeCode { get; set; } = "UZNET";
     public bool IsActive { get; set; } = true;
     public ICollection<UserPermission> Permissions { get; set; } = new List<UserPermission>();
 }

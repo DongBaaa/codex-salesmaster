@@ -49,6 +49,26 @@ public sealed class LocalCustomerCategory : LocalSyncEntity
     public bool IsSystemDefault { get; set; }
 }
 
+public sealed class LocalPriceGradeOption : LocalSyncEntity
+{
+    public string Name { get; set; } = string.Empty;
+    public string PriceSource { get; set; } = SelectionOptionDefaults.PriceSourceSales;
+    public int SortOrder { get; set; }
+    public bool IsSystemDefault { get; set; }
+    public bool IsActive { get; set; } = true;
+    public string PriceSourceDisplay => SelectionOptionDefaults.GetPriceSourceDisplayName(PriceSource);
+}
+
+public sealed class LocalTradeTypeOption : LocalSyncEntity
+{
+    public string Name { get; set; } = string.Empty;
+    public bool AllowsSales { get; set; } = true;
+    public bool AllowsPurchase { get; set; }
+    public int SortOrder { get; set; }
+    public bool IsSystemDefault { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
 public sealed class LocalCustomerMaster : LocalSyncEntity
 {
     public string NameOriginal { get; set; } = string.Empty;

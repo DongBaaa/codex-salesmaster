@@ -10,12 +10,13 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 {
     private readonly LocalStateService _local;
     private readonly SessionState _session;
-    private readonly List<LocalCustomer> _allYeonsuCustomers = new();
+    private readonly List<LocalCustomer> _allOfficeCustomers = new();
 
     public const string WarehouseOptionAll = "전체";
     public const string WarehouseOptionUznet = "유즈넷 창고";
     public const string WarehouseOptionYeonsu = "연수구 창고";
 
+    public ObservableCollection<DisplayOption> OfficeOptions { get; } = new();
     public ObservableCollection<LocalCustomer> Customers { get; } = new();
     public ObservableCollection<YeonsuDeliveryRow> Deliveries { get; } = new();
     public IReadOnlyList<string> WarehouseOptions { get; } =
@@ -27,6 +28,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     [ObservableProperty] private DateOnly _fromDate = new(DateTime.Today.Year, DateTime.Today.Month, 1);
     [ObservableProperty] private DateOnly _toDate = DateOnly.FromDateTime(DateTime.Today);
+    [ObservableProperty] private string _selectedOfficeCode = DomainConstants.OfficeYeonsu;
     [ObservableProperty] private string _customerSearchText = string.Empty;
     [ObservableProperty] private LocalCustomer? _selectedCustomer;
     [ObservableProperty] private string _selectedWarehouseOption = WarehouseOptionAll;
@@ -42,8 +44,17 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     public async Task InitializeAsync()
     {
+        await LoadOfficeOptionsAsync();
         await LoadCustomersAsync();
         await LoadDeliveriesAsync();
+    }
+
+    partial void OnSelectedOfficeCodeChanged(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || OfficeOptions.Count == 0)
+            return;
+
+        _ = ReloadForOfficeAsync();
     }
 
     partial void OnCustomerSearchTextChanged(string value)
@@ -82,9 +93,10 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
                 ToDate,
                 SelectedCustomer?.Id,
                 warehouseCodeFilter,
+                SelectedOfficeCode,
                 _session);
 
-            var customerMap = _allYeonsuCustomers.ToDictionary(customer => customer.Id, customer => customer);
+            var customerMap = _allOfficeCustomers.ToDictionary(customer => customer.Id, customer => customer);
             Deliveries.Clear();
 
             foreach (var invoice in invoices)
@@ -107,9 +119,10 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
                 });
             }
 
+            var officeDisplay = ResolveOfficeDisplayName(SelectedOfficeCode);
             StatusMessage = Deliveries.Count == 0
-                ? "조건에 맞는 연수구 납품 전표가 없습니다."
-                : $"연수구 납품 전표 {Deliveries.Count:N0}건을 조회했습니다.";
+                ? $"조건에 맞는 {officeDisplay} 납품 전표가 없습니다."
+                : $"{officeDisplay} 납품 전표 {Deliveries.Count:N0}건을 조회했습니다.";
         }
         finally
         {
@@ -125,17 +138,58 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
         CustomerSearchText = string.Empty;
         SelectedCustomer = null;
         SelectedWarehouseOption = WarehouseOptionAll;
+        if (!string.IsNullOrWhiteSpace(_session.OfficeCode) && !_session.IsAdmin)
+            SelectedOfficeCode = _session.OfficeCode;
         await LoadDeliveriesAsync();
+    }
+
+    private async Task LoadOfficeOptionsAsync()
+    {
+        var offices = await _local.GetOfficesAsync();
+        OfficeOptions.Clear();
+        foreach (var office in offices.OrderBy(current => current.Name, StringComparer.CurrentCultureIgnoreCase))
+        {
+            if (!_session.IsAdmin &&
+                !string.Equals(office.Code, _session.OfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            OfficeOptions.Add(new DisplayOption
+            {
+                Value = office.Code,
+                DisplayName = office.Name
+            });
+        }
+
+        if (OfficeOptions.Count == 0)
+        {
+            OfficeOptions.Add(new DisplayOption
+            {
+                Value = string.IsNullOrWhiteSpace(_session.OfficeCode) ? DomainConstants.OfficeYeonsu : _session.OfficeCode,
+                DisplayName = string.IsNullOrWhiteSpace(_session.OfficeCode) ? "연수구" : _session.OfficeCode
+            });
+        }
+
+        if (_session.IsAdmin)
+        {
+            SelectedOfficeCode = OfficeOptions.FirstOrDefault(option => string.Equals(option.Value, SelectedOfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
+                ?? OfficeOptions.First().Value;
+        }
+        else
+        {
+            SelectedOfficeCode = OfficeOptions.First().Value;
+        }
     }
 
     private async Task LoadCustomersAsync()
     {
         var customers = await _local.GetCustomersAsync(_session);
-        _allYeonsuCustomers.Clear();
-        _allYeonsuCustomers.AddRange(customers
+        _allOfficeCustomers.Clear();
+        _allOfficeCustomers.AddRange(customers
             .Where(customer => string.Equals(
                 customer.ResponsibleOfficeCode?.Trim(),
-                DomainConstants.OfficeYeonsu,
+                SelectedOfficeCode,
                 StringComparison.OrdinalIgnoreCase))
             .OrderBy(customer => customer.NameOriginal, StringComparer.CurrentCultureIgnoreCase));
 
@@ -145,7 +199,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
     private void ApplyCustomerFilter()
     {
         var keyword = (CustomerSearchText ?? string.Empty).Trim();
-        IEnumerable<LocalCustomer> filtered = _allYeonsuCustomers;
+        IEnumerable<LocalCustomer> filtered = _allOfficeCustomers;
         if (!string.IsNullOrWhiteSpace(keyword))
         {
             filtered = filtered.Where(customer =>
@@ -177,6 +231,19 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
         return $"{lines[0].ItemNameOriginal} 외 {lines.Count - 1}건";
     }
+
+    private async Task ReloadForOfficeAsync()
+    {
+        if (IsBusy)
+            return;
+
+        await LoadCustomersAsync();
+        await LoadDeliveriesAsync();
+    }
+
+    private string ResolveOfficeDisplayName(string? officeCode)
+        => OfficeOptions.FirstOrDefault(option => string.Equals(option.Value, officeCode, StringComparison.OrdinalIgnoreCase))?.DisplayName
+           ?? (string.IsNullOrWhiteSpace(officeCode) ? "담당지점" : officeCode);
 
     private static string ResolveWarehouseCodeFilter(string option)
     {

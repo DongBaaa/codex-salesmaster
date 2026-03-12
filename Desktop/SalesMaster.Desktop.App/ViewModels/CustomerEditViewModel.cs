@@ -52,8 +52,8 @@ public sealed partial class CustomerEditViewModel : ObservableObject
 
     public ObservableCollection<LocalCustomerCategory> Categories { get; } = new();
     public ObservableCollection<string> OfficeCodes { get; } = new();
-    public IReadOnlyList<string> TradeTypes => CustomerTradeTypes.All;
-    public string[] PriceGrades { get; } = ["매출단가", "A_단가 적용", "B_단가 적용", "C_단가 적용", "소매단가"];
+    public ObservableCollection<string> TradeTypes { get; } = new();
+    public ObservableCollection<string> PriceGrades { get; } = new();
 
     public CustomerEditViewModel(LocalStateService local, SessionState session)
     {
@@ -68,6 +68,20 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         Categories.Clear();
         foreach (var category in categories)
             Categories.Add(category);
+
+        var priceGrades = await _local.GetPriceGradeOptionsAsync();
+        PriceGrades.Clear();
+        foreach (var priceGrade in priceGrades.Select(option => option.Name))
+            PriceGrades.Add(priceGrade);
+        if (PriceGrades.Count == 0)
+            PriceGrades.Add("매출단가");
+
+        var tradeTypes = await _local.GetTradeTypeOptionsAsync();
+        TradeTypes.Clear();
+        foreach (var tradeType in tradeTypes.Select(option => option.Name))
+            TradeTypes.Add(tradeType);
+        if (TradeTypes.Count == 0)
+            TradeTypes.Add(CustomerTradeTypes.Sales);
 
         var offices = await _local.GetOfficesAsync();
         OfficeCodes.Clear();
@@ -97,9 +111,9 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             Name = MobilePhone = FaxNumber = Phone = Representative = string.Empty;
             Department = ContactPerson = BusinessNumber = BusinessType = BusinessItem = string.Empty;
             Address = DetailAddress = Recipient = Email = HomePage = Notes = string.Empty;
-            PriceGrade = "매출단가";
+            PriceGrade = PriceGrades.FirstOrDefault() ?? "매출단가";
             ResponsibleOfficeCode = defaultOfficeCode;
-            TradeType = CustomerTradeTypes.Sales;
+            TradeType = TradeTypes.FirstOrDefault() ?? CustomerTradeTypes.Sales;
             RegisterDate = DateOnly.FromDateTime(DateTime.Today);
             CategoryId = null;
             return;
@@ -122,11 +136,17 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         Recipient = customer.Recipient;
         Email = customer.Email;
         HomePage = customer.HomePage;
-        PriceGrade = string.IsNullOrWhiteSpace(customer.PriceGrade) ? "매출단가" : customer.PriceGrade;
+        PriceGrade = string.IsNullOrWhiteSpace(customer.PriceGrade)
+            ? PriceGrades.FirstOrDefault() ?? "매출단가"
+            : customer.PriceGrade;
         ResponsibleOfficeCode = string.IsNullOrWhiteSpace(customer.ResponsibleOfficeCode)
             ? DomainConstants.OfficeUznet
             : customer.ResponsibleOfficeCode.Trim().ToUpperInvariant();
         TradeType = CustomerTradeTypes.Normalize(customer.TradeType);
+        if (!TradeTypes.Contains(TradeType))
+            TradeTypes.Add(TradeType);
+        if (!PriceGrades.Contains(PriceGrade))
+            PriceGrades.Add(PriceGrade);
         if (!OfficeCodes.Contains(ResponsibleOfficeCode))
             OfficeCodes.Add(ResponsibleOfficeCode);
         Notes = customer.Notes;

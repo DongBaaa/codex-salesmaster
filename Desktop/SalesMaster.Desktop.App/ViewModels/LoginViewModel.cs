@@ -4,6 +4,7 @@ using System.Text;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SalesMaster.Desktop.App.Services;
+using SalesMaster.Shared.Contracts;
 
 namespace SalesMaster.Desktop.App.ViewModels;
 
@@ -77,7 +78,7 @@ public sealed partial class LoginViewModel : ObservableObject
                 result.User.Username,
                 result.User.Role,
                 result.User.Permissions,
-                ResolveOfficeCodeFromRole(result.User.Role));
+                ResolveOfficeCode(result.User));
             await SaveRememberOptionsAsync();
             _session.SetSession(result.Token, result.User);
             LoginSucceeded?.Invoke();
@@ -206,8 +207,14 @@ public sealed partial class LoginViewModel : ObservableObject
         return false;
     }
 
-    private static string ResolveOfficeCodeFromRole(string? role)
-        => DomainConstants.IsAdminRole(role)
+    private static string ResolveOfficeCode(UserSessionDto user)
+    {
+        var officeCode = (user.OfficeCode ?? string.Empty).Trim().ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(officeCode))
+            return officeCode;
+
+        return DomainConstants.IsAdminRole(user.Role)
             ? DomainConstants.OfficeUznet
             : DomainConstants.OfficeYeonsu;
+    }
 }

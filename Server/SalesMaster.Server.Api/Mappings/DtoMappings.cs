@@ -11,7 +11,7 @@ public static class DtoMappings
         {
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
-            Username = entity.Username, Role = entity.Role, IsActive = entity.IsActive,
+            Username = entity.Username, Role = entity.Role, OfficeCode = entity.OfficeCode, IsActive = entity.IsActive,
             Permissions = entity.Permissions.Select(x => x.Permission).Distinct().OrderBy(x => x).ToList()
         };
 

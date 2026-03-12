@@ -212,6 +212,152 @@
                 </ScrollViewer>
             </TabItem>
 
+            <TabItem Header="선택값 관리">
+                <ScrollViewer Margin="10" VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <Border Background="#1A2B4A" CornerRadius="6" Padding="16" BorderBrush="#2E4060" BorderThickness="1">
+                            <StackPanel>
+                                <TextBlock Text="거래처 선택값 관리" FontSize="18" FontWeight="Bold" Foreground="#4FC3F7"/>
+                                <TextBlock Text="거래처 등록/수정에서 사용하는 고객분류, 가격등급, 거래구분 선택값을 관리합니다." Foreground="#9FB3C8" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Margin="0,14,0,0">
+                            <Grid Margin="14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="2*"/>
+                                    <ColumnDefinition Width="12"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="180"/>
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="고객분류" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16" VerticalAlignment="Center"/>
+                                    <Button Content="신규" Background="#1565C0" Margin="14,0,6,0" Command="{Binding NewCategoryOptionCommand}"/>
+                                    <Button Content="저장" Background="#1B5E20" Margin="0,0,6,0" Command="{Binding SaveCategoryOptionCommand}"/>
+                                    <Button Content="삭제" Background="#C62828" Command="{Binding DeleteCategoryOptionCommand}"/>
+                                </StackPanel>
+
+                                <DataGrid Grid.Row="1" Grid.Column="0"
+                                          ItemsSource="{Binding CustomerCategories}"
+                                          SelectedItem="{Binding SelectedCategoryOption}"
+                                          IsReadOnly="True"
+                                          BorderThickness="0">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="이름" Binding="{Binding Name}" Width="*"/>
+                                        <DataGridCheckBoxColumn Header="기본" Binding="{Binding IsSystemDefault}" Width="80"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+
+                                <Border Grid.Row="1" Grid.Column="2" Background="#102039" CornerRadius="6" Padding="14">
+                                    <StackPanel>
+                                        <TextBlock Text="고객분류 편집" Foreground="#90CAF9" FontWeight="Bold" Margin="0,0,0,10"/>
+                                        <Label Content="이름"/>
+                                        <TextBox Text="{Binding CategoryOptionName, UpdateSourceTrigger=PropertyChanged}"/>
+                                        <TextBlock Text="기본 고객분류는 이름 수정만 가능하고 삭제는 제한됩니다." Foreground="#9FB3C8" Margin="0,10,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </Border>
+
+                        <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Margin="0,14,0,0">
+                            <Grid Margin="14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="2*"/>
+                                    <ColumnDefinition Width="12"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="180"/>
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="가격등급" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16" VerticalAlignment="Center"/>
+                                    <Button Content="신규" Background="#1565C0" Margin="14,0,6,0" Command="{Binding NewPriceGradeOptionCommand}"/>
+                                    <Button Content="저장" Background="#1B5E20" Margin="0,0,6,0" Command="{Binding SavePriceGradeOptionCommand}"/>
+                                    <Button Content="삭제" Background="#C62828" Command="{Binding DeletePriceGradeOptionCommand}"/>
+                                </StackPanel>
+
+                                <DataGrid Grid.Row="1" Grid.Column="0"
+                                          ItemsSource="{Binding PriceGradeOptions}"
+                                          SelectedItem="{Binding SelectedPriceGradeOption}"
+                                          IsReadOnly="True"
+                                          BorderThickness="0">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="이름" Binding="{Binding Name}" Width="*"/>
+                                        <DataGridTextColumn Header="기준단가" Binding="{Binding PriceSourceDisplay}" Width="110"/>
+                                        <DataGridCheckBoxColumn Header="기본" Binding="{Binding IsSystemDefault}" Width="80"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+
+                                <Border Grid.Row="1" Grid.Column="2" Background="#102039" CornerRadius="6" Padding="14">
+                                    <StackPanel>
+                                        <TextBlock Text="가격등급 편집" Foreground="#90CAF9" FontWeight="Bold" Margin="0,0,0,10"/>
+                                        <Label Content="이름"/>
+                                        <TextBox Text="{Binding PriceGradeOptionName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,10"/>
+                                        <Label Content="기준단가"/>
+                                        <ComboBox ItemsSource="{Binding PriceSourceOptions}"
+                                                  DisplayMemberPath="DisplayName"
+                                                  SelectedValuePath="Value"
+                                                  SelectedValue="{Binding PriceGradePriceSource}"/>
+                                        <TextBlock Text="가격등급명은 자유롭게 수정할 수 있고, 기준단가는 실제 품목 단가 필드와 연결됩니다." Foreground="#9FB3C8" Margin="0,10,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </Border>
+
+                        <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Margin="0,14,0,0">
+                            <Grid Margin="14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="2*"/>
+                                    <ColumnDefinition Width="12"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="180"/>
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="거래구분" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16" VerticalAlignment="Center"/>
+                                    <Button Content="신규" Background="#1565C0" Margin="14,0,6,0" Command="{Binding NewTradeTypeOptionCommand}"/>
+                                    <Button Content="저장" Background="#1B5E20" Margin="0,0,6,0" Command="{Binding SaveTradeTypeOptionCommand}"/>
+                                    <Button Content="삭제" Background="#C62828" Command="{Binding DeleteTradeTypeOptionCommand}"/>
+                                </StackPanel>
+
+                                <DataGrid Grid.Row="1" Grid.Column="0"
+                                          ItemsSource="{Binding TradeTypeOptions}"
+                                          SelectedItem="{Binding SelectedTradeTypeOption}"
+                                          IsReadOnly="True"
+                                          BorderThickness="0">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="이름" Binding="{Binding Name}" Width="*"/>
+                                        <DataGridCheckBoxColumn Header="매출" Binding="{Binding AllowsSales}" Width="80"/>
+                                        <DataGridCheckBoxColumn Header="매입" Binding="{Binding AllowsPurchase}" Width="80"/>
+                                        <DataGridCheckBoxColumn Header="기본" Binding="{Binding IsSystemDefault}" Width="80"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+
+                                <Border Grid.Row="1" Grid.Column="2" Background="#102039" CornerRadius="6" Padding="14">
+                                    <StackPanel>
+                                        <TextBlock Text="거래구분 편집" Foreground="#90CAF9" FontWeight="Bold" Margin="0,0,0,10"/>
+                                        <Label Content="이름"/>
+                                        <TextBox Text="{Binding TradeTypeOptionName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,10"/>
+                                        <CheckBox Content="매출 가능" IsChecked="{Binding TradeTypeAllowsSales}" Margin="0,0,0,6"/>
+                                        <CheckBox Content="매입 가능" IsChecked="{Binding TradeTypeAllowsPurchase}"/>
+                                        <TextBlock Text="거래구분은 판매/구매 화면의 거래처 선택 가능 여부를 결정합니다." Foreground="#9FB3C8" Margin="0,10,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <TabItem Header="담당지점 관리">
                 <Grid Margin="10">
                     <Grid.ColumnDefinitions>
@@ -284,7 +430,8 @@
                                       BorderThickness="0">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="아이디" Binding="{Binding Username}" Width="*"/>
-                                    <DataGridTextColumn Header="역할" Binding="{Binding Role}" Width="120"/>
+                                    <DataGridTextColumn Header="담당지점" Binding="{Binding OfficeCode}" Width="120"/>
+                                    <DataGridTextColumn Header="권한" Binding="{Binding Role}" Width="120"/>
                                     <DataGridCheckBoxColumn Header="활성" Binding="{Binding IsActive}" Width="80"/>
                                 </DataGrid.Columns>
                             </DataGrid>
@@ -304,9 +451,19 @@
                                      Margin="0,0,0,10"
                                      IsEnabled="{Binding CanManageUsers}"/>
 
-                            <Label Content="역할"/>
+                            <Label Content="담당지점"/>
+                            <ComboBox ItemsSource="{Binding UserOfficeOptions}"
+                                      DisplayMemberPath="DisplayName"
+                                      SelectedValuePath="Value"
+                                      SelectedValue="{Binding EditingUserOfficeCode}"
+                                      Margin="0,0,0,10"
+                                      IsEnabled="{Binding CanManageUsers}"/>
+
+                            <Label Content="권한"/>
                             <ComboBox ItemsSource="{Binding RoleOptions}"
-                                      SelectedItem="{Binding EditingUserRole}"
+                                      DisplayMemberPath="DisplayName"
+                                      SelectedValuePath="Value"
+                                      SelectedValue="{Binding EditingUserRole}"
                                       Margin="0,0,0,10"
                                       IsEnabled="{Binding CanManageUsers}"/>
 

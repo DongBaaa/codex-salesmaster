@@ -39,7 +39,7 @@ public static class CustomerTradeTypes
             return SalesAndPurchase;
         }
 
-        return Sales;
+        return normalized;
     }
 
     public static bool AllowsSales(string? tradeType)

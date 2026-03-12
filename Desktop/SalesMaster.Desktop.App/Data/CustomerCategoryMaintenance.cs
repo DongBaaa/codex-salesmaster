@@ -31,7 +31,10 @@ internal static class CustomerCategoryMaintenance
             }
             else
             {
-                TouchCanonicalCategory(canonical, definition.Name, isSystemDefault: true, now);
+                var canonicalName = string.IsNullOrWhiteSpace(canonical.Name)
+                    ? definition.Name
+                    : DefaultCustomerCategories.NormalizeName(canonical.Name);
+                TouchCanonicalCategory(canonical, canonicalName, isSystemDefault: true, now);
             }
         }
 

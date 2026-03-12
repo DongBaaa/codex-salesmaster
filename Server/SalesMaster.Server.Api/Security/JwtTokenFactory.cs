@@ -32,7 +32,8 @@ public sealed class JwtTokenFactory : IJwtTokenFactory
         {
             new(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new(ClaimTypes.Name, user.Username),
-            new(ClaimTypes.Role, user.Role)
+            new(ClaimTypes.Role, user.Role),
+            new("office", user.OfficeCode ?? string.Empty)
         };
 
         claims.AddRange(user.Permissions.Select(permission => new Claim("perm", permission.Permission)));
@@ -55,6 +56,7 @@ public sealed class JwtTokenFactory : IJwtTokenFactory
                 UserId = user.Id,
                 Username = user.Username,
                 Role = user.Role,
+                OfficeCode = user.OfficeCode ?? string.Empty,
                 Permissions = user.Permissions.Select(x => x.Permission).Distinct().ToList()
             }
         };

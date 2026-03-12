@@ -641,6 +641,7 @@ public sealed class PeriodLedgerAggregationService
             query.To,
             customerId,
             warehouseCode: null,
+            responsibleOfficeCode: null,
             session,
             ct);
 

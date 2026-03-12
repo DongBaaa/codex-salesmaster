@@ -51,6 +51,7 @@ public sealed class UsersController : ControllerBase
             Username = username,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
             Role = NormalizeRole(request.Role),
+            OfficeCode = NormalizeOfficeCode(request.OfficeCode),
             IsActive = request.IsActive
         };
 
@@ -85,6 +86,7 @@ public sealed class UsersController : ControllerBase
 
         user.Username = username;
         user.Role = NormalizeRole(request.Role);
+        user.OfficeCode = NormalizeOfficeCode(request.OfficeCode);
         user.IsActive = request.IsActive;
         ApplyPermissions(user, request.Permissions);
 
@@ -151,6 +153,12 @@ public sealed class UsersController : ControllerBase
         => string.Equals(role, "admin", StringComparison.OrdinalIgnoreCase)
             ? "Admin"
             : "User";
+
+    private static string NormalizeOfficeCode(string? officeCode)
+    {
+        var normalized = (officeCode ?? string.Empty).Trim().ToUpperInvariant();
+        return string.IsNullOrWhiteSpace(normalized) ? "UZNET" : normalized;
+    }
 
     private void ApplyPermissions(UserAccount user, IEnumerable<string> permissions)
     {

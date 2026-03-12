@@ -123,7 +123,7 @@ public sealed class LocalStateService
         await _db.SaveChangesAsync(ct);
 
         var grantedTemporaryAccess = !session.IsAdmin &&
-                                     string.Equals(normalizedOfficeCode, DomainConstants.OfficeUznet, StringComparison.OrdinalIgnoreCase);
+                                     !string.Equals(normalizedOfficeCode, NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUznet), StringComparison.OrdinalIgnoreCase);
 
         if (grantedTemporaryAccess)
             _officeAccess.GrantTemporaryCustomerAccess(session, customer.Id);
@@ -133,7 +133,7 @@ public sealed class LocalStateService
         return OfficeMutationResult.Ok(
             customer.Id,
             grantedTemporaryAccess
-                ? "거래처를 저장했습니다. 유즈넷 거래처는 당일만 계속 작업할 수 있습니다."
+                ? $"거래처를 저장했습니다. {normalizedOfficeCode} 거래처는 당일만 계속 작업할 수 있습니다."
                 : "거래처를 저장했습니다.",
             grantedTemporaryAccess);
     }
@@ -511,8 +511,10 @@ public sealed class LocalStateService
         DateOnly? to = null,
         Guid? customerId = null,
         string? warehouseCode = null,
+        string? responsibleOfficeCode = null,
         CancellationToken ct = default)
     {
+        var normalizedOfficeCode = NormalizeOfficeCode(responsibleOfficeCode, DomainConstants.OfficeYeonsu);
         var query = _db.Invoices
             .Include(invoice => invoice.Lines.Where(line => !line.IsDeleted))
             .Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
@@ -521,7 +523,7 @@ public sealed class LocalStateService
                               invoice.IsLatestVersion &&
                               invoice.IsConfirmed &&
                               invoice.VoucherType == VoucherType.Sales &&
-                              invoice.ResponsibleOfficeCode == DomainConstants.OfficeYeonsu);
+                              invoice.ResponsibleOfficeCode == normalizedOfficeCode);
 
         if (from.HasValue)
             query = query.Where(invoice => invoice.InvoiceDate >= from.Value);
@@ -548,13 +550,15 @@ public sealed class LocalStateService
         DateOnly? to,
         Guid? customerId,
         string? warehouseCode,
+        string? responsibleOfficeCode,
         SessionState session,
         CancellationToken ct = default)
     {
-        if (session.IsAdmin)
-            return GetYeonsuDeliveryInvoicesAsync(from, to, customerId, warehouseCode, ct);
+        var officeCode = session.IsAdmin
+            ? NormalizeOfficeCode(responsibleOfficeCode, DomainConstants.OfficeYeonsu)
+            : NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeYeonsu);
 
-        return GetYeonsuDeliveryInvoicesAsync(from, to, customerId, warehouseCode, ct);
+        return GetYeonsuDeliveryInvoicesAsync(from, to, customerId, warehouseCode, officeCode, ct);
     }
 
     public async Task<LocalInvoice?> GetInvoiceAsync(Guid id, CancellationToken ct = default)
@@ -978,6 +982,274 @@ public sealed class LocalStateService
             .ToListAsync(ct);
     }
 
+    public Task<List<LocalPriceGradeOption>> GetPriceGradeOptionsAsync(CancellationToken ct = default)
+        => _db.PriceGradeOptions
+            .AsNoTracking()
+            .Where(option => option.IsActive)
+            .OrderBy(option => option.SortOrder)
+            .ThenBy(option => option.Name)
+            .ToListAsync(ct);
+
+    public Task<List<LocalTradeTypeOption>> GetTradeTypeOptionsAsync(CancellationToken ct = default)
+        => _db.TradeTypeOptions
+            .AsNoTracking()
+            .Where(option => option.IsActive)
+            .OrderBy(option => option.SortOrder)
+            .ThenBy(option => option.Name)
+            .ToListAsync(ct);
+
+    public async Task<LocalMutationResult> SaveCustomerCategoryAsync(LocalCustomerCategory category, CancellationToken ct = default)
+    {
+        if (category is null)
+            throw new ArgumentNullException(nameof(category));
+
+        await EnsureCustomerCategoryIntegrityAsync(ct);
+
+        var name = DefaultCustomerCategories.NormalizeName(category.Name);
+        if (string.IsNullOrWhiteSpace(name))
+            return LocalMutationResult.Denied("고객분류 이름을 입력하세요.");
+
+        var categories = await _db.CustomerCategories.IgnoreQueryFilters().ToListAsync(ct);
+        if (categories.Any(current =>
+                current.Id != category.Id &&
+                !current.IsDeleted &&
+                string.Equals(DefaultCustomerCategories.NormalizeName(current.Name), name, StringComparison.CurrentCultureIgnoreCase)))
+        {
+            return LocalMutationResult.Denied("같은 이름의 고객분류가 이미 있습니다.");
+        }
+
+        var now = DateTime.UtcNow;
+        var existing = categories.FirstOrDefault(current => current.Id == category.Id);
+        if (existing is null)
+        {
+            var created = new LocalCustomerCategory
+            {
+                Id = category.Id == Guid.Empty ? Guid.NewGuid() : category.Id,
+                Name = name,
+                IsSystemDefault = false,
+                IsDeleted = false,
+                IsDirty = true,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            };
+            _db.CustomerCategories.Add(created);
+            await _db.SaveChangesAsync(ct);
+            return LocalMutationResult.Ok(created.Id, "고객분류를 추가했습니다.");
+        }
+
+        existing.Name = name;
+        existing.IsDeleted = false;
+        existing.IsDirty = true;
+        existing.UpdatedAtUtc = now;
+        await _db.SaveChangesAsync(ct);
+        return LocalMutationResult.Ok(existing.Id, "고객분류를 저장했습니다.");
+    }
+
+    public async Task<LocalMutationResult> DeleteCustomerCategoryAsync(Guid categoryId, CancellationToken ct = default)
+    {
+        await EnsureCustomerCategoryIntegrityAsync(ct);
+
+        var category = await _db.CustomerCategories.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Id == categoryId, ct);
+        if (category is null)
+            return LocalMutationResult.Missing("고객분류를 찾을 수 없습니다.");
+
+        if (category.IsSystemDefault)
+            return LocalMutationResult.Denied("기본 고객분류는 삭제할 수 없습니다.");
+
+        var inUse = await _db.Customers.IgnoreQueryFilters().AnyAsync(customer => customer.CategoryId == categoryId, ct) ||
+                    await _db.CustomerMasters.IgnoreQueryFilters().AnyAsync(customer => customer.CategoryId == categoryId, ct);
+        if (inUse)
+            return LocalMutationResult.Denied("사용 중인 고객분류는 삭제할 수 없습니다.");
+
+        category.IsDeleted = true;
+        category.IsDirty = true;
+        category.UpdatedAtUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return LocalMutationResult.Ok(category.Id, "고객분류를 삭제했습니다.");
+    }
+
+    public async Task<LocalMutationResult> SavePriceGradeOptionAsync(LocalPriceGradeOption option, string? previousName = null, CancellationToken ct = default)
+    {
+        if (option is null)
+            throw new ArgumentNullException(nameof(option));
+
+        var name = (option.Name ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(name))
+            return LocalMutationResult.Denied("가격등급 이름을 입력하세요.");
+
+        var source = SelectionOptionDefaults.NormalizePriceSource(option.PriceSource);
+        var options = await _db.PriceGradeOptions.IgnoreQueryFilters().ToListAsync(ct);
+        if (options.Any(current =>
+                current.Id != option.Id &&
+                !current.IsDeleted &&
+                string.Equals(current.Name, name, StringComparison.CurrentCultureIgnoreCase)))
+        {
+            return LocalMutationResult.Denied("같은 이름의 가격등급이 이미 있습니다.");
+        }
+
+        var now = DateTime.UtcNow;
+        var existing = options.FirstOrDefault(current => current.Id == option.Id);
+        var oldName = (previousName ?? existing?.Name ?? string.Empty).Trim();
+        if (existing is null)
+        {
+            var created = new LocalPriceGradeOption
+            {
+                Id = option.Id == Guid.Empty ? Guid.NewGuid() : option.Id,
+                Name = name,
+                PriceSource = source,
+                SortOrder = option.SortOrder,
+                IsSystemDefault = option.IsSystemDefault,
+                IsActive = true,
+                IsDeleted = false,
+                IsDirty = true,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            };
+            _db.PriceGradeOptions.Add(created);
+            await _db.SaveChangesAsync(ct);
+            return LocalMutationResult.Ok(created.Id, "가격등급을 추가했습니다.");
+        }
+
+        existing.Name = name;
+        existing.PriceSource = source;
+        existing.SortOrder = option.SortOrder;
+        existing.IsSystemDefault = existing.IsSystemDefault || option.IsSystemDefault;
+        existing.IsActive = true;
+        existing.IsDeleted = false;
+        existing.IsDirty = true;
+        existing.UpdatedAtUtc = now;
+
+        if (!string.IsNullOrWhiteSpace(oldName) && !string.Equals(oldName, name, StringComparison.CurrentCulture))
+        {
+            var customers = await _db.Customers.IgnoreQueryFilters()
+                .Where(customer => customer.PriceGrade == oldName)
+                .ToListAsync(ct);
+            foreach (var customer in customers)
+            {
+                customer.PriceGrade = name;
+                customer.IsDirty = true;
+                customer.UpdatedAtUtc = now;
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return LocalMutationResult.Ok(existing.Id, "가격등급을 저장했습니다.");
+    }
+
+    public async Task<LocalMutationResult> DeletePriceGradeOptionAsync(Guid optionId, CancellationToken ct = default)
+    {
+        var option = await _db.PriceGradeOptions.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Id == optionId, ct);
+        if (option is null)
+            return LocalMutationResult.Missing("가격등급을 찾을 수 없습니다.");
+
+        if (option.IsSystemDefault)
+            return LocalMutationResult.Denied("기본 가격등급은 삭제할 수 없습니다.");
+
+        var inUse = await _db.Customers.IgnoreQueryFilters().AnyAsync(customer => customer.PriceGrade == option.Name, ct);
+        if (inUse)
+            return LocalMutationResult.Denied("사용 중인 가격등급은 삭제할 수 없습니다.");
+
+        option.IsDeleted = true;
+        option.IsDirty = true;
+        option.IsActive = false;
+        option.UpdatedAtUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return LocalMutationResult.Ok(option.Id, "가격등급을 삭제했습니다.");
+    }
+
+    public async Task<LocalMutationResult> SaveTradeTypeOptionAsync(LocalTradeTypeOption option, string? previousName = null, CancellationToken ct = default)
+    {
+        if (option is null)
+            throw new ArgumentNullException(nameof(option));
+
+        var name = CustomerTradeTypes.Normalize(option.Name);
+        if (string.IsNullOrWhiteSpace(name))
+            return LocalMutationResult.Denied("거래구분 이름을 입력하세요.");
+
+        if (!option.AllowsSales && !option.AllowsPurchase)
+            return LocalMutationResult.Denied("거래구분은 매출 또는 매입 중 하나 이상 허용해야 합니다.");
+
+        var options = await _db.TradeTypeOptions.IgnoreQueryFilters().ToListAsync(ct);
+        if (options.Any(current =>
+                current.Id != option.Id &&
+                !current.IsDeleted &&
+                string.Equals(current.Name, name, StringComparison.CurrentCultureIgnoreCase)))
+        {
+            return LocalMutationResult.Denied("같은 이름의 거래구분이 이미 있습니다.");
+        }
+
+        var now = DateTime.UtcNow;
+        var existing = options.FirstOrDefault(current => current.Id == option.Id);
+        var oldName = CustomerTradeTypes.Normalize(previousName ?? existing?.Name);
+        if (existing is null)
+        {
+            var created = new LocalTradeTypeOption
+            {
+                Id = option.Id == Guid.Empty ? Guid.NewGuid() : option.Id,
+                Name = name,
+                AllowsSales = option.AllowsSales,
+                AllowsPurchase = option.AllowsPurchase,
+                SortOrder = option.SortOrder,
+                IsSystemDefault = option.IsSystemDefault,
+                IsActive = true,
+                IsDeleted = false,
+                IsDirty = true,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            };
+            _db.TradeTypeOptions.Add(created);
+            await _db.SaveChangesAsync(ct);
+            return LocalMutationResult.Ok(created.Id, "거래구분을 추가했습니다.");
+        }
+
+        existing.Name = name;
+        existing.AllowsSales = option.AllowsSales;
+        existing.AllowsPurchase = option.AllowsPurchase;
+        existing.SortOrder = option.SortOrder;
+        existing.IsSystemDefault = existing.IsSystemDefault || option.IsSystemDefault;
+        existing.IsActive = true;
+        existing.IsDeleted = false;
+        existing.IsDirty = true;
+        existing.UpdatedAtUtc = now;
+
+        if (!string.IsNullOrWhiteSpace(oldName) && !string.Equals(oldName, name, StringComparison.CurrentCulture))
+        {
+            var customers = await _db.Customers.IgnoreQueryFilters()
+                .Where(customer => customer.TradeType == oldName)
+                .ToListAsync(ct);
+            foreach (var customer in customers)
+            {
+                customer.TradeType = name;
+                customer.IsDirty = true;
+                customer.UpdatedAtUtc = now;
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return LocalMutationResult.Ok(existing.Id, "거래구분을 저장했습니다.");
+    }
+
+    public async Task<LocalMutationResult> DeleteTradeTypeOptionAsync(Guid optionId, CancellationToken ct = default)
+    {
+        var option = await _db.TradeTypeOptions.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Id == optionId, ct);
+        if (option is null)
+            return LocalMutationResult.Missing("거래구분을 찾을 수 없습니다.");
+
+        if (option.IsSystemDefault)
+            return LocalMutationResult.Denied("기본 거래구분은 삭제할 수 없습니다.");
+
+        var inUse = await _db.Customers.IgnoreQueryFilters().AnyAsync(customer => customer.TradeType == option.Name, ct);
+        if (inUse)
+            return LocalMutationResult.Denied("사용 중인 거래구분은 삭제할 수 없습니다.");
+
+        option.IsDeleted = true;
+        option.IsDirty = true;
+        option.IsActive = false;
+        option.UpdatedAtUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return LocalMutationResult.Ok(option.Id, "거래구분을 삭제했습니다.");
+    }
+
     // Settings
     public async Task<string?> GetSettingAsync(string key, CancellationToken ct = default)
     {
@@ -1127,6 +1399,7 @@ public sealed class LocalStateService
             return null;
 
         var role = await GetSettingAsync("CachedSession_Role", ct) ?? "User";
+        var officeCode = await GetSettingAsync("CachedSession_OfficeCode", ct) ?? string.Empty;
         var permissionsRaw = await GetSettingAsync("CachedSession_Permissions", ct) ?? string.Empty;
         var permissions = permissionsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList();
 
@@ -1135,6 +1408,7 @@ public sealed class LocalStateService
             UserId = Guid.Empty,
             Username = cachedUsername ?? username,
             Role = role,
+            OfficeCode = officeCode,
             Permissions = permissions
         };
     }
@@ -1499,9 +1773,10 @@ public sealed class LocalStateService
         if (HasFullAccess(session))
             return query;
 
+        var userOfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUznet);
         var temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
         return query.Where(customer =>
-            customer.ResponsibleOfficeCode == DomainConstants.OfficeYeonsu ||
+            customer.ResponsibleOfficeCode == userOfficeCode ||
             temporaryCustomerIds.Contains(customer.Id));
     }
 
@@ -1512,9 +1787,10 @@ public sealed class LocalStateService
         if (HasFullAccess(session))
             return query;
 
+        var userOfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUznet);
         var temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
         return query.Where(invoice =>
-            invoice.ResponsibleOfficeCode == DomainConstants.OfficeYeonsu ||
+            invoice.ResponsibleOfficeCode == userOfficeCode ||
             temporaryCustomerIds.Contains(invoice.CustomerId));
     }
 
@@ -1525,9 +1801,10 @@ public sealed class LocalStateService
         if (HasFullAccess(session))
             return query;
 
+        var userOfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUznet);
         var temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
         return query.Where(transaction =>
-            transaction.ResponsibleOfficeCode == DomainConstants.OfficeYeonsu ||
+            transaction.ResponsibleOfficeCode == userOfficeCode ||
             temporaryCustomerIds.Contains(transaction.CustomerId));
     }
 
@@ -1551,7 +1828,8 @@ public sealed class LocalStateService
             return true;
 
         var normalizedOfficeCode = NormalizeOfficeCode(customerOfficeCode, DomainConstants.OfficeUznet);
-        if (string.Equals(normalizedOfficeCode, DomainConstants.OfficeYeonsu, StringComparison.OrdinalIgnoreCase))
+        var userOfficeCode = NormalizeOfficeCode(session?.OfficeCode, DomainConstants.OfficeUznet);
+        if (string.Equals(normalizedOfficeCode, userOfficeCode, StringComparison.OrdinalIgnoreCase))
             return true;
 
         return session is not null && _officeAccess.HasTemporaryCustomerAccess(session, customerId);
@@ -1563,7 +1841,8 @@ public sealed class LocalStateService
             return true;
 
         var officeCode = NormalizeOfficeCode(invoice.ResponsibleOfficeCode, DomainConstants.OfficeUznet);
-        if (string.Equals(officeCode, DomainConstants.OfficeYeonsu, StringComparison.OrdinalIgnoreCase))
+        var userOfficeCode = NormalizeOfficeCode(session?.OfficeCode, DomainConstants.OfficeUznet);
+        if (string.Equals(officeCode, userOfficeCode, StringComparison.OrdinalIgnoreCase))
             return true;
 
         return session is not null && _officeAccess.HasTemporaryCustomerAccess(session, invoice.CustomerId);
@@ -1575,7 +1854,8 @@ public sealed class LocalStateService
             return true;
 
         var officeCode = NormalizeOfficeCode(transaction.ResponsibleOfficeCode, DomainConstants.OfficeUznet);
-        if (string.Equals(officeCode, DomainConstants.OfficeYeonsu, StringComparison.OrdinalIgnoreCase))
+        var userOfficeCode = NormalizeOfficeCode(session?.OfficeCode, DomainConstants.OfficeUznet);
+        if (string.Equals(officeCode, userOfficeCode, StringComparison.OrdinalIgnoreCase))
             return true;
 
         return session is not null && _officeAccess.HasTemporaryCustomerAccess(session, transaction.CustomerId);

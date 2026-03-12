@@ -8,6 +8,8 @@ public sealed class LocalDbContext : DbContext
     public DbSet<LocalCompanyProfile> CompanyProfiles => Set<LocalCompanyProfile>();
     public DbSet<LocalUnit> Units => Set<LocalUnit>();
     public DbSet<LocalCustomerCategory> CustomerCategories => Set<LocalCustomerCategory>();
+    public DbSet<LocalPriceGradeOption> PriceGradeOptions => Set<LocalPriceGradeOption>();
+    public DbSet<LocalTradeTypeOption> TradeTypeOptions => Set<LocalTradeTypeOption>();
     public DbSet<LocalCustomerMaster> CustomerMasters => Set<LocalCustomerMaster>();
     public DbSet<LocalCustomer> Customers => Set<LocalCustomer>();
     public DbSet<LocalItem> Items => Set<LocalItem>();
@@ -41,6 +43,8 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalCompanyProfile>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalUnit>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalCustomerCategory>().HasQueryFilter(e => !e.IsDeleted);
+        model.Entity<LocalPriceGradeOption>().HasQueryFilter(e => !e.IsDeleted);
+        model.Entity<LocalTradeTypeOption>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalCustomerMaster>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalCustomer>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalItem>().HasQueryFilter(e => !e.IsDeleted);
@@ -60,6 +64,8 @@ public sealed class LocalDbContext : DbContext
         // Indexes for sync pull efficiency
         model.Entity<LocalCompanyProfile>().HasIndex(e => e.Revision);
         model.Entity<LocalUnit>().HasIndex(e => e.Revision);
+        model.Entity<LocalPriceGradeOption>().HasIndex(e => e.Revision);
+        model.Entity<LocalTradeTypeOption>().HasIndex(e => e.Revision);
         model.Entity<LocalCustomer>().HasIndex(e => e.Revision);
         model.Entity<LocalItem>().HasIndex(e => e.Revision);
         model.Entity<LocalInvoice>().HasIndex(e => e.Revision);
@@ -93,6 +99,11 @@ public sealed class LocalDbContext : DbContext
             .HasKey(s => new { s.CustomerKey, s.DocCode });
         model.Entity<LocalAttachmentSelection>()
             .HasIndex(s => s.CustomerKey);
+
+        model.Entity<LocalPriceGradeOption>()
+            .HasIndex(option => option.Name);
+        model.Entity<LocalTradeTypeOption>()
+            .HasIndex(option => option.Name);
 
         model.Entity<LocalOffice>()
             .HasIndex(o => o.Code)

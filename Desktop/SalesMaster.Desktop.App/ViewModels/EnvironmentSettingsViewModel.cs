@@ -62,13 +62,12 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     public ObservableCollection<LocalOffice> Offices { get; } = new();
     public ObservableCollection<UserAccountDto> Users { get; } = new();
 
-    public IReadOnlyList<string> RoleOptions { get; } = ["Admin", "User"];
     public bool CanManageUsers => _session.IsAdmin && !_session.IsOfflineMode;
     public bool CanEditOfficeCode =>
         IsNewOffice ||
         (_session.IsAdmin && SelectedOffice is not null);
     public string UserManagementHint => CanManageUsers
-        ? "사용자 ID, 역할, 비밀번호를 관리합니다."
+        ? "사용자 ID, 담당지점, 권한, 비밀번호를 관리합니다."
         : _session.IsOfflineMode
             ? "오프라인 모드에서는 사용자 관리를 사용할 수 없습니다."
             : "관리자 계정으로 로그인해야 사용자 관리를 사용할 수 있습니다.";
@@ -89,6 +88,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             await LoadCompanyProfileAsync();
             await LoadLegacyMigrationSettingsAsync();
             await ReloadOfficesAsync();
+            await ReloadMasterOptionsAsync();
             await ReloadUsersAsync();
             NewOffice();
             NewUser();
@@ -368,6 +368,8 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         Offices.Clear();
         foreach (var office in offices)
             Offices.Add(office);
+
+        RefreshUserOfficeOptions();
     }
 
     [RelayCommand]
@@ -380,6 +382,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         EditingUserIsActive = true;
         EditingPassword = string.Empty;
         EditingPasswordConfirm = string.Empty;
+        SetDefaultEditingUserOfficeCode();
         StatusMessage = "새 사용자를 추가할 수 있습니다.";
     }
 
@@ -413,6 +416,12 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             return;
         }
 
+        if (string.IsNullOrWhiteSpace(EditingUserOfficeCode))
+        {
+            StatusMessage = "사용자의 담당지점을 선택하세요.";
+            return;
+        }
+
         var permissions = BuildPermissionsForRole(EditingUserRole);
         try
         {
@@ -424,6 +433,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
                     Username = EditingUsername.Trim(),
                     Password = EditingPassword,
                     Role = EditingUserRole,
+                    OfficeCode = EditingUserOfficeCode,
                     IsActive = EditingUserIsActive,
                     Permissions = permissions
                 });
@@ -435,6 +445,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
                 {
                     Username = EditingUsername.Trim(),
                     Role = EditingUserRole,
+                    OfficeCode = EditingUserOfficeCode,
                     IsActive = EditingUserIsActive,
                     Permissions = permissions
                 });
@@ -531,6 +542,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         EditingUserId = value.Id;
         EditingUsername = value.Username;
         EditingUserRole = string.Equals(value.Role, "Admin", StringComparison.OrdinalIgnoreCase) ? "Admin" : "User";
+        EditingUserOfficeCode = value.OfficeCode;
         EditingUserIsActive = value.IsActive;
         EditingPassword = string.Empty;
         EditingPasswordConfirm = string.Empty;

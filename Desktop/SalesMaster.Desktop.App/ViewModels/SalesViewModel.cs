@@ -23,6 +23,8 @@ public sealed partial class SalesViewModel : ObservableObject
     private readonly VoucherType _newInvoiceVoucherType;
     private List<LocalItem> _allItems = new();
     private List<LocalCustomer> _allCustomers = new();
+    private readonly Dictionary<string, string> _priceGradeSourceMap = new(StringComparer.CurrentCultureIgnoreCase);
+    private readonly Dictionary<string, (bool AllowsSales, bool AllowsPurchase)> _tradeTypeRuleMap = new(StringComparer.CurrentCultureIgnoreCase);
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
     private string _baselineStateSignature = string.Empty;
 
@@ -166,9 +168,31 @@ public sealed partial class SalesViewModel : ObservableObject
     {
         _allCustomers = await _local.GetCustomersAsync(_session);
         _allItems = await _local.GetItemsAsync();
+        await LoadMasterOptionsAsync();
         await LoadOfficeWarehouseAsync();
         RefreshItemSearch();
         InitializeOfficeAndWarehouseDefaults();
+    }
+
+    private async Task LoadMasterOptionsAsync()
+    {
+        _priceGradeSourceMap.Clear();
+        foreach (var option in await _local.GetPriceGradeOptionsAsync())
+        {
+            if (string.IsNullOrWhiteSpace(option.Name))
+                continue;
+
+            _priceGradeSourceMap[option.Name.Trim()] = SelectionOptionDefaults.NormalizePriceSource(option.PriceSource);
+        }
+
+        _tradeTypeRuleMap.Clear();
+        foreach (var option in await _local.GetTradeTypeOptionsAsync())
+        {
+            if (string.IsNullOrWhiteSpace(option.Name))
+                continue;
+
+            _tradeTypeRuleMap[option.Name.Trim()] = (option.AllowsSales, option.AllowsPurchase);
+        }
     }
 
     private async Task LoadOfficeWarehouseAsync()
@@ -265,6 +289,10 @@ public sealed partial class SalesViewModel : ObservableObject
         if (customer is null)
             return false;
 
+        var tradeType = (customer.TradeType ?? string.Empty).Trim();
+        if (_tradeTypeRuleMap.TryGetValue(tradeType, out var rule))
+            return IsPurchaseDocument ? rule.AllowsPurchase : rule.AllowsSales;
+
         return IsPurchaseDocument
             ? CustomerTradeTypes.AllowsPurchase(customer.TradeType)
             : CustomerTradeTypes.AllowsSales(customer.TradeType);
@@ -273,6 +301,7 @@ public sealed partial class SalesViewModel : ObservableObject
     public async Task ReloadCustomersAsync()
     {
         _allCustomers = await _local.GetCustomersAsync(_session);
+        await LoadMasterOptionsAsync();
     }
 
     public async Task ReloadItemsAsync()
@@ -352,13 +381,36 @@ public sealed partial class SalesViewModel : ObservableObject
             return 0;
         }
 
-        var grade = (CustomerPriceGrade ?? string.Empty).Trim().ToUpperInvariant();
-        if (grade.StartsWith("A") && item.PriceGradeA > 0) return item.PriceGradeA;
-        if (grade.StartsWith("B") && item.PriceGradeB > 0) return item.PriceGradeB;
-        if (grade.StartsWith("C") && item.PriceGradeC > 0) return item.PriceGradeC;
-        if (item.SalePrice > 0) return item.SalePrice;
-        if (item.RetailPrice > 0) return item.RetailPrice;
-        return 0;
+        var grade = (CustomerPriceGrade ?? string.Empty).Trim();
+        var priceSource = _priceGradeSourceMap.TryGetValue(grade, out var configuredSource)
+            ? configuredSource
+            : ResolveLegacyPriceSource(grade);
+
+        switch (priceSource)
+        {
+            case SelectionOptionDefaults.PriceSourceA when item.PriceGradeA > 0:
+                return item.PriceGradeA;
+            case SelectionOptionDefaults.PriceSourceB when item.PriceGradeB > 0:
+                return item.PriceGradeB;
+            case SelectionOptionDefaults.PriceSourceC when item.PriceGradeC > 0:
+                return item.PriceGradeC;
+            case SelectionOptionDefaults.PriceSourceRetail when item.RetailPrice > 0:
+                return item.RetailPrice;
+            default:
+                if (item.SalePrice > 0) return item.SalePrice;
+                if (item.RetailPrice > 0) return item.RetailPrice;
+                return 0;
+        }
+    }
+
+    private static string ResolveLegacyPriceSource(string? priceGrade)
+    {
+        var grade = (priceGrade ?? string.Empty).Trim().ToUpperInvariant();
+        if (grade.StartsWith("A")) return SelectionOptionDefaults.PriceSourceA;
+        if (grade.StartsWith("B")) return SelectionOptionDefaults.PriceSourceB;
+        if (grade.StartsWith("C")) return SelectionOptionDefaults.PriceSourceC;
+        if (grade.Contains("소매", StringComparison.OrdinalIgnoreCase)) return SelectionOptionDefaults.PriceSourceRetail;
+        return SelectionOptionDefaults.PriceSourceSales;
     }
 
     [RelayCommand]

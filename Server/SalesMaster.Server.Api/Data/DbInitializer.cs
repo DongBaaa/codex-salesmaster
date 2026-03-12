@@ -1,4 +1,4 @@
-using SalesMaster.Server.Api.Domain;
+﻿using SalesMaster.Server.Api.Domain;
 using SalesMaster.Server.Api.Security;
 using SalesMaster.Server.Api.Services;
 using SalesMaster.Shared.Contracts;
@@ -25,6 +25,7 @@ public static class DbInitializer
         }
 
         await EnsureCustomerTradeTypeColumnAsync(dbContext, cancellationToken);
+        await EnsureUserOfficeCodeColumnAsync(dbContext, cancellationToken);
 
         var maxRevision = await GetMaxRevisionAsync(dbContext, cancellationToken);
         revisionClock.Initialize(maxRevision);
@@ -36,6 +37,7 @@ public static class DbInitializer
                 Username = "admin",
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword("CHANGE_THIS_ADMIN_PASSWORD"),
                 Role = "Admin",
+                OfficeCode = "UZNET",
                 IsActive = true
             };
 
@@ -49,6 +51,7 @@ public static class DbInitializer
                 Username = "user",
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword("CHANGE_THIS_USER_PASSWORD"),
                 Role = "User",
+                OfficeCode = "YEONSU",
                 IsActive = true
             };
 
@@ -121,7 +124,7 @@ public static class DbInitializer
                     WHEN COALESCE(TRIM("TradeType"), '') IN ('', '판매', '매출처', '매출') THEN '매출'
                     WHEN COALESCE(TRIM("TradeType"), '') IN ('매입처', '매입') THEN '매입'
                     WHEN COALESCE(TRIM("TradeType"), '') IN ('판매/매입', '매출/매입', '매입/매출') THEN '매출/매입'
-                    ELSE '매출'
+                    ELSE TRIM("TradeType")
                 END;
                 """,
                 cancellationToken);
@@ -148,6 +151,56 @@ public static class DbInitializer
         };
 
         return revisions.Max();
+    }
+
+    private static async Task EnsureUserOfficeCodeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"Users\" ADD COLUMN \"OfficeCode\" TEXT NOT NULL DEFAULT 'UZNET';",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"OfficeCode\" text NOT NULL DEFAULT 'UZNET';",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE "Users"
+                SET "OfficeCode" = CASE
+                    WHEN COALESCE(TRIM("OfficeCode"), '') = ''
+                        THEN CASE
+                            WHEN LOWER(COALESCE(TRIM("Role"), '')) = 'user' THEN 'YEONSU'
+                            ELSE 'UZNET'
+                        END
+                    WHEN LOWER(COALESCE(TRIM("Username"), '')) = 'user'
+                         AND LOWER(COALESCE(TRIM("Role"), '')) = 'user'
+                         AND UPPER(TRIM("OfficeCode")) = 'UZNET'
+                        THEN 'YEONSU'
+                    ELSE UPPER(TRIM("OfficeCode"))
+                END;
+                """,
+                cancellationToken);
+        }
+        catch
+        {
+        }
     }
 
     private static string[] AllPermissions() =>
@@ -186,7 +239,10 @@ public static class DbInitializer
             }
             else
             {
-                TouchCanonicalCategory(canonical, definition.Name, isSystemDefault: true);
+                var canonicalName = string.IsNullOrWhiteSpace(canonical.Name)
+                    ? definition.Name
+                    : DefaultCustomerCategories.NormalizeName(canonical.Name);
+                TouchCanonicalCategory(canonical, canonicalName, isSystemDefault: true);
             }
         }
 
@@ -256,3 +312,4 @@ public static class DbInitializer
         category.IsDeleted = false;
     }
 }
+

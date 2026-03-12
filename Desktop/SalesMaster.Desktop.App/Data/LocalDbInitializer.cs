@@ -29,6 +29,8 @@ public static class LocalDbInitializer
                 }));
         }
 
+        SeedSelectionOptions(db);
+
         if (!db.Units.Any())
         {
             db.Units.AddRange(
@@ -57,6 +59,8 @@ public static class LocalDbInitializer
         await TryCreateTransactionsTableAsync(db);
         await TryCreateOfficeTableAsync(db);
         await TryCreateWarehouseTableAsync(db);
+        await TryCreatePriceGradeOptionsTableAsync(db);
+        await TryCreateTradeTypeOptionsTableAsync(db);
         await TryCreateInvoiceLineSerialsTableAsync(db);
         await TryCreateInventoryMovementsTableAsync(db);
         await TryCreateStockLayersTableAsync(db);
@@ -156,6 +160,69 @@ public static class LocalDbInitializer
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Transactions_ResponsibleOfficeCode\" ON \"Transactions\" (\"ResponsibleOfficeCode\");");
         await BackfillTransactionResponsibleOfficeCodeAsync(db);
         await NormalizeCustomerTradeTypeAsync(db);
+    }
+
+    private static void SeedSelectionOptions(LocalDbContext db)
+    {
+        var now = DateTime.UtcNow;
+
+        foreach (var definition in SelectionOptionDefaults.DefaultPriceGrades)
+        {
+            var option = db.PriceGradeOptions.IgnoreQueryFilters().FirstOrDefault(current => current.Id == definition.Id);
+            if (option is null)
+            {
+                db.PriceGradeOptions.Add(new LocalPriceGradeOption
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    PriceSource = definition.PriceSource,
+                    SortOrder = definition.SortOrder,
+                    IsSystemDefault = definition.IsSystemDefault,
+                    IsActive = true,
+                    IsDirty = false,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                });
+                continue;
+            }
+
+            option.Name = string.IsNullOrWhiteSpace(option.Name) ? definition.Name : option.Name.Trim();
+            option.PriceSource = SelectionOptionDefaults.NormalizePriceSource(option.PriceSource);
+            option.SortOrder = option.SortOrder == 0 ? definition.SortOrder : option.SortOrder;
+            option.IsSystemDefault = definition.IsSystemDefault || option.IsSystemDefault;
+            option.IsActive = true;
+            option.IsDeleted = false;
+        }
+
+        foreach (var definition in SelectionOptionDefaults.DefaultTradeTypes)
+        {
+            var option = db.TradeTypeOptions.IgnoreQueryFilters().FirstOrDefault(current => current.Id == definition.Id);
+            if (option is null)
+            {
+                db.TradeTypeOptions.Add(new LocalTradeTypeOption
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    AllowsSales = definition.AllowsSales,
+                    AllowsPurchase = definition.AllowsPurchase,
+                    SortOrder = definition.SortOrder,
+                    IsSystemDefault = definition.IsSystemDefault,
+                    IsActive = true,
+                    IsDirty = false,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                });
+                continue;
+            }
+
+            option.Name = string.IsNullOrWhiteSpace(option.Name) ? definition.Name : option.Name.Trim();
+            option.AllowsSales = option.AllowsSales || definition.AllowsSales;
+            option.AllowsPurchase = option.AllowsPurchase || definition.AllowsPurchase;
+            option.SortOrder = option.SortOrder == 0 ? definition.SortOrder : option.SortOrder;
+            option.IsSystemDefault = definition.IsSystemDefault || option.IsSystemDefault;
+            option.IsActive = true;
+            option.IsDeleted = false;
+        }
     }
 
     private static async Task SeedOfficeAndWarehouseAsync(LocalDbContext db)
@@ -339,7 +406,7 @@ public static class LocalDbInitializer
                 WHEN COALESCE(TRIM("TradeType"), '') IN ('', '판매', '매출처', '매출') THEN '매출'
                 WHEN COALESCE(TRIM("TradeType"), '') IN ('매입처', '매입') THEN '매입'
                 WHEN COALESCE(TRIM("TradeType"), '') IN ('판매/매입', '매출/매입', '매입/매출') THEN '매출/매입'
-                ELSE '매출'
+                ELSE TRIM("TradeType")
             END;
             """;
 
@@ -651,6 +718,57 @@ public static class LocalDbInitializer
                                """;
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_SerialLedgers_SerialNumber\" ON \"SerialLedgers\" (\"SerialNumber\");");
+        }
+        catch { }
+    }
+
+    private static async Task TryCreatePriceGradeOptionsTableAsync(LocalDbContext db)
+    {
+        try
+        {
+            const string sql = """
+                               CREATE TABLE IF NOT EXISTS "PriceGradeOptions" (
+                                   "Id" TEXT NOT NULL CONSTRAINT "PK_PriceGradeOptions" PRIMARY KEY,
+                                   "Name" TEXT NOT NULL,
+                                   "PriceSource" TEXT NOT NULL DEFAULT 'Sales',
+                                   "SortOrder" INTEGER NOT NULL DEFAULT 0,
+                                   "IsSystemDefault" INTEGER NOT NULL DEFAULT 0,
+                                   "IsActive" INTEGER NOT NULL DEFAULT 1,
+                                   "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                                   "CreatedAtUtc" TEXT NOT NULL,
+                                   "UpdatedAtUtc" TEXT NOT NULL,
+                                   "Revision" INTEGER NOT NULL DEFAULT 0,
+                                   "IsDirty" INTEGER NOT NULL DEFAULT 1
+                               );
+                               """;
+            await db.Database.ExecuteSqlRawAsync(sql);
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_PriceGradeOptions_Name\" ON \"PriceGradeOptions\" (\"Name\");");
+        }
+        catch { }
+    }
+
+    private static async Task TryCreateTradeTypeOptionsTableAsync(LocalDbContext db)
+    {
+        try
+        {
+            const string sql = """
+                               CREATE TABLE IF NOT EXISTS "TradeTypeOptions" (
+                                   "Id" TEXT NOT NULL CONSTRAINT "PK_TradeTypeOptions" PRIMARY KEY,
+                                   "Name" TEXT NOT NULL,
+                                   "AllowsSales" INTEGER NOT NULL DEFAULT 1,
+                                   "AllowsPurchase" INTEGER NOT NULL DEFAULT 0,
+                                   "SortOrder" INTEGER NOT NULL DEFAULT 0,
+                                   "IsSystemDefault" INTEGER NOT NULL DEFAULT 0,
+                                   "IsActive" INTEGER NOT NULL DEFAULT 1,
+                                   "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                                   "CreatedAtUtc" TEXT NOT NULL,
+                                   "UpdatedAtUtc" TEXT NOT NULL,
+                                   "Revision" INTEGER NOT NULL DEFAULT 0,
+                                   "IsDirty" INTEGER NOT NULL DEFAULT 1
+                               );
+                               """;
+            await db.Database.ExecuteSqlRawAsync(sql);
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TradeTypeOptions_Name\" ON \"TradeTypeOptions\" (\"Name\");");
         }
         catch { }
     }

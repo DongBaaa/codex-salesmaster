@@ -24,9 +24,11 @@ public partial class InventoryWindow : Window
 
         var transferVm = new InventoryTransferViewModel(vm.LocalStateService, vm.SessionState);
         await transferVm.LoadAsync();
+
         var window = new InventoryTransferWindow(transferVm) { Owner = this };
-        window.ShowDialog();
-        await vm.LoadAsync();
+        window.Closed += async (_, _) => await vm.LoadAsync();
+        window.Show();
+        window.Activate();
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();

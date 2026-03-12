@@ -22,7 +22,7 @@ public sealed class SessionState
         Token = token;
         User = user;
         IsOfflineMode = false;
-        OfficeCode = ResolveOfficeCode(user.Role);
+        OfficeCode = ResolveOfficeCode(user.OfficeCode, user.Role);
     }
 
     public void SetOfflineSession(UserSessionDto user)
@@ -31,7 +31,7 @@ public sealed class SessionState
         Token = null;
         User = user;
         IsOfflineMode = true;
-        OfficeCode = ResolveOfficeCode(user.Role);
+        OfficeCode = ResolveOfficeCode(user.OfficeCode, user.Role);
     }
 
     public void SetOfficeCode(string? officeCode)
@@ -58,8 +58,14 @@ public sealed class SessionState
         return User.Permissions.Contains(permissionName);
     }
 
-    private static string ResolveOfficeCode(string? role)
-        => DomainConstants.IsAdminRole(role)
+    private static string ResolveOfficeCode(string? officeCode, string? role)
+    {
+        var normalizedOfficeCode = (officeCode ?? string.Empty).Trim().ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
+            return normalizedOfficeCode;
+
+        return DomainConstants.IsAdminRole(role)
             ? DomainConstants.OfficeUznet
             : DomainConstants.OfficeYeonsu;
+    }
 }
