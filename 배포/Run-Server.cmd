@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal EnableExtensions
 
 set "SERVER_EXE=%~dp0Server\SalesMaster.Server.Api.exe"
@@ -7,7 +7,7 @@ set "APP_SETTINGS=%~dp0App\appsettings.json"
 set "SCAN_PORT=19080"
 
 if not exist "%SERVER_EXE%" (
-  echo [SalesMaster] Server exe not found: %SERVER_EXE%
+  echo [거래플랜] Server exe not found: %SERVER_EXE%
   pause
   exit /b 1
 )
@@ -21,10 +21,10 @@ if exist "%APP_SETTINGS%" (
 )
 
 set "ASPNETCORE_URLS=%SERVER_URL%"
-echo [SalesMaster] Starting server on %SERVER_URL%
+echo [거래플랜] Starting server on %SERVER_URL%
 "%SERVER_EXE%"
 echo.
-echo Server exited.
+echo 거래플랜 서버가 종료되었습니다.
 pause
 exit /b 0
 

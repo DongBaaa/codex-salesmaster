@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal EnableExtensions
 
 set "SERVER_EXE=%~dp0Server\SalesMaster.Server.Api.exe"
@@ -10,13 +10,13 @@ set "SCAN_PORT=19080"
 set /a PORT_TRIES=0
 
 if not exist "%SERVER_EXE%" (
-  echo [SalesMaster] Server exe not found: %SERVER_EXE%
+  echo [거래플랜] Server exe not found: %SERVER_EXE%
   pause
   exit /b 1
 )
 
 if not exist "%APP_EXE%" (
-  echo [SalesMaster] App exe not found: %APP_EXE%
+  echo [거래플랜] App exe not found: %APP_EXE%
   pause
   exit /b 1
 )
@@ -34,39 +34,39 @@ call :FIND_FREE_PORT %SCAN_PORT%
 if not defined SERVER_PORT goto :SERVER_FAIL
 set "SERVER_URL=http://127.0.0.1:%SERVER_PORT%"
 
-echo [SalesMaster] Using server URL %SERVER_URL%
+echo [거래플랜] Using server URL %SERVER_URL%
 
 if exist "%APP_SETTINGS%" (
   powershell -NoProfile -ExecutionPolicy Bypass -Command "$p='%APP_SETTINGS%'; $u='%SERVER_URL%'; $json=Get-Content -Raw -Path $p | ConvertFrom-Json; if($null -eq $json.Api){$json | Add-Member -NotePropertyName Api -NotePropertyValue ([pscustomobject]@{})}; $json.Api.BaseUrl=$u; $json | ConvertTo-Json -Depth 20 | Set-Content -Path $p -Encoding UTF8"
 )
 
-echo [SalesMaster] Starting server on %SERVER_URL%...
+echo [거래플랜] Starting server on %SERVER_URL%...
 set "ASPNETCORE_URLS=%SERVER_URL%"
-start "SalesMaster Server" "%SERVER_EXE%"
+start "거래플랜 Server" "%SERVER_EXE%"
 call :WAIT_FOR_PORT %SERVER_PORT% 20
 if errorlevel 1 (
-  echo [SalesMaster] Server did not bind to %SERVER_URL%. Retrying with next port...
+  echo [거래플랜] Server did not bind to %SERVER_URL%. Retrying with next port...
   set /a SCAN_PORT=%SERVER_PORT%+1
   goto :TRY_START_SERVER
 )
 
-echo [SalesMaster] Running server smoke test...
+echo [거래플랜] Running server smoke test...
 call :VERIFY_HTTP "%SERVER_URL%"
 if errorlevel 1 (
-  echo [SalesMaster] Server smoke test failed at %SERVER_URL%. Retrying with next port...
+  echo [거래플랜] Server smoke test failed at %SERVER_URL%. Retrying with next port...
   taskkill /F /IM "SalesMaster.Server.Api.exe" >nul 2>nul
   taskkill /F /IM "SalesMaster.Server.exe" >nul 2>nul
   set /a SCAN_PORT=%SERVER_PORT%+1
   goto :TRY_START_SERVER
 )
 
-echo [SalesMaster] Starting app...
-start "SalesMaster App" "%APP_EXE%"
+echo [거래플랜] Starting app...
+start "거래플랜 App" "%APP_EXE%"
 exit /b 0
 
 :SERVER_FAIL
-echo [SalesMaster] Failed to start server after multiple attempts.
-echo [SalesMaster] Run "%~dp0Run-Server.cmd" to check detailed server errors.
+echo [거래플랜] Failed to start server after multiple attempts.
+echo [거래플랜] Run "%~dp0Run-Server.cmd" to check detailed server errors.
 pause
 exit /b 1
 

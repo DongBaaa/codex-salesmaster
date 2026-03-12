@@ -1,7 +1,7 @@
 ﻿<Window x:Class="SalesMaster.Desktop.App.Views.LoginWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="코덱스 레거시 판매관리 - 로그인" Height="430" Width="460"
+        Title="거래플랜 - 로그인" Height="430" Width="460"
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
         Background="#1A2B4A">
     <Window.Resources>
@@ -9,9 +9,9 @@
     </Window.Resources>
     <Grid>
         <StackPanel Margin="40" VerticalAlignment="Center">
-            <TextBlock Text="코덱스 레거시 판매관리" FontSize="28" FontWeight="Bold"
+            <TextBlock Text="거래플랜" FontSize="28" FontWeight="Bold"
                        Foreground="#4FC3F7" HorizontalAlignment="Center" Margin="0,0,0,8"/>
-            <TextBlock Text="SalesMaster" FontSize="12" Foreground="#90CAF9"
+            <TextBlock Text="거래플랜 ERP" FontSize="12" Foreground="#90CAF9"
                        HorizontalAlignment="Center" Margin="0,0,0,30"/>
 
             <TextBlock Text="아이디" Foreground="#B0BEC5" Margin="0,0,0,4"/>

@@ -1,4 +1,4 @@
-<Window x:Class="SalesMaster.Desktop.App.Views.EnvironmentSettingsWindow"
+﻿<Window x:Class="SalesMaster.Desktop.App.Views.EnvironmentSettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="환경설정"
@@ -201,7 +201,7 @@
 
                                 <WrapPanel Margin="0,4,0,0">
                                     <Button Content="1) 원본 DB → 엑셀 추출" Background="#00796B" Command="{Binding ExportLegacyDataCommand}" Margin="0,0,8,0"/>
-                                    <Button Content="2) 엑셀 → 코덱스 DB 반영" Background="#1565C0" Command="{Binding ImportLegacyExcelDataCommand}" Margin="0,0,8,0"/>
+                                    <Button Content="2) 엑셀 → 거래플랜 DB 반영" Background="#1565C0" Command="{Binding ImportLegacyExcelDataCommand}" Margin="0,0,8,0"/>
                                     <Button Content="추출 + 반영 한번에" Background="#6D4C41" Command="{Binding ExportAndImportLegacyDataCommand}"/>
                                 </WrapPanel>
 

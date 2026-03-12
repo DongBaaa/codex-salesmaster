@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json.Serialization;
 using SalesMaster.Server.Api.Data;
 using SalesMaster.Server.Api.Security;
@@ -28,11 +28,11 @@ var useSqlite = forceSqlite ||
 
 if (useSqlite)
 {
-    Console.WriteLine($"[레거시 판매관리 API] PostgreSQL 연결 불가. SQLite 폴백 사용: {sqliteDbPath}");
+    Console.WriteLine($"[거래플랜 API] PostgreSQL 연결 불가. SQLite 폴백 사용: {sqliteDbPath}");
 }
 else
 {
-    Console.WriteLine("[레거시 판매관리 API] PostgreSQL 연결 성공");
+    Console.WriteLine("[거래플랜 API] PostgreSQL 연결 성공");
 }
 
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -97,7 +97,7 @@ builder.Services.AddCors(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
-    c.SwaggerDoc("v1", new OpenApiInfo { Title = "클로드 레거시 판매관리 API", Version = "v1" });
+    c.SwaggerDoc("v1", new OpenApiInfo { Title = "거래플랜 API", Version = "v1" });
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Description = "JWT Authorization header. 예: 'Bearer {token}'",

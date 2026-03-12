@@ -1,4 +1,4 @@
-# .NET / Visual Studio
+﻿# .NET / Visual Studio
 bin/
 obj/
 **/bin/
@@ -20,8 +20,8 @@ Desktop.ini
 publish/
 배포/App/
 배포/Server/
-배포/코덱스레거시 판매관리/
-배포/코덱스레거시 판매관리-서버/
+배포/거래플랜/
+배포/거래플랜-서버/
 
 # Keep launcher scripts in 배포
 !배포/*.cmd

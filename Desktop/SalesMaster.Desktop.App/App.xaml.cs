@@ -182,7 +182,7 @@ public partial class App : Application
             AppLogger.Error("APP", "Startup failure", ex);
             MessageBox.Show(
                 $"시작 오류:\n{ex.Message}\n\n{ex.InnerException?.Message}",
-                "코덱스 레거시 판매관리 오류",
+                "거래플랜 오류",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
             Shutdown(1);
@@ -290,7 +290,7 @@ public partial class App : Application
 
         var popup = new Window
         {
-            Title = "레거시 판매관리",
+            Title = "거래플랜",
             Content = root,
             Owner = owner,
             ShowInTaskbar = false,

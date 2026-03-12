@@ -1162,7 +1162,7 @@ public sealed partial class MainViewModel : ObservableObject
                 return;
             }
 
-            LegacyMigrationStatus = "엑셀 데이터를 코덱스 레거시 판매관리로 가져오는 중...";
+            LegacyMigrationStatus = "엑셀 데이터를 거래플랜으로 가져오는 중...";
             var result = await _legacyMigrationService.ImportFromExcelAsync(
                 LegacyCustomerExcelPath,
                 LegacyItemExcelPath);

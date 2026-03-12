@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\SalesMaster.Shared.Contracts\SalesMaster.Shared.Contracts.csproj" />
   </ItemGroup>
@@ -21,6 +21,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <AssemblyTitle>거래플랜</AssemblyTitle>
+    <Product>거래플랜</Product>
   </PropertyGroup>
 
   <ItemGroup>
