@@ -1,10 +1,10 @@
 ﻿@echo off
 setlocal EnableExtensions
 
-set "SERVER_EXE=%~dp0Server\SalesMaster.Server.Api.exe"
-if not exist "%SERVER_EXE%" set "SERVER_EXE=%~dp0Server\SalesMaster.Server.exe"
-set "APP_EXE=%~dp0App\SalesMaster.Desktop.App.exe"
-if not exist "%APP_EXE%" set "APP_EXE=%~dp0App\SalesMaster.App.exe"
+set "SERVER_EXE=%~dp0Server\거래플랜.Server.Api.exe"
+if not exist "%SERVER_EXE%" set "SERVER_EXE=%~dp0Server\거래플랜.Server.exe"
+set "APP_EXE=%~dp0App\거래플랜.Desktop.App.exe"
+if not exist "%APP_EXE%" set "APP_EXE=%~dp0App\거래플랜.App.exe"
 set "APP_SETTINGS=%~dp0App\appsettings.json"
 set "SCAN_PORT=19080"
 set /a PORT_TRIES=0
@@ -21,10 +21,10 @@ if not exist "%APP_EXE%" (
   exit /b 1
 )
 
-taskkill /F /IM "SalesMaster.Desktop.App.exe" >nul 2>nul
-taskkill /F /IM "SalesMaster.App.exe" >nul 2>nul
-taskkill /F /IM "SalesMaster.Server.Api.exe" >nul 2>nul
-taskkill /F /IM "SalesMaster.Server.exe" >nul 2>nul
+taskkill /F /IM "거래플랜.Desktop.App.exe" >nul 2>nul
+taskkill /F /IM "거래플랜.App.exe" >nul 2>nul
+taskkill /F /IM "거래플랜.Server.Api.exe" >nul 2>nul
+taskkill /F /IM "거래플랜.Server.exe" >nul 2>nul
 
 :TRY_START_SERVER
 set /a PORT_TRIES+=1
@@ -54,8 +54,8 @@ echo [거래플랜] Running server smoke test...
 call :VERIFY_HTTP "%SERVER_URL%"
 if errorlevel 1 (
   echo [거래플랜] Server smoke test failed at %SERVER_URL%. Retrying with next port...
-  taskkill /F /IM "SalesMaster.Server.Api.exe" >nul 2>nul
-  taskkill /F /IM "SalesMaster.Server.exe" >nul 2>nul
+  taskkill /F /IM "거래플랜.Server.Api.exe" >nul 2>nul
+  taskkill /F /IM "거래플랜.Server.exe" >nul 2>nul
   set /a SCAN_PORT=%SERVER_PORT%+1
   goto :TRY_START_SERVER
 )

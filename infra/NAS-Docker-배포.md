@@ -1,11 +1,11 @@
-﻿# 거래플랜 NAS Docker 배포
+# 거래플랜 NAS Docker 배포
 
 이 구성은 `NAS에서 Docker로 서버 1개를 실행`하고, `다른 PC의 거래플랜 클라이언트가 모두 그 서버에 접속`하는 용도입니다.
 
 ## 권장 구조
 
-- NAS Docker: `salesmaster-api`
-- NAS Docker: `salesmaster-postgres`
+- NAS Docker: `georaeplan-api`
+- NAS Docker: `georaeplan-postgres`
 - NAS 저장 경로: `infra/data/postgres`
 - 각 PC 클라이언트: `http://192.0.2.10:18080` 으로 접속
 
@@ -91,3 +91,4 @@ powershell -ExecutionPolicy Bypass -File .\Set-ApiBaseUrl.ps1 -BaseUrl http://19
 - 서버 로그는 `docker compose logs api` 로 확인합니다.
 - JWT 서명 키를 바꾸면 기존 로그인 토큰은 다시 로그인해야 합니다.
 - 여러 PC가 동시에 써도 괜찮지만, 반드시 모두 같은 NAS API 주소를 써야 합니다.
+- Docker 프로젝트/컨테이너 이름은 영문 식별자 제약 때문에 `georaeplan-*` 형태를 사용합니다.

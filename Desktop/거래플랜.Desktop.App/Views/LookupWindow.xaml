@@ -1,0 +1,121 @@
+﻿<Window x:Class="거래플랜.Desktop.App.Views.LookupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="검색" Height="480" Width="540"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Background="#1E2D40">
+    <Window.Resources>
+        <Style x:Key="DialogTitleStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="FontSize" Value="20"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+        </Style>
+        <Style x:Key="DialogSubtitleStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#A7D1FF"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+        <Style x:Key="SearchTextBoxStyle" TargetType="TextBox">
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4FC3F7"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="MinHeight" Value="36"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="DialogActionButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="110"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="Margin" Value="0,0,8,0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="검색" Style="{StaticResource DialogTitleStyle}"/>
+            <TextBlock Text="이름 또는 추가정보로 빠르게 찾아 선택하세요."
+                       Style="{StaticResource DialogSubtitleStyle}"
+                       Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <Grid Grid.Row="1" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBox x:Name="SearchBox" Grid.Column="0"
+                     Style="{StaticResource SearchTextBoxStyle}"
+                     KeyDown="SearchBox_KeyDown"
+                     TextChanged="SearchBox_TextChanged"/>
+            <Button Content="검색" Grid.Column="1" Width="88" Height="36" Margin="8,0,0,0"
+                    Background="#0D47A1" Foreground="White" BorderThickness="0"
+                    FontSize="13" FontWeight="SemiBold" Cursor="Hand"
+                    Click="SearchButton_Click"/>
+        </Grid>
+
+        <Border Grid.Row="2"
+                BorderBrush="#4FC3F7"
+                BorderThickness="1"
+                Background="#1E2D40">
+            <DataGrid x:Name="ResultGrid"
+                      AutoGenerateColumns="False"
+                      CanUserAddRows="False"
+                      IsReadOnly="True"
+                      SelectionMode="Single"
+                      Background="#1E2D40"
+                      Foreground="White"
+                      RowBackground="#243B55"
+                      AlternatingRowBackground="#1E2D40"
+                      GridLinesVisibility="Horizontal"
+                      HorizontalGridLinesBrush="#2E3D50"
+                      BorderThickness="0"
+                      MouseDoubleClick="ResultGrid_MouseDoubleClick"
+                      KeyDown="ResultGrid_KeyDown">
+                <DataGrid.ColumnHeaderStyle>
+                    <Style TargetType="DataGridColumnHeader">
+                        <Setter Property="Background" Value="#1A2B4A"/>
+                        <Setter Property="Foreground" Value="#4FC3F7"/>
+                        <Setter Property="FontWeight" Value="Bold"/>
+                        <Setter Property="Padding" Value="8,4"/>
+                    </Style>
+                </DataGrid.ColumnHeaderStyle>
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="이름" Binding="{Binding PrimaryText}" Width="*"/>
+                    <DataGridTextColumn Header="추가정보" Binding="{Binding SecondaryText}" Width="*"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Border>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button x:Name="RegisterButton"
+                    Visibility="Collapsed"
+                    Style="{StaticResource DialogActionButtonStyle}"
+                    Background="#2E7D32"
+                    Click="RegisterButton_Click"/>
+            <Button Content="선택 (Enter)"
+                    Style="{StaticResource DialogActionButtonStyle}"
+                    Background="#0D47A1"
+                    Click="SelectButton_Click"/>
+            <Button Content="취소 (Esc)"
+                    Style="{StaticResource DialogActionButtonStyle}"
+                    Margin="0"
+                    Background="#455A64"
+                    Click="CancelButton_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>
+

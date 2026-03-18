@@ -40,25 +40,25 @@ cmd /c "배포\전체실행.cmd"
 ### 개발 모드 실행
 서버:
 ```powershell
-cd "D:\거래플랜\Server\SalesMaster.Server.Api"
+cd "D:\거래플랜\Server\거래플랜.Server.Api"
 dotnet run
 ```
 
 데스크톱:
 ```powershell
-cd "D:\거래플랜\Desktop\SalesMaster.Desktop.App"
+cd "D:\거래플랜\Desktop\거래플랜.Desktop.App"
 dotnet run
 ```
 
 ## 빌드/테스트
 ```powershell
 cd "D:\거래플랜"
-dotnet build "레거시 판매관리.sln" -c Release
+dotnet build "거래플랜.sln" -c Release
 ```
 
 ```powershell
 cd "D:\거래플랜"
-dotnet test "레거시 판매관리.sln" -c Release --no-build
+dotnet test "거래플랜.sln" -c Release --no-build
 ```
 
 - 참고: 현재 솔루션에 별도 테스트 프로젝트는 없어 `dotnet test` 는 빌드/구성 검증 성격이 강합니다.
@@ -71,7 +71,7 @@ dotnet test "레거시 판매관리.sln" -c Release --no-build
 
 ## 자료 기간별 집계(엑셀)
 - `[완료]` 지원 유형: 판매+구매, 판매/매출, 구매/매입, 수금/지불, 연수구 납품내역
-- `[완료]` 저장 경로: `내문서\SalesDoctor\Exports` (또는 설정 경로)
+- `[완료]` 저장 경로: `내문서\거래플랜\Exports` (또는 설정 경로)
 - `[완료]` 파일명: `{From}~{To} 의 {원장종류} 거래원장_{yyyyMMdd_HHmmss}.xlsx`
 - `[검증필요]` 일부 실운영 데이터셋에서 산식 검증 필요
 

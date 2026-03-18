@@ -1,0 +1,312 @@
+﻿<Window x:Class="거래플랜.Desktop.App.Views.RentalBillingWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="렌탈 청구관리"
+        Height="900"
+        Width="1500"
+        WindowStartupLocation="CenterOwner"
+        Background="#151F2E"
+        KeyDown="Window_KeyDown">
+    <Window.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="FontFamily" Value="Malgun Gothic"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Height" Value="34"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="Padding" Value="8,1"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="IsEditable" Value="False"/>
+        </Style>
+        <Style TargetType="DatePicker">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="MinHeight" Value="28"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Padding" Value="8,1"/>
+            <Setter Property="SelectedDateFormat" Value="Short"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="{x:Type DatePickerTextBox}">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="MinHeight" Value="28"/>
+            <Setter Property="Padding" Value="8,0,10,0"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="RentalDatePickerButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}"/>
+        <Style TargetType="Button">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="#5D7593"/>
+            <Setter Property="Background" Value="#435A72"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinWidth" Value="108"/>
+            <Setter Property="FontFamily" Value="Malgun Gothic"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="#1E2D40"/>
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="BorderBrush" Value="#2E4060"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#2E4060"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="AlternatingRowBackground" Value="#223754"/>
+            <Setter Property="RowBackground" Value="#1E2D40"/>
+            <Setter Property="RowHeight" Value="34"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#1A2B4A"/>
+            <Setter Property="Foreground" Value="#4FC3F7"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Left">
+                    <TextBlock Text="렌탈 청구관리" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
+                    <TextBlock Text="로그인 계정 기준으로 담당지점별 렌탈 청구 대상과 처리 상태를 관리합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                </StackPanel>
+                <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
+                    <Button Content="새로고침" Margin="0,0,6,6" Command="{Binding ReloadCommand}"/>
+                    <Button Content="신규" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,6,6" Command="{Binding NewProfileCommand}"/>
+                    <Button Content="저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,6,6" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}"/>
+                    <Button Content="청구시작" Background="#2E7D32" BorderBrush="#2E7D32" Margin="0,0,6,6" Command="{Binding StartBillingCommand}" IsEnabled="{Binding CanStartBillingSelected}"/>
+                    <Button Content="보류" Background="#F9A825" BorderBrush="#F9A825" Margin="0,0,6,6" Command="{Binding HoldBillingCommand}" IsEnabled="{Binding CanHoldSelected}"/>
+                    <Button Content="수금등록" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,6" Click="RegisterSettlementButton_Click" IsEnabled="{Binding CanRegisterSettlementSelected}"/>
+                    <Button Content="완료" Background="#00695C" BorderBrush="#00695C" Margin="0,0,6,6" Command="{Binding MarkCompletedCommand}" IsEnabled="{Binding CanMarkCompletedSelected}"/>
+                    <Button Content="삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,6" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
+                    <Button Content="선택삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,6" Command="{Binding DeleteCheckedCommand}"/>
+                    <Button Content="닫기 (F12)" Click="CloseButton_Click" Margin="0,0,0,6"/>
+                </WrapPanel>
+            </DockPanel>
+        </Border>
+
+        <Border Grid.Row="1" Margin="0,10,0,0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+            <WrapPanel VerticalAlignment="Center">
+                <TextBlock Text="검색" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBox Width="220" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0"/>
+                <TextBlock Text="담당지점" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <ComboBox Width="150" ItemsSource="{Binding OfficeOptions}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedOfficeFilter}" Margin="0,0,12,0"/>
+                <TextBlock Text="담당계정" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <ComboBox Width="130" ItemsSource="{Binding AssignedUsernameOptions}" SelectedItem="{Binding SelectedAssignedUsernameFilter}" IsEnabled="{Binding CanViewAll}" Margin="0,0,12,0"/>
+                <TextBlock Text="상태" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <ComboBox Width="120" ItemsSource="{Binding StatusOptions}" SelectedItem="{Binding SelectedStatusFilter}" Margin="0,0,12,0"/>
+                <CheckBox Content="알림대상만" IsChecked="{Binding DueOnly}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <TextBlock Text="기준일" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <DatePicker Width="170" SelectedDate="{Binding ReferenceDate, Converter={StaticResource DateOnlyConverter}}" SelectedDateFormat="Short">
+                    <DatePicker.Resources>
+                        <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
+                    </DatePicker.Resources>
+                </DatePicker>
+            </WrapPanel>
+        </Border>
+
+        <Grid Grid.Row="2" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2.1*"/>
+                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="1.4*"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+                <DataGrid ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}" BorderThickness="0" IsReadOnly="False">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Width="46" IsReadOnly="False">
+                            <DataGridTemplateColumn.HeaderTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="선택" HorizontalAlignment="Center"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.HeaderTemplate>
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="예정일" Binding="{Binding NextBillingDate}" Width="105" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="상태" Binding="{Binding DisplayStatus}" Width="90" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="수금상태" Binding="{Binding SettlementStatus}" Width="100" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="완료" Binding="{Binding CompletionStatus}" Width="80" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="미수금" Binding="{Binding OutstandingAmount, StringFormat=N0}" Width="95" IsReadOnly="True"/>
+                        <DataGridCheckBoxColumn Header="후속" Binding="{Binding RequiresFollowUp}" Width="60" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="110" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="거래처" Binding="{Binding Source.CustomerName}" Width="180" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="실거래처" Binding="{Binding Source.RealCustomerName}" Width="170" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="모델" Binding="{Binding Source.ModelName}" Width="160" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="청구일" Binding="{Binding Source.BillingDay}" Width="70" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="주기(月)" Binding="{Binding Source.BillingCycleMonths}" Width="78" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="월청구대금" Binding="{Binding Source.MonthlyAmount, StringFormat=N0}" Width="120" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="담당계정" Binding="{Binding Source.AssignedUsername}" Width="110" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="자산수" Binding="{Binding AssetCount}" Width="70" IsReadOnly="True"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Border>
+
+            <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <Grid Grid.IsSharedSizeScope="True">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" SharedSizeGroup="RentalBillingLabel"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="20"/>
+                            <ColumnDefinition Width="Auto" SharedSizeGroup="RentalBillingLabel"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.ColumnSpan="5" Text="렌탈 청구 상세" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="거래처명" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditCustomerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="1" Grid.Column="3" Text="실거래처" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="1" Grid.Column="4" Text="{Binding EditRealCustomerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="담당지점" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding OfficeOptions}" DisplayMemberPath="DisplayName" SelectedValuePath="Value" SelectedValue="{Binding EditOfficeCode}" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="2" Grid.Column="3" Text="모델명" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="2" Grid.Column="4" Text="{Binding EditModelName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="사업자번호" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding EditBusinessNumber, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="3" Grid.Column="3" Text="이메일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="3" Grid.Column="4" Text="{Binding EditEmail, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="청구방식" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <ComboBox Grid.Row="4" Grid.Column="1" ItemsSource="{Binding BillingMethodOptions}" SelectedItem="{Binding EditBillingMethod}" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="4" Grid.Column="3" Text="결제방식" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="4" Grid.Column="4" Text="{Binding EditPaymentMethod, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="청구일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding EditBillingDay, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="5" Grid.Column="3" Text="주기(月)" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="5" Grid.Column="4" Text="{Binding EditBillingCycleMonths, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="월청구대금" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding EditMonthlyAmount, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="6" Grid.Column="3" Text="보증금" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="6" Grid.Column="4" Text="{Binding EditDepositAmount, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+
+                        <TextBlock Grid.Row="7" Grid.Column="0" Text="담당계정" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <ComboBox Grid.Row="7" Grid.Column="1" ItemsSource="{Binding AssignedUsernameOptions}" SelectedItem="{Binding EditAssignedUsername}" IsEditable="True" IsEnabled="{Binding CanManageAll}" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="7" Grid.Column="3" Text="청구상태" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="7" Grid.Column="4" Text="{Binding EditBillingStatus, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+
+                        <TextBlock Grid.Row="8" Grid.Column="0" Text="매입일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <DatePicker Grid.Row="8" Grid.Column="1" SelectedDate="{Binding EditBillingAnchorDate}" SelectedDateFormat="Short" Margin="0,0,0,8">
+                            <DatePicker.Resources>
+                                <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
+                            </DatePicker.Resources>
+                        </DatePicker>
+                        <TextBlock Grid.Row="8" Grid.Column="3" Text="기계설치일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <DatePicker Grid.Row="8" Grid.Column="4" SelectedDate="{Binding EditLastBilledDate}" SelectedDateFormat="Short" Margin="0,0,0,8">
+                            <DatePicker.Resources>
+                                <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
+                            </DatePicker.Resources>
+                        </DatePicker>
+
+                        <TextBlock Grid.Row="9" Grid.Column="0" Text="계약시작" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <DatePicker Grid.Row="9" Grid.Column="1" SelectedDate="{Binding EditContractStartDate}" SelectedDateFormat="Short" Margin="0,0,0,8">
+                            <DatePicker.Resources>
+                                <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
+                            </DatePicker.Resources>
+                        </DatePicker>
+                        <TextBlock Grid.Row="9" Grid.Column="3" Text="계약만료" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <DatePicker Grid.Row="9" Grid.Column="4" SelectedDate="{Binding EditContractEndDate}" SelectedDateFormat="Short" Margin="0,0,0,8">
+                            <DatePicker.Resources>
+                                <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
+                            </DatePicker.Resources>
+                        </DatePicker>
+
+                        <TextBlock Grid.Row="10" Grid.Column="0" Text="제출서류" VerticalAlignment="Top" Margin="0,0,10,0"/>
+                        <TextBox Grid.Row="10" Grid.Column="1" Text="{Binding EditSubmissionDocuments, UpdateSourceTrigger=PropertyChanged}" Height="70" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="10" Grid.Column="3" Text="비고 / 처리메모" VerticalAlignment="Top" Margin="0,0,10,0"/>
+                        <StackPanel Grid.Row="10" Grid.Column="4">
+                            <TextBox Text="{Binding EditNotes, UpdateSourceTrigger=PropertyChanged}" Height="70" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Margin="0,0,0,8"/>
+                            <TextBox Text="{Binding CompletionNote, UpdateSourceTrigger=PropertyChanged}" Height="40" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="11" Grid.Column="0" Text="수금상태" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <ComboBox Grid.Row="11" Grid.Column="1" ItemsSource="{Binding SettlementStatusOptions}" SelectedItem="{Binding EditSettlementStatus}" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="11" Grid.Column="3" Text="완료상태" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <ComboBox Grid.Row="11" Grid.Column="4" ItemsSource="{Binding CompletionStatusOptions}" SelectedItem="{Binding EditCompletionStatus}" Margin="0,0,0,8"/>
+
+                        <TextBlock Grid.Row="12" Grid.Column="0" Text="수금금액" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="12" Grid.Column="1" Text="{Binding EditSettledAmount, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="12" Grid.Column="3" Text="미수금" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="12" Grid.Column="4" Text="{Binding EditOutstandingAmount, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="True" Margin="0,0,0,8"/>
+
+                        <TextBlock Grid.Row="13" Grid.Column="0" Text="후속조치" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <CheckBox Grid.Row="13" Grid.Column="1" IsChecked="{Binding EditRequiresFollowUp}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="13" Grid.Column="3" Text="후속메모" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="13" Grid.Column="4" Text="{Binding EditFollowUpNote, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+
+                        <TextBlock Grid.Row="14" Grid.Column="0" Text="마지막수금일" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <DatePicker Grid.Row="14" Grid.Column="1" SelectedDate="{Binding EditLastSettledDate}" SelectedDateFormat="Short">
+                            <DatePicker.Resources>
+                                <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
+                            </DatePicker.Resources>
+                        </DatePicker>
+                        <TextBlock Grid.Row="14" Grid.Column="3" Text="{Binding EditOutstandingAmount, StringFormat=정산 미수 {0:N0}원}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    </Grid>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="3" Margin="0,10,0,0" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10">
+            <DockPanel LastChildFill="False">
+                <ProgressBar Width="220" Height="12" IsIndeterminate="{Binding IsBusy}" Margin="0,0,12,0"/>
+                <TextBlock Text="{Binding StatusMessage}" Foreground="#90CAF9" VerticalAlignment="Center"/>
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>

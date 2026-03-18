@@ -1,8 +1,8 @@
 ﻿@echo off
 setlocal EnableExtensions
 
-set "SERVER_EXE=%~dp0Server\SalesMaster.Server.Api.exe"
-if not exist "%SERVER_EXE%" set "SERVER_EXE=%~dp0Server\SalesMaster.Server.exe"
+set "SERVER_EXE=%~dp0Server\거래플랜.Server.Api.exe"
+if not exist "%SERVER_EXE%" set "SERVER_EXE=%~dp0Server\거래플랜.Server.exe"
 set "APP_SETTINGS=%~dp0App\appsettings.json"
 set "SCAN_PORT=19080"
 

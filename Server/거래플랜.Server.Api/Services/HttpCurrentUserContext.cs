@@ -1,0 +1,36 @@
+﻿using System.Security.Claims;
+
+namespace 거래플랜.Server.Api.Services;
+
+public sealed class HttpCurrentUserContext : ICurrentUserContext
+{
+    private readonly IHttpContextAccessor _httpContextAccessor;
+
+    public HttpCurrentUserContext(IHttpContextAccessor httpContextAccessor)
+    {
+        _httpContextAccessor = httpContextAccessor;
+    }
+
+    public Guid? UserId
+    {
+        get
+        {
+            var value = _httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.NameIdentifier);
+            return Guid.TryParse(value, out var id) ? id : null;
+        }
+    }
+
+    public string Username =>
+        _httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.Name) ?? "anonymous";
+
+    public bool IsAdmin =>
+        _httpContextAccessor.HttpContext?.User.IsInRole("Admin") ?? false;
+
+    public bool HasPermission(string permission)
+    {
+        var user = _httpContextAccessor.HttpContext?.User;
+        if (user is null) return false;
+        return user.IsInRole("Admin") ||
+               user.Claims.Any(c => c.Type == "perm" && c.Value == permission);
+    }
+}
