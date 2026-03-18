@@ -1,0 +1,15 @@
+namespace SalesMaster.Desktop.App.Services;
+
+public static class AppPermissionNames
+{
+    public const string CompanyProfileEdit = "CompanyProfile.Edit";
+    public const string AmountViewSales = "Amount.ViewSales";
+    public const string AmountViewPurchase = "Amount.ViewPurchase";
+    public const string SettingsEdit = "Settings.Edit";
+    public const string DataBackupRestore = "Data.BackupRestore";
+
+    public const string RentalViewAll = "Rental.ViewAll";
+    public const string RentalEditAll = "Rental.EditAll";
+    public const string RentalSettingsEdit = "Rental.SettingsEdit";
+    public const string RentalImport = "Rental.Import";
+}

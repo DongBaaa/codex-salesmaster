@@ -1,0 +1,163 @@
+<Window x:Class="SalesMaster.Desktop.App.Views.RentalDashboardWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="렌탈 대시보드"
+        Height="860"
+        Width="1380"
+        WindowStartupLocation="CenterOwner"
+        Background="#151F2E"
+        KeyDown="Window_KeyDown">
+    <Window.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="FontFamily" Value="Malgun Gothic"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="#5D7593"/>
+            <Setter Property="Background" Value="#435A72"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinWidth" Value="108"/>
+            <Setter Property="FontFamily" Value="Malgun Gothic"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="#1E2D40"/>
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="BorderBrush" Value="#2E4060"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#2E4060"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="AlternatingRowBackground" Value="#223754"/>
+            <Setter Property="RowBackground" Value="#1E2D40"/>
+            <Setter Property="RowHeight" Value="34"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#1A2B4A"/>
+            <Setter Property="Foreground" Value="#4FC3F7"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Left">
+                    <TextBlock Text="렌탈 대시보드" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
+                    <TextBlock Text="계정별 렌탈 청구 알림과 만료 예정 자산을 확인합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                </StackPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="새로고침" Margin="0,0,6,0" Command="{Binding ReloadCommand}"/>
+                    <Button Content="닫기 (F12)" Click="CloseButton_Click"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <UniformGrid Grid.Row="1" Columns="6" Margin="0,10,0,0">
+            <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
+                <StackPanel>
+                    <TextBlock Text="오늘 청구" Foreground="#9FB3C8" FontSize="11"/>
+                    <TextBlock Text="{Binding DueTodayCount, StringFormat={}{0:N0}건}" Foreground="#4FC3F7" FontWeight="Bold" FontSize="18"/>
+                </StackPanel>
+            </Border>
+            <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
+                <StackPanel>
+                    <TextBlock Text="예정 청구" Foreground="#9FB3C8" FontSize="11"/>
+                    <TextBlock Text="{Binding UpcomingCount, StringFormat={}{0:N0}건}" Foreground="#A5D6A7" FontWeight="Bold" FontSize="18"/>
+                </StackPanel>
+            </Border>
+            <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
+                <StackPanel>
+                    <TextBlock Text="지연 청구" Foreground="#9FB3C8" FontSize="11"/>
+                    <TextBlock Text="{Binding OverdueCount, StringFormat={}{0:N0}건}" Foreground="#EF9A9A" FontWeight="Bold" FontSize="18"/>
+                </StackPanel>
+            </Border>
+            <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
+                <StackPanel>
+                    <TextBlock Text="운영 자산" Foreground="#9FB3C8" FontSize="11"/>
+                    <TextBlock Text="{Binding ActiveAssetCount, StringFormat={}{0:N0}대}" Foreground="White" FontWeight="Bold" FontSize="18"/>
+                </StackPanel>
+            </Border>
+            <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
+                <StackPanel>
+                    <TextBlock Text="30일 내 만료" Foreground="#9FB3C8" FontSize="11"/>
+                    <TextBlock Text="{Binding ExpiringContractCount, StringFormat={}{0:N0}건}" Foreground="#FFCC80" FontWeight="Bold" FontSize="18"/>
+                </StackPanel>
+            </Border>
+            <Border Background="#1A2B4A" CornerRadius="6" Padding="10">
+                <StackPanel>
+                    <TextBlock Text="미배정" Foreground="#9FB3C8" FontSize="11"/>
+                    <TextBlock Text="{Binding UnassignedCount, StringFormat={}{0:N0}건}" Foreground="#CE93D8" FontWeight="Bold" FontSize="18"/>
+                </StackPanel>
+            </Border>
+        </UniformGrid>
+
+        <Grid Grid.Row="2" Margin="0,10,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="10"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <Border Grid.Row="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+                <DockPanel>
+                    <Border DockPanel.Dock="Top" Background="#102039" CornerRadius="6,6,0,0" Padding="10,8">
+                        <TextBlock Text="렌탈 청구 알림" Foreground="#4FC3F7" FontWeight="Bold"/>
+                    </Border>
+                    <DataGrid ItemsSource="{Binding AlertItems}" BorderThickness="0" IsReadOnly="True">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="상태" Binding="{Binding Severity}" Width="90"/>
+                            <DataGridTextColumn Header="예정일" Binding="{Binding NextBillingDate}" Width="110"/>
+                            <DataGridTextColumn Header="D-Day" Binding="{Binding DaysRemaining}" Width="80"/>
+                            <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="120"/>
+                            <DataGridTextColumn Header="거래처 / 실거래처" Binding="{Binding Summary}" Width="240"/>
+                            <DataGridTextColumn Header="모델" Binding="{Binding ModelName}" Width="180"/>
+                            <DataGridTextColumn Header="월청구대금" Binding="{Binding MonthlyAmount, StringFormat=N0}" Width="120"/>
+                            <DataGridTextColumn Header="담당계정" Binding="{Binding AssignedUsername}" Width="120"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </Border>
+
+            <Border Grid.Row="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+                <DockPanel>
+                    <Border DockPanel.Dock="Top" Background="#102039" CornerRadius="6,6,0,0" Padding="10,8">
+                        <TextBlock Text="만료 예정 자산" Foreground="#4FC3F7" FontWeight="Bold"/>
+                    </Border>
+                    <DataGrid ItemsSource="{Binding ExpiringAssets}" BorderThickness="0" IsReadOnly="True">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="관리번호" Binding="{Binding ManagementNumber}" Width="120"/>
+                            <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="120"/>
+                            <DataGridTextColumn Header="거래처" Binding="{Binding CustomerName}" Width="200"/>
+                            <DataGridTextColumn Header="모델" Binding="{Binding ModelName}" Width="180"/>
+                            <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="220"/>
+                            <DataGridTextColumn Header="만료일" Binding="{Binding RentalEndDate}" Width="110"/>
+                            <DataGridTextColumn Header="남은일수" Binding="{Binding DaysRemaining}" Width="90"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="3" Margin="0,10,0,0" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10">
+            <DockPanel LastChildFill="False">
+                <ProgressBar Width="220" Height="12" IsIndeterminate="{Binding IsBusy}" Margin="0,0,12,0"/>
+                <TextBlock Text="{Binding StatusMessage}" Foreground="#90CAF9" VerticalAlignment="Center"/>
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>

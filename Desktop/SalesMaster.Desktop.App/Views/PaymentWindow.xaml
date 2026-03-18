@@ -1,0 +1,703 @@
+﻿<Window x:Class="SalesMaster.Desktop.App.Views.PaymentWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:conv="clr-namespace:SalesMaster.Desktop.App.Converters"
+        Title="수금/지급 입력"
+        Width="1140"
+        Height="860" MinWidth="1040" MinHeight="780"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResize"
+        Background="#151F2E"
+        KeyDown="Window_KeyDown">
+    <Window.Resources>
+        <conv:DateOnlyConverter x:Key="DateOnlyConverter"/>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVisibility"/>
+        <conv:DecimalToStringConverter x:Key="DecimalToString"/>
+
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="Label">
+            <Setter Property="Foreground" Value="#B7C8DC"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Padding" Value="0,0,8,0"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="HorizontalContentAlignment" Value="Right"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="6,2"/>
+            <Setter Property="TextAlignment" Value="Right"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="ReadOnlyInfoTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="TextAlignment" Value="Left"/>
+            <Setter Property="Background" Value="#D5E1EF"/>
+        </Style>
+        <Style x:Key="NoteTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="TextAlignment" Value="Left"/>
+            <Setter Property="Height" Value="28"/>
+        </Style>
+        <Style TargetType="DatePicker">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="Padding" Value="8,1"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="{x:Type DatePickerTextBox}">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="MinHeight" Value="28"/>
+            <Setter Property="Padding" Value="8,0,10,0"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="BaseButtonStyle" TargetType="Button">
+            <Setter Property="Foreground" Value="#111"/>
+            <Setter Property="Background" Value="#E6E6E6"/>
+            <Setter Property="BorderBrush" Value="#8F8F8F"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="10,0"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="MinWidth" Value="96"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}">
+            <Setter Property="Background" Value="#2D8DE0"/>
+            <Setter Property="BorderBrush" Value="#2D8DE0"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="MinWidth" Value="112"/>
+        </Style>
+        <Style x:Key="UnifiedDatePickerButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="MinHeight" Value="34"/>
+            <Setter Property="Height" Value="34"/>
+            <Setter Property="MinWidth" Value="34"/>
+            <Setter Property="Width" Value="34"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="HorizontalAlignment" Value="Right"/>
+            <Setter Property="VerticalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="#122038"/>
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="BorderBrush" Value="#2E4060"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="RowBackground" Value="#162642"/>
+            <Setter Property="AlternatingRowBackground" Value="#13213A"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#2E4060"/>
+            <Setter Property="VerticalGridLinesBrush" Value="#2E4060"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="CanUserDeleteRows" Value="False"/>
+            <Setter Property="CanUserReorderColumns" Value="False"/>
+            <Setter Property="CanUserResizeRows" Value="False"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="RowHeight" Value="26"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#23395A"/>
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="BorderBrush" Value="#355172"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="Padding" Value="6,5"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Background="#1A2B4A"
+                Padding="10,6"
+                BorderBrush="#2E4060"
+                BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                    <TextBlock Text="수금/지급 입력"
+                               Foreground="White"
+                               FontSize="22"
+                               FontWeight="Bold"/>
+                    <TextBlock Text="거래처별 수금·지급 내역 입력과 최근 처리기록 확인"
+                               Foreground="#9FB3C8"
+                               Margin="0,4,0,0"
+                               FontSize="12"/>
+                </StackPanel>
+                <Button Grid.Column="1"
+                        Style="{StaticResource BaseButtonStyle}"
+                        Content="닫기(F12)"
+                        Background="#E3E3E3"
+                        Foreground="#111"
+                        MinWidth="104"
+                        Click="CloseButton_Click"/>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="1" Margin="8,4" Grid.IsSharedSizeScope="True">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <Border Grid.Row="0"
+                    Background="#1A2B4A"
+                    BorderBrush="#2E4060"
+                    BorderThickness="1"
+                    Padding="8"
+                    CornerRadius="6">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" SharedSizeGroup="PaymentInfoLabelLeft"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto" SharedSizeGroup="PaymentInfoLabelRight"/>
+                        <ColumnDefinition Width="168"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Label Grid.Row="0" Grid.Column="0" Content="고객/거래처"/>
+                    <Button Grid.Row="0"
+                            Style="{StaticResource BaseButtonStyle}"
+                            Grid.Column="1"
+                            Content="{Binding CustomerName}"
+                            Background="#D9E6F5"
+                            IsEnabled="{Binding CanSelectCustomer}"
+                            HorizontalAlignment="Stretch"
+                            HorizontalContentAlignment="Left"
+                            FontWeight="Bold"
+                            Foreground="Black"
+                            Margin="0,0,12,6"
+                            Click="CustomerSelectButton_Click"/>
+                    <Label Grid.Row="0" Grid.Column="2" Content="가격등급"/>
+                    <TextBox Grid.Row="0"
+                             Grid.Column="3"
+                             Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
+                             Text="{Binding CustomerCategory}"
+                             Margin="0,0,0,6"/>
+
+                    <Label Grid.Row="1" Grid.Column="0" Content="대표전화"/>
+                    <TextBox Grid.Row="1"
+                             Grid.Column="1"
+                             Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
+                             Text="{Binding CustomerPhone}"
+                             Margin="0,0,12,0"/>
+                    <Label Grid.Row="1" Grid.Column="2" Content="담당자"/>
+                    <TextBox Grid.Row="1"
+                             Grid.Column="3"
+                             Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
+                             Text="{Binding CustomerContactPerson}"/>
+
+                    <Label Grid.Row="2" Grid.Column="0" Content="거래구분"/>
+                    <ComboBox Grid.Row="2"
+                              Grid.Column="1"
+                              ItemsSource="{Binding TransactionKinds}"
+                              DisplayMemberPath="Label"
+                              SelectedValuePath="Value"
+                              SelectedValue="{Binding SelectedTransactionKind}"
+                              Margin="0,0,12,6"/>
+                    <Label Grid.Row="2" Grid.Column="2" Content="선수금잔액"/>
+                    <TextBox Grid.Row="2"
+                             Grid.Column="3"
+                             Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
+                             Text="{Binding AdvanceBalance, StringFormat=N0}"
+                             Margin="0,0,0,6"/>
+
+                    <Label Grid.Row="3" Grid.Column="0" Content="정산금액"/>
+                    <TextBox Grid.Row="3"
+                             Grid.Column="1"
+                             Text="{Binding SettlementAmount, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"
+                             IsEnabled="{Binding IsSettlementAmountEnabled}"
+                             Margin="0,0,12,6"/>
+                    <Label Grid.Row="3" Grid.Column="2" Content="정산방향"/>
+                    <TextBox Grid.Row="3"
+                             Grid.Column="3"
+                             Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
+                             Text="{Binding PaymentActionLabel, Mode=OneWay}"
+                             Margin="0,0,0,6"/>
+
+                    <Label Grid.Row="4" Grid.Column="0" Content="맥락요약"/>
+                    <Border Grid.Row="4"
+                            Grid.Column="1"
+                            Grid.ColumnSpan="3"
+                            Background="#122038"
+                            BorderBrush="#2E4060"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            Padding="8,4">
+                        <StackPanel>
+                            <TextBlock Text="{Binding TransactionContextSummary}"
+                                       FontWeight="Bold"
+                                       TextWrapping="Wrap"/>
+                            <TextBlock Text="{Binding TransactionSummary}"
+                                       Foreground="#9FB3C8"
+                                       Margin="0,2,0,0"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <Grid Grid.Row="1" Margin="0,4,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="8"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0"
+                        Background="#1A2B4A"
+                        BorderBrush="#A43B3B"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="8">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0"
+                                   Text="수금 처리내역"
+                                   FontSize="16"
+                                   FontWeight="Bold"
+                                   Foreground="#FF6B6B"
+                                   Margin="0,0,0,6"/>
+
+                        <Grid Grid.Row="1">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" SharedSizeGroup="PaymentFlowLabel"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <Label Grid.Row="0" Grid.Column="0" Content="수금일자"/>
+                            <DatePicker Grid.Row="0"
+                                        Grid.Column="1"
+                                        SelectedDate="{Binding ReceiptDate, Converter={StaticResource DateOnlyConverter}}"
+                                        SelectedDateFormat="Short"
+                                        Margin="0,0,0,6">
+                                <DatePicker.Resources>
+                                    <Style TargetType="{x:Type Button}">
+                                        <Setter Property="MinHeight" Value="34"/>
+                                        <Setter Property="Height" Value="34"/>
+                                        <Setter Property="MinWidth" Value="34"/>
+                                        <Setter Property="Width" Value="34"/>
+                                        <Setter Property="Padding" Value="0"/>
+                                        <Setter Property="Margin" Value="0"/>
+                                        <Setter Property="BorderThickness" Value="0"/>
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                        <Setter Property="VerticalAlignment" Value="Stretch"/>
+                                        <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                                        <Setter Property="VerticalContentAlignment" Value="Center"/>
+                                    </Style>
+                                </DatePicker.Resources>
+                            </DatePicker>
+                            <Label Grid.Row="1" Grid.Column="0" Content="수금구분"/>
+                            <TextBox Grid.Row="1"
+                                     Grid.Column="1"
+                                     Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
+                                     Text="{Binding PaymentActionLabel, Mode=OneWay}"
+                                     Margin="0,0,0,4"/>
+                            <Label Grid.Row="2" Grid.Column="0" Content="현금수금"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CashReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,4"/>
+                            <Label Grid.Row="3" Grid.Column="0" Content="카드수금"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding CardReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,4"/>
+                            <Label Grid.Row="4" Grid.Column="0" Content="통장수금"/>
+                            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding BankReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,4"/>
+                            <Label Grid.Row="5" Grid.Column="0" Content="D.C 해줌"/>
+                            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding DiscountApplied, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"/>
+                        </Grid>
+
+                        <Border Grid.Row="2"
+                                Margin="0,6,0,0"
+                                Padding="8,6"
+                                Background="#122038"
+                                BorderBrush="#2E4060"
+                                BorderThickness="1"
+                                CornerRadius="4">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="수금결제"
+                                           Foreground="#B7C8DC"
+                                           FontSize="13"/>
+                                <TextBlock Grid.Column="1"
+                                           Text="{Binding ReceiptTotal, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero}"
+                                           FontWeight="Bold"
+                                           FontSize="18"
+                                           Foreground="White"
+                                           VerticalAlignment="Center"/>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Column="2"
+                        Background="#1A2B4A"
+                        BorderBrush="#3D58B5"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="8">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0"
+                                   Text="지불 처리내역"
+                                   FontSize="16"
+                                   FontWeight="Bold"
+                                   Foreground="#6B86FF"
+                                   Margin="0,0,0,6"/>
+
+                        <Grid Grid.Row="1">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" SharedSizeGroup="PaymentFlowLabel"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <Label Grid.Row="0" Grid.Column="0" Content="지급일자"/>
+                            <DatePicker Grid.Row="0"
+                                        Grid.Column="1"
+                                        SelectedDate="{Binding PaymentDate, Converter={StaticResource DateOnlyConverter}}"
+                                        SelectedDateFormat="Short"
+                                        Margin="0,0,0,6">
+                                <DatePicker.Resources>
+                                    <Style TargetType="{x:Type Button}">
+                                        <Setter Property="MinHeight" Value="34"/>
+                                        <Setter Property="Height" Value="34"/>
+                                        <Setter Property="MinWidth" Value="34"/>
+                                        <Setter Property="Width" Value="34"/>
+                                        <Setter Property="Padding" Value="0"/>
+                                        <Setter Property="Margin" Value="0"/>
+                                        <Setter Property="BorderThickness" Value="0"/>
+                                        <Setter Property="HorizontalAlignment" Value="Right"/>
+                                        <Setter Property="VerticalAlignment" Value="Stretch"/>
+                                        <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                                        <Setter Property="VerticalContentAlignment" Value="Center"/>
+                                    </Style>
+                                </DatePicker.Resources>
+                            </DatePicker>
+                            <Label Grid.Row="1" Grid.Column="0" Content="지불구분"/>
+                            <TextBox Grid.Row="1"
+                                     Grid.Column="1"
+                                     Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
+                                     Text="{Binding PaymentActionLabel, Mode=OneWay}"
+                                     Margin="0,0,0,4"/>
+                            <Label Grid.Row="2" Grid.Column="0" Content="현금지급"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CashPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,4"/>
+                            <Label Grid.Row="3" Grid.Column="0" Content="카드지급"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding CardPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,4"/>
+                            <Label Grid.Row="4" Grid.Column="0" Content="통장지급"/>
+                            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding BankPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,4"/>
+                            <Label Grid.Row="5" Grid.Column="0" Content="D.C 받음"/>
+                            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding DiscountReceived, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"/>
+                        </Grid>
+
+                        <Border Grid.Row="2"
+                                Margin="0,6,0,0"
+                                Padding="8,6"
+                                Background="#122038"
+                                BorderBrush="#2E4060"
+                                BorderThickness="1"
+                                CornerRadius="4">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="지불결제"
+                                           Foreground="#B7C8DC"
+                                           FontSize="13"/>
+                                <TextBlock Grid.Column="1"
+                                           Text="{Binding PaymentTotal, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero}"
+                                           FontWeight="Bold"
+                                           FontSize="18"
+                                           Foreground="White"
+                                           VerticalAlignment="Center"/>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <Border Grid.Row="2"
+                    Margin="0,4,0,0"
+                    Background="#1A2B4A"
+                    BorderBrush="#2E4060"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" SharedSizeGroup="PaymentNoteLabel"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Label Grid.Row="0" Grid.Column="0" Content="거래내용"/>
+                    <TextBox Grid.Row="0"
+                             Grid.Column="1"
+                             Style="{StaticResource NoteTextBoxStyle}"
+                             Text="{Binding Note, UpdateSourceTrigger=PropertyChanged}"
+                             Margin="0,0,0,6"/>
+                    <Label Grid.Row="1" Grid.Column="0" Content="전표메모"/>
+                    <TextBox Grid.Row="1"
+                             Grid.Column="1"
+                             Style="{StaticResource NoteTextBoxStyle}"
+                             Text="{Binding Memo, UpdateSourceTrigger=PropertyChanged}"/>
+                </Grid>
+            </Border>
+
+            <Border Grid.Row="3"
+                    Margin="0,6,0,0"
+                    Background="#1A2B4A"
+                    BorderBrush="#2E4060"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="10">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.25*"/>
+                        <ColumnDefinition Width="8"/>
+                        <ColumnDefinition Width="0.95*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Grid Grid.Column="0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0" Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="최근 처리내역"
+                                       Foreground="#90CAF9"
+                                       FontWeight="Bold"
+                                       FontSize="16"/>
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding SelectedCustomer.NameOriginal, TargetNullValue=거래처를 선택하면 표시됩니다.}"
+                                       Foreground="#8EA6C4"
+                                       FontSize="12"/>
+                        </Grid>
+
+                        <DataGrid Grid.Row="1"
+                                  ItemsSource="{Binding History}"
+                                  SelectedItem="{Binding SelectedHistory}">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="일자" Binding="{Binding TransactionDate}" Width="88"/>
+                                <DataGridTextColumn Header="구분" Binding="{Binding TransactionKind}" Width="92"/>
+                                <DataGridTextColumn Header="연결전표" Binding="{Binding LinkedInvoiceNumber}" Width="120"/>
+                                <DataGridTextColumn Header="수금합계" Binding="{Binding ReceiptTotal, StringFormat={}{0:N0}}" Width="92"/>
+                                <DataGridTextColumn Header="지불합계" Binding="{Binding PaymentTotal, StringFormat={}{0:N0}}" Width="92"/>
+                                <DataGridTextColumn Header="거래내용" Binding="{Binding Note}" Width="*"/>
+                                <DataGridTextColumn Header="메모" Binding="{Binding Memo}" Width="0.9*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+
+                    <Grid Grid.Column="2">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0" Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="증빙 관리"
+                                       Foreground="#90CAF9"
+                                       FontWeight="Bold"
+                                       FontSize="16"/>
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding SelectedHistory.TransactionDate, TargetNullValue=처리내역을 선택하세요.}"
+                                       Foreground="#8EA6C4"
+                                       FontSize="12"/>
+                        </Grid>
+
+                        <Border Grid.Row="1"
+                                Background="#162642"
+                                BorderBrush="#2E4060"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Padding="10"
+                                Margin="0,0,0,8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="88"/>
+                                    <ColumnDefinition Width="150"/>
+                                    <ColumnDefinition Width="72"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <Label Grid.Row="0" Grid.Column="0" Content="증빙종류"/>
+                                <ComboBox Grid.Row="0"
+                                          Grid.Column="1"
+                                          ItemsSource="{Binding AttachmentTypes}"
+                                          SelectedItem="{Binding SelectedAttachmentType}"
+                                          Margin="0,0,8,6"/>
+                                <Label Grid.Row="0" Grid.Column="2" Content="메모"/>
+                                <TextBox Grid.Row="0"
+                                         Grid.Column="3"
+                                         Style="{StaticResource NoteTextBoxStyle}"
+                                         Text="{Binding AttachmentDescription, UpdateSourceTrigger=PropertyChanged}"
+                                         Margin="0,0,0,6"/>
+
+                                <StackPanel Grid.Row="1"
+                                            Grid.Column="0"
+                                            Grid.ColumnSpan="4"
+                                            Orientation="Horizontal"
+                                            HorizontalAlignment="Right">
+                                    <Button Content="증빙 첨부"
+                                            Style="{StaticResource PrimaryButtonStyle}"
+                                            MinWidth="96"
+                                            Margin="0,0,6,0"
+                                            IsEnabled="{Binding CanAddAttachment}"
+                                            Command="{Binding AddAttachmentCommand}"/>
+                                    <Button Content="미리보기"
+                                            Style="{StaticResource BaseButtonStyle}"
+                                            MinWidth="82"
+                                            Margin="0,0,6,0"
+                                            IsEnabled="{Binding CanPreviewAttachment}"
+                                            Command="{Binding PreviewAttachmentCommand}"/>
+                                    <Button Content="삭제"
+                                            Style="{StaticResource BaseButtonStyle}"
+                                            MinWidth="72"
+                                            Margin="0,0,6,0"
+                                            IsEnabled="{Binding CanDeleteAttachment}"
+                                            Command="{Binding DeleteAttachmentCommand}"/>
+                                    <Button Content="확인완료"
+                                            Style="{StaticResource BaseButtonStyle}"
+                                            MinWidth="88"
+                                            Margin="0,0,6,0"
+                                            Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}"
+                                            IsEnabled="{Binding CanVerifyAttachment}"
+                                            Command="{Binding VerifyAttachmentCommand}"/>
+                                    <Button Content="반려"
+                                            Style="{StaticResource BaseButtonStyle}"
+                                            MinWidth="72"
+                                            Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}"
+                                            IsEnabled="{Binding CanRejectAttachment}"
+                                            Command="{Binding RejectAttachmentCommand}"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <DataGrid Grid.Row="2"
+                                  ItemsSource="{Binding Attachments}"
+                                  SelectedItem="{Binding SelectedAttachment}">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="종류" Binding="{Binding AttachmentType}" Width="92"/>
+                                <DataGridTextColumn Header="파일명" Binding="{Binding FileName}" Width="*"/>
+                                <DataGridTextColumn Header="상태" Binding="{Binding VerificationStatus}" Width="84"/>
+                                <DataGridTextColumn Header="첨부자" Binding="{Binding UploadedByUsername}" Width="84"/>
+                                <DataGridTextColumn Header="첨부일시" Binding="{Binding UploadedAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm}}" Width="118"/>
+                                <DataGridTextColumn Header="확인자" Binding="{Binding VerifiedByUsername}" Width="84"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="2"
+                Background="#122038"
+                Padding="10,8"
+                BorderBrush="#2E4060"
+                BorderThickness="0,1,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0"
+                           Text="{Binding StatusMessage}"
+                           Margin="0,0,12,0"
+                           Foreground="#A5D6A7"
+                           TextWrapping="Wrap"/>
+                <Button Grid.Column="1"
+                        Content="저장"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Command="{Binding SaveCommand}"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
+
+

@@ -1,0 +1,41 @@
+name: salesmaster
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: salesmaster-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-salesmaster}
+      POSTGRES_USER: ${POSTGRES_USER:-sm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sm_user} -d ${POSTGRES_DB:-salesmaster}" ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  api:
+    container_name: salesmaster-api
+    build:
+      context: ..
+      dockerfile: Server/SalesMaster.Server.Api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:18080
+      Database__EnableSqliteFallback: false
+      ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DB:-salesmaster};Username=${POSTGRES_USER:-sm_user};Password=${POSTGRES_PASSWORD:-change_me}
+      Jwt__Issuer: ${JWT_ISSUER:-SalesMaster}
+      Jwt__Audience: ${JWT_AUDIENCE:-SalesMasterDesktop}
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:-SalesMaster_ChangeThisSigningKeyForProduction_AtLeast32Chars}
+      Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-480}
+    ports:
+      - "${API_PORT:-18080}:18080"

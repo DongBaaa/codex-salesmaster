@@ -1,0 +1,39 @@
+﻿# .NET / Visual Studio
+bin/
+obj/
+**/bin/
+**/obj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Logs
+*.log
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Build outputs / distribution bundles
+publish/
+배포/App/
+배포/Server/
+배포/거래플랜/
+배포/거래플랜-서버/
+
+# Keep launcher scripts in 배포
+!배포/*.cmd
+!배포/*.ps1
+
+# Local DB/cache
+*.db-shm
+*.db-wal
+
+# Local verification / scratch artifacts
+server-smoke.pid
+tmp/
+tmp_voucher_test.cs
+_codex_inventory_check/
+tasks/

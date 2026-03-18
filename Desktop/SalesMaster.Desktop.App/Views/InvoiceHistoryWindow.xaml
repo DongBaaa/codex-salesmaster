@@ -1,0 +1,136 @@
+﻿<Window x:Class="SalesMaster.Desktop.App.Views.InvoiceHistoryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="이전기록불러오기"
+        Height="620"
+        Width="980"
+        WindowStartupLocation="CenterOwner"
+        Background="#152235"
+        KeyDown="Window_KeyDown">
+    <Window.Resources>
+        <Style x:Key="DialogTitleStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="FontSize" Value="20"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+        </Style>
+        <Style x:Key="DialogSubtitleStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#D5E4FA"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+        <Style x:Key="SearchTextBoxStyle" TargetType="TextBox">
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4FC3F7"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="MinHeight" Value="36"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="DialogActionButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="110"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="Margin" Value="0,0,8,0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="이전 기록 불러오기" Style="{StaticResource DialogTitleStyle}"/>
+            <TextBlock Text="해당 거래처의 이전 전표를 선택하세요. 여러 건을 고르면 날짜순, 각 전표의 품목순으로 불러옵니다."
+                       Style="{StaticResource DialogSubtitleStyle}"
+                       Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <Grid Grid.Row="1" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBox x:Name="SearchBox"
+                     Grid.Column="0"
+                     Style="{StaticResource SearchTextBoxStyle}"
+                     TextChanged="SearchBox_TextChanged"/>
+            <Button Grid.Column="1"
+                    Content="전체선택"
+                    Style="{StaticResource DialogActionButtonStyle}"
+                    Background="#314A6B"
+                    Click="SelectAllButton_Click"/>
+            <Button Grid.Column="2"
+                    Content="전체해제"
+                    Style="{StaticResource DialogActionButtonStyle}"
+                    Margin="0"
+                    Background="#314A6B"
+                    Click="ClearSelectionButton_Click"/>
+        </Grid>
+
+        <Border Grid.Row="2"
+                BorderBrush="#2E4060"
+                BorderThickness="1"
+                Background="#1E2D40">
+            <DataGrid x:Name="HistoryGrid"
+                      AutoGenerateColumns="False"
+                      CanUserAddRows="False"
+                      IsReadOnly="False"
+                      SelectionMode="Extended"
+                      SelectionUnit="FullRow"
+                      Background="#1E2D40"
+                      Foreground="White"
+                      AlternatingRowBackground="#223754"
+                      RowBackground="#1E2D40"
+                      BorderThickness="0"
+                      GridLinesVisibility="Horizontal"
+                      HorizontalGridLinesBrush="#2E4060"
+                      HeadersVisibility="Column">
+                <DataGrid.ColumnHeaderStyle>
+                    <Style TargetType="DataGridColumnHeader">
+                        <Setter Property="Background" Value="#1A2B4A"/>
+                        <Setter Property="Foreground" Value="#4FC3F7"/>
+                        <Setter Property="FontWeight" Value="Bold"/>
+                        <Setter Property="Padding" Value="8,5"/>
+                    </Style>
+                </DataGrid.ColumnHeaderStyle>
+                <DataGrid.Columns>
+                    <DataGridCheckBoxColumn Header="선택" Binding="{Binding IsSelected, Mode=TwoWay}" Width="58"/>
+                    <DataGridTextColumn Header="일자" Binding="{Binding InvoiceDateDisplay}" Width="110" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="전표번호" Binding="{Binding InvoiceNumber}" Width="160" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="합계" Binding="{Binding TotalAmount, StringFormat=N0}" Width="110" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="항목수" Binding="{Binding LineCount}" Width="70" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="항목요약" Binding="{Binding Summary}" Width="2*" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="메모" Binding="{Binding Memo}" Width="*" IsReadOnly="True"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Border>
+
+        <StackPanel Grid.Row="3"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,12,0,0">
+            <Button Content="불러오기"
+                    Style="{StaticResource DialogActionButtonStyle}"
+                    Background="#0D47A1"
+                    Click="ConfirmButton_Click"/>
+            <Button Content="취소"
+                    Style="{StaticResource DialogActionButtonStyle}"
+                    Margin="0"
+                    Background="#455A64"
+                    Click="CancelButton_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>
+
