@@ -1,4 +1,5 @@
 using GeoraePlan.Mobile.App.ViewModels;
+using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Mobile.App.Pages;
@@ -60,6 +61,23 @@ public sealed class InvoicesPage : ContentPage
         };
         collectionView.SetBinding(ItemsView.ItemsSourceProperty, nameof(InvoicesViewModel.Invoices));
 
+        var actionGrid = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star)
+            },
+            ColumnSpacing = 8
+        };
+        actionGrid.Add(refreshButton);
+        Grid.SetColumn(refreshButton, 0);
+        actionGrid.Add(createInvoiceButton);
+        Grid.SetColumn(createInvoiceButton, 1);
+        actionGrid.Add(createPaymentButton);
+        Grid.SetColumn(createPaymentButton, 2);
+
         Content = new VerticalStackLayout
         {
             Padding = 16,
@@ -67,22 +85,7 @@ public sealed class InvoicesPage : ContentPage
             Children =
             {
                 searchBar,
-                new Grid
-                {
-                    ColumnDefinitions =
-                    {
-                        new ColumnDefinition(GridLength.Star),
-                        new ColumnDefinition(GridLength.Star),
-                        new ColumnDefinition(GridLength.Star)
-                    },
-                    ColumnSpacing = 8,
-                    Children =
-                    {
-                        { refreshButton, 0, 0 },
-                        { createInvoiceButton, 1, 0 },
-                        { createPaymentButton, 2, 0 }
-                    }
-                },
+                actionGrid,
                 statusLabel,
                 collectionView
             }

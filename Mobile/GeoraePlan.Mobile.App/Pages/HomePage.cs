@@ -1,4 +1,5 @@
 using GeoraePlan.Mobile.App.ViewModels;
+using Microsoft.Maui.Controls.Shapes;
 
 namespace GeoraePlan.Mobile.App.Pages;
 
@@ -35,6 +36,20 @@ public sealed class HomePage : ContentPage
         createPaymentButton.Clicked += async (_, _) =>
             await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>());
 
+        var quickActionGrid = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star)
+            },
+            ColumnSpacing = 12
+        };
+        quickActionGrid.Add(createInvoiceButton);
+        Grid.SetColumn(createInvoiceButton, 0);
+        quickActionGrid.Add(createPaymentButton);
+        Grid.SetColumn(createPaymentButton, 1);
+
         Content = new ScrollView
         {
             Content = new VerticalStackLayout
@@ -62,20 +77,7 @@ public sealed class HomePage : ContentPage
                             }
                         }
                     },
-                    new Grid
-                    {
-                        ColumnDefinitions =
-                        {
-                            new ColumnDefinition(GridLength.Star),
-                            new ColumnDefinition(GridLength.Star)
-                        },
-                        ColumnSpacing = 12,
-                        Children =
-                        {
-                            { createInvoiceButton, 0, 0 },
-                            { createPaymentButton, 1, 0 }
-                        }
-                    },
+                    quickActionGrid,
                     refreshButton,
                     statusLabel
                 }

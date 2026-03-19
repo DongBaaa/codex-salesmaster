@@ -1,8 +1,6 @@
 using GeoraePlan.Mobile.App.Pages;
 using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.ViewModels;
-using Microsoft.Extensions.Logging;
-
 namespace GeoraePlan.Mobile.App;
 
 public static class MauiProgram
@@ -12,10 +10,6 @@ public static class MauiProgram
         var builder = MauiApp.CreateBuilder();
         builder
             .UseMauiApp<App>();
-
-#if DEBUG
-        builder.Logging.AddDebug();
-#endif
 
         builder.Services.AddSingleton<SettingsService>();
         builder.Services.AddSingleton<SessionStore>();

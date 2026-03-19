@@ -1,4 +1,5 @@
 using GeoraePlan.Mobile.App.ViewModels;
+using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Mobile.App.Pages;

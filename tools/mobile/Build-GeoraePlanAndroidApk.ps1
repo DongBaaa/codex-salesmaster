@@ -2,6 +2,9 @@
 param(
     [string]$ProjectRoot,
     [string]$ProjectFile,
+    [string]$DotNetPath,
+    [string]$JavaSdkDirectory,
+    [string]$AndroidSdkDirectory,
     [string]$SigningConfigPath,
     [string]$KeystorePath,
     [string]$KeyAlias,
@@ -37,6 +40,100 @@ function Resolve-PathIfRelative {
     return (Join-Path $BaseDirectory $PathValue)
 }
 
+function Get-ResolvedDotNetPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$RequestedPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedPath) -and (Test-Path -LiteralPath $RequestedPath)) {
+        return (Resolve-Path -LiteralPath $RequestedPath).Path
+    }
+
+    foreach ($candidate in @(
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\dotnet8\dotnet.exe'),
+        (Join-Path $ProjectRoot '.tooling\dotnet8\dotnet.exe')
+    )) {
+        if (Test-Path -LiteralPath $candidate) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    $command = Get-Command dotnet -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    return $null
+}
+
+function Get-ResolvedJavaSdkDirectory {
+    param(
+        [string]$RequestedPath
+    )
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+        $candidates.Add($RequestedPath) | Out-Null
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME)) {
+        $candidates.Add($env:JAVA_HOME) | Out-Null
+    }
+
+    foreach ($commandName in @('javac', 'java', 'keytool')) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue
+        if ($null -ne $command) {
+            $candidates.Add((Split-Path -Parent (Split-Path -Parent $command.Source))) | Out-Null
+        }
+    }
+
+    foreach ($pattern in @(
+        (Join-Path $env:USERPROFILE '.antigravity\extensions\*\jre\*\bin\javac.exe'),
+        'C:\Program Files\Microsoft\jdk*\bin\javac.exe',
+        'C:\Program Files\Java\*\bin\javac.exe',
+        'C:\Deployment Tool\jre8\bin\javac.exe'
+    )) {
+        $match = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $match) {
+            $candidates.Add((Split-Path -Parent (Split-Path -Parent $match.FullName))) | Out-Null
+        }
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and
+            (Test-Path -LiteralPath (Join-Path $candidate 'bin\java.exe')) -and
+            (Test-Path -LiteralPath (Join-Path $candidate 'bin\keytool.exe'))) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    return $null
+}
+
+function Get-ResolvedAndroidSdkDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$RequestedPath
+    )
+
+    foreach ($candidate in @(
+        $RequestedPath,
+        $env:ANDROID_SDK_ROOT,
+        $env:ANDROID_HOME,
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\android-sdk'),
+        (Join-Path $ProjectRoot '.tooling\android-sdk'),
+        (Join-Path $env:LOCALAPPDATA 'Android\Sdk')
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    return $null
+}
+
 $ErrorActionPreference = 'Stop'
 
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
@@ -51,13 +148,34 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $ProjectRoot 'Mobile\artifacts\android'
 }
 
+$resolvedDotNetPath = Get-ResolvedDotNetPath -ProjectRoot $ProjectRoot -RequestedPath $DotNetPath
+$resolvedJavaSdkDirectory = Get-ResolvedJavaSdkDirectory -RequestedPath $JavaSdkDirectory
+$resolvedAndroidSdkDirectory = Get-ResolvedAndroidSdkDirectory -ProjectRoot $ProjectRoot -RequestedPath $AndroidSdkDirectory
+
 if (-not $SkipEnvironmentCheck) {
     $envCheckScript = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'Test-GeoraePlanAndroidEnvironment.ps1'
-    & $envCheckScript -ProjectRoot $ProjectRoot -ProjectFile $ProjectFile
+    & $envCheckScript `
+        -ProjectRoot $ProjectRoot `
+        -ProjectFile $ProjectFile `
+        -DotNetPath $resolvedDotNetPath `
+        -JavaSdkDirectory $resolvedJavaSdkDirectory `
+        -AndroidSdkDirectory $resolvedAndroidSdkDirectory
+}
+
+if ([string]::IsNullOrWhiteSpace($resolvedDotNetPath)) {
+    throw 'dotnet executable not found.'
 }
 
 if (-not (Test-Path -LiteralPath $ProjectFile)) {
     throw "Project file not found: $ProjectFile"
+}
+
+if ([string]::IsNullOrWhiteSpace($resolvedJavaSdkDirectory)) {
+    throw 'JavaSdkDirectory not found.'
+}
+
+if ([string]::IsNullOrWhiteSpace($resolvedAndroidSdkDirectory)) {
+    throw 'AndroidSdkDirectory not found.'
 }
 
 $signingConfigDirectory = $ProjectRoot
@@ -108,6 +226,11 @@ if ([string]::IsNullOrWhiteSpace($KeyPass)) {
     throw 'KeyPass is required.'
 }
 
+$env:JAVA_HOME = $resolvedJavaSdkDirectory
+$env:ANDROID_SDK_ROOT = $resolvedAndroidSdkDirectory
+$env:ANDROID_HOME = $resolvedAndroidSdkDirectory
+$env:PATH = (Join-Path $resolvedJavaSdkDirectory 'bin') + ';' + (Join-Path $resolvedAndroidSdkDirectory 'platform-tools') + ';' + (Split-Path -Parent $resolvedDotNetPath) + ';' + $env:PATH
+
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -126,6 +249,8 @@ $arguments = @(
     "-p:AndroidSigningKeyAlias=$KeyAlias"
     "-p:AndroidSigningStorePass=$StorePass"
     "-p:AndroidSigningKeyPass=$KeyPass"
+    "-p:AndroidSdkDirectory=$resolvedAndroidSdkDirectory"
+    "-p:JavaSdkDirectory=$resolvedJavaSdkDirectory"
     '-p:ArchiveOnBuild=true'
 )
 
@@ -141,7 +266,7 @@ if ($VersionCode -gt 0) {
     $arguments += "-p:ApplicationVersion=$VersionCode"
 }
 
-& dotnet @arguments
+& $resolvedDotNetPath @arguments
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
 }
@@ -161,3 +286,6 @@ $hashFile = $apkFile.FullName + '.sha256.txt'
 Write-Host "apk_ready=$($apkFile.FullName)"
 Write-Host "apk_sha256=$($hash.Hash)"
 Write-Host "apk_sha256_file=$hashFile"
+Write-Host "dotnet_path=$resolvedDotNetPath"
+Write-Host "java_sdk_directory=$resolvedJavaSdkDirectory"
+Write-Host "android_sdk_directory=$resolvedAndroidSdkDirectory"

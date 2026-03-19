@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
     [string]$ProjectRoot,
-    [string]$ProjectFile
+    [string]$ProjectFile,
+    [string]$DotNetPath,
+    [string]$JavaSdkDirectory,
+    [string]$AndroidSdkDirectory
 )
 
 function Resolve-DefaultProjectRoot {
@@ -10,6 +13,101 @@ function Resolve-DefaultProjectRoot {
     )
 
     return (Resolve-Path (Join-Path (Split-Path -Parent $ScriptPath) '..\..')).Path
+}
+
+function Get-ResolvedDotNetPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$RequestedPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedPath) -and (Test-Path -LiteralPath $RequestedPath)) {
+        return (Resolve-Path -LiteralPath $RequestedPath).Path
+    }
+
+    foreach ($candidate in @(
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\dotnet8\dotnet.exe'),
+        (Join-Path $ProjectRoot '.tooling\dotnet8\dotnet.exe')
+    )) {
+        if (Test-Path -LiteralPath $candidate) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    $command = Get-Command dotnet -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    return $null
+}
+
+function Get-ResolvedJavaSdkDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$RequestedPath
+    )
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+        $candidates.Add($RequestedPath) | Out-Null
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME)) {
+        $candidates.Add($env:JAVA_HOME) | Out-Null
+    }
+
+    foreach ($commandName in @('javac', 'java', 'keytool')) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue
+        if ($null -ne $command) {
+            $candidates.Add((Split-Path -Parent (Split-Path -Parent $command.Source))) | Out-Null
+        }
+    }
+
+    foreach ($pattern in @(
+        (Join-Path $env:USERPROFILE '.antigravity\extensions\*\jre\*\bin\javac.exe'),
+        'C:\Program Files\Microsoft\jdk*\bin\javac.exe',
+        'C:\Program Files\Java\*\bin\javac.exe',
+        'C:\Deployment Tool\jre8\bin\javac.exe'
+    )) {
+        $match = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $match) {
+            $candidates.Add((Split-Path -Parent (Split-Path -Parent $match.FullName))) | Out-Null
+        }
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and
+            (Test-Path -LiteralPath (Join-Path $candidate 'bin\java.exe')) -and
+            (Test-Path -LiteralPath (Join-Path $candidate 'bin\keytool.exe'))) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    return $null
+}
+
+function Get-ResolvedAndroidSdkDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$RequestedPath
+    )
+
+    foreach ($candidate in @(
+        $RequestedPath,
+        $env:ANDROID_SDK_ROOT,
+        $env:ANDROID_HOME,
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\android-sdk'),
+        (Join-Path $ProjectRoot '.tooling\android-sdk'),
+        (Join-Path $env:LOCALAPPDATA 'Android\Sdk')
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    return $null
 }
 
 function Add-CheckResult {
@@ -37,19 +135,20 @@ if ([string]::IsNullOrWhiteSpace($ProjectFile)) {
     $ProjectFile = Join-Path $ProjectRoot 'Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj'
 }
 
+$resolvedDotNetPath = Get-ResolvedDotNetPath -ProjectRoot $ProjectRoot -RequestedPath $DotNetPath
+$resolvedJavaSdkDirectory = Get-ResolvedJavaSdkDirectory -ProjectRoot $ProjectRoot -RequestedPath $JavaSdkDirectory
+$resolvedAndroidSdkDirectory = Get-ResolvedAndroidSdkDirectory -ProjectRoot $ProjectRoot -RequestedPath $AndroidSdkDirectory
+
 $results = [System.Collections.Generic.List[object]]::new()
 
-$dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
-Add-CheckResult -Results $results -Name 'dotnet' -Passed ($null -ne $dotnetCommand) -Detail ($(if ($dotnetCommand) { $dotnetCommand.Source } else { 'dotnet not found in PATH' }))
-
-$projectExists = Test-Path -LiteralPath $ProjectFile
-Add-CheckResult -Results $results -Name 'project-file' -Passed $projectExists -Detail $ProjectFile
+Add-CheckResult -Results $results -Name 'dotnet' -Passed (-not [string]::IsNullOrWhiteSpace($resolvedDotNetPath)) -Detail ($(if ($resolvedDotNetPath) { $resolvedDotNetPath } else { 'dotnet not found' }))
+Add-CheckResult -Results $results -Name 'project-file' -Passed (Test-Path -LiteralPath $ProjectFile) -Detail $ProjectFile
 
 $workloadInstalled = $false
 $workloadDetail = 'dotnet unavailable'
-if ($dotnetCommand) {
+if (-not [string]::IsNullOrWhiteSpace($resolvedDotNetPath)) {
     try {
-        $workloadOutput = & dotnet workload list 2>&1 | Out-String
+        $workloadOutput = & $resolvedDotNetPath workload list 2>&1 | Out-String
         $workloadInstalled = [bool]($workloadOutput | Select-String -Pattern 'maui-android' -SimpleMatch)
         $workloadDetail = $workloadOutput.Trim()
     }
@@ -59,14 +158,14 @@ if ($dotnetCommand) {
 }
 Add-CheckResult -Results $results -Name 'maui-android-workload' -Passed $workloadInstalled -Detail $workloadDetail
 
-$javaCommand = Get-Command java -ErrorAction SilentlyContinue
-Add-CheckResult -Results $results -Name 'java' -Passed ($null -ne $javaCommand) -Detail ($(if ($javaCommand) { $javaCommand.Source } else { 'java not found in PATH' }))
+$javaExecutable = if ($resolvedJavaSdkDirectory) { Join-Path $resolvedJavaSdkDirectory 'bin\java.exe' } else { $null }
+$keytoolExecutable = if ($resolvedJavaSdkDirectory) { Join-Path $resolvedJavaSdkDirectory 'bin\keytool.exe' } else { $null }
+$adbExecutable = if ($resolvedAndroidSdkDirectory) { Join-Path $resolvedAndroidSdkDirectory 'platform-tools\adb.exe' } else { $null }
 
-$keytoolCommand = Get-Command keytool -ErrorAction SilentlyContinue
-Add-CheckResult -Results $results -Name 'keytool' -Passed ($null -ne $keytoolCommand) -Detail ($(if ($keytoolCommand) { $keytoolCommand.Source } else { 'keytool not found in PATH' }))
-
-$adbCommand = Get-Command adb -ErrorAction SilentlyContinue
-Add-CheckResult -Results $results -Name 'adb' -Passed ($null -ne $adbCommand) -Detail ($(if ($adbCommand) { $adbCommand.Source } else { 'adb not found in PATH (optional unless deploying to device)' }))
+Add-CheckResult -Results $results -Name 'java-sdk' -Passed ($javaExecutable -and (Test-Path -LiteralPath $javaExecutable)) -Detail ($(if ($javaExecutable) { $resolvedJavaSdkDirectory } else { 'JDK/JRE not found' }))
+Add-CheckResult -Results $results -Name 'keytool' -Passed ($keytoolExecutable -and (Test-Path -LiteralPath $keytoolExecutable)) -Detail ($(if ($keytoolExecutable) { $keytoolExecutable } else { 'keytool not found' }))
+Add-CheckResult -Results $results -Name 'android-sdk' -Passed (-not [string]::IsNullOrWhiteSpace($resolvedAndroidSdkDirectory)) -Detail ($(if ($resolvedAndroidSdkDirectory) { $resolvedAndroidSdkDirectory } else { 'Android SDK not found' }))
+Add-CheckResult -Results $results -Name 'adb(optional)' -Passed $true -Detail ($(if ($adbExecutable -and (Test-Path -LiteralPath $adbExecutable)) { $adbExecutable } else { 'adb not found (okay unless deploying to device)' }))
 
 $results | Format-Table -AutoSize | Out-Host
 

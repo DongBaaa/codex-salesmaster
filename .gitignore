@@ -42,6 +42,7 @@ _codex_inventory_check/
 tasks/
 
 # Android local build / signing artifacts
+.tooling/
 Mobile/artifacts/
 Mobile/**/signing/*.keystore
 Mobile/**/signing/*.jks
