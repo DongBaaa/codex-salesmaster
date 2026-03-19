@@ -34,7 +34,7 @@ services:
       Database__EnableSqliteFallback: false
       ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DB:-거래플랜};Username=${POSTGRES_USER:-sm_user};Password=${POSTGRES_PASSWORD:-change_me}
       Jwt__Issuer: ${JWT_ISSUER:-거래플랜}
-      Jwt__Audience: ${JWT_AUDIENCE:-거래플랜Desktop}
+      Jwt__Audience: ${JWT_AUDIENCE:-georaeplan-client}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-거래플랜_ChangeThisSigningKeyForProduction_AtLeast32Chars}
       Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-480}
     ports:

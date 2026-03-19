@@ -1,0 +1,6 @@
+{
+  "keystorePath": "signing/georaeplan-release.keystore",
+  "keyAlias": "georaeplan",
+  "storePass": "CHANGE_ME_STORE_PASSWORD",
+  "keyPass": "CHANGE_ME_KEY_PASSWORD"
+}

@@ -90,4 +90,14 @@ dotnet test "거래플랜.sln" -c Release --no-build
 ## 관련 문서
 - 통합 진행 문서: `D:\거래플랜\기획.md`
 - 레거시 비교 문서: `D:\거래플랜\외부 레거시.md`
+- NAS 운영 런북: `D:\거래플랜\infra\NAS-운영-런북.md`
+- NAS 포트/폴더/도메인 배치안: `D:\거래플랜\tasks\NAS_포트_폴더_도메인_배치안_2026-03-19.md`
+- 안드로이드 MVP 기능명세: `D:\거래플랜\tasks\안드로이드_MVP_기능명세_2026-03-19.md`
+- 안드로이드 MAUI 스캐폴드: `D:\거래플랜\Mobile\GeoraePlan.Mobile.App\README.md`
+- 안드로이드 빌드/서명/직접설치 가이드: `D:\거래플랜\Mobile\안드로이드_빌드_서명_설치_가이드_2026-03-19.md`
+- 안드로이드 환경 점검 스크립트: `D:\거래플랜\tools\mobile\Test-GeoraePlanAndroidEnvironment.ps1`
+- 안드로이드 keystore 생성 스크립트: `D:\거래플랜\tools\mobile\New-GeoraePlanAndroidKeystore.ps1`
+- 안드로이드 서명 APK 빌드 스크립트: `D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidApk.ps1`
+- PC 설치 패키지 생성 스크립트: `D:\거래플랜\tools\release\Build-GeoraePlanDesktopInstaller.ps1`
+- PC 설치 패키지 출력물: `D:\거래플랜\배포\설치패키지\거래플랜-PC-설치패키지.zip`
 

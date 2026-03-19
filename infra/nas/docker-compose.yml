@@ -1,0 +1,43 @@
+name: georaeplan-nas
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-georaeplan}
+      POSTGRES_USER: ${POSTGRES_USER:-georaeplan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      TZ: ${TZ:-Asia/Seoul}
+    ports:
+      - "${HOST_BIND_IP:-127.0.0.1}:${POSTGRES_HOST_PORT:-15434}:5432"
+    volumes:
+      - "${NAS_ROOT_PATH:-/volume1/docker/georaeplan}/data/postgres:/var/lib/postgresql/data"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-georaeplan} -d ${POSTGRES_DB:-georaeplan}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    image: mcr.microsoft.com/dotnet/aspnet:8.0
+    restart: unless-stopped
+    working_dir: /app
+    command: ["dotnet", "거래플랜.Server.Api.dll"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      TZ: ${TZ:-Asia/Seoul}
+      Database__EnableSqliteFallback: false
+      ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DB:-georaeplan};Username=${POSTGRES_USER:-georaeplan};Password=${POSTGRES_PASSWORD}
+      Jwt__Issuer: ${JWT_ISSUER:-거래플랜}
+      Jwt__Audience: ${JWT_AUDIENCE:-georaeplan-client}
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:?set in .env}
+      Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-480}
+    ports:
+      - "${HOST_BIND_IP:-127.0.0.1}:${API_HOST_PORT:-18082}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - "${NAS_ROOT_PATH:-/volume1/docker/georaeplan}/app/live:/app:ro"

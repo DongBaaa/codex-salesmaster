@@ -15,6 +15,7 @@ obj/
 # Windows
 Thumbs.db
 Desktop.ini
+*.lnk
 
 # Build outputs / distribution bundles
 publish/
@@ -26,6 +27,8 @@ publish/
 # Keep launcher scripts in 배포
 !배포/*.cmd
 !배포/*.ps1
+배포/설치패키지/*/
+!배포/설치패키지/.gitkeep
 
 # Local DB/cache
 *.db-shm
@@ -37,3 +40,11 @@ tmp/
 tmp_voucher_test.cs
 _codex_inventory_check/
 tasks/
+
+# Android local build / signing artifacts
+Mobile/artifacts/
+Mobile/**/signing/*.keystore
+Mobile/**/signing/*.jks
+Mobile/**/signing/*.p12
+Mobile/**/signing/*.pem
+Mobile/**/android-signing.local.json
