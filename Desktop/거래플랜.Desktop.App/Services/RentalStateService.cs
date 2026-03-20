@@ -1029,6 +1029,12 @@ public sealed class RentalStateService
         if (CanViewAllRental(session))
             return query;
 
+        if (CanViewTenantRental(session))
+        {
+            var readableOfficeCodes = GetReadableOfficeCodes(session);
+            return query.Where(profile => readableOfficeCodes.Contains(profile.ResponsibleOfficeCode));
+        }
+
         var username = NormalizeUsername(session.User?.Username);
         var officeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
         return query.Where(profile =>
@@ -1042,6 +1048,12 @@ public sealed class RentalStateService
     {
         if (CanViewAllRental(session))
             return query;
+
+        if (CanViewTenantRental(session))
+        {
+            var readableOfficeCodes = GetReadableOfficeCodes(session);
+            return query.Where(asset => readableOfficeCodes.Contains(asset.ResponsibleOfficeCode));
+        }
 
         var username = NormalizeUsername(session.User?.Username);
         var officeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
@@ -1060,6 +1072,9 @@ public sealed class RentalStateService
         if (!string.IsNullOrWhiteSpace(normalizedAssigned) && normalizedAssigned == username)
             return true;
 
+        if (CanViewTenantRental(session))
+            return GetReadableOfficeCodes(session).Contains(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet));
+
         return string.IsNullOrWhiteSpace(normalizedAssigned) &&
                string.Equals(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet), NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet), StringComparison.OrdinalIgnoreCase);
     }
@@ -1070,10 +1085,34 @@ public sealed class RentalStateService
             session.HasPermission(AppPermissionNames.RentalViewAll) ||
             session.HasPermission(AppPermissionNames.RentalEditAll));
 
+    private static bool CanViewTenantRental(SessionState? session)
+        => session is not null &&
+           session.IsLoggedIn &&
+           !session.IsAdmin &&
+           string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase);
+
     private bool CanEditAllRental(SessionState? session)
         => session is not null && session.IsLoggedIn && (
             session.IsAdmin ||
             session.HasPermission(AppPermissionNames.RentalEditAll));
+
+    private static HashSet<string> GetReadableOfficeCodes(SessionState session)
+    {
+        if (session.IsAdmin)
+            return OfficeCodeCatalog.All.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            return TenantScopeCatalog.GetOfficeCodesForTenant(session.TenantCode)
+                .Select(code => NormalizeOfficeCode(code, DomainConstants.OfficeUsenet))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet)
+        };
+    }
 
     private bool CanEditRentalSettings(SessionState? session)
         => session is not null && (session.IsAdmin || session.HasPermission(AppPermissionNames.RentalSettingsEdit));

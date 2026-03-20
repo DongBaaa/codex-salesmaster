@@ -11,7 +11,14 @@ public static class DtoMappings
         {
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
-            Username = entity.Username, Role = entity.Role, OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(entity.OfficeCode), IsActive = entity.IsActive,
+            Username = entity.Username,
+            Role = entity.Role,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(entity.OfficeCode),
+            ScopeType = entity.Role.Equals("Admin", StringComparison.OrdinalIgnoreCase)
+                ? TenantScopeCatalog.ScopeAdmin
+                : TenantScopeCatalog.NormalizeScopeTypeOrDefault(entity.ScopeType),
+            IsActive = entity.IsActive,
             Permissions = entity.Permissions.Select(x => x.Permission).Distinct().OrderBy(x => x).ToList()
         };
 
@@ -27,6 +34,61 @@ public static class DtoMappings
             BankAccountText = entity.BankAccountText, StampImage = entity.StampImage
         };
 
+    public static TenantDefinitionDto ToDto(this TenantDefinition entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(entity.TenantCode),
+            DisplayName = entity.DisplayName,
+            StorageMode = TenantScopeCatalog.NormalizeStorageModeOrDefault(entity.StorageMode),
+            Description = entity.Description,
+            IsActive = entity.IsActive
+        };
+
+    public static TenantOfficeDefinitionDto ToDto(this TenantOfficeDefinition entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(entity.OfficeCode),
+            DisplayName = entity.DisplayName,
+            IsHeadOffice = entity.IsHeadOffice,
+            IsActive = entity.IsActive
+        };
+
+    public static DataSharingPolicyDto ToDto(this DataSharingPolicy entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            SourceTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.SourceTenantCode, entity.SourceOfficeCode),
+            SourceOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(entity.SourceOfficeCode),
+            TargetTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TargetTenantCode, entity.TargetOfficeCode),
+            TargetOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(entity.TargetOfficeCode),
+            ShareCustomers = entity.ShareCustomers,
+            ShareItems = entity.ShareItems,
+            ShareInvoices = entity.ShareInvoices,
+            SharePayments = entity.SharePayments,
+            ShareContracts = entity.ShareContracts,
+            ShareReports = entity.ShareReports,
+            ShareRentals = entity.ShareRentals,
+            ShareDeliveries = entity.ShareDeliveries,
+            AllowTargetWrite = entity.AllowTargetWrite,
+            Note = entity.Note,
+            IsActive = entity.IsActive
+        };
+
     public static void Apply(this CompanyProfile entity, CompanyProfileDto dto)
     {
         entity.TradeName = dto.TradeName; entity.Representative = dto.Representative;
@@ -34,6 +96,46 @@ public static class DtoMappings
         entity.BusinessItem = dto.BusinessItem; entity.Address = dto.Address;
         entity.ContactNumber = dto.ContactNumber; entity.Email = dto.Email;
         entity.BankAccountText = dto.BankAccountText; entity.StampImage = dto.StampImage;
+        entity.IsDeleted = dto.IsDeleted;
+    }
+
+    public static void Apply(this TenantDefinition entity, TenantDefinitionDto dto)
+    {
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(dto.TenantCode, entity.TenantCode);
+        entity.DisplayName = dto.DisplayName?.Trim() ?? string.Empty;
+        entity.StorageMode = TenantScopeCatalog.NormalizeStorageModeOrDefault(dto.StorageMode, entity.StorageMode);
+        entity.Description = dto.Description?.Trim() ?? string.Empty;
+        entity.IsActive = dto.IsActive;
+        entity.IsDeleted = dto.IsDeleted;
+    }
+
+    public static void Apply(this TenantOfficeDefinition entity, TenantOfficeDefinitionDto dto)
+    {
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(dto.TenantCode, dto.OfficeCode, entity.TenantCode, entity.OfficeCode);
+        entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(dto.OfficeCode, entity.OfficeCode);
+        entity.DisplayName = dto.DisplayName?.Trim() ?? string.Empty;
+        entity.IsHeadOffice = dto.IsHeadOffice;
+        entity.IsActive = dto.IsActive;
+        entity.IsDeleted = dto.IsDeleted;
+    }
+
+    public static void Apply(this DataSharingPolicy entity, DataSharingPolicyDto dto)
+    {
+        entity.SourceOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(dto.SourceOfficeCode, entity.SourceOfficeCode);
+        entity.SourceTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(dto.SourceTenantCode, entity.SourceOfficeCode);
+        entity.TargetOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(dto.TargetOfficeCode, entity.TargetOfficeCode);
+        entity.TargetTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(dto.TargetTenantCode, entity.TargetOfficeCode);
+        entity.ShareCustomers = dto.ShareCustomers;
+        entity.ShareItems = dto.ShareItems;
+        entity.ShareInvoices = dto.ShareInvoices;
+        entity.SharePayments = dto.SharePayments;
+        entity.ShareContracts = dto.ShareContracts;
+        entity.ShareReports = dto.ShareReports;
+        entity.ShareRentals = dto.ShareRentals;
+        entity.ShareDeliveries = dto.ShareDeliveries;
+        entity.AllowTargetWrite = dto.AllowTargetWrite;
+        entity.Note = dto.Note?.Trim() ?? string.Empty;
+        entity.IsActive = dto.IsActive;
         entity.IsDeleted = dto.IsDeleted;
     }
 
@@ -69,6 +171,7 @@ public static class DtoMappings
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
             NameOriginal = entity.NameOriginal, NameMatchKey = entity.NameMatchKey, CategoryId = entity.CategoryId,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
             OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode)
         };
 
@@ -77,6 +180,11 @@ public static class DtoMappings
         entity.NameOriginal = dto.NameOriginal;
         entity.NameMatchKey = string.IsNullOrWhiteSpace(dto.NameMatchKey) ? MatchKeyNormalizer.Normalize(dto.NameOriginal) : dto.NameMatchKey;
         entity.CategoryId = dto.CategoryId; entity.IsDeleted = dto.IsDeleted;
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            dto.TenantCode,
+            dto.OfficeCode,
+            entity.TenantCode,
+            entity.OfficeCode);
         if (!string.IsNullOrWhiteSpace(dto.OfficeCode))
             entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
         else if (string.IsNullOrWhiteSpace(entity.OfficeCode))
@@ -88,7 +196,10 @@ public static class DtoMappings
         {
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
-            CustomerMasterId = entity.CustomerMasterId, OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode), NameOriginal = entity.NameOriginal,
+            CustomerMasterId = entity.CustomerMasterId,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            NameOriginal = entity.NameOriginal,
             NameMatchKey = entity.NameMatchKey, CategoryId = entity.CategoryId,
             TradeType = entity.TradeType,
             Department = entity.Department, ContactPerson = entity.ContactPerson,
@@ -105,6 +216,11 @@ public static class DtoMappings
         entity.ContactPerson = dto.ContactPerson; entity.BusinessNumber = dto.BusinessNumber;
         entity.Address = dto.Address; entity.Phone = dto.Phone; entity.Email = dto.Email;
         entity.Notes = dto.Notes; entity.IsDeleted = dto.IsDeleted;
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            dto.TenantCode,
+            dto.OfficeCode,
+            entity.TenantCode,
+            entity.OfficeCode);
         if (!string.IsNullOrWhiteSpace(dto.OfficeCode))
             entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
         else if (string.IsNullOrWhiteSpace(entity.OfficeCode))
@@ -157,6 +273,7 @@ public static class DtoMappings
         {
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
             OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
             NameOriginal = entity.NameOriginal, NameMatchKey = entity.NameMatchKey,
             SpecificationOriginal = entity.SpecificationOriginal, SpecificationMatchKey = entity.SpecificationMatchKey,
@@ -198,6 +315,11 @@ public static class DtoMappings
         entity.SerialNumber = dto.SerialNumber; entity.MaterialNumber = dto.MaterialNumber;
         entity.InstallLocation = dto.InstallLocation; entity.RentalStartDate = dto.RentalStartDate;
         entity.RentalEndDate = dto.RentalEndDate; entity.Notes = dto.Notes; entity.IsDeleted = dto.IsDeleted;
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            dto.TenantCode,
+            dto.OfficeCode,
+            entity.TenantCode,
+            entity.OfficeCode);
         if (!string.IsNullOrWhiteSpace(dto.OfficeCode))
             entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
         else if (string.IsNullOrWhiteSpace(entity.OfficeCode))
@@ -209,7 +331,10 @@ public static class DtoMappings
         {
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
-            CustomerId = entity.CustomerId, OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode), InvoiceNumber = entity.InvoiceNumber,
+            CustomerId = entity.CustomerId,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            InvoiceNumber = entity.InvoiceNumber,
             LocalTempNumber = entity.LocalTempNumber, VoucherType = entity.VoucherType,
             InvoiceDate = entity.InvoiceDate, TotalAmount = entity.TotalAmount,
             SupplyAmount = entity.SupplyAmount, VatAmount = entity.VatAmount, Memo = entity.Memo,
@@ -234,6 +359,11 @@ public static class DtoMappings
         entity.CustomerId = dto.CustomerId; entity.InvoiceNumber = dto.InvoiceNumber;
         entity.LocalTempNumber = dto.LocalTempNumber; entity.VoucherType = dto.VoucherType;
         entity.InvoiceDate = dto.InvoiceDate; entity.Memo = dto.Memo; entity.IsDeleted = dto.IsDeleted;
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            dto.TenantCode,
+            dto.OfficeCode,
+            entity.TenantCode,
+            entity.OfficeCode);
         if (!string.IsNullOrWhiteSpace(dto.OfficeCode))
             entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
         else if (string.IsNullOrWhiteSpace(entity.OfficeCode))

@@ -184,8 +184,8 @@ public sealed partial class MainViewModel : ObservableObject
         _legacyMigrationService = new LegacyDataMigrationService(local);
 
         _sync.SyncStatusChanged += HandleSyncStatusChanged;
-        var offlineTag = session.IsOfflineMode ? " [?ㅽ봽?쇱씤]" : string.Empty;
-        CurrentUserDisplay = $"{session.User?.Username} ({session.User?.Role}/{session.OfficeCode}){offlineTag}";
+        _session.BusinessDatabaseChanged += HandleBusinessDatabaseChanged;
+        RefreshCurrentUserDisplay();
     }
 
     private void HandleSyncStatusChanged(string status)

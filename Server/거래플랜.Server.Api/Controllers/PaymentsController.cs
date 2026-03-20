@@ -1,14 +1,14 @@
-ï»¿using System.Security.Cryptography;
-using ê±°ëž˜í”Œëžœ.Server.Api.Data;
-using ê±°ëž˜í”Œëžœ.Server.Api.Domain;
-using ê±°ëž˜í”Œëžœ.Server.Api.Mappings;
-using ê±°ëž˜í”Œëžœ.Server.Api.Services;
-using ê±°ëž˜í”Œëžœ.Shared.Contracts;
+using System.Security.Cryptography;
+using °Å·¡ÇÃ·£.Server.Api.Data;
+using °Å·¡ÇÃ·£.Server.Api.Domain;
+using °Å·¡ÇÃ·£.Server.Api.Mappings;
+using °Å·¡ÇÃ·£.Server.Api.Services;
+using °Å·¡ÇÃ·£.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace ê±°ëž˜í”Œëžœ.Server.Api.Controllers;
+namespace °Å·¡ÇÃ·£.Server.Api.Controllers;
 
 [ApiController]
 [Authorize]
@@ -83,7 +83,7 @@ public sealed class PaymentsController : ControllerBase
             .ThenInclude(payment => payment!.Invoice)
             .ThenInclude(invoice => invoice!.Customer)
             .FirstOrDefaultAsync(x => x.Id == attachmentId, cancellationToken);
-        if (attachment is not null && !_officeScopeService.CanReadOffice(attachment.Payment?.Invoice?.OfficeCode))
+        if (attachment is not null && !_officeScopeService.CanReadOfficeForPayments(attachment.Payment?.Invoice?.OfficeCode, attachment.Payment?.Invoice?.TenantCode))
             attachment = null;
         if (attachment is null)
             return NotFound();
@@ -112,20 +112,20 @@ public sealed class PaymentsController : ControllerBase
             .Include(x => x.Invoice)
             .ThenInclude(invoice => invoice!.Customer)
             .FirstOrDefaultAsync(x => x.Id == paymentId, cancellationToken);
-        if (payment is not null && !_officeScopeService.CanWriteOffice(payment.Invoice?.OfficeCode))
+        if (payment is not null && !_officeScopeService.CanWriteOfficeForPayments(payment.Invoice?.OfficeCode, payment.Invoice?.TenantCode))
             return Forbid();
         if (payment is null)
             return NotFound();
 
         if (file is null || file.Length <= 0)
-            return BadRequest(new { error = "empty_file", message = "ì—…ë¡œë“œí•  íŒŒì¼ì„ ì„ íƒí•˜ì„¸ìš”." });
+            return BadRequest(new { error = "empty_file", message = "¾÷·ÎµåÇÒ ÆÄÀÏÀ» ¼±ÅÃÇÏ¼¼¿ä." });
 
         if (file.Length > 15 * 1024 * 1024)
-            return BadRequest(new { error = "file_too_large", message = "ì²¨ë¶€ íŒŒì¼ì€ 15MB ì´í•˜ë§Œ ì—…ë¡œë“œí•  ìˆ˜ ìžˆìŠµë‹ˆë‹¤." });
+            return BadRequest(new { error = "file_too_large", message = "Ã·ºÎ ÆÄÀÏÀº 15MB ÀÌÇÏ¸¸ ¾÷·ÎµåÇÒ ¼ö ÀÖ½À´Ï´Ù." });
 
         var safeFileName = Path.GetFileName(file.FileName ?? string.Empty);
         if (string.IsNullOrWhiteSpace(safeFileName))
-            return BadRequest(new { error = "invalid_file_name", message = "ìœ íš¨í•œ ì²¨ë¶€ íŒŒì¼ëª…ì„ í™•ì¸í•  ìˆ˜ ì—†ìŠµë‹ˆë‹¤." });
+            return BadRequest(new { error = "invalid_file_name", message = "À¯È¿ÇÑ Ã·ºÎ ÆÄÀÏ¸íÀ» È®ÀÎÇÒ ¼ö ¾ø½À´Ï´Ù." });
 
         var normalizedContentType = NormalizeContentType(file.ContentType, safeFileName);
         if (!IsAllowedAttachment(safeFileName, normalizedContentType))
@@ -133,7 +133,7 @@ public sealed class PaymentsController : ControllerBase
             return BadRequest(new
             {
                 error = "unsupported_file_type",
-                message = "ì²¨ë¶€ íŒŒì¼ì€ PDF ë˜ëŠ” ì´ë¯¸ì§€ íŒŒì¼ë§Œ ì—…ë¡œë“œí•  ìˆ˜ ìžˆìŠµë‹ˆë‹¤."
+                message = "Ã·ºÎ ÆÄÀÏÀº PDF ¶Ç´Â ÀÌ¹ÌÁö ÆÄÀÏ¸¸ ¾÷·ÎµåÇÒ ¼ö ÀÖ½À´Ï´Ù."
             });
         }
 
@@ -145,7 +145,7 @@ public sealed class PaymentsController : ControllerBase
         {
             Id = Guid.NewGuid(),
             PaymentId = paymentId,
-            AttachmentType = string.IsNullOrWhiteSpace(attachmentType) ? "ë‚´ì—­ì²¨ë¶€" : attachmentType.Trim(),
+            AttachmentType = string.IsNullOrWhiteSpace(attachmentType) ? "³»¿ªÃ·ºÎ" : attachmentType.Trim(),
             Description = description?.Trim() ?? string.Empty,
             FileName = safeFileName,
             MimeType = normalizedContentType,
@@ -202,7 +202,7 @@ public sealed class PaymentsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == dto.InvoiceId, cancellationToken);
         if (invoice is null)
             return BadRequest("Referenced invoice was not found.");
-        if (!_officeScopeService.CanWriteOffice(invoice.OfficeCode))
+        if (!_officeScopeService.CanWriteOfficeForPayments(invoice.OfficeCode, invoice.TenantCode))
             return Forbid();
 
         var entity = new Payment { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
@@ -227,7 +227,7 @@ public sealed class PaymentsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null)
             return NotFound();
-        if (entity.Invoice is null || !_officeScopeService.CanWriteOffice(entity.Invoice.OfficeCode))
+        if (entity.Invoice is null || !_officeScopeService.CanWriteOfficeForPayments(entity.Invoice.OfficeCode, entity.Invoice.TenantCode))
             return Forbid();
 
         entity.Apply(dto);
@@ -244,7 +244,7 @@ public sealed class PaymentsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null)
             return NotFound();
-        if (entity.Invoice is null || !_officeScopeService.CanWriteOffice(entity.Invoice.OfficeCode))
+        if (entity.Invoice is null || !_officeScopeService.CanWriteOfficeForPayments(entity.Invoice.OfficeCode, entity.Invoice.TenantCode))
             return Forbid();
 
         entity.IsDeleted = true;
@@ -259,3 +259,4 @@ public sealed class PaymentsController : ControllerBase
         return NoContent();
     }
 }
+

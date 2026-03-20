@@ -1425,7 +1425,7 @@ public sealed partial class LocalStateService
         => GetCompanyProfileAsync(username: null, officeCode: null, ct);
 
     public Task<LocalCompanyProfile?> GetCompanyProfileAsync(SessionState session, CancellationToken ct = default)
-        => GetCompanyProfileAsync(session.User?.Username, session.OfficeCode, ct);
+        => GetCompanyProfileAsync(session.User?.Username, session.BusinessOfficeCode, ct);
 
     public Task<List<LocalCompanyProfile>> GetCompanyProfilesAsync(CancellationToken ct = default)
         => _db.CompanyProfiles
@@ -3297,11 +3297,11 @@ public sealed partial class LocalStateService
         if (HasFullAccess(session))
             return query;
 
-        var userOfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
+        var readableOfficeCodes = GetReadableOfficeCodes(session);
         var temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
         return query.Where(customer =>
             customer.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
-            customer.ResponsibleOfficeCode == userOfficeCode ||
+            readableOfficeCodes.Contains(customer.ResponsibleOfficeCode) ||
             temporaryCustomerIds.Contains(customer.Id));
     }
 
@@ -3312,11 +3312,11 @@ public sealed partial class LocalStateService
         if (HasFullAccess(session))
             return query;
 
-        var userOfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
+        var readableOfficeCodes = GetReadableOfficeCodes(session);
         var temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
         return query.Where(invoice =>
             invoice.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
-            invoice.ResponsibleOfficeCode == userOfficeCode ||
+            readableOfficeCodes.Contains(invoice.ResponsibleOfficeCode) ||
             temporaryCustomerIds.Contains(invoice.CustomerId));
     }
 
@@ -3327,16 +3327,41 @@ public sealed partial class LocalStateService
         if (HasFullAccess(session))
             return query;
 
-        var userOfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
+        var readableOfficeCodes = GetReadableOfficeCodes(session);
         var temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
         return query.Where(transaction =>
             transaction.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
-            transaction.ResponsibleOfficeCode == userOfficeCode ||
+            readableOfficeCodes.Contains(transaction.ResponsibleOfficeCode) ||
             temporaryCustomerIds.Contains(transaction.CustomerId));
     }
 
     private static bool HasFullAccess(SessionState? session)
         => session is null || !session.IsLoggedIn || session.IsAdmin;
+
+    private static HashSet<string> GetReadableOfficeCodes(SessionState? session)
+    {
+        if (session is null || !session.IsLoggedIn || session.IsAdmin)
+            return OfficeCodeCatalog.All.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            return TenantScopeCatalog.GetOfficeCodesForTenant(session.TenantCode)
+                .Select(code => NormalizeOfficeCode(code, DomainConstants.OfficeUsenet))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet)
+        };
+    }
+
+    private static bool HasOfficeReadAccess(SessionState? session, string? officeCode)
+    {
+        var normalizedOfficeCode = NormalizeOfficeScope(officeCode, DomainConstants.OfficeUsenet);
+        return IsSharedOfficeScope(normalizedOfficeCode) ||
+               GetReadableOfficeCodes(session).Contains(normalizedOfficeCode);
+    }
 
     private bool CanAccessCustomer(LocalCustomer customer, SessionState? session)
         => CanAccessCustomer(
@@ -3358,8 +3383,7 @@ public sealed partial class LocalStateService
         if (IsSharedOfficeScope(normalizedOfficeCode))
             return true;
 
-        var userOfficeCode = NormalizeOfficeCode(session?.OfficeCode, DomainConstants.OfficeUsenet);
-        if (string.Equals(normalizedOfficeCode, userOfficeCode, StringComparison.OrdinalIgnoreCase))
+        if (HasOfficeReadAccess(session, normalizedOfficeCode))
             return true;
 
         return session is not null && _officeAccess.HasTemporaryCustomerAccess(session, customerId);
@@ -3374,8 +3398,7 @@ public sealed partial class LocalStateService
         if (IsSharedOfficeScope(officeCode))
             return true;
 
-        var userOfficeCode = NormalizeOfficeCode(session?.OfficeCode, DomainConstants.OfficeUsenet);
-        if (string.Equals(officeCode, userOfficeCode, StringComparison.OrdinalIgnoreCase))
+        if (HasOfficeReadAccess(session, officeCode))
             return true;
 
         return session is not null && _officeAccess.HasTemporaryCustomerAccess(session, invoice.CustomerId);
@@ -3390,8 +3413,7 @@ public sealed partial class LocalStateService
         if (IsSharedOfficeScope(officeCode))
             return true;
 
-        var userOfficeCode = NormalizeOfficeCode(session?.OfficeCode, DomainConstants.OfficeUsenet);
-        if (string.Equals(officeCode, userOfficeCode, StringComparison.OrdinalIgnoreCase))
+        if (HasOfficeReadAccess(session, officeCode))
             return true;
 
         return session is not null && _officeAccess.HasTemporaryCustomerAccess(session, transaction.CustomerId);

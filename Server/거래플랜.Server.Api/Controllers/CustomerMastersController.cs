@@ -32,6 +32,7 @@ public sealed class CustomerMastersController : ControllerBase
     public async Task<ActionResult<CustomerMasterDto>> Create([FromBody] CustomerMasterDto dto, CancellationToken cancellationToken)
     {
         var entity = new CustomerMaster { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
+        dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode);
         entity.Apply(dto);
         _dbContext.CustomerMasters.Add(entity);

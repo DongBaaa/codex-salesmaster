@@ -67,6 +67,17 @@ public sealed class OfficeAccessService
         }
     }
 
+    public void ClearSessionAccess(SessionState session)
+    {
+        if (session is null)
+            return;
+
+        lock (_gate)
+        {
+            _sessionCustomerAccess.Remove(session.SessionId);
+        }
+    }
+
     private void PurgeExpiredEntries_NoLock(Guid sessionId)
     {
         if (!_sessionCustomerAccess.TryGetValue(sessionId, out var grants))

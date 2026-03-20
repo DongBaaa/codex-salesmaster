@@ -289,7 +289,7 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == customerId, cancellationToken);
         if (customer is null)
             return (false, "복원할 거래처를 찾을 수 없습니다.");
-        if (!_officeScopeService.CanWriteOffice(customer.OfficeCode))
+        if (!_officeScopeService.CanWriteOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
             return (false, "현재 계정으로 복원할 수 없는 거래처입니다.");
         if (!customer.IsDeleted)
             return (true, "이미 활성 상태인 거래처입니다.");
@@ -314,7 +314,7 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == contract.CustomerId, cancellationToken);
         if (customer is null)
             return (false, "계약서와 연결된 거래처를 찾을 수 없습니다.");
-        if (!_officeScopeService.CanWriteOffice(customer.OfficeCode))
+        if (!_officeScopeService.CanWriteOfficeForContracts(customer.OfficeCode, customer.TenantCode))
             return (false, "현재 계정으로 복원할 수 없는 계약서입니다.");
 
         if (customer.IsDeleted)
@@ -345,7 +345,7 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == itemId, cancellationToken);
         if (item is null)
             return (false, "복원할 품목을 찾을 수 없습니다.");
-        if (!_officeScopeService.CanWriteOffice(item.OfficeCode))
+        if (!_officeScopeService.CanWriteOfficeForItems(item.OfficeCode, item.TenantCode))
             return (false, "현재 계정으로 복원할 수 없는 품목입니다.");
         if (!item.IsDeleted)
             return (true, "이미 활성 상태인 품목입니다.");
@@ -370,7 +370,7 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == invoice.CustomerId, cancellationToken);
         if (customer is null)
             return (false, "전표와 연결된 거래처를 찾을 수 없습니다.");
-        if (!_officeScopeService.CanWriteOffice(invoice.OfficeCode))
+        if (!_officeScopeService.CanWriteOfficeForInvoices(invoice.OfficeCode, invoice.TenantCode))
             return (false, "현재 계정으로 복원할 수 없는 전표입니다.");
 
         if (customer.IsDeleted)
@@ -402,7 +402,7 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == invoice.CustomerId, cancellationToken);
         if (customer is null)
             return (false, "연결된 거래처를 찾을 수 없습니다.");
-        if (!_officeScopeService.CanWriteOffice(invoice.OfficeCode))
+        if (!_officeScopeService.CanWriteOfficeForPayments(invoice.OfficeCode, invoice.TenantCode))
             return (false, "현재 계정으로 복원할 수 없는 수금/지급 기록입니다.");
 
         if (customer.IsDeleted)
@@ -422,7 +422,7 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == customerId, cancellationToken);
         if (customer is null)
             return (false, "영구삭제할 거래처를 찾을 수 없습니다.");
-        if (!_officeScopeService.CanWriteOffice(customer.OfficeCode))
+        if (!_officeScopeService.CanWriteOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
             return (false, "현재 계정으로 영구삭제할 수 없는 거래처입니다.");
         if (!customer.IsDeleted)
             return (false, "활성 상태 거래처는 휴지통에서 영구삭제할 수 없습니다.");
@@ -446,7 +446,7 @@ public sealed class RecycleBinController : ControllerBase
         if (contract is null)
             return (false, "영구삭제할 계약서를 찾을 수 없습니다.");
         var contractCustomer = await _dbContext.Customers.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Id == contract.CustomerId, cancellationToken);
-        if (contractCustomer is null || !_officeScopeService.CanWriteOffice(contractCustomer.OfficeCode))
+        if (contractCustomer is null || !_officeScopeService.CanWriteOfficeForContracts(contractCustomer.OfficeCode, contractCustomer.TenantCode))
             return (false, "현재 계정으로 영구삭제할 수 없는 계약서입니다.");
         if (!contract.IsDeleted)
             return (false, "활성 상태 계약서는 휴지통에서 영구삭제할 수 없습니다.");
@@ -463,7 +463,7 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == itemId, cancellationToken);
         if (item is null)
             return (false, "영구삭제할 품목을 찾을 수 없습니다.");
-        if (!_officeScopeService.CanWriteOffice(item.OfficeCode))
+        if (!_officeScopeService.CanWriteOfficeForItems(item.OfficeCode, item.TenantCode))
             return (false, "현재 계정으로 영구삭제할 수 없는 품목입니다.");
         if (!item.IsDeleted)
             return (false, "활성 상태 품목은 휴지통에서 영구삭제할 수 없습니다.");
@@ -481,7 +481,7 @@ public sealed class RecycleBinController : ControllerBase
         if (invoice is null)
             return (false, "영구삭제할 전표를 찾을 수 없습니다.");
         var invoiceCustomer = await _dbContext.Customers.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Id == invoice.CustomerId, cancellationToken);
-        if (invoiceCustomer is null || !_officeScopeService.CanWriteOffice(invoice.OfficeCode))
+        if (invoiceCustomer is null || !_officeScopeService.CanWriteOfficeForInvoices(invoice.OfficeCode, invoice.TenantCode))
             return (false, "현재 계정으로 영구삭제할 수 없는 전표입니다.");
         if (!invoice.IsDeleted)
             return (false, "활성 상태 전표는 휴지통에서 영구삭제할 수 없습니다.");
@@ -506,7 +506,7 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "영구삭제할 수금/지급 기록을 찾을 수 없습니다.");
         var purgeInvoice = await _dbContext.Invoices.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, cancellationToken);
         var purgeCustomer = purgeInvoice is null ? null : await _dbContext.Customers.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Id == purgeInvoice.CustomerId, cancellationToken);
-        if (purgeInvoice is null || purgeCustomer is null || !_officeScopeService.CanWriteOffice(purgeInvoice.OfficeCode))
+        if (purgeInvoice is null || purgeCustomer is null || !_officeScopeService.CanWriteOfficeForPayments(purgeInvoice.OfficeCode, purgeInvoice.TenantCode))
             return (false, "현재 계정으로 영구삭제할 수 없는 수금/지급 기록입니다.");
         if (!payment.IsDeleted)
             return (false, "활성 상태 수금/지급 기록은 휴지통에서 영구삭제할 수 없습니다.");

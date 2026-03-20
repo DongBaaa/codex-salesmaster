@@ -25,7 +25,9 @@ public sealed class UserAccount : TrackedEntity
     public string Username { get; set; } = string.Empty;
     public string PasswordHash { get; set; } = string.Empty;
     public string Role { get; set; } = "User";
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
+    public string ScopeType { get; set; } = TenantScopeCatalog.ScopeOfficeOnly;
     public bool IsActive { get; set; } = true;
     public ICollection<UserPermission> Permissions { get; set; } = new List<UserPermission>();
 }
@@ -51,6 +53,43 @@ public sealed class CompanyProfile : TrackedEntity
     public byte[]? StampImage { get; set; }
 }
 
+public sealed class TenantDefinition : TrackedEntity
+{
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string DisplayName { get; set; } = string.Empty;
+    public string StorageMode { get; set; } = TenantScopeCatalog.StorageSharedDatabase;
+    public string Description { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class TenantOfficeDefinition : TrackedEntity
+{
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
+    public string DisplayName { get; set; } = string.Empty;
+    public bool IsHeadOffice { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class DataSharingPolicy : TrackedEntity
+{
+    public string SourceTenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string SourceOfficeCode { get; set; } = OfficeCodeCatalog.Yeonsu;
+    public string TargetTenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string TargetOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
+    public bool ShareCustomers { get; set; } = true;
+    public bool ShareItems { get; set; }
+    public bool ShareInvoices { get; set; } = true;
+    public bool SharePayments { get; set; } = true;
+    public bool ShareContracts { get; set; } = true;
+    public bool ShareReports { get; set; } = true;
+    public bool ShareRentals { get; set; } = true;
+    public bool ShareDeliveries { get; set; } = true;
+    public bool AllowTargetWrite { get; set; }
+    public string Note { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+}
+
 public sealed class Unit : TrackedEntity
 {
     public string Name { get; set; } = string.Empty;
@@ -69,6 +108,7 @@ public sealed class CustomerMaster : TrackedEntity
     public string NameMatchKey { get; set; } = string.Empty;
     public Guid? CategoryId { get; set; }
     public CustomerCategory? Category { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
 }
 
@@ -76,6 +116,7 @@ public sealed class Customer : TrackedEntity
 {
     public Guid? CustomerMasterId { get; set; }
     public CustomerMaster? CustomerMaster { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
@@ -113,6 +154,7 @@ public sealed class CustomerContract : TrackedEntity
 
 public sealed class Item : TrackedEntity
 {
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
@@ -143,6 +185,7 @@ public sealed class Invoice : TrackedEntity
 {
     public Guid CustomerId { get; set; }
     public Customer? Customer { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
@@ -235,4 +278,3 @@ public sealed class ConflictLog
     public string Reason { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
-

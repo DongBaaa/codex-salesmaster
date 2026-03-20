@@ -23,11 +23,21 @@ public sealed class ErpApiClient
         _session = session;
     }
 
-    private void SetAuthHeader()
+    private void SetAuthHeader(bool includeBusinessDatabaseHeader = false)
     {
+        _http.DefaultRequestHeaders.Authorization = null;
         if (_session.Token is not null)
             _http.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", _session.Token);
+
+        const string tenantHeaderName = "X-Tenant-Code";
+        if (_http.DefaultRequestHeaders.Contains(tenantHeaderName))
+            _http.DefaultRequestHeaders.Remove(tenantHeaderName);
+
+        if (!includeBusinessDatabaseHeader || !_session.IsAdmin || string.IsNullOrWhiteSpace(_session.SelectedBusinessDatabaseName))
+            return;
+
+        _http.DefaultRequestHeaders.TryAddWithoutValidation(tenantHeaderName, _session.SelectedBusinessDatabaseName);
     }
 
     // ── Auth ──────────────────────────────────────────────────────────────────
@@ -45,7 +55,7 @@ public sealed class ErpApiClient
                    operationName: "사용자 목록(users)",
                    sendAsync: async token =>
                    {
-                       SetAuthHeader();
+                       SetAuthHeader(includeBusinessDatabaseHeader: false);
                        return await _http.GetAsync("users", token);
                    },
                    readAsync: static async (resp, token) =>
@@ -60,7 +70,7 @@ public sealed class ErpApiClient
             operationName: "사용자 생성(users)",
             sendAsync: async token =>
             {
-                SetAuthHeader();
+                SetAuthHeader(includeBusinessDatabaseHeader: false);
                 return await _http.PostAsJsonAsync("users", request, token);
             },
             readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<UserAccountDto>(token),
@@ -73,7 +83,7 @@ public sealed class ErpApiClient
             operationName: "사용자 수정(users)",
             sendAsync: async token =>
             {
-                SetAuthHeader();
+                SetAuthHeader(includeBusinessDatabaseHeader: false);
                 return await _http.PutAsJsonAsync($"users/{userId}", request, token);
             },
             readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<UserAccountDto>(token),
@@ -86,7 +96,7 @@ public sealed class ErpApiClient
             operationName: "사용자 비밀번호 수정(users/password)",
             sendAsync: async token =>
             {
-                SetAuthHeader();
+                SetAuthHeader(includeBusinessDatabaseHeader: false);
                 return await _http.PutAsJsonAsync($"users/{userId}/password", request, token);
             },
             readAsync: static (_, _) => Task.FromResult<object?>(new object()),
@@ -99,8 +109,86 @@ public sealed class ErpApiClient
             operationName: "사용자 삭제(users)",
             sendAsync: async token =>
             {
-                SetAuthHeader();
+                SetAuthHeader(includeBusinessDatabaseHeader: false);
                 return await _http.DeleteAsync($"users/{userId}", token);
+            },
+            readAsync: static (_, _) => Task.FromResult<object?>(new object()),
+            ct);
+    }
+
+    public async Task<TenantConfigurationSnapshotDto?> GetTenantConfigurationAsync(CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "업체/데이터 권한 조회(tenant-settings)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader(includeBusinessDatabaseHeader: false);
+                return await _http.GetAsync("tenant-settings", token);
+            },
+            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<TenantConfigurationSnapshotDto>(token),
+            ct);
+    }
+
+    public async Task<TenantDefinitionDto?> UpdateTenantDefinitionAsync(string tenantCode, UpdateTenantDefinitionRequest request, CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "업체권역 저장(tenant-settings/tenants)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader(includeBusinessDatabaseHeader: false);
+                return await _http.PutAsJsonAsync($"tenant-settings/tenants/{Uri.EscapeDataString(tenantCode)}", request, token);
+            },
+            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<TenantDefinitionDto>(token),
+            ct);
+    }
+
+    public async Task<TenantOfficeDefinitionDto?> UpdateTenantOfficeDefinitionAsync(string officeCode, UpdateTenantOfficeDefinitionRequest request, CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "지점 정의 저장(tenant-settings/offices)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader(includeBusinessDatabaseHeader: false);
+                return await _http.PutAsJsonAsync($"tenant-settings/offices/{Uri.EscapeDataString(officeCode)}", request, token);
+            },
+            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<TenantOfficeDefinitionDto>(token),
+            ct);
+    }
+
+    public async Task<DataSharingPolicyDto?> CreateSharingPolicyAsync(UpsertDataSharingPolicyRequest request, CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "연동 정책 생성(tenant-settings/sharing-policies)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader(includeBusinessDatabaseHeader: false);
+                return await _http.PostAsJsonAsync("tenant-settings/sharing-policies", request, token);
+            },
+            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<DataSharingPolicyDto>(token),
+            ct);
+    }
+
+    public async Task<DataSharingPolicyDto?> UpdateSharingPolicyAsync(Guid policyId, UpsertDataSharingPolicyRequest request, CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "연동 정책 저장(tenant-settings/sharing-policies)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader(includeBusinessDatabaseHeader: false);
+                return await _http.PutAsJsonAsync($"tenant-settings/sharing-policies/{policyId}", request, token);
+            },
+            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<DataSharingPolicyDto>(token),
+            ct);
+    }
+
+    public async Task DeleteSharingPolicyAsync(Guid policyId, CancellationToken ct = default)
+    {
+        await ExecuteWithRetryAsync(
+            operationName: "연동 정책 삭제(tenant-settings/sharing-policies)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader(includeBusinessDatabaseHeader: false);
+                return await _http.DeleteAsync($"tenant-settings/sharing-policies/{policyId}", token);
             },
             readAsync: static (_, _) => Task.FromResult<object?>(new object()),
             ct);
@@ -113,7 +201,7 @@ public sealed class ErpApiClient
             operationName: "동기화 다운로드(sync/pull)",
             sendAsync: async token =>
             {
-                SetAuthHeader();
+                SetAuthHeader(includeBusinessDatabaseHeader: true);
                 return await _http.GetAsync($"sync/pull?sinceRev={sinceRevision}", token);
             },
             readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<SyncPullResponse>(token),
@@ -126,7 +214,7 @@ public sealed class ErpApiClient
             operationName: "동기화 업로드(sync/push)",
             sendAsync: async token =>
             {
-                SetAuthHeader();
+                SetAuthHeader(includeBusinessDatabaseHeader: true);
                 return await _http.PostAsJsonAsync("sync/push", request, token);
             },
             readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<SyncPushResult>(token),
@@ -139,7 +227,7 @@ public sealed class ErpApiClient
             operationName: "업데이트 매니페스트 조회(updates/manifest)",
             sendAsync: async token =>
             {
-                SetAuthHeader();
+                SetAuthHeader(includeBusinessDatabaseHeader: false);
                 return await _http.GetAsync($"updates/manifest?channel={Uri.EscapeDataString(channel)}", token);
             },
             readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<AppUpdateManifestDto>(token),
@@ -171,7 +259,7 @@ public sealed class ErpApiClient
                    operationName: "휴지통 조회(recycle-bin)",
                    sendAsync: async token =>
                    {
-                       SetAuthHeader();
+                       SetAuthHeader(includeBusinessDatabaseHeader: true);
                        return await _http.GetAsync(query, token);
                    },
                    readAsync: static async (resp, token) =>
@@ -188,7 +276,7 @@ public sealed class ErpApiClient
             operationName: "휴지통 복원(recycle-bin/restore)",
             sendAsync: async token =>
             {
-                SetAuthHeader();
+                SetAuthHeader(includeBusinessDatabaseHeader: true);
                 return await _http.PostAsJsonAsync(
                     "recycle-bin/restore",
                     new RecycleBinMutationRequest { Items = items.ToList() },
@@ -206,7 +294,7 @@ public sealed class ErpApiClient
             operationName: "휴지통 영구삭제(recycle-bin/purge)",
             sendAsync: async token =>
             {
-                SetAuthHeader();
+                SetAuthHeader(includeBusinessDatabaseHeader: true);
                 return await _http.PostAsJsonAsync(
                     "recycle-bin/purge",
                     new RecycleBinMutationRequest { Items = items.ToList() },

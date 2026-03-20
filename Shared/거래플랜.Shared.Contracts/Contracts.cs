@@ -110,7 +110,9 @@ public sealed class UserSessionDto
     public Guid UserId { get; set; }
     public string Username { get; set; } = string.Empty;
     public string Role { get; set; } = string.Empty;
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = string.Empty;
+    public string ScopeType { get; set; } = TenantScopeCatalog.ScopeOfficeOnly;
     public List<string> Permissions { get; set; } = new();
 }
 
@@ -118,7 +120,9 @@ public sealed class UserAccountDto : SyncEntityDto
 {
     public string Username { get; set; } = string.Empty;
     public string Role { get; set; } = string.Empty;
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = string.Empty;
+    public string ScopeType { get; set; } = TenantScopeCatalog.ScopeOfficeOnly;
     public bool IsActive { get; set; }
     public List<string> Permissions { get; set; } = new();
 }
@@ -133,7 +137,9 @@ public sealed class CreateUserRequest
     public string Username { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
     public string Role { get; set; } = string.Empty;
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = string.Empty;
+    public string ScopeType { get; set; } = TenantScopeCatalog.ScopeOfficeOnly;
     public bool IsActive { get; set; } = true;
     public List<string> Permissions { get; set; } = new();
 }
@@ -142,7 +148,9 @@ public sealed class UpdateUserRequest
 {
     public string Username { get; set; } = string.Empty;
     public string Role { get; set; } = string.Empty;
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = string.Empty;
+    public string ScopeType { get; set; } = TenantScopeCatalog.ScopeOfficeOnly;
     public bool IsActive { get; set; }
     public List<string> Permissions { get; set; } = new();
 }
@@ -192,12 +200,14 @@ public sealed class CustomerMasterDto : SyncEntityDto
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
     public Guid? CategoryId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
 }
 
 public sealed class CustomerDto : SyncEntityDto
 {
     public Guid? CustomerMasterId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
@@ -231,6 +241,7 @@ public sealed class CustomerContractDto : SyncEntityDto
 
 public sealed class ItemDto : SyncEntityDto
 {
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
@@ -260,6 +271,7 @@ public sealed class ItemDto : SyncEntityDto
 public sealed class InvoiceDto : SyncEntityDto
 {
     public Guid CustomerId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
@@ -435,6 +447,84 @@ public sealed class RecycleBinMutationResultDto
     public int RequestedCount { get; set; }
     public int SucceededCount { get; set; }
     public List<string> Messages { get; set; } = new();
+}
+
+public sealed class TenantDefinitionDto : SyncEntityDto
+{
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string DisplayName { get; set; } = string.Empty;
+    public string StorageMode { get; set; } = TenantScopeCatalog.StorageSharedDatabase;
+    public string Description { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class TenantOfficeDefinitionDto : SyncEntityDto
+{
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
+    public string DisplayName { get; set; } = string.Empty;
+    public bool IsHeadOffice { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class DataSharingPolicyDto : SyncEntityDto
+{
+    public string SourceTenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string SourceOfficeCode { get; set; } = OfficeCodeCatalog.Yeonsu;
+    public string TargetTenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string TargetOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
+    public bool ShareCustomers { get; set; } = true;
+    public bool ShareItems { get; set; }
+    public bool ShareInvoices { get; set; } = true;
+    public bool SharePayments { get; set; } = true;
+    public bool ShareContracts { get; set; } = true;
+    public bool ShareReports { get; set; } = true;
+    public bool ShareRentals { get; set; } = true;
+    public bool ShareDeliveries { get; set; } = true;
+    public bool AllowTargetWrite { get; set; }
+    public string Note { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class UpsertDataSharingPolicyRequest
+{
+    public string SourceTenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string SourceOfficeCode { get; set; } = OfficeCodeCatalog.Yeonsu;
+    public string TargetTenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string TargetOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
+    public bool ShareCustomers { get; set; } = true;
+    public bool ShareItems { get; set; }
+    public bool ShareInvoices { get; set; } = true;
+    public bool SharePayments { get; set; } = true;
+    public bool ShareContracts { get; set; } = true;
+    public bool ShareReports { get; set; } = true;
+    public bool ShareRentals { get; set; } = true;
+    public bool ShareDeliveries { get; set; } = true;
+    public bool AllowTargetWrite { get; set; }
+    public bool IsActive { get; set; } = true;
+    public string Note { get; set; } = string.Empty;
+}
+
+public sealed class TenantConfigurationSnapshotDto
+{
+    public List<TenantDefinitionDto> Tenants { get; set; } = new();
+    public List<TenantOfficeDefinitionDto> Offices { get; set; } = new();
+    public List<DataSharingPolicyDto> SharingPolicies { get; set; } = new();
+}
+
+public sealed class UpdateTenantDefinitionRequest
+{
+    public string DisplayName { get; set; } = string.Empty;
+    public string StorageMode { get; set; } = TenantScopeCatalog.StorageSharedDatabase;
+    public string Description { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class UpdateTenantOfficeDefinitionRequest
+{
+    public string DisplayName { get; set; } = string.Empty;
+    public bool IsHeadOffice { get; set; }
+    public bool IsActive { get; set; } = true;
 }
 
 public sealed class AppUpdateManifestDto

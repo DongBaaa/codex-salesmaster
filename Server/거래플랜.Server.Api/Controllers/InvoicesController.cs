@@ -76,9 +76,10 @@ public sealed class InvoicesController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
         if (customer is null)
             return BadRequest("Referenced customer was not found.");
-        if (!_officeScopeService.CanReadOffice(customer.OfficeCode))
+        if (!_officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
             return Forbid();
 
+        dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, customer.TenantCode, customer.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, customer.OfficeCode);
         var entity = new Invoice { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         entity.Apply(dto);
@@ -111,7 +112,7 @@ public sealed class InvoicesController : ControllerBase
         var entity = await _dbContext.Invoices.Include(x => x.Customer).Include(x => x.Lines)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOffice(entity.OfficeCode))
+        if (!_officeScopeService.CanWriteOfficeForInvoices(entity.OfficeCode, entity.TenantCode))
             return Forbid();
 
         var customer = await _dbContext.Customers
@@ -119,9 +120,10 @@ public sealed class InvoicesController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
         if (customer is null)
             return BadRequest("Referenced customer was not found.");
-        if (!_officeScopeService.CanReadOffice(customer.OfficeCode))
+        if (!_officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
             return Forbid();
 
+        dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, entity.TenantCode, entity.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, entity.OfficeCode);
         entity.Apply(dto);
         _dbContext.InvoiceLines.RemoveRange(entity.Lines);
@@ -148,7 +150,7 @@ public sealed class InvoicesController : ControllerBase
     {
         var entity = await _dbContext.Invoices.Include(x => x.Customer).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOffice(entity.OfficeCode))
+        if (!_officeScopeService.CanWriteOfficeForInvoices(entity.OfficeCode, entity.TenantCode))
             return Forbid();
 
         entity.IsDeleted = true;

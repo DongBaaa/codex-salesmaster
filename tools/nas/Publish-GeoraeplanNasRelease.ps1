@@ -22,6 +22,29 @@ function Invoke-RobocopyMirror {
     }
 }
 
+function Get-NasEnvMap {
+    param(
+        [Parameter(Mandatory = $true)][string]$EnvPath
+    )
+
+    if (-not (Test-Path -LiteralPath $EnvPath)) {
+        return @{}
+    }
+
+    $map = @{}
+    foreach ($line in Get-Content -LiteralPath $EnvPath) {
+        if ($line -match '^\s*#') {
+            continue
+        }
+
+        if ($line -match '^([^=]+)=(.*)$') {
+            $map[$matches[1].Trim()] = $matches[2]
+        }
+    }
+
+    return $map
+}
+
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = (Resolve-Path (Join-Path $scriptRoot '..\..')).Path
@@ -31,8 +54,10 @@ $solutionPath = (Get-ChildItem -LiteralPath $ProjectRoot -File -Filter '*.sln' |
 $serverProject = (Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'Server') -Recurse -File -Filter '*.Server.Api.csproj' | Select-Object -First 1 -ExpandProperty FullName)
 $releaseRoot = Join-Path $NasRoot "releases\$ReleaseId"
 $liveRoot = Join-Path $NasRoot 'app\live'
+$opsEnvPath = Join-Path $NasRoot 'ops\.env'
 $tempPublishRoot = Join-Path ([System.IO.Path]::GetTempPath()) "georaeplan-$ReleaseId"
 $metadataPath = Join-Path $tempPublishRoot 'release-info.txt'
+$nasEnv = Get-NasEnvMap -EnvPath $opsEnvPath
 
 if (-not (Test-Path -LiteralPath $serverProject)) {
     throw "Server project not found: $serverProject"
@@ -83,6 +108,24 @@ if (Test-Path -LiteralPath $publishedAppSettingsPath) {
     }
 
     $publishedSettings.Kestrel.Endpoints.Http.Url = 'http://0.0.0.0:8080'
+
+    if (-not $publishedSettings.PSObject.Properties['ConnectionStrings']) {
+        $publishedSettings | Add-Member -NotePropertyName ConnectionStrings -NotePropertyValue ([pscustomobject]@{})
+    }
+
+    $postgresPassword = if ($nasEnv.ContainsKey('POSTGRES_PASSWORD')) { "$($nasEnv['POSTGRES_PASSWORD'])".Trim() } else { '' }
+    $postgresUser = if ($nasEnv.ContainsKey('POSTGRES_USER')) { "$($nasEnv['POSTGRES_USER'])".Trim() } else { 'georaeplan' }
+    $itworldDbName = if ($nasEnv.ContainsKey('ITWORLD_POSTGRES_DB')) { "$($nasEnv['ITWORLD_POSTGRES_DB'])".Trim() } else { 'georaeplan_itworld' }
+    if (-not [string]::IsNullOrWhiteSpace($postgresPassword) -and -not [string]::IsNullOrWhiteSpace($itworldDbName)) {
+        $itworldConnection = "Host=postgres;Port=5432;Database=$itworldDbName;Username=$postgresUser;Password=$postgresPassword"
+        if ($publishedSettings.ConnectionStrings.PSObject.Properties['ITWORLD']) {
+            $publishedSettings.ConnectionStrings.ITWORLD = $itworldConnection
+        }
+        else {
+            $publishedSettings.ConnectionStrings | Add-Member -NotePropertyName ITWORLD -NotePropertyValue $itworldConnection
+        }
+    }
+
     $publishedSettings | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $publishedAppSettingsPath -Encoding UTF8
 }
 

@@ -24,8 +24,14 @@ public sealed class HttpCurrentUserContext : ICurrentUserContext
     public string Username =>
         _httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.Name) ?? "anonymous";
 
+    public string TenantCode =>
+        TenantScopeCatalog.NormalizeTenantCodeOrDefault(_httpContextAccessor.HttpContext?.User.FindFirstValue("tenant"));
+
     public string OfficeCode =>
         OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_httpContextAccessor.HttpContext?.User.FindFirstValue("office"));
+
+    public string ScopeType =>
+        TenantScopeCatalog.NormalizeScopeTypeOrDefault(_httpContextAccessor.HttpContext?.User.FindFirstValue("scope"));
 
     public bool IsAdmin =>
         _httpContextAccessor.HttpContext?.User.IsInRole("Admin") ?? false;

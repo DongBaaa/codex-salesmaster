@@ -4,7 +4,9 @@ public interface ICurrentUserContext
 {
     Guid? UserId { get; }
     string Username { get; }
+    string TenantCode { get; }
     string OfficeCode { get; }
+    string ScopeType { get; }
     bool IsAdmin { get; }
     bool HasPermission(string permission);
 }

@@ -106,6 +106,7 @@ public sealed class ItemsController : ControllerBase
     public async Task<ActionResult<ItemDto>> Create([FromBody] ItemDto dto, CancellationToken cancellationToken)
     {
         var entity = new Item { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
+        dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode);
         entity.Apply(dto);
         _dbContext.Items.Add(entity);
@@ -118,9 +119,10 @@ public sealed class ItemsController : ControllerBase
     {
         var entity = await _dbContext.Items.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOffice(entity.OfficeCode))
+        if (!_officeScopeService.CanWriteOfficeForItems(entity.OfficeCode, entity.TenantCode))
             return Forbid();
 
+        dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, entity.TenantCode, entity.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, entity.OfficeCode);
         entity.Apply(dto);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -132,7 +134,7 @@ public sealed class ItemsController : ControllerBase
     {
         var entity = await _dbContext.Items.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOffice(entity.OfficeCode))
+        if (!_officeScopeService.CanWriteOfficeForItems(entity.OfficeCode, entity.TenantCode))
             return Forbid();
 
         entity.IsDeleted = true;

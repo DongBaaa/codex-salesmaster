@@ -1,9 +1,10 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
+using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -35,6 +36,7 @@ var allowedCorsOrigins = securityOptions.AllowedCorsOrigins
     .ToArray();
 
 var connectionString = builder.Configuration.GetConnectionString("Default") ?? string.Empty;
+var dedicatedBusinessConnections = ResolveDedicatedBusinessConnections(builder.Configuration, connectionString);
 var sqliteFallbackEnabled = builder.Configuration.GetValue("Database:EnableSqliteFallback", true);
 var forceSqlite = string.Equals(Environment.GetEnvironmentVariable("ERP_DB_FALLBACK_SQLITE"), "1", StringComparison.Ordinal);
 var forcePostgres = string.Equals(Environment.GetEnvironmentVariable("ERP_FORCE_POSTGRES"), "1", StringComparison.Ordinal);
@@ -45,9 +47,18 @@ var useSqlite = forceSqlite ||
                  (string.IsNullOrWhiteSpace(connectionString) ||
                   (sqliteFallbackEnabled && !TryCanConnectPostgres(connectionString))));
 
+var tenantDatabaseRoutingOptions = new TenantDatabaseRoutingOptions
+{
+    UseSqlite = useSqlite,
+    SqliteDbPath = sqliteDbPath,
+    DefaultConnectionString = connectionString,
+    DedicatedBusinessConnections = dedicatedBusinessConnections
+};
+
 ValidateProductionSecurityConfiguration(
     builder.Environment,
     connectionString,
+    dedicatedBusinessConnections,
     jwtOptions,
     securityOptions,
     seedUsersOptions,
@@ -62,19 +73,22 @@ else
     Console.WriteLine("[거래플랜 API] PostgreSQL 연결 성공");
 }
 
-builder.Services.AddDbContext<AppDbContext>(options =>
+builder.Services.AddSingleton(tenantDatabaseRoutingOptions);
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<ITenantDatabaseConnectionResolver, TenantDatabaseConnectionResolver>();
+builder.Services.AddDbContext<AppDbContext>((serviceProvider, options) =>
 {
-    if (useSqlite)
+    var resolvedConnection = serviceProvider.GetRequiredService<ITenantDatabaseConnectionResolver>().ResolveCurrent();
+    if (resolvedConnection.UseSqlite)
     {
-        options.UseSqlite($"Data Source={sqliteDbPath}");
+        options.UseSqlite(resolvedConnection.ConnectionString);
     }
     else
     {
-        options.UseNpgsql(connectionString);
+        options.UseNpgsql(resolvedConnection.ConnectionString);
     }
 });
 
-builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
 builder.Services.AddScoped<OfficeScopeService>();
 builder.Services.AddScoped<IJwtTokenFactory, JwtTokenFactory>();
@@ -212,7 +226,7 @@ builder.Services.AddSwaggerGen(c =>
 
 var app = builder.Build();
 
-LogSecurityWarnings(app, connectionString, jwtOptions, securityOptions, useSqlite, allowedCorsOrigins);
+LogSecurityWarnings(app, connectionString, dedicatedBusinessConnections, jwtOptions, securityOptions, useSqlite, allowedCorsOrigins);
 
 if (app.Environment.IsDevelopment())
 {
@@ -335,6 +349,7 @@ static string ResolveRateLimitKey(HttpContext context, string path)
 static void ValidateProductionSecurityConfiguration(
     IWebHostEnvironment environment,
     string connectionString,
+    IReadOnlyDictionary<string, string> dedicatedBusinessConnections,
     JwtOptions jwtOptions,
     SecurityOptions securityOptions,
     SeedUsersOptions seedUsersOptions,
@@ -359,6 +374,12 @@ static void ValidateProductionSecurityConfiguration(
     if (!securityOptions.RequireHttpsForwardedProto)
         throw new InvalidOperationException("Production requires Security:RequireHttpsForwardedProto=true.");
 
+    foreach (var pair in dedicatedBusinessConnections)
+    {
+        if (ContainsInsecureConnectionStringSecret(pair.Value))
+            throw new InvalidOperationException($"Production database password for tenant '{pair.Key}' cannot use a sample or placeholder value.");
+    }
+
     if (!seedUsersOptions.EnableSeedUsers)
         return;
 
@@ -372,6 +393,7 @@ static void ValidateProductionSecurityConfiguration(
 static void LogSecurityWarnings(
     WebApplication app,
     string connectionString,
+    IReadOnlyDictionary<string, string> dedicatedBusinessConnections,
     JwtOptions jwtOptions,
     SecurityOptions securityOptions,
     bool useSqlite,
@@ -410,6 +432,34 @@ static void LogSecurityWarnings(
     {
         app.Logger.LogWarning("RequireHttpsForwardedProto=false 입니다. NAS reverse proxy 운영 시 true 를 권장합니다.");
     }
+
+    foreach (var pair in dedicatedBusinessConnections)
+    {
+        app.Logger.LogInformation("Dedicated business DB routing enabled for tenant {TenantCode}.", pair.Key);
+    }
+}
+
+static IReadOnlyDictionary<string, string> ResolveDedicatedBusinessConnections(IConfiguration configuration, string defaultConnectionString)
+{
+    var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    var connectionSection = configuration.GetSection("ConnectionStrings");
+
+    foreach (var tenantCode in TenantScopeCatalog.AllTenants)
+    {
+        if (string.Equals(tenantCode, TenantScopeCatalog.UsenetGroup, StringComparison.OrdinalIgnoreCase))
+            continue;
+
+        var candidate = (connectionSection[tenantCode] ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(candidate))
+            continue;
+
+        if (string.Equals(candidate, defaultConnectionString, StringComparison.OrdinalIgnoreCase))
+            continue;
+
+        result[tenantCode] = candidate;
+    }
+
+    return result;
 }
 
 static bool ContainsInsecureConnectionStringSecret(string connectionString)

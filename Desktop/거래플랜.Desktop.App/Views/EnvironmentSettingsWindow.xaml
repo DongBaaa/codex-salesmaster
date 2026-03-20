@@ -79,6 +79,7 @@
             <Setter Property="BorderBrush" Value="#2E4060"/>
             <Setter Property="Padding" Value="16,8"/>
         </Style>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
     </Window.Resources>
 
     <Grid Margin="14">
@@ -532,6 +533,341 @@
                 </Grid>
             </TabItem>
 
+            <TabItem Header="업체 / 데이터 권한">
+                <ScrollViewer Margin="10" VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="업체 / 데이터 권한" Foreground="#4FC3F7" FontWeight="Bold" FontSize="18"/>
+                                    <TextBlock Text="{Binding TenantConfigurationHint}" Foreground="#9FB3C8" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                                </StackPanel>
+                                <Border Grid.Column="1"
+                                        Background="#37474F"
+                                        CornerRadius="12"
+                                        Padding="10,4"
+                                        VerticalAlignment="Top">
+                                    <TextBlock Text="{Binding CanManageTenantConfiguration, StringFormat=관리자 편집 가능: {0}}"
+                                               Foreground="#EAF2FF"
+                                               FontSize="11"
+                                               FontWeight="Bold"/>
+                                </Border>
+                            </Grid>
+                        </Border>
+
+                        <Border Background="#1A2B4A"
+                                CornerRadius="6"
+                                BorderBrush="#2E4060"
+                                BorderThickness="1"
+                                Padding="16"
+                                Margin="0,14,0,0"
+                                Visibility="{Binding CanManageBusinessDatabaseSelection, Converter={StaticResource BoolToVisibilityConverter}}">
+                            <StackPanel>
+                                <TextBlock Text="업체 DB 설정" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                <TextBlock Text="관리자 계정만 업체 DB를 선택하고 불러올 수 있습니다. 현재 선택 DB와 드롭다운은 모두 업체명(DB명) 형식으로 표시됩니다."
+                                           Foreground="#9FB3C8"
+                                           Margin="0,8,0,0"
+                                           TextWrapping="Wrap"/>
+                                <Grid Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="120"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+
+                                    <Label Grid.Row="0" Grid.Column="0" Content="현재 선택 DB"/>
+                                    <TextBlock Grid.Row="0"
+                                               Grid.Column="1"
+                                               Text="{Binding CurrentBusinessDatabaseLabel}"
+                                               VerticalAlignment="Center"
+                                               Foreground="#90CAF9"
+                                               FontWeight="SemiBold"/>
+
+                                    <Label Grid.Row="1" Grid.Column="0" Content="업체 DB 선택" Margin="0,10,0,0"/>
+                                    <ComboBox Grid.Row="1"
+                                              Grid.Column="1"
+                                              Margin="0,10,8,0"
+                                              ItemsSource="{Binding BusinessDatabaseOptions}"
+                                              DisplayMemberPath="DisplayName"
+                                              SelectedItem="{Binding SelectedBusinessDatabaseOption}"/>
+                                    <Button Grid.Row="1"
+                                            Grid.Column="2"
+                                            Content="불러오기"
+                                            Background="#1565C0"
+                                            Margin="0,10,0,0"
+                                            Command="{Binding LoadSelectedBusinessDatabaseCommand}"
+                                            IsEnabled="{Binding CanLoadSelectedBusinessDatabase}"/>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Grid Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.15*"/>
+                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="1.35*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14">
+                                    <DockPanel>
+                                        <Border DockPanel.Dock="Top" Background="#102039" Padding="12" CornerRadius="6,6,0,0">
+                                            <DockPanel>
+                                                <TextBlock Text="업체 권역" Foreground="#4FC3F7" FontWeight="Bold" DockPanel.Dock="Left"/>
+                                                <Button Content="새로고침"
+                                                        DockPanel.Dock="Right"
+                                                        Background="#455A64"
+                                                        Command="{Binding ReloadTenantConfigurationCommand}"
+                                                        IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            </DockPanel>
+                                        </Border>
+                                        <DataGrid ItemsSource="{Binding TenantDefinitions}"
+                                                  SelectedItem="{Binding SelectedTenantDefinition}"
+                                                  IsReadOnly="True"
+                                                  Height="220"
+                                                  BorderThickness="0">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Header="코드" Binding="{Binding TenantCode}" Width="130"/>
+                                                <DataGridTextColumn Header="이름" Binding="{Binding DisplayName}" Width="*"/>
+                                                <DataGridTextColumn Header="저장 방식" Binding="{Binding StorageMode}" Width="160"/>
+                                                <DataGridCheckBoxColumn Header="활성" Binding="{Binding IsActive}" Width="70"/>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </DockPanel>
+                                </Border>
+
+                                <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14" Margin="0,12,0,0">
+                                    <StackPanel>
+                                        <TextBlock Text="업체 권역 편집" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                        <Grid Margin="0,14,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+
+                                            <Label Grid.Row="0" Grid.Column="0" Content="업체 코드"/>
+                                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EditingTenantCode}" IsReadOnly="True" Margin="0,0,0,8"/>
+                                            <Label Grid.Row="1" Grid.Column="0" Content="표시 이름"/>
+                                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditingTenantDisplayName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <Label Grid.Row="2" Grid.Column="0" Content="저장 방식"/>
+                                            <ComboBox Grid.Row="2" Grid.Column="1"
+                                                      ItemsSource="{Binding TenantStorageModeOptions}"
+                                                      DisplayMemberPath="DisplayName"
+                                                      SelectedValuePath="Value"
+                                                      SelectedValue="{Binding EditingTenantStorageMode}"
+                                                      Margin="0,0,0,8"
+                                                      IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <Label Grid.Row="3" Grid.Column="0" Content="설명"/>
+                                            <TextBox Grid.Row="3" Grid.Column="1"
+                                                     Text="{Binding EditingTenantDescription, UpdateSourceTrigger=PropertyChanged}"
+                                                     Height="72"
+                                                     AcceptsReturn="True"
+                                                     TextWrapping="Wrap"
+                                                     IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                        </Grid>
+                                        <CheckBox Content="활성 업체 권역" IsChecked="{Binding EditingTenantIsActive}" Margin="0,10,0,0" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                        <Button Content="업체 권역 저장"
+                                                Background="#1565C0"
+                                                Command="{Binding SaveTenantDefinitionCommand}"
+                                                Margin="0,12,0,0"
+                                                HorizontalAlignment="Left"
+                                                IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14" Margin="0,12,0,0">
+                                    <DockPanel>
+                                        <Border DockPanel.Dock="Top" Background="#102039" Padding="12" CornerRadius="6,6,0,0">
+                                            <TextBlock Text="지점 구조" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                        </Border>
+                                        <DataGrid ItemsSource="{Binding TenantOfficeDefinitions}"
+                                                  SelectedItem="{Binding SelectedTenantOfficeDefinition}"
+                                                  IsReadOnly="True"
+                                                  Height="180"
+                                                  BorderThickness="0">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Header="지점" Binding="{Binding OfficeCode}" Width="100"/>
+                                                <DataGridTextColumn Header="업체" Binding="{Binding TenantCode}" Width="130"/>
+                                                <DataGridTextColumn Header="이름" Binding="{Binding DisplayName}" Width="*"/>
+                                                <DataGridCheckBoxColumn Header="상급" Binding="{Binding IsHeadOffice}" Width="70"/>
+                                                <DataGridCheckBoxColumn Header="활성" Binding="{Binding IsActive}" Width="70"/>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </DockPanel>
+                                </Border>
+
+                                <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14" Margin="0,12,0,0">
+                                    <StackPanel>
+                                        <TextBlock Text="지점 편집" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                        <Grid Margin="0,14,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <Label Grid.Row="0" Grid.Column="0" Content="지점 코드"/>
+                                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EditingOfficeCode}" IsReadOnly="True" Margin="0,0,0,8"/>
+                                            <Label Grid.Row="1" Grid.Column="0" Content="업체 권역"/>
+                                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditingOfficeTenantCode}" IsReadOnly="True" Margin="0,0,0,8"/>
+                                            <Label Grid.Row="2" Grid.Column="0" Content="표시 이름"/>
+                                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding EditingOfficeDisplayName, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                        </Grid>
+                                        <WrapPanel Margin="0,12,0,0">
+                                            <CheckBox Content="상위 지점" IsChecked="{Binding EditingOfficeIsHeadOffice}" Margin="0,0,16,0" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <CheckBox Content="활성 지점" IsChecked="{Binding EditingOfficeIsActive}" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                        </WrapPanel>
+                                        <Button Content="지점 저장"
+                                                Background="#1565C0"
+                                                Command="{Binding SaveTenantOfficeDefinitionCommand}"
+                                                Margin="0,12,0,0"
+                                                HorizontalAlignment="Left"
+                                                IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2">
+                                <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14">
+                                    <DockPanel>
+                                        <Border DockPanel.Dock="Top" Background="#102039" Padding="12" CornerRadius="6,6,0,0">
+                                            <DockPanel>
+                                                <TextBlock Text="업체 / 지점 데이터 연동 정책" Foreground="#4FC3F7" FontWeight="Bold" DockPanel.Dock="Left"/>
+                                                <WrapPanel DockPanel.Dock="Right">
+                                                    <Button Content="신규 정책" Background="#455A64" Margin="0,0,8,0" Command="{Binding NewSharingPolicyCommand}" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                                    <Button Content="삭제" Background="#C62828" Command="{Binding DeleteSharingPolicyCommand}" IsEnabled="{Binding CanDeleteSelectedSharingPolicy}"/>
+                                                </WrapPanel>
+                                            </DockPanel>
+                                        </Border>
+                                        <DataGrid ItemsSource="{Binding SharingPolicies}"
+                                                  SelectedItem="{Binding SelectedSharingPolicy}"
+                                                  IsReadOnly="True"
+                                                  Height="280"
+                                                  BorderThickness="0">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn Header="Source" Binding="{Binding SourceOfficeCode}" Width="90"/>
+                                                <DataGridTextColumn Header="Target" Binding="{Binding TargetOfficeCode}" Width="90"/>
+                                                <DataGridCheckBoxColumn Header="거래처" Binding="{Binding ShareCustomers}" Width="70"/>
+                                                <DataGridCheckBoxColumn Header="전표" Binding="{Binding ShareInvoices}" Width="70"/>
+                                                <DataGridCheckBoxColumn Header="수금" Binding="{Binding SharePayments}" Width="70"/>
+                                                <DataGridCheckBoxColumn Header="집계" Binding="{Binding ShareReports}" Width="70"/>
+                                                <DataGridCheckBoxColumn Header="렌탈" Binding="{Binding ShareRentals}" Width="70"/>
+                                                <DataGridCheckBoxColumn Header="납품" Binding="{Binding ShareDeliveries}" Width="70"/>
+                                                <DataGridCheckBoxColumn Header="Target 쓰기" Binding="{Binding AllowTargetWrite}" Width="90"/>
+                                                <DataGridCheckBoxColumn Header="활성" Binding="{Binding IsActive}" Width="70"/>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </DockPanel>
+                                </Border>
+
+                                <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14" Margin="0,12,0,0">
+                                    <StackPanel>
+                                        <TextBlock Text="연동 정책 편집" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                        <Grid Margin="0,14,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="100"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="12"/>
+                                                <ColumnDefinition Width="100"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+
+                                            <Label Grid.Row="0" Grid.Column="0" Content="Source 업체"/>
+                                            <ComboBox Grid.Row="0" Grid.Column="1"
+                                                      ItemsSource="{Binding SharingSourceTenantOptions}"
+                                                      DisplayMemberPath="DisplayName"
+                                                      SelectedValuePath="Value"
+                                                      SelectedValue="{Binding SharingSourceTenantCode}"
+                                                      IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <Label Grid.Row="0" Grid.Column="3" Content="Source 지점"/>
+                                            <ComboBox Grid.Row="0" Grid.Column="4"
+                                                      ItemsSource="{Binding SharingSourceOfficeOptions}"
+                                                      DisplayMemberPath="DisplayName"
+                                                      SelectedValuePath="Value"
+                                                      SelectedValue="{Binding SharingSourceOfficeCode}"
+                                                      IsEnabled="{Binding CanManageTenantConfiguration}"/>
+
+                                            <Label Grid.Row="1" Grid.Column="0" Content="Target 업체"/>
+                                            <ComboBox Grid.Row="1" Grid.Column="1"
+                                                      ItemsSource="{Binding SharingTargetTenantOptions}"
+                                                      DisplayMemberPath="DisplayName"
+                                                      SelectedValuePath="Value"
+                                                      SelectedValue="{Binding SharingTargetTenantCode}"
+                                                      Margin="0,8,0,0"
+                                                      IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <Label Grid.Row="1" Grid.Column="3" Content="Target 지점"/>
+                                            <ComboBox Grid.Row="1" Grid.Column="4"
+                                                      ItemsSource="{Binding SharingTargetOfficeOptions}"
+                                                      DisplayMemberPath="DisplayName"
+                                                      SelectedValuePath="Value"
+                                                      SelectedValue="{Binding SharingTargetOfficeCode}"
+                                                      Margin="0,8,0,0"
+                                                      IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                        </Grid>
+
+                                        <UniformGrid Columns="4" Margin="0,14,0,0">
+                                            <CheckBox Content="거래처" IsChecked="{Binding SharingShareCustomers}" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <CheckBox Content="품목" IsChecked="{Binding SharingShareItems}" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <CheckBox Content="전표" IsChecked="{Binding SharingShareInvoices}" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <CheckBox Content="수금/지급" IsChecked="{Binding SharingSharePayments}" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <CheckBox Content="계약서" IsChecked="{Binding SharingShareContracts}" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <CheckBox Content="집계" IsChecked="{Binding SharingShareReports}" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <CheckBox Content="렌탈" IsChecked="{Binding SharingShareRentals}" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <CheckBox Content="납품" IsChecked="{Binding SharingShareDeliveries}" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                        </UniformGrid>
+
+                                        <WrapPanel Margin="0,10,0,0">
+                                            <CheckBox Content="Target 지점 쓰기 허용" IsChecked="{Binding SharingAllowTargetWrite}" Margin="0,0,16,0" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <CheckBox Content="활성 정책" IsChecked="{Binding SharingIsActive}" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                        </WrapPanel>
+
+                                        <Label Content="정책 메모" Margin="0,10,0,0"/>
+                                        <TextBox Text="{Binding SharingNote, UpdateSourceTrigger=PropertyChanged}"
+                                                 Height="80"
+                                                 AcceptsReturn="True"
+                                                 TextWrapping="Wrap"
+                                                 IsEnabled="{Binding CanManageTenantConfiguration}"/>
+
+                                        <WrapPanel Margin="0,14,0,0">
+                                            <Button Content="연동 정책 저장"
+                                                    Background="#1565C0"
+                                                    Command="{Binding SaveSharingPolicyCommand}"
+                                                    Margin="0,0,8,0"
+                                                    IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <Button Content="신규 정책으로 초기화"
+                                                    Background="#455A64"
+                                                    Command="{Binding NewSharingPolicyCommand}"
+                                                    IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <TabItem Header="사용자 관리">
                 <Grid Margin="10">
                     <Grid.ColumnDefinitions>
@@ -556,7 +892,9 @@
                                       BorderThickness="0">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="아이디" Binding="{Binding Username}" Width="*"/>
+                                    <DataGridTextColumn Header="업체권역" Binding="{Binding TenantCode}" Width="130"/>
                                     <DataGridTextColumn Header="담당지점" Binding="{Binding OfficeCode}" Width="120"/>
+                                    <DataGridTextColumn Header="범위" Binding="{Binding ScopeType}" Width="110"/>
                                     <DataGridTextColumn Header="권한" Binding="{Binding Role}" Width="120"/>
                                     <DataGridCheckBoxColumn Header="활성" Binding="{Binding IsActive}" Width="80"/>
                                 </DataGrid.Columns>
@@ -577,11 +915,27 @@
                                      Margin="0,0,0,10"
                                      IsEnabled="{Binding CanManageUsers}"/>
 
+                            <Label Content="업체권역"/>
+                            <ComboBox ItemsSource="{Binding UserTenantOptions}"
+                                      DisplayMemberPath="DisplayName"
+                                      SelectedValuePath="Value"
+                                      SelectedValue="{Binding EditingUserTenantCode}"
+                                      Margin="0,0,0,10"
+                                      IsEnabled="{Binding CanManageUsers}"/>
+
                             <Label Content="담당지점"/>
                             <ComboBox ItemsSource="{Binding UserOfficeOptions}"
                                       DisplayMemberPath="DisplayName"
                                       SelectedValuePath="Value"
                                       SelectedValue="{Binding EditingUserOfficeCode}"
+                                      Margin="0,0,0,10"
+                                      IsEnabled="{Binding CanManageUsers}"/>
+
+                            <Label Content="데이터 범위"/>
+                            <ComboBox ItemsSource="{Binding ScopeTypeOptions}"
+                                      DisplayMemberPath="DisplayName"
+                                      SelectedValuePath="Value"
+                                      SelectedValue="{Binding EditingUserScopeType}"
                                       Margin="0,0,0,10"
                                       IsEnabled="{Binding CanManageUsers}"/>
 

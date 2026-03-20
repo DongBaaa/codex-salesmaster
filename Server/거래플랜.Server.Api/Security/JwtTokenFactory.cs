@@ -29,13 +29,20 @@ public sealed class JwtTokenFactory : IJwtTokenFactory
         var credentials = new SigningCredentials(signingKey, SecurityAlgorithms.HmacSha256);
 
         var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(user.OfficeCode);
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(user.TenantCode, officeCode);
+        var scopeType = user.Role.Equals("Admin", StringComparison.OrdinalIgnoreCase)
+            ? TenantScopeCatalog.ScopeAdmin
+            : TenantScopeCatalog.NormalizeScopeTypeOrDefault(user.ScopeType);
 
         var claims = new List<Claim>
         {
             new(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new(ClaimTypes.Name, user.Username),
             new(ClaimTypes.Role, user.Role),
+            new("tenant", tenantCode),
             new("office", officeCode)
+            ,
+            new("scope", scopeType)
         };
 
         claims.AddRange(user.Permissions.Select(permission => new Claim("perm", permission.Permission)));
@@ -58,7 +65,9 @@ public sealed class JwtTokenFactory : IJwtTokenFactory
                 UserId = user.Id,
                 Username = user.Username,
                 Role = user.Role,
+                TenantCode = tenantCode,
                 OfficeCode = officeCode,
+                ScopeType = scopeType,
                 Permissions = user.Permissions.Select(x => x.Permission).Distinct().ToList()
             }
         };

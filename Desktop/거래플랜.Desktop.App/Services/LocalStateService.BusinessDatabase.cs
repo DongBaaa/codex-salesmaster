@@ -1,0 +1,81 @@
+using Microsoft.EntityFrameworkCore;
+using 거래플랜.Desktop.App.Data;
+
+namespace 거래플랜.Desktop.App.Services;
+
+public sealed partial class LocalStateService
+{
+    private static readonly string[] BusinessScopedSettingKeys =
+    [
+        "LastSyncRevision",
+        "Sync.LastSuccessAt",
+        "Sync.LastError",
+        "InvoiceFilter.From",
+        "InvoiceFilter.To",
+        "InvoiceFilter.CustomerName",
+        "InvoiceFilter.VoucherType",
+        "InvoiceFilter.MinAmount",
+        "InvoiceFilter.MaxAmount",
+        "InvoiceFavorites.Ids"
+    ];
+
+    public async Task<bool> HasPendingSyncChangesAsync(CancellationToken ct = default)
+    {
+        if (_db.ChangeTracker.Entries<ILocalSyncEntity>().Any(entry => entry.Entity.IsDirty))
+            return true;
+
+        return await _db.CompanyProfiles.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.Customers.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.CustomerContracts.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.Items.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.Invoices.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.Payments.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct);
+    }
+
+    public async Task ResetBusinessDataCacheAsync(SessionState session, CancellationToken ct = default)
+    {
+        _officeAccess.ClearSessionAccess(session);
+
+        await _db.TransactionAttachments.ExecuteDeleteAsync(ct);
+        await _db.Transactions.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.CustomerContracts.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.Payments.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.InvoiceLineSerials.ExecuteDeleteAsync(ct);
+        await _db.InventoryMovements.ExecuteDeleteAsync(ct);
+        await _db.CostAllocations.ExecuteDeleteAsync(ct);
+        await _db.StockLayers.ExecuteDeleteAsync(ct);
+        await _db.SerialLedgers.ExecuteDeleteAsync(ct);
+        await _db.InventoryTransferLines.ExecuteDeleteAsync(ct);
+        await _db.InventoryTransfers.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.InvoiceLines.ExecuteDeleteAsync(ct);
+        await _db.Invoices.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.ItemWarehouseStocks.ExecuteDeleteAsync(ct);
+        await _db.RentalBillingLogs.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.RentalAssets.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.RentalBillingProfiles.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.RentalManagementCompanies.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.Customers.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.CustomerMasters.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.Items.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.CompanyProfiles.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.Units.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.CustomerCategories.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.PriceGradeOptions.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.TradeTypeOptions.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.ItemCategoryOptions.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.Offices.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.Warehouses.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.RecentSelections.ExecuteDeleteAsync(ct);
+        await _db.AttachmentSelections.ExecuteDeleteAsync(ct);
+        await _db.AuditLogs.ExecuteDeleteAsync(ct);
+
+        foreach (var key in BusinessScopedSettingKeys)
+        {
+            var setting = await _db.Settings.FindAsync([key], ct);
+            if (setting is not null)
+                _db.Settings.Remove(setting);
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+}

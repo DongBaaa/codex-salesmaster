@@ -147,11 +147,12 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
     private async Task LoadOfficeOptionsAsync()
     {
         var offices = await _local.GetOfficesAsync();
+        var readableOfficeCodes = GetReadableOfficeCodes();
         OfficeOptions.Clear();
         foreach (var office in offices.OrderBy(current => current.Name, StringComparer.CurrentCultureIgnoreCase))
         {
             if (!_session.IsAdmin &&
-                !string.Equals(office.Code, _session.OfficeCode, StringComparison.OrdinalIgnoreCase))
+                !readableOfficeCodes.Contains(office.Code))
             {
                 continue;
             }
@@ -177,10 +178,32 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
             SelectedOfficeCode = OfficeOptions.FirstOrDefault(option => string.Equals(option.Value, SelectedOfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
                 ?? OfficeOptions.First().Value;
         }
+        else if (string.Equals(_session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            SelectedOfficeCode = OfficeOptions.FirstOrDefault(option => string.Equals(option.Value, _session.OfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
+                ?? OfficeOptions.First().Value;
+        }
         else
         {
             SelectedOfficeCode = OfficeOptions.First().Value;
         }
+    }
+
+    private HashSet<string> GetReadableOfficeCodes()
+    {
+        if (_session.IsAdmin)
+            return OfficeCodeCatalog.All.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (string.Equals(_session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            return TenantScopeCatalog.GetOfficeCodesForTenant(_session.TenantCode)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeYeonsu)
+        };
     }
 
     private async Task LoadCustomersAsync()

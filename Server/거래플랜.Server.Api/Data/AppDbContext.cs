@@ -26,6 +26,9 @@ public sealed class AppDbContext : DbContext
     public DbSet<UserAccount> Users => Set<UserAccount>();
     public DbSet<UserPermission> UserPermissions => Set<UserPermission>();
     public DbSet<CompanyProfile> CompanyProfiles => Set<CompanyProfile>();
+    public DbSet<TenantDefinition> TenantDefinitions => Set<TenantDefinition>();
+    public DbSet<TenantOfficeDefinition> TenantOfficeDefinitions => Set<TenantOfficeDefinition>();
+    public DbSet<DataSharingPolicy> DataSharingPolicies => Set<DataSharingPolicy>();
     public DbSet<Unit> Units => Set<Unit>();
     public DbSet<CustomerCategory> CustomerCategories => Set<CustomerCategory>();
     public DbSet<CustomerMaster> CustomerMasters => Set<CustomerMaster>();
@@ -49,6 +52,17 @@ public sealed class AppDbContext : DbContext
             .HasOne(x => x.User).WithMany(x => x.Permissions)
             .HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<UserAccount>().HasIndex(x => x.Username).IsUnique();
+        modelBuilder.Entity<UserAccount>().HasIndex(x => new { x.TenantCode, x.OfficeCode });
+        modelBuilder.Entity<TenantDefinition>().HasIndex(x => x.TenantCode).IsUnique();
+        modelBuilder.Entity<TenantOfficeDefinition>().HasIndex(x => x.OfficeCode).IsUnique();
+        modelBuilder.Entity<TenantOfficeDefinition>().HasIndex(x => new { x.TenantCode, x.OfficeCode }).IsUnique();
+        modelBuilder.Entity<DataSharingPolicy>().HasIndex(x => new
+        {
+            x.SourceTenantCode,
+            x.SourceOfficeCode,
+            x.TargetTenantCode,
+            x.TargetOfficeCode
+        });
 
         modelBuilder.Entity<Invoice>()
             .HasMany(x => x.Lines).WithOne(x => x.Invoice)
@@ -84,15 +98,19 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<ItemWarehouseStock>().Property(x => x.Quantity).HasPrecision(18, 2);
 
         modelBuilder.Entity<Customer>().HasIndex(x => x.NameMatchKey);
+        modelBuilder.Entity<Customer>().HasIndex(x => x.TenantCode);
         modelBuilder.Entity<Customer>().HasIndex(x => x.OfficeCode);
         modelBuilder.Entity<CustomerContract>().HasIndex(x => x.CustomerId);
         modelBuilder.Entity<CustomerContract>().HasIndex(x => new { x.CustomerId, x.IsPrimary });
         modelBuilder.Entity<CustomerMaster>().HasIndex(x => x.NameMatchKey);
+        modelBuilder.Entity<CustomerMaster>().HasIndex(x => x.TenantCode);
         modelBuilder.Entity<CustomerMaster>().HasIndex(x => x.OfficeCode);
         modelBuilder.Entity<Item>().HasIndex(x => x.NameMatchKey);
         modelBuilder.Entity<Item>().HasIndex(x => x.SpecificationMatchKey);
         modelBuilder.Entity<Item>().HasIndex(x => x.CategoryName);
+        modelBuilder.Entity<Item>().HasIndex(x => x.TenantCode);
         modelBuilder.Entity<Item>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<Invoice>().HasIndex(x => x.TenantCode);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.OfficeCode);
         modelBuilder.Entity<ItemWarehouseStock>().HasKey(x => new { x.ItemId, x.WarehouseCode });
         modelBuilder.Entity<ItemWarehouseStock>().HasIndex(x => x.WarehouseCode);
@@ -100,6 +118,9 @@ public sealed class AppDbContext : DbContext
 
         ApplySoftDeleteFilter<UserAccount>(modelBuilder);
         ApplySoftDeleteFilter<CompanyProfile>(modelBuilder);
+        ApplySoftDeleteFilter<TenantDefinition>(modelBuilder);
+        ApplySoftDeleteFilter<TenantOfficeDefinition>(modelBuilder);
+        ApplySoftDeleteFilter<DataSharingPolicy>(modelBuilder);
         ApplySoftDeleteFilter<Unit>(modelBuilder);
         ApplySoftDeleteFilter<CustomerCategory>(modelBuilder);
         ApplySoftDeleteFilter<CustomerMaster>(modelBuilder);

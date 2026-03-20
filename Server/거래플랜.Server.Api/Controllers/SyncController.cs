@@ -1,14 +1,14 @@
-ï»¿using System.Text.Json;
-using ê±°ëž˜í”Œëžœ.Server.Api.Data;
-using ê±°ëž˜í”Œëžœ.Server.Api.Domain;
-using ê±°ëž˜í”Œëžœ.Server.Api.Mappings;
-using ê±°ëž˜í”Œëžœ.Server.Api.Services;
-using ê±°ëž˜í”Œëžœ.Shared.Contracts;
+using System.Text.Json;
+using °Å·¡ÇÃ·£.Server.Api.Data;
+using °Å·¡ÇÃ·£.Server.Api.Domain;
+using °Å·¡ÇÃ·£.Server.Api.Mappings;
+using °Å·¡ÇÃ·£.Server.Api.Services;
+using °Å·¡ÇÃ·£.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace ê±°ëž˜í”Œëžœ.Server.Api.Controllers;
+namespace °Å·¡ÇÃ·£.Server.Api.Controllers;
 
 [ApiController]
 [Authorize]
@@ -165,7 +165,7 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (!_officeScopeService.CanWriteOffice(entity.OfficeCode))
+            if (!_officeScopeService.CanWriteOfficeForInvoices(entity.OfficeCode, entity.TenantCode))
             {
                 AddClientConflict(dto, nameof(Invoice), "Current account cannot modify this office scope.", result);
                 continue;
@@ -205,12 +205,13 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.CustomerMasters.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.CanWriteOffice(existing.OfficeCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForCustomers(existing.OfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(CustomerMaster), "Current account cannot modify this office scope.", result);
                 continue;
             }
 
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
             dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
             scoped.Add(dto);
         }
@@ -250,12 +251,13 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.Customers.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.CanWriteOffice(existing.OfficeCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForItems(existing.OfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(Customer), "Current account cannot modify this office scope.", result);
                 continue;
             }
 
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
             dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
             scoped.Add(dto);
         }
@@ -289,7 +291,7 @@ public sealed class SyncController : ControllerBase
                     continue;
                 }
 
-                if (!_officeScopeService.CanReadOffice(customerMaster.OfficeCode))
+                if (!_officeScopeService.CanReadOfficeForCustomers(customerMaster.OfficeCode, customerMaster.TenantCode))
                 {
                     AddClientConflict(dto, nameof(Customer),
                         $"Referenced customer master is outside the current office scope: {dto.CustomerMasterId}.", result);
@@ -314,12 +316,13 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.Items.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.CanWriteOffice(existing.OfficeCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForCustomers(existing.OfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(Item), "Current account cannot modify this office scope.", result);
                 continue;
             }
 
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
             dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
             scoped.Add(dto);
         }
@@ -343,7 +346,7 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (!_officeScopeService.CanReadOffice(customer.OfficeCode))
+            if (!_officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
             {
                 AddClientConflict(dto, nameof(Invoice),
                     $"Referenced customer is outside the readable office scope: {dto.CustomerId}.", result);
@@ -352,13 +355,18 @@ public sealed class SyncController : ControllerBase
 
             var existing = await _dbContext.Invoices.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.CanWriteOffice(existing.OfficeCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForInvoices(existing.OfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(Invoice),
                     "Current account cannot modify this office scope.", result);
                 continue;
             }
 
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
+                dto.TenantCode,
+                dto.OfficeCode,
+                existing?.TenantCode ?? customer.TenantCode,
+                existing?.OfficeCode ?? customer.OfficeCode);
             dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(
                 dto.OfficeCode,
                 existing?.OfficeCode ?? customer.OfficeCode);
@@ -379,7 +387,7 @@ public sealed class SyncController : ControllerBase
                 .Include(x => x.Customer)
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
 
-            if (existing?.Customer is not null && !_officeScopeService.CanWriteOffice(existing.Customer.OfficeCode))
+            if (existing?.Customer is not null && !_officeScopeService.CanWriteOfficeForContracts(existing.Customer.OfficeCode, existing.Customer.TenantCode))
             {
                 AddClientConflict(dto, nameof(CustomerContract),
                     "Current account cannot modify this office scope.", result);
@@ -397,7 +405,7 @@ public sealed class SyncController : ControllerBase
                     continue;
                 }
 
-                if (!_officeScopeService.CanWriteOffice(customer.OfficeCode))
+                if (!_officeScopeService.CanWriteOfficeForContracts(customer.OfficeCode, customer.TenantCode))
                 {
                     AddClientConflict(dto, nameof(CustomerContract),
                         $"Referenced customer is outside the writable office scope: {dto.CustomerId}.", result);
@@ -464,7 +472,7 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (!_officeScopeService.CanWriteOffice(invoice.OfficeCode))
+            if (!_officeScopeService.CanWriteOfficeForPayments(invoice.OfficeCode, invoice.TenantCode))
             {
                 AddClientConflict(dto, nameof(Payment),
                     $"Referenced invoice is outside the writable office scope: {dto.InvoiceId}.", result);
@@ -501,7 +509,7 @@ public sealed class SyncController : ControllerBase
         foreach (var itemId in groupedByItem.Keys)
         {
             var scopedItem = await _dbContext.Items.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == itemId, cancellationToken);
-            if (scopedItem is null || scopedItem.IsDeleted || !_officeScopeService.CanWriteOffice(scopedItem.OfficeCode))
+            if (scopedItem is null || scopedItem.IsDeleted || !_officeScopeService.CanWriteOfficeForItems(scopedItem.OfficeCode, scopedItem.TenantCode))
                 continue;
 
             var desiredCodes = groupedByItem[itemId]
@@ -518,7 +526,7 @@ public sealed class SyncController : ControllerBase
         foreach (var dto in sanitized)
         {
             var item = await _dbContext.Items.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == dto.ItemId, cancellationToken);
-            if (item is null || item.IsDeleted || !_officeScopeService.CanWriteOffice(item.OfficeCode) || !_officeScopeService.CanWriteWarehouse(dto.WarehouseCode))
+            if (item is null || item.IsDeleted || !_officeScopeService.CanWriteOfficeForItems(item.OfficeCode, item.TenantCode) || !_officeScopeService.CanWriteWarehouse(dto.WarehouseCode, item.OfficeCode))
                 continue;
             var entity = await _dbContext.ItemWarehouseStocks
                 .FirstOrDefaultAsync(x => x.ItemId == dto.ItemId && x.WarehouseCode == dto.WarehouseCode, cancellationToken);

@@ -49,12 +49,20 @@ public sealed class UsersController : ControllerBase
         if (!TryNormalizeOfficeCode(request.OfficeCode, out var normalizedOfficeCode))
             return BadRequest("OfficeCode must be one of USENET, ITWORLD, YEONSU.");
 
+        var normalizedTenantCode = NormalizeTenantCode(request.TenantCode, normalizedOfficeCode);
+        if (!TenantScopeCatalog.TenantContainsOffice(normalizedTenantCode, normalizedOfficeCode))
+            return BadRequest("TenantCode and OfficeCode are not compatible.");
+
+        var normalizedScopeType = NormalizeScopeType(request.ScopeType, request.Role);
+
         var user = new UserAccount
         {
             Username = username,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
             Role = NormalizeRole(request.Role),
+            TenantCode = normalizedTenantCode,
             OfficeCode = normalizedOfficeCode,
+            ScopeType = normalizedScopeType,
             IsActive = request.IsActive
         };
 
@@ -90,9 +98,17 @@ public sealed class UsersController : ControllerBase
         if (!TryNormalizeOfficeCode(request.OfficeCode, out var normalizedOfficeCode))
             return BadRequest("OfficeCode must be one of USENET, ITWORLD, YEONSU.");
 
+        var normalizedTenantCode = NormalizeTenantCode(request.TenantCode, normalizedOfficeCode);
+        if (!TenantScopeCatalog.TenantContainsOffice(normalizedTenantCode, normalizedOfficeCode))
+            return BadRequest("TenantCode and OfficeCode are not compatible.");
+
+        var normalizedScopeType = NormalizeScopeType(request.ScopeType, request.Role);
+
         user.Username = username;
         user.Role = NormalizeRole(request.Role);
+        user.TenantCode = normalizedTenantCode;
         user.OfficeCode = normalizedOfficeCode;
+        user.ScopeType = normalizedScopeType;
         user.IsActive = request.IsActive;
         ApplyPermissions(user, request.Permissions);
 
@@ -162,6 +178,14 @@ public sealed class UsersController : ControllerBase
 
     private static bool TryNormalizeOfficeCode(string? officeCode, out string normalized)
         => OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out normalized);
+
+    private static string NormalizeTenantCode(string? tenantCode, string officeCode)
+        => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode);
+
+    private static string NormalizeScopeType(string? scopeType, string? role)
+        => string.Equals(role, "admin", StringComparison.OrdinalIgnoreCase)
+            ? TenantScopeCatalog.ScopeAdmin
+            : TenantScopeCatalog.NormalizeScopeTypeOrDefault(scopeType, TenantScopeCatalog.ScopeOfficeOnly);
 
     private void ApplyPermissions(UserAccount user, IEnumerable<string> permissions)
     {

@@ -10,6 +10,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Npgsql;
 
 namespace 거래플랜.Server.Api.Data;
 
@@ -24,21 +25,25 @@ public static class DbInitializer
         var loggerFactory = scope.ServiceProvider.GetRequiredService<ILoggerFactory>();
         var logger = loggerFactory.CreateLogger(typeof(DbInitializer).FullName ?? nameof(DbInitializer));
         var seedUsersOptions = scope.ServiceProvider.GetRequiredService<IOptions<SeedUsersOptions>>().Value;
+        var connectionResolver = scope.ServiceProvider.GetRequiredService<ITenantDatabaseConnectionResolver>();
 
-        await EnsureDatabaseSchemaAsync(dbContext, cancellationToken);
+        await EnsureBusinessDatabaseSchemaAsync(dbContext, cancellationToken);
 
-        await EnsureCustomerContractsTableAsync(dbContext, cancellationToken);
-        await EnsurePaymentAttachmentsTableAsync(dbContext, cancellationToken);
-        await EnsureItemWarehouseStocksTableAsync(dbContext, cancellationToken);
-        await EnsureCustomerTradeTypeColumnAsync(dbContext, cancellationToken);
-        await EnsureUserOfficeCodeColumnAsync(dbContext, cancellationToken);
-        await EnsureItemCatalogColumnsAsync(dbContext, cancellationToken);
-        await EnsureCustomerMasterOfficeCodeColumnAsync(dbContext, cancellationToken);
-        await EnsureCustomerOfficeCodeColumnAsync(dbContext, cancellationToken);
-        await EnsureItemOfficeCodeColumnAsync(dbContext, cancellationToken);
-        await EnsureInvoiceOfficeCodeColumnAsync(dbContext, cancellationToken);
+        var dedicatedBusinessConnections = connectionResolver.GetDedicatedBusinessConnections();
+        foreach (var connectionInfo in dedicatedBusinessConnections)
+        {
+            await EnsureDedicatedBusinessDatabaseExistsAsync(connectionInfo, logger, cancellationToken);
+            await using var tenantDbContext = CreateDbContext(connectionInfo, revisionClock);
+            await EnsureBusinessDatabaseSchemaAsync(tenantDbContext, cancellationToken);
+        }
 
         var maxRevision = await GetMaxRevisionAsync(dbContext, cancellationToken);
+        foreach (var connectionInfo in dedicatedBusinessConnections)
+        {
+            await using var tenantDbContext = CreateDbContext(connectionInfo, revisionClock);
+            maxRevision = Math.Max(maxRevision, await GetMaxRevisionAsync(tenantDbContext, cancellationToken));
+        }
+
         revisionClock.Initialize(maxRevision);
 
         if (seedUsersOptions.EnableSeedUsers)
@@ -51,7 +56,9 @@ public static class DbInitializer
                 username: "admin",
                 password: seedUsersOptions.AdminPassword,
                 role: "Admin",
+                tenantCode: TenantScopeCatalog.UsenetGroup,
                 officeCode: OfficeCodeCatalog.Usenet,
+                scopeType: TenantScopeCatalog.ScopeAdmin,
                 grantAllPermissions: true,
                 updatePasswordIfExists: false,
                 cancellationToken);
@@ -62,7 +69,9 @@ public static class DbInitializer
                 username: "user",
                 password: seedUsersOptions.UserPassword,
                 role: "User",
+                tenantCode: TenantScopeCatalog.UsenetGroup,
                 officeCode: OfficeCodeCatalog.Yeonsu,
+                scopeType: TenantScopeCatalog.ScopeOfficeOnly,
                 grantAllPermissions: false,
                 updatePasswordIfExists: false,
                 cancellationToken);
@@ -73,7 +82,9 @@ public static class DbInitializer
                 username: "itw",
                 password: seedUsersOptions.ItwPassword,
                 role: "User",
+                tenantCode: TenantScopeCatalog.Itworld,
                 officeCode: OfficeCodeCatalog.Itworld,
+                scopeType: TenantScopeCatalog.ScopeTenantAll,
                 grantAllPermissions: false,
                 updatePasswordIfExists: seedUsersOptions.UpdateExistingItwPassword,
                 cancellationToken);
@@ -83,6 +94,50 @@ public static class DbInitializer
             logger.LogInformation("Seed user creation is disabled by configuration.");
         }
 
+        await EnsureReferenceDataAsync(dbContext, cancellationToken);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        foreach (var connectionInfo in dedicatedBusinessConnections)
+        {
+            await using var tenantDbContext = CreateDbContext(connectionInfo, revisionClock);
+            await SyncTenantConfigurationAsync(dbContext, tenantDbContext, cancellationToken);
+            await EnsureReferenceDataAsync(tenantDbContext, cancellationToken);
+            await tenantDbContext.SaveChangesAsync(cancellationToken);
+            logger.LogInformation("Dedicated business database initialized for tenant {TenantCode}.", connectionInfo.TenantCode);
+        }
+    }
+
+    private static async Task EnsureBusinessDatabaseSchemaAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureDatabaseSchemaAsync(dbContext, cancellationToken);
+
+        await EnsureCustomerContractsTableAsync(dbContext, cancellationToken);
+        await EnsurePaymentAttachmentsTableAsync(dbContext, cancellationToken);
+        await EnsureItemWarehouseStocksTableAsync(dbContext, cancellationToken);
+        await EnsureCustomerTradeTypeColumnAsync(dbContext, cancellationToken);
+        await EnsureUserOfficeCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureUserTenantScopeColumnsAsync(dbContext, cancellationToken);
+        await EnsureTenantDefinitionsTableAsync(dbContext, cancellationToken);
+        await EnsureTenantOfficeDefinitionsTableAsync(dbContext, cancellationToken);
+        await EnsureDataSharingPoliciesTableAsync(dbContext, cancellationToken);
+        await EnsureItemCatalogColumnsAsync(dbContext, cancellationToken);
+        await EnsureCustomerMasterOfficeCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureCustomerMasterTenantCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureCustomerOfficeCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureCustomerTenantCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureItemOfficeCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureItemTenantCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureInvoiceOfficeCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureInvoiceTenantCodeColumnAsync(dbContext, cancellationToken);
+    }
+
+    private static async Task EnsureReferenceDataAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureDefaultTenantConfigurationAsync(dbContext, cancellationToken);
         await EnsureDefaultCustomerCategoriesAsync(dbContext, cancellationToken);
 
         if (!await dbContext.Units.IgnoreQueryFilters().AnyAsync(cancellationToken))
@@ -110,8 +165,138 @@ public static class DbInitializer
                 BankAccountText = "입금용 계좌번호를 입력하세요."
             });
         }
+    }
 
-        await dbContext.SaveChangesAsync(cancellationToken);
+    private static async Task SyncTenantConfigurationAsync(
+        AppDbContext sourceDbContext,
+        AppDbContext targetDbContext,
+        CancellationToken cancellationToken)
+    {
+        var tenantDefinitions = await sourceDbContext.TenantDefinitions.IgnoreQueryFilters().AsNoTracking().ToListAsync(cancellationToken);
+        var targetTenantDefinitions = await targetDbContext.TenantDefinitions.IgnoreQueryFilters().ToListAsync(cancellationToken);
+        foreach (var source in tenantDefinitions)
+        {
+            var target = targetTenantDefinitions.FirstOrDefault(current =>
+                string.Equals(current.TenantCode, source.TenantCode, StringComparison.OrdinalIgnoreCase));
+            if (target is null)
+            {
+                target = new TenantDefinition();
+                targetDbContext.TenantDefinitions.Add(target);
+                targetTenantDefinitions.Add(target);
+            }
+
+            target.TenantCode = source.TenantCode;
+            target.DisplayName = source.DisplayName;
+            target.StorageMode = source.StorageMode;
+            target.Description = source.Description;
+            target.IsActive = source.IsActive;
+            target.IsDeleted = source.IsDeleted;
+        }
+
+        var officeDefinitions = await sourceDbContext.TenantOfficeDefinitions.IgnoreQueryFilters().AsNoTracking().ToListAsync(cancellationToken);
+        var targetOfficeDefinitions = await targetDbContext.TenantOfficeDefinitions.IgnoreQueryFilters().ToListAsync(cancellationToken);
+        foreach (var source in officeDefinitions)
+        {
+            var target = targetOfficeDefinitions.FirstOrDefault(current =>
+                string.Equals(current.OfficeCode, source.OfficeCode, StringComparison.OrdinalIgnoreCase));
+            if (target is null)
+            {
+                target = new TenantOfficeDefinition();
+                targetDbContext.TenantOfficeDefinitions.Add(target);
+                targetOfficeDefinitions.Add(target);
+            }
+
+            target.TenantCode = source.TenantCode;
+            target.OfficeCode = source.OfficeCode;
+            target.DisplayName = source.DisplayName;
+            target.IsHeadOffice = source.IsHeadOffice;
+            target.IsActive = source.IsActive;
+            target.IsDeleted = source.IsDeleted;
+        }
+
+        var sharingPolicies = await sourceDbContext.DataSharingPolicies.IgnoreQueryFilters().AsNoTracking().ToListAsync(cancellationToken);
+        var targetSharingPolicies = await targetDbContext.DataSharingPolicies.IgnoreQueryFilters().ToListAsync(cancellationToken);
+        foreach (var source in sharingPolicies)
+        {
+            var target = targetSharingPolicies.FirstOrDefault(current => current.Id == source.Id);
+            if (target is null)
+            {
+                target = new DataSharingPolicy { Id = source.Id };
+                targetDbContext.DataSharingPolicies.Add(target);
+                targetSharingPolicies.Add(target);
+            }
+
+            target.SourceTenantCode = source.SourceTenantCode;
+            target.SourceOfficeCode = source.SourceOfficeCode;
+            target.TargetTenantCode = source.TargetTenantCode;
+            target.TargetOfficeCode = source.TargetOfficeCode;
+            target.ShareCustomers = source.ShareCustomers;
+            target.ShareItems = source.ShareItems;
+            target.ShareInvoices = source.ShareInvoices;
+            target.SharePayments = source.SharePayments;
+            target.ShareContracts = source.ShareContracts;
+            target.ShareReports = source.ShareReports;
+            target.ShareRentals = source.ShareRentals;
+            target.ShareDeliveries = source.ShareDeliveries;
+            target.AllowTargetWrite = source.AllowTargetWrite;
+            target.Note = source.Note;
+            target.IsActive = source.IsActive;
+            target.IsDeleted = source.IsDeleted;
+        }
+    }
+
+    private static AppDbContext CreateDbContext(TenantDatabaseConnectionInfo connectionInfo, RevisionClock revisionClock)
+    {
+        var optionsBuilder = new DbContextOptionsBuilder<AppDbContext>();
+        if (connectionInfo.UseSqlite)
+        {
+            optionsBuilder.UseSqlite(connectionInfo.ConnectionString);
+        }
+        else
+        {
+            optionsBuilder.UseNpgsql(connectionInfo.ConnectionString);
+        }
+
+        return new AppDbContext(optionsBuilder.Options, SystemCurrentUserContext.Instance, revisionClock);
+    }
+
+    private static async Task EnsureDedicatedBusinessDatabaseExistsAsync(
+        TenantDatabaseConnectionInfo connectionInfo,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        if (connectionInfo.UseSqlite || !connectionInfo.IsDedicatedBusinessDatabase)
+            return;
+
+        var targetBuilder = new NpgsqlConnectionStringBuilder(connectionInfo.ConnectionString);
+        var targetDatabaseName = targetBuilder.Database?.Trim();
+        if (string.IsNullOrWhiteSpace(targetDatabaseName))
+            return;
+
+        var adminBuilder = new NpgsqlConnectionStringBuilder(connectionInfo.ConnectionString)
+        {
+            Database = "postgres"
+        };
+
+        await using var connection = new NpgsqlConnection(adminBuilder.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var existsCommand = connection.CreateCommand();
+        existsCommand.CommandText = "SELECT 1 FROM pg_database WHERE datname = @databaseName";
+        existsCommand.Parameters.AddWithValue("databaseName", targetDatabaseName);
+        var exists = await existsCommand.ExecuteScalarAsync(cancellationToken) is not null;
+        if (exists)
+            return;
+
+        var escapedDatabaseName = targetDatabaseName.Replace("\"", "\"\"");
+        await using var createCommand = connection.CreateCommand();
+        createCommand.CommandText = $"CREATE DATABASE \"{escapedDatabaseName}\"";
+        await createCommand.ExecuteNonQueryAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Created dedicated business database {DatabaseName} for tenant {TenantCode}.",
+            targetDatabaseName,
+            connectionInfo.TenantCode);
     }
 
     private static async Task EnsureDatabaseSchemaAsync(
@@ -174,6 +359,258 @@ public static class DbInitializer
         }
     }
 
+    private static async Task EnsureTenantDefinitionsTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "TenantDefinitions" (
+                        "Id" TEXT NOT NULL PRIMARY KEY,
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0,
+                        "TenantCode" TEXT NOT NULL,
+                        "DisplayName" TEXT NOT NULL DEFAULT '',
+                        "StorageMode" TEXT NOT NULL DEFAULT 'SharedBusinessDatabase',
+                        "Description" TEXT NOT NULL DEFAULT '',
+                        "IsActive" INTEGER NOT NULL DEFAULT 1
+                    );
+                    """,
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_TenantDefinitions_TenantCode\" ON \"TenantDefinitions\" (\"TenantCode\");",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "TenantDefinitions" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "IsDeleted" boolean NOT NULL DEFAULT FALSE,
+                        "CreatedAtUtc" timestamptz NOT NULL,
+                        "UpdatedAtUtc" timestamptz NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0,
+                        "TenantCode" text NOT NULL,
+                        "DisplayName" text NOT NULL DEFAULT '',
+                        "StorageMode" text NOT NULL DEFAULT 'SharedBusinessDatabase',
+                        "Description" text NOT NULL DEFAULT '',
+                        "IsActive" boolean NOT NULL DEFAULT TRUE
+                    );
+                    """,
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_TenantDefinitions_TenantCode\" ON \"TenantDefinitions\" (\"TenantCode\");",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+            // Table may already exist or provider may not support IF NOT EXISTS in the same way.
+        }
+    }
+
+    private static async Task EnsureTenantOfficeDefinitionsTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "TenantOfficeDefinitions" (
+                        "Id" TEXT NOT NULL PRIMARY KEY,
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0,
+                        "TenantCode" TEXT NOT NULL,
+                        "OfficeCode" TEXT NOT NULL,
+                        "DisplayName" TEXT NOT NULL DEFAULT '',
+                        "IsHeadOffice" INTEGER NOT NULL DEFAULT 0,
+                        "IsActive" INTEGER NOT NULL DEFAULT 1
+                    );
+                    """,
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_TenantOfficeDefinitions_OfficeCode\" ON \"TenantOfficeDefinitions\" (\"OfficeCode\");",
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_TenantOfficeDefinitions_TenantCode_OfficeCode\" ON \"TenantOfficeDefinitions\" (\"TenantCode\", \"OfficeCode\");",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "TenantOfficeDefinitions" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "IsDeleted" boolean NOT NULL DEFAULT FALSE,
+                        "CreatedAtUtc" timestamptz NOT NULL,
+                        "UpdatedAtUtc" timestamptz NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0,
+                        "TenantCode" text NOT NULL,
+                        "OfficeCode" text NOT NULL,
+                        "DisplayName" text NOT NULL DEFAULT '',
+                        "IsHeadOffice" boolean NOT NULL DEFAULT FALSE,
+                        "IsActive" boolean NOT NULL DEFAULT TRUE
+                    );
+                    """,
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_TenantOfficeDefinitions_OfficeCode\" ON \"TenantOfficeDefinitions\" (\"OfficeCode\");",
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_TenantOfficeDefinitions_TenantCode_OfficeCode\" ON \"TenantOfficeDefinitions\" (\"TenantCode\", \"OfficeCode\");",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+            // Table may already exist or provider may not support IF NOT EXISTS in the same way.
+        }
+    }
+
+    private static async Task EnsureDataSharingPoliciesTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "DataSharingPolicies" (
+                        "Id" TEXT NOT NULL PRIMARY KEY,
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0,
+                        "SourceTenantCode" TEXT NOT NULL,
+                        "SourceOfficeCode" TEXT NOT NULL,
+                        "TargetTenantCode" TEXT NOT NULL,
+                        "TargetOfficeCode" TEXT NOT NULL,
+                        "ShareCustomers" INTEGER NOT NULL DEFAULT 1,
+                        "ShareItems" INTEGER NOT NULL DEFAULT 0,
+                        "ShareInvoices" INTEGER NOT NULL DEFAULT 1,
+                        "SharePayments" INTEGER NOT NULL DEFAULT 1,
+                        "ShareContracts" INTEGER NOT NULL DEFAULT 1,
+                        "ShareReports" INTEGER NOT NULL DEFAULT 1,
+                        "ShareRentals" INTEGER NOT NULL DEFAULT 1,
+                        "ShareDeliveries" INTEGER NOT NULL DEFAULT 1,
+                        "AllowTargetWrite" INTEGER NOT NULL DEFAULT 0,
+                        "Note" TEXT NOT NULL DEFAULT '',
+                        "IsActive" INTEGER NOT NULL DEFAULT 1
+                    );
+                    """,
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE INDEX IF NOT EXISTS "IX_DataSharingPolicies_SourceTarget"
+                    ON "DataSharingPolicies" ("SourceTenantCode", "SourceOfficeCode", "TargetTenantCode", "TargetOfficeCode");
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "DataSharingPolicies" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "IsDeleted" boolean NOT NULL DEFAULT FALSE,
+                        "CreatedAtUtc" timestamptz NOT NULL,
+                        "UpdatedAtUtc" timestamptz NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0,
+                        "SourceTenantCode" text NOT NULL,
+                        "SourceOfficeCode" text NOT NULL,
+                        "TargetTenantCode" text NOT NULL,
+                        "TargetOfficeCode" text NOT NULL,
+                        "ShareCustomers" boolean NOT NULL DEFAULT TRUE,
+                        "ShareItems" boolean NOT NULL DEFAULT FALSE,
+                        "ShareInvoices" boolean NOT NULL DEFAULT TRUE,
+                        "SharePayments" boolean NOT NULL DEFAULT TRUE,
+                        "ShareContracts" boolean NOT NULL DEFAULT TRUE,
+                        "ShareReports" boolean NOT NULL DEFAULT TRUE,
+                        "ShareRentals" boolean NOT NULL DEFAULT TRUE,
+                        "ShareDeliveries" boolean NOT NULL DEFAULT TRUE,
+                        "AllowTargetWrite" boolean NOT NULL DEFAULT FALSE,
+                        "Note" text NOT NULL DEFAULT '',
+                        "IsActive" boolean NOT NULL DEFAULT TRUE
+                    );
+                    """,
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE INDEX IF NOT EXISTS "IX_DataSharingPolicies_SourceTarget"
+                    ON "DataSharingPolicies" ("SourceTenantCode", "SourceOfficeCode", "TargetTenantCode", "TargetOfficeCode");
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+            // Table may already exist or provider may not support IF NOT EXISTS in the same way.
+        }
+    }
+
+    private static async Task EnsureDefaultTenantConfigurationAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await UpsertTenantDefinitionAsync(
+            dbContext,
+            tenantCode: TenantScopeCatalog.UsenetGroup,
+            displayName: "USENET / 연수구",
+            storageMode: TenantScopeCatalog.StorageSharedDatabase,
+            description: "유즈넷과 연수구는 같은 업체 권역/공용 업무 DB를 사용합니다.",
+            cancellationToken);
+
+        await UpsertTenantDefinitionAsync(
+            dbContext,
+            tenantCode: TenantScopeCatalog.Itworld,
+            displayName: "ITWORLD",
+            storageMode: TenantScopeCatalog.StorageDedicatedDatabase,
+            description: "아이티월드는 별도 업체 권역으로 분리해 운영합니다.",
+            cancellationToken);
+
+        await UpsertTenantOfficeDefinitionAsync(dbContext, TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet, "유즈넷", true, cancellationToken);
+        await UpsertTenantOfficeDefinitionAsync(dbContext, TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Yeonsu, "연수구", false, cancellationToken);
+        await UpsertTenantOfficeDefinitionAsync(dbContext, TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld, "아이티월드", true, cancellationToken);
+
+        await UpsertDataSharingPolicyAsync(
+            dbContext,
+            sourceTenantCode: TenantScopeCatalog.UsenetGroup,
+            sourceOfficeCode: OfficeCodeCatalog.Yeonsu,
+            targetTenantCode: TenantScopeCatalog.UsenetGroup,
+            targetOfficeCode: OfficeCodeCatalog.Usenet,
+            shareCustomers: true,
+            shareItems: true,
+            shareInvoices: true,
+            sharePayments: true,
+            shareContracts: true,
+            shareReports: true,
+            shareRentals: true,
+            shareDeliveries: true,
+            allowTargetWrite: false,
+            note: "연수구에서 등록/수정한 데이터는 유즈넷 상급권한 계정에서 조회할 수 있습니다.",
+            cancellationToken);
+    }
+
     private static async Task EnsureCustomerTradeTypeColumnAsync(
         AppDbContext dbContext,
         CancellationToken cancellationToken)
@@ -226,6 +663,9 @@ public static class DbInitializer
         {
             await dbContext.Users.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.CompanyProfiles.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.TenantDefinitions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.TenantOfficeDefinitions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.DataSharingPolicies.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Units.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.CustomerCategories.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.CustomerMasters.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
@@ -296,6 +736,70 @@ public static class DbInitializer
         }
     }
 
+    private static async Task EnsureUserTenantScopeColumnsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"Users\" ADD COLUMN \"TenantCode\" TEXT NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}';",
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"Users\" ADD COLUMN \"ScopeType\" TEXT NOT NULL DEFAULT '{TenantScopeCatalog.ScopeOfficeOnly}';",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"TenantCode\" text NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}';",
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"ScopeType\" text NOT NULL DEFAULT '{TenantScopeCatalog.ScopeOfficeOnly}';",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                $"""
+                UPDATE "Users"
+                SET "TenantCode" = CASE
+                    WHEN UPPER(TRIM(COALESCE("OfficeCode", ''))) = '{OfficeCodeCatalog.Itworld}' THEN '{TenantScopeCatalog.Itworld}'
+                    ELSE '{TenantScopeCatalog.UsenetGroup}'
+                END,
+                    "ScopeType" = CASE
+                    WHEN LOWER(COALESCE(TRIM("Role"), '')) = 'admin' THEN '{TenantScopeCatalog.ScopeAdmin}'
+                    WHEN UPPER(TRIM(COALESCE("OfficeCode", ''))) = '{OfficeCodeCatalog.Itworld}' THEN '{TenantScopeCatalog.ScopeTenantAll}'
+                    WHEN UPPER(TRIM(COALESCE("OfficeCode", ''))) = '{OfficeCodeCatalog.Usenet}' THEN '{TenantScopeCatalog.ScopeTenantAll}'
+                    ELSE '{TenantScopeCatalog.ScopeOfficeOnly}'
+                END;
+                """,
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_Users_TenantCode_OfficeCode\" ON \"Users\" (\"TenantCode\", \"OfficeCode\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
     private static async Task EnsureCustomerMasterOfficeCodeColumnAsync(
         AppDbContext dbContext,
         CancellationToken cancellationToken)
@@ -304,6 +808,17 @@ public static class DbInitializer
             dbContext,
             tableName: "CustomerMasters",
             indexName: "IX_CustomerMasters_OfficeCode",
+            cancellationToken);
+    }
+
+    private static async Task EnsureCustomerMasterTenantCodeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureTenantScopeColumnAsync(
+            dbContext,
+            tableName: "CustomerMasters",
+            indexName: "IX_CustomerMasters_TenantCode",
             cancellationToken);
     }
 
@@ -318,6 +833,17 @@ public static class DbInitializer
             cancellationToken);
     }
 
+    private static async Task EnsureCustomerTenantCodeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureTenantScopeColumnAsync(
+            dbContext,
+            tableName: "Customers",
+            indexName: "IX_Customers_TenantCode",
+            cancellationToken);
+    }
+
     private static async Task EnsureItemOfficeCodeColumnAsync(
         AppDbContext dbContext,
         CancellationToken cancellationToken)
@@ -326,6 +852,17 @@ public static class DbInitializer
             dbContext,
             tableName: "Items",
             indexName: "IX_Items_OfficeCode",
+            cancellationToken);
+    }
+
+    private static async Task EnsureItemTenantCodeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureTenantScopeColumnAsync(
+            dbContext,
+            tableName: "Items",
+            indexName: "IX_Items_TenantCode",
             cancellationToken);
     }
 
@@ -438,6 +975,58 @@ public static class DbInitializer
 #pragma warning restore EF1002
     }
 
+    private static async Task EnsureInvoiceTenantCodeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"Invoices\" ADD COLUMN \"TenantCode\" TEXT NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}';",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"Invoices\" ADD COLUMN IF NOT EXISTS \"TenantCode\" text NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}';",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                $"""
+                UPDATE "Invoices"
+                SET "TenantCode" = CASE
+                    WHEN UPPER(TRIM(COALESCE("OfficeCode", ''))) = '{OfficeCodeCatalog.Itworld}' THEN '{TenantScopeCatalog.Itworld}'
+                    ELSE '{TenantScopeCatalog.UsenetGroup}'
+                END;
+                """,
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_Invoices_TenantCode\" ON \"Invoices\" (\"TenantCode\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
     private static async Task EnsureOfficeScopeColumnAsync(
         AppDbContext dbContext,
         string tableName,
@@ -490,6 +1079,62 @@ public static class DbInitializer
         {
             await dbContext.Database.ExecuteSqlRawAsync(
                 $"CREATE INDEX IF NOT EXISTS \"{indexName}\" ON \"{tableName}\" (\"OfficeCode\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+#pragma warning restore EF1002
+    }
+
+    private static async Task EnsureTenantScopeColumnAsync(
+        AppDbContext dbContext,
+        string tableName,
+        string indexName,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+#pragma warning disable EF1002
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"{tableName}\" ADD COLUMN \"TenantCode\" TEXT NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}';",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS \"TenantCode\" text NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}';",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                $"""
+                UPDATE "{tableName}"
+                SET "TenantCode" = CASE
+                    WHEN UPPER(TRIM(COALESCE("OfficeCode", ''))) = '{OfficeCodeCatalog.Itworld}' THEN '{TenantScopeCatalog.Itworld}'
+                    ELSE '{TenantScopeCatalog.UsenetGroup}'
+                END;
+                """,
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                $"CREATE INDEX IF NOT EXISTS \"{indexName}\" ON \"{tableName}\" (\"TenantCode\");",
                 cancellationToken);
         }
         catch
@@ -796,13 +1441,144 @@ public static class DbInitializer
         PermissionNames.RentalImport
     ];
 
+    private static async Task UpsertTenantDefinitionAsync(
+        AppDbContext dbContext,
+        string tenantCode,
+        string displayName,
+        string storageMode,
+        string description,
+        CancellationToken cancellationToken)
+    {
+        var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode);
+        var normalizedStorageMode = TenantScopeCatalog.NormalizeStorageModeOrDefault(storageMode);
+        var entity = dbContext.TenantDefinitions.Local.FirstOrDefault(current =>
+                         string.Equals(current.TenantCode, normalizedTenantCode, StringComparison.OrdinalIgnoreCase))
+                     ?? await dbContext.TenantDefinitions.IgnoreQueryFilters()
+                         .FirstOrDefaultAsync(current => current.TenantCode == normalizedTenantCode, cancellationToken);
+
+        if (entity is null)
+        {
+            entity = new TenantDefinition
+            {
+                TenantCode = normalizedTenantCode
+            };
+            dbContext.TenantDefinitions.Add(entity);
+        }
+
+        entity.DisplayName = string.IsNullOrWhiteSpace(displayName)
+            ? TenantScopeCatalog.GetTenantDisplayName(normalizedTenantCode)
+            : displayName.Trim();
+        entity.StorageMode = normalizedStorageMode;
+        entity.Description = description?.Trim() ?? string.Empty;
+        entity.IsActive = true;
+        entity.IsDeleted = false;
+        entity.UpdatedAtUtc = DateTime.UtcNow;
+    }
+
+    private static async Task UpsertTenantOfficeDefinitionAsync(
+        AppDbContext dbContext,
+        string tenantCode,
+        string officeCode,
+        string displayName,
+        bool isHeadOffice,
+        CancellationToken cancellationToken)
+    {
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode);
+        var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, normalizedOfficeCode);
+        var entity = dbContext.TenantOfficeDefinitions.Local.FirstOrDefault(current =>
+                         string.Equals(current.OfficeCode, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                     ?? await dbContext.TenantOfficeDefinitions.IgnoreQueryFilters()
+                         .FirstOrDefaultAsync(current => current.OfficeCode == normalizedOfficeCode, cancellationToken);
+
+        if (entity is null)
+        {
+            entity = new TenantOfficeDefinition
+            {
+                OfficeCode = normalizedOfficeCode
+            };
+            dbContext.TenantOfficeDefinitions.Add(entity);
+        }
+
+        entity.TenantCode = normalizedTenantCode;
+        entity.DisplayName = string.IsNullOrWhiteSpace(displayName)
+            ? OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode)
+            : displayName.Trim();
+        entity.IsHeadOffice = isHeadOffice;
+        entity.IsActive = true;
+        entity.IsDeleted = false;
+        entity.UpdatedAtUtc = DateTime.UtcNow;
+    }
+
+    private static async Task UpsertDataSharingPolicyAsync(
+        AppDbContext dbContext,
+        string sourceTenantCode,
+        string sourceOfficeCode,
+        string targetTenantCode,
+        string targetOfficeCode,
+        bool shareCustomers,
+        bool shareItems,
+        bool shareInvoices,
+        bool sharePayments,
+        bool shareContracts,
+        bool shareReports,
+        bool shareRentals,
+        bool shareDeliveries,
+        bool allowTargetWrite,
+        string note,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSourceOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(sourceOfficeCode);
+        var normalizedTargetOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(targetOfficeCode);
+        var normalizedSourceTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(sourceTenantCode, normalizedSourceOffice);
+        var normalizedTargetTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(targetTenantCode, normalizedTargetOffice);
+
+        var entity = dbContext.DataSharingPolicies.Local.FirstOrDefault(current =>
+                         string.Equals(current.SourceTenantCode, normalizedSourceTenant, StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(current.SourceOfficeCode, normalizedSourceOffice, StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(current.TargetTenantCode, normalizedTargetTenant, StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(current.TargetOfficeCode, normalizedTargetOffice, StringComparison.OrdinalIgnoreCase))
+                     ?? await dbContext.DataSharingPolicies.IgnoreQueryFilters()
+                         .FirstOrDefaultAsync(current =>
+                                 current.SourceTenantCode == normalizedSourceTenant &&
+                                 current.SourceOfficeCode == normalizedSourceOffice &&
+                                 current.TargetTenantCode == normalizedTargetTenant &&
+                                 current.TargetOfficeCode == normalizedTargetOffice,
+                             cancellationToken);
+
+        if (entity is null)
+        {
+            entity = new DataSharingPolicy();
+            dbContext.DataSharingPolicies.Add(entity);
+        }
+
+        entity.SourceTenantCode = normalizedSourceTenant;
+        entity.SourceOfficeCode = normalizedSourceOffice;
+        entity.TargetTenantCode = normalizedTargetTenant;
+        entity.TargetOfficeCode = normalizedTargetOffice;
+        entity.ShareCustomers = shareCustomers;
+        entity.ShareItems = shareItems;
+        entity.ShareInvoices = shareInvoices;
+        entity.SharePayments = sharePayments;
+        entity.ShareContracts = shareContracts;
+        entity.ShareReports = shareReports;
+        entity.ShareRentals = shareRentals;
+        entity.ShareDeliveries = shareDeliveries;
+        entity.AllowTargetWrite = allowTargetWrite;
+        entity.Note = note?.Trim() ?? string.Empty;
+        entity.IsActive = true;
+        entity.IsDeleted = false;
+        entity.UpdatedAtUtc = DateTime.UtcNow;
+    }
+
     private static async Task EnsureSeedUserAsync(
         AppDbContext dbContext,
         ILogger logger,
         string username,
         string? password,
         string role,
+        string tenantCode,
         string officeCode,
+        string scopeType,
         bool grantAllPermissions,
         bool updatePasswordIfExists,
         CancellationToken cancellationToken)
@@ -832,7 +1608,9 @@ public static class DbInitializer
                 Username = normalizedUsername,
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword(normalizedPassword),
                 Role = role,
+                TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode),
                 OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode),
+                ScopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(scopeType),
                 IsActive = true,
                 IsDeleted = false
             };
@@ -844,7 +1622,9 @@ public static class DbInitializer
                 user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(normalizedPassword);
 
             user.Role = role;
+            user.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode);
             user.OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode);
+            user.ScopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(scopeType);
             user.IsActive = true;
             user.IsDeleted = false;
             user.UpdatedAtUtc = DateTime.UtcNow;
@@ -1011,5 +1791,18 @@ public static class DbInitializer
         category.Name = normalizedName;
         category.IsSystemDefault = category.IsSystemDefault || isSystemDefault;
         category.IsDeleted = false;
+    }
+
+    private sealed class SystemCurrentUserContext : ICurrentUserContext
+    {
+        public static SystemCurrentUserContext Instance { get; } = new();
+
+        public Guid? UserId => null;
+        public string Username => "system";
+        public string TenantCode => TenantScopeCatalog.UsenetGroup;
+        public string OfficeCode => OfficeCodeCatalog.Usenet;
+        public string ScopeType => TenantScopeCatalog.ScopeAdmin;
+        public bool IsAdmin => true;
+        public bool HasPermission(string permission) => true;
     }
 }

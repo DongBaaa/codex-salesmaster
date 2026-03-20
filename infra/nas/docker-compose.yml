@@ -31,6 +31,7 @@ services:
       TZ: ${TZ:-Asia/Seoul}
       Database__EnableSqliteFallback: false
       ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DB:-georaeplan};Username=${POSTGRES_USER:-georaeplan};Password=${POSTGRES_PASSWORD}
+      ConnectionStrings__ITWORLD: Host=postgres;Port=5432;Database=${ITWORLD_POSTGRES_DB:-georaeplan_itworld};Username=${POSTGRES_USER:-georaeplan};Password=${POSTGRES_PASSWORD}
       Jwt__Issuer: ${JWT_ISSUER:-georaeplan}
       Jwt__Audience: ${JWT_AUDIENCE:-georaeplan-client}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:?set in .env}

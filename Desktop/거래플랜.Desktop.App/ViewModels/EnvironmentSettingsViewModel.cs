@@ -64,6 +64,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [ObservableProperty] private Guid _editingUserId;
     [ObservableProperty] private string _editingUsername = string.Empty;
     [ObservableProperty] private string _editingUserRole = "User";
+    [ObservableProperty] private string _editingUserTenantCode = TenantScopeCatalog.UsenetGroup;
     [ObservableProperty] private bool _editingUserIsActive = true;
     [ObservableProperty] private string _editingUserCompanyProfileId = string.Empty;
     [ObservableProperty] private string _editingPassword = string.Empty;
@@ -76,6 +77,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     public ObservableCollection<DisplayOption> CompanyProfileOptions { get; } = new();
 
     public bool CanManageUsers => _session.IsAdmin && !_session.IsOfflineMode;
+    public bool CanManageTenantConfiguration => _session.IsAdmin && !_session.IsOfflineMode;
     public bool CanManageSelectionOptions => _session.IsAdmin;
     public bool CanEditCompanyProfiles => _session.IsAdmin;
     public bool CanEditOfficeCode => false;
@@ -90,15 +92,21 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         ? "관리자 계정은 회사설정을 추가/수정/삭제할 수 있습니다."
         : "일반 사용자는 회사설정을 추가/수정/삭제할 수 없고, 기존 회사설정만 선택해 사용할 수 있습니다.";
 
-    public EnvironmentSettingsViewModel(LocalStateService local, SessionState session, ErpApiClient api)
+    public EnvironmentSettingsViewModel(
+        LocalStateService local,
+        SessionState session,
+        ErpApiClient api,
+        Func<Task>? applyBusinessDatabaseChangeAsync = null)
     {
         _local = local;
         _session = session;
         _api = api;
         _legacyMigrationService = new LegacyDataMigrationService(local);
         _updateService = new DesktopAppUpdateService(api);
+        _applyBusinessDatabaseChangeAsync = applyBusinessDatabaseChangeAsync;
         InitializeRecycleBinTypeOptions();
         InitializeUpdateState();
+        InitializeBusinessDatabaseSelection();
     }
 
     public async Task InitializeAsync()
@@ -110,6 +118,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             await LoadLegacyMigrationSettingsAsync();
             await ReloadOfficesAsync();
             await ReloadMasterOptionsAsync();
+            await ReloadTenantConfigurationAsync();
             await ReloadUsersAsync();
             await LoadCurrentUserCompanyProfileAsync();
             await ReloadRecycleBinAsync();
@@ -494,10 +503,12 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         EditingUserId = Guid.Empty;
         EditingUsername = string.Empty;
         EditingUserRole = "User";
+        EditingUserTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(_session.TenantCode);
         EditingUserIsActive = true;
         EditingUserCompanyProfileId = string.Empty;
         EditingPassword = string.Empty;
         EditingPasswordConfirm = string.Empty;
+        EditingUserScopeType = TenantScopeCatalog.ScopeOfficeOnly;
         SetDefaultEditingUserOfficeCode();
         EditingUserCompanyProfileId = ResolveDefaultCompanyProfileId(EditingUserOfficeCode);
         StatusMessage = "새 사용자를 추가할 수 있습니다.";
@@ -557,7 +568,9 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
                     Username = username,
                     Password = EditingPassword,
                     Role = EditingUserRole,
+                    TenantCode = EditingUserTenantCode,
                     OfficeCode = EditingUserOfficeCode,
+                    ScopeType = EditingUserScopeType,
                     IsActive = EditingUserIsActive,
                     Permissions = permissions
                 });
@@ -569,7 +582,9 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
                 {
                     Username = username,
                     Role = EditingUserRole,
+                    TenantCode = EditingUserTenantCode,
                     OfficeCode = EditingUserOfficeCode,
+                    ScopeType = EditingUserScopeType,
                     IsActive = EditingUserIsActive,
                     Permissions = permissions
                 });
@@ -667,7 +682,9 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         EditingUserId = value.Id;
         EditingUsername = value.Username;
         EditingUserRole = string.Equals(value.Role, "Admin", StringComparison.OrdinalIgnoreCase) ? "Admin" : "User";
+        EditingUserTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(value.TenantCode, value.OfficeCode);
         EditingUserOfficeCode = value.OfficeCode;
+        EditingUserScopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(value.ScopeType);
         EditingUserIsActive = value.IsActive;
         _ = LoadAssignedCompanyProfileForSelectedUserAsync(value.Username, value.OfficeCode);
         EditingPassword = string.Empty;
@@ -746,6 +763,43 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         var defaultProfileId = ResolveDefaultCompanyProfileId(value);
         if (!string.IsNullOrWhiteSpace(defaultProfileId))
             EditingUserCompanyProfileId = defaultProfileId;
+    }
+
+    partial void OnEditingUserTenantCodeChanged(string value)
+    {
+        RefreshUserOfficeOptions();
+        if (!CanManageUsers)
+            return;
+
+        if (string.Equals(EditingUserRole, "Admin", StringComparison.OrdinalIgnoreCase))
+        {
+            EditingUserScopeType = TenantScopeCatalog.ScopeAdmin;
+            return;
+        }
+
+        if (string.Equals(TenantScopeCatalog.NormalizeTenantCodeOrDefault(value), TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase))
+        {
+            EditingUserScopeType = TenantScopeCatalog.ScopeTenantAll;
+        }
+        else if (!string.Equals(EditingUserScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase) &&
+                 !string.Equals(EditingUserScopeType, TenantScopeCatalog.ScopeOfficeOnly, StringComparison.OrdinalIgnoreCase))
+        {
+            EditingUserScopeType = TenantScopeCatalog.ScopeOfficeOnly;
+        }
+    }
+
+    partial void OnEditingUserRoleChanged(string value)
+    {
+        if (string.Equals(value, "Admin", StringComparison.OrdinalIgnoreCase))
+        {
+            EditingUserScopeType = TenantScopeCatalog.ScopeAdmin;
+            return;
+        }
+
+        var normalizedTenant = TenantScopeCatalog.NormalizeTenantCodeOrDefault(EditingUserTenantCode, _session.TenantCode);
+        EditingUserScopeType = string.Equals(normalizedTenant, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
+            ? TenantScopeCatalog.ScopeTenantAll
+            : TenantScopeCatalog.ScopeOfficeOnly;
     }
 
     private void ApplyCompanyProfile(LocalCompanyProfile profile)

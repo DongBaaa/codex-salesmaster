@@ -472,14 +472,20 @@ public partial class MainWindow : Window
 
     private async Task OpenEnvironmentSettingsWindowAsync(bool openRecycleBinTab = false)
     {
-        var vm = new EnvironmentSettingsViewModel(_local, _session, _api);
+        var vm = new EnvironmentSettingsViewModel(
+            _local,
+            _session,
+            _api,
+            async () => await _vm.ReloadForBusinessDatabaseChangeAsync());
         await vm.InitializeAsync();
         var win = new EnvironmentSettingsWindow(vm, openRecycleBinTab)
         {
             Owner = this
         };
         win.ShowDialog();
-        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+
+        if (!vm.BusinessDatabaseChanged)
+            await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
 
     private async Task OpenCustomerManagementWindowAsync()
