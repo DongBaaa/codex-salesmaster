@@ -77,7 +77,11 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($DesktopPackagePath)) {
-    $DesktopPackagePath = Join-Path $ProjectRoot '배포\설치패키지\거래플랜-PC-설치패키지.zip'
+    $desktopCandidates = @(
+        (Join-Path $ProjectRoot '배포\설치패키지\관리자용\거래플랜-PC-설치패키지.zip'),
+        (Join-Path $ProjectRoot '배포\설치패키지\거래플랜-PC-설치패키지.zip')
+    )
+    $DesktopPackagePath = $desktopCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
 
 if ([string]::IsNullOrWhiteSpace($AndroidPackagePath)) {

@@ -34,7 +34,8 @@ function Get-DefaultClientSourceFolder {
     $candidates = Get-ChildItem -LiteralPath $DeploymentRoot -Directory |
         Where-Object {
             (Test-Path -LiteralPath (Join-Path $_.FullName 'appsettings.json')) -and
-            (Test-Path -LiteralPath (Join-Path $_.FullName '거래플랜.exe'))
+            ((Test-Path -LiteralPath (Join-Path $_.FullName '거래플랜.exe')) -or
+             (Test-Path -LiteralPath (Join-Path $_.FullName '거래플랜.Desktop.App.exe')))
         } |
         Sort-Object FullName
 
@@ -102,6 +103,7 @@ function Ensure-WixTool {
 
     $candidates += @(
         (Join-Path $ProjectRoot '.tooling\wix\wix.exe'),
+        (Join-Path $ProjectRoot '.wix\bin\wix.exe'),
         'wix.exe'
     )
 
@@ -124,6 +126,17 @@ function Ensure-WixTool {
     }
 
     return (Join-Path $toolPath 'wix.exe')
+}
+
+function Ensure-WixExtensions {
+    param([Parameter(Mandatory = $true)][string]$WixExePath)
+
+    foreach ($extension in @('WixToolset.UI.wixext/6.0.2', 'WixToolset.Util.wixext/6.0.2')) {
+        & $WixExePath extension add -g $extension | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to add WiX extension: $extension"
+        }
+    }
 }
 
 function Convert-ToXmlAttribute {
@@ -149,6 +162,151 @@ function Get-RelativeWindowsPath {
     return ([System.Uri]::UnescapeDataString($relative) -replace '/', '\')
 }
 
+function Get-AppIconsRoot {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+
+    $iconsRoot = Join-Path $ProjectRoot 'AppIcons'
+    if (-not (Test-Path -LiteralPath $iconsRoot)) {
+        throw "AppIcons folder not found: $iconsRoot"
+    }
+
+    return (Resolve-Path -LiteralPath $iconsRoot).Path
+}
+
+function Get-WindowsIconAsset {
+    param([Parameter(Mandatory = $true)][string]$AppIconsRoot)
+
+    $preferred = Join-Path $AppIconsRoot 'tradeplan-windows.ico'
+    if (Test-Path -LiteralPath $preferred) {
+        return (Resolve-Path -LiteralPath $preferred).Path
+    }
+
+    $firstIco = Get-ChildItem -LiteralPath $AppIconsRoot -Recurse -File -Filter '*.ico' | Select-Object -First 1
+    if ($null -ne $firstIco) {
+        return $firstIco.FullName
+    }
+
+    throw "Windows icon asset (.ico) not found under $AppIconsRoot"
+}
+
+function Invoke-RobocopyMirror {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    & robocopy $Source $Destination /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) {
+        throw "robocopy failed ($LASTEXITCODE): $Source -> $Destination"
+    }
+}
+
+function New-DesktopShortcutVbsContent {
+    param(
+        [Parameter(Mandatory = $true)][string]$AppDisplayName,
+        [Parameter(Mandatory = $true)][string]$LaunchExeName,
+        [Parameter(Mandatory = $true)][string]$ShortcutIconFileName
+    )
+
+    return @"
+Option Explicit
+
+Dim shell
+Dim fso
+Dim installDir
+Dim desktopPath
+Dim shortcutPath
+Dim shortcut
+
+Set shell = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+
+installDir = fso.GetParentFolderName(WScript.ScriptFullName)
+desktopPath = shell.SpecialFolders("Desktop")
+shortcutPath = fso.BuildPath(desktopPath, "$AppDisplayName.lnk")
+
+Set shortcut = shell.CreateShortcut(shortcutPath)
+shortcut.TargetPath = fso.BuildPath(installDir, "$LaunchExeName")
+shortcut.WorkingDirectory = installDir
+shortcut.IconLocation = fso.BuildPath(installDir, "$ShortcutIconFileName")
+shortcut.Description = "$AppDisplayName"
+shortcut.Save
+"@
+}
+
+function Publish-DesktopApplication {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$PublishRoot
+    )
+
+    $desktopProject = Join-Path $ProjectRoot 'Desktop\거래플랜.Desktop.App\거래플랜.Desktop.App.csproj'
+    if (-not (Test-Path -LiteralPath $desktopProject)) {
+        throw "Desktop project not found: $desktopProject"
+    }
+
+    Remove-Item -LiteralPath $PublishRoot -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $PublishRoot | Out-Null
+
+    & dotnet publish $desktopProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $PublishRoot | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to publish desktop application for installer packaging.'
+    }
+
+    return $PublishRoot
+}
+
+function Prepare-InstallerSourceFolder {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$OriginalSourceFolder,
+        [Parameter(Mandatory = $true)][string]$StagingRoot,
+        [Parameter(Mandatory = $true)][string]$LaunchExeName,
+        [Parameter(Mandatory = $true)][string]$AppDisplayName,
+        [Parameter(Mandatory = $true)][string]$ShortcutIconPath
+    )
+
+    $installerSourceRoot = Join-Path $StagingRoot 'installer-source'
+    Invoke-RobocopyMirror -Source $OriginalSourceFolder -Destination $installerSourceRoot
+
+    $shortcutIconFileName = Split-Path -Leaf $ShortcutIconPath
+    Copy-Item -LiteralPath $ShortcutIconPath -Destination (Join-Path $installerSourceRoot $shortcutIconFileName) -Force
+
+    $desktopShortcutScriptName = 'CreateDesktopShortcut.vbs'
+    (New-DesktopShortcutVbsContent -AppDisplayName $AppDisplayName -LaunchExeName $LaunchExeName -ShortcutIconFileName $shortcutIconFileName) |
+        Set-Content -LiteralPath (Join-Path $installerSourceRoot $desktopShortcutScriptName) -Encoding ASCII
+
+    $publishRoot = Publish-DesktopApplication -ProjectRoot $ProjectRoot -PublishRoot (Join-Path $StagingRoot 'desktop-publish')
+
+    $publishedExeCandidates = @(
+        (Join-Path $publishRoot '거래플랜.Desktop.App.exe'),
+        (Join-Path $publishRoot '거래플랜.exe')
+    )
+    $publishedExe = $publishedExeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($publishedExe)) {
+        throw "Published desktop executable not found under $publishRoot"
+    }
+
+    Copy-Item -LiteralPath $publishedExe -Destination (Join-Path $installerSourceRoot '거래플랜.Desktop.App.exe') -Force
+    Copy-Item -LiteralPath $publishedExe -Destination (Join-Path $installerSourceRoot $LaunchExeName) -Force
+
+    $publishedPdbCandidates = @(
+        (Join-Path $publishRoot '거래플랜.Desktop.App.pdb'),
+        (Join-Path $publishRoot '거래플랜.pdb')
+    )
+    $publishedPdb = $publishedPdbCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not [string]::IsNullOrWhiteSpace($publishedPdb)) {
+        Copy-Item -LiteralPath $publishedPdb -Destination (Join-Path $installerSourceRoot '거래플랜.Desktop.App.pdb') -Force
+    }
+
+    return [pscustomobject]@{
+        SourceRoot = $installerSourceRoot
+        ShortcutIconFileName = $shortcutIconFileName
+        DesktopShortcutScriptName = $desktopShortcutScriptName
+    }
+}
+
 function New-GeneratedWxsContent {
     param([Parameter(Mandatory = $true)][string]$SourceRoot)
 
@@ -160,15 +318,15 @@ function New-GeneratedWxsContent {
         $index++
     }
 
-    $script:__GeoraePlanComponentIds = New-Object System.Collections.Generic.List[string]
-    $script:__GeoraePlanComponentIndex = 1
-    $script:__GeoraePlanFileIndex = 1
-    $script:__GeoraePlanDirMap = $dirMap
+    $script:__TradePlanComponentIds = New-Object System.Collections.Generic.List[string]
+    $script:__TradePlanComponentIndex = 1
+    $script:__TradePlanFileIndex = 1
+    $script:__TradePlanDirMap = $dirMap
 
     function RenderDirectoryChildren {
         param(
-            [string]$DirectoryPath,
-            [int]$Depth
+            [Parameter(Mandatory = $true)][string]$DirectoryPath,
+            [Parameter(Mandatory = $true)][int]$Depth
         )
 
         $indent = ('  ' * $Depth)
@@ -176,11 +334,11 @@ function New-GeneratedWxsContent {
 
         $files = Get-ChildItem -LiteralPath $DirectoryPath -File | Sort-Object Name
         foreach ($file in $files) {
-            $componentId = 'CMP{0:D4}' -f $script:__GeoraePlanComponentIndex
-            $fileId = 'FIL{0:D4}' -f $script:__GeoraePlanFileIndex
-            $script:__GeoraePlanComponentIndex++
-            $script:__GeoraePlanFileIndex++
-            $script:__GeoraePlanComponentIds.Add($componentId)
+            $componentId = 'CMP{0:D4}' -f $script:__TradePlanComponentIndex
+            $fileId = 'FIL{0:D4}' -f $script:__TradePlanFileIndex
+            $script:__TradePlanComponentIndex++
+            $script:__TradePlanFileIndex++
+            $script:__TradePlanComponentIds.Add($componentId)
 
             $sourcePath = '$(var.SourceDir)\' + (Get-RelativeWindowsPath -Root $SourceRoot -Path $file.FullName)
             $fileName = Convert-ToXmlAttribute $file.Name
@@ -193,7 +351,7 @@ function New-GeneratedWxsContent {
 
         $subDirectories = Get-ChildItem -LiteralPath $DirectoryPath -Directory | Sort-Object Name
         foreach ($subDirectory in $subDirectories) {
-            $dirId = $script:__GeoraePlanDirMap[$subDirectory.FullName]
+            $dirId = $script:__TradePlanDirMap[$subDirectory.FullName]
             $dirName = Convert-ToXmlAttribute $subDirectory.Name
             $lines.Add("$indent<Directory Id=`"$dirId`" Name=`"$dirName`">")
             foreach ($line in (RenderDirectoryChildren -DirectoryPath $subDirectory.FullName -Depth ($Depth + 1))) {
@@ -211,7 +369,7 @@ function New-GeneratedWxsContent {
     }
 
     $componentGroupLines = New-Object System.Collections.Generic.List[string]
-    foreach ($componentId in $script:__GeoraePlanComponentIds) {
+    foreach ($componentId in $script:__TradePlanComponentIds) {
         $componentGroupLines.Add("      <ComponentRef Id=`"$componentId`" />")
     }
 
@@ -237,149 +395,286 @@ function New-ProductWxsContent {
         [Parameter(Mandatory = $true)][string]$AppDisplayName,
         [Parameter(Mandatory = $true)][string]$Manufacturer,
         [Parameter(Mandatory = $true)][string]$LaunchExeName,
-        [Parameter(Mandatory = $true)][string]$UpgradeCode
+        [Parameter(Mandatory = $true)][string]$UpgradeCode,
+        [Parameter(Mandatory = $true)][string]$DesktopShortcutScriptName
     )
 
     $productName = Convert-ToXmlAttribute $AppDisplayName
-    $manufacturerEscaped = Convert-ToXmlAttribute $Manufacturer
-    $launchExeEscaped = Convert-ToXmlAttribute $LaunchExeName
-    $upgradeCodeEscaped = Convert-ToXmlAttribute $UpgradeCode
-    $installFolderEscaped = Convert-ToXmlAttribute $AppDisplayName
+    $manufacturerName = Convert-ToXmlAttribute $Manufacturer
+    $launchExe = Convert-ToXmlAttribute $LaunchExeName
+    $upgradeCodeValue = Convert-ToXmlAttribute $UpgradeCode
+    $desktopScript = Convert-ToXmlAttribute $DesktopShortcutScriptName
     $downgradeMessage = Convert-ToXmlAttribute '이미 최신 버전의 거래플랜이 설치되어 있습니다.'
+    $desktopShortcutText = Convert-ToXmlAttribute '바탕화면 바로가기 만들기'
+    $uninstallShortcutName = Convert-ToXmlAttribute '거래플랜 제거'
+    $registryManufacturer = Convert-ToXmlAttribute $Manufacturer
+    $registryProduct = Convert-ToXmlAttribute $AppDisplayName
 
     return @"
 <?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="$productName"
-           Manufacturer="$manufacturerEscaped"
+           Manufacturer="$manufacturerName"
            Version="`$(var.ProductVersion)"
-           UpgradeCode="$upgradeCodeEscaped"
+           UpgradeCode="$upgradeCodeValue"
            Language="1042"
-           Scope="perUser"
+           Scope="perMachine"
            InstallerVersion="500"
            Compressed="yes"
            Codepage="65001">
-    <SummaryInformation Description="$productName" Manufacturer="$manufacturerEscaped" />
+    <SummaryInformation Description="$productName" Manufacturer="$manufacturerName" />
     <MajorUpgrade DowngradeErrorMessage="$downgradeMessage" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
-    <StandardDirectory Id="LocalAppDataFolder">
-      <Directory Id="ProgramsFolder" Name="Programs">
-        <Directory Id="INSTALLFOLDER" Name="$installFolderEscaped" />
-      </Directory>
+    <Icon Id="AppPackageIcon" SourceFile="`$(var.AppIconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="AppPackageIcon" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="$desktopShortcutText" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="0" />
+
+    <SetProperty Id="ARPINSTALLLOCATION"
+                 Value="[INSTALLFOLDER]"
+                 Before="RegisterProduct"
+                 Sequence="execute" />
+
+    <StandardDirectory Id="ProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="tradeplan" />
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="ProgramMenuDir" Name="$installFolderEscaped" />
+      <Directory Id="ProgramMenuDir" Name="$productName" />
     </StandardDirectory>
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+    <CustomAction Id="CreateDesktopShortcutAction"
+                  BinaryRef="Wix4UtilCA_`$(sys.BUILDARCHSHORT)"
+                  DllEntry="WixShellExec"
+                  Execute="immediate"
+                  Return="ignore"
+                  Impersonate="yes" />
 
     <Feature Id="MainFeature" Title="$productName" Level="1">
       <ComponentGroupRef Id="AppFiles" />
-      <ComponentRef Id="ApplicationShortcutComponent" />
+      <ComponentRef Id="ApplicationStartMenuComponent" />
+      <ComponentRef Id="DesktopShortcutCleanupComponent" />
     </Feature>
+
+    <UI>
+      <Publish Dialog="ExitDialog"
+               Control="Finish"
+               Event="SetProperty"
+               Value="WixShellExecTarget=[INSTALLFOLDER]$desktopScript"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed"
+               Order="1" />
+      <Publish Dialog="ExitDialog"
+               Control="Finish"
+               Event="DoAction"
+               Value="CreateDesktopShortcutAction"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed"
+               Order="2" />
+    </UI>
   </Package>
 
   <Fragment>
-    <Component Id="ApplicationShortcutComponent" Directory="INSTALLFOLDER" Guid="*">
+    <Component Id="ApplicationStartMenuComponent" Directory="ProgramMenuDir" Guid="*">
       <Shortcut Id="ApplicationStartMenuShortcut"
                 Directory="ProgramMenuDir"
                 Name="$productName"
-                Target="[INSTALLFOLDER]$launchExeEscaped"
+                Target="[INSTALLFOLDER]$launchExe"
                 WorkingDirectory="INSTALLFOLDER"
+                Icon="AppPackageIcon"
+                IconIndex="0"
                 Advertise="no" />
-      <Shortcut Id="ApplicationDesktopShortcut"
-                Directory="DesktopFolder"
-                Name="$productName"
-                Target="[INSTALLFOLDER]$launchExeEscaped"
+      <Shortcut Id="ApplicationUninstallShortcut"
+                Directory="ProgramMenuDir"
+                Name="$uninstallShortcutName"
+                Target="[SystemFolder]msiexec.exe"
+                Arguments="/x [ProductCode]"
                 WorkingDirectory="INSTALLFOLDER"
+                Icon="AppPackageIcon"
+                IconIndex="0"
                 Advertise="no" />
       <RemoveFolder Id="CleanProgramMenuDir" Directory="ProgramMenuDir" On="uninstall" />
-      <RegistryValue Root="HKCU" Key="Software\$manufacturerEscaped\$installFolderEscaped" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+      <RegistryValue Root="HKLM" Key="Software\$registryManufacturer\$registryProduct" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+  </Fragment>
+
+  <Fragment>
+    <Component Id="DesktopShortcutCleanupComponent" Directory="INSTALLFOLDER" Guid="*">
+      <RemoveFile Id="RemoveDesktopShortcut" Directory="DesktopFolder" Name="$productName.lnk" On="uninstall" />
+      <RegistryValue Root="HKLM" Key="Software\$registryManufacturer\$registryProduct" Name="DesktopShortcutCleanup" Type="integer" Value="1" KeyPath="yes" />
     </Component>
   </Fragment>
 </Wix>
 "@
 }
 
-function New-IExpressInstallCmd {
-    param([Parameter(Mandatory = $true)][string]$MsiFileName)
-
-    return @"
-@echo off
-setlocal
-set MSI_PATH=%~dp0$MsiFileName
-if /I "%~1"=="/quiet" (
-  msiexec.exe /i "%MSI_PATH%" /qn /norestart
-) else (
-  msiexec.exe /i "%MSI_PATH%"
-)
-set EXITCODE=%ERRORLEVEL%
-endlocal & exit /b %EXITCODE%
-"@
-}
-
-function New-IExpressSedContent {
+function New-BootstrapperProjectFiles {
     param(
-        [Parameter(Mandatory = $true)][string]$TargetExePath,
-        [Parameter(Mandatory = $true)][string]$FriendlyName,
-        [Parameter(Mandatory = $true)][string]$SourceDirectory,
-        [Parameter(Mandatory = $true)][string[]]$Files
+        [Parameter(Mandatory = $true)][string]$BootstrapperRoot,
+        [Parameter(Mandatory = $true)][string]$MsiPath,
+        [Parameter(Mandatory = $true)][string]$IconPath,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$AppDisplayName
     )
 
-    $escapedTarget = $TargetExePath
-    $escapedFriendly = 'GeoraePlan Installer'
-    $escapedSource = $SourceDirectory
+    New-Item -ItemType Directory -Force -Path $BootstrapperRoot | Out-Null
+    $projectPath = Join-Path $BootstrapperRoot 'TradePlan.Installer.csproj'
+    $programPath = Join-Path $BootstrapperRoot 'Program.cs'
+    $manifestPath = Join-Path $BootstrapperRoot 'app.manifest'
+    $localMsiPath = Join-Path $BootstrapperRoot 'package.msi'
+    $localIconPath = Join-Path $BootstrapperRoot 'tradeplan-windows.ico'
 
-    $stringLines = New-Object System.Collections.Generic.List[string]
-    $sourceEntryLines = New-Object System.Collections.Generic.List[string]
-    for ($i = 0; $i -lt $Files.Length; $i++) {
-        $stringLines.Add(("FILE{0}={1}" -f $i, $Files[$i]))
-        $sourceEntryLines.Add(("%FILE{0}%=" -f $i))
+    Copy-Item -LiteralPath $MsiPath -Destination $localMsiPath -Force
+    Copy-Item -LiteralPath $IconPath -Destination $localIconPath -Force
+
+    $csprojContent = @"
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <AssemblyName>TradePlan.Installer</AssemblyName>
+    <ApplicationIcon>tradeplan-windows.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>$Version</Version>
+    <FileVersion>$Version.0</FileVersion>
+    <Product>$AppDisplayName Installer</Product>
+    <Company>TradePlan</Company>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="package.msi" LogicalName="package.msi" />
+  </ItemGroup>
+</Project>
+"@
+
+    $manifestContent = @'
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="TradePlan.Installer.app" />
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+      <supportedOS Id="{4f476546-937f-47f9-a4f2-61c5f2fbe5a5}" />
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}" />
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}" />
+      <supportedOS Id="{e2011457-1546-43c5-a5fe-008deee3d3f0}" />
+    </application>
+  </compatibility>
+</assembly>
+'@
+
+    $programContent = @'
+using System.Diagnostics;
+using System.Reflection;
+
+internal static class Program
+{
+    [STAThread]
+    private static int Main(string[] args)
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "TradePlanInstaller");
+        Directory.CreateDirectory(tempRoot);
+        var packagePath = Path.Combine(tempRoot, "tradeplan-installer.msi");
+
+        using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("package.msi"))
+        {
+            if (stream is null)
+            {
+                return 2;
+            }
+
+            using var fileStream = File.Create(packagePath);
+            stream.CopyTo(fileStream);
+        }
+
+        var startInfo = new ProcessStartInfo("msiexec.exe")
+        {
+            UseShellExecute = false,
+        };
+
+        startInfo.ArgumentList.Add("/i");
+        startInfo.ArgumentList.Add(packagePath);
+
+        foreach (var arg in NormalizeArgs(args))
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        using var process = Process.Start(startInfo);
+        if (process is null)
+        {
+            return 3;
+        }
+
+        process.WaitForExit();
+        return process.ExitCode;
     }
 
-    return @"
-[Version]
-Class=IEXPRESS
-SEDVersion=3
+    private static IEnumerable<string> NormalizeArgs(IEnumerable<string> args)
+    {
+        foreach (var arg in args)
+        {
+            if (string.Equals(arg, "/Q", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(arg, "/quiet", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return "/qn";
+                yield return "/norestart";
+                continue;
+            }
 
-[Options]
-PackagePurpose=InstallApp
-ShowInstallProgramWindow=1
-HideExtractAnimation=0
-UseLongFileName=1
-InsideCompressed=0
-CAB_FixedSize=0
-CAB_ResvCodeSigning=0
-RebootMode=N
-InstallPrompt=
-DisplayLicense=
-FinishMessage=
-TargetName=$escapedTarget
-FriendlyName=$escapedFriendly
-AppLaunched=cmd.exe /c install.cmd
-PostInstallCmd=<None>
-AdminQuietInstCmd=cmd.exe /c install.cmd /quiet
-UserQuietInstCmd=cmd.exe /c install.cmd /quiet
-SourceFiles=SourceFiles
+            yield return arg;
+        }
+    }
+}
+'@
 
-[Strings]
-$($stringLines -join [Environment]::NewLine)
+    $csprojContent | Set-Content -LiteralPath $projectPath -Encoding UTF8
+    $programContent | Set-Content -LiteralPath $programPath -Encoding UTF8
+    $manifestContent | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 
-[SourceFiles]
-SourceFiles0=$escapedSource
+    return $projectPath
+}
 
-[SourceFiles0]
-$($sourceEntryLines -join [Environment]::NewLine)
-"@
+function Build-BootstrapperExe {
+    param(
+        [Parameter(Mandatory = $true)][string]$BootstrapperProjectPath,
+        [Parameter(Mandatory = $true)][string]$PublishRoot
+    )
+
+    Remove-Item -LiteralPath $PublishRoot -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $PublishRoot | Out-Null
+
+    & dotnet publish $BootstrapperProjectPath -c Release -r win-x86 --self-contained true -p:PublishSingleFile=true -o $PublishRoot | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to build installer bootstrapper executable.'
+    }
+
+    $bootstrapperExe = Join-Path $PublishRoot 'TradePlan.Installer.exe'
+    if (-not (Test-Path -LiteralPath $bootstrapperExe)) {
+        throw "Bootstrapper executable not found: $bootstrapperExe"
+    }
+
+    return $bootstrapperExe
 }
 
 function Write-Sha256File {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Algorithm
-    )
+    param([Parameter(Mandatory = $true)][string]$Path)
 
-    $hash = Get-FileHash -LiteralPath $Path -Algorithm $Algorithm
+    $hash = Get-FileHash -LiteralPath $Path -Algorithm SHA256
     ("{0} *{1}" -f $hash.Hash, (Split-Path -Leaf $Path)) | Set-Content -LiteralPath ($Path + '.sha256.txt') -Encoding ASCII
 }
 
@@ -396,7 +691,7 @@ if ([string]::IsNullOrWhiteSpace($PackageName)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($Manufacturer)) {
-    $Manufacturer = '거래플랜'
+    $Manufacturer = 'TradePlan'
 }
 
 if ([string]::IsNullOrWhiteSpace($LaunchExeName)) {
@@ -418,21 +713,50 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 $SourceFolder = (Resolve-Path -LiteralPath $SourceFolder).Path
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 $OutputRoot = (Resolve-Path -LiteralPath $OutputRoot).Path
+$adminOutputRoot = Join-Path $OutputRoot '관리자용'
+$archiveOutputRoot = Join-Path $adminOutputRoot '버전보관'
+New-Item -ItemType Directory -Force -Path $adminOutputRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $archiveOutputRoot | Out-Null
+
+Get-ChildItem -LiteralPath $OutputRoot -File -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.Name -like ($PackageName + '.msi') -or
+        $_.Name -like ($PackageName + '.msi.sha256.txt') -or
+        $_.Name -like ($PackageName + '-v*.exe') -or
+        $_.Name -like ($PackageName + '-v*.exe.sha256.txt') -or
+        $_.Name -like ($PackageName + '-v*.msi') -or
+        $_.Name -like ($PackageName + '-v*.msi.sha256.txt') -or
+        $_.Name -like ($PackageName + '.zip') -or
+        $_.Name -like ($PackageName + '.zip.sha256.txt')
+    } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
+$legacyPackageRoot = Join-Path $OutputRoot $PackageName
+if (Test-Path -LiteralPath $legacyPackageRoot) {
+    Remove-Item -LiteralPath $legacyPackageRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 $wixExe = Ensure-WixTool -ProjectRoot $ProjectRoot -PreferredToolPath $WixToolPath
+Ensure-WixExtensions -WixExePath $wixExe
+$appIconsRoot = Get-AppIconsRoot -ProjectRoot $ProjectRoot
+$shortcutIconPath = Get-WindowsIconAsset -AppIconsRoot $appIconsRoot
 
 $stagingRoot = Join-Path ([System.IO.Path]::GetPathRoot($ProjectRoot)) 'GeoraePlanInstallerBuild'
 Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
 
+$preparedSource = Prepare-InstallerSourceFolder -ProjectRoot $ProjectRoot -OriginalSourceFolder $SourceFolder -StagingRoot $stagingRoot -LaunchExeName $LaunchExeName -AppDisplayName $AppDisplayName -ShortcutIconPath $shortcutIconPath
+$sourceForPackaging = $preparedSource.SourceRoot
+$appIconForPackage = Join-Path $sourceForPackaging $preparedSource.ShortcutIconFileName
+
 $productWxsPath = Join-Path $stagingRoot 'Product.wxs'
 $generatedWxsPath = Join-Path $stagingRoot 'GeneratedFiles.wxs'
-$productWxs = New-ProductWxsContent -AppDisplayName $AppDisplayName -Manufacturer $Manufacturer -LaunchExeName $LaunchExeName -UpgradeCode '{0E5C8E78-44C0-4585-A2E9-5E74071A3A11}'
-$generatedWxs = New-GeneratedWxsContent -SourceRoot $SourceFolder
+$productWxs = New-ProductWxsContent -AppDisplayName $AppDisplayName -Manufacturer $Manufacturer -LaunchExeName $LaunchExeName -UpgradeCode '{0E5C8E78-44C0-4585-A2E9-5E74071A3A11}' -DesktopShortcutScriptName $preparedSource.DesktopShortcutScriptName
+$generatedWxs = New-GeneratedWxsContent -SourceRoot $sourceForPackaging
 $productWxs | Set-Content -LiteralPath $productWxsPath -Encoding UTF8
 $generatedWxs | Set-Content -LiteralPath $generatedWxsPath -Encoding UTF8
 
-$tempMsiPath = Join-Path $stagingRoot 'georaeplan-installer.msi'
+$tempMsiPath = Join-Path $stagingRoot 'tradeplan-installer.msi'
 $wixIntermediateRoot = Join-Path $stagingRoot 'wix-intermediate'
 New-Item -ItemType Directory -Force -Path $wixIntermediateRoot | Out-Null
 if (Test-Path -LiteralPath $tempMsiPath) { Remove-Item -LiteralPath $tempMsiPath -Force }
@@ -442,7 +766,7 @@ $previousTmp = $env:TMP
 $env:TEMP = $wixIntermediateRoot
 $env:TMP = $wixIntermediateRoot
 try {
-    & $wixExe build $productWxsPath $generatedWxsPath -arch x64 -intermediatefolder $wixIntermediateRoot -d SourceDir=$SourceFolder -d ProductVersion=$Version -o $tempMsiPath
+    & $wixExe build $productWxsPath $generatedWxsPath -arch x86 -intermediatefolder $wixIntermediateRoot -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext -d SourceDir=$sourceForPackaging -d ProductVersion=$Version -d AppIconPath=$appIconForPackage -o $tempMsiPath
 }
 finally {
     $env:TEMP = $previousTemp
@@ -453,37 +777,61 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tempMsiPath)) {
     throw 'Failed to build MSI installer.'
 }
 
-$versionedMsiPath = Join-Path $OutputRoot ("{0}-v{1}.msi" -f $PackageName, $Version)
-$stableMsiPath = Join-Path $OutputRoot ($PackageName + '.msi')
+$versionedMsiPath = Join-Path $archiveOutputRoot ("{0}-v{1}.msi" -f $PackageName, $Version)
+$stableMsiPath = Join-Path $adminOutputRoot ($PackageName + '.msi')
 Copy-Item -LiteralPath $tempMsiPath -Destination $versionedMsiPath -Force
 Copy-Item -LiteralPath $tempMsiPath -Destination $stableMsiPath -Force
-Write-Sha256File -Path $versionedMsiPath -Algorithm 'SHA256'
-Write-Sha256File -Path $stableMsiPath -Algorithm 'SHA256'
+Write-Sha256File -Path $versionedMsiPath
+Write-Sha256File -Path $stableMsiPath
 
-$iexpressRoot = Join-Path $stagingRoot 'iexpress'
-New-Item -ItemType Directory -Force -Path $iexpressRoot | Out-Null
-$iexpressMsiName = 'package.msi'
-$iexpressCmdName = 'install.cmd'
-Copy-Item -LiteralPath $tempMsiPath -Destination (Join-Path $iexpressRoot $iexpressMsiName) -Force
-(New-IExpressInstallCmd -MsiFileName $iexpressMsiName) | Set-Content -LiteralPath (Join-Path $iexpressRoot $iexpressCmdName) -Encoding ASCII
-$tempExePath = Join-Path $stagingRoot 'georaeplan-installer.exe'
-$sedPath = Join-Path $iexpressRoot 'package.sed'
-(New-IExpressSedContent -TargetExePath $tempExePath -FriendlyName $PackageName -SourceDirectory $iexpressRoot -Files @($iexpressCmdName, $iexpressMsiName)) | Set-Content -LiteralPath $sedPath -Encoding ASCII
+$bootstrapperRoot = Join-Path $stagingRoot 'bootstrapper'
+$bootstrapperProject = New-BootstrapperProjectFiles -BootstrapperRoot $bootstrapperRoot -MsiPath $tempMsiPath -IconPath $shortcutIconPath -Version $Version -AppDisplayName $AppDisplayName
+$tempExePath = Build-BootstrapperExe -BootstrapperProjectPath $bootstrapperProject -PublishRoot (Join-Path $bootstrapperRoot 'publish')
 
-& iexpress.exe /N /Q $sedPath | Out-Null
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tempExePath)) {
-    throw 'Failed to build EXE installer.'
-}
-
-$versionedExePath = Join-Path $OutputRoot ("{0}-v{1}.exe" -f $PackageName, $Version)
+$versionedExePath = Join-Path $archiveOutputRoot ("{0}-v{1}.exe" -f $PackageName, $Version)
 $stableExePath = Join-Path $OutputRoot ($PackageName + '.exe')
 Copy-Item -LiteralPath $tempExePath -Destination $versionedExePath -Force
 Copy-Item -LiteralPath $tempExePath -Destination $stableExePath -Force
-Write-Sha256File -Path $versionedExePath -Algorithm 'SHA256'
-Write-Sha256File -Path $stableExePath -Algorithm 'SHA256'
+Write-Sha256File -Path $versionedExePath
+Write-Sha256File -Path $stableExePath
+
+$packageReadmePath = Join-Path $OutputRoot 'README.txt'
+$packageReadme = @(
+    '거래플랜 Windows 설치 안내',
+    '',
+    '일반 사용자/회사 배포용 설치 파일:',
+    ' - 거래플랜-PC-설치패키지.exe',
+    '',
+    '권장 방식:',
+    ' - EXE를 실행하고 관리자 권한(UAC)을 허용한 뒤 설치를 진행합니다.',
+    ' - 설치 중 경로를 바꿀 수 있으며 기본 경로는 C:\Program Files (x86)\tradeplan 입니다.',
+    '',
+    '관리자용 보관 파일:',
+    ' - 관리자용\거래플랜-PC-설치패키지.msi',
+    ' - 관리자용\거래플랜-PC-설치패키지.zip',
+    ' - 관리자용\버전보관\*',
+    '',
+    '참고:',
+    ' - 프로그램은 하나이며, 관리자/일반 구분은 로그인 권한으로 처리됩니다.',
+    ' - 설치파일 형식(EXE/MSI)은 설치 방식 차이입니다.'
+) -join [Environment]::NewLine
+$packageReadme | Set-Content -LiteralPath $packageReadmePath -Encoding UTF8
+
+$adminReadmePath = Join-Path $adminOutputRoot 'README.txt'
+$adminReadme = @(
+    '거래플랜 관리자용 보관 폴더',
+    '',
+    '포함 항목:',
+    ' - MSI 설치본',
+    ' - ZIP 내부업데이트 원본',
+    ' - 버전별 EXE/MSI 보관본',
+    '',
+    '일반 사용자 배포는 상위 폴더의 EXE를 사용하세요.'
+) -join [Environment]::NewLine
+$adminReadme | Set-Content -LiteralPath $adminReadmePath -Encoding UTF8
 
 Write-Host "installer_msi=$stableMsiPath"
 Write-Host "installer_exe=$stableExePath"
 Write-Host "installer_msi_versioned=$versionedMsiPath"
 Write-Host "installer_exe_versioned=$versionedExePath"
-
+Write-Host "installer_admin_root=$adminOutputRoot"

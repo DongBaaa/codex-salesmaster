@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ProjectRoot,
     [string]$SourceFolder,
@@ -127,10 +127,21 @@ if (-not (Test-Path -LiteralPath $SourceFolder)) {
 }
 
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
+$adminOutputRoot = Join-Path $OutputRoot '관리자용'
+New-Item -ItemType Directory -Force -Path $adminOutputRoot | Out-Null
 
-$packageRoot = Join-Path $OutputRoot $PackageName
+$legacyRootPackage = Join-Path $OutputRoot $PackageName
+if (Test-Path -LiteralPath $legacyRootPackage) {
+    Remove-Item -LiteralPath $legacyRootPackage -Recurse -Force -ErrorAction SilentlyContinue
+}
+$legacyRootZip = Join-Path $OutputRoot ($PackageName + '.zip')
+if (Test-Path -LiteralPath $legacyRootZip) {
+    Remove-Item -LiteralPath $legacyRootZip -Force -ErrorAction SilentlyContinue
+}
+
+$packageRoot = Join-Path $adminOutputRoot $PackageName
 $appRoot = Join-Path $packageRoot 'App'
-$zipPath = Join-Path $OutputRoot ($PackageName + '.zip')
+$zipPath = Join-Path $adminOutputRoot ($PackageName + '.zip')
 
 Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
@@ -164,96 +175,96 @@ if (Test-Path -LiteralPath $appSettingsPath) {
 $installPs1Name = 'Install-GeoraePlan.ps1'
 $uninstallPs1Name = 'Uninstall-GeoraePlan.ps1'
 
-$uninstallScriptBody = @'
+$uninstallScriptBody = @"
 param(
-    [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'Programs\__APP_DISPLAY_NAME__')
+    [string]`$InstallRoot = (Join-Path `$env:LOCALAPPDATA 'Programs\__APP_DISPLAY_NAME__')
 )
 
-$desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) '__APP_DISPLAY_NAME__.lnk'
-$startMenuDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\__APP_DISPLAY_NAME__'
+`$desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) '__APP_DISPLAY_NAME__.lnk'
+`$startMenuDir = Join-Path `$env:APPDATA 'Microsoft\Windows\Start Menu\Programs\__APP_DISPLAY_NAME__'
 
-Remove-Item -LiteralPath $desktopShortcut -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $startMenuDir -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath `$desktopShortcut -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath `$startMenuDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath `$InstallRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host '__APP_DISPLAY_NAME__ removed'
-'@.Replace('__APP_DISPLAY_NAME__', $AppDisplayName)
+"@
+$uninstallScriptBody = $uninstallScriptBody.Replace('__APP_DISPLAY_NAME__', $AppDisplayName)
 
 $uninstallScriptBodyBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($uninstallScriptBody))
 
-$installScriptTemplate = @'
+$installScriptTemplate = @"
 param(
-    [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'Programs\__APP_DISPLAY_NAME__'),
-    [switch]$NoLaunch,
-    [switch]$NoShortcuts
+    [string]`$InstallRoot = (Join-Path `$env:LOCALAPPDATA 'Programs\__APP_DISPLAY_NAME__'),
+    [switch]`$NoLaunch,
+    [switch]`$NoShortcuts
 )
 
 function Invoke-RobocopyMirror {
     param(
-        [Parameter(Mandatory = $true)][string]$Source,
-        [Parameter(Mandatory = $true)][string]$Destination
+        [Parameter(Mandatory = `$true)][string]`$Source,
+        [Parameter(Mandatory = `$true)][string]`$Destination
     )
 
-    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-    & robocopy $Source $Destination /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
-    if ($LASTEXITCODE -ge 8) {
-        throw "robocopy failed ($LASTEXITCODE): $Source -> $Destination"
+    New-Item -ItemType Directory -Force -Path `$Destination | Out-Null
+    & robocopy `$Source `$Destination /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
+    if (`$LASTEXITCODE -ge 8) {
+        throw "robocopy failed (`$LASTEXITCODE): `$Source -> `$Destination"
     }
 }
 
-$ErrorActionPreference = 'Stop'
+`$ErrorActionPreference = 'Stop'
 
-$packageRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$sourceRoot = Join-Path $packageRoot 'App'
-$desktopDir = [Environment]::GetFolderPath('Desktop')
-$startMenuDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\__APP_DISPLAY_NAME__'
-$exePath = Join-Path $InstallRoot '__APP_DISPLAY_NAME__.exe'
-$uninstallScriptPath = Join-Path $InstallRoot '__UNINSTALL_PS1_NAME__'
+`$packageRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
+`$sourceRoot = Join-Path `$packageRoot 'App'
+`$desktopDir = [Environment]::GetFolderPath('Desktop')
+`$startMenuDir = Join-Path `$env:APPDATA 'Microsoft\Windows\Start Menu\Programs\__APP_DISPLAY_NAME__'
+`$exePath = Join-Path `$InstallRoot '__APP_DISPLAY_NAME__.exe'
+`$uninstallScriptPath = Join-Path `$InstallRoot '__UNINSTALL_PS1_NAME__'
 
-if (-not (Test-Path -LiteralPath $sourceRoot)) {
-    throw "App source not found: $sourceRoot"
+if (-not (Test-Path -LiteralPath `$sourceRoot)) {
+    throw "App source not found: `$sourceRoot"
 }
 
-Invoke-RobocopyMirror -Source $sourceRoot -Destination $InstallRoot
+Invoke-RobocopyMirror -Source `$sourceRoot -Destination `$InstallRoot
 
-$uninstallScriptContent = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('__UNINSTALL_SCRIPT_B64__'))
-$uninstallScriptContent | Set-Content -LiteralPath $uninstallScriptPath -Encoding UTF8
+`$uninstallScriptContent = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('__UNINSTALL_SCRIPT_B64__'))
+`$uninstallScriptContent | Set-Content -LiteralPath `$uninstallScriptPath -Encoding UTF8
 
-if (-not $NoShortcuts) {
-    New-Item -ItemType Directory -Force -Path $startMenuDir | Out-Null
-    $shell = New-Object -ComObject WScript.Shell
+if (-not `$NoShortcuts) {
+    New-Item -ItemType Directory -Force -Path `$startMenuDir | Out-Null
+    `$shell = New-Object -ComObject WScript.Shell
 
-    foreach ($shortcutPath in @(
-        (Join-Path $desktopDir '__APP_DISPLAY_NAME__.lnk'),
-        (Join-Path $startMenuDir '__APP_DISPLAY_NAME__.lnk')
+    foreach (`$shortcutPath in @(
+        (Join-Path `$desktopDir '__APP_DISPLAY_NAME__.lnk'),
+        (Join-Path `$startMenuDir '__APP_DISPLAY_NAME__.lnk')
     )) {
-        $shortcut = $shell.CreateShortcut($shortcutPath)
-        $shortcut.TargetPath = $exePath
-        $shortcut.WorkingDirectory = $InstallRoot
-        $shortcut.Save()
+        `$shortcut = `$shell.CreateShortcut(`$shortcutPath)
+        `$shortcut.TargetPath = `$exePath
+        `$shortcut.WorkingDirectory = `$InstallRoot
+        `$shortcut.Save()
     }
 
-    $removeShortcut = $shell.CreateShortcut((Join-Path $startMenuDir '__APP_DISPLAY_NAME____REMOVE_SHORTCUT_SUFFIX__'))
-    $removeShortcut.TargetPath = 'powershell.exe'
-    $removeShortcut.Arguments = "-ExecutionPolicy Bypass -File `"$uninstallScriptPath`""
-    $removeShortcut.WorkingDirectory = $InstallRoot
-    $removeShortcut.Save()
+    `$removeShortcut = `$shell.CreateShortcut((Join-Path `$startMenuDir '__APP_DISPLAY_NAME____REMOVE_SHORTCUT_SUFFIX__'))
+    `$removeShortcut.TargetPath = 'powershell.exe'
+    `$removeShortcut.Arguments = "-ExecutionPolicy Bypass -File ``"`$uninstallScriptPath``""
+    `$removeShortcut.WorkingDirectory = `$InstallRoot
+    `$removeShortcut.Save()
 }
 
-Write-Host "Install complete: $InstallRoot"
-Write-Host "Executable: $exePath"
+Write-Host "Install complete: `$InstallRoot"
+Write-Host "Executable: `$exePath"
 
-if (-not $NoLaunch) {
-    Start-Process -FilePath $exePath -WorkingDirectory $InstallRoot
+if (-not `$NoLaunch) {
+    Start-Process -FilePath `$exePath -WorkingDirectory `$InstallRoot
 }
-'@
+"@
 
-$installScript = $installScriptTemplate.
-    Replace('__APP_DISPLAY_NAME__', $AppDisplayName).
-    Replace('__UNINSTALL_PS1_NAME__', $uninstallPs1Name).
-    Replace('__UNINSTALL_SCRIPT_B64__', $uninstallScriptBodyBase64).
-    Replace('__REMOVE_SHORTCUT_SUFFIX__', $removeShortcutSuffix)
-
+$installScript = $installScriptTemplate
+$installScript = $installScript.Replace('__APP_DISPLAY_NAME__', $AppDisplayName)
+$installScript = $installScript.Replace('__UNINSTALL_PS1_NAME__', $uninstallPs1Name)
+$installScript = $installScript.Replace('__UNINSTALL_SCRIPT_B64__', $uninstallScriptBodyBase64)
+$installScript = $installScript.Replace('__REMOVE_SHORTCUT_SUFFIX__', $removeShortcutSuffix)
 $cmdScript = @"
 @echo off
 setlocal
