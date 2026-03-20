@@ -59,7 +59,10 @@ public sealed class UpdatesController : ControllerBase
         if (!System.IO.File.Exists(fullPath))
             return NotFound();
 
-        return PhysicalFile(fullPath, ResolveContentType(safeFileName), safeFileName, enableRangeProcessing: true);
+        var stream = System.IO.File.OpenRead(fullPath);
+        Response.Headers.CacheControl = "no-store";
+        Response.Headers["X-Update-FileName"] = Uri.EscapeDataString(safeFileName);
+        return File(stream, ResolveContentType(safeFileName));
     }
 
     private void NormalizePackage(AppUpdatePackageDto? package, string platform)

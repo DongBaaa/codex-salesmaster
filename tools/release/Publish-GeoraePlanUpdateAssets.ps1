@@ -130,12 +130,12 @@ $manifest = [ordered]@{
 }
 
 if (-not [string]::IsNullOrWhiteSpace($DesktopPackagePath) -and (Test-Path -LiteralPath $DesktopPackagePath)) {
-    $desktopFileName = "거래플랜-PC-설치패키지-v$DesktopVersion.zip"
+    $desktopFileName = "tradeplan-pc-installer-v$DesktopVersion.zip"
     $manifest.desktop = Copy-PackageWithMetadata -SourcePath $DesktopPackagePath -DestinationDirectory (Join-Path $downloadsRoot 'desktop') -OutputFileName $desktopFileName -Platform 'desktop' -Version $DesktopVersion -Notes $DesktopNotes -Mandatory:$MandatoryDesktop
 }
 
 if (-not [string]::IsNullOrWhiteSpace($AndroidPackagePath) -and (Test-Path -LiteralPath $AndroidPackagePath)) {
-    $androidFileName = "거래플랜-안드로이드-v$AndroidVersion.apk"
+    $androidFileName = "tradeplan-android-v$AndroidVersion.apk"
     $manifest.android = Copy-PackageWithMetadata -SourcePath $AndroidPackagePath -DestinationDirectory (Join-Path $downloadsRoot 'android') -OutputFileName $androidFileName -Platform 'android' -Version $AndroidVersion -Notes $AndroidNotes -Mandatory:$MandatoryAndroid
 }
 
