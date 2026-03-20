@@ -85,15 +85,7 @@ function Get-DefaultOutputRoot {
         [Parameter(Mandatory = $true)][string]$DeploymentRoot
     )
 
-    $candidate = Get-ChildItem -LiteralPath $DeploymentRoot -Directory |
-        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName '.gitkeep') } |
-        Select-Object -First 1 -ExpandProperty FullName
-
-    if (-not [string]::IsNullOrWhiteSpace($candidate)) {
-        return $candidate
-    }
-
-    return (Join-Path $DeploymentRoot 'InstallerPackage')
+    return $DeploymentRoot
 }
 
 if ([string]::IsNullOrWhiteSpace($AppDisplayName)) {

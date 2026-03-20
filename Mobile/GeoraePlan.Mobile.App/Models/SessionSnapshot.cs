@@ -9,6 +9,7 @@ public sealed class SessionSnapshot
     public bool IsAuthenticated { get; init; }
     public string Username { get; init; } = string.Empty;
     public string Role { get; init; } = string.Empty;
+    public string TenantCode { get; init; } = string.Empty;
     public string OfficeCode { get; init; } = string.Empty;
     public bool IsAdmin => string.Equals(Role, "Admin", StringComparison.OrdinalIgnoreCase);
 }

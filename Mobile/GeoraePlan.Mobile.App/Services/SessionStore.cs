@@ -9,6 +9,7 @@ public sealed class SessionStore
     private const string TokenKey = "session.token";
     private const string UsernameKey = "session.username";
     private const string RoleKey = "session.role";
+    private const string TenantCodeKey = "session.tenant";
     private const string OfficeCodeKey = "session.office";
 
     public bool HasCachedSession()
@@ -24,6 +25,7 @@ public sealed class SessionStore
             IsAuthenticated = true,
             Username = Preferences.Default.Get(UsernameKey, string.Empty),
             Role = Preferences.Default.Get(RoleKey, string.Empty),
+            TenantCode = Preferences.Default.Get(TenantCodeKey, string.Empty),
             OfficeCode = Preferences.Default.Get(OfficeCodeKey, string.Empty)
         };
     }
@@ -44,6 +46,7 @@ public sealed class SessionStore
         Preferences.Default.Set(HasSessionKey, true);
         Preferences.Default.Set(UsernameKey, response.User?.Username ?? string.Empty);
         Preferences.Default.Set(RoleKey, response.User?.Role ?? string.Empty);
+        Preferences.Default.Set(TenantCodeKey, response.User?.TenantCode ?? string.Empty);
         Preferences.Default.Set(OfficeCodeKey, response.User?.OfficeCode ?? string.Empty);
     }
 
@@ -60,12 +63,13 @@ public sealed class SessionStore
     }
 
 #if DEBUG
-    public async Task SaveDebugSnapshotAsync(string token, string username, string role, string officeCode = "")
+    public async Task SaveDebugSnapshotAsync(string token, string username, string role, string officeCode = "", string tenantCode = "")
     {
         await SecureStorage.Default.SetAsync(TokenKey, token ?? string.Empty);
         Preferences.Default.Set(HasSessionKey, true);
         Preferences.Default.Set(UsernameKey, username ?? string.Empty);
         Preferences.Default.Set(RoleKey, role ?? string.Empty);
+        Preferences.Default.Set(TenantCodeKey, tenantCode ?? string.Empty);
         Preferences.Default.Set(OfficeCodeKey, officeCode ?? string.Empty);
     }
 #endif
@@ -84,6 +88,7 @@ public sealed class SessionStore
         Preferences.Default.Remove(HasSessionKey);
         Preferences.Default.Remove(UsernameKey);
         Preferences.Default.Remove(RoleKey);
+        Preferences.Default.Remove(TenantCodeKey);
         Preferences.Default.Remove(OfficeCodeKey);
         return Task.CompletedTask;
     }

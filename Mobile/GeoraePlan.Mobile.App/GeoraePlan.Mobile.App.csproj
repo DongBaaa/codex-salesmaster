@@ -20,8 +20,27 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <MauiIcon Include="..\..\AppIcons\playstore.png" Link="Resources\AppIcon\appicon.png" BaseSize="512,512" />
+    <MauiIcon Remove="Resources\AppIcon\appicon.svg" />
+    <MauiIcon Remove="Resources\AppIcon\appiconfg.svg" />
     <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#2563EB" BaseSize="128,128" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0-android'">
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-mdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-mdpi\appicon.png" LogicalName="mipmap-mdpi/appicon.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-hdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-hdpi\appicon.png" LogicalName="mipmap-hdpi/appicon.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-xhdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-xhdpi\appicon.png" LogicalName="mipmap-xhdpi/appicon.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-xxhdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-xxhdpi\appicon.png" LogicalName="mipmap-xxhdpi/appicon.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-xxxhdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-xxxhdpi\appicon.png" LogicalName="mipmap-xxxhdpi/appicon.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-mdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-mdpi\appicon_foreground.png" LogicalName="mipmap-mdpi/appicon_foreground.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-hdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-hdpi\appicon_foreground.png" LogicalName="mipmap-hdpi/appicon_foreground.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-xhdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-xhdpi\appicon_foreground.png" LogicalName="mipmap-xhdpi/appicon_foreground.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-xxhdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-xxhdpi\appicon_foreground.png" LogicalName="mipmap-xxhdpi/appicon_foreground.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-xxxhdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-xxxhdpi\appicon_foreground.png" LogicalName="mipmap-xxxhdpi/appicon_foreground.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-mdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-mdpi\appicon_round.png" LogicalName="mipmap-mdpi/appicon_round.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-hdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-hdpi\appicon_round.png" LogicalName="mipmap-hdpi/appicon_round.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-xhdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-xhdpi\appicon_round.png" LogicalName="mipmap-xhdpi/appicon_round.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-xxhdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-xxhdpi\appicon_round.png" LogicalName="mipmap-xxhdpi/appicon_round.png" />
+    <AndroidResource Include="..\..\AppIcons\android\mipmap-xxxhdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-xxxhdpi\appicon_round.png" LogicalName="mipmap-xxxhdpi/appicon_round.png" />
   </ItemGroup>
 
   <ItemGroup>

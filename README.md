@@ -116,13 +116,13 @@ dotnet test "거래플랜.sln" -c Release --no-build
 - 안드로이드 환경 점검 스크립트: `D:\거래플랜\tools\mobile\Test-GeoraePlanAndroidEnvironment.ps1`
 - 안드로이드 keystore 생성 스크립트: `D:\거래플랜\tools\mobile\New-GeoraePlanAndroidKeystore.ps1`
 - 안드로이드 서명 APK 빌드 스크립트: `D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidApk.ps1`
-- 안드로이드 실사용 APK: `D:\거래플랜\배포\테스트\모바일\거래플랜-안드로이드-v0.2.3-signed.apk`
+- 안드로이드 실사용 APK: `D:\거래플랜\배포\거래플랜-안드로이드-v0.2.3-signed.apk`
 - PC 설치 패키지 생성 스크립트: `D:\거래플랜\tools\release\Build-GeoraePlanDesktopInstaller.ps1`
 - PC EXE/MSI 설치 패키지 생성 스크립트: `D:\거래플랜\tools\release\Build-GeoraePlanDesktopNativeInstallers.ps1`
 - PC 실사용 설치 파일(권장):
-  - `D:\거래플랜\배포\설치패키지\거래플랜-PC-설치패키지.exe`
+  - `D:\거래플랜\배포\거래플랜-PC-설치패키지.exe`
 - PC 관리자용 보관 파일:
-  - `D:\거래플랜\배포\설치패키지\관리자용\거래플랜-PC-설치패키지.msi`
-  - `D:\거래플랜\배포\설치패키지\관리자용\거래플랜-PC-설치패키지.zip`
+  - `D:\거래플랜\배포\관리자용\거래플랜-PC-설치패키지.msi`
+  - `D:\거래플랜\배포\관리자용\거래플랜-PC-설치패키지.zip`
 - 수정/업데이트 가이드:
   - `D:\거래플랜\수정_업데이트_가이드_2026-03-20.md`

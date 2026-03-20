@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ProjectRoot,
     [string]$ProjectFile,
@@ -21,12 +21,53 @@ param(
     [switch]$NoRestore
 )
 
+function Get-Utf8String {
+    param(
+        [Parameter(Mandatory = $true)][string]$Base64
+    )
+
+    return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Base64))
+}
+
 function Resolve-DefaultProjectRoot {
     param(
         [Parameter(Mandatory = $true)][string]$ScriptPath
     )
 
     return (Resolve-Path (Join-Path (Split-Path -Parent $ScriptPath) '..\..')).Path
+}
+
+function Resolve-DeploymentRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot
+    )
+
+    $candidate = Get-ChildItem -LiteralPath $ProjectRoot -Directory |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'Set-ApiBaseUrl.ps1') } |
+        Select-Object -First 1 -ExpandProperty FullName
+
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        throw 'Deployment root not found under project root.'
+    }
+
+    return $candidate
+}
+
+function Get-CsprojPropertyValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectFile,
+        [Parameter(Mandatory = $true)][string]$PropertyName
+    )
+
+    [xml]$xml = Get-Content -LiteralPath $ProjectFile -Raw
+    foreach ($group in $xml.Project.PropertyGroup) {
+        $property = $group.$PropertyName
+        if ($null -ne $property -and -not [string]::IsNullOrWhiteSpace([string]$property)) {
+            return ([string]$property).Trim()
+        }
+    }
+
+    return $null
 }
 
 function Resolve-PathIfRelative {
@@ -156,6 +197,10 @@ if ([string]::IsNullOrWhiteSpace($ProjectFile)) {
     $ProjectFile = Join-Path $ProjectRoot 'Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj'
 }
 
+if ([string]::IsNullOrWhiteSpace($VersionName)) {
+    $VersionName = Get-CsprojPropertyValue -ProjectFile $ProjectFile -PropertyName 'ApplicationDisplayVersion'
+}
+
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $ProjectRoot 'Mobile\artifacts\android'
 }
@@ -244,6 +289,7 @@ $env:ANDROID_HOME = $resolvedAndroidSdkDirectory
 $env:PATH = (Join-Path $resolvedJavaSdkDirectory 'bin') + ';' + (Join-Path $resolvedAndroidSdkDirectory 'platform-tools') + ';' + (Split-Path -Parent $resolvedDotNetPath) + ';' + $env:PATH
 
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
+$deploymentRoot = Resolve-DeploymentRoot -ProjectRoot $ProjectRoot
 
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $artifactPrefix = switch ($PackageFormat) {
@@ -325,9 +371,21 @@ if ($PackageFormat -in @('apk', 'both')) {
     }
 
     $apkHash = Write-PackageHash -File $apkFile
+    $stableApkVersion = if ([string]::IsNullOrWhiteSpace($VersionName)) { 'latest' } else { $VersionName }
+    $stableApkPrefix = Get-Utf8String '6rGw656Y7ZSM656cLeyViOuTnOuhnOydtOuTnC12'
+    $stableApkName = "$stableApkPrefix$stableApkVersion-signed.apk"
+    $stableApkFilter = Get-Utf8String '6rGw656Y7ZSM656cLeyViOuTnOuhnOydtOuTnC12Ki1zaWduZWQuYXBrKg=='
+    Get-ChildItem -LiteralPath $deploymentRoot -File -Filter $stableApkFilter -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    $stableApkPath = Join-Path $deploymentRoot $stableApkName
+    Copy-Item -LiteralPath $apkFile.FullName -Destination $stableApkPath -Force
+    $stableApkHash = Write-PackageHash -File (Get-Item -LiteralPath $stableApkPath)
     Write-Host "apk_ready=$($apkFile.FullName)"
     Write-Host "apk_sha256=$($apkHash.Hash)"
     Write-Host "apk_sha256_file=$($apkHash.HashFile)"
+    Write-Host "apk_deployment_copy=$stableApkPath"
+    Write-Host "apk_deployment_sha256=$($stableApkHash.Hash)"
+    Write-Host "apk_deployment_sha256_file=$($stableApkHash.HashFile)"
 }
 
 if ($PackageFormat -in @('aab', 'both')) {
@@ -347,3 +405,4 @@ if ($PackageFormat -in @('aab', 'both')) {
 Write-Host "dotnet_path=$resolvedDotNetPath"
 Write-Host "java_sdk_directory=$resolvedJavaSdkDirectory"
 Write-Host "android_sdk_directory=$resolvedAndroidSdkDirectory"
+

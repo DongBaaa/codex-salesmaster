@@ -3,7 +3,7 @@
   <application
     android:allowBackup="false"
     android:icon="@mipmap/appicon"
-    android:roundIcon="@mipmap/appicon"
+    android:roundIcon="@mipmap/appicon_round"
     android:supportsRtl="true"
     android:usesCleartextTraffic="false">
     <provider

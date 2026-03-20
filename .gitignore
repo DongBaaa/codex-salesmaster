@@ -76,3 +76,6 @@ Mobile/**/android-signing.local.json
 배포/*.exe
 배포/*.apk
 배포/*.zip
+배포/*.sha256.txt
+배포/README.txt
+배포/관리자용/**

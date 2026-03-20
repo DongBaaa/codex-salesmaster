@@ -12,6 +12,8 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     private readonly SyncCoordinator _syncCoordinator;
     private readonly MobileRefreshCoordinator _refreshCoordinator;
     private readonly SessionStore _sessionStore;
+    private readonly RecentItemSelectionStore _recentItemSelectionStore;
+    private readonly List<RecentItemSelectionRecord> _recentSelections = new();
 
     private CustomerDto? _selectedCustomer;
     private ItemCategorySummaryDto? _selectedCategory;
@@ -26,20 +28,25 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     private string _statusMessage = "거래처를 찾고 품목을 추가한 뒤 전표를 저장하세요.";
     private bool _isBusy;
     private bool _isLoaded;
+    private bool _isItemEntrySheetVisible;
     private Guid? _editingLineId;
     private MobileOfficeOption? _selectedInvoiceOffice;
     private string _sessionOfficeCode = OfficeCodeCatalog.Usenet;
+    private string _sessionTenantCode = TenantScopeCatalog.UsenetGroup;
+    private string _sessionUsername = string.Empty;
 
     public InvoiceDraftViewModel(
         GeoraePlanApiClient api,
         SyncCoordinator syncCoordinator,
         MobileRefreshCoordinator refreshCoordinator,
-        SessionStore sessionStore)
+        SessionStore sessionStore,
+        RecentItemSelectionStore recentItemSelectionStore)
     {
         _api = api;
         _syncCoordinator = syncCoordinator;
         _refreshCoordinator = refreshCoordinator;
         _sessionStore = sessionStore;
+        _recentItemSelectionStore = recentItemSelectionStore;
         LoadCommand = new AsyncCommand(LoadAsync);
         SaveDraftCommand = new AsyncCommand(SaveDraftAsync);
 
@@ -47,6 +54,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         ItemSearchResults.CollectionChanged += HandleCollectionChanged;
         SelectedItemBranchStocks.CollectionChanged += HandleCollectionChanged;
         LineItems.CollectionChanged += HandleCollectionChanged;
+        VisibleRecentItems.CollectionChanged += HandleCollectionChanged;
     }
 
     public event Func<Task>? SavedSuccessfully;
@@ -57,6 +65,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public ObservableCollection<ItemWarehouseStockDto> SelectedItemBranchStocks { get; } = new();
     public ObservableCollection<InvoiceLineDraftItem> LineItems { get; } = new();
     public ObservableCollection<MobileOfficeOption> InvoiceOfficeOptions { get; } = new();
+    public ObservableCollection<RecentItemSelectionRecord> VisibleRecentItems { get; } = new();
 
     public CustomerDto? SelectedCustomer
     {
@@ -74,17 +83,15 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public ItemCategorySummaryDto? SelectedCategory
     {
         get => _selectedCategory;
-        set
+        private set
         {
             if (SetProperty(ref _selectedCategory, value))
             {
-                ItemSearchResults.Clear();
-                SelectedItem = null;
-                SelectedItemBranchStocks.Clear();
+                OnPropertyChanged(nameof(HasSelectedCategory));
+                OnPropertyChanged(nameof(IsCategoryChooserVisible));
+                OnPropertyChanged(nameof(SelectedCategoryHeader));
                 OnPropertyChanged(nameof(SelectedCategorySummary));
-                OnPropertyChanged(nameof(HasSelectedItem));
-                if (value is not null)
-                    StatusMessage = $"{value.Name} 분류에서 품목을 찾으세요.";
+                RefreshVisibleRecentItems();
             }
         }
     }
@@ -97,7 +104,8 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             if (SetProperty(ref _selectedItem, value))
             {
                 OnPropertyChanged(nameof(HasSelectedItem));
-                OnPropertyChanged(nameof(SelectedItemSummary));
+                OnPropertyChanged(nameof(SelectedItemSheetTitle));
+                OnPropertyChanged(nameof(SelectedItemSheetSpecification));
                 OnPropertyChanged(nameof(SelectedItemPriceSummary));
                 OnPropertyChanged(nameof(SelectedItemMemo));
                 OnPropertyChanged(nameof(SelectedItemStockSummary));
@@ -172,8 +180,17 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         set => SetProperty(ref _isBusy, value);
     }
 
+    public bool IsItemEntrySheetVisible
+    {
+        get => _isItemEntrySheetVisible;
+        private set => SetProperty(ref _isItemEntrySheetVisible, value);
+    }
+
     public bool HasSelectedCustomer => SelectedCustomer is not null;
+    public bool HasSelectedCategory => SelectedCategory is not null;
+    public bool IsCategoryChooserVisible => !HasSelectedCategory;
     public bool HasSelectedItem => SelectedItem is not null;
+    public bool HasVisibleRecentItems => VisibleRecentItems.Count > 0;
     public bool CanChooseInvoiceOffice => InvoiceOfficeOptions.Count > 1;
     public string SelectedInvoiceOfficeCode => SelectedInvoiceOffice?.Code ?? _sessionOfficeCode;
     public string SelectedInvoiceOfficeSummary => SelectedInvoiceOffice is null
@@ -182,12 +199,20 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public string SelectedCustomerSummary => SelectedCustomer is null
         ? "거래처를 아직 선택하지 않았습니다."
         : $"선택 거래처: {SelectedCustomer.NameOriginal}";
+    public string SelectedCategoryHeader => SelectedCategory is null
+        ? "품목분류를 선택하세요."
+        : $"선택된 분류: {SelectedCategory.Name}";
     public string SelectedCategorySummary => SelectedCategory is null
         ? "품목분류를 선택하세요."
-        : $"선택 분류: {SelectedCategory.Name} ({SelectedCategory.ItemCount:N0}건)";
-    public string SelectedItemSummary => SelectedItem is null
-        ? "품목을 선택하세요."
-        : $"{SelectedItem.NameOriginal} / {SelectedItem.SpecificationOriginal}";
+        : $"현재 분류 품목 {ItemSearchResults.Count:N0}건";
+    public string SelectedItemSheetTitle => SelectedItem is null
+        ? "선택 품목"
+        : $"선택 품목: {SelectedItem.NameOriginal}";
+    public string SelectedItemSheetSpecification => SelectedItem is null
+        ? "규격 정보 없음"
+        : string.IsNullOrWhiteSpace(SelectedItem.SpecificationOriginal)
+            ? "규격 정보 없음"
+            : $"규격: {SelectedItem.SpecificationOriginal}";
     public string SelectedItemPriceSummary => SelectedItem is null
         ? "단가 정보 없음"
         : $"매입 {SelectedItem.PurchasePrice:N0} / 판매 {SelectedItem.SalePrice:N0} / 소매 {SelectedItem.RetailPrice:N0}";
@@ -201,27 +226,32 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public string SelectedItemStockSummary => SelectedItem is null
         ? "재고 정보 없음"
         : $"현재재고 {SelectedItem.CurrentStock:N0} / 안전재고 {SelectedItem.SafetyStock:N0}";
-    public string LineActionText => _editingLineId.HasValue ? "선택 품목 수정" : "품목 추가";
+    public string LineActionText => _editingLineId.HasValue ? "품목 수정" : "품목 추가";
     public string DraftSummary => LineItems.Count == 0
         ? "추가된 품목이 없습니다."
         : $"품목 {LineItems.Count:N0}건 / 합계 {LineItems.Sum(x => x.LineAmount):N0}원";
     public double CustomerSearchResultsHeight => CalculateListHeight(CustomerSearchResults.Count, 56, 42, 2);
-    public double ItemSearchResultsHeight => CalculateListHeight(ItemSearchResults.Count, 60, 42, 2);
-    public double SelectedItemBranchStocksHeight => CalculateListHeight(SelectedItemBranchStocks.Count, 30, 36, 3);
-    public double LineItemsHeight => CalculateListHeight(LineItems.Count, 74, 42, 2);
+    public double ItemSearchResultsHeight => CalculateListHeight(ItemSearchResults.Count, 64, 48, 5);
+    public double SelectedItemBranchStocksHeight => CalculateListHeight(SelectedItemBranchStocks.Count, 32, 40, 4);
+    public double LineItemsHeight => CalculateListHeight(LineItems.Count, 74, 42, 3);
 
     public AsyncCommand LoadCommand { get; }
     public AsyncCommand SaveDraftCommand { get; }
 
     public async Task LoadAsync()
     {
-        if (IsBusy || _isLoaded)
+        if (IsBusy)
             return;
 
         try
         {
             IsBusy = true;
             InitializeOfficeOptions();
+            await LoadRecentSelectionsAsync();
+
+            if (_isLoaded)
+                return;
+
             StatusMessage = "전표 작성을 위한 분류 정보를 불러오고 있습니다.";
             await _syncCoordinator.TryBackgroundSyncAsync("invoice-draft-load", TimeSpan.FromSeconds(30));
 
@@ -233,7 +263,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             _isLoaded = true;
             StatusMessage = ItemCategories.Count == 0
                 ? "등록된 품목분류가 없습니다."
-                : $"품목분류 {ItemCategories.Count:N0}건";
+                : "품목분류를 선택한 뒤 여러 품목을 연속 추가하세요.";
         }
         catch (Exception ex)
         {
@@ -305,6 +335,28 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         StatusMessage = $"{customer.NameOriginal} 거래처 기준으로 전표를 입력하세요.";
     }
 
+    public async Task SelectCategoryAsync(ItemCategorySummaryDto category, bool resetSearch = true)
+    {
+        if (category is null)
+            return;
+
+        if (resetSearch)
+            ItemSearchText = string.Empty;
+
+        SelectedCategory = category;
+        ResetItemSelection(clearCategory: false);
+        await SearchItemsAsync();
+    }
+
+    public void ClearSelectedCategory()
+    {
+        SelectedCategory = null;
+        ItemSearchText = string.Empty;
+        ItemSearchResults.Clear();
+        ResetItemSelection(clearCategory: false);
+        StatusMessage = "품목분류를 다시 선택하세요.";
+    }
+
     public async Task SearchItemsAsync()
     {
         if (IsBusy)
@@ -319,15 +371,16 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         try
         {
             IsBusy = true;
-            StatusMessage = "선택한 분류에서 품목을 찾고 있습니다.";
+            StatusMessage = $"{SelectedCategory.Name} 분류 품목을 조회하고 있습니다.";
             var items = await _api.GetItemsAsync(ItemSearchText, SelectedCategory.Name);
             ItemSearchResults.Clear();
             foreach (var item in items.OrderBy(x => x.NameOriginal))
                 ItemSearchResults.Add(item);
 
             StatusMessage = items.Count == 0
-                ? "조건에 맞는 품목이 없습니다."
-                : $"품목 검색 결과 {items.Count:N0}건";
+                ? "현재 분류에서 조건에 맞는 품목이 없습니다."
+                : $"{SelectedCategory.Name} 분류 품목 {items.Count:N0}건";
+            OnPropertyChanged(nameof(SelectedCategorySummary));
         }
         catch (Exception ex)
         {
@@ -339,57 +392,57 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         }
     }
 
-    public async Task SelectItemAsync(ItemDto item)
+    public Task SelectItemAsync(ItemDto item)
+        => OpenItemEntrySheetAsync(item, recordRecent: true);
+
+    public async Task SelectRecentItemAsync(RecentItemSelectionRecord recent)
     {
-        SelectedItem = item;
-        LineQuantityText = "1";
-        LineUnitPriceText = ResolveDefaultUnitPrice(item).ToString("0.##");
-        LineRemark = string.IsNullOrWhiteSpace(item.SimpleMemo) ? item.Notes : item.SimpleMemo;
-        _editingLineId = null;
-        OnPropertyChanged(nameof(LineActionText));
+        if (recent is null)
+            return;
 
-        SelectedItemBranchStocks.Clear();
-        try
+        if (SelectedCategory is null || !CategoryEquals(SelectedCategory.Name, recent.CategoryName))
         {
-            var detail = await _api.GetItemDetailAsync(item.Id);
-            if (detail?.Item is not null)
-                SelectedItem = detail.Item;
-
-            foreach (var stock in detail?.BranchStocks ?? [])
-                SelectedItemBranchStocks.Add(stock);
-        }
-        catch
-        {
-            SelectedItemBranchStocks.Add(new ItemWarehouseStockDto
-            {
-                ItemId = item.Id,
-                WarehouseCode = "전체",
-                Quantity = item.CurrentStock,
-                UpdatedAtUtc = DateTime.UtcNow
-            });
+            var category = FindCategoryByName(recent.CategoryName);
+            if (category is not null)
+                await SelectCategoryAsync(category);
         }
 
-        StatusMessage = $"{item.NameOriginal} 품목이 선택되었습니다.";
+        var matched = ItemSearchResults.FirstOrDefault(item => item.Id == recent.ItemId)
+                      ?? new ItemDto
+                      {
+                          Id = recent.ItemId,
+                          CategoryName = recent.CategoryName,
+                          NameOriginal = recent.ItemNameOriginal,
+                          SpecificationOriginal = recent.SpecificationOriginal
+                      };
+
+        await OpenItemEntrySheetAsync(matched, recordRecent: true);
     }
 
-    public Task AddOrUpdateLineAsync()
+    public async Task CancelItemEntryAsync()
+    {
+        ResetItemSelection(clearCategory: false);
+        await Task.CompletedTask;
+    }
+
+    public async Task AddOrUpdateLineAsync()
     {
         if (SelectedItem is null)
         {
             StatusMessage = "추가할 품목을 먼저 선택하세요.";
-            return Task.CompletedTask;
+            return;
         }
 
         if (!decimal.TryParse(LineQuantityText, out var quantity) || quantity <= 0m)
         {
             StatusMessage = "수량을 올바르게 입력하세요.";
-            return Task.CompletedTask;
+            return;
         }
 
         if (!decimal.TryParse(LineUnitPriceText, out var unitPrice) || unitPrice < 0m)
         {
             StatusMessage = "단가를 올바르게 입력하세요.";
-            return Task.CompletedTask;
+            return;
         }
 
         var draft = InvoiceLineDraftItem.FromItem(SelectedItem, quantity);
@@ -406,44 +459,78 @@ public sealed class InvoiceDraftViewModel : ObservableObject
                 draft.Id = existing.Id;
                 LineItems[index] = draft;
             }
-            StatusMessage = "전표 품목을 수정했습니다.";
+
+            StatusMessage = "전표 품목을 수정했습니다. 같은 분류에서 다음 품목을 계속 추가하세요.";
         }
         else
         {
             LineItems.Add(draft);
-            StatusMessage = "전표 품목을 추가했습니다.";
+            StatusMessage = "전표 품목을 추가했습니다. 같은 분류에서 다음 품목을 계속 선택하세요.";
         }
 
-        _editingLineId = null;
-        LineQuantityText = "1";
-        LineUnitPriceText = ResolveDefaultUnitPrice(SelectedItem).ToString("0.##");
-        LineRemark = string.Empty;
-        OnPropertyChanged(nameof(LineActionText));
+        await RecordRecentSelectionAsync(SelectedItem);
+        ResetItemSelection(clearCategory: false);
         OnPropertyChanged(nameof(DraftSummary));
-        return Task.CompletedTask;
     }
 
-    public Task EditLineAsync(InvoiceLineDraftItem line)
+    public async Task EditLineAsync(InvoiceLineDraftItem line)
     {
+        if (!string.IsNullOrWhiteSpace(line.CategoryName))
+        {
+            var category = FindCategoryByName(line.CategoryName);
+            if (category is not null && (SelectedCategory is null || !CategoryEquals(SelectedCategory.Name, category.Name)))
+                await SelectCategoryAsync(category);
+        }
+
+        ItemDto item;
+        if (line.ItemId.HasValue)
+        {
+            item = ItemSearchResults.FirstOrDefault(candidate => candidate.Id == line.ItemId.Value)
+                   ?? new ItemDto
+                   {
+                       Id = line.ItemId.Value,
+                       CategoryName = line.CategoryName,
+                       NameOriginal = line.ItemNameOriginal,
+                       SpecificationOriginal = line.SpecificationOriginal,
+                       Unit = line.Unit,
+                       SalePrice = line.UnitPrice,
+                       RetailPrice = line.UnitPrice,
+                       PurchasePrice = line.UnitPrice,
+                       SimpleMemo = line.Remark
+                   };
+        }
+        else
+        {
+            item = new ItemDto
+            {
+                CategoryName = line.CategoryName,
+                NameOriginal = line.ItemNameOriginal,
+                SpecificationOriginal = line.SpecificationOriginal,
+                Unit = line.Unit,
+                SalePrice = line.UnitPrice,
+                RetailPrice = line.UnitPrice,
+                PurchasePrice = line.UnitPrice,
+                SimpleMemo = line.Remark
+            };
+        }
+
         _editingLineId = line.Id;
+        await OpenItemEntrySheetAsync(item, recordRecent: false);
         LineQuantityText = line.Quantity.ToString("0.##");
         LineUnitPriceText = line.UnitPrice.ToString("0.##");
         LineRemark = line.Remark;
         OnPropertyChanged(nameof(LineActionText));
         StatusMessage = $"{line.ItemNameOriginal} 품목을 수정 중입니다.";
-        return Task.CompletedTask;
     }
 
     public Task RemoveLineAsync(InvoiceLineDraftItem line)
     {
         LineItems.Remove(line);
         if (_editingLineId == line.Id)
-        {
-            _editingLineId = null;
-            OnPropertyChanged(nameof(LineActionText));
-        }
+            ResetItemSelection(clearCategory: false);
 
         OnPropertyChanged(nameof(DraftSummary));
+        StatusMessage = $"{line.ItemNameOriginal} 품목을 목록에서 제거했습니다.";
         return Task.CompletedTask;
     }
 
@@ -521,6 +608,66 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         }
     }
 
+    private async Task OpenItemEntrySheetAsync(ItemDto item, bool recordRecent)
+    {
+        SelectedItem = item;
+        _editingLineId = recordRecent ? null : _editingLineId;
+        OnPropertyChanged(nameof(LineActionText));
+        LineQuantityText = "1";
+        LineUnitPriceText = ResolveDefaultUnitPrice(item).ToString("0.##");
+        LineRemark = string.IsNullOrWhiteSpace(item.SimpleMemo) ? item.Notes : item.SimpleMemo;
+        SelectedItemBranchStocks.Clear();
+
+        try
+        {
+            var detail = item.Id == Guid.Empty ? null : await _api.GetItemDetailAsync(item.Id);
+            if (detail?.Item is not null)
+            {
+                SelectedItem = detail.Item;
+                LineUnitPriceText = ResolveDefaultUnitPrice(detail.Item).ToString("0.##");
+                if (string.IsNullOrWhiteSpace(LineRemark))
+                    LineRemark = string.IsNullOrWhiteSpace(detail.Item.SimpleMemo) ? detail.Item.Notes : detail.Item.SimpleMemo;
+            }
+
+            foreach (var stock in detail?.BranchStocks ?? [])
+                SelectedItemBranchStocks.Add(stock);
+        }
+        catch
+        {
+            if (item.Id != Guid.Empty)
+            {
+                SelectedItemBranchStocks.Add(new ItemWarehouseStockDto
+                {
+                    ItemId = item.Id,
+                    WarehouseCode = "전체",
+                    Quantity = item.CurrentStock,
+                    UpdatedAtUtc = DateTime.UtcNow
+                });
+            }
+        }
+
+        if (recordRecent && SelectedItem is not null)
+            await RecordRecentSelectionAsync(SelectedItem);
+
+        IsItemEntrySheetVisible = true;
+        StatusMessage = $"{item.NameOriginal} 품목을 선택했습니다. 수량과 단가를 입력하세요.";
+    }
+
+    private void ResetItemSelection(bool clearCategory)
+    {
+        _editingLineId = null;
+        SelectedItem = null;
+        SelectedItemBranchStocks.Clear();
+        IsItemEntrySheetVisible = false;
+        LineQuantityText = "1";
+        LineUnitPriceText = "0";
+        LineRemark = string.Empty;
+        OnPropertyChanged(nameof(LineActionText));
+
+        if (clearCategory)
+            SelectedCategory = null;
+    }
+
     private void InitializeOfficeOptions()
     {
         if (InvoiceOfficeOptions.Count > 0)
@@ -528,6 +675,8 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
         var snapshot = _sessionStore.GetSnapshot();
         _sessionOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(snapshot.OfficeCode, OfficeCodeCatalog.Usenet);
+        _sessionTenantCode = string.IsNullOrWhiteSpace(snapshot.TenantCode) ? TenantScopeCatalog.UsenetGroup : snapshot.TenantCode;
+        _sessionUsername = snapshot.Username ?? string.Empty;
 
         var options = new List<string>();
         if (snapshot.IsAdmin)
@@ -560,6 +709,70 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedInvoiceOfficeSummary));
     }
 
+    private async Task LoadRecentSelectionsAsync()
+    {
+        var snapshot = _sessionStore.GetSnapshot();
+        _sessionTenantCode = string.IsNullOrWhiteSpace(snapshot.TenantCode) ? TenantScopeCatalog.UsenetGroup : snapshot.TenantCode;
+        _sessionUsername = snapshot.Username ?? string.Empty;
+
+        _recentSelections.Clear();
+        var records = await _recentItemSelectionStore.LoadAsync(_sessionTenantCode, _sessionUsername);
+        _recentSelections.AddRange(records);
+        RefreshVisibleRecentItems();
+    }
+
+    private async Task RecordRecentSelectionAsync(ItemDto item)
+    {
+        if (item.Id == Guid.Empty)
+            return;
+
+        _recentSelections.RemoveAll(entry => entry.ItemId == item.Id);
+        _recentSelections.Insert(0, new RecentItemSelectionRecord
+        {
+            ItemId = item.Id,
+            CategoryName = item.CategoryName,
+            ItemNameOriginal = item.NameOriginal,
+            SpecificationOriginal = item.SpecificationOriginal,
+            SelectedAtUtc = DateTime.UtcNow
+        });
+
+        if (_recentSelections.Count > 5)
+            _recentSelections.RemoveRange(5, _recentSelections.Count - 5);
+
+        await _recentItemSelectionStore.SaveAsync(_sessionTenantCode, _sessionUsername, _recentSelections);
+        RefreshVisibleRecentItems();
+    }
+
+    private void RefreshVisibleRecentItems()
+    {
+        var ordered = _recentSelections
+            .OrderBy(record => SelectedCategory is not null && CategoryEquals(record.CategoryName, SelectedCategory.Name) ? 0 : 1)
+            .ThenByDescending(record => record.SelectedAtUtc)
+            .Take(5)
+            .ToList();
+
+        VisibleRecentItems.Clear();
+        foreach (var record in ordered)
+            VisibleRecentItems.Add(record);
+
+        OnPropertyChanged(nameof(HasVisibleRecentItems));
+    }
+
+    private ItemCategorySummaryDto? FindCategoryByName(string? categoryName)
+    {
+        if (string.IsNullOrWhiteSpace(categoryName))
+            return ItemCategories.FirstOrDefault(category => string.Equals(category.Name, "미분류", StringComparison.OrdinalIgnoreCase));
+
+        return ItemCategories.FirstOrDefault(category => CategoryEquals(category.Name, categoryName));
+    }
+
+    private static bool CategoryEquals(string? left, string? right)
+    {
+        var normalizedLeft = string.IsNullOrWhiteSpace(left) ? "미분류" : left.Trim();
+        var normalizedRight = string.IsNullOrWhiteSpace(right) ? "미분류" : right.Trim();
+        return string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string GetOfficeDisplayName(string code)
         => OfficeCodeCatalog.IsSharedOfficeCode(code)
             ? "공용"
@@ -572,6 +785,8 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedItemBranchStocksHeight));
         OnPropertyChanged(nameof(LineItemsHeight));
         OnPropertyChanged(nameof(DraftSummary));
+        OnPropertyChanged(nameof(HasVisibleRecentItems));
+        OnPropertyChanged(nameof(SelectedCategorySummary));
     }
 
     private static double CalculateListHeight(int count, double rowHeight, double emptyHeight, int maxVisibleRows)

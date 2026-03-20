@@ -78,6 +78,7 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 
 if ([string]::IsNullOrWhiteSpace($DesktopPackagePath)) {
     $desktopCandidates = @(
+        (Join-Path $ProjectRoot '배포\관리자용\거래플랜-PC-설치패키지.zip'),
         (Join-Path $ProjectRoot '배포\설치패키지\관리자용\거래플랜-PC-설치패키지.zip'),
         (Join-Path $ProjectRoot '배포\설치패키지\거래플랜-PC-설치패키지.zip')
     )
@@ -85,9 +86,16 @@ if ([string]::IsNullOrWhiteSpace($DesktopPackagePath)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($AndroidPackagePath)) {
-    $androidNamed = Get-ChildItem -Path (Join-Path $ProjectRoot 'Mobile\artifacts\android') -File -Filter '거래플랜-안드로이드-*.apk' -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
+    $androidCandidates = @(
+        (Get-ChildItem -Path (Join-Path $ProjectRoot '배포') -File -Filter '거래플랜-안드로이드-v*-signed.apk' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1),
+        (Get-ChildItem -Path (Join-Path $ProjectRoot 'Mobile\artifacts\android') -File -Filter '거래플랜-안드로이드-*.apk' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1)
+    ) | Where-Object { $null -ne $_ }
+
+    $androidNamed = $androidCandidates | Select-Object -First 1
     if ($null -ne $androidNamed) {
         $AndroidPackagePath = $androidNamed.FullName
     }

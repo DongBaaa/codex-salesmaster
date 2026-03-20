@@ -57,15 +57,7 @@ function Get-DefaultClientSourceFolder {
 function Get-DefaultOutputRoot {
     param([Parameter(Mandatory = $true)][string]$DeploymentRoot)
 
-    $candidate = Get-ChildItem -LiteralPath $DeploymentRoot -Directory |
-        Where-Object { $_.Name -eq '설치패키지' } |
-        Select-Object -First 1 -ExpandProperty FullName
-
-    if (-not [string]::IsNullOrWhiteSpace($candidate)) {
-        return $candidate
-    }
-
-    return (Join-Path $DeploymentRoot '설치패키지')
+    return $DeploymentRoot
 }
 
 function Get-ProjectVersion {

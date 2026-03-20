@@ -16,6 +16,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<SessionStore>();
         builder.Services.AddSingleton<JsonSyncStateStore>();
         builder.Services.AddSingleton<CustomerContractCacheStore>();
+        builder.Services.AddSingleton<RecentItemSelectionStore>();
         builder.Services.AddSingleton<MobileRefreshCoordinator>();
         builder.Services.AddSingleton<PaymentAttachmentDraftStore>();
         builder.Services.AddSingleton<GeoraePlanApiClient>();
