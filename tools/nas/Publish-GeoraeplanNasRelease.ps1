@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$ProjectRoot,
     [string]$NasRoot = '\\192.0.2.10\docker\georaeplan',
@@ -6,7 +6,13 @@ param(
     [string]$ReleaseId = (Get-Date -Format 'yyyyMMdd-HHmmss'),
     [switch]$SkipBuild,
     [switch]$SkipConfigSync,
-    [switch]$MirrorToLive
+    [switch]$MirrorToLive,
+    [switch]$AllowLegacyLiveMirror,
+    [string]$NasSshHost,
+    [string]$NasSshUser,
+    [int]$NasSshPort = 0,
+    [string]$NasSshKeyPath,
+    [string]$NasRemoteOpsPath
 )
 
 function Invoke-RobocopyMirror {
@@ -45,6 +51,134 @@ function Get-NasEnvMap {
     return $map
 }
 
+function Get-FirstConfiguredValue {
+    param([string[]]$Candidates)
+
+    foreach ($candidate in $Candidates) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            return $candidate.Trim()
+        }
+    }
+
+    return ''
+}
+
+function Get-NasHostFromRoot {
+    param([Parameter(Mandatory = $true)][string]$NasRoot)
+
+    if ($NasRoot -match '^\\\\([^\\]+)\\') {
+        return $matches[1]
+    }
+
+    return ''
+}
+
+function Resolve-NasSshConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$NasRoot,
+        [Parameter(Mandatory = $true)][hashtable]$NasEnv,
+        [string]$NasSshHost,
+        [string]$NasSshUser,
+        [int]$NasSshPort,
+        [string]$NasSshKeyPath,
+        [string]$NasRemoteOpsPath
+    )
+
+    $sshHost = Get-FirstConfiguredValue @(
+        $NasSshHost,
+        $env:NAS_SSH_HOST,
+        ($NasEnv['NAS_SSH_HOST']),
+        (Get-NasHostFromRoot -NasRoot $NasRoot)
+    )
+
+    $user = Get-FirstConfiguredValue @(
+        $NasSshUser,
+        $env:NAS_SSH_USER,
+        ($NasEnv['NAS_SSH_USER'])
+    )
+
+    $remoteOpsPath = Get-FirstConfiguredValue @(
+        $NasRemoteOpsPath,
+        $env:NAS_REMOTE_OPS_PATH,
+        ($NasEnv['NAS_REMOTE_OPS_PATH']),
+        '/volume1/docker/georaeplan/ops'
+    )
+
+    $portText = Get-FirstConfiguredValue @(
+        ($(if ($NasSshPort -gt 0) { $NasSshPort.ToString() } else { '' })),
+        $env:NAS_SSH_PORT,
+        ($NasEnv['NAS_SSH_PORT']),
+        '22'
+    )
+    $port = 22
+    [void][int]::TryParse($portText, [ref]$port)
+
+    $keyPath = Get-FirstConfiguredValue @(
+        $NasSshKeyPath,
+        $env:NAS_SSH_KEY_PATH,
+        ($NasEnv['NAS_SSH_KEY_PATH'])
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($keyPath) -and -not [System.IO.Path]::IsPathRooted($keyPath)) {
+        $keyPath = Join-Path $env:USERPROFILE $keyPath
+    }
+
+    return [pscustomobject]@{
+        Host = $sshHost
+        User = $user
+        Port = $port
+        KeyPath = $keyPath
+        RemoteOpsPath = $remoteOpsPath
+    }
+}
+
+function Test-NasSshConfigComplete {
+    param([Parameter(Mandatory = $true)]$Config)
+
+    return -not [string]::IsNullOrWhiteSpace($Config.Host) -and
+           -not [string]::IsNullOrWhiteSpace($Config.User) -and
+           -not [string]::IsNullOrWhiteSpace($Config.RemoteOpsPath)
+}
+
+function Invoke-NasApplyRelease {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReleaseId,
+        [Parameter(Mandatory = $true)]$Config
+    )
+
+    $sshCommand = Get-Command ssh -ErrorAction SilentlyContinue
+    if ($null -eq $sshCommand) {
+        throw 'ssh command not found. Install OpenSSH client or configure a reachable SSH client first.'
+    }
+
+    $sshArgs = @(
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-o', 'ConnectTimeout=10',
+        '-o', 'PreferredAuthentications=publickey,password,keyboard-interactive'
+    )
+
+    if ($Config.Port -gt 0) {
+        $sshArgs += @('-p', $Config.Port.ToString())
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Config.KeyPath)) {
+        if (-not (Test-Path -LiteralPath $Config.KeyPath)) {
+            throw "NAS_SSH_KEY_PATH not found: $($Config.KeyPath)"
+        }
+
+        $sshArgs += @('-i', $Config.KeyPath)
+    }
+
+    $remoteCommand = "cd '$($Config.RemoteOpsPath)' && chmod +x ./apply-release.sh ./health-check.sh ./_common.sh && ./apply-release.sh '$ReleaseId'"
+    $sshArgs += ('{0}@{1}' -f $Config.User, $Config.Host)
+    $sshArgs += $remoteCommand
+
+    & $sshCommand.Source @sshArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "NAS apply-release.sh execution failed with exit code $LASTEXITCODE."
+    }
+}
+
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = (Resolve-Path (Join-Path $scriptRoot '..\..')).Path
@@ -58,6 +192,7 @@ $opsEnvPath = Join-Path $NasRoot 'ops\.env'
 $tempPublishRoot = Join-Path ([System.IO.Path]::GetTempPath()) "georaeplan-$ReleaseId"
 $metadataPath = Join-Path $tempPublishRoot 'release-info.txt'
 $nasEnv = Get-NasEnvMap -EnvPath $opsEnvPath
+$sshConfig = Resolve-NasSshConfig -NasRoot $NasRoot -NasEnv $nasEnv -NasSshHost $NasSshHost -NasSshUser $NasSshUser -NasSshPort $NasSshPort -NasSshKeyPath $NasSshKeyPath -NasRemoteOpsPath $NasRemoteOpsPath
 
 if (-not (Test-Path -LiteralPath $serverProject)) {
     throw "Server project not found: $serverProject"
@@ -73,20 +208,20 @@ New-Item -ItemType Directory -Force $tempPublishRoot | Out-Null
 if (-not $SkipBuild) {
     & dotnet build $solutionPath -c $Configuration
     if ($LASTEXITCODE -ne 0) {
-        throw "dotnet build failed."
+        throw 'dotnet build failed.'
     }
 }
 
 & dotnet publish $serverProject -c $Configuration -o $tempPublishRoot
 if ($LASTEXITCODE -ne 0) {
-    throw "dotnet publish failed."
+    throw 'dotnet publish failed.'
 }
 
 $updateAssetScript = Join-Path $ProjectRoot 'tools\release\Publish-GeoraePlanUpdateAssets.ps1'
 if (Test-Path -LiteralPath $updateAssetScript) {
     & $updateAssetScript -ProjectRoot $ProjectRoot -OutputRoot (Join-Path $tempPublishRoot 'updates')
     if ($LASTEXITCODE -ne 0) {
-        throw "Update asset publish failed."
+        throw 'Update asset publish failed.'
     }
 }
 
@@ -140,19 +275,37 @@ $commit = (& git -C $ProjectRoot rev-parse HEAD 2>$null)
 if (-not $SkipConfigSync) {
     & (Join-Path $scriptRoot 'Sync-GeoraeplanNasConfig.ps1') -ProjectRoot $ProjectRoot -NasRoot $NasRoot
     if (-not $?) {
-        throw "NAS config sync failed."
+        throw 'NAS config sync failed.'
     }
 }
 
 Invoke-RobocopyMirror -Source $tempPublishRoot -Destination $releaseRoot
 
+$appliedRemotely = $false
 if ($MirrorToLive) {
-    Invoke-RobocopyMirror -Source $tempPublishRoot -Destination $liveRoot
+    if (Test-NasSshConfigComplete -Config $sshConfig) {
+        Write-Host "nas_apply_release_mode=ssh host=$($sshConfig.Host) user=$($sshConfig.User) port=$($sshConfig.Port)"
+        Invoke-NasApplyRelease -ReleaseId $ReleaseId -Config $sshConfig
+        $appliedRemotely = $true
+    }
+    elseif ($AllowLegacyLiveMirror) {
+        Write-Warning 'NAS SSH settings are missing. Because AllowLegacyLiveMirror was specified, the script will only copy the release and mirror app\\live directly.'
+        Write-Warning 'Recommended: configure NAS_SSH_USER, NAS_SSH_HOST, NAS_SSH_PORT, NAS_SSH_KEY_PATH, and NAS_REMOTE_OPS_PATH in ops/.env or Windows environment variables so the script can run apply-release.sh remotely.'
+        Invoke-RobocopyMirror -Source $tempPublishRoot -Destination $liveRoot
+    }
+    else {
+        throw 'MirrorToLive was requested, but NAS SSH settings are incomplete so apply-release.sh cannot be executed. Configure NAS_SSH_USER/HOST/PORT/KEY_PATH/REMOTE_OPS_PATH, or use -AllowLegacyLiveMirror only as a temporary fallback.'
+    }
 }
 
 Remove-Item $tempPublishRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host "publish_done release_id=$ReleaseId release_path=$releaseRoot"
 if ($MirrorToLive) {
-    Write-Host "live_mirror_done live_path=$liveRoot"
+    if ($appliedRemotely) {
+        Write-Host "nas_apply_release_done release_id=$ReleaseId host=$($sshConfig.Host) user=$($sshConfig.User)"
+    }
+    elseif ($AllowLegacyLiveMirror) {
+        Write-Host "live_mirror_done live_path=$liveRoot"
+    }
 }

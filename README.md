@@ -77,6 +77,18 @@ dotnet test "거래플랜.sln" -c Release --no-build
 
 - 참고: 현재 솔루션에 별도 테스트 프로젝트는 없어 `dotnet test` 는 빌드/구성 검증 성격이 강합니다.
 
+## NAS 자동 배포(권장)
+PC 설치파일, Android APK, 업데이트 자산 생성 후 NAS에 **파일 복사 + `apply-release.sh` 자동 실행 + 컨테이너 재기동**까지 한 번에 처리하려면 아래 명령을 사용합니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\release\Publish-GeoraePlanFullRelease.ps1" -ProjectRoot "D:\거래플랜" -SigningConfigPath "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\android-signing.local.json" -DeployToNas
+```
+
+사전 조건:
+- `D:\거래플랜\infra\nas\.env.example` 또는 운영용 `.env`에 `NAS_SSH_USER`를 포함한 SSH 정보가 채워져 있어야 합니다.
+- `NAS_SSH_KEY_PATH`는 **Windows 배포 PC 기준 경로**입니다.
+- SSH 설정이 없으면 기본값으로는 배포를 중단하며, 정말 필요한 경우에만 `-AllowLegacyLiveMirror`를 명시해 예전 방식의 직접 미러링을 허용할 수 있습니다.
+
 ## 인쇄 기본 동작
 - `[완료]` 판매(매출) 창에서 `출력물 편집` 후 데이터 저장
 - `[완료]` `인쇄하기(F9)` 클릭 시 미리보기 창 우선 표시

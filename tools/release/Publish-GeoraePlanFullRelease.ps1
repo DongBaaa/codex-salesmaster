@@ -4,7 +4,13 @@ param(
     [string]$SigningConfigPath,
     [string]$Channel = 'stable',
     [switch]$DeployToNas,
-    [switch]$NoRestore
+    [switch]$NoRestore,
+    [switch]$AllowLegacyLiveMirror,
+    [string]$NasSshHost,
+    [string]$NasSshUser,
+    [int]$NasSshPort = 0,
+    [string]$NasSshKeyPath,
+    [string]$NasRemoteOpsPath
 )
 
 function Resolve-ProjectRoot {
@@ -101,7 +107,34 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($DeployToNas) {
     $nasScript = Join-Path $ProjectRoot 'tools\nas\Publish-GeoraeplanNasRelease.ps1'
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $nasScript -ProjectRoot $ProjectRoot -MirrorToLive
+    $nasArgs = @(
+        '-NoProfile'
+        '-ExecutionPolicy', 'Bypass'
+        '-File', $nasScript
+        '-ProjectRoot', $ProjectRoot
+        '-MirrorToLive'
+    )
+
+    if ($AllowLegacyLiveMirror) {
+        $nasArgs += '-AllowLegacyLiveMirror'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($NasSshHost)) {
+        $nasArgs += @('-NasSshHost', $NasSshHost)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($NasSshUser)) {
+        $nasArgs += @('-NasSshUser', $NasSshUser)
+    }
+    if ($NasSshPort -gt 0) {
+        $nasArgs += @('-NasSshPort', $NasSshPort.ToString())
+    }
+    if (-not [string]::IsNullOrWhiteSpace($NasSshKeyPath)) {
+        $nasArgs += @('-NasSshKeyPath', $NasSshKeyPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($NasRemoteOpsPath)) {
+        $nasArgs += @('-NasRemoteOpsPath', $NasRemoteOpsPath)
+    }
+
+    & powershell @nasArgs
     if ($LASTEXITCODE -ne 0) {
         throw 'NAS deployment failed.'
     }
