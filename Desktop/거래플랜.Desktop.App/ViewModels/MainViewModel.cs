@@ -247,6 +247,7 @@ public sealed partial class MainViewModel : ObservableObject
         }
         finally { _suppressCustomerSave = false; }
 
+        _ = RefreshCustomerFinancialPreviewAsync(value);
         HandleInvoiceFilterChanged();
     }
 
@@ -365,10 +366,20 @@ public sealed partial class MainViewModel : ObservableObject
         PreviewSupplyAmount = 0;
         PreviewVatAmount = 0;
 
-        if (row is null) return;
+        if (row is null)
+        {
+            if (SelectedCustomerFilter is null)
+                await RefreshCustomerFinancialPreviewAsync(null);
+            return;
+        }
 
         var inv = await _local.GetInvoiceAsync(row.Id, _session);
-        if (inv is null) return;
+        if (inv is null)
+        {
+            if (SelectedCustomerFilter is null)
+                await RefreshCustomerFinancialPreviewAsync(null);
+            return;
+        }
 
         foreach (var line in inv.Lines.Where(l => !l.IsDeleted))
             PreviewLines.Add(InvoiceLineEditModel.FromLocal(line));
@@ -396,6 +407,12 @@ public sealed partial class MainViewModel : ObservableObject
                     EditCustNotes = customer.Notes;
                 }
                 finally { _suppressCustomerSave = false; }
+
+                await RefreshCustomerFinancialPreviewAsync(customer);
+            }
+            else
+            {
+                await RefreshCustomerFinancialPreviewAsync(null);
             }
         }
     }

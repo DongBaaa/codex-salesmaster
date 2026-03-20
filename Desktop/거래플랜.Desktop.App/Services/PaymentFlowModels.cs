@@ -16,3 +16,10 @@ public sealed class RentalSettlementSummary
     public string SettlementStatus { get; init; } = PaymentFlowConstants.SettlementStatusUnpaid;
     public string CompletionStatus { get; init; } = PaymentFlowConstants.CompletionPending;
 }
+
+public sealed class CustomerFinancialSummary
+{
+    public decimal AdvanceBalance { get; init; }
+    public decimal ReceivableAmount { get; init; }
+    public decimal PrepaymentAmount { get; init; }
+}

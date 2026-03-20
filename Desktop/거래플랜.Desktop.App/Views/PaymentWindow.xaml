@@ -4,7 +4,7 @@
         xmlns:conv="clr-namespace:거래플랜.Desktop.App.Converters"
         Title="수금/지급 입력"
         Width="1140"
-        Height="860" MinWidth="1040" MinHeight="780"
+        Height="900" MinWidth="1040" MinHeight="820"
         WindowStartupLocation="CenterOwner"
         ResizeMode="CanResize"
         Background="#151F2E"
@@ -182,99 +182,109 @@
                     Background="#1A2B4A"
                     BorderBrush="#2E4060"
                     BorderThickness="1"
-                    Padding="8"
+                    Padding="8,7"
                     CornerRadius="6">
                 <Grid>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" SharedSizeGroup="PaymentInfoLabelLeft"/>
+                        <ColumnDefinition Width="510"/>
+                        <ColumnDefinition Width="12"/>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto" SharedSizeGroup="PaymentInfoLabelRight"/>
-                        <ColumnDefinition Width="168"/>
                     </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
 
-                    <Label Grid.Row="0" Grid.Column="0" Content="고객/거래처"/>
-                    <Button Grid.Row="0"
-                            Style="{StaticResource BaseButtonStyle}"
-                            Grid.Column="1"
-                            Content="{Binding CustomerName}"
-                            Background="#D9E6F5"
-                            IsEnabled="{Binding CanSelectCustomer}"
-                            HorizontalAlignment="Stretch"
-                            HorizontalContentAlignment="Left"
-                            FontWeight="Bold"
-                            Foreground="Black"
-                            Margin="0,0,12,6"
-                            Click="CustomerSelectButton_Click"/>
-                    <Label Grid.Row="0" Grid.Column="2" Content="가격등급"/>
-                    <TextBox Grid.Row="0"
-                             Grid.Column="3"
-                             Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
-                             Text="{Binding CustomerCategory}"
-                             Margin="0,0,0,6"/>
+                    <Grid Grid.Column="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" SharedSizeGroup="PaymentInfoLabelLeft"/>
+                            <ColumnDefinition Width="198"/>
+                            <ColumnDefinition Width="Auto" SharedSizeGroup="PaymentInfoLabelRight"/>
+                            <ColumnDefinition Width="150"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
 
-                    <Label Grid.Row="1" Grid.Column="0" Content="대표전화"/>
-                    <TextBox Grid.Row="1"
-                             Grid.Column="1"
-                             Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
-                             Text="{Binding CustomerPhone}"
-                             Margin="0,0,12,0"/>
-                    <Label Grid.Row="1" Grid.Column="2" Content="담당자"/>
-                    <TextBox Grid.Row="1"
-                             Grid.Column="3"
-                             Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
-                             Text="{Binding CustomerContactPerson}"/>
+                        <Label Grid.Row="0" Grid.Column="0" Content="고객/거래처"/>
+                        <Button Grid.Row="0"
+                                Grid.Column="1"
+                                Style="{StaticResource BaseButtonStyle}"
+                                Content="{Binding CustomerName}"
+                                Background="#D9E6F5"
+                                IsEnabled="{Binding CanSelectCustomer}"
+                                HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Left"
+                                FontWeight="Bold"
+                                Foreground="Black"
+                                Margin="0,0,10,6"
+                                Click="CustomerSelectButton_Click"/>
+                        <Label Grid.Row="0" Grid.Column="2" Content="가격등급"/>
+                        <TextBox Grid.Row="0"
+                                 Grid.Column="3"
+                                 Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
+                                 Text="{Binding CustomerCategory}"
+                                 Margin="0,0,0,6"/>
 
-                    <Label Grid.Row="2" Grid.Column="0" Content="거래구분"/>
-                    <ComboBox Grid.Row="2"
-                              Grid.Column="1"
-                              ItemsSource="{Binding TransactionKinds}"
-                              DisplayMemberPath="Label"
-                              SelectedValuePath="Value"
-                              SelectedValue="{Binding SelectedTransactionKind}"
-                              Margin="0,0,12,6"/>
-                    <Label Grid.Row="2" Grid.Column="2" Content="선수금잔액"/>
-                    <TextBox Grid.Row="2"
-                             Grid.Column="3"
-                             Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
-                             Text="{Binding AdvanceBalance, StringFormat=N0}"
-                             Margin="0,0,0,6"/>
+                        <Label Grid.Row="1" Grid.Column="0" Content="대표전화"/>
+                        <TextBox Grid.Row="1"
+                                 Grid.Column="1"
+                                 Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
+                                 Text="{Binding CustomerPhone}"
+                                 Margin="0,0,10,6"/>
+                        <Label Grid.Row="1" Grid.Column="2" Content="담당자"/>
+                        <TextBox Grid.Row="1"
+                                 Grid.Column="3"
+                                 Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
+                                 Text="{Binding CustomerContactPerson}"
+                                 Margin="0,0,0,6"/>
 
-                    <Label Grid.Row="3" Grid.Column="0" Content="정산금액"/>
-                    <TextBox Grid.Row="3"
-                             Grid.Column="1"
-                             Text="{Binding SettlementAmount, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"
-                             IsEnabled="{Binding IsSettlementAmountEnabled}"
-                             Margin="0,0,12,6"/>
-                    <Label Grid.Row="3" Grid.Column="2" Content="정산방향"/>
-                    <TextBox Grid.Row="3"
-                             Grid.Column="3"
-                             Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
-                             Text="{Binding PaymentActionLabel, Mode=OneWay}"
-                             Margin="0,0,0,6"/>
+                        <Label Grid.Row="2" Grid.Column="0" Content="거래구분"/>
+                        <ComboBox Grid.Row="2"
+                                  Grid.Column="1"
+                                  ItemsSource="{Binding TransactionKinds}"
+                                  DisplayMemberPath="Label"
+                                  SelectedValuePath="Value"
+                                  SelectedValue="{Binding SelectedTransactionKind}"
+                                  Margin="0,0,10,6"/>
+                        <Label Grid.Row="2" Grid.Column="2" Content="선수금잔액"/>
+                        <TextBox Grid.Row="2"
+                                 Grid.Column="3"
+                                 Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
+                                 Text="{Binding AdvanceBalance, StringFormat=N0}"
+                                 Margin="0,0,0,6"/>
 
-                    <Label Grid.Row="4" Grid.Column="0" Content="맥락요약"/>
-                    <Border Grid.Row="4"
-                            Grid.Column="1"
-                            Grid.ColumnSpan="3"
+                        <Label Grid.Row="3" Grid.Column="0" Content="정산금액"/>
+                        <TextBox Grid.Row="3"
+                                 Grid.Column="1"
+                                 Width="148"
+                                 HorizontalAlignment="Left"
+                                 Text="{Binding SettlementAmount, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"
+                                 IsEnabled="{Binding IsSettlementAmountEnabled}"
+                                 Margin="0,0,10,0"/>
+                        <Label Grid.Row="3" Grid.Column="2" Content="정산방향"/>
+                        <TextBox Grid.Row="3"
+                                 Grid.Column="3"
+                                 Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
+                                 Text="{Binding PaymentActionLabel, Mode=OneWay}"/>
+                    </Grid>
+
+                    <Border Grid.Column="2"
                             Background="#122038"
                             BorderBrush="#2E4060"
                             BorderThickness="1"
                             CornerRadius="4"
-                            Padding="8,4">
+                            Padding="10,8">
                         <StackPanel>
+                            <TextBlock Text="맥락요약"
+                                       Foreground="#9FB3C8"
+                                       FontSize="12"
+                                       Margin="0,0,0,4"/>
                             <TextBlock Text="{Binding TransactionContextSummary}"
                                        FontWeight="Bold"
                                        TextWrapping="Wrap"/>
                             <TextBlock Text="{Binding TransactionSummary}"
                                        Foreground="#9FB3C8"
-                                       Margin="0,2,0,0"
+                                       Margin="0,4,0,0"
                                        TextWrapping="Wrap"/>
                         </StackPanel>
                     </Border>
@@ -293,7 +303,7 @@
                         BorderBrush="#A43B3B"
                         BorderThickness="1"
                         CornerRadius="6"
-                        Padding="8">
+                        Padding="10,8">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -311,7 +321,7 @@
                         <Grid Grid.Row="1">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" SharedSizeGroup="PaymentFlowLabel"/>
-                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="150"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
@@ -391,7 +401,7 @@
                         BorderBrush="#3D58B5"
                         BorderThickness="1"
                         CornerRadius="6"
-                        Padding="8">
+                        Padding="10,8">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -409,9 +419,10 @@
                         <Grid Grid.Row="1">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" SharedSizeGroup="PaymentFlowLabel"/>
-                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="150"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
@@ -490,7 +501,7 @@
                     BorderBrush="#2E4060"
                     BorderThickness="1"
                     CornerRadius="6"
-                    Padding="8">
+                    Padding="8,7">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" SharedSizeGroup="PaymentNoteLabel"/>
@@ -521,7 +532,7 @@
                     BorderBrush="#2E4060"
                     BorderThickness="1"
                     CornerRadius="6"
-                    Padding="10">
+                    Padding="8,8">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="1.25*"/>
@@ -535,7 +546,7 @@
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
-                        <Grid Grid.Row="0" Margin="0,0,0,6">
+                        <Grid Grid.Row="0" Margin="0,0,0,4">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
@@ -555,7 +566,7 @@
                                   SelectedItem="{Binding SelectedHistory}">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="일자" Binding="{Binding TransactionDate}" Width="88"/>
-                                <DataGridTextColumn Header="구분" Binding="{Binding TransactionKind}" Width="92"/>
+                                <DataGridTextColumn Header="구분" Binding="{Binding TransactionKindDisplay}" Width="92"/>
                                 <DataGridTextColumn Header="연결전표" Binding="{Binding LinkedInvoiceNumber}" Width="120"/>
                                 <DataGridTextColumn Header="수금합계" Binding="{Binding ReceiptTotal, StringFormat={}{0:N0}}" Width="92"/>
                                 <DataGridTextColumn Header="지불합계" Binding="{Binding PaymentTotal, StringFormat={}{0:N0}}" Width="92"/>
@@ -572,7 +583,7 @@
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
-                        <Grid Grid.Row="0" Margin="0,0,0,8">
+                        <Grid Grid.Row="0" Margin="0,0,0,6">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
@@ -592,8 +603,8 @@
                                 BorderBrush="#2E4060"
                                 BorderThickness="1"
                                 CornerRadius="4"
-                                Padding="10"
-                                Margin="0,0,0,8">
+                                Padding="8"
+                                Margin="0,0,0,6">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="88"/>

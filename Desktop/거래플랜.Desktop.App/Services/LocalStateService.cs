@@ -2185,6 +2185,52 @@ public sealed partial class LocalStateService
         return await GetAdvanceBalanceCoreAsync(customerId, ct);
     }
 
+    public async Task<CustomerFinancialSummary> GetCustomerFinancialSummaryAsync(
+        Guid customerId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var customer = await _db.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == customerId, ct);
+        if (customer is null)
+            return new CustomerFinancialSummary();
+
+        var customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        if (!CanAccessCustomer(customer.Id, customerOfficeCode, session, session.User?.Role))
+            return new CustomerFinancialSummary();
+
+        var invoices = await _db.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
+            .Where(invoice => !invoice.IsDeleted && invoice.CustomerId == customerId && invoice.VoucherType == VoucherType.Sales)
+            .ToListAsync(ct);
+
+        var receivableAmount = invoices
+            .Where(invoice => CanAccessInvoice(invoice, session))
+            .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount)));
+
+        var transactions = await _db.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(transaction => !transaction.IsDeleted && transaction.CustomerId == customerId)
+            .ToListAsync(ct);
+
+        var prepaymentAmount = transactions
+            .Where(transaction => transaction.AdvanceDelta > 0m &&
+                                  (transaction.LinkedInvoiceId.HasValue || transaction.LinkedRentalBillingProfileId.HasValue))
+            .Sum(transaction => transaction.AdvanceDelta);
+
+        return new CustomerFinancialSummary
+        {
+            AdvanceBalance = transactions.Sum(transaction => transaction.AdvanceDelta),
+            ReceivableAmount = receivableAmount,
+            PrepaymentAmount = prepaymentAmount
+        };
+    }
+
     public async Task<InvoiceSettlementSummary> GetInvoiceSettlementSummaryAsync(
         Guid invoiceId,
         SessionState session,
@@ -2492,9 +2538,10 @@ public sealed partial class LocalStateService
             return;
         }
 
+        var transactionKindLabel = PaymentFlowConstants.GetTransactionKindDisplayName(transaction.TransactionKind);
         var note = string.IsNullOrWhiteSpace(transaction.Note)
-            ? transaction.TransactionKind
-            : $"{transaction.TransactionKind} - {transaction.Note.Trim()}";
+            ? transactionKindLabel
+            : $"{transactionKindLabel} - {transaction.Note.Trim()}";
 
         if (payment is null)
         {

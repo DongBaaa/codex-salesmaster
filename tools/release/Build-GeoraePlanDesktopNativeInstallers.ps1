@@ -223,7 +223,13 @@ Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
 installDir = fso.GetParentFolderName(WScript.ScriptFullName)
-desktopPath = shell.SpecialFolders("Desktop")
+On Error Resume Next
+desktopPath = shell.SpecialFolders("AllUsersDesktop")
+If Err.Number <> 0 Or Len(desktopPath) = 0 Then
+    Err.Clear
+    desktopPath = shell.SpecialFolders("Desktop")
+End If
+On Error GoTo 0
 shortcutPath = fso.BuildPath(desktopPath, "$AppDisplayName.lnk")
 
 Set shortcut = shell.CreateShortcut(shortcutPath)
@@ -275,7 +281,7 @@ function Prepare-InstallerSourceFolder {
 
     $desktopShortcutScriptName = 'CreateDesktopShortcut.vbs'
     (New-DesktopShortcutVbsContent -AppDisplayName $AppDisplayName -LaunchExeName $LaunchExeName -ShortcutIconFileName $shortcutIconFileName) |
-        Set-Content -LiteralPath (Join-Path $installerSourceRoot $desktopShortcutScriptName) -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $installerSourceRoot $desktopShortcutScriptName) -Encoding Unicode
 
     $publishRoot = Publish-DesktopApplication -ProjectRoot $ProjectRoot -PublishRoot (Join-Path $StagingRoot 'desktop-publish')
 

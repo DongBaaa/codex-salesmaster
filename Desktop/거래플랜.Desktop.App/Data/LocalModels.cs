@@ -409,6 +409,7 @@ public sealed class LocalTransaction : LocalSyncEntity
     public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUsenet;
     public DateOnly TransactionDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public string TransactionKind { get; set; } = PaymentFlowConstants.TransactionKindReceipt;
+    public string TransactionKindDisplay => PaymentFlowConstants.GetTransactionKindDisplayName(TransactionKind);
     public Guid? LinkedInvoiceId { get; set; }
     public string LinkedInvoiceNumber { get; set; } = string.Empty;
     public Guid? LinkedRentalBillingProfileId { get; set; }

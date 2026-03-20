@@ -339,10 +339,10 @@ public sealed partial class PaymentViewModel : ObservableObject
         }
         else
         {
-            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindReceipt, "일반수금"));
-            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindPayment, "일반지급"));
-            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceDeposit, "선수금입금"));
-            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceRefund, "선수금환불"));
+            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindReceipt, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindReceipt)));
+            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindPayment, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindPayment)));
+            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceDeposit, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindAdvanceDeposit)));
+            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceRefund, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindAdvanceRefund)));
         }
 
         if (TransactionKinds.Count == 0)
@@ -378,7 +378,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     {
         return TransactionKinds.FirstOrDefault(option =>
                    string.Equals(option.Value, kind, StringComparison.OrdinalIgnoreCase))?.Label
-               ?? kind
+               ?? PaymentFlowConstants.GetTransactionKindDisplayName(kind)
                ?? "거래구분";
     }
 
@@ -640,7 +640,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             case var current when current == PaymentFlowConstants.TransactionKindAdvanceRefund:
                 if (PaymentTotal <= 0m || ReceiptTotal > 0m)
                 {
-                    StatusMessage = "선수금환불은 지급 금액만 입력해야 합니다.";
+                    StatusMessage = $"{PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindAdvanceRefund)}은 지급 금액만 입력해야 합니다.";
                     return;
                 }
 

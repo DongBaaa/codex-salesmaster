@@ -63,6 +63,16 @@ public static class PaymentFlowConstants
         };
     }
 
+    public static string GetTransactionKindDisplayName(string? kind)
+    {
+        var normalized = NormalizeTransactionKind(kind);
+        return normalized switch
+        {
+            TransactionKindAdvanceRefund => "선수금 사용",
+            _ => normalized
+        };
+    }
+
     public static string NormalizeBillingStatus(string? status)
     {
         var trimmed = (status ?? string.Empty).Trim();

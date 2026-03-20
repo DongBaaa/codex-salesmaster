@@ -397,6 +397,7 @@ public partial class MainWindow : Window
             vm.CanSelectCustomer(_vm.SelectedCustomerFilter))
         {
             vm.SetCustomer(_vm.SelectedCustomerFilter);
+            vm.MarkCurrentStateAsPristine();
         }
 
         var win = new SalesWindow(vm) { Owner = this };

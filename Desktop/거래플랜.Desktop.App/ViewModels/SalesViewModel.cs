@@ -37,9 +37,11 @@ public sealed partial class SalesViewModel : ObservableObject
     [ObservableProperty] private string _customerName = string.Empty;
     [ObservableProperty] private string _customerPhone = string.Empty;
     [ObservableProperty] private string _customerMobile = string.Empty;
+    [ObservableProperty] private string _customerTradeType = string.Empty;
     [ObservableProperty] private string _customerPriceGrade = string.Empty;
     [ObservableProperty] private string _customerNote = string.Empty;
     [ObservableProperty] private decimal _customerBalance;   // 珥?誘몄닔湲?
+    [ObservableProperty] private decimal _customerAdvanceBalance;
     [ObservableProperty] private string _selectedResponsibleOfficeCode = DomainConstants.OfficeUsenet;
     [ObservableProperty] private string _selectedWarehouseCode = DomainConstants.WarehouseUsenetMain;
     // ?? ?꾪몴 ?ㅻ뜑 ?????????????????????????????????????????????????????????
@@ -282,9 +284,11 @@ public sealed partial class SalesViewModel : ObservableObject
         CustomerName = string.Empty;
         CustomerPhone = string.Empty;
         CustomerMobile = string.Empty;
+        CustomerTradeType = string.Empty;
         CustomerPriceGrade = string.Empty;
         CustomerNote = string.Empty;
         CustomerBalance = 0;
+        CustomerAdvanceBalance = 0;
         InvoiceMemo = string.Empty;
         WorkDate = DateOnly.FromDateTime(DateTime.Today);
         VoucherType = _newInvoiceVoucherType;
@@ -323,6 +327,7 @@ public sealed partial class SalesViewModel : ObservableObject
         CustomerName = customer.NameOriginal;
         CustomerPhone = customer.Phone;
         CustomerMobile = customer.MobilePhone;
+        CustomerTradeType = customer.TradeType;
         CustomerPriceGrade = customer.PriceGrade;
         CustomerNote = customer.Notes;
         SelectedResponsibleOfficeCode = string.IsNullOrWhiteSpace(customer.ResponsibleOfficeCode)
@@ -381,6 +386,7 @@ public sealed partial class SalesViewModel : ObservableObject
         }
 
         var advanceBalance = await GetAdvanceBalanceAsync(SelectedCustomer.Id);
+        CustomerAdvanceBalance = advanceBalance;
         PaymentSummaryAdvanceText = $"선수금 잔액 {advanceBalance:N0}";
 
         var invoice = await _local.GetInvoiceAsync(InvoiceId, _session);
@@ -428,11 +434,15 @@ public sealed partial class SalesViewModel : ObservableObject
 
     private void ResetPaymentSummary()
     {
+        CustomerAdvanceBalance = 0m;
         PaymentSummaryContextText = "전표를 저장하면 수금/지급 요약이 표시됩니다.";
         PaymentSummaryDetailText = "연결 전표가 없으면 지급/수금 요약은 표시되지 않습니다.";
         PaymentSummaryAdvanceText = "선수금 잔액 0";
         OnPropertyChanged(nameof(PaymentSummaryTitleText));
     }
+
+    public void MarkCurrentStateAsPristine()
+        => CaptureBaselineState();
 
     public List<LocalItem> FindItemsForQuickInput(string keyword, int maxCount = 300)
     {
