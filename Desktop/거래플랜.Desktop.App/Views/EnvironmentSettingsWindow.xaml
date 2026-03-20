@@ -101,7 +101,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0">
                     <TextBlock Text="환경설정" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
-                    <TextBlock Text="회사 정보, 담당지점, 사용자 계정을 관리합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                    <TextBlock Text="회사 정보, 담당지점, 사용자 계정, 휴지통 복원과 버전 업데이트를 관리합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
                 </StackPanel>
                 <Button Grid.Column="1"
                         Content="닫기(F12)"
@@ -112,7 +112,7 @@
             </Grid>
         </Border>
 
-        <TabControl Grid.Row="1" Margin="0,10,0,0">
+        <TabControl x:Name="SettingsTabs" Grid.Row="1" Margin="0,10,0,0">
             <TabItem Header="회사 설정">
                 <ScrollViewer Margin="10" VerticalScrollBarVisibility="Auto">
                     <StackPanel>
@@ -120,6 +120,7 @@
                             <StackPanel>
                                 <TextBlock Text="사용자별 회사 설정" FontSize="18" FontWeight="Bold" Foreground="#4FC3F7"/>
                                 <TextBlock Text="계약서와 렌탈 문서는 현재 로그인 사용자에게 연결된 회사설정을 기준으로 작성됩니다." Foreground="#9FB3C8" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding CompanyProfileManagementHint}" Foreground="#90CAF9" Margin="0,6,0,0" TextWrapping="Wrap"/>
                                 <Grid Margin="0,14,0,0">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="120"/>
@@ -149,7 +150,7 @@
                                 <DockPanel>
                                     <Border DockPanel.Dock="Top" Background="#102039" Padding="12" CornerRadius="6,6,0,0">
                                         <StackPanel Orientation="Horizontal">
-                                            <Button Content="신규 회사설정" Background="#1565C0" Margin="0,0,6,0" Command="{Binding NewCompanyProfileCommand}"/>
+                                            <Button Content="신규 회사설정" Background="#1565C0" Margin="0,0,6,0" Command="{Binding NewCompanyProfileCommand}" IsEnabled="{Binding CanEditCompanyProfiles}"/>
                                             <Button Content="삭제" Background="#C62828" Margin="0,0,6,0" Command="{Binding DeleteCompanyProfileCommand}" IsEnabled="{Binding CanEditCompanyProfiles}"/>
                                             <Button Content="새로고침" Background="#455A64" Command="{Binding ReloadCompanyProfilesCommand}"/>
                                         </StackPanel>
@@ -622,6 +623,245 @@
                         </StackPanel>
                     </Border>
                 </Grid>
+            </TabItem>
+
+            <TabItem x:Name="RecycleBinTab" Header="휴지통">
+                <Grid Margin="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14">
+                        <StackPanel>
+                            <TextBlock Text="삭제 백업 / 복원" Foreground="#4FC3F7" FontWeight="Bold" FontSize="18"/>
+                            <TextBlock Text="거래처, 계약서, 품목, 전표, 수금/지급, 거래내역 삭제 시 바로 영구 제거하지 않고 휴지통에 보관합니다."
+                                       Foreground="#9FB3C8"
+                                       Margin="0,8,0,0"
+                                       TextWrapping="Wrap"/>
+
+                            <DockPanel Margin="0,12,0,0" LastChildFill="False">
+                                <TextBlock DockPanel.Dock="Left" Text="{Binding RecycleBinSummary}" Foreground="#90CAF9" VerticalAlignment="Center"/>
+
+                                <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Border Background="#1E3A5F" CornerRadius="12" Padding="10,4" Margin="0,0,8,0">
+                                        <TextBlock Text="{Binding RecycleBinCustomerCount, StringFormat=거래처 {0:N0}}" Foreground="#B3E5FC" FontSize="11" FontWeight="Bold"/>
+                                    </Border>
+                                    <Border Background="#30475E" CornerRadius="12" Padding="10,4" Margin="0,0,8,0">
+                                        <TextBlock Text="{Binding RecycleBinContractCount, StringFormat=계약서 {0:N0}}" Foreground="#D1C4E9" FontSize="11" FontWeight="Bold"/>
+                                    </Border>
+                                    <Border Background="#415A77" CornerRadius="12" Padding="10,4" Margin="0,0,8,0">
+                                        <TextBlock Text="{Binding RecycleBinInvoiceCount, StringFormat=전표 {0:N0}}" Foreground="#C5E1A5" FontSize="11" FontWeight="Bold"/>
+                                    </Border>
+                                    <Border Background="#7C2D12" CornerRadius="12" Padding="10,4">
+                                        <TextBlock Text="{Binding RecycleBinTotalCount, StringFormat=전체 {0:N0}}" Foreground="#FFE0B2" FontSize="11" FontWeight="Bold"/>
+                                    </Border>
+                                </WrapPanel>
+                            </DockPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="1" Background="#102039" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12" Margin="0,12,0,12">
+                        <WrapPanel VerticalAlignment="Center">
+                            <TextBlock Text="구분" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <ComboBox Width="150"
+                                      ItemsSource="{Binding RecycleBinTypeOptions}"
+                                      DisplayMemberPath="DisplayName"
+                                      SelectedValuePath="Value"
+                                      SelectedItem="{Binding SelectedRecycleBinTypeOption}"
+                                      Margin="0,0,10,0"/>
+
+                            <TextBlock Text="검색" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBox Width="280"
+                                     Text="{Binding RecycleBinSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                     Margin="0,0,10,0"/>
+
+                            <Button Content="새로고침"
+                                    Background="#455A64"
+                                    Command="{Binding ReloadRecycleBinCommand}"
+                                    Margin="0,0,6,0"/>
+                            <Button Content="현재 필터 전체 선택"
+                                    Background="#546E7A"
+                                    Command="{Binding MarkAllFilteredRecycleBinEntriesCommand}"
+                                    Margin="0,0,6,0"
+                                    IsEnabled="{Binding HasRecycleBinEntries}"/>
+                            <Button Content="선택 해제"
+                                    Background="#37474F"
+                                    Command="{Binding ClearRecycleBinMarksCommand}"
+                                    Margin="0,0,6,0"
+                                    IsEnabled="{Binding HasMarkedRecycleBinEntries}"/>
+                            <Button Content="체크 항목 복원"
+                                    Background="#1E88E5"
+                                    Command="{Binding RestoreMarkedRecycleBinEntriesCommand}"
+                                    Margin="0,0,6,0"
+                                    IsEnabled="{Binding HasMarkedRecycleBinEntries}"/>
+                            <Button Content="체크 항목 영구삭제"
+                                    Background="#C62828"
+                                    Command="{Binding PermanentlyDeleteMarkedRecycleBinEntriesCommand}"
+                                    IsEnabled="{Binding HasMarkedRecycleBinEntries}"/>
+                            <TextBlock Text="{Binding MarkedRecycleBinCount, StringFormat=선택 {0:N0}건}"
+                                       Foreground="#FFD54F"
+                                       VerticalAlignment="Center"
+                                       Margin="10,0,0,0"/>
+                        </WrapPanel>
+                    </Border>
+
+                    <Grid Grid.Row="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2.2*"/>
+                            <ColumnDefinition Width="12"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+                            <DockPanel>
+                                <Border DockPanel.Dock="Top" Background="#102039" Padding="12" CornerRadius="6,6,0,0">
+                                    <TextBlock Text="삭제된 항목 목록" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                </Border>
+                                <DataGrid ItemsSource="{Binding RecycleBinEntries}"
+                                          SelectedItem="{Binding SelectedRecycleBinEntry}"
+                                          IsReadOnly="False"
+                                          BorderThickness="0">
+                                    <DataGrid.Columns>
+                                        <DataGridCheckBoxColumn Header="선택" Binding="{Binding IsMarked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="70"/>
+                                        <DataGridTextColumn Header="구분" Binding="{Binding KindText}" Width="110" IsReadOnly="True"/>
+                                        <DataGridTextColumn Header="제목" Binding="{Binding Title}" Width="*" IsReadOnly="True"/>
+                                        <DataGridTextColumn Header="보조정보" Binding="{Binding Subtitle}" Width="1.2*" IsReadOnly="True"/>
+                                        <DataGridTextColumn Header="삭제시각" Binding="{Binding DeletedAtLocalText}" Width="150" IsReadOnly="True"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </DockPanel>
+                        </Border>
+
+                        <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14">
+                            <StackPanel>
+                                <TextBlock Text="복원 / 영구삭제 상세" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                <TextBlock Text="삭제된 항목을 선택하면 복원 전 내용을 미리 확인하고, 필요 시 영구삭제까지 처리할 수 있습니다."
+                                           Foreground="#9FB3C8"
+                                           Margin="0,8,0,12"
+                                           TextWrapping="Wrap"/>
+
+                                <Label Content="구분"/>
+                                <TextBlock Text="{Binding SelectedRecycleBinEntry.KindText, TargetNullValue=항목을 선택하세요.}" Margin="0,0,0,10"/>
+
+                                <Label Content="제목"/>
+                                <TextBlock Text="{Binding SelectedRecycleBinEntry.Title}" Margin="0,0,0,10" TextWrapping="Wrap"/>
+
+                                <Label Content="보조정보"/>
+                                <TextBlock Text="{Binding SelectedRecycleBinEntry.Subtitle}" Margin="0,0,0,10" TextWrapping="Wrap"/>
+
+                                <Label Content="상세"/>
+                                <TextBlock Text="{Binding SelectedRecycleBinEntry.Detail}" Margin="0,0,0,10" TextWrapping="Wrap"/>
+
+                                <Label Content="삭제시각"/>
+                                <TextBlock Text="{Binding SelectedRecycleBinEntry.DeletedAtLocalText}" Margin="0,0,0,16"/>
+
+                                <WrapPanel>
+                                    <Button Content="선택 항목 복원"
+                                            Background="#1565C0"
+                                            Command="{Binding RestoreSelectedRecycleBinEntryCommand}"
+                                            Margin="0,0,8,0"
+                                            IsEnabled="{Binding HasSelectedRecycleBinEntry}"/>
+                                    <Button Content="선택 항목 영구삭제"
+                                            Background="#C62828"
+                                            Command="{Binding PermanentlyDeleteSelectedRecycleBinEntryCommand}"
+                                            IsEnabled="{Binding HasSelectedRecycleBinEntry}"/>
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <TabItem x:Name="UpdateTab" Header="버전 / 업데이트">
+                <ScrollViewer Margin="10" VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="버전 / 업데이트" Foreground="#4FC3F7" FontWeight="Bold" FontSize="18"/>
+                                    <TextBlock Text="현재 설치 버전과 NAS 배포본을 비교해 내부 업데이트를 진행합니다." Foreground="#9FB3C8" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                                </StackPanel>
+
+                                <WrapPanel Grid.Column="1" VerticalAlignment="Top">
+                                    <Button Content="업데이트 확인"
+                                            Background="#455A64"
+                                            Margin="0,0,8,0"
+                                            Command="{Binding CheckForUpdatesCommand}"/>
+                                    <Button Content="업데이트 시작"
+                                            Background="#1565C0"
+                                            Command="{Binding StartDesktopUpdateCommand}"
+                                            IsEnabled="{Binding IsUpdateAvailable}"/>
+                                </WrapPanel>
+                            </Grid>
+                        </Border>
+
+                        <Grid Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.2*"/>
+                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="1.8*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
+                                <StackPanel>
+                                    <TextBlock Text="설치 상태" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                    <Grid Margin="0,16,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="130"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+
+                                        <Label Grid.Row="0" Grid.Column="0" Content="현재 버전"/>
+                                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding CurrentAppVersion}" VerticalAlignment="Center"/>
+
+                                        <Label Grid.Row="1" Grid.Column="0" Content="최신 버전"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding LatestDesktopVersion}" VerticalAlignment="Center"/>
+
+                                        <Label Grid.Row="2" Grid.Column="0" Content="배포 시각"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding UpdateReleasedAtText}" VerticalAlignment="Center"/>
+
+                                        <Label Grid.Row="3" Grid.Column="0" Content="상태"/>
+                                        <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding UpdateStatusText}" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
+                                <StackPanel>
+                                    <TextBlock Text="배포 메모" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                    <Border Background="#102039" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,14,0,0">
+                                        <TextBlock Text="{Binding UpdateNotes}" Foreground="#EAF2FF" TextWrapping="Wrap"/>
+                                    </Border>
+                                    <TextBlock Text="업데이트 시작을 누르면 현재 앱이 저장/동기화 후 종료되고, 다운로드/설치가 완료되면 자동으로 다시 실행됩니다."
+                                               Foreground="#9FB3C8"
+                                               Margin="0,14,0,0"
+                                               TextWrapping="Wrap"/>
+                                    <Border Background="#7C2D12"
+                                            CornerRadius="6"
+                                            Padding="12"
+                                            Margin="0,12,0,0">
+                                        <TextBlock Text="이 버전부터 내부 업데이트 도우미가 포함됩니다. 이미 설치된 예전 버전은 이번 빌드를 한 번 설치한 뒤부터 내부 업데이트를 사용할 수 있습니다."
+                                                   Foreground="#FFE0B2"
+                                                   TextWrapping="Wrap"/>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </StackPanel>
+                </ScrollViewer>
             </TabItem>
         </TabControl>
 

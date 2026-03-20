@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -89,7 +89,7 @@ public sealed partial class MainViewModel : ObservableObject
         customer.NameMatchKey = customer.NameOriginal.ToUpperInvariant();
         var result = await _local.UpsertCustomerAsync(customer, _session);
         if (!result.Success)
-            SyncStatus = result.Message;
+            AppLogger.Warn("AUTOSAVE", $"Customer inline auto-save failed for '{customer.NameOriginal}'. {result.Message}");
     }
 
     // ?? ?꾪몴 紐⑸줉 ?? Bottom panel (?좏깮???꾪몴 ?쇱씤 誘몃━蹂닿린) ???????????????
@@ -207,7 +207,7 @@ public sealed partial class MainViewModel : ObservableObject
         await LoadCompanyProfileAsync();
         await LoadLegacyMigrationSettingsAsync();
         if (!_session.IsOfflineMode)
-            _sync.Start(15);
+            _sync.Start(1);
         else
             SyncStatus = "?ㅽ봽?쇱씤 紐⑤뱶 ???쒕쾭 ?곌껐 ???먮룞 ?숆린?붾맗?덈떎";
     }
@@ -502,6 +502,9 @@ public sealed partial class MainViewModel : ObservableObject
         DashboardRentalUpcomingCount = rentalSummary.UpcomingCount;
         DashboardRentalOverdueCount = rentalSummary.OverdueCount;
         RentalAlertPopupMessage = rentalSummary.AlertPopupMessage;
+
+        await RefreshContractDashboardAsync();
+        await RefreshRecycleBinDashboardAsync();
     }
 
     private void HandleInvoiceFilterChanged()

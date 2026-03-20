@@ -156,6 +156,21 @@
                     </Button>
                     <Rectangle Width="1" Height="20" Fill="#3E5875" Margin="4,0,10,0" VerticalAlignment="Center"/>
                     <Button Content="환경설정" Background="#546E7A" Margin="0,0,6,0" Click="EnvironmentSettingsButton_Click"/>
+                    <Grid Margin="0,0,6,0">
+                        <Button Content="휴지통" Background="#6D4C41" Click="RecycleBinButton_Click"/>
+                        <Border Background="#C62828"
+                                CornerRadius="10"
+                                Padding="6,1"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Top"
+                                Margin="0,-4,-4,0"
+                                Visibility="{Binding HasDashboardRecycleBinItems, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="{Binding DashboardRecycleBinCount}"
+                                       Foreground="White"
+                                       FontSize="10"
+                                       FontWeight="Bold"/>
+                        </Border>
+                    </Grid>
                     <Rectangle Width="1" Height="20" Fill="#3E5875" Margin="4,0,10,0" VerticalAlignment="Center"/>
                     <!-- 사용자/동기화 그룹 -->
                     <TextBlock Text="{Binding CurrentUserDisplay}" Foreground="#9FB3C8" VerticalAlignment="Center" Margin="0,0,10,0"/>
@@ -218,6 +233,65 @@
                     </StackPanel>
                 </Border>
             </UniformGrid>
+        </Border>
+
+        <Border DockPanel.Dock="Top" Background="#102039" Padding="12,10" BorderBrush="#2E4060" BorderThickness="0,0,0,1">
+            <StackPanel>
+                <DockPanel LastChildFill="False">
+                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="계약서 알림" Foreground="#4FC3F7" FontWeight="Bold"/>
+                        <TextBlock Text="{Binding DashboardContractAlertSummary}" Foreground="#9FB3C8" Margin="12,0,0,0"/>
+                    </StackPanel>
+
+                    <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Background="#1E3A5F" CornerRadius="12" Padding="10,4" Margin="0,0,8,0">
+                            <TextBlock Text="{Binding DashboardCustomersWithContractsCount, StringFormat=계약서 {0:N0}곳}"
+                                       Foreground="#B3E5FC"
+                                       FontSize="11"
+                                       FontWeight="Bold"/>
+                        </Border>
+                        <Border Background="#7F1D1D" CornerRadius="12" Padding="10,4" Margin="0,0,8,0">
+                            <TextBlock Text="{Binding DashboardContractExpiredCount, StringFormat=만료 {0:N0}건}"
+                                       Foreground="#FFCDD2"
+                                       FontSize="11"
+                                       FontWeight="Bold"/>
+                        </Border>
+                        <Border Background="#7C2D12" CornerRadius="12" Padding="10,4">
+                            <TextBlock Text="{Binding DashboardContractExpiringSoonCount, StringFormat=30일 내 {0:N0}건}"
+                                       Foreground="#FFE0B2"
+                                       FontSize="11"
+                                       FontWeight="Bold"/>
+                        </Border>
+                    </WrapPanel>
+                </DockPanel>
+
+                <ItemsControl ItemsSource="{Binding DashboardContractAlerts}"
+                              Margin="0,8,0,0"
+                              Visibility="{Binding HasDashboardContractAlerts, Converter={StaticResource BoolToVisibility}}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="#1A2B4A"
+                                    BorderBrush="#2E4060"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="10,6"
+                                    Margin="0,0,8,6"
+                                    Width="236">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding CustomerName}" FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding ContractType}" Foreground="#90CAF9" FontSize="11" Margin="0,2,0,0"/>
+                                    <TextBlock Text="{Binding AlertText}" Foreground="#FFCC80" FontSize="11" Margin="0,1,0,0"/>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
         </Border>
 
         <Border DockPanel.Dock="Bottom" Background="#0D1B2A" Padding="10,6"><TextBlock Text="{Binding SyncStatus}" Foreground="#9FB3C8" FontSize="11"/></Border>

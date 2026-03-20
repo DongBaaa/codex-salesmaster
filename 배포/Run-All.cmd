@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 setlocal EnableExtensions
 
 set "SERVER_EXE=%~dp0Server\거래플랜.Server.Api.exe"
@@ -41,8 +41,10 @@ if exist "%APP_SETTINGS%" (
 )
 
 echo [거래플랜] Starting server on %SERVER_URL%...
+set "ASPNETCORE_ENVIRONMENT=Development"
 set "ASPNETCORE_URLS=%SERVER_URL%"
-start "거래플랜 Server" "%SERVER_EXE%"
+set "Kestrel__Endpoints__Http__Url=%SERVER_URL%"
+start "거래플랜 Server" /D "%~dp0Server" "%SERVER_EXE%"
 call :WAIT_FOR_PORT %SERVER_PORT% 20
 if errorlevel 1 (
   echo [거래플랜] Server did not bind to %SERVER_URL%. Retrying with next port...
@@ -61,7 +63,7 @@ if errorlevel 1 (
 )
 
 echo [거래플랜] Starting app...
-start "거래플랜 App" "%APP_EXE%"
+start "거래플랜 App" /D "%~dp0App" "%APP_EXE%"
 exit /b 0
 
 :SERVER_FAIL
@@ -97,5 +99,5 @@ goto :WAIT_FOR_PORT_LOOP
 :VERIFY_HTTP
 set "CHECK_URL=%~1"
 if "%CHECK_URL%"=="" exit /b 1
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$u='%CHECK_URL%/'; try { Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 5 | Out-Null; exit 0 } catch { if ($_.Exception.Response -and $_.Exception.Response.StatusCode) { $c = [int]$_.Exception.Response.StatusCode; if ($c -ge 100 -and $c -lt 600) { exit 0 } }; exit 1 }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$u='%CHECK_URL%/healthz'; try { Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 5 | Out-Null; exit 0 } catch { if ($_.Exception.Response -and $_.Exception.Response.StatusCode) { $c = [int]$_.Exception.Response.StatusCode; if ($c -ge 100 -and $c -lt 600) { exit 0 } }; exit 1 }"
 exit /b %errorlevel%

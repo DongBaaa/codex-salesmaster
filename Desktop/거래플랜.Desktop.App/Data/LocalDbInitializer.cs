@@ -103,6 +103,7 @@ public static class LocalDbInitializer
     private static async Task MigrateColumnsAsync(LocalDbContext db)
     {
         await TryCreateAttachmentSelectionsTableAsync(db);
+        await TryCreateCustomerContractsTableAsync(db);
         await TryCreateTransactionsTableAsync(db);
         await TryCreateTransactionAttachmentsTableAsync(db);
         await TryCreateOfficeTableAsync(db);
@@ -303,6 +304,8 @@ public static class LocalDbInitializer
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CompanyProfiles_OfficeCode_ProfileName\" ON \"CompanyProfiles\" (\"OfficeCode\", \"ProfileName\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CompanyProfiles_OfficeCode_IsDefaultForOffice\" ON \"CompanyProfiles\" (\"OfficeCode\", \"IsDefaultForOffice\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Transactions_ResponsibleOfficeCode\" ON \"Transactions\" (\"ResponsibleOfficeCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId\" ON \"CustomerContracts\" (\"CustomerId\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId_IsPrimary\" ON \"CustomerContracts\" (\"CustomerId\", \"IsPrimary\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionId\" ON \"TransactionAttachments\" (\"TransactionId\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionStatus\" ON \"TransactionAttachments\" (\"TransactionId\", \"VerificationStatus\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TransferStatus\" ON \"InventoryTransfers\" (\"TransferStatus\");");
@@ -444,6 +447,8 @@ public static class LocalDbInitializer
     {
         foreach (var definition in CanonicalOffices)
             await EnsureOfficeAsync(db, definition.Code, definition.Name, definition.IsHeadOffice);
+
+        await db.SaveChangesAsync();
 
         await NormalizeLegacyOfficeCodesAsync(db);
         await NormalizeOfficeReferenceDataAsync(db);
@@ -1415,6 +1420,42 @@ public static class LocalDbInitializer
             await db.Database.ExecuteSqlRawAsync(createTableSql);
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionId\" ON \"TransactionAttachments\" (\"TransactionId\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionStatus\" ON \"TransactionAttachments\" (\"TransactionId\", \"VerificationStatus\");");
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task TryCreateCustomerContractsTableAsync(LocalDbContext db)
+    {
+        try
+        {
+            const string createTableSql = """
+                                          CREATE TABLE IF NOT EXISTS "CustomerContracts" (
+                                              "Id" TEXT NOT NULL CONSTRAINT "PK_CustomerContracts" PRIMARY KEY,
+                                              "CustomerId" TEXT NOT NULL,
+                                              "ContractType" TEXT NOT NULL DEFAULT '거래계약서',
+                                              "FileName" TEXT NOT NULL DEFAULT '',
+                                              "MimeType" TEXT NOT NULL DEFAULT 'application/pdf',
+                                              "FileSize" INTEGER NOT NULL DEFAULT 0,
+                                              "FileHash" TEXT NOT NULL DEFAULT '',
+                                              "Description" TEXT NOT NULL DEFAULT '',
+                                              "SignedDate" TEXT NULL,
+                                              "ExpireDate" TEXT NULL,
+                                              "IsPrimary" INTEGER NOT NULL DEFAULT 0,
+                                              "UploadedByUsername" TEXT NOT NULL DEFAULT '',
+                                              "UploadedAtUtc" TEXT NOT NULL,
+                                              "FileContent" BLOB NOT NULL,
+                                              "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                                              "CreatedAtUtc" TEXT NOT NULL,
+                                              "UpdatedAtUtc" TEXT NOT NULL,
+                                              "Revision" INTEGER NOT NULL DEFAULT 0,
+                                              "IsDirty" INTEGER NOT NULL DEFAULT 1
+                                          );
+                                          """;
+            await db.Database.ExecuteSqlRawAsync(createTableSql);
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId\" ON \"CustomerContracts\" (\"CustomerId\");");
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId_IsPrimary\" ON \"CustomerContracts\" (\"CustomerId\", \"IsPrimary\");");
         }
         catch
         {

@@ -1,3 +1,5 @@
+﻿using GeoraePlan.Mobile.App.Models;
+using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using 거래플랜.Shared.Contracts;
 
@@ -9,31 +11,102 @@ public sealed class PaymentDraftPage : ContentPage
 
     public PaymentDraftPage()
     {
-        Title = "수금 입력";
+        GeoraePlanTheme.ApplyPage(this, "수금 입력");
+
         _viewModel = ServiceHelper.GetRequiredService<PaymentDraftViewModel>();
+        _viewModel.SavedSuccessfully += HandleSavedSuccessfullyAsync;
         BindingContext = _viewModel;
 
-        var invoicePicker = new Picker { Title = "전표 선택" };
+        var invoicePicker = GeoraePlanTheme.CreatePicker("전표 선택");
         invoicePicker.SetBinding(Picker.ItemsSourceProperty, nameof(PaymentDraftViewModel.Invoices));
         invoicePicker.SetBinding(Picker.SelectedItemProperty, nameof(PaymentDraftViewModel.SelectedInvoice));
         invoicePicker.ItemDisplayBinding = new Binding(nameof(InvoiceDto.InvoiceNumber));
 
-        var datePicker = new DatePicker();
+        var datePicker = new DatePicker
+        {
+            BackgroundColor = GeoraePlanTheme.InputBackground,
+            TextColor = Colors.Black
+        };
         datePicker.SetBinding(DatePicker.DateProperty, nameof(PaymentDraftViewModel.PaymentDate));
 
-        var amountEntry = new Entry { Keyboard = Keyboard.Numeric, Placeholder = "수금 금액" };
+        var amountEntry = GeoraePlanTheme.CreateEntry("수금 금액");
+        amountEntry.Keyboard = Keyboard.Numeric;
         amountEntry.SetBinding(Entry.TextProperty, nameof(PaymentDraftViewModel.AmountText));
 
-        var noteEditor = new Editor { AutoSize = EditorAutoSizeOption.TextChanges, Placeholder = "비고" };
+        var noteEditor = new Editor
+        {
+            AutoSize = EditorAutoSizeOption.TextChanges,
+            Placeholder = "비고",
+            BackgroundColor = GeoraePlanTheme.InputBackground,
+            TextColor = Colors.Black,
+            PlaceholderColor = Colors.Gray,
+            MinimumHeightRequest = 96
+        };
         noteEditor.SetBinding(Editor.TextProperty, nameof(PaymentDraftViewModel.Note));
 
-        var saveButton = new Button { Text = "수금 임시저장" };
+        var attachmentSummary = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 12);
+        attachmentSummary.SetBinding(Label.TextProperty, nameof(PaymentDraftViewModel.AttachmentSummary));
+
+        var attachButton = GeoraePlanTheme.CreateButton("내역 첨부하기", GeoraePlanTheme.Purple);
+        attachButton.Clicked += async (_, _) => await ShowAttachmentMenuAsync();
+
+        var attachmentsView = new CollectionView
+        {
+            SelectionMode = SelectionMode.None,
+            HeightRequest = 180,
+            BackgroundColor = Colors.Transparent,
+            EmptyView = GeoraePlanTheme.CreateBodyText("첨부된 파일이 없습니다."),
+            ItemTemplate = new DataTemplate(() =>
+            {
+                var fileLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 13);
+                fileLabel.FontAttributes = FontAttributes.Bold;
+                fileLabel.SetBinding(Label.TextProperty, nameof(PendingPaymentAttachmentRecord.FileName));
+
+                var metaLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
+                metaLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new AttachmentSummaryConverter()));
+
+                var openButton = GeoraePlanTheme.CreateButton("열기", GeoraePlanTheme.SecondaryButton);
+                openButton.HeightRequest = 38;
+                openButton.Clicked += async (sender, _) =>
+                {
+                    if (sender is Button button && button.BindingContext is PendingPaymentAttachmentRecord attachment)
+                        await _viewModel.OpenAttachmentAsync(attachment);
+                };
+
+                var deleteButton = GeoraePlanTheme.CreateButton("삭제", GeoraePlanTheme.Danger);
+                deleteButton.HeightRequest = 38;
+                deleteButton.Clicked += async (sender, _) =>
+                {
+                    if (sender is Button button && button.BindingContext is PendingPaymentAttachmentRecord attachment)
+                        await _viewModel.RemoveAttachmentAsync(attachment);
+                };
+
+                var actionGrid = new Grid
+                {
+                    ColumnDefinitions =
+                    {
+                        new ColumnDefinition(GridLength.Star),
+                        new ColumnDefinition(new GridLength(8)),
+                        new ColumnDefinition(GridLength.Star)
+                    }
+                };
+                actionGrid.Add(openButton);
+                Grid.SetColumn(openButton, 0);
+                actionGrid.Add(deleteButton);
+                Grid.SetColumn(deleteButton, 2);
+
+                return GeoraePlanTheme.CreateCard(fileLabel, metaLabel, actionGrid);
+            })
+        };
+        attachmentsView.SetBinding(ItemsView.ItemsSourceProperty, nameof(PaymentDraftViewModel.Attachments));
+
+        var saveButton = GeoraePlanTheme.CreateButton("수금 임시저장", GeoraePlanTheme.Accent);
         saveButton.SetBinding(Button.CommandProperty, nameof(PaymentDraftViewModel.SaveDraftCommand));
 
-        var statusLabel = new Label { TextColor = Colors.DimGray };
+        var statusLabel = GeoraePlanTheme.CreateStatusLabel();
         statusLabel.SetBinding(Label.TextProperty, nameof(PaymentDraftViewModel.StatusMessage));
 
-        var activity = new ActivityIndicator();
+        var activity = new ActivityIndicator { Color = GeoraePlanTheme.Accent };
         activity.SetBinding(ActivityIndicator.IsRunningProperty, nameof(PaymentDraftViewModel.IsBusy));
         activity.SetBinding(ActivityIndicator.IsVisibleProperty, nameof(PaymentDraftViewModel.IsBusy));
 
@@ -41,21 +114,28 @@ public sealed class PaymentDraftPage : ContentPage
         {
             Content = new VerticalStackLayout
             {
-                Padding = 24,
+                Padding = 16,
                 Spacing = 12,
                 Children =
                 {
-                    new Label { Text = "전표", FontAttributes = FontAttributes.Bold },
-                    invoicePicker,
-                    new Label { Text = "수금일자", FontAttributes = FontAttributes.Bold },
-                    datePicker,
-                    new Label { Text = "금액", FontAttributes = FontAttributes.Bold },
-                    amountEntry,
-                    new Label { Text = "비고", FontAttributes = FontAttributes.Bold },
-                    noteEditor,
-                    saveButton,
-                    activity,
-                    statusLabel
+                    GeoraePlanTheme.CreateCard(
+                        GeoraePlanTheme.CreateSectionTitle("수금 입력"),
+                        GeoraePlanTheme.CreateBodyText("전표 기준으로 수금 내역을 빠르게 입력합니다."),
+                        GeoraePlanTheme.CreateSectionTitle("전표", 14),
+                        invoicePicker,
+                        GeoraePlanTheme.CreateSectionTitle("수금일자", 14),
+                        datePicker,
+                        GeoraePlanTheme.CreateSectionTitle("금액", 14),
+                        amountEntry,
+                        GeoraePlanTheme.CreateSectionTitle("비고", 14),
+                        noteEditor,
+                        GeoraePlanTheme.CreateSectionTitle("첨부", 14),
+                        attachmentSummary,
+                        attachButton,
+                        attachmentsView,
+                        saveButton,
+                        activity,
+                        statusLabel)
                 }
             }
         };
@@ -65,5 +145,44 @@ public sealed class PaymentDraftPage : ContentPage
     {
         base.OnAppearing();
         await _viewModel.LoadAsync();
+    }
+
+    protected override void OnDisappearing()
+    {
+        _viewModel.SavedSuccessfully -= HandleSavedSuccessfullyAsync;
+        base.OnDisappearing();
+    }
+
+    private async Task ShowAttachmentMenuAsync()
+    {
+        var action = await DisplayActionSheet("첨부 방식 선택", "취소", null, "PDF 파일 업로드", "카메라 촬영 이미지 업로드");
+        if (action == "PDF 파일 업로드")
+        {
+            await _viewModel.AddPdfAttachmentAsync();
+        }
+        else if (action == "카메라 촬영 이미지 업로드")
+        {
+            await _viewModel.CaptureAttachmentAsync();
+        }
+    }
+
+    private async Task HandleSavedSuccessfullyAsync()
+    {
+        if (Navigation.NavigationStack.Count > 1)
+            await Shell.Current.Navigation.PopAsync();
+    }
+
+    private sealed class AttachmentSummaryConverter : IValueConverter
+    {
+        public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
+        {
+            if (value is not PendingPaymentAttachmentRecord attachment)
+                return string.Empty;
+
+            return $"{attachment.AttachmentType} / {attachment.FileSize / 1024d:N1} KB";
+        }
+
+        public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
+            => throw new NotSupportedException();
     }
 }

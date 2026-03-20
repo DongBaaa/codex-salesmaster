@@ -58,6 +58,16 @@ function Get-ResolvedJavaSdkDirectory {
         $candidates.Add($env:JAVA_HOME) | Out-Null
     }
 
+    foreach ($directCandidate in @(
+        (Join-Path $env:ProgramFiles 'Android\Android Studio\jbr'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Android\Android Studio\jbr'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\jbr')
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($directCandidate)) {
+            $candidates.Add($directCandidate) | Out-Null
+        }
+    }
+
     foreach ($commandName in @('javac', 'java', 'keytool')) {
         $command = Get-Command $commandName -ErrorAction SilentlyContinue
         if ($null -ne $command) {

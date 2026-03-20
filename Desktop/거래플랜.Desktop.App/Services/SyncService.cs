@@ -17,17 +17,27 @@ public sealed class SyncService : IDisposable
     private readonly LocalStateService _local;
     private readonly ErpApiClient _api;
     private readonly SessionState _session;
+    private readonly SyncRequestDispatcher _dispatcher;
+    private readonly object _immediateSyncGate = new();
     private Timer? _timer;
     private bool _syncInProgress;
+    private CancellationTokenSource? _immediateSyncCts;
 
     public event Action<string>? SyncStatusChanged;
 
-    public SyncService(LocalDbContext db, LocalStateService local, ErpApiClient api, SessionState session)
+    public SyncService(
+        LocalDbContext db,
+        LocalStateService local,
+        ErpApiClient api,
+        SessionState session,
+        SyncRequestDispatcher dispatcher)
     {
         _db = db;
         _local = local;
         _api = api;
         _session = session;
+        _dispatcher = dispatcher;
+        _dispatcher.ImmediateSyncRequested += HandleImmediateSyncRequested;
     }
 
     public void Start(int intervalMinutes = 3, bool runImmediately = false)
@@ -94,6 +104,40 @@ public sealed class SyncService : IDisposable
         return false;
     }
 
+    private void HandleImmediateSyncRequested()
+    {
+        if (!_session.IsLoggedIn || _session.IsOfflineMode)
+            return;
+
+        CancellationTokenSource cts;
+        lock (_immediateSyncGate)
+        {
+            _immediateSyncCts?.Cancel();
+            _immediateSyncCts?.Dispose();
+            _immediateSyncCts = new CancellationTokenSource();
+            cts = _immediateSyncCts;
+        }
+
+        _ = RunDeferredImmediateSyncAsync(cts.Token);
+    }
+
+    private async Task RunDeferredImmediateSyncAsync(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+            await TrySyncAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // newer local change arrived; debounce in progress
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("SYNC", "즉시 동기화 실패", ex);
+        }
+    }
+
     private async Task ExecuteWithRetryAsync(
         Func<CancellationToken, Task> operation,
         string operationName,
@@ -108,7 +152,7 @@ public sealed class SyncService : IDisposable
                 await operation(ct);
                 if (attempt > 1)
                 {
-                    var recoveredMessage = $"?숆린??{operationName} 蹂듦뎄??({attempt}/{MaxRetryCount})";
+                    var recoveredMessage = $"동기화 {operationName} 복구 ({attempt}/{MaxRetryCount})";
                     SetStatus(recoveredMessage);
                     AppLogger.Info("SYNC", recoveredMessage);
                 }
@@ -141,8 +185,17 @@ public sealed class SyncService : IDisposable
                 .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
+            CustomerContracts = await _db.CustomerContracts.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
             Items = await _db.Items.IgnoreQueryFilters()
                 .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
+            ItemWarehouseStocks = await _db.ItemWarehouseStocks
+                .AsNoTracking()
+                .ToListAsync(ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
             Invoices = await _db.Invoices.IgnoreQueryFilters()
@@ -156,7 +209,7 @@ public sealed class SyncService : IDisposable
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct)
         };
 
-        var hasDirty = req.CompanyProfiles.Count + req.Customers.Count +
+        var hasDirty = req.CompanyProfiles.Count + req.Customers.Count + req.CustomerContracts.Count +
                        req.Items.Count + req.Invoices.Count + req.Payments.Count > 0;
         if (!hasDirty)
             return;
@@ -164,6 +217,17 @@ public sealed class SyncService : IDisposable
         var result = await _api.PushAsync(req, ct);
         if (result is null)
             return;
+
+        if (result.ConflictCount > 0)
+        {
+            var first = result.Conflicts.FirstOrDefault();
+            var detail = first is null
+                ? $"동기화 충돌 {result.ConflictCount}건"
+                : $"동기화 충돌 {result.ConflictCount}건: {first.EntityName} {first.EntityId} - {first.Reason}";
+
+            AppLogger.Warn("SYNC", detail);
+            throw new InvalidOperationException(detail);
+        }
 
         foreach (var assigned in result.AssignedInvoiceNumbers)
         {
@@ -178,6 +242,7 @@ public sealed class SyncService : IDisposable
 
         await MarkCleanAsync<LocalCompanyProfile>(ct);
         await MarkCleanAsync<LocalCustomer>(ct);
+        await MarkCleanAsync<LocalCustomerContract>(ct);
         await MarkCleanAsync<LocalItem>(ct);
         await MarkCleanInvoicesAsync(ct);
         await MarkCleanAsync<LocalPayment>(ct);
@@ -212,7 +277,9 @@ public sealed class SyncService : IDisposable
         await UpsertPulledAsync(pull.Units, _db.Units, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.CustomerCategories, _db.CustomerCategories, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.Customers, _db.Customers, LocalMappings.ToLocal, ct);
+        await UpsertPulledAsync(pull.CustomerContracts, _db.CustomerContracts, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.Items, _db.Items, LocalMappings.ToLocal, ct);
+        await UpsertPulledItemWarehouseStocksAsync(pull.ItemWarehouseStocks, ct);
         await UpsertPulledInvoicesAsync(pull.Invoices, ct);
         await UpsertPulledAsync(pull.Payments, _db.Payments, LocalMappings.ToLocal, ct);
 
@@ -243,6 +310,25 @@ public sealed class SyncService : IDisposable
                     _db.Entry(existing).CurrentValues.SetValues(local);
             }
         }
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task UpsertPulledItemWarehouseStocksAsync(IReadOnlyList<ItemWarehouseStockDto> dtos, CancellationToken ct)
+    {
+        foreach (var dto in dtos)
+        {
+            var local = LocalMappings.ToLocal(dto);
+            var existing = await _db.ItemWarehouseStocks.FindAsync([local.ItemId, local.WarehouseCode], ct);
+            if (existing is null)
+            {
+                _db.ItemWarehouseStocks.Add(local);
+            }
+            else
+            {
+                _db.Entry(existing).CurrentValues.SetValues(local);
+            }
+        }
+
         await _db.SaveChangesAsync(ct);
     }
 
@@ -291,6 +377,16 @@ public sealed class SyncService : IDisposable
         await _db.SaveChangesAsync(ct);
     }
 
-    public void Dispose() => _timer?.Dispose();
-}
+    public void Dispose()
+    {
+        _dispatcher.ImmediateSyncRequested -= HandleImmediateSyncRequested;
+        _timer?.Dispose();
 
+        lock (_immediateSyncGate)
+        {
+            _immediateSyncCts?.Cancel();
+            _immediateSyncCts?.Dispose();
+            _immediateSyncCts = null;
+        }
+    }
+}

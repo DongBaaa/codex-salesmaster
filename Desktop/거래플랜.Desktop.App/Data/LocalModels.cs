@@ -114,6 +114,23 @@ public sealed class LocalCustomer : LocalSyncEntity
     public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUsenet;
 }
 
+public sealed class LocalCustomerContract : LocalSyncEntity
+{
+    public Guid CustomerId { get; set; }
+    public string ContractType { get; set; } = "거래계약서";
+    public string FileName { get; set; } = string.Empty;
+    public string MimeType { get; set; } = "application/pdf";
+    public long FileSize { get; set; }
+    public string FileHash { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public DateOnly? SignedDate { get; set; }
+    public DateOnly? ExpireDate { get; set; }
+    public bool IsPrimary { get; set; }
+    public string UploadedByUsername { get; set; } = string.Empty;
+    public DateTime UploadedAtUtc { get; set; } = DateTime.UtcNow;
+    public byte[] FileContent { get; set; } = [];
+}
+
 public sealed class LocalItem : LocalSyncEntity
 {
     public string NameOriginal { get; set; } = string.Empty;

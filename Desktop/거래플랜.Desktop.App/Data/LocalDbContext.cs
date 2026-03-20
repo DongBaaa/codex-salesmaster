@@ -13,6 +13,7 @@ public sealed class LocalDbContext : DbContext
     public DbSet<LocalItemCategoryOption> ItemCategoryOptions => Set<LocalItemCategoryOption>();
     public DbSet<LocalCustomerMaster> CustomerMasters => Set<LocalCustomerMaster>();
     public DbSet<LocalCustomer> Customers => Set<LocalCustomer>();
+    public DbSet<LocalCustomerContract> CustomerContracts => Set<LocalCustomerContract>();
     public DbSet<LocalItem> Items => Set<LocalItem>();
     public DbSet<LocalInvoice> Invoices => Set<LocalInvoice>();
     public DbSet<LocalInvoiceLine> InvoiceLines => Set<LocalInvoiceLine>();
@@ -54,6 +55,7 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalItemCategoryOption>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalCustomerMaster>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalCustomer>().HasQueryFilter(e => !e.IsDeleted);
+        model.Entity<LocalCustomerContract>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalItem>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalInvoice>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalPayment>().HasQueryFilter(e => !e.IsDeleted);
@@ -80,6 +82,7 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalTradeTypeOption>().HasIndex(e => e.Revision);
         model.Entity<LocalItemCategoryOption>().HasIndex(e => e.Revision);
         model.Entity<LocalCustomer>().HasIndex(e => e.Revision);
+        model.Entity<LocalCustomerContract>().HasIndex(e => e.Revision);
         model.Entity<LocalItem>().HasIndex(e => e.Revision);
         model.Entity<LocalInvoice>().HasIndex(e => e.Revision);
         model.Entity<LocalPayment>().HasIndex(e => e.Revision);
@@ -122,6 +125,10 @@ public sealed class LocalDbContext : DbContext
             .HasKey(s => new { s.CustomerKey, s.DocCode });
         model.Entity<LocalAttachmentSelection>()
             .HasIndex(s => s.CustomerKey);
+        model.Entity<LocalCustomerContract>()
+            .HasIndex(contract => contract.CustomerId);
+        model.Entity<LocalCustomerContract>()
+            .HasIndex(contract => new { contract.CustomerId, contract.IsPrimary });
 
         model.Entity<LocalPriceGradeOption>()
             .HasIndex(option => option.Name);

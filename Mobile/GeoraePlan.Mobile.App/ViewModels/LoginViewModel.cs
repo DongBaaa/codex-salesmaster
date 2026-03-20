@@ -1,4 +1,4 @@
-using GeoraePlan.Mobile.App.Services;
+﻿using GeoraePlan.Mobile.App.Services;
 using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Mobile.App.ViewModels;
@@ -12,8 +12,10 @@ public sealed class LoginViewModel : ObservableObject
     private string _baseUrl = string.Empty;
     private string _username = string.Empty;
     private string _password = string.Empty;
-    private string _statusMessage = "NAS 서버 주소와 계정을 입력하세요.";
+    private string _statusMessage = "아이디와 비밀번호를 입력하세요.";
     private bool _isBusy;
+    private bool _rememberUsername = true;
+    private bool _rememberPassword;
 
     public LoginViewModel(SettingsService settings, SessionStore sessionStore, GeoraePlanApiClient api)
     {
@@ -43,6 +45,32 @@ public sealed class LoginViewModel : ObservableObject
         set => SetProperty(ref _password, value);
     }
 
+    public bool RememberUsername
+    {
+        get => _rememberUsername;
+        set
+        {
+            if (!SetProperty(ref _rememberUsername, value))
+                return;
+
+            if (!value && RememberPassword)
+                RememberPassword = false;
+        }
+    }
+
+    public bool RememberPassword
+    {
+        get => _rememberPassword;
+        set
+        {
+            if (!SetProperty(ref _rememberPassword, value))
+                return;
+
+            if (value && !RememberUsername)
+                RememberUsername = true;
+        }
+    }
+
     public string StatusMessage
     {
         get => _statusMessage;
@@ -57,12 +85,14 @@ public sealed class LoginViewModel : ObservableObject
 
     public AsyncCommand LoginCommand { get; }
 
-    public Task InitializeAsync()
+    public async Task InitializeAsync()
     {
         BaseUrl = _settings.GetBaseUrl();
-        Username = _settings.GetLastUsername();
-        Password = string.Empty;
-        return Task.CompletedTask;
+        RememberUsername = _settings.GetRememberUsername();
+        RememberPassword = _settings.GetRememberPassword();
+        Username = RememberUsername ? _settings.GetLastUsername() : string.Empty;
+        Password = RememberPassword ? await _settings.GetSavedPasswordAsync() : string.Empty;
+        StatusMessage = "거래플랜 NAS에 연결해 로그인합니다.";
     }
 
     public async Task LoginAsync()
@@ -70,15 +100,21 @@ public sealed class LoginViewModel : ObservableObject
         if (IsBusy)
             return;
 
+        var normalizedUsername = Username.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedUsername) || string.IsNullOrWhiteSpace(Password))
+        {
+            StatusMessage = "아이디와 비밀번호를 모두 입력하세요.";
+            return;
+        }
+
         try
         {
             IsBusy = true;
             StatusMessage = "로그인 중...";
 
-            await _settings.SaveBaseUrlAsync(BaseUrl);
             var response = await _api.LoginAsync(new LoginRequest
             {
-                Username = Username.Trim(),
+                Username = normalizedUsername,
                 Password = Password
             });
 
@@ -89,7 +125,7 @@ public sealed class LoginViewModel : ObservableObject
             }
 
             await _sessionStore.SaveAsync(response);
-            await _settings.SaveLastUsernameAsync(Username.Trim());
+            await _settings.SaveLoginPreferencesAsync(normalizedUsername, Password, RememberUsername, RememberPassword);
             StatusMessage = "로그인 성공";
             LoginSucceeded?.Invoke();
         }
@@ -100,7 +136,8 @@ public sealed class LoginViewModel : ObservableObject
         finally
         {
             IsBusy = false;
-            Password = string.Empty;
+            if (!RememberPassword)
+                Password = string.Empty;
         }
     }
 }

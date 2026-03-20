@@ -133,6 +133,89 @@ public sealed class ErpApiClient
             ct);
     }
 
+    public async Task<AppUpdateManifestDto?> GetUpdateManifestAsync(string channel = "stable", CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "업데이트 매니페스트 조회(updates/manifest)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader();
+                return await _http.GetAsync($"updates/manifest?channel={Uri.EscapeDataString(channel)}", token);
+            },
+            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<AppUpdateManifestDto>(token),
+            ct);
+    }
+
+    public string ResolveAbsoluteUrl(string relativeOrAbsolute)
+    {
+        if (string.IsNullOrWhiteSpace(relativeOrAbsolute))
+            return string.Empty;
+
+        if (Uri.TryCreate(relativeOrAbsolute, UriKind.Absolute, out var absoluteUri))
+            return absoluteUri.ToString();
+
+        var baseAddress = GetBaseUri();
+        return new Uri(baseAddress, relativeOrAbsolute.TrimStart('/')).ToString();
+    }
+
+    public Uri GetBaseUri()
+        => _http.BaseAddress ?? throw new InvalidOperationException("API 기본 주소가 설정되지 않았습니다.");
+
+    public async Task<List<RecycleBinEntryDto>> GetRecycleBinAsync(
+        string? kind = null,
+        string? searchText = null,
+        CancellationToken ct = default)
+    {
+        var query = BuildQuery("recycle-bin", ("kind", kind), ("q", searchText));
+        return await ExecuteWithRetryAsync(
+                   operationName: "휴지통 조회(recycle-bin)",
+                   sendAsync: async token =>
+                   {
+                       SetAuthHeader();
+                       return await _http.GetAsync(query, token);
+                   },
+                   readAsync: static async (resp, token) =>
+                       await resp.Content.ReadFromJsonAsync<List<RecycleBinEntryDto>>(token) ?? new List<RecycleBinEntryDto>(),
+                   ct)
+               ?? new List<RecycleBinEntryDto>();
+    }
+
+    public async Task<RecycleBinMutationResultDto?> RestoreRecycleBinAsync(
+        IReadOnlyList<RecycleBinMutationTargetDto> items,
+        CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "휴지통 복원(recycle-bin/restore)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader();
+                return await _http.PostAsJsonAsync(
+                    "recycle-bin/restore",
+                    new RecycleBinMutationRequest { Items = items.ToList() },
+                    token);
+            },
+            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<RecycleBinMutationResultDto>(token),
+            ct);
+    }
+
+    public async Task<RecycleBinMutationResultDto?> PurgeRecycleBinAsync(
+        IReadOnlyList<RecycleBinMutationTargetDto> items,
+        CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "휴지통 영구삭제(recycle-bin/purge)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader();
+                return await _http.PostAsJsonAsync(
+                    "recycle-bin/purge",
+                    new RecycleBinMutationRequest { Items = items.ToList() },
+                    token);
+            },
+            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<RecycleBinMutationResultDto>(token),
+            ct);
+    }
+
     private static bool ShouldRetry(HttpStatusCode code)
     {
         return code == HttpStatusCode.RequestTimeout
@@ -163,6 +246,16 @@ public sealed class ErpApiClient
         if (body.Length > 200)
             body = body[..200] + "...";
         return $"{(int)response.StatusCode} {response.ReasonPhrase} {body}".Trim();
+    }
+
+    private static string BuildQuery(string path, params (string Key, string? Value)[] query)
+    {
+        var items = query
+            .Where(x => !string.IsNullOrWhiteSpace(x.Value))
+            .Select(x => $"{Uri.EscapeDataString(x.Key)}={Uri.EscapeDataString(x.Value!)}")
+            .ToList();
+
+        return items.Count == 0 ? path : $"{path}?{string.Join("&", items)}";
     }
 
     private async Task<T?> ExecuteWithRetryAsync<T>(

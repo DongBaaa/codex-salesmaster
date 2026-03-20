@@ -22,6 +22,8 @@ public static class LocalMappings
         Email = dto.Email,
         BankAccountText = dto.BankAccountText,
         StampImage = dto.StampImage,
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
         Revision = dto.Revision,
         IsDeleted = dto.IsDeleted,
         IsDirty = false
@@ -40,6 +42,8 @@ public static class LocalMappings
         Email = e.Email,
         BankAccountText = e.BankAccountText,
         StampImage = e.StampImage,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
         Revision = e.Revision,
         IsDeleted = e.IsDeleted
     };
@@ -50,6 +54,8 @@ public static class LocalMappings
         Id = dto.Id,
         Name = dto.Name,
         IsActive = dto.IsActive,
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
         Revision = dto.Revision,
         IsDeleted = dto.IsDeleted,
         IsDirty = false
@@ -60,6 +66,8 @@ public static class LocalMappings
         Id = e.Id,
         Name = e.Name,
         IsActive = e.IsActive,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
         Revision = e.Revision,
         IsDeleted = e.IsDeleted
     };
@@ -70,6 +78,8 @@ public static class LocalMappings
         Id = dto.Id,
         Name = dto.Name,
         IsSystemDefault = dto.IsSystemDefault,
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
         Revision = dto.Revision,
         IsDeleted = dto.IsDeleted,
         IsDirty = false
@@ -80,6 +90,8 @@ public static class LocalMappings
         Id = e.Id,
         Name = e.Name,
         IsSystemDefault = e.IsSystemDefault,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
         Revision = e.Revision,
         IsDeleted = e.IsDeleted
     };
@@ -100,6 +112,9 @@ public static class LocalMappings
         Phone = dto.Phone,
         Email = dto.Email,
         Notes = dto.Notes,
+        ResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, DomainConstants.OfficeUsenet),
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
         Revision = dto.Revision,
         IsDeleted = dto.IsDeleted,
         IsDirty = false
@@ -109,6 +124,7 @@ public static class LocalMappings
     {
         Id = e.Id,
         CustomerMasterId = e.CustomerMasterId,
+        OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(e.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
         NameOriginal = e.NameOriginal,
         NameMatchKey = e.NameMatchKey,
         CategoryId = e.CategoryId,
@@ -120,6 +136,53 @@ public static class LocalMappings
         Phone = e.Phone,
         Email = e.Email,
         Notes = e.Notes,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
+        Revision = e.Revision,
+        IsDeleted = e.IsDeleted
+    };
+
+    public static LocalCustomerContract ToLocal(CustomerContractDto dto) => new()
+    {
+        Id = dto.Id,
+        CustomerId = dto.CustomerId,
+        ContractType = dto.ContractType,
+        FileName = dto.FileName,
+        MimeType = dto.MimeType,
+        FileSize = dto.FileSize,
+        FileHash = dto.FileHash,
+        Description = dto.Description,
+        SignedDate = dto.SignedDate,
+        ExpireDate = dto.ExpireDate,
+        IsPrimary = dto.IsPrimary,
+        UploadedByUsername = dto.UploadedByUsername,
+        UploadedAtUtc = dto.UploadedAtUtc,
+        FileContent = dto.FileContent ?? [],
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
+        Revision = dto.Revision,
+        IsDeleted = dto.IsDeleted,
+        IsDirty = false
+    };
+
+    public static CustomerContractDto ToDto(LocalCustomerContract e) => new()
+    {
+        Id = e.Id,
+        CustomerId = e.CustomerId,
+        ContractType = e.ContractType,
+        FileName = e.FileName,
+        MimeType = e.MimeType,
+        FileSize = e.FileSize,
+        FileHash = e.FileHash,
+        Description = e.Description,
+        SignedDate = e.SignedDate,
+        ExpireDate = e.ExpireDate,
+        IsPrimary = e.IsPrimary,
+        UploadedByUsername = e.UploadedByUsername,
+        UploadedAtUtc = e.UploadedAtUtc,
+        FileContent = e.FileContent ?? [],
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
         Revision = e.Revision,
         IsDeleted = e.IsDeleted
     };
@@ -132,7 +195,17 @@ public static class LocalMappings
         NameMatchKey = dto.NameMatchKey,
         SpecificationOriginal = dto.SpecificationOriginal,
         SpecificationMatchKey = dto.SpecificationMatchKey,
+        CategoryName = dto.CategoryName,
         Unit = dto.Unit,
+        CurrentStock = dto.CurrentStock,
+        SafetyStock = dto.SafetyStock,
+        PurchasePrice = dto.PurchasePrice,
+        SalePrice = dto.SalePrice,
+        RetailPrice = dto.RetailPrice,
+        PriceGradeA = dto.PriceGradeA,
+        PriceGradeB = dto.PriceGradeB,
+        PriceGradeC = dto.PriceGradeC,
+        SimpleMemo = dto.SimpleMemo,
         IsRental = dto.IsRental,
         IsSale = dto.IsSale,
         SerialNumber = dto.SerialNumber,
@@ -141,6 +214,8 @@ public static class LocalMappings
         RentalStartDate = dto.RentalStartDate,
         RentalEndDate = dto.RentalEndDate,
         Notes = dto.Notes,
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
         Revision = dto.Revision,
         IsDeleted = dto.IsDeleted,
         IsDirty = false
@@ -153,7 +228,17 @@ public static class LocalMappings
         NameMatchKey = e.NameMatchKey,
         SpecificationOriginal = e.SpecificationOriginal,
         SpecificationMatchKey = e.SpecificationMatchKey,
+        CategoryName = e.CategoryName,
         Unit = e.Unit,
+        CurrentStock = e.CurrentStock,
+        SafetyStock = e.SafetyStock,
+        PurchasePrice = e.PurchasePrice,
+        SalePrice = e.SalePrice,
+        RetailPrice = e.RetailPrice,
+        PriceGradeA = e.PriceGradeA,
+        PriceGradeB = e.PriceGradeB,
+        PriceGradeC = e.PriceGradeC,
+        SimpleMemo = e.SimpleMemo,
         IsRental = e.IsRental,
         IsSale = e.IsSale,
         SerialNumber = e.SerialNumber,
@@ -162,6 +247,8 @@ public static class LocalMappings
         RentalStartDate = e.RentalStartDate,
         RentalEndDate = e.RentalEndDate,
         Notes = e.Notes,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
         Revision = e.Revision,
         IsDeleted = e.IsDeleted
     };
@@ -171,6 +258,7 @@ public static class LocalMappings
     {
         Id = dto.Id,
         CustomerId = dto.CustomerId,
+        ResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, DomainConstants.OfficeUsenet),
         InvoiceNumber = dto.InvoiceNumber,
         LocalTempNumber = dto.LocalTempNumber,
         VoucherType = dto.VoucherType,
@@ -179,6 +267,8 @@ public static class LocalMappings
         SupplyAmount = dto.SupplyAmount,
         VatAmount = dto.VatAmount,
         Memo = dto.Memo,
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
         Revision = dto.Revision,
         IsDeleted = dto.IsDeleted,
         IsDirty = false,
@@ -190,6 +280,7 @@ public static class LocalMappings
     {
         Id = e.Id,
         CustomerId = e.CustomerId,
+        OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(e.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
         InvoiceNumber = e.InvoiceNumber,
         LocalTempNumber = e.LocalTempNumber,
         VoucherType = e.VoucherType,
@@ -198,6 +289,8 @@ public static class LocalMappings
         SupplyAmount = e.SupplyAmount,
         VatAmount = e.VatAmount,
         Memo = e.Memo,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
         Revision = e.Revision,
         IsDeleted = e.IsDeleted,
         Lines = e.Lines.Where(l => !l.IsDeleted).Select(ToDto).ToList(),
@@ -253,6 +346,8 @@ public static class LocalMappings
         PaymentDate = dto.PaymentDate,
         Amount = dto.Amount,
         Note = dto.Note,
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
         Revision = dto.Revision,
         IsDeleted = dto.IsDeleted,
         IsDirty = false
@@ -265,7 +360,25 @@ public static class LocalMappings
         PaymentDate = e.PaymentDate,
         Amount = e.Amount,
         Note = e.Note,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
         Revision = e.Revision,
         IsDeleted = e.IsDeleted
+    };
+
+    public static LocalItemWarehouseStock ToLocal(ItemWarehouseStockDto dto) => new()
+    {
+        ItemId = dto.ItemId,
+        WarehouseCode = dto.WarehouseCode,
+        Quantity = dto.Quantity,
+        UpdatedAtUtc = dto.UpdatedAtUtc
+    };
+
+    public static ItemWarehouseStockDto ToDto(LocalItemWarehouseStock e) => new()
+    {
+        ItemId = e.ItemId,
+        WarehouseCode = e.WarehouseCode,
+        Quantity = e.Quantity,
+        UpdatedAtUtc = e.UpdatedAtUtc
     };
 }

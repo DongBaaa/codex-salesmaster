@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using GeoraePlan.Mobile.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -11,6 +11,7 @@ public sealed class ItemsViewModel : ObservableObject
     private string _searchText = string.Empty;
     private string _statusMessage = "품목을 불러오세요.";
     private bool _isBusy;
+    private DateTime? _lastRefreshUtc;
 
     public ItemsViewModel(GeoraePlanApiClient api)
     {
@@ -40,6 +41,9 @@ public sealed class ItemsViewModel : ObservableObject
 
     public AsyncCommand RefreshCommand { get; }
 
+    public bool NeedsRefresh(TimeSpan maxAge)
+        => !_lastRefreshUtc.HasValue || DateTime.UtcNow - _lastRefreshUtc.Value >= maxAge;
+
     public async Task RefreshAsync()
     {
         if (IsBusy)
@@ -48,13 +52,15 @@ public sealed class ItemsViewModel : ObservableObject
         try
         {
             IsBusy = true;
-            StatusMessage = "품목 조회 중...";
+            StatusMessage = "품목을 조회하고 있습니다.";
             var result = await _api.GetItemsAsync(SearchText);
+
             Items.Clear();
             foreach (var item in result)
                 Items.Add(item);
 
-            StatusMessage = $"품목 {Items.Count}건";
+            _lastRefreshUtc = DateTime.UtcNow;
+            StatusMessage = $"품목 {Items.Count:N0}건";
         }
         catch (Exception ex)
         {

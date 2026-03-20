@@ -30,10 +30,13 @@ public sealed class AppDbContext : DbContext
     public DbSet<CustomerCategory> CustomerCategories => Set<CustomerCategory>();
     public DbSet<CustomerMaster> CustomerMasters => Set<CustomerMaster>();
     public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<CustomerContract> CustomerContracts => Set<CustomerContract>();
     public DbSet<Item> Items => Set<Item>();
+    public DbSet<ItemWarehouseStock> ItemWarehouseStocks => Set<ItemWarehouseStock>();
     public DbSet<Invoice> Invoices => Set<Invoice>();
     public DbSet<InvoiceLine> InvoiceLines => Set<InvoiceLine>();
     public DbSet<Payment> Payments => Set<Payment>();
+    public DbSet<PaymentAttachment> PaymentAttachments => Set<PaymentAttachment>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<ConflictLog> ConflictLogs => Set<ConflictLog>();
 
@@ -53,19 +56,47 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<Invoice>()
             .HasMany(x => x.Payments).WithOne(x => x.Invoice)
             .HasForeignKey(x => x.InvoiceId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<Customer>()
+            .HasMany(x => x.Contracts).WithOne(x => x.Customer)
+            .HasForeignKey(x => x.CustomerId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<ItemWarehouseStock>()
+            .HasOne(x => x.Item).WithMany()
+            .HasForeignKey(x => x.ItemId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<Payment>()
+            .HasMany(x => x.Attachments).WithOne(x => x.Payment)
+            .HasForeignKey(x => x.PaymentId).OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<Invoice>().Property(x => x.TotalAmount).HasPrecision(18, 2);
         modelBuilder.Entity<Invoice>().Property(x => x.SupplyAmount).HasPrecision(18, 2);
         modelBuilder.Entity<Invoice>().Property(x => x.VatAmount).HasPrecision(18, 2);
+        modelBuilder.Entity<Item>().Property(x => x.CurrentStock).HasPrecision(18, 2);
+        modelBuilder.Entity<Item>().Property(x => x.SafetyStock).HasPrecision(18, 2);
+        modelBuilder.Entity<Item>().Property(x => x.PurchasePrice).HasPrecision(18, 2);
+        modelBuilder.Entity<Item>().Property(x => x.SalePrice).HasPrecision(18, 2);
+        modelBuilder.Entity<Item>().Property(x => x.RetailPrice).HasPrecision(18, 2);
+        modelBuilder.Entity<Item>().Property(x => x.PriceGradeA).HasPrecision(18, 2);
+        modelBuilder.Entity<Item>().Property(x => x.PriceGradeB).HasPrecision(18, 2);
+        modelBuilder.Entity<Item>().Property(x => x.PriceGradeC).HasPrecision(18, 2);
         modelBuilder.Entity<InvoiceLine>().Property(x => x.Quantity).HasPrecision(18, 2);
         modelBuilder.Entity<InvoiceLine>().Property(x => x.UnitPrice).HasPrecision(18, 2);
         modelBuilder.Entity<InvoiceLine>().Property(x => x.LineAmount).HasPrecision(18, 2);
         modelBuilder.Entity<Payment>().Property(x => x.Amount).HasPrecision(18, 2);
+        modelBuilder.Entity<ItemWarehouseStock>().Property(x => x.Quantity).HasPrecision(18, 2);
 
         modelBuilder.Entity<Customer>().HasIndex(x => x.NameMatchKey);
+        modelBuilder.Entity<Customer>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<CustomerContract>().HasIndex(x => x.CustomerId);
+        modelBuilder.Entity<CustomerContract>().HasIndex(x => new { x.CustomerId, x.IsPrimary });
         modelBuilder.Entity<CustomerMaster>().HasIndex(x => x.NameMatchKey);
+        modelBuilder.Entity<CustomerMaster>().HasIndex(x => x.OfficeCode);
         modelBuilder.Entity<Item>().HasIndex(x => x.NameMatchKey);
         modelBuilder.Entity<Item>().HasIndex(x => x.SpecificationMatchKey);
+        modelBuilder.Entity<Item>().HasIndex(x => x.CategoryName);
+        modelBuilder.Entity<Item>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<Invoice>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<ItemWarehouseStock>().HasKey(x => new { x.ItemId, x.WarehouseCode });
+        modelBuilder.Entity<ItemWarehouseStock>().HasIndex(x => x.WarehouseCode);
+        modelBuilder.Entity<PaymentAttachment>().HasIndex(x => x.PaymentId);
 
         ApplySoftDeleteFilter<UserAccount>(modelBuilder);
         ApplySoftDeleteFilter<CompanyProfile>(modelBuilder);
@@ -73,9 +104,11 @@ public sealed class AppDbContext : DbContext
         ApplySoftDeleteFilter<CustomerCategory>(modelBuilder);
         ApplySoftDeleteFilter<CustomerMaster>(modelBuilder);
         ApplySoftDeleteFilter<Customer>(modelBuilder);
+        ApplySoftDeleteFilter<CustomerContract>(modelBuilder);
         ApplySoftDeleteFilter<Item>(modelBuilder);
         ApplySoftDeleteFilter<Invoice>(modelBuilder);
         ApplySoftDeleteFilter<Payment>(modelBuilder);
+        ApplySoftDeleteFilter<PaymentAttachment>(modelBuilder);
     }
 
     public override int SaveChanges()
@@ -146,7 +179,9 @@ public sealed class AppDbContext : DbContext
 
         foreach (var property in entry.Properties)
         {
-            if (property.Metadata.IsPrimaryKey() || property.Metadata.Name == nameof(UserAccount.PasswordHash))
+            if (property.Metadata.IsPrimaryKey() ||
+                property.Metadata.Name == nameof(UserAccount.PasswordHash) ||
+                property.Metadata.ClrType == typeof(byte[]))
             {
                 continue;
             }

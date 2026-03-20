@@ -31,11 +31,16 @@
 - `[검증필요]` 장시간 운영 시 동기화/백업 알림 노이즈
 
 ## 실행 방법
-### 권장 실행
+### 권장 실행(로컬 빠른 확인)
 ```powershell
 cd "D:\거래플랜"
 cmd /c "배포\전체실행.cmd"
 ```
+
+- 2026-03-20 실제 검증 결과:
+  - `배포\전체실행.cmd` 는 로컬 테스트용으로 `Development` 환경 + SQLite fallback 기준에서 실행되도록 조정함
+  - 서버는 `http://127.0.0.1:19080` 계열이 아니라, 스크립트가 잡은 실제 포트로 기동
+  - 외부 NAS 실서버 확인은 `https://api.example.invalid` 기준으로 별도 검증
 
 ### 개발 모드 실행
 서버:
@@ -49,6 +54,15 @@ dotnet run
 cd "D:\거래플랜\Desktop\거래플랜.Desktop.App"
 dotnet run
 ```
+
+### 배포본 직접 실행(가장 단순한 PC 테스트)
+```powershell
+cd "D:\거래플랜\배포\거래플랜"
+.\거래플랜.exe
+```
+
+- 위 실행본은 `https://api.example.invalid` 를 바라보는 포터블 배포본이다.
+- 로컬 서버 없이 외부 NAS API에 붙여서 UI/로그인 테스트할 때 가장 단순하다.
 
 ## 빌드/테스트
 ```powershell
@@ -91,6 +105,9 @@ dotnet test "거래플랜.sln" -c Release --no-build
 - 통합 진행 문서: `D:\거래플랜\기획.md`
 - 레거시 비교 문서: `D:\거래플랜\외부 레거시.md`
 - NAS 운영 런북: `D:\거래플랜\infra\NAS-운영-런북.md`
+- NAS 실운영 최소 체크리스트: `D:\거래플랜\infra\NAS-실운영-최소체크리스트_2026-03-19.md`
+- NAS 실행 명령 요약: `D:\거래플랜\infra\NAS-실행-명령요약_2026-03-19.md`
+- NAS 보안 체크리스트: `D:\거래플랜\infra\NAS-보안-체크리스트_2026-03-19.md`
 - NAS 포트/폴더/도메인 배치안: `D:\거래플랜\tasks\NAS_포트_폴더_도메인_배치안_2026-03-19.md`
 - 안드로이드 MVP 기능명세: `D:\거래플랜\tasks\안드로이드_MVP_기능명세_2026-03-19.md`
 - 안드로이드 MAUI 스캐폴드: `D:\거래플랜\Mobile\GeoraePlan.Mobile.App\README.md`
@@ -101,5 +118,8 @@ dotnet test "거래플랜.sln" -c Release --no-build
 - 안드로이드 서명 APK 빌드 스크립트: `D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidApk.ps1`
 - 안드로이드 APK 출력물: `D:\거래플랜\Mobile\artifacts\android\거래플랜-안드로이드-v0.1.0-signed.apk`
 - PC 설치 패키지 생성 스크립트: `D:\거래플랜\tools\release\Build-GeoraePlanDesktopInstaller.ps1`
-- PC 설치 패키지 출력물: `D:\거래플랜\배포\설치패키지\거래플랜-PC-설치패키지.zip`
-
+- PC EXE/MSI 설치 패키지 생성 스크립트: `D:\거래플랜\tools\release\Build-GeoraePlanDesktopNativeInstallers.ps1`
+- PC 설치 패키지 출력물:
+  - `D:\거래플랜\배포\설치패키지\거래플랜-PC-설치패키지.zip`
+  - `D:\거래플랜\배포\설치패키지\거래플랜-PC-설치패키지.exe`
+  - `D:\거래플랜\배포\설치패키지\거래플랜-PC-설치패키지.msi`

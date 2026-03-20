@@ -44,11 +44,17 @@ public partial class MainWindow : Window
     {
         await _vm.LoadAsync();
 
+        var popupSections = new List<string>();
+        if (!string.IsNullOrWhiteSpace(_vm.ContractAlertPopupMessage))
+            popupSections.Add(_vm.ContractAlertPopupMessage);
         if (!string.IsNullOrWhiteSpace(_vm.RentalAlertPopupMessage))
+            popupSections.Add(_vm.RentalAlertPopupMessage);
+
+        if (popupSections.Count > 0)
         {
             MessageBox.Show(
-                _vm.RentalAlertPopupMessage,
-                "렌탈 알림",
+                string.Join(Environment.NewLine + Environment.NewLine, popupSections),
+                "대시보드 알림",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
@@ -189,7 +195,7 @@ public partial class MainWindow : Window
         }
 
         var confirm = MessageBox.Show(
-            $"거래처 '{customer.NameOriginal}'를 삭제하시겠습니까?",
+            $"거래처 '{customer.NameOriginal}'를 삭제하시겠습니까?{Environment.NewLine}삭제된 항목은 환경설정 > 휴지통에서 복원할 수 있습니다.",
             "거래처 삭제 확인",
             MessageBoxButton.OKCancel,
             MessageBoxImage.Warning);
@@ -240,7 +246,7 @@ public partial class MainWindow : Window
         }
 
         var confirm = MessageBox.Show(
-            "선택한 전표를 삭제하시겠습니까?",
+            $"선택한 전표를 삭제하시겠습니까?{Environment.NewLine}삭제된 전표는 환경설정 > 휴지통에서 복원할 수 있습니다.",
             "전표 삭제 확인",
             MessageBoxButton.OKCancel,
             MessageBoxImage.Warning);
@@ -321,6 +327,11 @@ public partial class MainWindow : Window
     private async void EnvironmentSettingsButton_Click(object sender, RoutedEventArgs e)
     {
         await OpenEnvironmentSettingsWindowAsync();
+    }
+
+    private async void RecycleBinButton_Click(object sender, RoutedEventArgs e)
+    {
+        await OpenEnvironmentSettingsWindowAsync(openRecycleBinTab: true);
     }
 
     private void RentalManagementButton_Click(object sender, RoutedEventArgs e)
@@ -458,15 +469,16 @@ public partial class MainWindow : Window
         win.Show();
     }
 
-    private async Task OpenEnvironmentSettingsWindowAsync()
+    private async Task OpenEnvironmentSettingsWindowAsync(bool openRecycleBinTab = false)
     {
         var vm = new EnvironmentSettingsViewModel(_local, _session, _api);
         await vm.InitializeAsync();
-        var win = new EnvironmentSettingsWindow(vm)
+        var win = new EnvironmentSettingsWindow(vm, openRecycleBinTab)
         {
             Owner = this
         };
         win.ShowDialog();
+        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
 
     private async Task OpenCustomerManagementWindowAsync()

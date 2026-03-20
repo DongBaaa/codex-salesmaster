@@ -1,4 +1,4 @@
-﻿using System.Threading;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -58,6 +58,7 @@ public partial class App : Application
 
             services.AddSingleton<SessionState>();
             services.AddSingleton<OfficeAccessService>();
+            services.AddSingleton<SyncRequestDispatcher>();
             services.AddTransient<LocalStateService>();
             services.AddTransient<RentalStateService>();
             services.AddTransient<RentalDocumentService>();
@@ -75,6 +76,22 @@ public partial class App : Application
             {
                 var db = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
                 await LocalDbInitializer.InitializeAsync(db);
+
+                try
+                {
+                    var localState = scope.ServiceProvider.GetRequiredService<LocalStateService>();
+                    var legacyMigration = new LegacyDataMigrationService(localState);
+                    var migrationResult = await legacyMigration.TryAutoMigrateLocalDataAsync();
+
+                    if (migrationResult.Applied)
+                        AppLogger.Info("LEGACY", $"자동 마이그레이션 완료. source={migrationResult.SourceType}, path={migrationResult.SourcePath}, message={migrationResult.Message}");
+                    else if (!string.IsNullOrWhiteSpace(migrationResult.Message))
+                        AppLogger.Info("LEGACY", $"자동 마이그레이션 건너뜀. source={migrationResult.SourceType}, path={migrationResult.SourcePath}, message={migrationResult.Message}");
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Warn("LEGACY", $"자동 마이그레이션 실패. {ex.Message}");
+                }
             }
 
             var loginVm = _services.GetRequiredService<LoginViewModel>();
@@ -250,13 +267,17 @@ public partial class App : Application
 
             var backup = sp.GetRequiredService<BackupService>();
             var backupOk = await backup.BackupNowAsync();
+            if (!backupOk)
+            {
+                AppLogger.Warn(
+                    "APP",
+                    $"Background save completed but backup failed. isShutdown={isShutdown}");
+            }
 
             if (isShutdown)
-                mainVm.SyncStatus = backupOk ? "저장 완료. 종료합니다." : "저장 완료(백업 실패). 종료합니다.";
+                mainVm.SyncStatus = "저장 완료. 종료합니다.";
             else
-                mainVm.SyncStatus = backupOk
-                    ? $"자동 저장 완료 {DateTime.Now:HH:mm:ss}"
-                    : $"자동 저장 완료(백업 실패) {DateTime.Now:HH:mm:ss}";
+                mainVm.SyncStatus = $"자동 저장 완료 {DateTime.Now:HH:mm:ss}";
         }
         finally
         {

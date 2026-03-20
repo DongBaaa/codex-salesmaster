@@ -1,4 +1,4 @@
-using GeoraePlan.Mobile.App.Services;
+﻿using GeoraePlan.Mobile.App.Services;
 
 namespace GeoraePlan.Mobile.App.ViewModels;
 
@@ -8,9 +8,12 @@ public sealed class HomeViewModel : ObservableObject
     private readonly JsonSyncStateStore _syncStateStore;
 
     private string _displayName = "거래플랜";
-    private string _roleText = "로그인 필요";
+    private string _roleText = "로그인이 필요합니다.";
     private string _lastSyncText = "아직 동기화 기록이 없습니다.";
-    private string _statusMessage = "안드로이드 클라이언트 스캐폴드";
+    private string _statusMessage = "안드로이드 클라이언트 준비 완료";
+    private string _autoSyncText = "로그인 후 자동 동기화가 시작됩니다.";
+    private string _pendingNoticeText = string.Empty;
+    private bool _hasPendingNotice;
 
     public HomeViewModel(SessionStore sessionStore, JsonSyncStateStore syncStateStore)
     {
@@ -43,6 +46,24 @@ public sealed class HomeViewModel : ObservableObject
         set => SetProperty(ref _statusMessage, value);
     }
 
+    public string AutoSyncText
+    {
+        get => _autoSyncText;
+        set => SetProperty(ref _autoSyncText, value);
+    }
+
+    public string PendingNoticeText
+    {
+        get => _pendingNoticeText;
+        set => SetProperty(ref _pendingNoticeText, value);
+    }
+
+    public bool HasPendingNotice
+    {
+        get => _hasPendingNotice;
+        set => SetProperty(ref _hasPendingNotice, value);
+    }
+
     public AsyncCommand RefreshCommand { get; }
 
     public async Task RefreshAsync()
@@ -50,17 +71,37 @@ public sealed class HomeViewModel : ObservableObject
         var session = _sessionStore.GetSnapshot();
         DisplayName = session.IsAuthenticated
             ? $"{session.Username} 님"
-            : "로그인 필요";
+            : "로그인이 필요합니다.";
         RoleText = session.IsAuthenticated
             ? $"권한: {session.Role}"
             : "권한 정보 없음";
+        AutoSyncText = session.IsAuthenticated
+            ? "앱 활성 중에는 약 25초 간격으로 자동 동기화를 시도합니다."
+            : "로그인 후 자동 동기화가 시작됩니다.";
 
         var sync = await _syncStateStore.LoadAsync();
         LastSyncText = sync.LastSuccessUtc.HasValue
             ? $"마지막 성공 동기화: {sync.LastSuccessUtc.Value.ToLocalTime():yyyy-MM-dd HH:mm:ss}"
             : "아직 동기화 기록이 없습니다.";
+
+        if (sync.PendingPaymentAttachmentCount > 0)
+        {
+            HasPendingNotice = true;
+            PendingNoticeText = $"첨부 {sync.PendingPaymentAttachmentCount:N0}건 업로드 대기 중입니다. 네트워크 복구 후 자동 재시도됩니다.";
+        }
+        else if (sync.PendingInvoiceCount > 0 || sync.PendingPaymentCount > 0)
+        {
+            HasPendingNotice = true;
+            PendingNoticeText = $"전표 {sync.PendingInvoiceCount:N0}건 / 수금 {sync.PendingPaymentCount:N0}건 업로드 대기 중입니다.";
+        }
+        else
+        {
+            HasPendingNotice = false;
+            PendingNoticeText = string.Empty;
+        }
+
         StatusMessage = string.IsNullOrWhiteSpace(sync.LastError)
-            ? "NAS 서버와 수동 동기화 준비됨"
-            : $"최근 오류: {sync.LastError}";
+            ? "NAS 서버와 자동 동기화 준비됨"
+            : $"최근 동기화 주의: {sync.LastError}";
     }
 }

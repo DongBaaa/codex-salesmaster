@@ -192,11 +192,13 @@ public sealed class CustomerMasterDto : SyncEntityDto
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
     public Guid? CategoryId { get; set; }
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
 }
 
 public sealed class CustomerDto : SyncEntityDto
 {
     public Guid? CustomerMasterId { get; set; }
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
     public Guid? CategoryId { get; set; }
@@ -210,13 +212,41 @@ public sealed class CustomerDto : SyncEntityDto
     public string Notes { get; set; } = string.Empty;
 }
 
+public sealed class CustomerContractDto : SyncEntityDto
+{
+    public Guid CustomerId { get; set; }
+    public string ContractType { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public string MimeType { get; set; } = "application/pdf";
+    public long FileSize { get; set; }
+    public string FileHash { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public DateOnly? SignedDate { get; set; }
+    public DateOnly? ExpireDate { get; set; }
+    public bool IsPrimary { get; set; }
+    public string UploadedByUsername { get; set; } = string.Empty;
+    public DateTime UploadedAtUtc { get; set; } = DateTime.UtcNow;
+    public byte[] FileContent { get; set; } = [];
+}
+
 public sealed class ItemDto : SyncEntityDto
 {
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
     public string SpecificationOriginal { get; set; } = string.Empty;
     public string SpecificationMatchKey { get; set; } = string.Empty;
+    public string CategoryName { get; set; } = string.Empty;
     public string Unit { get; set; } = string.Empty;
+    public decimal CurrentStock { get; set; }
+    public decimal SafetyStock { get; set; }
+    public decimal PurchasePrice { get; set; }
+    public decimal SalePrice { get; set; }
+    public decimal RetailPrice { get; set; }
+    public decimal PriceGradeA { get; set; }
+    public decimal PriceGradeB { get; set; }
+    public decimal PriceGradeC { get; set; }
+    public string SimpleMemo { get; set; } = string.Empty;
     public bool IsRental { get; set; }
     public bool IsSale { get; set; }
     public string SerialNumber { get; set; } = string.Empty;
@@ -230,6 +260,7 @@ public sealed class ItemDto : SyncEntityDto
 public sealed class InvoiceDto : SyncEntityDto
 {
     public Guid CustomerId { get; set; }
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
     public VoucherType VoucherType { get; set; }
@@ -268,6 +299,46 @@ public sealed class PaymentDto : SyncEntityDto
     public DateOnly PaymentDate { get; set; }
     public decimal Amount { get; set; }
     public string Note { get; set; } = string.Empty;
+    public List<PaymentAttachmentDto> Attachments { get; set; } = new();
+}
+
+public sealed class PaymentAttachmentDto : SyncEntityDto
+{
+    public Guid PaymentId { get; set; }
+    public string AttachmentType { get; set; } = "내역첨부";
+    public string FileName { get; set; } = string.Empty;
+    public string MimeType { get; set; } = string.Empty;
+    public long FileSize { get; set; }
+    public string FileHash { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public DateTime UploadedAtUtc { get; set; } = DateTime.UtcNow;
+    public byte[] FileContent { get; set; } = [];
+}
+
+public sealed class ItemWarehouseStockDto
+{
+    public Guid ItemId { get; set; }
+    public string WarehouseCode { get; set; } = string.Empty;
+    public decimal Quantity { get; set; }
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class CustomerDetailDto
+{
+    public CustomerDto Customer { get; set; } = new();
+    public List<InvoiceDto> RecentInvoices { get; set; } = new();
+}
+
+public sealed class ItemCategorySummaryDto
+{
+    public string Name { get; set; } = string.Empty;
+    public int ItemCount { get; set; }
+}
+
+public sealed class ItemDetailDto
+{
+    public ItemDto Item { get; set; } = new();
+    public List<ItemWarehouseStockDto> BranchStocks { get; set; } = new();
 }
 
 public sealed class AuditLogDto
@@ -305,7 +376,9 @@ public sealed class SyncPullResponse
     public List<CustomerCategoryDto> CustomerCategories { get; set; } = new();
     public List<CustomerMasterDto> CustomerMasters { get; set; } = new();
     public List<CustomerDto> Customers { get; set; } = new();
+    public List<CustomerContractDto> CustomerContracts { get; set; } = new();
     public List<ItemDto> Items { get; set; } = new();
+    public List<ItemWarehouseStockDto> ItemWarehouseStocks { get; set; } = new();
     public List<InvoiceDto> Invoices { get; set; } = new();
     public List<PaymentDto> Payments { get; set; } = new();
 }
@@ -318,7 +391,9 @@ public sealed class SyncPushRequest
     public List<CustomerCategoryDto> CustomerCategories { get; set; } = new();
     public List<CustomerMasterDto> CustomerMasters { get; set; } = new();
     public List<CustomerDto> Customers { get; set; } = new();
+    public List<CustomerContractDto> CustomerContracts { get; set; } = new();
     public List<ItemDto> Items { get; set; } = new();
+    public List<ItemWarehouseStockDto> ItemWarehouseStocks { get; set; } = new();
     public List<InvoiceDto> Invoices { get; set; } = new();
     public List<PaymentDto> Payments { get; set; } = new();
 }
@@ -331,4 +406,54 @@ public sealed class SyncPushResult
     public List<ConflictLogDto> Conflicts { get; set; } = new();
     /// <summary>Key = local invoice Id, Value = assigned server InvoiceNumber.</summary>
     public Dictionary<Guid, string> AssignedInvoiceNumbers { get; set; } = new();
+}
+
+public sealed class RecycleBinEntryDto
+{
+    public Guid EntityId { get; set; }
+    public string Kind { get; set; } = string.Empty;
+    public string KindText { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Subtitle { get; set; } = string.Empty;
+    public string Detail { get; set; } = string.Empty;
+    public DateTime DeletedAtUtc { get; set; }
+}
+
+public sealed class RecycleBinMutationTargetDto
+{
+    public Guid EntityId { get; set; }
+    public string Kind { get; set; } = string.Empty;
+}
+
+public sealed class RecycleBinMutationRequest
+{
+    public List<RecycleBinMutationTargetDto> Items { get; set; } = new();
+}
+
+public sealed class RecycleBinMutationResultDto
+{
+    public int RequestedCount { get; set; }
+    public int SucceededCount { get; set; }
+    public List<string> Messages { get; set; } = new();
+}
+
+public sealed class AppUpdateManifestDto
+{
+    public string Channel { get; set; } = "stable";
+    public DateTime GeneratedAtUtc { get; set; } = DateTime.UtcNow;
+    public AppUpdatePackageDto? Desktop { get; set; }
+    public AppUpdatePackageDto? Android { get; set; }
+}
+
+public sealed class AppUpdatePackageDto
+{
+    public string Platform { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public bool Mandatory { get; set; }
+    public string PackageUrl { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public string Sha256 { get; set; } = string.Empty;
+    public long FileSize { get; set; }
+    public string Notes { get; set; } = string.Empty;
+    public DateTime ReleasedAtUtc { get; set; } = DateTime.UtcNow;
 }

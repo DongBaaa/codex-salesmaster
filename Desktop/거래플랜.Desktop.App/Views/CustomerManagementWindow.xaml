@@ -2,13 +2,15 @@
         x:Name="Root"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:conv="clr-namespace:거래플랜.Desktop.App.Converters"
         Title="거래처 관리"
-        Height="720"
-        Width="1100"
+        Height="820"
+        Width="1160"
         WindowStartupLocation="CenterOwner"
         Background="#151F2E"
         KeyDown="Window_KeyDown">
     <Window.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVisibility"/>
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
@@ -80,6 +82,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -95,7 +98,7 @@
                            FontSize="22"
                            FontWeight="Bold"
                            Foreground="#4FC3F7"/>
-                <TextBlock Text="거래처 등록, 수정, 담당지점 변경을 관리합니다."
+                <TextBlock Text="거래처 등록, 수정, 담당지점 변경과 계약서 만료 현황을 관리합니다."
                            Foreground="#9FB3C8"
                            Margin="0,4,0,0"/>
             </StackPanel>
@@ -184,18 +187,71 @@
 
         <Border Grid.Row="2"
                 Margin="0,8,0,0"
+                Background="#2A1E1E"
+                Padding="10"
+                CornerRadius="6"
+                BorderBrush="#7F1D1D"
+                BorderThickness="1"
+                Visibility="{Binding HasContractAlerts, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="6"/>
+                    <RowDefinition Height="118"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0">
+                    <TextBlock Text="계약 만료 알림"
+                               FontSize="16"
+                               FontWeight="Bold"
+                               Foreground="#FFCDD2"/>
+                    <TextBlock Text="{Binding ContractAlertSummary}"
+                               Foreground="#FFEBEE"
+                               Margin="0,4,0,0"/>
+                </StackPanel>
+
+                <DataGrid Grid.Row="2"
+                          ItemsSource="{Binding ContractAlerts}"
+                          SelectedItem="{x:Null}"
+                          IsReadOnly="True"
+                          BorderThickness="0"
+                          CanUserSortColumns="False">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="거래처명"
+                                            Binding="{Binding CustomerName}"
+                                            Width="2*"
+                                            ElementStyle="{StaticResource CustomerGridTextStyle}"/>
+                        <DataGridTextColumn Header="계약구분"
+                                            Binding="{Binding ContractType}"
+                                            Width="120"
+                                            ElementStyle="{StaticResource CustomerGridTextStyle}"/>
+                        <DataGridTextColumn Header="만료일"
+                                            Binding="{Binding ExpireDate}"
+                                            Width="110"
+                                            ElementStyle="{StaticResource CustomerGridTextStyle}"/>
+                        <DataGridTextColumn Header="상태"
+                                            Binding="{Binding AlertText}"
+                                            Width="2*"
+                                            ElementStyle="{StaticResource CustomerGridTextStyle}"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="3"
+                Margin="0,8,0,0"
                 Background="#1A2B4A"
                 CornerRadius="6"
                 BorderBrush="#2E4060"
                 BorderThickness="1">
-                <DataGrid x:Name="CustomerRowsDataGrid"
+            <DataGrid x:Name="CustomerRowsDataGrid"
                       ItemsSource="{Binding Customers}"
                       SelectedItem="{Binding SelectedCustomer}"
                       IsReadOnly="False"
                       BorderThickness="0"
                       MouseDoubleClick="CustomerRowsDataGrid_MouseDoubleClick">
                 <DataGrid.Columns>
-                    <DataGridTemplateColumn Header="거래처명" Width="2.4*" IsReadOnly="True">
+                    <DataGridTemplateColumn Header="거래처명" Width="2.2*" IsReadOnly="True">
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                                 <TextBlock Text="{Binding NameOriginal}"
@@ -221,6 +277,16 @@
                     <DataGridTextColumn Header="대표전화"
                                         Binding="{Binding Phone, Mode=OneWay}"
                                         Width="140"
+                                        IsReadOnly="True"
+                                        ElementStyle="{StaticResource CustomerGridTextStyle}"/>
+                    <DataGridTextColumn Header="계약서"
+                                        Binding="{Binding ContractPresenceText, Mode=OneWay}"
+                                        Width="82"
+                                        IsReadOnly="True"
+                                        ElementStyle="{StaticResource CustomerGridTextStyle}"/>
+                    <DataGridTextColumn Header="계약상태"
+                                        Binding="{Binding ContractStatusText, Mode=OneWay}"
+                                        Width="130"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
                     <DataGridTemplateColumn Header="담당지점" Width="172" CellStyle="{StaticResource CustomerGridComboCellStyle}">
@@ -253,7 +319,7 @@
             </DataGrid>
         </Border>
 
-        <Border Grid.Row="3"
+        <Border Grid.Row="4"
                 Margin="0,10,0,0"
                 Background="#122038"
                 BorderBrush="#2E4060"
@@ -276,4 +342,3 @@
         </Border>
     </Grid>
 </Window>
-

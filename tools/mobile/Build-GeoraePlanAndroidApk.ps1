@@ -15,6 +15,8 @@ param(
     [string]$OutputRoot,
     [string]$VersionName,
     [int]$VersionCode,
+    [ValidateSet('apk', 'aab', 'both')]
+    [string]$PackageFormat = 'apk',
     [switch]$SkipEnvironmentCheck,
     [switch]$NoRestore
 )
@@ -80,6 +82,16 @@ function Get-ResolvedJavaSdkDirectory {
 
     if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME)) {
         $candidates.Add($env:JAVA_HOME) | Out-Null
+    }
+
+    foreach ($directCandidate in @(
+        (Join-Path $env:ProgramFiles 'Android\Android Studio\jbr'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Android\Android Studio\jbr'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\jbr')
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($directCandidate)) {
+            $candidates.Add($directCandidate) | Out-Null
+        }
     }
 
     foreach ($commandName in @('javac', 'java', 'keytool')) {
@@ -234,7 +246,12 @@ $env:PATH = (Join-Path $resolvedJavaSdkDirectory 'bin') + ';' + (Join-Path $reso
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-$publishDirectory = Join-Path $OutputRoot ("publish_" + $timestamp)
+$artifactPrefix = switch ($PackageFormat) {
+    'aab' { 'aab_' }
+    'both' { 'bundle_' }
+    default { 'publish_' }
+}
+$publishDirectory = Join-Path $OutputRoot ($artifactPrefix + $timestamp)
 New-Item -ItemType Directory -Force -Path $publishDirectory | Out-Null
 
 $arguments = @(
@@ -243,7 +260,6 @@ $arguments = @(
     '-c', $Configuration
     '-f', $Framework
     '--output', $publishDirectory
-    '-p:AndroidPackageFormat=apk'
     '-p:AndroidKeyStore=true'
     "-p:AndroidSigningKeyStore=$KeystorePath"
     "-p:AndroidSigningKeyAlias=$KeyAlias"
@@ -253,6 +269,18 @@ $arguments = @(
     "-p:JavaSdkDirectory=$resolvedJavaSdkDirectory"
     '-p:ArchiveOnBuild=true'
 )
+
+switch ($PackageFormat) {
+    'apk' {
+        $arguments += '-p:AndroidPackageFormat=apk'
+    }
+    'aab' {
+        $arguments += '-p:AndroidPackageFormats=aab'
+    }
+    'both' {
+        $arguments += '-p:AndroidPackageFormats=aab;apk'
+    }
+}
 
 if ($NoRestore) {
     $arguments += '--no-restore'
@@ -271,21 +299,51 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
 }
 
-$apkFile = Get-ChildItem -LiteralPath $publishDirectory -Recurse -File -Filter '*.apk' |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
+function Write-PackageHash {
+    param(
+        [Parameter(Mandatory = $true)][System.IO.FileInfo]$File
+    )
 
-if ($null -eq $apkFile) {
-    throw "No APK file was produced under $publishDirectory"
+    $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $File.FullName
+    $hashFile = $File.FullName + '.sha256.txt'
+    "$($hash.Hash)  $($File.Name)" | Set-Content -LiteralPath $hashFile -Encoding ASCII
+    return @{
+        Hash = $hash.Hash
+        HashFile = $hashFile
+    }
 }
 
-$hash = Get-FileHash -Algorithm SHA256 -LiteralPath $apkFile.FullName
-$hashFile = $apkFile.FullName + '.sha256.txt'
-"$($hash.Hash)  $($apkFile.Name)" | Set-Content -LiteralPath $hashFile -Encoding ASCII
+$apkFile = $null
+$aabFile = $null
 
-Write-Host "apk_ready=$($apkFile.FullName)"
-Write-Host "apk_sha256=$($hash.Hash)"
-Write-Host "apk_sha256_file=$hashFile"
+if ($PackageFormat -in @('apk', 'both')) {
+    $apkFile = Get-ChildItem -LiteralPath $publishDirectory -Recurse -File -Filter '*.apk' |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($null -eq $apkFile) {
+        throw "No APK file was produced under $publishDirectory"
+    }
+
+    $apkHash = Write-PackageHash -File $apkFile
+    Write-Host "apk_ready=$($apkFile.FullName)"
+    Write-Host "apk_sha256=$($apkHash.Hash)"
+    Write-Host "apk_sha256_file=$($apkHash.HashFile)"
+}
+
+if ($PackageFormat -in @('aab', 'both')) {
+    $aabFile = Get-ChildItem -LiteralPath $publishDirectory -Recurse -File -Filter '*.aab' |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($null -eq $aabFile) {
+        throw "No AAB file was produced under $publishDirectory"
+    }
+
+    $aabHash = Write-PackageHash -File $aabFile
+    Write-Host "aab_ready=$($aabFile.FullName)"
+    Write-Host "aab_sha256=$($aabHash.Hash)"
+    Write-Host "aab_sha256_file=$($aabHash.HashFile)"
+}
+
 Write-Host "dotnet_path=$resolvedDotNetPath"
 Write-Host "java_sdk_directory=$resolvedJavaSdkDirectory"
 Write-Host "android_sdk_directory=$resolvedAndroidSdkDirectory"

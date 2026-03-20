@@ -1,0 +1,79 @@
+﻿#!/usr/bin/env bash
+set -euo pipefail
+
+OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GEORAEPLAN_ROOT="${GEORAEPLAN_ROOT:-$(cd "$OPS_DIR/.." && pwd)}"
+ENV_FILE="${ENV_FILE:-$OPS_DIR/.env}"
+COMPOSE_FILE="${COMPOSE_FILE:-$OPS_DIR/docker-compose.yml}"
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+APP_LIVE_PATH="${APP_LIVE_PATH:-$GEORAEPLAN_ROOT/app/live}"
+RELEASES_PATH="${RELEASES_PATH:-$GEORAEPLAN_ROOT/releases}"
+BACKUPS_PATH="${BACKUPS_PATH:-$GEORAEPLAN_ROOT/backups}"
+POSTGRES_DATA_PATH="${POSTGRES_DATA_PATH:-$GEORAEPLAN_ROOT/data/postgres}"
+STATE_DIR="${STATE_DIR:-$OPS_DIR/state}"
+CURRENT_RELEASE_FILE="${CURRENT_RELEASE_FILE:-$STATE_DIR/current-release.txt}"
+PREVIOUS_RELEASE_FILE="${PREVIOUS_RELEASE_FILE:-$STATE_DIR/previous-release.txt}"
+API_HOST_PORT="${API_HOST_PORT:-18082}"
+POSTGRES_DB="${POSTGRES_DB:-georaeplan}"
+POSTGRES_USER="${POSTGRES_USER:-georaeplan}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
+
+ensure_state_dir() {
+  mkdir -p "$STATE_DIR"
+}
+
+compose() {
+  local args=()
+  if [[ -f "$ENV_FILE" ]]; then
+    args+=(--env-file "$ENV_FILE")
+  fi
+  args+=(-f "$COMPOSE_FILE")
+
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "${args[@]}" "$@"
+    return
+  fi
+
+  if command -v docker-compose >/dev/null 2>&1; then
+    docker-compose "${args[@]}" "$@"
+    return
+  fi
+
+  echo "docker compose 명령을 찾지 못했습니다." >&2
+  exit 1
+}
+
+mirror_dir() {
+  local src="$1"
+  local dst="$2"
+
+  mkdir -p "$dst"
+  find "$dst" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  cp -a "$src"/. "$dst"/
+}
+
+wait_for_health() {
+  local retries="${1:-45}"
+  local url="http://127.0.0.1:${API_HOST_PORT}/healthz"
+
+  for ((i = 1; i <= retries; i++)); do
+    if command -v curl >/dev/null 2>&1 && curl -fsS "$url" >/dev/null; then
+      return 0
+    fi
+
+    if command -v wget >/dev/null 2>&1 && wget -qO- "$url" >/dev/null; then
+      return 0
+    fi
+
+    sleep 2
+  done
+
+  return 1
+}

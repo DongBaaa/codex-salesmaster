@@ -1,4 +1,4 @@
-﻿using 거래플랜.Server.Api.Data;
+using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Security;
@@ -18,12 +18,18 @@ public sealed class InvoicesController : ControllerBase
     private readonly AppDbContext _dbContext;
     private readonly ICurrentUserContext _currentUserContext;
     private readonly IInvoiceNumberService _invoiceNumberService;
+    private readonly OfficeScopeService _officeScopeService;
 
-    public InvoicesController(AppDbContext dbContext, ICurrentUserContext currentUserContext, IInvoiceNumberService invoiceNumberService)
+    public InvoicesController(
+        AppDbContext dbContext,
+        ICurrentUserContext currentUserContext,
+        IInvoiceNumberService invoiceNumberService,
+        OfficeScopeService officeScopeService)
     {
         _dbContext = dbContext;
         _currentUserContext = currentUserContext;
         _invoiceNumberService = invoiceNumberService;
+        _officeScopeService = officeScopeService;
     }
 
     [HttpGet]
@@ -33,7 +39,12 @@ public sealed class InvoicesController : ControllerBase
         [FromQuery] int take = 200,
         CancellationToken cancellationToken = default)
     {
-        var query = _dbContext.Invoices.Include(x => x.Lines).AsNoTracking();
+        var query = _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices
+            .Include(x => x.Customer)
+            .Include(x => x.Lines)
+            .Include(x => x.Payments)
+            .ThenInclude(payment => payment.Attachments)
+            .AsNoTracking());
         if (customerId.HasValue) query = query.Where(x => x.CustomerId == customerId.Value);
         if (!string.IsNullOrWhiteSpace(q))
         {
@@ -47,14 +58,28 @@ public sealed class InvoicesController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<InvoiceDto>> GetById(Guid id, CancellationToken cancellationToken)
     {
-        var entity = await _dbContext.Invoices.Include(x => x.Lines)
-            .AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+        var entity = await _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices
+            .Include(x => x.Customer)
+            .Include(x => x.Lines)
+            .Include(x => x.Payments)
+            .ThenInclude(payment => payment.Attachments)
+            .AsNoTracking())
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         return entity is null ? NotFound() : Ok(entity.ToDto());
     }
 
     [HttpPost]
     public async Task<ActionResult<InvoiceDto>> Create([FromBody] InvoiceDto dto, CancellationToken cancellationToken)
     {
+        var customer = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
+        if (customer is null)
+            return BadRequest("Referenced customer was not found.");
+        if (!_officeScopeService.CanReadOffice(customer.OfficeCode))
+            return Forbid();
+
+        dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, customer.OfficeCode);
         var entity = new Invoice { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         entity.Apply(dto);
         if (string.IsNullOrWhiteSpace(entity.InvoiceNumber))
@@ -83,9 +108,21 @@ public sealed class InvoicesController : ControllerBase
     [HttpPut("{id:guid}")]
     public async Task<ActionResult<InvoiceDto>> Update(Guid id, [FromBody] InvoiceDto dto, CancellationToken cancellationToken)
     {
-        var entity = await _dbContext.Invoices.Include(x => x.Lines)
+        var entity = await _dbContext.Invoices.Include(x => x.Customer).Include(x => x.Lines)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
+        if (!_officeScopeService.CanWriteOffice(entity.OfficeCode))
+            return Forbid();
+
+        var customer = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
+        if (customer is null)
+            return BadRequest("Referenced customer was not found.");
+        if (!_officeScopeService.CanReadOffice(customer.OfficeCode))
+            return Forbid();
+
+        dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, entity.OfficeCode);
         entity.Apply(dto);
         _dbContext.InvoiceLines.RemoveRange(entity.Lines);
         entity.Lines.Clear();
@@ -109,8 +146,11 @@ public sealed class InvoicesController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
-        var entity = await _dbContext.Invoices.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+        var entity = await _dbContext.Invoices.Include(x => x.Customer).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
+        if (!_officeScopeService.CanWriteOffice(entity.OfficeCode))
+            return Forbid();
+
         entity.IsDeleted = true;
         await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();

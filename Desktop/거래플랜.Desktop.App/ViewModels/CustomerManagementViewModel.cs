@@ -9,22 +9,30 @@ namespace 거래플랜.Desktop.App.ViewModels;
 public sealed partial class CustomerManagementViewModel : ObservableObject
 {
     private const string AllCategoriesOption = "전체";
+    private const int ContractAlertWindowDays = 30;
 
     private readonly LocalStateService _local;
     private readonly SessionState _session;
     private readonly List<EnvironmentCustomerRow> _allRows = new();
     private Dictionary<Guid, string> _categoryNames = new();
+    private Dictionary<Guid, CustomerContractSummaryItem> _contractSummaryMap = new();
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private string _selectedCategoryFilter = AllCategoriesOption;
     [ObservableProperty] private EnvironmentCustomerRow? _selectedCustomer;
     [ObservableProperty] private string _statusMessage = "거래처 등록, 수정, 담당지점 변경을 관리합니다.";
     [ObservableProperty] private bool _isBusy;
+    [ObservableProperty] private int _customersWithContractsCount;
+    [ObservableProperty] private int _expiredContractCount;
+    [ObservableProperty] private int _expiringSoonContractCount;
+    [ObservableProperty] private string _contractAlertSummary = "계약서 알림이 없습니다.";
 
     public ObservableCollection<EnvironmentCustomerRow> Customers { get; } = new();
+    public ObservableCollection<CustomerContractAlertItem> ContractAlerts { get; } = new();
     public ObservableCollection<string> OfficeCodes { get; } = new();
     public ObservableCollection<string> CategoryFilters { get; } = new();
     public bool CanEditAllResponsibleOffices => _session.IsAdmin;
+    public bool HasContractAlerts => ContractAlerts.Count > 0;
 
     public CustomerManagementViewModel(LocalStateService local, SessionState session)
     {
@@ -50,13 +58,17 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
             var customers = _session.IsAdmin
                 ? await _local.GetCustomersAsync()
                 : await _local.GetCustomersAsync(_session);
+            _contractSummaryMap = await _local.GetCustomerContractSummaryMapAsync(_session, ContractAlertWindowDays);
+            var alertItems = await _local.GetCustomerContractAlertsAsync(_session, ContractAlertWindowDays);
 
             _allRows.Clear();
             _allRows.AddRange(customers.Select(customer => new EnvironmentCustomerRow(
                 customer,
-                ResolveCategoryName(customer.CategoryId))));
+                ResolveCategoryName(customer.CategoryId),
+                ResolveContractSummary(customer.Id))));
+            RefreshContractAlertState(alertItems);
             ApplyFilter();
-            StatusMessage = $"거래처 {_allRows.Count:N0}건을 불러왔습니다.";
+            StatusMessage = BuildStatusMessage();
         }
         finally
         {
@@ -192,7 +204,8 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
                 row.NameOriginal.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
                 row.BusinessNumber.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
                 row.CategoryName.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
-                row.Phone.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+                row.Phone.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                row.ContractStatusText.Contains(keyword, StringComparison.OrdinalIgnoreCase));
         }
 
         if (!string.Equals(SelectedCategoryFilter, AllCategoriesOption, StringComparison.CurrentCultureIgnoreCase))
@@ -235,6 +248,35 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
                !string.IsNullOrWhiteSpace(categoryName)
             ? categoryName
             : "-";
+    }
+
+    private CustomerContractSummaryItem? ResolveContractSummary(Guid customerId)
+        => _contractSummaryMap.TryGetValue(customerId, out var summary)
+            ? summary
+            : null;
+
+    private void RefreshContractAlertState(IReadOnlyList<CustomerContractAlertItem> alertItems)
+    {
+        ContractAlerts.Clear();
+        foreach (var item in alertItems)
+            ContractAlerts.Add(item);
+
+        OnPropertyChanged(nameof(HasContractAlerts));
+
+        CustomersWithContractsCount = _contractSummaryMap.Values.Count(summary => summary.ContractCount > 0);
+        ExpiredContractCount = _contractSummaryMap.Values.Count(summary => summary.HasExpiredContract);
+        ExpiringSoonContractCount = _contractSummaryMap.Values.Count(summary => summary.ExpiringSoonCount > 0);
+        ContractAlertSummary = ContractAlerts.Count == 0
+            ? "계약서 만료 알림이 없습니다."
+            : $"계약서 보유 거래처 {CustomersWithContractsCount:N0}곳 / 만료 계약 {ExpiredContractCount:N0}곳 / {ContractAlertWindowDays}일 내 만료 예정 {ExpiringSoonContractCount:N0}곳";
+    }
+
+    private string BuildStatusMessage()
+    {
+        var baseText = $"거래처 {_allRows.Count:N0}건을 불러왔습니다.";
+        return ContractAlerts.Count == 0
+            ? $"{baseText} 계약서 알림은 없습니다."
+            : $"{baseText} 만료 계약 {ExpiredContractCount:N0}곳, {ContractAlertWindowDays}일 내 만료 예정 {ExpiringSoonContractCount:N0}곳입니다.";
     }
 
     private static int GetOfficeSortOrder(string? officeCode)

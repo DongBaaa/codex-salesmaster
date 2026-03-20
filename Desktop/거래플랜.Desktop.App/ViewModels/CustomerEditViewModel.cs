@@ -1,8 +1,12 @@
 ﻿using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.Win32;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -10,6 +14,15 @@ namespace 거래플랜.Desktop.App.ViewModels;
 
 public sealed partial class CustomerEditViewModel : ObservableObject
 {
+    private static readonly string[] DefaultContractTypes =
+    [
+        "거래계약서",
+        "렌탈계약서",
+        "유지보수계약서",
+        "특약서",
+        "기타"
+    ];
+
     private readonly LocalStateService _local;
     private readonly SessionState _session;
 
@@ -43,6 +56,12 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     [ObservableProperty] private DateOnly _registerDate = DateOnly.FromDateTime(DateTime.Today);
 
     [ObservableProperty] private string _notes = string.Empty;
+    [ObservableProperty] private LocalCustomerContract? _selectedContract;
+    [ObservableProperty] private string _selectedContractType = DefaultContractTypes[0];
+    [ObservableProperty] private DateOnly? _contractSignedDate;
+    [ObservableProperty] private DateOnly? _contractExpireDate;
+    [ObservableProperty] private string _contractDescription = string.Empty;
+    [ObservableProperty] private bool _newContractIsPrimary;
 
     [ObservableProperty] private bool _isNew = true;
     [ObservableProperty]
@@ -55,11 +74,16 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     public ObservableCollection<string> OfficeCodes { get; } = new();
     public ObservableCollection<string> TradeTypes { get; } = new();
     public ObservableCollection<string> PriceGrades { get; } = new();
+    public ObservableCollection<string> ContractTypes { get; } = new();
+    public ObservableCollection<LocalCustomerContract> Contracts { get; } = new();
 
     public CustomerEditViewModel(LocalStateService local, SessionState session)
     {
         _local = local;
         _session = session;
+
+        foreach (var contractType in DefaultContractTypes)
+            ContractTypes.Add(contractType);
     }
 
     public async Task LoadAsync(LocalCustomer? customer = null)
@@ -102,6 +126,8 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             OfficeCodes.Add(DomainConstants.OfficeYeonsu);
         }
 
+        StatusMessage = string.Empty;
+
         if (customer is null)
         {
             var defaultOfficeCode = NormalizeOfficeCode(_session.OfficeCode);
@@ -116,6 +142,9 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             TradeType = TradeTypes.FirstOrDefault() ?? CustomerTradeTypes.Sales;
             RegisterDate = DateOnly.FromDateTime(DateTime.Today);
             CategoryId = null;
+            SelectedContract = null;
+            Contracts.Clear();
+            ResetContractEntry(makePrimary: true);
             return;
         }
 
@@ -151,6 +180,8 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             OfficeCodes.Add(ResponsibleOfficeCode);
         Notes = customer.Notes;
         CategoryId = customer.CategoryId;
+
+        await LoadContractsAsync(CustomerId);
     }
 
     [RelayCommand]
@@ -176,6 +207,121 @@ public sealed partial class CustomerEditViewModel : ObservableObject
 
         await LoadAsync();
         SavedAndNew?.Invoke();
+    }
+
+    [RelayCommand]
+    private async Task AddContractAsync()
+    {
+        if (IsNew)
+        {
+            if (!ValidateBeforeSave())
+                return;
+
+            if (!await DoSaveAsync())
+                return;
+        }
+
+        var dialog = new OpenFileDialog
+        {
+            Title = "거래처 계약서 PDF 선택",
+            Filter = "PDF 파일|*.pdf",
+            Multiselect = false
+        };
+
+        if (dialog.ShowDialog() != true)
+            return;
+
+        var result = await _local.SaveCustomerContractAsync(
+            CustomerId,
+            dialog.FileName,
+            SelectedContractType,
+            ContractSignedDate,
+            ContractExpireDate,
+            ContractDescription,
+            NewContractIsPrimary || Contracts.Count == 0,
+            _session);
+
+        StatusMessage = result.Message;
+        if (!result.Success)
+            return;
+
+        await LoadContractsAsync(CustomerId, result.EntityId);
+        ResetContractEntry(makePrimary: Contracts.Count == 0);
+    }
+
+    [RelayCommand]
+    private void OpenContract()
+    {
+        var contract = SelectedContract;
+        if (contract is null)
+        {
+            StatusMessage = "열 계약서를 선택하세요.";
+            return;
+        }
+
+        if (contract.FileContent is null || contract.FileContent.Length == 0)
+        {
+            StatusMessage = "계약서 PDF 내용이 없습니다. 동기화 상태를 확인해주세요.";
+            return;
+        }
+
+        var previewPath = BuildContractPreviewPath(contract);
+        Directory.CreateDirectory(Path.GetDirectoryName(previewPath)!);
+        File.WriteAllBytes(previewPath, contract.FileContent);
+
+        Process.Start(new ProcessStartInfo(previewPath)
+        {
+            UseShellExecute = true
+        });
+
+        StatusMessage = "계약서 PDF를 열었습니다.";
+    }
+
+    [RelayCommand]
+    private async Task SetPrimaryContractAsync()
+    {
+        if (SelectedContract is null)
+        {
+            StatusMessage = "대표로 지정할 계약서를 선택하세요.";
+            return;
+        }
+
+        var selectedId = SelectedContract.Id;
+        var result = await _local.SetPrimaryCustomerContractAsync(selectedId, _session);
+        StatusMessage = result.Message;
+        if (!result.Success)
+            return;
+
+        await LoadContractsAsync(CustomerId, selectedId);
+    }
+
+    [RelayCommand]
+    private async Task DeleteContractAsync()
+    {
+        if (SelectedContract is null)
+        {
+            StatusMessage = "삭제할 계약서를 선택하세요.";
+            return;
+        }
+
+        var confirm = System.Windows.MessageBox.Show(
+            $"선택한 계약서 '{SelectedContract.FileName}'을(를) 삭제하시겠습니까?",
+            "계약서 삭제",
+            System.Windows.MessageBoxButton.YesNo,
+            System.Windows.MessageBoxImage.Warning);
+
+        if (confirm != System.Windows.MessageBoxResult.Yes)
+            return;
+
+        var deletedId = SelectedContract.Id;
+        var result = await _local.DeleteCustomerContractAsync(deletedId, _session);
+        StatusMessage = result.Message;
+        if (!result.Success)
+            return;
+
+        await LoadContractsAsync(CustomerId);
+        if (SelectedContract?.Id == deletedId)
+            SelectedContract = null;
     }
 
     private bool ValidateBeforeSave()
@@ -223,15 +369,57 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         {
             await _local.UpsertCustomerAsync(customer);
             StatusMessage = "거래처를 저장했습니다.";
+            IsNew = false;
             return true;
         }
 
         var result = await _local.UpsertCustomerAsync(customer, _session);
         StatusMessage = result.Message;
+        if (result.Success)
+            IsNew = false;
         return result.Success;
     }
 
-    private static string NormalizeOfficeCode(string? officeCode)
-        => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, DomainConstants.OfficeUsenet);
-}
+    private async Task LoadContractsAsync(Guid customerId, Guid? selectContractId = null)
+    {
+        Contracts.Clear();
+        var contracts = await _local.GetCustomerContractsAsync(customerId, _session);
+        foreach (var contract in contracts)
+            Contracts.Add(contract);
 
+        SelectedContract = selectContractId.HasValue
+            ? Contracts.FirstOrDefault(current => current.Id == selectContractId.Value)
+            : Contracts.FirstOrDefault();
+
+        ResetContractEntry(makePrimary: Contracts.Count == 0);
+    }
+
+    private void ResetContractEntry(bool makePrimary)
+    {
+        SelectedContractType = ContractTypes.FirstOrDefault() ?? DefaultContractTypes[0];
+        ContractSignedDate = null;
+        ContractExpireDate = null;
+        ContractDescription = string.Empty;
+        NewContractIsPrimary = makePrimary;
+    }
+
+    private static string BuildContractPreviewPath(LocalCustomerContract contract)
+    {
+        var previewDir = Path.Combine(AppPaths.CustomerContractPreviewDir, contract.CustomerId.ToString("N"));
+        var extension = string.IsNullOrWhiteSpace(Path.GetExtension(contract.FileName))
+            ? ".pdf"
+            : Path.GetExtension(contract.FileName);
+        var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(contract.FileName);
+        if (string.IsNullOrWhiteSpace(fileNameWithoutExtension))
+            fileNameWithoutExtension = "customer-contract";
+
+        var safeBaseName = new string(fileNameWithoutExtension.Where(ch => !Path.GetInvalidFileNameChars().Contains(ch)).ToArray());
+        if (string.IsNullOrWhiteSpace(safeBaseName))
+            safeBaseName = "customer-contract";
+
+        return Path.Combine(previewDir, $"{safeBaseName}_{contract.Id:N}{extension}");
+    }
+
+    private static string NormalizeOfficeCode(string? officeCode)
+    => OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, DomainConstants.OfficeUsenet);
+}

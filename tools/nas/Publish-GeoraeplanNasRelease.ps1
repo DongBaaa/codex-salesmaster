@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ProjectRoot,
     [string]$NasRoot = '\\192.0.2.10\docker\georaeplan',
@@ -55,6 +55,35 @@ if (-not $SkipBuild) {
 & dotnet publish $serverProject -c $Configuration -o $tempPublishRoot
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed."
+}
+
+$updateAssetScript = Join-Path $ProjectRoot 'tools\release\Publish-GeoraePlanUpdateAssets.ps1'
+if (Test-Path -LiteralPath $updateAssetScript) {
+    & $updateAssetScript -ProjectRoot $ProjectRoot -OutputRoot (Join-Path $tempPublishRoot 'updates')
+    if ($LASTEXITCODE -ne 0) {
+        throw "Update asset publish failed."
+    }
+}
+
+$publishedAppSettingsPath = Join-Path $tempPublishRoot 'appsettings.json'
+if (Test-Path -LiteralPath $publishedAppSettingsPath) {
+    $publishedSettings = Get-Content -LiteralPath $publishedAppSettingsPath -Raw | ConvertFrom-Json
+
+    if (-not $publishedSettings.PSObject.Properties['Kestrel']) {
+        $publishedSettings | Add-Member -NotePropertyName Kestrel -NotePropertyValue ([pscustomobject]@{})
+    }
+    if (-not $publishedSettings.Kestrel.PSObject.Properties['Endpoints']) {
+        $publishedSettings.Kestrel | Add-Member -NotePropertyName Endpoints -NotePropertyValue ([pscustomobject]@{})
+    }
+    if (-not $publishedSettings.Kestrel.Endpoints.PSObject.Properties['Http']) {
+        $publishedSettings.Kestrel.Endpoints | Add-Member -NotePropertyName Http -NotePropertyValue ([pscustomobject]@{})
+    }
+    if (-not $publishedSettings.Kestrel.Endpoints.Http.PSObject.Properties['Url']) {
+        $publishedSettings.Kestrel.Endpoints.Http | Add-Member -NotePropertyName Url -NotePropertyValue 'http://0.0.0.0:8080'
+    }
+
+    $publishedSettings.Kestrel.Endpoints.Http.Url = 'http://0.0.0.0:8080'
+    $publishedSettings | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $publishedAppSettingsPath -Encoding UTF8
 }
 
 $commit = (& git -C $ProjectRoot rev-parse HEAD 2>$null)

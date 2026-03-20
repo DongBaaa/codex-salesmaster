@@ -23,17 +23,31 @@ services:
     image: mcr.microsoft.com/dotnet/aspnet:8.0
     restart: unless-stopped
     working_dir: /app
-    command: ["dotnet", "거래플랜.Server.Api.dll"]
+    command: ["sh", "-c", "exec dotnet /app/*.Server.Api.dll"]
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:8080
+      Kestrel__Endpoints__Http__Url: http://0.0.0.0:8080
       TZ: ${TZ:-Asia/Seoul}
       Database__EnableSqliteFallback: false
       ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DB:-georaeplan};Username=${POSTGRES_USER:-georaeplan};Password=${POSTGRES_PASSWORD}
-      Jwt__Issuer: ${JWT_ISSUER:-거래플랜}
+      Jwt__Issuer: ${JWT_ISSUER:-georaeplan}
       Jwt__Audience: ${JWT_AUDIENCE:-georaeplan-client}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:?set in .env}
       Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-480}
+      Security__EnableRateLimiting: ${SECURITY_ENABLE_RATE_LIMITING:-true}
+      Security__LoginPermitLimitPerMinute: ${SECURITY_LOGIN_PERMIT_LIMIT_PER_MINUTE:-10}
+      Security__ApiPermitLimitPerMinute: ${SECURITY_API_PERMIT_LIMIT_PER_MINUTE:-300}
+      Security__AddSecurityHeaders: ${SECURITY_ADD_SECURITY_HEADERS:-true}
+      Security__RequireHttpsForwardedProto: ${SECURITY_REQUIRE_HTTPS_FORWARDED_PROTO:-true}
+      Security__AllowAnyCorsOrigin: ${SECURITY_ALLOW_ANY_CORS_ORIGIN:-false}
+      Security__AllowedCorsOrigins__0: ${SECURITY_ALLOWED_CORS_ORIGIN_0:-}
+      SeedUsers__EnableSeedUsers: ${SEED_USERS_ENABLE_SEED_USERS:-true}
+      SeedUsers__AdminPassword: ${SEED_USERS_ADMIN_PASSWORD:-}
+      SeedUsers__UserPassword: ${SEED_USERS_USER_PASSWORD:-}
+      SeedUsers__ItwPassword: ${SEED_USERS_ITW_PASSWORD:-}
+      SeedUsers__UpdateExistingItwPassword: ${SEED_USERS_UPDATE_EXISTING_ITW_PASSWORD:-true}
+      SeedUsers__WarnOnDefaultPasswords: ${SEED_USERS_WARN_ON_DEFAULT_PASSWORDS:-true}
     ports:
       - "${HOST_BIND_IP:-127.0.0.1}:${API_HOST_PORT:-18082}:8080"
     depends_on:

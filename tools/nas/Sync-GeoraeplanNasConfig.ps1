@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ProjectRoot,
     [string]$NasRoot = '\\192.0.2.10\docker\georaeplan'
@@ -36,12 +36,8 @@ if (-not (Test-Path -LiteralPath $sourceNasRoot)) {
 
 New-Item -ItemType Directory -Force $nasOpsRoot | Out-Null
 
-Copy-TextFileLf -Source (Join-Path $sourceNasRoot 'docker-compose.yml') -Destination (Join-Path $nasOpsRoot 'docker-compose.yml')
-Copy-TextFileLf -Source (Join-Path $sourceNasRoot '.env.example') -Destination (Join-Path $nasOpsRoot '.env.example')
-
-$realExample = Join-Path $sourceNasRoot '.env.api.example.invalid.example'
-if (Test-Path -LiteralPath $realExample) {
-    Copy-TextFileLf -Source $realExample -Destination (Join-Path $nasOpsRoot '.env.api.example.invalid.example')
+Get-ChildItem -LiteralPath $sourceNasRoot -File | ForEach-Object {
+    Copy-TextFileLf -Source $_.FullName -Destination (Join-Path $nasOpsRoot $_.Name)
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $nasOpsRoot '.env'))) {

@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.IO;
+using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
@@ -19,6 +20,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     private readonly SessionState _session;
     private readonly ErpApiClient _api;
     private readonly LegacyDataMigrationService _legacyMigrationService;
+    private readonly DesktopAppUpdateService _updateService;
 
     private Guid _companyProfileId = Guid.NewGuid();
 
@@ -75,7 +77,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
 
     public bool CanManageUsers => _session.IsAdmin && !_session.IsOfflineMode;
     public bool CanManageSelectionOptions => _session.IsAdmin;
-    public bool CanEditCompanyProfiles => _session.HasPermission(AppPermissionNames.CompanyProfileEdit) || _session.IsAdmin;
+    public bool CanEditCompanyProfiles => _session.IsAdmin;
     public bool CanEditOfficeCode => false;
     public bool CanEditOfficeName => false;
     public bool CanManageOffices => false;
@@ -84,6 +86,9 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         : _session.IsOfflineMode
             ? "오프라인 모드에서는 사용자 관리를 사용할 수 없습니다."
             : "관리자 계정으로 로그인해야 사용자 관리를 사용할 수 있습니다.";
+    public string CompanyProfileManagementHint => CanEditCompanyProfiles
+        ? "관리자 계정은 회사설정을 추가/수정/삭제할 수 있습니다."
+        : "일반 사용자는 회사설정을 추가/수정/삭제할 수 없고, 기존 회사설정만 선택해 사용할 수 있습니다.";
 
     public EnvironmentSettingsViewModel(LocalStateService local, SessionState session, ErpApiClient api)
     {
@@ -91,6 +96,9 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         _session = session;
         _api = api;
         _legacyMigrationService = new LegacyDataMigrationService(local);
+        _updateService = new DesktopAppUpdateService(api);
+        InitializeRecycleBinTypeOptions();
+        InitializeUpdateState();
     }
 
     public async Task InitializeAsync()
@@ -104,6 +112,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             await ReloadMasterOptionsAsync();
             await ReloadUsersAsync();
             await LoadCurrentUserCompanyProfileAsync();
+            await ReloadRecycleBinAsync();
             NewOffice();
             NewUser();
             StatusMessage = "환경설정을 불러왔습니다.";
@@ -117,7 +126,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveCompanyProfileAsync()
     {
-        if (!_session.HasPermission("CompanyProfile.Edit") && !_session.IsAdmin)
+        if (!CanEditCompanyProfiles)
         {
             StatusMessage = "회사 정보를 수정할 권한이 없습니다.";
             return;
@@ -153,6 +162,12 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [RelayCommand]
     private void NewCompanyProfile()
     {
+        if (!CanEditCompanyProfiles)
+        {
+            StatusMessage = "일반 사용자는 회사설정을 새로 만들 수 없습니다.";
+            return;
+        }
+
         SelectedCompanyProfile = null;
         IsNewCompanyProfile = true;
         _companyProfileId = Guid.NewGuid();
@@ -184,7 +199,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             return;
         }
 
-        if (!_session.HasPermission(AppPermissionNames.CompanyProfileEdit) && !_session.IsAdmin)
+        if (!CanEditCompanyProfiles)
         {
             StatusMessage = "회사 정보를 수정할 권한이 없습니다.";
             return;
@@ -244,6 +259,12 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [RelayCommand]
     private void SelectStampImage()
     {
+        if (!CanEditCompanyProfiles)
+        {
+            StatusMessage = "일반 사용자는 회사설정 이미지를 수정할 수 없습니다.";
+            return;
+        }
+
         var dialog = new OpenFileDialog
         {
             Title = "직인 이미지 선택",
@@ -261,6 +282,12 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [RelayCommand]
     private void ClearStampImage()
     {
+        if (!CanEditCompanyProfiles)
+        {
+            StatusMessage = "일반 사용자는 회사설정 이미지를 삭제할 수 없습니다.";
+            return;
+        }
+
         CompanyStampImage = null;
         CompanyStampImagePath = "(없음)";
         StatusMessage = "직인 이미지를 삭제했습니다.";

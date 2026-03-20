@@ -9,6 +9,7 @@ public sealed class SessionStore
     private const string TokenKey = "session.token";
     private const string UsernameKey = "session.username";
     private const string RoleKey = "session.role";
+    private const string OfficeCodeKey = "session.office";
 
     public bool HasCachedSession()
         => Preferences.Default.Get(HasSessionKey, false);
@@ -22,7 +23,8 @@ public sealed class SessionStore
         {
             IsAuthenticated = true,
             Username = Preferences.Default.Get(UsernameKey, string.Empty),
-            Role = Preferences.Default.Get(RoleKey, string.Empty)
+            Role = Preferences.Default.Get(RoleKey, string.Empty),
+            OfficeCode = Preferences.Default.Get(OfficeCodeKey, string.Empty)
         };
     }
 
@@ -35,26 +37,38 @@ public sealed class SessionStore
         }
         catch
         {
-            Preferences.Default.Set(TokenKey, token);
+            await ClearAsync();
+            throw new InvalidOperationException("보안 저장소를 사용할 수 없어 로그인 정보를 안전하게 저장하지 못했습니다.");
         }
 
         Preferences.Default.Set(HasSessionKey, true);
         Preferences.Default.Set(UsernameKey, response.User?.Username ?? string.Empty);
         Preferences.Default.Set(RoleKey, response.User?.Role ?? string.Empty);
+        Preferences.Default.Set(OfficeCodeKey, response.User?.OfficeCode ?? string.Empty);
     }
 
     public async Task<string?> GetTokenAsync()
     {
         try
         {
-            return await SecureStorage.Default.GetAsync(TokenKey)
-                   ?? Preferences.Default.Get(TokenKey, string.Empty);
+            return await SecureStorage.Default.GetAsync(TokenKey);
         }
         catch
         {
-            return Preferences.Default.Get(TokenKey, string.Empty);
+            return null;
         }
     }
+
+#if DEBUG
+    public async Task SaveDebugSnapshotAsync(string token, string username, string role, string officeCode = "")
+    {
+        await SecureStorage.Default.SetAsync(TokenKey, token ?? string.Empty);
+        Preferences.Default.Set(HasSessionKey, true);
+        Preferences.Default.Set(UsernameKey, username ?? string.Empty);
+        Preferences.Default.Set(RoleKey, role ?? string.Empty);
+        Preferences.Default.Set(OfficeCodeKey, officeCode ?? string.Empty);
+    }
+#endif
 
     public Task ClearAsync()
     {
@@ -67,10 +81,10 @@ public sealed class SessionStore
             // ignore
         }
 
-        Preferences.Default.Remove(TokenKey);
         Preferences.Default.Remove(HasSessionKey);
         Preferences.Default.Remove(UsernameKey);
         Preferences.Default.Remove(RoleKey);
+        Preferences.Default.Remove(OfficeCodeKey);
         return Task.CompletedTask;
     }
 }

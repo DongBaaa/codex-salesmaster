@@ -753,7 +753,7 @@ public sealed partial class SalesViewModel : ObservableObject
         if (!HasPendingChanges || !HasMeaningfulDraftContent())
             return true;
 
-        return await SaveCoreAsync(showValidationFeedback: false, statusPrefix: "자동저장");
+        return await SaveCoreAsync(showValidationFeedback: false, statusPrefix: "자동저장", showFailureStatus: false);
     }
 
     private bool HasMeaningfulDraftContent()
@@ -833,21 +833,26 @@ public sealed partial class SalesViewModel : ObservableObject
         return null;
     }
 
-    private async Task<bool> SaveCoreAsync(bool showValidationFeedback = true, string statusPrefix = "저장")
+    private async Task<bool> SaveCoreAsync(
+        bool showValidationFeedback = true,
+        string statusPrefix = "저장",
+        bool showFailureStatus = true)
     {
         if (SelectedCustomer is null)
         {
-            StatusMessage = "거래처를 선택하세요.";
+            if (showFailureStatus)
+                StatusMessage = "거래처를 선택하세요.";
             if (showValidationFeedback)
-                System.Windows.MessageBox.Show(StatusMessage, "알림", System.Windows.MessageBoxButton.OK);
+                System.Windows.MessageBox.Show("거래처를 선택하세요.", "알림", System.Windows.MessageBoxButton.OK);
             return false;
         }
         var validLines = Lines.Where(l => !string.IsNullOrWhiteSpace(l.ItemName)).ToList();
         if (!validLines.Any())
         {
-            StatusMessage = "항목을 1개 이상 입력하세요.";
+            if (showFailureStatus)
+                StatusMessage = "항목을 1개 이상 입력하세요.";
             if (showValidationFeedback)
-                System.Windows.MessageBox.Show(StatusMessage, "알림", System.Windows.MessageBoxButton.OK);
+                System.Windows.MessageBox.Show("항목을 1개 이상 입력하세요.", "알림", System.Windows.MessageBoxButton.OK);
             return false;
         }
 
@@ -878,7 +883,10 @@ public sealed partial class SalesViewModel : ObservableObject
         var saveResult = await _local.SaveInvoiceAsync(inv, saveContext, _session);
         if (!saveResult.Success)
         {
-            StatusMessage = saveResult.Message;
+            if (showFailureStatus)
+                StatusMessage = saveResult.Message;
+            else
+                AppLogger.Warn("AUTOSAVE", $"Sales invoice auto-save failed silently. {saveResult.Message}");
             if (showValidationFeedback)
             {
                 System.Windows.MessageBox.Show(

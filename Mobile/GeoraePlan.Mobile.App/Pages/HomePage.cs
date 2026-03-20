@@ -1,3 +1,5 @@
+﻿using GeoraePlan.Mobile.App.Services;
+using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using Microsoft.Maui.Controls.Shapes;
 
@@ -6,33 +8,66 @@ namespace GeoraePlan.Mobile.App.Pages;
 public sealed class HomePage : ContentPage
 {
     private readonly HomeViewModel _viewModel;
+    private readonly SyncCoordinator _syncCoordinator;
 
     public HomePage()
     {
-        Title = "홈";
+        GeoraePlanTheme.ApplyPage(this, "홈");
+
         _viewModel = ServiceHelper.GetRequiredService<HomeViewModel>();
+        _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
         BindingContext = _viewModel;
 
-        var displayName = new Label { FontSize = 24, FontAttributes = FontAttributes.Bold };
+        var displayName = new Label
+        {
+            FontSize = 24,
+            FontAttributes = FontAttributes.Bold,
+            TextColor = GeoraePlanTheme.TextPrimary
+        };
         displayName.SetBinding(Label.TextProperty, nameof(HomeViewModel.DisplayName));
 
-        var roleLabel = new Label();
+        var roleLabel = GeoraePlanTheme.CreateBodyText(string.Empty);
         roleLabel.SetBinding(Label.TextProperty, nameof(HomeViewModel.RoleText));
 
-        var syncLabel = new Label();
+        var syncLabel = GeoraePlanTheme.CreateBodyText(string.Empty);
         syncLabel.SetBinding(Label.TextProperty, nameof(HomeViewModel.LastSyncText));
 
-        var statusLabel = new Label { TextColor = Colors.DimGray };
+        var autoSyncLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
+        autoSyncLabel.SetBinding(Label.TextProperty, nameof(HomeViewModel.AutoSyncText));
+
+        var statusLabel = GeoraePlanTheme.CreateStatusLabel();
         statusLabel.SetBinding(Label.TextProperty, nameof(HomeViewModel.StatusMessage));
 
-        var refreshButton = new Button { Text = "상태 새로고침" };
+        var pendingNoticeLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 13);
+        pendingNoticeLabel.TextColor = Colors.White;
+        pendingNoticeLabel.SetBinding(Label.TextProperty, nameof(HomeViewModel.PendingNoticeText));
+
+        var pendingNoticeCard = new Border
+        {
+            BackgroundColor = Color.FromArgb("#3A2B12"),
+            Stroke = GeoraePlanTheme.Brown,
+            StrokeShape = new RoundRectangle { CornerRadius = 14 },
+            Padding = 16,
+            Content = new VerticalStackLayout
+            {
+                Spacing = 6,
+                Children =
+                {
+                    GeoraePlanTheme.CreateSectionTitle("업로드 대기 알림", 15),
+                    pendingNoticeLabel
+                }
+            }
+        };
+        pendingNoticeCard.SetBinding(IsVisibleProperty, nameof(HomeViewModel.HasPendingNotice));
+
+        var refreshButton = GeoraePlanTheme.CreateButton("상태 새로고침", GeoraePlanTheme.SecondaryButton);
         refreshButton.SetBinding(Button.CommandProperty, nameof(HomeViewModel.RefreshCommand));
 
-        var createInvoiceButton = new Button { Text = "전표 작성" };
+        var createInvoiceButton = GeoraePlanTheme.CreateButton("전표 작성", GeoraePlanTheme.Success);
         createInvoiceButton.Clicked += async (_, _) =>
             await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InvoiceDraftPage>());
 
-        var createPaymentButton = new Button { Text = "수금 입력" };
+        var createPaymentButton = GeoraePlanTheme.CreateButton("수금 입력", GeoraePlanTheme.Purple);
         createPaymentButton.Clicked += async (_, _) =>
             await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>());
 
@@ -54,32 +89,23 @@ public sealed class HomePage : ContentPage
         {
             Content = new VerticalStackLayout
             {
-                Padding = 24,
-                Spacing = 16,
+                Padding = 16,
+                Spacing = 12,
                 Children =
                 {
-                    displayName,
-                    roleLabel,
-                    syncLabel,
-                    new Border
-                    {
-                        Stroke = Colors.LightGray,
-                        StrokeShape = new RoundRectangle { CornerRadius = 12 },
-                        Padding = 16,
-                        Content = new VerticalStackLayout
-                        {
-                            Spacing = 8,
-                            Children =
-                            {
-                                new Label { Text = "빠른 안내", FontAttributes = FontAttributes.Bold },
-                                new Label { Text = "거래처/품목/전표 탭은 NAS 서버 조회용 기본 화면입니다." },
-                                new Label { Text = "동기화 탭은 안드로이드 스캐폴드용 수동 sync 상태를 보여줍니다." }
-                            }
-                        }
-                    },
-                    quickActionGrid,
-                    refreshButton,
-                    statusLabel
+                    GeoraePlanTheme.CreateCard(
+                        displayName,
+                        roleLabel,
+                        syncLabel,
+                        autoSyncLabel),
+                    pendingNoticeCard,
+                    GeoraePlanTheme.CreateCard(
+                        GeoraePlanTheme.CreateSectionTitle("빠른 안내"),
+                        GeoraePlanTheme.CreateBodyText("PC 버전과 같은 진한 네이비/블루 톤을 유지합니다."),
+                        GeoraePlanTheme.CreateBodyText("거래처, 품목, 전표, 수금, 휴지통은 같은 NAS 서버 데이터와 연동됩니다."),
+                        quickActionGrid,
+                        refreshButton,
+                        statusLabel)
                 }
             }
         };
@@ -88,6 +114,7 @@ public sealed class HomePage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
+        await _syncCoordinator.TryBackgroundSyncAsync("home-page", TimeSpan.FromSeconds(45));
         await _viewModel.RefreshAsync();
     }
 }

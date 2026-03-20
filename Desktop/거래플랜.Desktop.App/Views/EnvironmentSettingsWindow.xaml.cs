@@ -6,10 +6,15 @@ namespace 거래플랜.Desktop.App.Views;
 
 public partial class EnvironmentSettingsWindow : Window
 {
-    public EnvironmentSettingsWindow(EnvironmentSettingsViewModel vm)
+    public EnvironmentSettingsWindow(EnvironmentSettingsViewModel vm, bool openRecycleBinTab = false)
     {
         InitializeComponent();
         DataContext = vm;
+
+        if (openRecycleBinTab)
+        {
+            Loaded += (_, _) => SettingsTabs.SelectedItem = RecycleBinTab;
+        }
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)

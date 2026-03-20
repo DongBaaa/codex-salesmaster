@@ -44,6 +44,16 @@ public sealed class DateOnlyConverter : IValueConverter
         => value is DateTime dt ? DateOnly.FromDateTime(dt) : DateOnly.FromDateTime(DateTime.Today);
 }
 
+[ValueConversion(typeof(DateOnly?), typeof(DateTime?))]
+public sealed class NullableDateOnlyConverter : IValueConverter
+{
+    public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is DateOnly d ? new DateTime(d.Year, d.Month, d.Day) : (DateTime?)null;
+
+    public object? ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is DateTime dt ? DateOnly.FromDateTime(dt) : null;
+}
+
 [ValueConversion(typeof(VoucherType), typeof(string))]
 public sealed class VoucherTypeConverter : IValueConverter
 {

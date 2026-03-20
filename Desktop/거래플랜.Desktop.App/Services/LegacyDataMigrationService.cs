@@ -1,16 +1,21 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using ClosedXML.Excel;
 using FirebirdSql.Data.FirebirdClient;
+using Microsoft.Data.Sqlite;
 using 거래플랜.Desktop.App.Data;
-
+using 거래플랜.Desktop.App.Infrastructure;
 namespace 거래플랜.Desktop.App.Services;
 
-public sealed class LegacyDataMigrationService
+public sealed partial class LegacyDataMigrationService
 {
-    private static readonly string[] CustomerHeaders =
-    [
+    private const string AutoLegacyLocalDbFingerprintSettingKey = "LegacyMigration.Auto.LocalDbFingerprint";
+    private const string AutoLegacyLocalDbPathSettingKey = "LegacyMigration.Auto.LocalDbPath";
+    private const string AutoLegacyExcelFingerprintSettingKey = "LegacyMigration.Auto.ExcelFingerprint";
+    private const string LegacyCustomerExcelPathSettingKey = "LegacyMigration.CustomerExcelPath";
+    private const string LegacyItemExcelPathSettingKey = "LegacyMigration.ItemExcelPath";
+    private static readonly string[] CustomerHeaders =[
         "거래처명",
         "고객분류",
         "",
@@ -59,9 +64,166 @@ public sealed class LegacyDataMigrationService
 
     private readonly LocalStateService _local;
 
-    public LegacyDataMigrationService(LocalStateService local)
+        public LegacyDataMigrationService(LocalStateService local)
     {
         _local = local;
+    }
+
+    public async Task<LegacyAutoMigrationResult> TryAutoMigrateLocalDataAsync(CancellationToken ct = default)
+    {
+        var legacyLocalDbPath = ResolveLegacyLocalDbPath();
+        if (!string.IsNullOrWhiteSpace(legacyLocalDbPath))
+        {
+            var fingerprint = BuildFileFingerprint(legacyLocalDbPath);
+            var processedFingerprint = await _local.GetSettingAsync(AutoLegacyLocalDbFingerprintSettingKey, ct);
+            var hasCurrentData = (await _local.GetCustomersAsync(ct)).Count > 0 || (await _local.GetItemsAsync(ct)).Count > 0;
+            if (hasCurrentData && string.Equals(processedFingerprint, fingerprint, StringComparison.Ordinal))
+            {
+                return new LegacyAutoMigrationResult(
+                    false,
+                    "local-sqlite",
+                    legacyLocalDbPath,
+                    null,
+                    "이전에 처리한 로컬 DB와 동일해서 자동 마이그레이션을 건너뛰었습니다.");
+            }
+
+            var result = await ImportFromLegacyLocalDbAsync(legacyLocalDbPath, ct);
+            await _local.SetSettingAsync(AutoLegacyLocalDbFingerprintSettingKey, fingerprint, ct);
+            await _local.SetSettingAsync(AutoLegacyLocalDbPathSettingKey, legacyLocalDbPath, ct);
+            return new LegacyAutoMigrationResult(
+                true,
+                "local-sqlite",
+                legacyLocalDbPath,
+                result,
+                $"로컬 DB 거래처 {result.CreatedCustomers + result.UpdatedCustomers:N0}건, 품목 {result.CreatedItems + result.UpdatedItems:N0}건을 반영했습니다.");
+        }
+
+        var excelPaths = await ResolveConfiguredLegacyExcelPathsAsync(ct);
+        if (!string.IsNullOrWhiteSpace(excelPaths.CustomerExcelPath) &&
+            !string.IsNullOrWhiteSpace(excelPaths.ItemExcelPath) &&
+            File.Exists(excelPaths.CustomerExcelPath) &&
+            File.Exists(excelPaths.ItemExcelPath))
+        {
+            var fingerprint = BuildFileFingerprint(excelPaths.CustomerExcelPath, excelPaths.ItemExcelPath);
+            var processedFingerprint = await _local.GetSettingAsync(AutoLegacyExcelFingerprintSettingKey, ct);
+            var hasCurrentData = (await _local.GetCustomersAsync(ct)).Count > 0 || (await _local.GetItemsAsync(ct)).Count > 0;
+            if (hasCurrentData && string.Equals(processedFingerprint, fingerprint, StringComparison.Ordinal))
+            {
+                return new LegacyAutoMigrationResult(
+                    false,
+                    "excel",
+                    $"{excelPaths.CustomerExcelPath} | {excelPaths.ItemExcelPath}",
+                    null,
+                    "이전에 처리한 엑셀 데이터와 동일해서 자동 마이그레이션을 건너뛰었습니다.");
+            }
+
+            var result = await ImportFromExcelAsync(excelPaths.CustomerExcelPath, excelPaths.ItemExcelPath, ct);
+            await _local.SetSettingAsync(AutoLegacyExcelFingerprintSettingKey, fingerprint, ct);
+            return new LegacyAutoMigrationResult(
+                true,
+                "excel",
+                $"{excelPaths.CustomerExcelPath} | {excelPaths.ItemExcelPath}",
+                result,
+                $"엑셀 거래처 {result.CreatedCustomers + result.UpdatedCustomers:N0}건, 품목 {result.CreatedItems + result.UpdatedItems:N0}건을 반영했습니다.");
+        }
+
+        return new LegacyAutoMigrationResult(false, string.Empty, string.Empty, null, "자동 마이그레이션 대상 로컬 데이터가 없습니다.");
+    }
+
+    public async Task<LegacyImportResult> ImportFromLegacyLocalDbAsync(
+        string sourceDbPath,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(sourceDbPath) || !File.Exists(sourceDbPath))
+            throw new FileNotFoundException("기존 로컬 DB 파일을 찾을 수 없습니다.", sourceDbPath);
+
+        var sourceCustomers = await Task.Run(() => ReadCustomersFromLegacyLocalDb(sourceDbPath), ct);
+        var sourceItems = await Task.Run(() => ReadItemsFromLegacyLocalDb(sourceDbPath), ct);
+
+        var existingCustomers = await _local.GetCustomersAsync(ct);
+        var existingItems = await _local.GetItemsAsync(ct);
+        var customerLookup = BuildCustomerLookup(existingCustomers);
+        var itemLookup = BuildItemLookup(existingItems);
+
+        var createdCustomers = 0;
+        var updatedCustomers = 0;
+        var skippedCustomers = 0;
+        foreach (var source in sourceCustomers)
+        {
+            if (string.IsNullOrWhiteSpace(source.NameOriginal))
+            {
+                skippedCustomers++;
+                continue;
+            }
+
+            var target = FindMatchingCustomer(customerLookup, source);
+            var isNew = target is null;
+            if (isNew)
+                target = CreateNewCustomerShell(source);
+
+            var preferIncoming = isNew || source.UpdatedAtUtc >= target!.UpdatedAtUtc;
+            var changed = MergeCustomer(target!, source, preferIncoming);
+            if (isNew)
+            {
+                await _local.UpsertCustomerAsync(target!, ct);
+                RegisterCustomerLookup(customerLookup, target!);
+                createdCustomers++;
+            }
+            else if (changed)
+            {
+                await _local.UpsertCustomerAsync(target!, ct);
+                RegisterCustomerLookup(customerLookup, target!);
+                updatedCustomers++;
+            }
+            else
+            {
+                skippedCustomers++;
+            }
+        }
+
+        var createdItems = 0;
+        var updatedItems = 0;
+        var skippedItems = 0;
+        foreach (var source in sourceItems)
+        {
+            if (string.IsNullOrWhiteSpace(source.NameOriginal))
+            {
+                skippedItems++;
+                continue;
+            }
+
+            var target = FindMatchingItem(itemLookup, source);
+            var isNew = target is null;
+            if (isNew)
+                target = CreateNewItemShell(source);
+
+            var preferIncoming = isNew || source.UpdatedAtUtc >= target!.UpdatedAtUtc;
+            var changed = MergeItem(target!, source, preferIncoming);
+            if (isNew)
+            {
+                await _local.UpsertItemAsync(target!, ct);
+                RegisterItemLookup(itemLookup, target!);
+                createdItems++;
+            }
+            else if (changed)
+            {
+                await _local.UpsertItemAsync(target!, ct);
+                RegisterItemLookup(itemLookup, target!);
+                updatedItems++;
+            }
+            else
+            {
+                skippedItems++;
+            }
+        }
+
+        return new LegacyImportResult(
+            createdCustomers,
+            updatedCustomers,
+            skippedCustomers,
+            createdItems,
+            updatedItems,
+            skippedItems);
     }
 
     public async Task<LegacyExportResult> ExportFromOriginalAsync(
@@ -111,7 +273,7 @@ public sealed class LegacyDataMigrationService
             itemExcelPath);
     }
 
-    public async Task<LegacyImportResult> ImportFromExcelAsync(
+        public async Task<LegacyImportResult> ImportFromExcelAsync(
         string customerExcelPath,
         string itemExcelPath,
         CancellationToken ct = default)
@@ -121,24 +283,18 @@ public sealed class LegacyDataMigrationService
         if (string.IsNullOrWhiteSpace(itemExcelPath) || !File.Exists(itemExcelPath))
             throw new FileNotFoundException("제품 엑셀 파일을 찾을 수 없습니다.", itemExcelPath);
 
-        var customers = await Task.Run(() => ReadCustomersFromWorkbook(customerExcelPath), ct);
-        var items = await Task.Run(() => ReadItemsFromWorkbook(itemExcelPath), ct);
+        var customerRows = await Task.Run(() => ReadCustomersFromWorkbook(customerExcelPath), ct);
+        var itemRows = await Task.Run(() => ReadItemsFromWorkbook(itemExcelPath), ct);
 
         var existingCustomers = await _local.GetCustomersAsync(ct);
         var existingItems = await _local.GetItemsAsync(ct);
-
-        var customerMap = existingCustomers
-            .GroupBy(c => NormalizeKey(c.NameOriginal))
-            .ToDictionary(g => g.Key, g => g.First());
-        var itemMap = existingItems
-            .GroupBy(i => BuildItemKey(i.NameOriginal, i.SpecificationOriginal))
-            .ToDictionary(g => g.Key, g => g.First());
+        var customerLookup = BuildCustomerLookup(existingCustomers);
+        var itemLookup = BuildItemLookup(existingItems);
 
         var createdCustomers = 0;
         var updatedCustomers = 0;
         var skippedCustomers = 0;
-
-        foreach (var row in customers)
+        foreach (var row in customerRows)
         {
             if (string.IsNullOrWhiteSpace(row.Name))
             {
@@ -146,30 +302,35 @@ public sealed class LegacyDataMigrationService
                 continue;
             }
 
-            var key = NormalizeKey(row.Name);
-            if (!customerMap.TryGetValue(key, out var target))
+            var source = BuildImportedCustomer(row);
+            var target = FindMatchingCustomer(customerLookup, source);
+            var isNew = target is null;
+            if (isNew)
+                target = CreateNewCustomerShell(source);
+
+            var changed = MergeCustomer(target!, source, preferIncoming: true);
+            if (isNew)
             {
-                target = new LocalCustomer
-                {
-                    Id = Guid.NewGuid()
-                };
+                await _local.UpsertCustomerAsync(target!, ct);
+                RegisterCustomerLookup(customerLookup, target!);
                 createdCustomers++;
+            }
+            else if (changed)
+            {
+                await _local.UpsertCustomerAsync(target!, ct);
+                RegisterCustomerLookup(customerLookup, target!);
+                updatedCustomers++;
             }
             else
             {
-                updatedCustomers++;
+                skippedCustomers++;
             }
-
-            ApplyCustomer(target, row);
-            await _local.UpsertCustomerAsync(target, ct);
-            customerMap[key] = target;
         }
 
         var createdItems = 0;
         var updatedItems = 0;
         var skippedItems = 0;
-
-        foreach (var row in items)
+        foreach (var row in itemRows)
         {
             if (string.IsNullOrWhiteSpace(row.Name))
             {
@@ -177,23 +338,29 @@ public sealed class LegacyDataMigrationService
                 continue;
             }
 
-            var key = BuildItemKey(row.Name, row.Specification);
-            if (!itemMap.TryGetValue(key, out var target))
+            var source = BuildImportedItem(row);
+            var target = FindMatchingItem(itemLookup, source);
+            var isNew = target is null;
+            if (isNew)
+                target = CreateNewItemShell(source);
+
+            var changed = MergeItem(target!, source, preferIncoming: true);
+            if (isNew)
             {
-                target = new LocalItem
-                {
-                    Id = Guid.NewGuid()
-                };
+                await _local.UpsertItemAsync(target!, ct);
+                RegisterItemLookup(itemLookup, target!);
                 createdItems++;
+            }
+            else if (changed)
+            {
+                await _local.UpsertItemAsync(target!, ct);
+                RegisterItemLookup(itemLookup, target!);
+                updatedItems++;
             }
             else
             {
-                updatedItems++;
+                skippedItems++;
             }
-
-            ApplyItem(target, row);
-            await _local.UpsertItemAsync(target, ct);
-            itemMap[key] = target;
         }
 
         return new LegacyImportResult(
@@ -205,8 +372,7 @@ public sealed class LegacyDataMigrationService
             skippedItems);
     }
 
-    private static void EnsureParentDirectory(string path)
-    {
+    private static void EnsureParentDirectory(string path){
         var parent = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(parent))
             Directory.CreateDirectory(parent);
@@ -907,5 +1073,3 @@ public sealed record LegacyImportResult(
     int CreatedItems,
     int UpdatedItems,
     int SkippedItems);
-
-

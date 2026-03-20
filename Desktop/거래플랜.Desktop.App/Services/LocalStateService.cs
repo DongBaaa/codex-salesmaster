@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.IO;
 using Microsoft.EntityFrameworkCore;
@@ -13,12 +13,15 @@ namespace 거래플랜.Desktop.App.Services;
 /// Facade over the local SQLite database for all CRUD operations.
 /// All writes mark IsDirty = true; sync service flushes dirty records.
 /// </summary>
-public sealed class LocalStateService
+public sealed partial class LocalStateService
 {
     private const string YeonsuOfficeIdSettingKey = "SystemOffice.YeonsuOfficeId";
     private const string CompanyProfileAssignmentPrefix = "CompanyProfile.Assigned.";
+    private const long MaxCustomerContractFileSizeBytes = 15 * 1024 * 1024;
     private readonly LocalDbContext _db;
     private readonly OfficeAccessService _officeAccess;
+    private readonly SyncRequestDispatcher _syncRequestDispatcher;
+    private bool _hasPendingSyncEntityChanges;
     public event EventHandler? InventoryStateChanged;
 
     private static readonly JsonSerializerOptions AuditJsonOptions = new(JsonSerializerDefaults.Web)
@@ -26,12 +29,38 @@ public sealed class LocalStateService
         WriteIndented = false
     };
 
-    public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess)
+    public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, SyncRequestDispatcher syncRequestDispatcher)
     {
         _db = db;
         _officeAccess = officeAccess;
+        _syncRequestDispatcher = syncRequestDispatcher;
+
+        _db.SavingChanges += HandleSavingChanges;
+        _db.SavedChanges += HandleSavedChanges;
+        _db.SaveChangesFailed += HandleSaveChangesFailed;
     }
 
+    private void HandleSavingChanges(object? sender, SavingChangesEventArgs args)
+    {
+        _hasPendingSyncEntityChanges = _db.ChangeTracker
+            .Entries()
+            .Any(entry =>
+                entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted &&
+                entry.Entity is ILocalSyncEntity);
+    }
+
+    private void HandleSavedChanges(object? sender, SavedChangesEventArgs args)
+    {
+        if (_hasPendingSyncEntityChanges)
+            _syncRequestDispatcher.RequestImmediateSync();
+
+        _hasPendingSyncEntityChanges = false;
+    }
+
+    private void HandleSaveChangesFailed(object? sender, SaveChangesFailedEventArgs args)
+    {
+        _hasPendingSyncEntityChanges = false;
+    }
     // Customers
     public Task<List<LocalCustomer>> GetCustomersAsync(CancellationToken ct = default)
         => _db.Customers.AsNoTracking().OrderBy(c => c.NameOriginal).ToListAsync(ct);
@@ -82,7 +111,7 @@ public sealed class LocalStateService
 
     public async Task<LocalCustomer> UpsertCustomerAsync(LocalCustomer customer, CancellationToken ct = default)
     {
-        customer.ResponsibleOfficeCode = NormalizeOfficeCode(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        customer.ResponsibleOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
         customer.IsDirty = true;
         customer.UpdatedAtUtc = DateTime.UtcNow;
 
@@ -104,7 +133,7 @@ public sealed class LocalStateService
         if (customer is null)
             throw new ArgumentNullException(nameof(customer));
 
-        var normalizedOfficeCode = NormalizeOfficeCode(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        var normalizedOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
         var existing = await _db.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == customer.Id, ct);
@@ -128,6 +157,7 @@ public sealed class LocalStateService
         await _db.SaveChangesAsync(ct);
 
         var grantedTemporaryAccess = !session.IsAdmin &&
+                                     !IsSharedOfficeScope(normalizedOfficeCode) &&
                                      !string.Equals(normalizedOfficeCode, NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet), StringComparison.OrdinalIgnoreCase);
 
         if (grantedTemporaryAccess)
@@ -152,6 +182,7 @@ public sealed class LocalStateService
         customer.IsDeleted = true;
         customer.IsDirty = true;
         customer.UpdatedAtUtc = DateTime.UtcNow;
+        await SoftDeleteCustomerContractsAsync(id, ct);
         await _db.SaveChangesAsync(ct);
     }
 
@@ -172,10 +203,320 @@ public sealed class LocalStateService
         customer.IsDeleted = true;
         customer.IsDirty = true;
         customer.UpdatedAtUtc = DateTime.UtcNow;
+        await SoftDeleteCustomerContractsAsync(id, ct);
         await _db.SaveChangesAsync(ct);
         _officeAccess.RevokeTemporaryCustomerAccess(session, id);
 
         return OfficeMutationResult.Ok(id, "嫄곕옒泥섎? ??젣?덉뒿?덈떎.");
+    }
+
+    public async Task<List<LocalCustomerContract>> GetCustomerContractsAsync(
+        Guid customerId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var customer = await _db.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == customerId, ct);
+        if (customer is null || !CanAccessCustomer(customer, session))
+            return new List<LocalCustomerContract>();
+
+        return await _db.CustomerContracts
+            .AsNoTracking()
+            .Where(current => current.CustomerId == customerId)
+            .OrderByDescending(current => current.IsPrimary)
+            .ThenByDescending(current => current.SignedDate)
+            .ThenByDescending(current => current.UploadedAtUtc)
+            .ToListAsync(ct);
+    }
+
+    public async Task<Dictionary<Guid, CustomerContractSummaryItem>> GetCustomerContractSummaryMapAsync(
+        SessionState session,
+        int alertWindowDays = 30,
+        CancellationToken ct = default)
+    {
+        var customerRows = await ApplyCustomerScope(_db.Customers.AsNoTracking(), session)
+            .Select(customer => new { customer.Id, customer.NameOriginal })
+            .ToListAsync(ct);
+
+        if (customerRows.Count == 0)
+            return new Dictionary<Guid, CustomerContractSummaryItem>();
+
+        var customerIds = customerRows.Select(row => row.Id).ToList();
+        var contracts = await _db.CustomerContracts
+            .AsNoTracking()
+            .Where(contract => customerIds.Contains(contract.CustomerId))
+            .ToListAsync(ct);
+
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        var alertLimit = today.AddDays(Math.Max(alertWindowDays, 0));
+        var contractLookup = contracts
+            .GroupBy(contract => contract.CustomerId)
+            .ToDictionary(group => group.Key, group => group.ToList());
+
+        var result = new Dictionary<Guid, CustomerContractSummaryItem>();
+        foreach (var customerRow in customerRows)
+        {
+            contractLookup.TryGetValue(customerRow.Id, out var items);
+            items ??= new List<LocalCustomerContract>();
+
+            var expiringSoonCount = items.Count(contract =>
+                contract.ExpireDate.HasValue &&
+                contract.ExpireDate.Value >= today &&
+                contract.ExpireDate.Value <= alertLimit);
+            var nearestExpireDate = items
+                .Where(contract => contract.ExpireDate.HasValue)
+                .Select(contract => contract.ExpireDate!.Value)
+                .OrderBy(date => date)
+                .FirstOrDefault();
+
+            result[customerRow.Id] = new CustomerContractSummaryItem
+            {
+                CustomerId = customerRow.Id,
+                ContractCount = items.Count,
+                NearestExpireDate = nearestExpireDate == default ? null : nearestExpireDate,
+                ExpiringSoonCount = expiringSoonCount,
+                HasExpiredContract = items.Any(contract =>
+                    contract.ExpireDate.HasValue &&
+                    contract.ExpireDate.Value < today)
+            };
+        }
+
+        return result;
+    }
+
+    public async Task<List<CustomerContractAlertItem>> GetCustomerContractAlertsAsync(
+        SessionState session,
+        int alertWindowDays = 30,
+        CancellationToken ct = default)
+    {
+        var customerRows = await ApplyCustomerScope(_db.Customers.AsNoTracking(), session)
+            .Select(customer => new { customer.Id, customer.NameOriginal })
+            .ToListAsync(ct);
+
+        if (customerRows.Count == 0)
+            return new List<CustomerContractAlertItem>();
+
+        var customerNameMap = customerRows.ToDictionary(row => row.Id, row => row.NameOriginal);
+        var customerIds = customerNameMap.Keys.ToList();
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        var alertLimit = today.AddDays(Math.Max(alertWindowDays, 0));
+
+        var contracts = await _db.CustomerContracts
+            .AsNoTracking()
+            .Where(contract =>
+                customerIds.Contains(contract.CustomerId) &&
+                contract.ExpireDate.HasValue &&
+                contract.ExpireDate.Value <= alertLimit)
+            .OrderBy(contract => contract.ExpireDate)
+            .ToListAsync(ct);
+
+        return contracts
+            .Select(contract => new CustomerContractAlertItem
+            {
+                CustomerId = contract.CustomerId,
+                ContractId = contract.Id,
+                CustomerName = customerNameMap[contract.CustomerId],
+                ContractType = contract.ContractType,
+                FileName = contract.FileName,
+                ExpireDate = contract.ExpireDate!.Value,
+                DaysRemaining = contract.ExpireDate!.Value.DayNumber - today.DayNumber,
+                AlertLevel = contract.ExpireDate.Value < today
+                    ? "만료"
+                    : contract.ExpireDate.Value == today
+                        ? "오늘"
+                        : "예정",
+                AlertText = contract.ExpireDate.Value < today
+                    ? $"만료 {today.DayNumber - contract.ExpireDate.Value.DayNumber:N0}일 경과"
+                    : contract.ExpireDate.Value == today
+                        ? "오늘 만료"
+                        : $"{contract.ExpireDate.Value.DayNumber - today.DayNumber:N0}일 남음"
+            })
+            .ToList();
+    }
+
+    public async Task<OfficeMutationResult> SaveCustomerContractAsync(
+        Guid customerId,
+        string sourceFilePath,
+        string contractType,
+        DateOnly? signedDate,
+        DateOnly? expireDate,
+        string? description,
+        bool isPrimary,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (customerId == Guid.Empty)
+            return OfficeMutationResult.Denied("계약서를 등록할 거래처를 먼저 저장하세요.");
+
+        if (string.IsNullOrWhiteSpace(sourceFilePath) || !File.Exists(sourceFilePath))
+            return OfficeMutationResult.Missing("등록할 PDF 파일을 찾을 수 없습니다.");
+
+        var fileInfo = new FileInfo(sourceFilePath);
+        if (!string.Equals(fileInfo.Extension, ".pdf", StringComparison.OrdinalIgnoreCase))
+            return OfficeMutationResult.Denied("계약서는 PDF 파일만 등록할 수 있습니다.");
+
+        if (fileInfo.Length <= 0)
+            return OfficeMutationResult.Denied("빈 PDF 파일은 등록할 수 없습니다.");
+
+        if (fileInfo.Length > MaxCustomerContractFileSizeBytes)
+            return OfficeMutationResult.Denied("계약서 PDF는 15MB 이하로 등록해주세요. 스캔 해상도를 낮추거나 PDF를 압축한 뒤 다시 시도하세요.");
+
+        var customer = await _db.Customers
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == customerId, ct);
+        if (customer is null)
+            return OfficeMutationResult.Missing("거래처를 찾을 수 없습니다.");
+
+        if (!CanAccessCustomer(customer, session))
+            return OfficeMutationResult.Denied("권한이 없어 해당 거래처 계약서를 등록할 수 없습니다.");
+
+        var now = DateTime.UtcNow;
+        var fileBytes = await File.ReadAllBytesAsync(sourceFilePath, ct);
+        var contract = new LocalCustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customerId,
+            ContractType = NormalizeCustomerContractType(contractType),
+            FileName = fileInfo.Name,
+            MimeType = "application/pdf",
+            FileSize = fileInfo.Length,
+            FileHash = ComputeFileHash(fileBytes),
+            Description = (description ?? string.Empty).Trim(),
+            SignedDate = signedDate,
+            ExpireDate = expireDate,
+            IsPrimary = isPrimary,
+            UploadedByUsername = session.User?.Username ?? "local-user",
+            UploadedAtUtc = now,
+            FileContent = fileBytes,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+            IsDirty = true
+        };
+
+        if (contract.IsPrimary)
+            await ClearPrimaryCustomerContractAsync(customerId, exceptContractId: contract.Id, ct);
+
+        _db.CustomerContracts.Add(contract);
+        _db.AuditLogs.Add(new LocalAuditLog
+        {
+            EntityName = nameof(LocalCustomerContract),
+            EntityId = contract.Id.ToString("D"),
+            Action = "Create",
+            Username = session.User?.Username ?? "local-user",
+            Role = session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = session.OfficeCode,
+            BeforeJson = string.Empty,
+            AfterJson = JsonSerializer.Serialize(new
+            {
+                contract.CustomerId,
+                contract.ContractType,
+                contract.FileName,
+                contract.IsPrimary,
+                contract.SignedDate,
+                contract.ExpireDate
+            }, AuditJsonOptions),
+            CreatedAtUtc = now
+        });
+
+        await _db.SaveChangesAsync(ct);
+        return OfficeMutationResult.Ok(contract.Id, "거래처 계약서를 등록했습니다.");
+    }
+
+    public async Task<OfficeMutationResult> DeleteCustomerContractAsync(
+        Guid contractId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var contract = await _db.CustomerContracts
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == contractId, ct);
+        if (contract is null)
+            return OfficeMutationResult.Missing("삭제할 계약서를 찾을 수 없습니다.");
+
+        var customer = await _db.Customers
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == contract.CustomerId, ct);
+        if (customer is null)
+            return OfficeMutationResult.Missing("계약서와 연결된 거래처를 찾을 수 없습니다.");
+
+        if (!CanAccessCustomer(customer, session))
+            return OfficeMutationResult.Denied("권한이 없어 해당 거래처 계약서를 삭제할 수 없습니다.");
+
+        contract.IsDeleted = true;
+        contract.IsDirty = true;
+        contract.IsPrimary = false;
+        contract.UpdatedAtUtc = DateTime.UtcNow;
+
+        _db.AuditLogs.Add(new LocalAuditLog
+        {
+            EntityName = nameof(LocalCustomerContract),
+            EntityId = contract.Id.ToString("D"),
+            Action = "Delete",
+            Username = session.User?.Username ?? "local-user",
+            Role = session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = session.OfficeCode,
+            BeforeJson = JsonSerializer.Serialize(new
+            {
+                contract.CustomerId,
+                contract.ContractType,
+                contract.FileName
+            }, AuditJsonOptions),
+            AfterJson = string.Empty,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+
+        await _db.SaveChangesAsync(ct);
+        return OfficeMutationResult.Ok(contract.Id, "거래처 계약서를 삭제했습니다.");
+    }
+
+    public async Task<OfficeMutationResult> SetPrimaryCustomerContractAsync(
+        Guid contractId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var contract = await _db.CustomerContracts
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == contractId, ct);
+        if (contract is null)
+            return OfficeMutationResult.Missing("대표로 지정할 계약서를 찾을 수 없습니다.");
+
+        var customer = await _db.Customers
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == contract.CustomerId, ct);
+        if (customer is null)
+            return OfficeMutationResult.Missing("계약서와 연결된 거래처를 찾을 수 없습니다.");
+
+        if (!CanAccessCustomer(customer, session))
+            return OfficeMutationResult.Denied("권한이 없어 해당 거래처 계약서를 변경할 수 없습니다.");
+
+        await ClearPrimaryCustomerContractAsync(contract.CustomerId, contract.Id, ct);
+        contract.IsPrimary = true;
+        contract.IsDirty = true;
+        contract.UpdatedAtUtc = DateTime.UtcNow;
+
+        _db.AuditLogs.Add(new LocalAuditLog
+        {
+            EntityName = nameof(LocalCustomerContract),
+            EntityId = contract.Id.ToString("D"),
+            Action = "SetPrimary",
+            Username = session.User?.Username ?? "local-user",
+            Role = session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = session.OfficeCode,
+            BeforeJson = string.Empty,
+            AfterJson = JsonSerializer.Serialize(new
+            {
+                contract.CustomerId,
+                contract.ContractType,
+                contract.FileName,
+                contract.IsPrimary
+            }, AuditJsonOptions),
+            CreatedAtUtc = DateTime.UtcNow
+        });
+
+        await _db.SaveChangesAsync(ct);
+        return OfficeMutationResult.Ok(contract.Id, "대표 계약서로 지정했습니다.");
     }
 
     // Items
@@ -774,7 +1115,7 @@ public sealed class LocalStateService
         if (customer is null)
             return InvoiceSaveResult.Missing("嫄곕옒泥??뺣낫瑜?李얠쓣 ???놁뒿?덈떎.");
 
-        var customerOfficeCode = NormalizeOfficeCode(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        var customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
         if (!CanAccessCustomer(customer.Id, customerOfficeCode, session, context.Role))
             return InvoiceSaveResult.Denied("沅뚰븳???놁뼱 ?대떦 嫄곕옒泥??꾪몴瑜???ν븷 ???놁뒿?덈떎.");
 
@@ -805,7 +1146,16 @@ public sealed class LocalStateService
             context.OfficeCode,
             customerOfficeCode);
 
-        var responsibleOfficeCode = customerOfficeCode;
+        var responsibleOfficeCode = IsSharedOfficeScope(customerOfficeCode)
+            ? NormalizeOfficeScope(
+                string.IsNullOrWhiteSpace(invoice.ResponsibleOfficeCode)
+                    ? latest?.ResponsibleOfficeCode
+                    : invoice.ResponsibleOfficeCode,
+                context.OfficeCode)
+            : customerOfficeCode;
+
+        if (IsSharedOfficeScope(responsibleOfficeCode))
+            responsibleOfficeCode = NormalizeOfficeScope(context.OfficeCode, DomainConstants.OfficeUsenet);
 
         var validLines = (invoice.Lines ?? new List<LocalInvoiceLine>())
             .Where(line => !line.IsDeleted && !string.IsNullOrWhiteSpace(line.ItemNameOriginal))
@@ -1828,7 +2178,7 @@ public sealed class LocalStateService
         if (customer is null)
             return 0m;
 
-        var customerOfficeCode = NormalizeOfficeCode(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        var customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
         if (!CanAccessCustomer(customer.Id, customerOfficeCode, session, session.User?.Role))
             return 0m;
 
@@ -1918,7 +2268,7 @@ public sealed class LocalStateService
         if (customer is null)
             return OfficeMutationResult.Missing("嫄곕옒泥섎? 李얠쓣 ???놁뒿?덈떎.");
 
-        var customerOfficeCode = NormalizeOfficeCode(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        var customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
         if (!CanAccessCustomer(customer.Id, customerOfficeCode, session, session.User?.Role))
             return OfficeMutationResult.Denied("沅뚰븳???놁뼱 ?대떦 嫄곕옒泥섏쓽 ?섍툑/吏遺덉쓣 ??ν븷 ???놁뒿?덈떎.");
 
@@ -2868,6 +3218,7 @@ public sealed class LocalStateService
         var count = 0;
         count += await _db.CompanyProfiles.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         count += await _db.Customers.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        count += await _db.CustomerContracts.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         count += await _db.Items.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         count += await _db.ItemCategoryOptions.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         count += await _db.Invoices.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
@@ -2902,6 +3253,7 @@ public sealed class LocalStateService
         var userOfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
         var temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
         return query.Where(customer =>
+            customer.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
             customer.ResponsibleOfficeCode == userOfficeCode ||
             temporaryCustomerIds.Contains(customer.Id));
     }
@@ -2916,6 +3268,7 @@ public sealed class LocalStateService
         var userOfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
         var temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
         return query.Where(invoice =>
+            invoice.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
             invoice.ResponsibleOfficeCode == userOfficeCode ||
             temporaryCustomerIds.Contains(invoice.CustomerId));
     }
@@ -2930,6 +3283,7 @@ public sealed class LocalStateService
         var userOfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
         var temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
         return query.Where(transaction =>
+            transaction.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
             transaction.ResponsibleOfficeCode == userOfficeCode ||
             temporaryCustomerIds.Contains(transaction.CustomerId));
     }
@@ -2953,7 +3307,10 @@ public sealed class LocalStateService
         if (HasFullAccess(session) || DomainConstants.IsAdminRole(role))
             return true;
 
-        var normalizedOfficeCode = NormalizeOfficeCode(customerOfficeCode, DomainConstants.OfficeUsenet);
+        var normalizedOfficeCode = NormalizeOfficeScope(customerOfficeCode, DomainConstants.OfficeUsenet);
+        if (IsSharedOfficeScope(normalizedOfficeCode))
+            return true;
+
         var userOfficeCode = NormalizeOfficeCode(session?.OfficeCode, DomainConstants.OfficeUsenet);
         if (string.Equals(normalizedOfficeCode, userOfficeCode, StringComparison.OrdinalIgnoreCase))
             return true;
@@ -2966,7 +3323,10 @@ public sealed class LocalStateService
         if (HasFullAccess(session))
             return true;
 
-        var officeCode = NormalizeOfficeCode(invoice.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        var officeCode = NormalizeOfficeScope(invoice.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        if (IsSharedOfficeScope(officeCode))
+            return true;
+
         var userOfficeCode = NormalizeOfficeCode(session?.OfficeCode, DomainConstants.OfficeUsenet);
         if (string.Equals(officeCode, userOfficeCode, StringComparison.OrdinalIgnoreCase))
             return true;
@@ -2979,7 +3339,10 @@ public sealed class LocalStateService
         if (HasFullAccess(session))
             return true;
 
-        var officeCode = NormalizeOfficeCode(transaction.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        var officeCode = NormalizeOfficeScope(transaction.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        if (IsSharedOfficeScope(officeCode))
+            return true;
+
         var userOfficeCode = NormalizeOfficeCode(session?.OfficeCode, DomainConstants.OfficeUsenet);
         if (string.Equals(officeCode, userOfficeCode, StringComparison.OrdinalIgnoreCase))
             return true;
@@ -2991,6 +3354,17 @@ public sealed class LocalStateService
     {
         return OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, fallback);
     }
+
+    private static string NormalizeOfficeScope(string? officeCode, string? fallback)
+    {
+        return OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, fallback);
+    }
+
+    private static bool IsSharedOfficeScope(string? officeCode)
+        => string.Equals(
+            NormalizeOfficeScope(officeCode, OfficeCodeCatalog.Shared),
+            OfficeCodeCatalog.Shared,
+            StringComparison.OrdinalIgnoreCase);
 
     private static bool IsSystemOfficeCode(string? officeCode)
         => OfficeCodeCatalog.IsCanonicalOfficeCode(officeCode);
@@ -3172,6 +3546,19 @@ public sealed class LocalStateService
         };
     }
 
+    private static string NormalizeCustomerContractType(string? contractType)
+    {
+        var normalized = (contractType ?? string.Empty).Trim();
+        return normalized switch
+        {
+            "거래계약서" => "거래계약서",
+            "렌탈계약서" => "렌탈계약서",
+            "유지보수계약서" => "유지보수계약서",
+            "특약서" => "특약서",
+            _ => "기타"
+        };
+    }
+
     private static string NormalizeAttachmentVerificationStatus(string? verificationStatus)
     {
         var normalized = (verificationStatus ?? string.Empty).Trim();
@@ -3205,6 +3592,52 @@ public sealed class LocalStateService
         using var sha256 = SHA256.Create();
         var hash = sha256.ComputeHash(stream);
         return Convert.ToHexString(hash);
+    }
+
+    private static string ComputeFileHash(byte[] fileContent)
+    {
+        using var sha256 = SHA256.Create();
+        var hash = sha256.ComputeHash(fileContent);
+        return Convert.ToHexString(hash);
+    }
+
+    private async Task ClearPrimaryCustomerContractAsync(
+        Guid customerId,
+        Guid? exceptContractId,
+        CancellationToken ct)
+    {
+        var existingContracts = await _db.CustomerContracts
+            .IgnoreQueryFilters()
+            .Where(current => current.CustomerId == customerId &&
+                              !current.IsDeleted &&
+                              current.IsPrimary &&
+                              (!exceptContractId.HasValue || current.Id != exceptContractId.Value))
+            .ToListAsync(ct);
+
+        foreach (var current in existingContracts)
+        {
+            current.IsPrimary = false;
+            current.IsDirty = true;
+            current.UpdatedAtUtc = DateTime.UtcNow;
+        }
+    }
+
+    private async Task SoftDeleteCustomerContractsAsync(
+        Guid customerId,
+        CancellationToken ct)
+    {
+        var contracts = await _db.CustomerContracts
+            .IgnoreQueryFilters()
+            .Where(current => current.CustomerId == customerId && !current.IsDeleted)
+            .ToListAsync(ct);
+
+        foreach (var contract in contracts)
+        {
+            contract.IsDeleted = true;
+            contract.IsDirty = true;
+            contract.IsPrimary = false;
+            contract.UpdatedAtUtc = DateTime.UtcNow;
+        }
     }
 
     private static object BuildAuditInvoice(LocalInvoice invoice)
@@ -3333,10 +3766,14 @@ public sealed class LocalStateService
         var items = await _db.Items.ToListAsync(ct);
         foreach (var item in items)
         {
-            item.CurrentStock = itemStockTotals.TryGetValue(item.Id, out var totalStock)
+            var recalculatedStock = itemStockTotals.TryGetValue(item.Id, out var totalStock)
                 ? totalStock
                 : 0m;
 
+            if (item.CurrentStock == recalculatedStock)
+                continue;
+
+            item.CurrentStock = recalculatedStock;
             item.IsDirty = true;
             item.UpdatedAtUtc = DateTime.UtcNow;
         }

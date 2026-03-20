@@ -1,11 +1,13 @@
 using System.Text;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -13,8 +15,24 @@ using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.AddServerHeader = false;
+});
+
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
+builder.Services.Configure<SeedUsersOptions>(builder.Configuration.GetSection(SeedUsersOptions.SectionName));
+builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(UpdateOptions.SectionName));
+
 var jwtOptions = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
+var securityOptions = builder.Configuration.GetSection(SecurityOptions.SectionName).Get<SecurityOptions>() ?? new SecurityOptions();
+var seedUsersOptions = builder.Configuration.GetSection(SeedUsersOptions.SectionName).Get<SeedUsersOptions>() ?? new SeedUsersOptions();
+var allowedCorsOrigins = securityOptions.AllowedCorsOrigins
+    .Where(origin => !string.IsNullOrWhiteSpace(origin))
+    .Select(origin => origin.Trim())
+    .Distinct(StringComparer.OrdinalIgnoreCase)
+    .ToArray();
 
 var connectionString = builder.Configuration.GetConnectionString("Default") ?? string.Empty;
 var sqliteFallbackEnabled = builder.Configuration.GetValue("Database:EnableSqliteFallback", true);
@@ -27,9 +45,17 @@ var useSqlite = forceSqlite ||
                  (string.IsNullOrWhiteSpace(connectionString) ||
                   (sqliteFallbackEnabled && !TryCanConnectPostgres(connectionString))));
 
+ValidateProductionSecurityConfiguration(
+    builder.Environment,
+    connectionString,
+    jwtOptions,
+    securityOptions,
+    seedUsersOptions,
+    useSqlite);
+
 if (useSqlite)
 {
-    Console.WriteLine($"[거래플랜 API] PostgreSQL 연결 불가. SQLite 폴백 사용: {sqliteDbPath}");
+    Console.WriteLine($"[거래플랜 API] PostgreSQL 연결 불가. SQLite 대체 사용: {sqliteDbPath}");
 }
 else
 {
@@ -50,6 +76,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
+builder.Services.AddScoped<OfficeScopeService>();
 builder.Services.AddScoped<IJwtTokenFactory, JwtTokenFactory>();
 builder.Services.AddScoped<IInvoiceNumberService, InvoiceNumberService>();
 builder.Services.AddSingleton<RevisionClock>();
@@ -58,7 +85,7 @@ builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
-        options.RequireHttpsMetadata = false;
+        options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -91,9 +118,66 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("DesktopClient", policy =>
     {
-        policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+        if (securityOptions.AllowAnyCorsOrigin || builder.Environment.IsDevelopment())
+        {
+            policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+            return;
+        }
+
+        if (allowedCorsOrigins.Length > 0)
+        {
+            policy.WithOrigins(allowedCorsOrigins)
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+            return;
+        }
+
+        policy.SetIsOriginAllowed(_ => false)
+              .AllowAnyHeader()
+              .AllowAnyMethod();
     });
 });
+
+if (securityOptions.EnableRateLimiting)
+{
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+        options.OnRejected = async (context, token) =>
+        {
+            context.HttpContext.Response.ContentType = "application/json; charset=utf-8";
+            await context.HttpContext.Response.WriteAsJsonAsync(
+                new
+                {
+                    error = "rate_limited",
+                    message = "요청이 너무 많습니다. 잠시 후 다시 시도하세요."
+                },
+                cancellationToken: token);
+        };
+
+        var loginPermitLimit = Math.Max(1, securityOptions.LoginPermitLimitPerMinute);
+        var apiPermitLimit = Math.Max(1, securityOptions.ApiPermitLimitPerMinute);
+
+        options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        {
+            var path = httpContext.Request.Path.Value ?? string.Empty;
+            var permitLimit = path.StartsWith("/auth/login", StringComparison.OrdinalIgnoreCase)
+                ? loginPermitLimit
+                : apiPermitLimit;
+
+            return RateLimitPartition.GetFixedWindowLimiter(
+                ResolveRateLimitKey(httpContext, path),
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = permitLimit,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                    AutoReplenishment = true
+                });
+        });
+    });
+}
 
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
@@ -109,8 +193,10 @@ builder.Services.AddSwaggerGen(c =>
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Description = "JWT Authorization header. 예: 'Bearer {token}'",
-        Name = "Authorization", In = ParameterLocation.Header,
-        Type = SecuritySchemeType.ApiKey, Scheme = "Bearer"
+        Name = "Authorization",
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.ApiKey,
+        Scheme = "Bearer"
     });
     c.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
@@ -126,6 +212,8 @@ builder.Services.AddSwaggerGen(c =>
 
 var app = builder.Build();
 
+LogSecurityWarnings(app, connectionString, jwtOptions, securityOptions, useSqlite, allowedCorsOrigins);
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -133,6 +221,43 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseForwardedHeaders();
+
+if (securityOptions.AddSecurityHeaders)
+{
+    app.Use(async (context, next) =>
+    {
+        if (securityOptions.RequireHttpsForwardedProto &&
+            !app.Environment.IsDevelopment() &&
+            !string.Equals(context.Request.Path.Value, "/healthz", StringComparison.OrdinalIgnoreCase) &&
+            !context.Request.IsHttps)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                error = "https_required",
+                message = "HTTPS reverse proxy를 통해 접속해야 합니다."
+            });
+            return;
+        }
+
+        context.Response.Headers.TryAdd("X-Content-Type-Options", "nosniff");
+        context.Response.Headers.TryAdd("X-Frame-Options", "DENY");
+        context.Response.Headers.TryAdd("Referrer-Policy", "no-referrer");
+        context.Response.Headers.TryAdd("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+        if (context.Request.IsHttps)
+        {
+            context.Response.Headers.TryAdd("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+        }
+
+        await next();
+    });
+}
+
+if (securityOptions.EnableRateLimiting)
+{
+    app.UseRateLimiter();
+}
+
 app.UseCors("DesktopClient");
 app.UseAuthentication();
 app.UseAuthorization();
@@ -190,3 +315,104 @@ static void AddPermissionPolicy(AuthorizationOptions options, string permission)
             context.User.Claims.Any(claim => claim.Type == "perm" && claim.Value == permission));
     });
 }
+
+static string ResolveRateLimitKey(HttpContext context, string path)
+{
+    if (path.StartsWith("/auth/login", StringComparison.OrdinalIgnoreCase))
+    {
+        var loginKey = context.Connection.RemoteIpAddress?.ToString();
+        return $"login:{loginKey ?? "anonymous"}";
+    }
+
+    var subject = context.User.Identity?.IsAuthenticated == true
+        ? context.User.Identity?.Name
+        : null;
+
+    subject ??= context.Connection.RemoteIpAddress?.ToString();
+    return $"api:{subject ?? "anonymous"}";
+}
+
+static void ValidateProductionSecurityConfiguration(
+    IWebHostEnvironment environment,
+    string connectionString,
+    JwtOptions jwtOptions,
+    SecurityOptions securityOptions,
+    SeedUsersOptions seedUsersOptions,
+    bool useSqlite)
+{
+    if (environment.IsDevelopment())
+        return;
+
+    if (useSqlite)
+        throw new InvalidOperationException("Production environment cannot start with SQLite fallback enabled.");
+
+    if (string.IsNullOrWhiteSpace(jwtOptions.SigningKey) ||
+        jwtOptions.SigningKey.Length < 32 ||
+        jwtOptions.SigningKey.Contains("ChangeThis", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException("Production JWT signing key must be replaced with a strong secret.");
+    }
+
+    if (ContainsInsecureConnectionStringSecret(connectionString))
+        throw new InvalidOperationException("Production database password cannot use a sample or placeholder value.");
+
+    if (!securityOptions.RequireHttpsForwardedProto)
+        throw new InvalidOperationException("Production requires Security:RequireHttpsForwardedProto=true.");
+
+    if (!seedUsersOptions.EnableSeedUsers)
+        return;
+
+    if (seedUsersOptions.UsesDefaultAdminPassword() ||
+        seedUsersOptions.UsesDefaultUserPassword() ||
+        seedUsersOptions.UsesDefaultItwPassword())
+    {
+        throw new InvalidOperationException("Production seed users cannot use default passwords.");
+    }
+}
+static void LogSecurityWarnings(
+    WebApplication app,
+    string connectionString,
+    JwtOptions jwtOptions,
+    SecurityOptions securityOptions,
+    bool useSqlite,
+    string[] allowedCorsOrigins)
+{
+    if (app.Environment.IsDevelopment())
+        return;
+
+    if (useSqlite)
+    {
+        app.Logger.LogWarning("Production startup is using SQLite fallback. NAS 운영 시 PostgreSQL 고정을 권장합니다.");
+    }
+
+    if (string.IsNullOrWhiteSpace(jwtOptions.SigningKey) ||
+        jwtOptions.SigningKey.Length < 32 ||
+        jwtOptions.SigningKey.Contains("ChangeThis", StringComparison.OrdinalIgnoreCase))
+    {
+        app.Logger.LogWarning("JWT signing key is weak or still using a placeholder. 운영 전 반드시 긴 랜덤 값으로 변경하세요.");
+    }
+
+    if (ContainsInsecureConnectionStringSecret(connectionString))
+    {
+        app.Logger.LogWarning("Connection string still contains a sample or placeholder database password. Change it before production use.");
+    }
+
+    if (securityOptions.AllowAnyCorsOrigin)
+    {
+        app.Logger.LogWarning("AllowAnyCorsOrigin=true 입니다. 운영에서는 허용 Origin을 제한하는 것을 권장합니다.");
+    }
+    else if (allowedCorsOrigins.Length == 0)
+    {
+        app.Logger.LogInformation("No browser CORS origins are configured. 기본 네이티브 앱(PC/Android) 사용에는 영향이 없습니다.");
+    }
+
+    if (!securityOptions.RequireHttpsForwardedProto)
+    {
+        app.Logger.LogWarning("RequireHttpsForwardedProto=false 입니다. NAS reverse proxy 운영 시 true 를 권장합니다.");
+    }
+}
+
+static bool ContainsInsecureConnectionStringSecret(string connectionString)
+    => connectionString.Contains("CHANGE_THIS_LOCAL_POSTGRES_PASSWORD", StringComparison.OrdinalIgnoreCase) ||
+       connectionString.Contains("CHANGE_THIS", StringComparison.OrdinalIgnoreCase) ||
+       connectionString.Contains("__SET_SECURE_PASSWORD__", StringComparison.OrdinalIgnoreCase);

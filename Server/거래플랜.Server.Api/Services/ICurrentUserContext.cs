@@ -4,6 +4,7 @@ public interface ICurrentUserContext
 {
     Guid? UserId { get; }
     string Username { get; }
+    string OfficeCode { get; }
     bool IsAdmin { get; }
     bool HasPermission(string permission);
 }

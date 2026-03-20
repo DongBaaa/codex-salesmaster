@@ -2,6 +2,7 @@
 
 public static class OfficeCodeCatalog
 {
+    public const string Shared = "ALL";
     public const string Usenet = "USENET";
     public const string Itworld = "ITWORLD";
     public const string Yeonsu = "YEONSU";
@@ -16,6 +17,14 @@ public static class OfficeCodeCatalog
         Yeonsu
     ];
 
+    public static IReadOnlyList<string> AllScopes { get; } =
+    [
+        Shared,
+        Usenet,
+        Itworld,
+        Yeonsu
+    ];
+
     public static bool IsCanonical(string? value)
     {
         var normalized = (value ?? string.Empty).Trim().ToUpperInvariant();
@@ -24,6 +33,12 @@ public static class OfficeCodeCatalog
 
     public static bool IsCanonicalOfficeCode(string? value)
         => IsCanonical(value);
+
+    public static bool IsSharedOfficeCode(string? value)
+        => string.Equals((value ?? string.Empty).Trim(), Shared, StringComparison.OrdinalIgnoreCase) ||
+           string.Equals((value ?? string.Empty).Trim(), "공용", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals((value ?? string.Empty).Trim(), "전체", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals((value ?? string.Empty).Trim(), "shared", StringComparison.OrdinalIgnoreCase);
 
     public static bool TryNormalize(string? value, out string canonical)
     {
@@ -72,6 +87,17 @@ public static class OfficeCodeCatalog
         return false;
     }
 
+    public static bool TryNormalizeScope(string? value, out string canonical)
+    {
+        if (IsSharedOfficeCode(value))
+        {
+            canonical = Shared;
+            return true;
+        }
+
+        return TryNormalize(value, out canonical);
+    }
+
     public static bool TryNormalizeOfficeCode(string? value, out string canonical)
         => TryNormalize(value, out canonical);
 
@@ -88,6 +114,17 @@ public static class OfficeCodeCatalog
 
     public static string NormalizeOfficeCodeOrDefault(string? value, string? fallback = null)
         => NormalizeOrDefault(value, fallback);
+
+    public static string NormalizeOfficeScopeOrDefault(string? value, string? fallback = null)
+    {
+        if (TryNormalizeScope(value, out var canonical))
+            return canonical;
+
+        if (TryNormalizeScope(fallback, out canonical))
+            return canonical;
+
+        return Shared;
+    }
 
     public static string NormalizeLoose(string? primary, string? secondary = null, string? fallback = null)
     {

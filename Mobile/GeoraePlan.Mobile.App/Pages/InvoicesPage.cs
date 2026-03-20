@@ -1,3 +1,5 @@
+﻿using GeoraePlan.Mobile.App.Services;
+using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
@@ -7,49 +9,57 @@ namespace GeoraePlan.Mobile.App.Pages;
 public sealed class InvoicesPage : ContentPage
 {
     private readonly InvoicesViewModel _viewModel;
+    private readonly MobileRefreshCoordinator _refreshCoordinator;
+    private readonly SyncCoordinator _syncCoordinator;
+    private int _seenInvoicesVersion;
 
     public InvoicesPage()
     {
-        Title = "전표";
+        GeoraePlanTheme.ApplyPage(this, "전표");
+
         _viewModel = ServiceHelper.GetRequiredService<InvoicesViewModel>();
+        _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
+        _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
         BindingContext = _viewModel;
 
-        var searchBar = new SearchBar { Placeholder = "전표번호 / 메모" };
+        var searchBar = GeoraePlanTheme.CreateSearchBar("전표번호 / 메모");
         searchBar.SetBinding(SearchBar.TextProperty, nameof(InvoicesViewModel.SearchText));
 
-        var refreshButton = new Button { Text = "조회" };
+        var refreshButton = GeoraePlanTheme.CreateButton("조회", GeoraePlanTheme.SecondaryButton);
         refreshButton.SetBinding(Button.CommandProperty, nameof(InvoicesViewModel.RefreshCommand));
 
-        var createInvoiceButton = new Button { Text = "전표 작성" };
+        var createInvoiceButton = GeoraePlanTheme.CreateButton("전표 작성", GeoraePlanTheme.Success);
         createInvoiceButton.Clicked += async (_, _) =>
             await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InvoiceDraftPage>());
 
-        var createPaymentButton = new Button { Text = "수금 입력" };
+        var createPaymentButton = GeoraePlanTheme.CreateButton("수금 입력", GeoraePlanTheme.Purple);
         createPaymentButton.Clicked += async (_, _) =>
             await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>());
 
-        var statusLabel = new Label { TextColor = Colors.DimGray };
+        var statusLabel = GeoraePlanTheme.CreateStatusLabel();
         statusLabel.SetBinding(Label.TextProperty, nameof(InvoicesViewModel.StatusMessage));
 
         var collectionView = new CollectionView
         {
             SelectionMode = SelectionMode.None,
+            BackgroundColor = Colors.Transparent,
             ItemTemplate = new DataTemplate(() =>
             {
-                var numberLabel = new Label { FontAttributes = FontAttributes.Bold, FontSize = 16 };
+                var numberLabel = new Label { FontAttributes = FontAttributes.Bold, FontSize = 16, TextColor = GeoraePlanTheme.TextPrimary };
                 numberLabel.SetBinding(Label.TextProperty, nameof(InvoiceDto.InvoiceNumber));
 
-                var dateLabel = new Label();
+                var dateLabel = new Label { TextColor = GeoraePlanTheme.TextSecondary };
                 dateLabel.SetBinding(Label.TextProperty, new Binding(nameof(InvoiceDto.InvoiceDate), stringFormat: "{0:yyyy-MM-dd}"));
 
-                var amountLabel = new Label { TextColor = Colors.DimGray, FontSize = 12 };
+                var amountLabel = new Label { TextColor = GeoraePlanTheme.TextSecondary, FontSize = 12 };
                 amountLabel.SetBinding(Label.TextProperty, new Binding(nameof(InvoiceDto.TotalAmount), stringFormat: "{0:N0}원"));
 
                 return new Border
                 {
-                    Stroke = Colors.LightGray,
-                    StrokeShape = new RoundRectangle { CornerRadius = 10 },
-                    Padding = 12,
+                    BackgroundColor = GeoraePlanTheme.SurfaceAlt,
+                    Stroke = GeoraePlanTheme.Border,
+                    StrokeShape = new RoundRectangle { CornerRadius = 12 },
+                    Padding = 14,
                     Margin = new Thickness(0, 0, 0, 8),
                     Content = new VerticalStackLayout
                     {
@@ -78,24 +88,39 @@ public sealed class InvoicesPage : ContentPage
         actionGrid.Add(createPaymentButton);
         Grid.SetColumn(createPaymentButton, 2);
 
-        Content = new VerticalStackLayout
+        var contentGrid = new Grid
         {
             Padding = 16,
-            Spacing = 12,
-            Children =
+            RowDefinitions =
             {
-                searchBar,
-                actionGrid,
-                statusLabel,
-                collectionView
-            }
+                new RowDefinition(GridLength.Auto),
+                new RowDefinition(GridLength.Auto),
+                new RowDefinition(GridLength.Auto),
+                new RowDefinition(GridLength.Star)
+            },
+            RowSpacing = 12
         };
+        contentGrid.Add(searchBar);
+        Grid.SetRow(searchBar, 0);
+        contentGrid.Add(actionGrid);
+        Grid.SetRow(actionGrid, 1);
+        contentGrid.Add(statusLabel);
+        Grid.SetRow(statusLabel, 2);
+        contentGrid.Add(collectionView);
+        Grid.SetRow(collectionView, 3);
+
+        Content = contentGrid;
     }
 
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        if (_viewModel.Invoices.Count == 0)
+        await _syncCoordinator.TryBackgroundSyncAsync("invoices-page", TimeSpan.FromSeconds(45));
+
+        var versionChanged = _seenInvoicesVersion != _refreshCoordinator.InvoicesVersion;
+        if (versionChanged || _viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             await _viewModel.RefreshAsync();
+
+        _seenInvoicesVersion = _refreshCoordinator.InvoicesVersion;
     }
 }

@@ -4,7 +4,8 @@ param(
     [string]$SourceFolder,
     [string]$OutputRoot,
     [string]$PackageName,
-    [string]$AppDisplayName
+    [string]$AppDisplayName,
+    [switch]$SkipNativeInstallers
 )
 
 function Get-Utf8String {
@@ -59,8 +60,14 @@ function Get-DefaultClientSourceFolder {
         Sort-Object FullName
 
     $preferred = $candidates |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "$AppDisplayName.exe") } |
+        Select-Object -First 1
+
+    if ($null -eq $preferred) {
+        $preferred = $candidates |
         Where-Object { (Get-ChildItem -LiteralPath $_.FullName -File -Filter '*.pdb' | Measure-Object).Count -eq 0 } |
         Select-Object -First 1
+    }
 
     if ($null -eq $preferred) {
         $preferred = $candidates | Select-Object -First 1
@@ -129,6 +136,16 @@ Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyConti
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
 Invoke-RobocopyMirror -Source $SourceFolder -Destination $appRoot
+
+$updaterProject = Join-Path $ProjectRoot 'Updater\거래플랜.Updater\거래플랜.Updater.csproj'
+if (Test-Path -LiteralPath $updaterProject) {
+    $updaterPublishRoot = Join-Path $env:TEMP 'georaeplan-updater-publish'
+    Remove-Item -LiteralPath $updaterPublishRoot -Recurse -Force -ErrorAction SilentlyContinue
+    & dotnet publish $updaterProject -c Release -o $updaterPublishRoot | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Invoke-RobocopyMirror -Source $updaterPublishRoot -Destination (Join-Path $appRoot 'Updater')
+    }
+}
 
 $serverUrl = ''
 $appSettingsPath = Join-Path $SourceFolder 'appsettings.json'
@@ -270,3 +287,13 @@ Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $zipPath -C
 
 Write-Host "package_ready root=$packageRoot"
 Write-Host "package_zip=$zipPath"
+
+if (-not $SkipNativeInstallers) {
+    $nativeInstallerScript = Join-Path $scriptRoot 'Build-GeoraePlanDesktopNativeInstallers.ps1'
+    if (Test-Path -LiteralPath $nativeInstallerScript) {
+        & powershell -ExecutionPolicy Bypass -File $nativeInstallerScript -ProjectRoot $ProjectRoot -SourceFolder $SourceFolder -OutputRoot $OutputRoot -PackageName $PackageName -AppDisplayName $AppDisplayName
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Native installer generation failed.'
+        }
+    }
+}

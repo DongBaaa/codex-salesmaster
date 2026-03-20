@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 setlocal EnableExtensions
 
 set "SERVER_EXE=%~dp0Server\거래플랜.Server.Api.exe"
@@ -20,9 +20,13 @@ if exist "%APP_SETTINGS%" (
   powershell -NoProfile -ExecutionPolicy Bypass -Command "$p='%APP_SETTINGS%'; $u='%SERVER_URL%'; $json=Get-Content -Raw -Path $p | ConvertFrom-Json; if($null -eq $json.Api){$json | Add-Member -NotePropertyName Api -NotePropertyValue ([pscustomobject]@{})}; $json.Api.BaseUrl=$u; $json | ConvertTo-Json -Depth 20 | Set-Content -Path $p -Encoding UTF8"
 )
 
+set "ASPNETCORE_ENVIRONMENT=Development"
 set "ASPNETCORE_URLS=%SERVER_URL%"
+set "Kestrel__Endpoints__Http__Url=%SERVER_URL%"
+pushd "%~dp0Server"
 echo [거래플랜] Starting server on %SERVER_URL%
 "%SERVER_EXE%"
+popd
 echo.
 echo 거래플랜 서버가 종료되었습니다.
 pause

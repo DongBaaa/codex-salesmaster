@@ -26,6 +26,8 @@
     <UseWPF>true</UseWPF>
     <AssemblyTitle>거래플랜</AssemblyTitle>
     <Product>거래플랜</Product>
+    <Version>1.1.1</Version>
+    <FileVersion>1.1.1.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>

@@ -1,4 +1,5 @@
 ﻿using System.Security.Claims;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Server.Api.Services;
 
@@ -22,6 +23,9 @@ public sealed class HttpCurrentUserContext : ICurrentUserContext
 
     public string Username =>
         _httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.Name) ?? "anonymous";
+
+    public string OfficeCode =>
+        OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_httpContextAccessor.HttpContext?.User.FindFirstValue("office"));
 
     public bool IsAdmin =>
         _httpContextAccessor.HttpContext?.User.IsInRole("Admin") ?? false;

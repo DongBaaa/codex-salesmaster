@@ -2,8 +2,14 @@
 using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
 using 거래플랜.Shared.Contracts;
+using System.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace 거래플랜.Server.Api.Data;
 
@@ -14,51 +20,68 @@ public static class DbInitializer
         await using var scope = serviceProvider.CreateAsyncScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var revisionClock = scope.ServiceProvider.GetRequiredService<RevisionClock>();
+        var hostEnvironment = scope.ServiceProvider.GetRequiredService<IHostEnvironment>();
+        var loggerFactory = scope.ServiceProvider.GetRequiredService<ILoggerFactory>();
+        var logger = loggerFactory.CreateLogger(typeof(DbInitializer).FullName ?? nameof(DbInitializer));
+        var seedUsersOptions = scope.ServiceProvider.GetRequiredService<IOptions<SeedUsersOptions>>().Value;
 
-        if (dbContext.Database.IsSqlite())
-        {
-            await dbContext.Database.EnsureCreatedAsync(cancellationToken);
-        }
-        else
-        {
-            await dbContext.Database.MigrateAsync(cancellationToken);
-        }
+        await EnsureDatabaseSchemaAsync(dbContext, cancellationToken);
 
+        await EnsureCustomerContractsTableAsync(dbContext, cancellationToken);
+        await EnsurePaymentAttachmentsTableAsync(dbContext, cancellationToken);
+        await EnsureItemWarehouseStocksTableAsync(dbContext, cancellationToken);
         await EnsureCustomerTradeTypeColumnAsync(dbContext, cancellationToken);
         await EnsureUserOfficeCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureItemCatalogColumnsAsync(dbContext, cancellationToken);
+        await EnsureCustomerMasterOfficeCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureCustomerOfficeCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureItemOfficeCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureInvoiceOfficeCodeColumnAsync(dbContext, cancellationToken);
 
         var maxRevision = await GetMaxRevisionAsync(dbContext, cancellationToken);
         revisionClock.Initialize(maxRevision);
 
-        await EnsureSeedUserAsync(
-            dbContext,
-            username: "admin",
-            password: "CHANGE_THIS_ADMIN_PASSWORD",
-            role: "Admin",
-            officeCode: OfficeCodeCatalog.Usenet,
-            grantAllPermissions: true,
-            updatePasswordIfExists: false,
-            cancellationToken);
+        if (seedUsersOptions.EnableSeedUsers)
+        {
+            LogSeedUserWarnings(hostEnvironment, logger, seedUsersOptions);
 
-        await EnsureSeedUserAsync(
-            dbContext,
-            username: "user",
-            password: "CHANGE_THIS_USER_PASSWORD",
-            role: "User",
-            officeCode: OfficeCodeCatalog.Yeonsu,
-            grantAllPermissions: false,
-            updatePasswordIfExists: false,
-            cancellationToken);
+            await EnsureSeedUserAsync(
+                dbContext,
+                logger,
+                username: "admin",
+                password: seedUsersOptions.AdminPassword,
+                role: "Admin",
+                officeCode: OfficeCodeCatalog.Usenet,
+                grantAllPermissions: true,
+                updatePasswordIfExists: false,
+                cancellationToken);
 
-        await EnsureSeedUserAsync(
-            dbContext,
-            username: "itw",
-            password: "CHANGE_THIS_ITW_PASSWORD",
-            role: "User",
-            officeCode: OfficeCodeCatalog.Itworld,
-            grantAllPermissions: false,
-            updatePasswordIfExists: true,
-            cancellationToken);
+            await EnsureSeedUserAsync(
+                dbContext,
+                logger,
+                username: "user",
+                password: seedUsersOptions.UserPassword,
+                role: "User",
+                officeCode: OfficeCodeCatalog.Yeonsu,
+                grantAllPermissions: false,
+                updatePasswordIfExists: false,
+                cancellationToken);
+
+            await EnsureSeedUserAsync(
+                dbContext,
+                logger,
+                username: "itw",
+                password: seedUsersOptions.ItwPassword,
+                role: "User",
+                officeCode: OfficeCodeCatalog.Itworld,
+                grantAllPermissions: false,
+                updatePasswordIfExists: seedUsersOptions.UpdateExistingItwPassword,
+                cancellationToken);
+        }
+        else
+        {
+            logger.LogInformation("Seed user creation is disabled by configuration.");
+        }
 
         await EnsureDefaultCustomerCategoriesAsync(dbContext, cancellationToken);
 
@@ -89,6 +112,66 @@ public static class DbInitializer
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private static async Task EnsureDatabaseSchemaAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        if (dbContext.Database.IsSqlite())
+        {
+            await dbContext.Database.EnsureCreatedAsync(cancellationToken);
+            return;
+        }
+
+        var migrationsAssembly = dbContext.Database.GetService<IMigrationsAssembly>();
+        if (migrationsAssembly.Migrations.Count > 0)
+        {
+            await dbContext.Database.MigrateAsync(cancellationToken);
+            return;
+        }
+
+        var relationalDatabaseCreator = dbContext.Database.GetService<IRelationalDatabaseCreator>();
+        if (!await relationalDatabaseCreator.ExistsAsync(cancellationToken))
+        {
+            await relationalDatabaseCreator.CreateAsync(cancellationToken);
+        }
+
+        if (!await HasTableAsync(dbContext, "Users", cancellationToken))
+        {
+            await relationalDatabaseCreator.CreateTablesAsync(cancellationToken);
+        }
+    }
+
+    private static async Task<bool> HasTableAsync(
+        AppDbContext dbContext,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        await dbContext.Database.OpenConnectionAsync(cancellationToken);
+
+        try
+        {
+            await using var command = dbContext.Database.GetDbConnection().CreateCommand();
+            var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+            command.CommandText = providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase)
+                ? "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = @tableName LIMIT 1;"
+                : "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = @tableName LIMIT 1;";
+
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = "@tableName";
+            parameter.DbType = DbType.String;
+            parameter.Value = tableName;
+            command.Parameters.Add(parameter);
+
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            return result is not null && result != DBNull.Value;
+        }
+        finally
+        {
+            await dbContext.Database.CloseConnectionAsync();
+        }
     }
 
     private static async Task EnsureCustomerTradeTypeColumnAsync(
@@ -147,6 +230,7 @@ public static class DbInitializer
             await dbContext.CustomerCategories.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.CustomerMasters.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Customers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.CustomerContracts.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Items.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Invoices.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Payments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0
@@ -212,6 +296,493 @@ public static class DbInitializer
         }
     }
 
+    private static async Task EnsureCustomerMasterOfficeCodeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureOfficeScopeColumnAsync(
+            dbContext,
+            tableName: "CustomerMasters",
+            indexName: "IX_CustomerMasters_OfficeCode",
+            cancellationToken);
+    }
+
+    private static async Task EnsureCustomerOfficeCodeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureOfficeScopeColumnAsync(
+            dbContext,
+            tableName: "Customers",
+            indexName: "IX_Customers_OfficeCode",
+            cancellationToken);
+    }
+
+    private static async Task EnsureItemOfficeCodeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureOfficeScopeColumnAsync(
+            dbContext,
+            tableName: "Items",
+            indexName: "IX_Items_OfficeCode",
+            cancellationToken);
+    }
+
+    private static async Task EnsureInvoiceOfficeCodeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+#pragma warning disable EF1002
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    ALTER TABLE "Invoices" ADD COLUMN "OfficeCode" TEXT NOT NULL DEFAULT '';
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    ALTER TABLE "Invoices" ADD COLUMN IF NOT EXISTS "OfficeCode" text NOT NULL DEFAULT '';
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    $"""
+                    UPDATE "Invoices"
+                    SET "OfficeCode" = CASE
+                        WHEN COALESCE(TRIM("OfficeCode"), '') = '' THEN COALESCE((
+                            SELECT CASE
+                                WHEN COALESCE(TRIM("Customers"."OfficeCode"), '') = '' THEN '{OfficeCodeCatalog.Shared}'
+                                WHEN UPPER(TRIM("Customers"."OfficeCode")) IN ('ALL', 'SHARED') OR TRIM("Customers"."OfficeCode") IN ('공용', '전체') THEN '{OfficeCodeCatalog.Shared}'
+                                WHEN UPPER(TRIM("Customers"."OfficeCode")) IN ('USENET', 'UZNET') OR TRIM("Customers"."OfficeCode") = '유즈넷' THEN 'USENET'
+                                WHEN UPPER(TRIM("Customers"."OfficeCode")) = 'ITWORLD' OR TRIM("Customers"."OfficeCode") = '아이티월드' THEN 'ITWORLD'
+                                WHEN UPPER(TRIM("Customers"."OfficeCode")) = 'YEONSU' OR TRIM("Customers"."OfficeCode") IN ('연수구', '연수구 사무실') THEN 'YEONSU'
+                                ELSE '{OfficeCodeCatalog.Shared}'
+                            END
+                            FROM "Customers"
+                            WHERE "Customers"."Id" = "Invoices"."CustomerId"
+                        ), '{OfficeCodeCatalog.Shared}')
+                        WHEN UPPER(TRIM("OfficeCode")) IN ('ALL', 'SHARED') OR TRIM("OfficeCode") IN ('공용', '전체') THEN '{OfficeCodeCatalog.Shared}'
+                        WHEN UPPER(TRIM("OfficeCode")) IN ('USENET', 'UZNET') OR TRIM("OfficeCode") = '유즈넷' THEN 'USENET'
+                        WHEN UPPER(TRIM("OfficeCode")) = 'ITWORLD' OR TRIM("OfficeCode") = '아이티월드' THEN 'ITWORLD'
+                        WHEN UPPER(TRIM("OfficeCode")) = 'YEONSU' OR TRIM("OfficeCode") IN ('연수구', '연수구 사무실') THEN 'YEONSU'
+                        ELSE '{OfficeCodeCatalog.Shared}'
+                    END;
+                    """,
+                    cancellationToken);
+            }
+            else
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    $"""
+                    UPDATE "Invoices" AS invoice
+                    SET "OfficeCode" = CASE
+                        WHEN COALESCE(TRIM(invoice."OfficeCode"), '') = '' THEN COALESCE(
+                            CASE
+                                WHEN COALESCE(TRIM(customer."OfficeCode"), '') = '' THEN '{OfficeCodeCatalog.Shared}'
+                                WHEN UPPER(TRIM(customer."OfficeCode")) IN ('ALL', 'SHARED') OR TRIM(customer."OfficeCode") IN ('공용', '전체') THEN '{OfficeCodeCatalog.Shared}'
+                                WHEN UPPER(TRIM(customer."OfficeCode")) IN ('USENET', 'UZNET') OR TRIM(customer."OfficeCode") = '유즈넷' THEN 'USENET'
+                                WHEN UPPER(TRIM(customer."OfficeCode")) = 'ITWORLD' OR TRIM(customer."OfficeCode") = '아이티월드' THEN 'ITWORLD'
+                                WHEN UPPER(TRIM(customer."OfficeCode")) = 'YEONSU' OR TRIM(customer."OfficeCode") IN ('연수구', '연수구 사무실') THEN 'YEONSU'
+                                ELSE '{OfficeCodeCatalog.Shared}'
+                            END,
+                            '{OfficeCodeCatalog.Shared}')
+                        WHEN UPPER(TRIM(invoice."OfficeCode")) IN ('ALL', 'SHARED') OR TRIM(invoice."OfficeCode") IN ('공용', '전체') THEN '{OfficeCodeCatalog.Shared}'
+                        WHEN UPPER(TRIM(invoice."OfficeCode")) IN ('USENET', 'UZNET') OR TRIM(invoice."OfficeCode") = '유즈넷' THEN 'USENET'
+                        WHEN UPPER(TRIM(invoice."OfficeCode")) = 'ITWORLD' OR TRIM(invoice."OfficeCode") = '아이티월드' THEN 'ITWORLD'
+                        WHEN UPPER(TRIM(invoice."OfficeCode")) = 'YEONSU' OR TRIM(invoice."OfficeCode") IN ('연수구', '연수구 사무실') THEN 'YEONSU'
+                        ELSE '{OfficeCodeCatalog.Shared}'
+                    END
+                    FROM "Customers" AS customer
+                    WHERE customer."Id" = invoice."CustomerId";
+
+                    UPDATE "Invoices"
+                    SET "OfficeCode" = '{OfficeCodeCatalog.Shared}'
+                    WHERE COALESCE(TRIM("OfficeCode"), '') = '';
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                CREATE INDEX IF NOT EXISTS "IX_Invoices_OfficeCode" ON "Invoices" ("OfficeCode");
+                """,
+                cancellationToken);
+        }
+        catch
+        {
+        }
+#pragma warning restore EF1002
+    }
+
+    private static async Task EnsureOfficeScopeColumnAsync(
+        AppDbContext dbContext,
+        string tableName,
+        string indexName,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+#pragma warning disable EF1002
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"{tableName}\" ADD COLUMN \"OfficeCode\" TEXT NOT NULL DEFAULT '{OfficeCodeCatalog.Shared}';",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS \"OfficeCode\" text NOT NULL DEFAULT '{OfficeCodeCatalog.Shared}';",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                $"""
+                UPDATE "{tableName}"
+                SET "OfficeCode" = CASE
+                    WHEN COALESCE(TRIM("OfficeCode"), '') = '' THEN '{OfficeCodeCatalog.Shared}'
+                    WHEN UPPER(TRIM("OfficeCode")) IN ('ALL', 'SHARED') OR TRIM("OfficeCode") IN ('공용', '전체') THEN '{OfficeCodeCatalog.Shared}'
+                    WHEN UPPER(TRIM("OfficeCode")) IN ('USENET', 'UZNET') OR TRIM("OfficeCode") = '유즈넷' THEN 'USENET'
+                    WHEN UPPER(TRIM("OfficeCode")) = 'ITWORLD' OR TRIM("OfficeCode") = '아이티월드' THEN 'ITWORLD'
+                    WHEN UPPER(TRIM("OfficeCode")) = 'YEONSU' OR TRIM("OfficeCode") IN ('연수구', '연수구 사무실') THEN 'YEONSU'
+                    ELSE '{OfficeCodeCatalog.Shared}'
+                END;
+                """,
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                $"CREATE INDEX IF NOT EXISTS \"{indexName}\" ON \"{tableName}\" (\"OfficeCode\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+#pragma warning restore EF1002
+    }
+
+    private static async Task EnsureItemCatalogColumnsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        var columns = new (string Name, string SqliteDefinition, string PostgresDefinition)[]
+        {
+            ("CategoryName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''"),
+            ("CurrentStock", "REAL NOT NULL DEFAULT 0", "numeric(18,2) NOT NULL DEFAULT 0"),
+            ("SafetyStock", "REAL NOT NULL DEFAULT 0", "numeric(18,2) NOT NULL DEFAULT 0"),
+            ("PurchasePrice", "REAL NOT NULL DEFAULT 0", "numeric(18,2) NOT NULL DEFAULT 0"),
+            ("SalePrice", "REAL NOT NULL DEFAULT 0", "numeric(18,2) NOT NULL DEFAULT 0"),
+            ("RetailPrice", "REAL NOT NULL DEFAULT 0", "numeric(18,2) NOT NULL DEFAULT 0"),
+            ("PriceGradeA", "REAL NOT NULL DEFAULT 0", "numeric(18,2) NOT NULL DEFAULT 0"),
+            ("PriceGradeB", "REAL NOT NULL DEFAULT 0", "numeric(18,2) NOT NULL DEFAULT 0"),
+            ("PriceGradeC", "REAL NOT NULL DEFAULT 0", "numeric(18,2) NOT NULL DEFAULT 0"),
+            ("SimpleMemo", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''")
+        };
+
+        foreach (var (name, sqliteDefinition, postgresDefinition) in columns)
+        {
+            try
+            {
+#pragma warning disable EF1002
+                if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+                {
+                    await dbContext.Database.ExecuteSqlRawAsync(
+                        $"ALTER TABLE \"Items\" ADD COLUMN \"{name}\" {sqliteDefinition};",
+                        cancellationToken);
+                }
+                else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+                {
+                    await dbContext.Database.ExecuteSqlRawAsync(
+                        $"ALTER TABLE \"Items\" ADD COLUMN IF NOT EXISTS \"{name}\" {postgresDefinition};",
+                        cancellationToken);
+                }
+#pragma warning restore EF1002
+            }
+            catch
+            {
+                // Existing databases may already contain the column.
+            }
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE "Items"
+                SET "CategoryName" = COALESCE("CategoryName", ''),
+                    "SimpleMemo" = COALESCE("SimpleMemo", '');
+                """,
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_Items_CategoryName\" ON \"Items\" (\"CategoryName\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task EnsureCustomerContractsTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "CustomerContracts" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_CustomerContracts" PRIMARY KEY,
+                        "CustomerId" TEXT NOT NULL,
+                        "ContractType" TEXT NOT NULL DEFAULT '거래계약서',
+                        "FileName" TEXT NOT NULL DEFAULT '',
+                        "MimeType" TEXT NOT NULL DEFAULT 'application/pdf',
+                        "FileSize" INTEGER NOT NULL DEFAULT 0,
+                        "FileHash" TEXT NOT NULL DEFAULT '',
+                        "Description" TEXT NOT NULL DEFAULT '',
+                        "SignedDate" TEXT NULL,
+                        "ExpireDate" TEXT NULL,
+                        "IsPrimary" INTEGER NOT NULL DEFAULT 0,
+                        "UploadedByUsername" TEXT NOT NULL DEFAULT '',
+                        "UploadedAtUtc" TEXT NOT NULL,
+                        "FileContent" BLOB NOT NULL DEFAULT X'',
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "CustomerContracts" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "CustomerId" uuid NOT NULL,
+                        "ContractType" text NOT NULL DEFAULT '거래계약서',
+                        "FileName" text NOT NULL DEFAULT '',
+                        "MimeType" text NOT NULL DEFAULT 'application/pdf',
+                        "FileSize" bigint NOT NULL DEFAULT 0,
+                        "FileHash" text NOT NULL DEFAULT '',
+                        "Description" text NOT NULL DEFAULT '',
+                        "SignedDate" date NULL,
+                        "ExpireDate" date NULL,
+                        "IsPrimary" boolean NOT NULL DEFAULT false,
+                        "UploadedByUsername" text NOT NULL DEFAULT '',
+                        "UploadedAtUtc" timestamp with time zone NOT NULL,
+                        "FileContent" bytea NOT NULL DEFAULT ''::bytea,
+                        "IsDeleted" boolean NOT NULL DEFAULT false,
+                        "CreatedAtUtc" timestamp with time zone NOT NULL,
+                        "UpdatedAtUtc" timestamp with time zone NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId\" ON \"CustomerContracts\" (\"CustomerId\");",
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId_IsPrimary\" ON \"CustomerContracts\" (\"CustomerId\", \"IsPrimary\");",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId\" ON \"CustomerContracts\" (\"CustomerId\");",
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId_IsPrimary\" ON \"CustomerContracts\" (\"CustomerId\", \"IsPrimary\");",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task EnsurePaymentAttachmentsTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "PaymentAttachments" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_PaymentAttachments" PRIMARY KEY,
+                        "PaymentId" TEXT NOT NULL,
+                        "AttachmentType" TEXT NOT NULL DEFAULT '내역첨부',
+                        "FileName" TEXT NOT NULL DEFAULT '',
+                        "MimeType" TEXT NOT NULL DEFAULT '',
+                        "FileSize" INTEGER NOT NULL DEFAULT 0,
+                        "FileHash" TEXT NOT NULL DEFAULT '',
+                        "Description" TEXT NOT NULL DEFAULT '',
+                        "UploadedAtUtc" TEXT NOT NULL,
+                        "FileContent" BLOB NOT NULL DEFAULT X'',
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "PaymentAttachments" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "PaymentId" uuid NOT NULL,
+                        "AttachmentType" text NOT NULL DEFAULT '내역첨부',
+                        "FileName" text NOT NULL DEFAULT '',
+                        "MimeType" text NOT NULL DEFAULT '',
+                        "FileSize" bigint NOT NULL DEFAULT 0,
+                        "FileHash" text NOT NULL DEFAULT '',
+                        "Description" text NOT NULL DEFAULT '',
+                        "UploadedAtUtc" timestamp with time zone NOT NULL,
+                        "FileContent" bytea NOT NULL DEFAULT ''::bytea,
+                        "IsDeleted" boolean NOT NULL DEFAULT false,
+                        "CreatedAtUtc" timestamp with time zone NOT NULL,
+                        "UpdatedAtUtc" timestamp with time zone NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_PaymentAttachments_PaymentId\" ON \"PaymentAttachments\" (\"PaymentId\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task EnsureItemWarehouseStocksTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "ItemWarehouseStocks" (
+                        "ItemId" TEXT NOT NULL,
+                        "WarehouseCode" TEXT NOT NULL,
+                        "Quantity" REAL NOT NULL DEFAULT 0,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        CONSTRAINT "PK_ItemWarehouseStocks" PRIMARY KEY ("ItemId", "WarehouseCode")
+                    );
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "ItemWarehouseStocks" (
+                        "ItemId" uuid NOT NULL,
+                        "WarehouseCode" text NOT NULL,
+                        "Quantity" numeric(18,2) NOT NULL DEFAULT 0,
+                        "UpdatedAtUtc" timestamp with time zone NOT NULL,
+                        CONSTRAINT "PK_ItemWarehouseStocks" PRIMARY KEY ("ItemId", "WarehouseCode")
+                    );
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_ItemWarehouseStocks_WarehouseCode\" ON \"ItemWarehouseStocks\" (\"WarehouseCode\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
     private static string[] AllPermissions() =>
     [
         PermissionNames.CompanyProfileEdit,
@@ -227,8 +798,9 @@ public static class DbInitializer
 
     private static async Task EnsureSeedUserAsync(
         AppDbContext dbContext,
+        ILogger logger,
         string username,
-        string password,
+        string? password,
         string role,
         string officeCode,
         bool grantAllPermissions,
@@ -236,6 +808,13 @@ public static class DbInitializer
         CancellationToken cancellationToken)
     {
         var normalizedUsername = username.Trim();
+        var normalizedPassword = NormalizeSeedPassword(password);
+
+        if (string.IsNullOrWhiteSpace(normalizedPassword))
+        {
+            logger.LogWarning("Seed user '{Username}' skipped because password was not configured.", normalizedUsername);
+            return;
+        }
         var user = dbContext.Users.Local.FirstOrDefault(current =>
             string.Equals(current.Username, normalizedUsername, StringComparison.OrdinalIgnoreCase));
 
@@ -251,7 +830,7 @@ public static class DbInitializer
             user = new UserAccount
             {
                 Username = normalizedUsername,
-                PasswordHash = BCrypt.Net.BCrypt.HashPassword(password),
+                PasswordHash = BCrypt.Net.BCrypt.HashPassword(normalizedPassword),
                 Role = role,
                 OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode),
                 IsActive = true,
@@ -262,7 +841,7 @@ public static class DbInitializer
         else
         {
             if (updatePasswordIfExists)
-                user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(password);
+                user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(normalizedPassword);
 
             user.Role = role;
             user.OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode);
@@ -273,6 +852,45 @@ public static class DbInitializer
 
         if (grantAllPermissions)
             EnsurePermissions(user, AllPermissions());
+    }
+
+    private static string? NormalizeSeedPassword(string? password)
+    {
+        if (string.IsNullOrWhiteSpace(password))
+            return null;
+
+        var trimmed = password.Trim();
+        if (trimmed.StartsWith("CHANGE_THIS_", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("__DISABLE__", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return trimmed;
+    }
+
+    private static void LogSeedUserWarnings(
+        IHostEnvironment hostEnvironment,
+        ILogger logger,
+        SeedUsersOptions seedUsersOptions)
+    {
+        if (hostEnvironment.IsDevelopment() || !seedUsersOptions.WarnOnDefaultPasswords)
+            return;
+
+        if (seedUsersOptions.UsesDefaultAdminPassword())
+        {
+            logger.LogWarning("SeedUsers: admin password is still using the default value. 운영 전 반드시 변경하세요.");
+        }
+
+        if (seedUsersOptions.UsesDefaultUserPassword())
+        {
+            logger.LogWarning("SeedUsers: user password is still using the default value. 운영 전 반드시 변경하거나 비활성화하세요.");
+        }
+
+        if (seedUsersOptions.UsesDefaultItwPassword())
+        {
+            logger.LogWarning("SeedUsers: itw password is still using the default value. 운영 전 반드시 변경하거나 비활성화하세요.");
+        }
     }
 
     private static void EnsurePermissions(UserAccount user, IEnumerable<string> permissions)
@@ -395,4 +1013,3 @@ public static class DbInitializer
         category.IsDeleted = false;
     }
 }
-

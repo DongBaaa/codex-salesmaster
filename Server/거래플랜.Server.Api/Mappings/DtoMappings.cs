@@ -68,7 +68,8 @@ public static class DtoMappings
         {
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
-            NameOriginal = entity.NameOriginal, NameMatchKey = entity.NameMatchKey, CategoryId = entity.CategoryId
+            NameOriginal = entity.NameOriginal, NameMatchKey = entity.NameMatchKey, CategoryId = entity.CategoryId,
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode)
         };
 
     public static void Apply(this CustomerMaster entity, CustomerMasterDto dto)
@@ -76,6 +77,10 @@ public static class DtoMappings
         entity.NameOriginal = dto.NameOriginal;
         entity.NameMatchKey = string.IsNullOrWhiteSpace(dto.NameMatchKey) ? MatchKeyNormalizer.Normalize(dto.NameOriginal) : dto.NameMatchKey;
         entity.CategoryId = dto.CategoryId; entity.IsDeleted = dto.IsDeleted;
+        if (!string.IsNullOrWhiteSpace(dto.OfficeCode))
+            entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
+        else if (string.IsNullOrWhiteSpace(entity.OfficeCode))
+            entity.OfficeCode = OfficeCodeCatalog.Shared;
     }
 
     public static CustomerDto ToDto(this Customer entity) =>
@@ -83,7 +88,7 @@ public static class DtoMappings
         {
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
-            CustomerMasterId = entity.CustomerMasterId, NameOriginal = entity.NameOriginal,
+            CustomerMasterId = entity.CustomerMasterId, OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode), NameOriginal = entity.NameOriginal,
             NameMatchKey = entity.NameMatchKey, CategoryId = entity.CategoryId,
             TradeType = entity.TradeType,
             Department = entity.Department, ContactPerson = entity.ContactPerson,
@@ -100,6 +105,51 @@ public static class DtoMappings
         entity.ContactPerson = dto.ContactPerson; entity.BusinessNumber = dto.BusinessNumber;
         entity.Address = dto.Address; entity.Phone = dto.Phone; entity.Email = dto.Email;
         entity.Notes = dto.Notes; entity.IsDeleted = dto.IsDeleted;
+        if (!string.IsNullOrWhiteSpace(dto.OfficeCode))
+            entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
+        else if (string.IsNullOrWhiteSpace(entity.OfficeCode))
+            entity.OfficeCode = OfficeCodeCatalog.Shared;
+    }
+
+    public static CustomerContractDto ToDto(this CustomerContract entity, bool includeContent = false) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            CustomerId = entity.CustomerId,
+            ContractType = entity.ContractType,
+            FileName = entity.FileName,
+            MimeType = entity.MimeType,
+            FileSize = entity.FileSize,
+            FileHash = entity.FileHash,
+            Description = entity.Description,
+            SignedDate = entity.SignedDate,
+            ExpireDate = entity.ExpireDate,
+            IsPrimary = entity.IsPrimary,
+            UploadedByUsername = entity.UploadedByUsername,
+            UploadedAtUtc = entity.UploadedAtUtc,
+            FileContent = includeContent ? entity.FileContent ?? [] : []
+        };
+
+    public static void Apply(this CustomerContract entity, CustomerContractDto dto)
+    {
+        entity.CustomerId = dto.CustomerId;
+        entity.ContractType = string.IsNullOrWhiteSpace(dto.ContractType) ? "거래계약서" : dto.ContractType.Trim();
+        entity.FileName = dto.FileName?.Trim() ?? string.Empty;
+        entity.MimeType = string.IsNullOrWhiteSpace(dto.MimeType) ? "application/pdf" : dto.MimeType.Trim();
+        entity.FileSize = dto.FileSize;
+        entity.FileHash = dto.FileHash?.Trim() ?? string.Empty;
+        entity.Description = dto.Description?.Trim() ?? string.Empty;
+        entity.SignedDate = dto.SignedDate;
+        entity.ExpireDate = dto.ExpireDate;
+        entity.IsPrimary = dto.IsPrimary;
+        entity.UploadedByUsername = dto.UploadedByUsername?.Trim() ?? string.Empty;
+        entity.UploadedAtUtc = dto.UploadedAtUtc;
+        entity.FileContent = dto.FileContent ?? [];
+        entity.IsDeleted = dto.IsDeleted;
     }
 
     public static ItemDto ToDto(this Item entity) =>
@@ -107,9 +157,21 @@ public static class DtoMappings
         {
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
             NameOriginal = entity.NameOriginal, NameMatchKey = entity.NameMatchKey,
             SpecificationOriginal = entity.SpecificationOriginal, SpecificationMatchKey = entity.SpecificationMatchKey,
-            Unit = entity.Unit, IsRental = entity.IsRental, IsSale = entity.IsSale,
+            CategoryName = entity.CategoryName,
+            Unit = entity.Unit,
+            CurrentStock = entity.CurrentStock,
+            SafetyStock = entity.SafetyStock,
+            PurchasePrice = entity.PurchasePrice,
+            SalePrice = entity.SalePrice,
+            RetailPrice = entity.RetailPrice,
+            PriceGradeA = entity.PriceGradeA,
+            PriceGradeB = entity.PriceGradeB,
+            PriceGradeC = entity.PriceGradeC,
+            SimpleMemo = entity.SimpleMemo,
+            IsRental = entity.IsRental, IsSale = entity.IsSale,
             SerialNumber = entity.SerialNumber, MaterialNumber = entity.MaterialNumber,
             InstallLocation = entity.InstallLocation, RentalStartDate = entity.RentalStartDate,
             RentalEndDate = entity.RentalEndDate, Notes = entity.Notes
@@ -121,10 +183,25 @@ public static class DtoMappings
         entity.NameMatchKey = string.IsNullOrWhiteSpace(dto.NameMatchKey) ? MatchKeyNormalizer.Normalize(dto.NameOriginal) : dto.NameMatchKey;
         entity.SpecificationOriginal = dto.SpecificationOriginal;
         entity.SpecificationMatchKey = string.IsNullOrWhiteSpace(dto.SpecificationMatchKey) ? MatchKeyNormalizer.Normalize(dto.SpecificationOriginal) : dto.SpecificationMatchKey;
-        entity.Unit = dto.Unit; entity.IsRental = dto.IsRental; entity.IsSale = dto.IsSale;
+        entity.CategoryName = dto.CategoryName;
+        entity.Unit = dto.Unit;
+        entity.CurrentStock = dto.CurrentStock;
+        entity.SafetyStock = dto.SafetyStock;
+        entity.PurchasePrice = dto.PurchasePrice;
+        entity.SalePrice = dto.SalePrice;
+        entity.RetailPrice = dto.RetailPrice;
+        entity.PriceGradeA = dto.PriceGradeA;
+        entity.PriceGradeB = dto.PriceGradeB;
+        entity.PriceGradeC = dto.PriceGradeC;
+        entity.SimpleMemo = dto.SimpleMemo;
+        entity.IsRental = dto.IsRental; entity.IsSale = dto.IsSale;
         entity.SerialNumber = dto.SerialNumber; entity.MaterialNumber = dto.MaterialNumber;
         entity.InstallLocation = dto.InstallLocation; entity.RentalStartDate = dto.RentalStartDate;
         entity.RentalEndDate = dto.RentalEndDate; entity.Notes = dto.Notes; entity.IsDeleted = dto.IsDeleted;
+        if (!string.IsNullOrWhiteSpace(dto.OfficeCode))
+            entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
+        else if (string.IsNullOrWhiteSpace(entity.OfficeCode))
+            entity.OfficeCode = OfficeCodeCatalog.Shared;
     }
 
     public static InvoiceDto ToDto(this Invoice entity) =>
@@ -132,11 +209,12 @@ public static class DtoMappings
         {
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
-            CustomerId = entity.CustomerId, InvoiceNumber = entity.InvoiceNumber,
+            CustomerId = entity.CustomerId, OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode), InvoiceNumber = entity.InvoiceNumber,
             LocalTempNumber = entity.LocalTempNumber, VoucherType = entity.VoucherType,
             InvoiceDate = entity.InvoiceDate, TotalAmount = entity.TotalAmount,
             SupplyAmount = entity.SupplyAmount, VatAmount = entity.VatAmount, Memo = entity.Memo,
-            Lines = entity.Lines.Where(x => !x.IsDeleted).OrderBy(x => x.Id).Select(x => x.ToDto()).ToList()
+            Lines = entity.Lines.Where(x => !x.IsDeleted).OrderBy(x => x.Id).Select(x => x.ToDto()).ToList(),
+            Payments = entity.Payments.Where(x => !x.IsDeleted).OrderByDescending(x => x.PaymentDate).Select(x => x.ToDto()).ToList()
         };
 
     public static InvoiceLineDto ToDto(this InvoiceLine entity) =>
@@ -156,6 +234,10 @@ public static class DtoMappings
         entity.CustomerId = dto.CustomerId; entity.InvoiceNumber = dto.InvoiceNumber;
         entity.LocalTempNumber = dto.LocalTempNumber; entity.VoucherType = dto.VoucherType;
         entity.InvoiceDate = dto.InvoiceDate; entity.Memo = dto.Memo; entity.IsDeleted = dto.IsDeleted;
+        if (!string.IsNullOrWhiteSpace(dto.OfficeCode))
+            entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
+        else if (string.IsNullOrWhiteSpace(entity.OfficeCode))
+            entity.OfficeCode = OfficeCodeCatalog.Shared;
         var lines = dto.Lines ?? [];
         entity.TotalAmount = lines.Sum(x => x.LineAmount);
         entity.SupplyAmount = Math.Round(entity.TotalAmount / 1.1m, 0, MidpointRounding.AwayFromZero);
@@ -168,7 +250,12 @@ public static class DtoMappings
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
             InvoiceId = entity.InvoiceId, PaymentDate = entity.PaymentDate,
-            Amount = entity.Amount, Note = entity.Note
+            Amount = entity.Amount, Note = entity.Note,
+            Attachments = entity.Attachments
+                .Where(x => !x.IsDeleted)
+                .OrderByDescending(x => x.UploadedAtUtc)
+                .Select(x => x.ToDto(false))
+                .ToList()
         };
 
     public static void Apply(this Payment entity, PaymentDto dto)
@@ -176,6 +263,48 @@ public static class DtoMappings
         entity.InvoiceId = dto.InvoiceId; entity.PaymentDate = dto.PaymentDate;
         entity.Amount = dto.Amount; entity.Note = dto.Note; entity.IsDeleted = dto.IsDeleted;
     }
+
+    public static PaymentAttachmentDto ToDto(this PaymentAttachment entity, bool includeContent = false) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            PaymentId = entity.PaymentId,
+            AttachmentType = entity.AttachmentType,
+            FileName = entity.FileName,
+            MimeType = entity.MimeType,
+            FileSize = entity.FileSize,
+            FileHash = entity.FileHash,
+            Description = entity.Description,
+            UploadedAtUtc = entity.UploadedAtUtc,
+            FileContent = includeContent ? entity.FileContent ?? [] : []
+        };
+
+    public static void Apply(this PaymentAttachment entity, PaymentAttachmentDto dto)
+    {
+        entity.PaymentId = dto.PaymentId;
+        entity.AttachmentType = dto.AttachmentType?.Trim() ?? "내역첨부";
+        entity.FileName = dto.FileName?.Trim() ?? string.Empty;
+        entity.MimeType = dto.MimeType?.Trim() ?? string.Empty;
+        entity.FileSize = dto.FileSize;
+        entity.FileHash = dto.FileHash?.Trim() ?? string.Empty;
+        entity.Description = dto.Description?.Trim() ?? string.Empty;
+        entity.UploadedAtUtc = dto.UploadedAtUtc;
+        entity.FileContent = dto.FileContent ?? [];
+        entity.IsDeleted = dto.IsDeleted;
+    }
+
+    public static ItemWarehouseStockDto ToDto(this ItemWarehouseStock entity) =>
+        new()
+        {
+            ItemId = entity.ItemId,
+            WarehouseCode = entity.WarehouseCode,
+            Quantity = entity.Quantity,
+            UpdatedAtUtc = entity.UpdatedAtUtc
+        };
 
     public static AuditLogDto ToDto(this AuditLog entity) =>
         new()

@@ -165,15 +165,18 @@ public partial class SalesWindow : Window
         {
             saved = _vm.TryAutoSaveOnCloseAsync().GetAwaiter().GetResult();
         }
-        catch
+        catch (Exception ex)
         {
+            AppLogger.Warn("AUTOSAVE", $"Sales window close auto-save threw an exception. {ex.Message}");
             saved = false;
         }
 
         if (saved) return;
 
+        AppLogger.Warn("AUTOSAVE", "Sales window close auto-save did not complete successfully. Showing generic discard prompt without failure details.");
+
         var discard = MessageBox.Show(
-            "자동저장에 실패했습니다. 저장 없이 닫을까요?",
+            "저장되지 않은 변경사항이 있습니다. 저장 없이 닫을까요?",
             "확인",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
