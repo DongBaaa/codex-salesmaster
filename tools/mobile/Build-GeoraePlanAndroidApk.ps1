@@ -17,6 +17,7 @@ param(
     [int]$VersionCode,
     [ValidateSet('apk', 'aab', 'both')]
     [string]$PackageFormat = 'apk',
+    [switch]$DisableTrimming,
     [switch]$SkipEnvironmentCheck,
     [switch]$NoRestore
 )
@@ -315,6 +316,10 @@ $arguments = @(
     "-p:JavaSdkDirectory=$resolvedJavaSdkDirectory"
     '-p:ArchiveOnBuild=true'
 )
+
+if ($DisableTrimming) {
+    $arguments += '-p:PublishTrimmed=false'
+}
 
 switch ($PackageFormat) {
     'apk' {
