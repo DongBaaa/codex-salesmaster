@@ -59,6 +59,7 @@ tmp_*.ps1
 tmp_*.json
 @AutomationLog.txt
 bugreport-*.zip
+정리보관/
 _codex_inventory_check/
 tasks/
 
