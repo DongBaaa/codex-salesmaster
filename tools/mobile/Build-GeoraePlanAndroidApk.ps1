@@ -317,8 +317,10 @@ $arguments = @(
     '-p:ArchiveOnBuild=true'
 )
 
-if ($DisableTrimming) {
+$shouldDisableTrimming = $DisableTrimming.IsPresent -or $Configuration.Equals('Release', [System.StringComparison]::OrdinalIgnoreCase)
+if ($shouldDisableTrimming) {
     $arguments += '-p:PublishTrimmed=false'
+    Write-Host 'publish_trimmed=false'
 }
 
 switch ($PackageFormat) {

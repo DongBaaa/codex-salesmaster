@@ -40,7 +40,12 @@ public sealed class ItemsController : ControllerBase
         }
 
         if (!string.IsNullOrWhiteSpace(category))
-            query = query.Where(x => x.CategoryName == category);
+        {
+            if (string.Equals(category.Trim(), "미분류", StringComparison.OrdinalIgnoreCase))
+                query = query.Where(x => string.IsNullOrWhiteSpace(x.CategoryName));
+            else
+                query = query.Where(x => x.CategoryName == category);
+        }
 
         return Ok(await query.OrderBy(x => x.NameOriginal).Take(200).Select(x => x.ToDto()).ToListAsync(cancellationToken));
     }
@@ -48,7 +53,9 @@ public sealed class ItemsController : ControllerBase
     [HttpGet("categories")]
     public async Task<IActionResult> GetCategories(CancellationToken cancellationToken)
     {
-        var result = await _officeScopeService.ApplyItemScope(_dbContext.Items.AsNoTracking())
+        var scopedItems = _officeScopeService.ApplyItemScope(_dbContext.Items.AsNoTracking());
+
+        var result = await scopedItems
             .Where(item => !string.IsNullOrWhiteSpace(item.CategoryName))
             .GroupBy(item => item.CategoryName)
             .OrderBy(group => group.Key)
@@ -59,7 +66,17 @@ public sealed class ItemsController : ControllerBase
             })
             .ToListAsync(cancellationToken);
 
-        return Ok(result);
+        var uncategorizedCount = await scopedItems.CountAsync(item => string.IsNullOrWhiteSpace(item.CategoryName), cancellationToken);
+        if (uncategorizedCount > 0)
+        {
+            result.Add(new ItemCategorySummaryDto
+            {
+                Name = "미분류",
+                ItemCount = uncategorizedCount
+            });
+        }
+
+        return Ok(result.OrderBy(item => item.Name == "미분류" ? "zzz" : item.Name).ToList());
     }
 
     [HttpGet("{id:guid}")]
