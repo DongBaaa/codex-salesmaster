@@ -29,6 +29,22 @@ publish/
 !배포/*.ps1
 배포/설치패키지/*/
 !배포/설치패키지/.gitkeep
+배포/설치패키지/*.exe
+배포/설치패키지/*.msi
+배포/설치패키지/*.exe.sha256.txt
+배포/설치패키지/*.msi.sha256.txt
+배포/업데이트/**
+
+# Keep only lightweight test launchers under 배포/테스트
+배포/테스트/PC/**
+!배포/테스트/PC/
+!배포/테스트/PC/Run-PC.cmd
+!배포/테스트/PC/거래플랜-실행.cmd
+배포/테스트/모바일/**
+!배포/테스트/모바일/
+!배포/테스트/모바일/Install-Android-Emulator.cmd
+!배포/테스트/모바일/Install-Android-Emulator.ps1
+!배포/테스트/모바일/README.txt
 
 # Local DB/cache
 *.db-shm
@@ -37,7 +53,12 @@ publish/
 # Local verification / scratch artifacts
 server-smoke.pid
 tmp/
+.tmp/
 tmp_voucher_test.cs
+tmp_*.ps1
+tmp_*.json
+@AutomationLog.txt
+bugreport-*.zip
 _codex_inventory_check/
 tasks/
 
