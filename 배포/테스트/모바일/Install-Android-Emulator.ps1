@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ArtifactDirectory = $PSScriptRoot
 )
 
@@ -6,8 +6,8 @@ $ErrorActionPreference = 'Stop'
 
 function Resolve-AdbPath {
     foreach ($candidate in @(
-        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\android-sdk\platform-tools\adb.exe'),
-        (Join-Path $env:LOCALAPPDATA 'Android\Sdk\platform-tools\adb.exe')
+        (Join-Path $env:LOCALAPPDATA 'Android\Sdk\platform-tools\adb.exe'),
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\android-sdk\platform-tools\adb.exe')
     )) {
         if (Test-Path -LiteralPath $candidate) {
             return $candidate
@@ -24,8 +24,8 @@ function Resolve-AdbPath {
 
 function Resolve-EmulatorPath {
     foreach ($candidate in @(
-        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\android-sdk\emulator\emulator.exe'),
-        (Join-Path $env:LOCALAPPDATA 'Android\Sdk\emulator\emulator.exe')
+        (Join-Path $env:LOCALAPPDATA 'Android\Sdk\emulator\emulator.exe'),
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\android-sdk\emulator\emulator.exe')
     )) {
         if (Test-Path -LiteralPath $candidate) {
             return $candidate
@@ -38,6 +38,31 @@ function Resolve-EmulatorPath {
     }
 
     return $null
+}
+
+function Resolve-ApkFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArtifactDirectory
+    )
+
+    foreach ($searchRoot in @(
+        $ArtifactDirectory,
+        (Split-Path -Parent (Split-Path -Parent $ArtifactDirectory))
+    )) {
+        if (-not (Test-Path -LiteralPath $searchRoot)) {
+            continue
+        }
+
+        $apk = Get-ChildItem -LiteralPath $searchRoot -Recurse -File -Filter *.apk -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+        if ($apk) {
+            return $apk
+        }
+    }
+
+    throw "APK 파일을 찾을 수 없습니다: $ArtifactDirectory"
 }
 
 function Get-ConnectedDeviceId([string]$AdbPath) {
@@ -65,10 +90,7 @@ function Wait-ForBoot([string]$AdbPath, [string]$DeviceId, [int]$TimeoutSeconds 
     throw '에뮬레이터 부팅 완료를 확인하지 못했습니다.'
 }
 
-$apk = Get-ChildItem -LiteralPath $ArtifactDirectory -Filter *.apk | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $apk) {
-    throw "APK 파일을 찾을 수 없습니다: $ArtifactDirectory"
-}
+$apk = Resolve-ApkFile -ArtifactDirectory $ArtifactDirectory
 
 $adb = Resolve-AdbPath
 $emulator = Resolve-EmulatorPath

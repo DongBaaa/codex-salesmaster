@@ -38,6 +38,7 @@
 - keystore 생성: `D:\거래플랜\tools\mobile\New-GeoraePlanAndroidKeystore.ps1`
 - 서명 APK 빌드: `D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidApk.ps1`
 - 서명 AAB 빌드: `D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidBundle.ps1`
+- Android Studio 직접 테스트 실행: `D:\거래플랜\tools\mobile\Start-GeoraePlanAndroidStudioTest.ps1`
 
 ## 빌드 명령 예시
 - APK:
@@ -46,6 +47,30 @@
   - `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidBundle.ps1" -ProjectRoot "D:\거래플랜" -SigningConfigPath "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\android-signing.local.json"`
 - APK+AAB 동시 생성:
   - `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidApk.ps1" -ProjectRoot "D:\거래플랜" -SigningConfigPath "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\android-signing.local.json" -PackageFormat both`
+
+## Android Studio로 직접 확인하는 방법
+- 이 프로젝트는 **.NET MAUI Android 앱**이라서 Android Studio가 앱을 직접 Gradle 빌드하는 구조는 아닙니다.
+- 대신 Android Studio를 **에뮬레이터(Device Manager) / Logcat / 장치 확인** 용도로 쓰고, APK 빌드/설치는 거래플랜 스크립트가 자동으로 처리합니다.
+
+### 가장 쉬운 방법
+- `D:\거래플랜\배포\안드로이드스튜디오-테스트.cmd` 더블클릭
+
+동작:
+1. Android Studio 실행
+2. Android Studio SDK 기준 에뮬레이터 확인/부팅
+3. 최신 APK 빌드
+4. 에뮬레이터에 APK 설치
+5. 거래플랜 앱 자동 실행
+
+### PowerShell 직접 실행
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\mobile\Start-GeoraePlanAndroidStudioTest.ps1" -ProjectRoot "D:\거래플랜" -SigningConfigPath "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\android-signing.local.json"
+```
+
+### 빠르게 재설치만 할 때
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\mobile\Start-GeoraePlanAndroidStudioTest.ps1" -ProjectRoot "D:\거래플랜" -SigningConfigPath "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\android-signing.local.json" -SkipBuild
+```
 
 ## 배포 방식
 - NAS 서버 공용 사용

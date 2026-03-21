@@ -120,6 +120,25 @@ function Get-ResolvedAndroidSdkDirectory {
     return $null
 }
 
+function Get-ResolvedAndroidStudioPath {
+    foreach ($candidate in @(
+        (Join-Path $env:ProgramFiles 'Android\Android Studio\bin\studio64.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Android\Android Studio\bin\studio64.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\bin\studio64.exe')
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    $command = Get-Command studio64.exe -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    return $null
+}
+
 function Add-CheckResult {
     param(
         [System.Collections.Generic.List[object]]$Results,
@@ -148,6 +167,7 @@ if ([string]::IsNullOrWhiteSpace($ProjectFile)) {
 $resolvedDotNetPath = Get-ResolvedDotNetPath -ProjectRoot $ProjectRoot -RequestedPath $DotNetPath
 $resolvedJavaSdkDirectory = Get-ResolvedJavaSdkDirectory -ProjectRoot $ProjectRoot -RequestedPath $JavaSdkDirectory
 $resolvedAndroidSdkDirectory = Get-ResolvedAndroidSdkDirectory -ProjectRoot $ProjectRoot -RequestedPath $AndroidSdkDirectory
+$resolvedAndroidStudioPath = Get-ResolvedAndroidStudioPath
 
 $results = [System.Collections.Generic.List[object]]::new()
 
@@ -171,11 +191,14 @@ Add-CheckResult -Results $results -Name 'maui-android-workload' -Passed $workloa
 $javaExecutable = if ($resolvedJavaSdkDirectory) { Join-Path $resolvedJavaSdkDirectory 'bin\java.exe' } else { $null }
 $keytoolExecutable = if ($resolvedJavaSdkDirectory) { Join-Path $resolvedJavaSdkDirectory 'bin\keytool.exe' } else { $null }
 $adbExecutable = if ($resolvedAndroidSdkDirectory) { Join-Path $resolvedAndroidSdkDirectory 'platform-tools\adb.exe' } else { $null }
+$emulatorExecutable = if ($resolvedAndroidSdkDirectory) { Join-Path $resolvedAndroidSdkDirectory 'emulator\emulator.exe' } else { $null }
 
 Add-CheckResult -Results $results -Name 'java-sdk' -Passed ($javaExecutable -and (Test-Path -LiteralPath $javaExecutable)) -Detail ($(if ($javaExecutable) { $resolvedJavaSdkDirectory } else { 'JDK/JRE not found' }))
 Add-CheckResult -Results $results -Name 'keytool' -Passed ($keytoolExecutable -and (Test-Path -LiteralPath $keytoolExecutable)) -Detail ($(if ($keytoolExecutable) { $keytoolExecutable } else { 'keytool not found' }))
 Add-CheckResult -Results $results -Name 'android-sdk' -Passed (-not [string]::IsNullOrWhiteSpace($resolvedAndroidSdkDirectory)) -Detail ($(if ($resolvedAndroidSdkDirectory) { $resolvedAndroidSdkDirectory } else { 'Android SDK not found' }))
+Add-CheckResult -Results $results -Name 'android-studio(optional)' -Passed $true -Detail ($(if ($resolvedAndroidStudioPath) { $resolvedAndroidStudioPath } else { 'Android Studio not found (okay unless using Android Studio 직접 테스트)' }))
 Add-CheckResult -Results $results -Name 'adb(optional)' -Passed $true -Detail ($(if ($adbExecutable -and (Test-Path -LiteralPath $adbExecutable)) { $adbExecutable } else { 'adb not found (okay unless deploying to device)' }))
+Add-CheckResult -Results $results -Name 'emulator(optional)' -Passed $true -Detail ($(if ($emulatorExecutable -and (Test-Path -LiteralPath $emulatorExecutable)) { $emulatorExecutable } else { 'emulator not found (okay unless using Android Studio emulator)' }))
 
 $results | Format-Table -AutoSize | Out-Host
 
