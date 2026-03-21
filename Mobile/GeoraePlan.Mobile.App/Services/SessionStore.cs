@@ -153,7 +153,7 @@ public sealed class SessionStore
         return DateTime.TryParse(
             raw,
             null,
-            System.Globalization.DateTimeStyles.RoundtripKind | System.Globalization.DateTimeStyles.AssumeUniversal,
+            System.Globalization.DateTimeStyles.RoundtripKind,
             out var parsed)
             ? parsed.ToUniversalTime()
             : null;
