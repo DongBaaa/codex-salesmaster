@@ -129,10 +129,8 @@ public sealed class SyncController : ControllerBase
 
             if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
             {
-                result.ConflictCount++;
                 var conflict = BuildConflict(dto, entity, typeof(TEntity).Name, "Server version is newer.");
                 _dbContext.ConflictLogs.Add(conflict);
-                result.Conflicts.Add(conflict.ToDto());
                 continue;
             }
 
@@ -173,10 +171,8 @@ public sealed class SyncController : ControllerBase
 
             if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
             {
-                result.ConflictCount++;
                 var conflict = BuildConflict(dto, entity, nameof(Invoice), "Server version is newer.");
                 _dbContext.ConflictLogs.Add(conflict);
-                result.Conflicts.Add(conflict.ToDto());
                 continue;
             }
 
@@ -496,7 +492,7 @@ public sealed class SyncController : ControllerBase
                 ItemId = dto.ItemId,
                 WarehouseCode = dto.WarehouseCode.Trim(),
                 Quantity = dto.Quantity,
-                UpdatedAtUtc = dto.UpdatedAtUtc
+                UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc)
             })
             .GroupBy(dto => new { dto.ItemId, dto.WarehouseCode })
             .Select(group => group.Last())
@@ -538,13 +534,13 @@ public sealed class SyncController : ControllerBase
                     ItemId = dto.ItemId,
                     WarehouseCode = dto.WarehouseCode,
                     Quantity = dto.Quantity,
-                    UpdatedAtUtc = dto.UpdatedAtUtc == default ? DateTime.UtcNow : dto.UpdatedAtUtc
+                    UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc)
                 });
                 continue;
             }
 
             entity.Quantity = dto.Quantity;
-            entity.UpdatedAtUtc = dto.UpdatedAtUtc == default ? DateTime.UtcNow : dto.UpdatedAtUtc;
+            entity.UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc);
         }
     }
 
@@ -721,4 +717,20 @@ public sealed class SyncController : ControllerBase
         maxRevision = Math.Max(maxRevision, await _dbContext.Payments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         return maxRevision;
     }
+
+    private static DateTime NormalizeUtc(DateTime value)
+    {
+        if (value == default)
+            return DateTime.UtcNow;
+
+        return value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
+    }
 }
+
+
+

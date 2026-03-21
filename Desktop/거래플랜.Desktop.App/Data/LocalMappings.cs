@@ -371,7 +371,7 @@ public static class LocalMappings
         ItemId = dto.ItemId,
         WarehouseCode = dto.WarehouseCode,
         Quantity = dto.Quantity,
-        UpdatedAtUtc = dto.UpdatedAtUtc
+        UpdatedAtUtc = EnsureUtc(dto.UpdatedAtUtc)
     };
 
     public static ItemWarehouseStockDto ToDto(LocalItemWarehouseStock e) => new()
@@ -379,6 +379,19 @@ public static class LocalMappings
         ItemId = e.ItemId,
         WarehouseCode = e.WarehouseCode,
         Quantity = e.Quantity,
-        UpdatedAtUtc = e.UpdatedAtUtc
+        UpdatedAtUtc = EnsureUtc(e.UpdatedAtUtc)
     };
+
+    private static DateTime EnsureUtc(DateTime value)
+    {
+        if (value == default)
+            return DateTime.UtcNow;
+
+        return value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
+    }
 }

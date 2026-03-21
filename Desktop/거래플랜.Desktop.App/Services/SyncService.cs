@@ -220,13 +220,30 @@ public sealed class SyncService : IDisposable
 
         if (result.ConflictCount > 0)
         {
-            var first = result.Conflicts.FirstOrDefault();
-            var detail = first is null
-                ? $"동기화 충돌 {result.ConflictCount}건"
-                : $"동기화 충돌 {result.ConflictCount}건: {first.EntityName} {first.EntityId} - {first.Reason}";
+            var serverNewerConflicts = result.Conflicts
+                .Where(conflict => string.Equals(conflict.Reason, "Server version is newer.", StringComparison.OrdinalIgnoreCase))
+                .ToList();
 
-            AppLogger.Warn("SYNC", detail);
-            throw new InvalidOperationException(detail);
+            if (serverNewerConflicts.Count > 0)
+            {
+                await ResolveServerNewerConflictsAsync(serverNewerConflicts, ct);
+                AppLogger.Warn("SYNC", $"서버 최신 버전 우선으로 충돌 {serverNewerConflicts.Count}건을 정리했습니다.");
+            }
+
+            var unresolvedConflicts = result.Conflicts
+                .Except(serverNewerConflicts)
+                .ToList();
+
+            if (unresolvedConflicts.Count > 0)
+            {
+                var first = unresolvedConflicts.FirstOrDefault();
+                var detail = first is null
+                    ? $"동기화 충돌 {unresolvedConflicts.Count}건"
+                    : $"동기화 충돌 {unresolvedConflicts.Count}건: {first.EntityName} {first.EntityId} - {first.Reason}";
+
+                AppLogger.Warn("SYNC", detail);
+                throw new InvalidOperationException(detail);
+            }
         }
 
         foreach (var assigned in result.AssignedInvoiceNumbers)
@@ -250,11 +267,60 @@ public sealed class SyncService : IDisposable
         await _db.SaveChangesAsync(ct);
     }
 
+    private async Task ResolveServerNewerConflictsAsync(IReadOnlyCollection<ConflictLogDto> conflicts, CancellationToken ct)
+    {
+        foreach (var group in conflicts
+                     .Where(conflict => Guid.TryParse(conflict.EntityId, out _))
+                     .GroupBy(conflict => conflict.EntityName, StringComparer.OrdinalIgnoreCase))
+        {
+            var ids = group
+                .Select(conflict => Guid.TryParse(conflict.EntityId, out var id) ? id : Guid.Empty)
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+
+            if (ids.Count == 0)
+                continue;
+
+            switch (group.Key)
+            {
+                case "CompanyProfile":
+                    await MarkServerNewerConflictsCleanAsync<LocalCompanyProfile>(ids, ct);
+                    break;
+                case "Customer":
+                    await MarkServerNewerConflictsCleanAsync<LocalCustomer>(ids, ct);
+                    break;
+                case "CustomerContract":
+                    await MarkServerNewerConflictsCleanAsync<LocalCustomerContract>(ids, ct);
+                    break;
+                case "Item":
+                    await MarkServerNewerConflictsCleanAsync<LocalItem>(ids, ct);
+                    break;
+                case "Invoice":
+                    await MarkServerNewerConflictsCleanAsync<LocalInvoice>(ids, ct);
+                    break;
+                case "Payment":
+                    await MarkServerNewerConflictsCleanAsync<LocalPayment>(ids, ct);
+                    break;
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
     private async Task MarkCleanAsync<T>(CancellationToken ct) where T : class, ILocalSyncEntity
     {
         await _db.Set<T>().IgnoreQueryFilters()
             .Where(e => e.IsDirty)
             .ExecuteUpdateAsync(s => s.SetProperty(e => e.IsDirty, false), ct);
+    }
+
+    private async Task MarkServerNewerConflictsCleanAsync<T>(IReadOnlyCollection<Guid> ids, CancellationToken ct)
+        where T : class, ILocalSyncEntity
+    {
+        await _db.Set<T>().IgnoreQueryFilters()
+            .Where(entity => ids.Contains(entity.Id) && entity.IsDirty)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(entity => entity.IsDirty, false), ct);
     }
 
     private async Task MarkCleanInvoicesAsync(CancellationToken ct)

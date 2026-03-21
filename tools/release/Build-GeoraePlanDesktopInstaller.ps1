@@ -205,50 +205,171 @@ function Invoke-RobocopyMirror {
     }
 }
 
-`$ErrorActionPreference = 'Stop'
+function Get-DirectorySizeBytes {
+    param([Parameter(Mandatory = `$true)][string]`$Path)
 
-`$packageRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
-`$sourceRoot = Join-Path `$packageRoot 'App'
-`$desktopDir = [Environment]::GetFolderPath('Desktop')
-`$startMenuDir = Join-Path `$env:APPDATA 'Microsoft\Windows\Start Menu\Programs\__APP_DISPLAY_NAME__'
-`$exePath = Join-Path `$InstallRoot '__APP_DISPLAY_NAME__.exe'
-`$uninstallScriptPath = Join-Path `$InstallRoot '__UNINSTALL_PS1_NAME__'
-
-if (-not (Test-Path -LiteralPath `$sourceRoot)) {
-    throw "App source not found: `$sourceRoot"
-}
-
-Invoke-RobocopyMirror -Source `$sourceRoot -Destination `$InstallRoot
-
-`$uninstallScriptContent = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('__UNINSTALL_SCRIPT_B64__'))
-`$uninstallScriptContent | Set-Content -LiteralPath `$uninstallScriptPath -Encoding UTF8
-
-if (-not `$NoShortcuts) {
-    New-Item -ItemType Directory -Force -Path `$startMenuDir | Out-Null
-    `$shell = New-Object -ComObject WScript.Shell
-
-    foreach (`$shortcutPath in @(
-        (Join-Path `$desktopDir '__APP_DISPLAY_NAME__.lnk'),
-        (Join-Path `$startMenuDir '__APP_DISPLAY_NAME__.lnk')
-    )) {
-        `$shortcut = `$shell.CreateShortcut(`$shortcutPath)
-        `$shortcut.TargetPath = `$exePath
-        `$shortcut.WorkingDirectory = `$InstallRoot
-        `$shortcut.Save()
+    if (-not (Test-Path -LiteralPath `$Path)) {
+        return 0L
     }
 
-    `$removeShortcut = `$shell.CreateShortcut((Join-Path `$startMenuDir '__APP_DISPLAY_NAME____REMOVE_SHORTCUT_SUFFIX__'))
-    `$removeShortcut.TargetPath = 'powershell.exe'
-    `$removeShortcut.Arguments = "-ExecutionPolicy Bypass -File ``"`$uninstallScriptPath``""
-    `$removeShortcut.WorkingDirectory = `$InstallRoot
-    `$removeShortcut.Save()
+    return (Get-ChildItem -LiteralPath `$Path -File -Recurse | Measure-Object -Property Length -Sum).Sum
 }
 
-Write-Host "Install complete: `$InstallRoot"
-Write-Host "Executable: `$exePath"
+function Get-AvailableFreeBytes {
+    param([Parameter(Mandatory = `$true)][string]`$Path)
 
-if (-not `$NoLaunch) {
-    Start-Process -FilePath `$exePath -WorkingDirectory `$InstallRoot
+    `$root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath(`$Path))
+    if ([string]::IsNullOrWhiteSpace(`$root)) {
+        throw "Drive root not found: `$Path"
+    }
+
+    return ([System.IO.DriveInfo]::new(`$root)).AvailableFreeSpace
+}
+
+function Format-Size {
+    param([long]`$Bytes)
+
+    `$units = @('B','KB','MB','GB','TB')
+    `$value = [double]`$Bytes
+    `$unitIndex = 0
+    while (`$value -ge 1024 -and `$unitIndex -lt (`$units.Length - 1)) {
+        `$value /= 1024
+        `$unitIndex++
+    }
+
+    return ('{0:0.##} {1}' -f `$value, `$units[`$unitIndex])
+}
+
+function Show-InstallError {
+    param([Parameter(Mandatory = `$true)][string]`$Message)
+
+    Add-Type -AssemblyName PresentationFramework
+    [System.Windows.MessageBox]::Show(`$Message, '__APP_DISPLAY_NAME__ 설치', 'OK', 'Error') | Out-Null
+}
+
+function Test-ProtectedInstallRoot {
+    param([Parameter(Mandatory = `$true)][string]`$Path)
+
+    `$fullPath = [System.IO.Path]::GetFullPath(`$Path)
+    `$protectedRoots = @(
+        [Environment]::GetFolderPath('ProgramFiles'),
+        [Environment]::GetFolderPath('ProgramFilesX86'),
+        [Environment]::GetFolderPath('Windows')
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) } | ForEach-Object {
+        [System.IO.Path]::GetFullPath(`$_).TrimEnd('\') + '\'
+    }
+
+    foreach (`$root in `$protectedRoots) {
+        if (`$fullPath.StartsWith(`$root, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return `$true
+        }
+    }
+
+    return `$false
+}
+
+function Ensure-ElevatedIfNeeded {
+    if (-not (Test-ProtectedInstallRoot -Path `$InstallRoot)) {
+        return
+    }
+
+    `$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    `$principal = [Security.Principal.WindowsPrincipal]::new(`$currentIdentity)
+    if (`$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        return
+    }
+
+    `$arguments = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', `$PSCommandPath,
+        '-InstallRoot', `$InstallRoot
+    )
+
+    if (`$NoLaunch) {
+        `$arguments += '-NoLaunch'
+    }
+
+    if (`$NoShortcuts) {
+        `$arguments += '-NoShortcuts'
+    }
+
+    try {
+        `$elevated = Start-Process -FilePath 'powershell.exe' -ArgumentList `$arguments -Verb RunAs -Wait -PassThru
+    }
+    catch {
+        Show-InstallError '관리자 권한 승인이 취소되어 업데이트를 진행할 수 없습니다.'
+        exit 1
+    }
+
+    exit `$elevated.ExitCode
+}
+
+function Ensure-SufficientInstallSpace {
+    param([Parameter(Mandatory = `$true)][string]`$SourceRoot)
+
+    `$requiredBytes = [Math]::Max(268435456, (Get-DirectorySizeBytes -Path `$SourceRoot) + 134217728)
+    `$availableBytes = Get-AvailableFreeBytes -Path `$InstallRoot
+
+    if (`$availableBytes -lt `$requiredBytes) {
+        Show-InstallError ("설치 드라이브 여유 공간이 부족합니다.`r`n필요 공간: {0}`r`n현재 여유 공간: {1}" -f (Format-Size `$requiredBytes), (Format-Size `$availableBytes))
+        exit 1
+    }
+}
+
+`$ErrorActionPreference = 'Stop'
+
+try {
+    Ensure-ElevatedIfNeeded
+
+    `$packageRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
+    `$sourceRoot = Join-Path `$packageRoot 'App'
+    `$desktopDir = [Environment]::GetFolderPath('Desktop')
+    `$startMenuDir = Join-Path `$env:APPDATA 'Microsoft\Windows\Start Menu\Programs\__APP_DISPLAY_NAME__'
+    `$exePath = Join-Path `$InstallRoot '__APP_DISPLAY_NAME__.exe'
+    `$uninstallScriptPath = Join-Path `$InstallRoot '__UNINSTALL_PS1_NAME__'
+
+    if (-not (Test-Path -LiteralPath `$sourceRoot)) {
+        throw "App source not found: `$sourceRoot"
+    }
+
+    Ensure-SufficientInstallSpace -SourceRoot `$sourceRoot
+    Invoke-RobocopyMirror -Source `$sourceRoot -Destination `$InstallRoot
+
+    `$uninstallScriptContent = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('__UNINSTALL_SCRIPT_B64__'))
+    `$uninstallScriptContent | Set-Content -LiteralPath `$uninstallScriptPath -Encoding UTF8
+
+    if (-not `$NoShortcuts) {
+        New-Item -ItemType Directory -Force -Path `$startMenuDir | Out-Null
+        `$shell = New-Object -ComObject WScript.Shell
+
+        foreach (`$shortcutPath in @(
+            (Join-Path `$desktopDir '__APP_DISPLAY_NAME__.lnk'),
+            (Join-Path `$startMenuDir '__APP_DISPLAY_NAME__.lnk')
+        )) {
+            `$shortcut = `$shell.CreateShortcut(`$shortcutPath)
+            `$shortcut.TargetPath = `$exePath
+            `$shortcut.WorkingDirectory = `$InstallRoot
+            `$shortcut.Save()
+        }
+
+        `$removeShortcut = `$shell.CreateShortcut((Join-Path `$startMenuDir '__APP_DISPLAY_NAME____REMOVE_SHORTCUT_SUFFIX__'))
+        `$removeShortcut.TargetPath = 'powershell.exe'
+        `$removeShortcut.Arguments = "-ExecutionPolicy Bypass -File ``"`$uninstallScriptPath``""
+        `$removeShortcut.WorkingDirectory = `$InstallRoot
+        `$removeShortcut.Save()
+    }
+
+    Write-Host "Install complete: `$InstallRoot"
+    Write-Host "Executable: `$exePath"
+
+    if (-not `$NoLaunch) {
+        Start-Process -FilePath `$exePath -WorkingDirectory `$InstallRoot
+    }
+}
+catch {
+    Show-InstallError (`$_.Exception.Message)
+    exit 1
 }
 "@
 

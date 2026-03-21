@@ -8,6 +8,9 @@ namespace 거래플랜.Desktop.App.Services;
 
 public sealed class DesktopAppUpdateService
 {
+    private const long MinimumUpdaterWorkBytes = 512L * 1024 * 1024;
+    private const long InstallBufferBytes = 256L * 1024 * 1024;
+
     private readonly ErpApiClient _api;
 
     public DesktopAppUpdateService(ErpApiClient api)
@@ -105,6 +108,8 @@ public sealed class DesktopAppUpdateService
             throw new InvalidOperationException("현재 실행 파일 경로를 확인하지 못했습니다.");
 
         var installRoot = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        EnsureSufficientDiskSpace(package.FileSize, installRoot);
+
         var arguments = string.Join(" ", new[]
         {
             "--package-url",
@@ -119,6 +124,8 @@ public sealed class DesktopAppUpdateService
             currentProcess.Id.ToString(),
             "--version",
             QuoteArgument(package.Version),
+            "--file-size",
+            package.FileSize.ToString(),
             "--file-name",
             QuoteArgument(package.FileName ?? string.Empty),
             "--notes",
@@ -224,4 +231,56 @@ public sealed class DesktopAppUpdateService
 
     private static string QuoteArgument(string value)
         => "\"" + (value ?? string.Empty).Replace("\"", "\\\"") + "\"";
+
+    private static void EnsureSufficientDiskSpace(long packageBytes, string installRoot)
+    {
+        if (packageBytes <= 0)
+            return;
+
+        var tempRoot = Path.GetTempPath();
+        var tempDrive = GetDriveInfo(tempRoot);
+        var installDrive = GetDriveInfo(installRoot);
+
+        var requiredTempBytes = Math.Max(MinimumUpdaterWorkBytes, checked(packageBytes * 4));
+        if (tempDrive.AvailableFreeSpace < requiredTempBytes)
+        {
+            throw new InvalidOperationException(
+                $"{tempDrive.Name} 드라이브 여유 공간이 부족합니다. " +
+                $"업데이트 작업용으로 최소 {FormatBytes(requiredTempBytes)} 정도가 필요합니다. " +
+                $"현재 여유 공간: {FormatBytes(tempDrive.AvailableFreeSpace)}");
+        }
+
+        var requiredInstallBytes = Math.Max(InstallBufferBytes, checked(packageBytes * 2));
+        if (!string.Equals(tempDrive.Name, installDrive.Name, StringComparison.OrdinalIgnoreCase) &&
+            installDrive.AvailableFreeSpace < requiredInstallBytes)
+        {
+            throw new InvalidOperationException(
+                $"{installDrive.Name} 드라이브 여유 공간이 부족합니다. " +
+                $"설치용으로 최소 {FormatBytes(requiredInstallBytes)} 정도가 필요합니다. " +
+                $"현재 여유 공간: {FormatBytes(installDrive.AvailableFreeSpace)}");
+        }
+    }
+
+    private static DriveInfo GetDriveInfo(string path)
+    {
+        var root = Path.GetPathRoot(Path.GetFullPath(path));
+        if (string.IsNullOrWhiteSpace(root))
+            throw new InvalidOperationException($"드라이브 경로를 확인하지 못했습니다: {path}");
+
+        return new DriveInfo(root);
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        double value = bytes;
+        var unitIndex = 0;
+        while (value >= 1024 && unitIndex < units.Length - 1)
+        {
+            value /= 1024d;
+            unitIndex++;
+        }
+
+        return $"{value:0.##} {units[unitIndex]}";
+    }
 }

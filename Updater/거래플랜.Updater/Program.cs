@@ -1,5 +1,6 @@
-﻿using System.IO.Compression;
+﻿using System.ComponentModel;
 using System.IO;
+using System.IO.Compression;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Windows;
@@ -8,6 +9,9 @@ namespace 거래플랜.Updater;
 
 internal static class Program
 {
+    private const long MinimumUpdaterWorkBytes = 512L * 1024 * 1024;
+    private const long InstallBufferBytes = 256L * 1024 * 1024;
+
     [STAThread]
     public static async Task<int> Main(string[] args)
     {
@@ -32,6 +36,7 @@ internal static class Program
     {
         var workRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan", "updates", DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         Directory.CreateDirectory(workRoot);
+        EnsureWorkDriveFreeSpace(workRoot, options.FileSize);
 
         var packagePath = Path.Combine(workRoot, string.IsNullOrWhiteSpace(options.FileName)
             ? $"desktop-{options.Version}.zip"
@@ -42,18 +47,32 @@ internal static class Program
 
         var extractRoot = Path.Combine(workRoot, "package");
         ZipFile.ExtractToDirectory(packagePath, extractRoot, overwriteFiles: true);
+        EnsureInstallDriveFreeSpace(extractRoot, options.InstallRoot);
+
         var installScriptPath = Path.Combine(extractRoot, "Install-GeoraePlan.ps1");
         if (!File.Exists(installScriptPath))
             throw new FileNotFoundException("설치 스크립트를 찾지 못했습니다.", installScriptPath);
 
-        var installProcess = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        var installStartInfo = new System.Diagnostics.ProcessStartInfo
         {
             FileName = "powershell.exe",
             Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{installScriptPath}\" -InstallRoot \"{options.InstallRoot}\" -NoLaunch",
-            UseShellExecute = false,
-            CreateNoWindow = true,
+            UseShellExecute = true,
             WorkingDirectory = extractRoot
-        });
+        };
+
+        if (RequiresElevation(options.InstallRoot))
+            installStartInfo.Verb = "runas";
+
+        System.Diagnostics.Process? installProcess;
+        try
+        {
+            installProcess = System.Diagnostics.Process.Start(installStartInfo);
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            throw new InvalidOperationException("업데이트 설치에 필요한 관리자 권한 승인이 취소되었습니다.", ex);
+        }
 
         if (installProcess is null)
             throw new InvalidOperationException("업데이트 설치 프로세스를 시작하지 못했습니다.");
@@ -117,6 +136,84 @@ internal static class Program
             // already exited
         }
     }
+
+    private static void EnsureWorkDriveFreeSpace(string workRoot, long packageBytes)
+    {
+        if (packageBytes <= 0)
+            return;
+
+        var drive = GetDriveInfo(workRoot);
+        var requiredBytes = Math.Max(MinimumUpdaterWorkBytes, checked(packageBytes * 4));
+        if (drive.AvailableFreeSpace >= requiredBytes)
+            return;
+
+        throw new InvalidOperationException(
+            $"{drive.Name} 드라이브 여유 공간이 부족합니다. 업데이트 준비에 최소 {FormatBytes(requiredBytes)} 정도가 필요합니다. 현재 여유 공간: {FormatBytes(drive.AvailableFreeSpace)}");
+    }
+
+    private static void EnsureInstallDriveFreeSpace(string extractRoot, string installRoot)
+    {
+        var installDrive = GetDriveInfo(installRoot);
+        var extractDrive = GetDriveInfo(extractRoot);
+        if (!string.Equals(installDrive.Name, extractDrive.Name, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var extractedSize = GetDirectorySize(extractRoot);
+        var requiredBytes = Math.Max(InstallBufferBytes, checked(extractedSize + 128L * 1024 * 1024));
+        if (installDrive.AvailableFreeSpace >= requiredBytes)
+            return;
+
+        throw new InvalidOperationException(
+            $"{installDrive.Name} 드라이브 여유 공간이 부족합니다. 설치에 최소 {FormatBytes(requiredBytes)} 정도가 필요합니다. 현재 여유 공간: {FormatBytes(installDrive.AvailableFreeSpace)}");
+    }
+
+    private static DriveInfo GetDriveInfo(string path)
+    {
+        var root = Path.GetPathRoot(Path.GetFullPath(path));
+        if (string.IsNullOrWhiteSpace(root))
+            throw new InvalidOperationException($"드라이브 경로를 확인하지 못했습니다: {path}");
+
+        return new DriveInfo(root);
+    }
+
+    private static long GetDirectorySize(string path)
+    {
+        if (!Directory.Exists(path))
+            return 0;
+
+        return Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
+            .Select(file => new FileInfo(file).Length)
+            .Aggregate(0L, (total, length) => checked(total + length));
+    }
+
+    private static bool RequiresElevation(string installRoot)
+    {
+        var fullPath = Path.GetFullPath(installRoot);
+        var protectedRoots = new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetFolderPath(Environment.SpecialFolder.Windows)
+        }
+        .Where(path => !string.IsNullOrWhiteSpace(path))
+        .Select(path => Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar);
+
+        return protectedRoots.Any(root => fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        double value = bytes;
+        var unitIndex = 0;
+        while (value >= 1024 && unitIndex < units.Length - 1)
+        {
+            value /= 1024d;
+            unitIndex++;
+        }
+
+        return $"{value:0.##} {units[unitIndex]}";
+    }
 }
 
 internal sealed class UpdateArguments
@@ -127,6 +224,7 @@ internal sealed class UpdateArguments
     public string LaunchExe { get; init; } = string.Empty;
     public string Version { get; init; } = string.Empty;
     public string FileName { get; init; } = string.Empty;
+    public long FileSize { get; init; }
     public int ProcessId { get; init; }
 
     public static UpdateArguments Parse(string[] args)
@@ -155,6 +253,7 @@ internal sealed class UpdateArguments
             LaunchExe = launchExe,
             Version = values.GetValueOrDefault("--version", string.Empty),
             FileName = values.GetValueOrDefault("--file-name", Path.GetFileName(new Uri(packageUrl).AbsolutePath)),
+            FileSize = long.TryParse(values.GetValueOrDefault("--file-size", "0"), out var fileSize) ? fileSize : 0,
             ProcessId = int.TryParse(values.GetValueOrDefault("--process-id", "0"), out var pid) ? pid : 0
         };
     }
