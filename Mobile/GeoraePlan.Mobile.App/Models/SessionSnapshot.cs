@@ -11,5 +11,6 @@ public sealed class SessionSnapshot
     public string Role { get; init; } = string.Empty;
     public string TenantCode { get; init; } = string.Empty;
     public string OfficeCode { get; init; } = string.Empty;
+    public DateTime? ExpiresAtUtc { get; init; }
     public bool IsAdmin => string.Equals(Role, "Admin", StringComparison.OrdinalIgnoreCase);
 }

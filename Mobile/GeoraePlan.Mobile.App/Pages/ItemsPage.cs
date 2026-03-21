@@ -1,11 +1,9 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
-using GeoraePlan.Mobile.App.Models;
 using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using Microsoft.Maui.Controls.Shapes;
-using Microsoft.Maui.Layouts;
 using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Mobile.App.Pages;
@@ -13,27 +11,20 @@ namespace GeoraePlan.Mobile.App.Pages;
 public sealed class ItemsPage : ContentPage
 {
     private readonly ItemsViewModel _viewModel;
-    private readonly MobileRefreshCoordinator _refreshCoordinator;
-    private readonly SyncCoordinator _syncCoordinator;
     private readonly Grid _categoryButtonGrid;
-    private readonly FlexLayout _recentItemsLayout;
-    private int _seenItemsVersion;
 
     public ItemsPage()
     {
         GeoraePlanTheme.ApplyPage(this, "품목");
 
         _viewModel = ServiceHelper.GetRequiredService<ItemsViewModel>();
-        _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
-        _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
         BindingContext = _viewModel;
 
         _viewModel.ItemCategories.CollectionChanged += HandleCategoryCollectionChanged;
-        _viewModel.VisibleRecentItems.CollectionChanged += HandleRecentCollectionChanged;
         _viewModel.PropertyChanged += HandleViewModelPropertyChanged;
 
         var categoryTitle = GeoraePlanTheme.CreateSectionTitle("품목분류", 15);
-        var categoryGuide = GeoraePlanTheme.CreateBodyText("분류를 먼저 선택한 뒤 같은 화면에서 연속으로 품목을 추가하세요.", true, 12);
+        var categoryGuide = GeoraePlanTheme.CreateBodyText("먼저 품목분류를 선택한 뒤 해당 분류 품목만 리스트에서 확인하세요.", true, 12);
         categoryGuide.LineHeight = 1.0;
 
         _categoryButtonGrid = new Grid
@@ -51,7 +42,7 @@ public sealed class ItemsPage : ContentPage
         selectedCategoryLabel.FontAttributes = FontAttributes.Bold;
         selectedCategoryLabel.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedCategoryHeader));
 
-        var changeCategoryButton = GeoraePlanTheme.CreateCompactButton("분류 변경", GeoraePlanTheme.SecondaryButton);
+        var changeCategoryButton = GeoraePlanTheme.CreateCompactButton("분류 다시 선택", GeoraePlanTheme.SecondaryButton);
         changeCategoryButton.Clicked += (_, _) => _viewModel.ClearSelectedCategory();
 
         var selectedCategoryHeader = new Grid
@@ -75,9 +66,11 @@ public sealed class ItemsPage : ContentPage
         var searchEntry = GeoraePlanTheme.CreateCompactEntry("품목명 / 규격 검색");
         searchEntry.SetBinding(Entry.TextProperty, nameof(ItemsViewModel.SearchText));
         searchEntry.Completed += async (_, _) => await _viewModel.SearchItemsAsync();
+        searchEntry.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
 
         var searchButton = GeoraePlanTheme.CreateCompactButton("찾기", GeoraePlanTheme.SecondaryButton);
         searchButton.Clicked += async (_, _) => await _viewModel.SearchItemsAsync();
+        searchButton.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
 
         var searchGrid = new Grid
         {
@@ -92,25 +85,7 @@ public sealed class ItemsPage : ContentPage
         searchGrid.Add(searchButton, 1, 0);
         searchGrid.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
 
-        var recentHeader = GeoraePlanTheme.CreateFieldLabel("최근 선택 품목");
-        recentHeader.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasVisibleRecentItems));
-
-        _recentItemsLayout = new FlexLayout
-        {
-            Wrap = FlexWrap.Wrap,
-            Direction = FlexDirection.Row,
-            JustifyContent = FlexJustify.Start,
-            AlignItems = FlexAlignItems.Start
-        };
-
-        var recentScroll = new ScrollView
-        {
-            Orientation = ScrollOrientation.Horizontal,
-            Content = _recentItemsLayout
-        };
-        recentScroll.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasVisibleRecentItems));
-
-        var itemListLabel = GeoraePlanTheme.CreateFieldLabel("현재 분류 품목");
+        var itemListLabel = GeoraePlanTheme.CreateFieldLabel("분류 품목 목록");
         itemListLabel.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
 
         var itemList = new CollectionView
@@ -129,12 +104,13 @@ public sealed class ItemsPage : ContentPage
                 specLabel.LineHeight = 1.0;
                 specLabel.SetBinding(Label.TextProperty, nameof(ItemDto.SpecificationOriginal));
 
-                var metaLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
-                metaLabel.LineHeight = 1.0;
-                metaLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new ItemMetaConverter()));
+                var priceLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+                priceLabel.LineHeight = 1.0;
+                priceLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new ItemPriceConverter()));
 
-                var hintLabel = GeoraePlanTheme.CreateBodyText("탭하면 하단 시트에서 수량/단가를 입력합니다.", true, 11);
-                hintLabel.LineHeight = 1.0;
+                var stockLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+                stockLabel.LineHeight = 1.0;
+                stockLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new ItemStockConverter()));
 
                 var border = new Border
                 {
@@ -146,7 +122,7 @@ public sealed class ItemsPage : ContentPage
                     Content = new VerticalStackLayout
                     {
                         Spacing = 4,
-                        Children = { nameLabel, specLabel, metaLabel, hintLabel }
+                        Children = { nameLabel, specLabel, priceLabel, stockLabel }
                     }
                 };
 
@@ -164,135 +140,33 @@ public sealed class ItemsPage : ContentPage
         itemList.SetBinding(VisualElement.HeightRequestProperty, nameof(ItemsViewModel.ItemListHeight));
         itemList.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
 
-        var categoryContentCard = GeoraePlanTheme.CreateCompactCard(
-            selectedCategoryHeader,
-            categorySummary,
-            searchGrid,
-            recentHeader,
-            recentScroll,
-            itemListLabel,
-            itemList);
-        categoryContentCard.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
+        var detailTitle = GeoraePlanTheme.CreateSectionTitle(string.Empty, 15);
+        detailTitle.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemTitle));
 
-        var draftTitle = GeoraePlanTheme.CreateSectionTitle("전표 목록", 15);
-        var draftSummary = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 12);
-        draftSummary.LineHeight = 1.0;
-        draftSummary.SetBinding(Label.TextProperty, nameof(ItemsViewModel.DraftSummary));
+        var detailSpecification = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
+        detailSpecification.LineHeight = 1.0;
+        detailSpecification.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemSpecification));
 
-        var draftList = new CollectionView
-        {
-            SelectionMode = SelectionMode.None,
-            BackgroundColor = Colors.Transparent,
-            EmptyView = GeoraePlanTheme.CreateBodyText("추가된 품목이 없습니다.", true, 12),
-            ItemTemplate = new DataTemplate(() =>
-            {
-                var nameLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 13);
-                nameLabel.FontAttributes = FontAttributes.Bold;
-                nameLabel.LineHeight = 1.0;
-                nameLabel.SetBinding(Label.TextProperty, nameof(InvoiceLineDraftItem.ItemNameOriginal));
+        var detailPrice = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
+        detailPrice.LineHeight = 1.0;
+        detailPrice.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemPriceSummary));
 
-                var specLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
-                specLabel.LineHeight = 1.0;
-                specLabel.SetBinding(Label.TextProperty, new Binding(nameof(InvoiceLineDraftItem.SpecificationOriginal), stringFormat: "규격 {0}"));
+        var detailStock = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
+        detailStock.LineHeight = 1.0;
+        detailStock.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemStockSummary));
 
-                var summaryLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
-                summaryLabel.LineHeight = 1.0;
-                summaryLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new DraftLineSummaryConverter()));
+        var detailMemo = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
+        detailMemo.LineHeight = 1.0;
+        detailMemo.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemMemo));
 
-                var removeButton = GeoraePlanTheme.CreateCompactButton("삭제", GeoraePlanTheme.Danger);
-                removeButton.Clicked += async (sender, _) =>
-                {
-                    if (sender is Button button && button.BindingContext is InvoiceLineDraftItem line)
-                        await _viewModel.RemoveDraftLineAsync(line);
-                };
-
-                var rowGrid = new Grid
-                {
-                    ColumnSpacing = 10,
-                    ColumnDefinitions =
-                    {
-                        new ColumnDefinition(GridLength.Star),
-                        new ColumnDefinition(GridLength.Auto)
-                    }
-                };
-                rowGrid.Add(new VerticalStackLayout
-                {
-                    Spacing = 4,
-                    Children = { nameLabel, specLabel, summaryLabel }
-                });
-                rowGrid.Add(removeButton, 1, 0);
-
-                return new Border
-                {
-                    BackgroundColor = GeoraePlanTheme.Surface,
-                    Stroke = GeoraePlanTheme.Border,
-                    StrokeShape = new RoundRectangle { CornerRadius = 10 },
-                    Padding = new Thickness(10, 8),
-                    Margin = new Thickness(0, 0, 0, 6),
-                    Content = rowGrid
-                };
-            })
-        };
-        draftList.SetBinding(ItemsView.ItemsSourceProperty, nameof(ItemsViewModel.DraftLines));
-        draftList.SetBinding(VisualElement.HeightRequestProperty, nameof(ItemsViewModel.DraftLinesHeight));
-
-        var draftCard = GeoraePlanTheme.CreateCompactCard(draftTitle, draftSummary, draftList);
-
-        var statusLabel = GeoraePlanTheme.CreateStatusLabel();
-        statusLabel.SetBinding(Label.TextProperty, nameof(ItemsViewModel.StatusMessage));
-
-        var stack = new VerticalStackLayout
-        {
-            Spacing = 12,
-            Children =
-            {
-                categoryCard,
-                categoryContentCard,
-                draftCard,
-                statusLabel
-            }
-        };
-
-        var scroll = new ScrollView
-        {
-            Content = new Grid
-            {
-                Padding = 12,
-                Children = { stack }
-            }
-        };
-
-        var backdrop = new BoxView
-        {
-            BackgroundColor = Color.FromArgb("#80000000"),
-            IsVisible = false
-        };
-        backdrop.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.IsItemEntrySheetVisible));
-
-        var sheetTitle = GeoraePlanTheme.CreateSectionTitle(string.Empty, 15);
-        sheetTitle.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemSheetTitle));
-
-        var sheetSpec = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
-        sheetSpec.LineHeight = 1.0;
-        sheetSpec.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemSheetSpecification));
-
-        var sheetPrice = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
-        sheetPrice.LineHeight = 1.0;
-        sheetPrice.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemPriceSummary));
-
-        var sheetStock = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
-        sheetStock.LineHeight = 1.0;
-        sheetStock.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemStockSummary));
-
-        var sheetMemo = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
-        sheetMemo.LineHeight = 1.0;
-        sheetMemo.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemMemo));
+        var branchStockLabel = GeoraePlanTheme.CreateFieldLabel("지점별 재고");
+        branchStockLabel.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedItem));
 
         var branchStockView = new CollectionView
         {
             SelectionMode = SelectionMode.None,
             BackgroundColor = Colors.Transparent,
-            EmptyView = GeoraePlanTheme.CreateBodyText("지점별 재고 없음", true, 11),
+            EmptyView = GeoraePlanTheme.CreateBodyText("지점별 재고 정보가 없습니다.", true, 11),
             ItemTemplate = new DataTemplate(() =>
             {
                 var warehouseLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 11);
@@ -316,131 +190,70 @@ public sealed class ItemsPage : ContentPage
         };
         branchStockView.SetBinding(ItemsView.ItemsSourceProperty, nameof(ItemsViewModel.SelectedItemBranchStocks));
         branchStockView.SetBinding(VisualElement.HeightRequestProperty, nameof(ItemsViewModel.SelectedItemBranchStocksHeight));
+        branchStockView.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedItem));
 
-        var quantityLabel = GeoraePlanTheme.CreateFieldLabel("수량");
-        var quantityEntry = GeoraePlanTheme.CreateCompactEntry("수량");
-        quantityEntry.Keyboard = Keyboard.Numeric;
-        quantityEntry.SetBinding(Entry.TextProperty, nameof(ItemsViewModel.LineQuantityText));
+        var detailCard = GeoraePlanTheme.CreateCompactCard(
+            detailTitle,
+            detailSpecification,
+            detailPrice,
+            detailStock,
+            detailMemo,
+            branchStockLabel,
+            branchStockView);
+        detailCard.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedItem));
 
-        var unitPriceLabel = GeoraePlanTheme.CreateFieldLabel("단가");
-        var unitPriceEntry = GeoraePlanTheme.CreateCompactEntry("단가");
-        unitPriceEntry.Keyboard = Keyboard.Numeric;
-        unitPriceEntry.SetBinding(Entry.TextProperty, nameof(ItemsViewModel.LineUnitPriceText));
+        var statusLabel = GeoraePlanTheme.CreateStatusLabel();
+        statusLabel.SetBinding(Label.TextProperty, nameof(ItemsViewModel.StatusMessage));
 
-        var remarkLabel = GeoraePlanTheme.CreateFieldLabel("메모");
-        var remarkEntry = GeoraePlanTheme.CreateCompactEntry("메모");
-        remarkEntry.SetBinding(Entry.TextProperty, nameof(ItemsViewModel.LineRemark));
+        var listCard = GeoraePlanTheme.CreateCompactCard(
+            selectedCategoryHeader,
+            categorySummary,
+            searchGrid,
+            itemListLabel,
+            itemList);
+        listCard.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
 
-        var quantityColumn = new VerticalStackLayout { Spacing = 4, Children = { quantityLabel, quantityEntry } };
-        var unitPriceColumn = new VerticalStackLayout { Spacing = 4, Children = { unitPriceLabel, unitPriceEntry } };
-
-        var entryGrid = new Grid
+        Content = new ScrollView
         {
-            ColumnSpacing = 10,
-            RowSpacing = 8,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star)
-            },
-            RowDefinitions =
-            {
-                new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Auto)
-            }
-        };
-        entryGrid.Add(quantityColumn);
-        entryGrid.Add(unitPriceColumn, 1, 0);
-        var remarkColumn = new VerticalStackLayout { Spacing = 4, Children = { remarkLabel, remarkEntry } };
-        entryGrid.Add(remarkColumn, 0, 1);
-        entryGrid.SetColumnSpan(remarkColumn, 2);
-
-        var addButton = GeoraePlanTheme.CreateCompactButton("품목 추가", GeoraePlanTheme.Success);
-        addButton.Clicked += async (_, _) => await _viewModel.AddDraftLineAsync();
-
-        var cancelButton = GeoraePlanTheme.CreateCompactButton("취소", GeoraePlanTheme.SecondaryButton);
-        cancelButton.Clicked += async (_, _) => await _viewModel.CancelItemEntryAsync();
-
-        var actionGrid = new Grid
-        {
-            ColumnSpacing = 8,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star)
-            }
-        };
-        actionGrid.Add(addButton);
-        actionGrid.Add(cancelButton, 1, 0);
-
-        var bottomSheet = new Border
-        {
-            BackgroundColor = GeoraePlanTheme.Surface,
-            Stroke = GeoraePlanTheme.Border,
-            StrokeShape = new RoundRectangle { CornerRadius = new CornerRadius(18, 18, 0, 0) },
-            Padding = new Thickness(14, 12),
-            VerticalOptions = LayoutOptions.End,
-            IsVisible = false,
             Content = new VerticalStackLayout
             {
-                Spacing = 8,
+                Padding = 12,
+                Spacing = 12,
                 Children =
                 {
-                    sheetTitle,
-                    sheetSpec,
-                    sheetPrice,
-                    sheetStock,
-                    sheetMemo,
-                    branchStockView,
-                    entryGrid,
-                    actionGrid
+                    categoryCard,
+                    listCard,
+                    detailCard,
+                    statusLabel
                 }
             }
         };
-        bottomSheet.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.IsItemEntrySheetVisible));
-
-        var backdropTap = new TapGestureRecognizer();
-        backdropTap.Tapped += async (_, _) => await _viewModel.CancelItemEntryAsync();
-        backdrop.GestureRecognizers.Add(backdropTap);
-
-        var root = new Grid();
-        root.Children.Add(scroll);
-        root.Children.Add(backdrop);
-        root.Children.Add(bottomSheet);
-
-        Content = root;
 
         RebuildCategoryButtons();
-        RebuildRecentItems();
     }
 
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        await _syncCoordinator.TryBackgroundSyncAsync("items-page", TimeSpan.FromSeconds(45));
 
-        var versionChanged = _seenItemsVersion != _refreshCoordinator.ItemsVersion;
-        if (versionChanged || _viewModel.NeedsRefresh(TimeSpan.FromSeconds(30)))
-            await _viewModel.RefreshAsync();
-
-        _seenItemsVersion = _refreshCoordinator.ItemsVersion;
-        RebuildCategoryButtons();
-        RebuildRecentItems();
+        try
+        {
+            await _viewModel.PrepareForEntryAsync();
+            RebuildCategoryButtons();
+        }
+        catch (Exception ex)
+        {
+            _viewModel.StatusMessage = $"품목 화면 진입 실패: {ex.Message}";
+        }
     }
 
     private void HandleCategoryCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
         => RebuildCategoryButtons();
 
-    private void HandleRecentCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-        => RebuildRecentItems();
-
     private void HandleViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName is nameof(ItemsViewModel.SelectedCategory) or nameof(ItemsViewModel.HasSelectedCategory))
-        {
             RebuildCategoryButtons();
-            RebuildRecentItems();
-        }
     }
 
     private void RebuildCategoryButtons()
@@ -476,22 +289,26 @@ public sealed class ItemsPage : ContentPage
         }
     }
 
-    private void RebuildRecentItems()
+    private sealed class ItemPriceConverter : IValueConverter
     {
-        _recentItemsLayout.Children.Clear();
-        foreach (var recent in _viewModel.VisibleRecentItems)
+        public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
         {
-            var matchesCurrentCategory = _viewModel.SelectedCategory is not null &&
-                                         string.Equals(_viewModel.SelectedCategory.Name, recent.CategoryName, StringComparison.OrdinalIgnoreCase);
-            var button = GeoraePlanTheme.CreateCompactButton(recent.ItemNameOriginal, matchesCurrentCategory ? GeoraePlanTheme.Accent : GeoraePlanTheme.SecondaryButton);
-            button.Margin = new Thickness(0, 0, 8, 8);
-            button.Padding = new Thickness(12, 0);
-            button.Clicked += async (_, _) => await _viewModel.SelectRecentItemAsync(recent);
-            _recentItemsLayout.Children.Add(button);
+            if (value is not ItemDto item)
+                return string.Empty;
+
+            var displayPrice = item.SalePrice > 0m
+                ? item.SalePrice
+                : item.RetailPrice > 0m
+                    ? item.RetailPrice
+                    : item.PurchasePrice;
+            return displayPrice > 0m ? $"기본 단가 {displayPrice:N0}원" : "기본 단가 미등록";
         }
+
+        public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
+            => throw new NotSupportedException();
     }
 
-    private sealed class ItemMetaConverter : IValueConverter
+    private sealed class ItemStockConverter : IValueConverter
     {
         public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
         {
@@ -500,20 +317,6 @@ public sealed class ItemsPage : ContentPage
 
             var unit = string.IsNullOrWhiteSpace(item.Unit) ? "EA" : item.Unit;
             return $"단위 {unit} · 현재재고 {item.CurrentStock:N0}";
-        }
-
-        public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
-            => throw new NotSupportedException();
-    }
-
-    private sealed class DraftLineSummaryConverter : IValueConverter
-    {
-        public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
-        {
-            if (value is not InvoiceLineDraftItem line)
-                return string.Empty;
-
-            return $"수량 {line.Quantity:N0} / 단가 {line.UnitPrice:N0}원 / 합계 {line.LineAmount:N0}원";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)

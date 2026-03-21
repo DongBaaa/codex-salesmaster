@@ -536,10 +536,37 @@ public sealed class InvoiceDraftPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        await _viewModel.LoadAsync();
+
+        try
+        {
+            await _viewModel.LoadAsync();
+        }
+        catch (MobileAuthenticationException ex)
+        {
+            _viewModel.StatusMessage = ex.Message;
+            return;
+        }
+        catch (Exception ex)
+        {
+            _viewModel.StatusMessage = $"전표작성 화면 초기화 실패: {ex.Message}";
+            return;
+        }
 
         if (_preferredCustomerId.HasValue)
-            await _viewModel.PreselectCustomerAsync(_preferredCustomerId.Value, _preferredCustomerName);
+        {
+            try
+            {
+                await _viewModel.PreselectCustomerAsync(_preferredCustomerId.Value, _preferredCustomerName);
+            }
+            catch (MobileAuthenticationException ex)
+            {
+                _viewModel.StatusMessage = ex.Message;
+            }
+            catch (Exception ex)
+            {
+                _viewModel.StatusMessage = $"선택 거래처 기본값 적용 실패: {ex.Message}";
+            }
+        }
 
         RebuildCategoryButtons();
         RebuildRecentItems();

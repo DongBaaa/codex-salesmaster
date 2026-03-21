@@ -1,6 +1,4 @@
 using System.Collections.ObjectModel;
-using System.Collections.Specialized;
-using GeoraePlan.Mobile.App.Models;
 using GeoraePlan.Mobile.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -9,69 +7,48 @@ namespace GeoraePlan.Mobile.App.ViewModels;
 public sealed class ItemsViewModel : ObservableObject
 {
     private const string UncategorizedName = "미분류";
+    private static readonly string[] PreferredCategoryOrder =
+    {
+        "기타",
+        "흑백프린터",
+        "컬러프린터",
+        "복합기",
+        "컬러복합기",
+        "하드웨어",
+        "소모품",
+        "렌탈료",
+        UncategorizedName
+    };
 
     private readonly GeoraePlanApiClient _api;
-    private readonly RecentItemSelectionStore _recentItemSelectionStore;
     private readonly SessionStore _sessionStore;
-
-    private readonly List<RecentItemSelectionRecord> _recentSelections = new();
 
     private string _searchText = string.Empty;
     private string _statusMessage = "품목분류를 선택하세요.";
-    private string _lineQuantityText = "1";
-    private string _lineUnitPriceText = "0";
-    private string _lineRemark = string.Empty;
     private bool _isBusy;
-    private bool _isItemEntrySheetVisible;
     private DateTime? _lastRefreshUtc;
     private ItemCategorySummaryDto? _selectedCategory;
     private ItemDto? _selectedItem;
     private string _sessionTenantCode = string.Empty;
     private string _sessionUsername = string.Empty;
 
-    public ItemsViewModel(
-        GeoraePlanApiClient api,
-        RecentItemSelectionStore recentItemSelectionStore,
-        SessionStore sessionStore)
+    public ItemsViewModel(GeoraePlanApiClient api, SessionStore sessionStore)
     {
         _api = api;
-        _recentItemSelectionStore = recentItemSelectionStore;
         _sessionStore = sessionStore;
-
         RefreshCommand = new AsyncCommand(RefreshAsync);
-
-        DraftLines.CollectionChanged += HandleDraftLinesChanged;
-        VisibleRecentItems.CollectionChanged += HandleVisibleRecentItemsChanged;
     }
 
     public ObservableCollection<ItemCategorySummaryDto> ItemCategories { get; } = new();
     public ObservableCollection<ItemDto> Items { get; } = new();
     public ObservableCollection<ItemWarehouseStockDto> SelectedItemBranchStocks { get; } = new();
-    public ObservableCollection<RecentItemSelectionRecord> VisibleRecentItems { get; } = new();
-    public ObservableCollection<InvoiceLineDraftItem> DraftLines { get; } = new();
+
+    public AsyncCommand RefreshCommand { get; }
 
     public string SearchText
     {
         get => _searchText;
         set => SetProperty(ref _searchText, value);
-    }
-
-    public string LineQuantityText
-    {
-        get => _lineQuantityText;
-        set => SetProperty(ref _lineQuantityText, value);
-    }
-
-    public string LineUnitPriceText
-    {
-        get => _lineUnitPriceText;
-        set => SetProperty(ref _lineUnitPriceText, value);
-    }
-
-    public string LineRemark
-    {
-        get => _lineRemark;
-        set => SetProperty(ref _lineRemark, value);
     }
 
     public string StatusMessage
@@ -86,12 +63,6 @@ public sealed class ItemsViewModel : ObservableObject
         set => SetProperty(ref _isBusy, value);
     }
 
-    public bool IsItemEntrySheetVisible
-    {
-        get => _isItemEntrySheetVisible;
-        private set => SetProperty(ref _isItemEntrySheetVisible, value);
-    }
-
     public ItemCategorySummaryDto? SelectedCategory
     {
         get => _selectedCategory;
@@ -104,7 +75,6 @@ public sealed class ItemsViewModel : ObservableObject
             OnPropertyChanged(nameof(IsCategoryChooserVisible));
             OnPropertyChanged(nameof(SelectedCategoryHeader));
             OnPropertyChanged(nameof(SelectedCategorySummary));
-            RefreshVisibleRecentItems();
         }
     }
 
@@ -117,19 +87,17 @@ public sealed class ItemsViewModel : ObservableObject
                 return;
 
             OnPropertyChanged(nameof(HasSelectedItem));
-            OnPropertyChanged(nameof(SelectedItemSheetTitle));
-            OnPropertyChanged(nameof(SelectedItemSheetSpecification));
+            OnPropertyChanged(nameof(SelectedItemTitle));
+            OnPropertyChanged(nameof(SelectedItemSpecification));
             OnPropertyChanged(nameof(SelectedItemPriceSummary));
-            OnPropertyChanged(nameof(SelectedItemMemo));
             OnPropertyChanged(nameof(SelectedItemStockSummary));
+            OnPropertyChanged(nameof(SelectedItemMemo));
         }
     }
 
     public bool HasSelectedCategory => SelectedCategory is not null;
     public bool IsCategoryChooserVisible => !HasSelectedCategory;
-    public bool HasVisibleRecentItems => VisibleRecentItems.Count > 0;
     public bool HasSelectedItem => SelectedItem is not null;
-    public bool HasDraftLines => DraftLines.Count > 0;
 
     public string SelectedCategoryHeader => SelectedCategory is null
         ? "선택된 분류 없음"
@@ -139,44 +107,41 @@ public sealed class ItemsViewModel : ObservableObject
         ? "품목분류를 먼저 선택하세요."
         : $"현재 분류 품목 {Items.Count:N0}건";
 
-    public string SelectedItemSheetTitle => SelectedItem is null
-        ? "선택 품목"
-        : $"선택 품목: {SelectedItem.NameOriginal}";
+    public string SelectedItemTitle => SelectedItem?.NameOriginal ?? "품목 상세";
 
-    public string SelectedItemSheetSpecification => SelectedItem is null
+    public string SelectedItemSpecification => SelectedItem is null
         ? "규격 정보 없음"
         : string.IsNullOrWhiteSpace(SelectedItem.SpecificationOriginal)
             ? "규격 정보 없음"
             : $"규격: {SelectedItem.SpecificationOriginal}";
 
     public string SelectedItemPriceSummary => SelectedItem is null
-        ? "단가 정보 없음"
-        : $"매입 {SelectedItem.PurchasePrice:N0} / 판매 {SelectedItem.SalePrice:N0} / 소매 {SelectedItem.RetailPrice:N0}";
-
-    public string SelectedItemMemo => SelectedItem is null
-        ? "메모 없음"
-        : string.IsNullOrWhiteSpace(SelectedItem.SimpleMemo)
-            ? "메모 없음"
-            : SelectedItem.SimpleMemo;
+        ? "기본 단가 정보 없음"
+        : $"매입 {SelectedItem.PurchasePrice:N0}원 / 판매 {SelectedItem.SalePrice:N0}원 / 소매 {SelectedItem.RetailPrice:N0}원";
 
     public string SelectedItemStockSummary => SelectedItem is null
         ? "재고 정보 없음"
         : $"현재재고 {SelectedItem.CurrentStock:N0} / 안전재고 {SelectedItem.SafetyStock:N0}";
 
-    public string DraftSummary => DraftLines.Count == 0
-        ? "전표 목록이 비어 있습니다."
-        : $"전표 목록 {DraftLines.Count:N0}건 / 합계 {DraftLines.Sum(x => x.LineAmount):N0}원";
+    public string SelectedItemMemo => SelectedItem is null
+        ? "메모 없음"
+        : string.IsNullOrWhiteSpace(SelectedItem.SimpleMemo)
+            ? string.IsNullOrWhiteSpace(SelectedItem.Notes) ? "메모 없음" : SelectedItem.Notes
+            : SelectedItem.SimpleMemo;
 
-    public double ItemListHeight => CalculateListHeight(Items.Count, 68, 48, 5);
-    public double DraftLinesHeight => CalculateListHeight(DraftLines.Count, 80, 48, 4);
-    public double SelectedItemBranchStocksHeight => CalculateListHeight(SelectedItemBranchStocks.Count, 32, 36, 3);
-
-    public AsyncCommand RefreshCommand { get; }
+    public double ItemListHeight => CalculateListHeight(Items.Count, 72, 48, 7);
+    public double SelectedItemBranchStocksHeight => CalculateListHeight(SelectedItemBranchStocks.Count, 34, 36, 4);
 
     public bool NeedsRefresh(TimeSpan maxAge)
         => !_lastRefreshUtc.HasValue || DateTime.UtcNow - _lastRefreshUtc.Value >= maxAge;
 
+    public Task PrepareForEntryAsync()
+        => RefreshInternalAsync(preserveSelectedCategory: false);
+
     public async Task RefreshAsync()
+        => await RefreshInternalAsync(preserveSelectedCategory: true);
+
+    private async Task RefreshInternalAsync(bool preserveSelectedCategory)
     {
         if (IsBusy)
             return;
@@ -185,30 +150,34 @@ public sealed class ItemsViewModel : ObservableObject
         {
             IsBusy = true;
             EnsureSessionContext();
-            await LoadRecentSelectionsAsync();
 
             StatusMessage = "품목분류를 불러오고 있습니다.";
             var categories = await _api.GetItemCategoriesAsync();
             ReplaceCategories(categories);
 
-            if (SelectedCategory is not null)
+            if (!preserveSelectedCategory || SelectedCategory is null)
             {
-                var matchedCategory = FindCategoryByName(SelectedCategory.Name);
-                SelectedCategory = matchedCategory;
-                if (SelectedCategory is not null)
-                    await SearchItemsCoreAsync();
-                else
-                {
-                    Items.Clear();
-                    StatusMessage = "품목분류를 다시 선택하세요.";
-                }
+                SearchText = string.Empty;
+                SelectedCategory = null;
+                Items.Clear();
+                ClearSelectedItem();
+                StatusMessage = ItemCategories.Count == 0
+                    ? "등록된 품목분류가 없습니다."
+                    : "품목분류를 먼저 선택하세요.";
             }
             else
             {
-                Items.Clear();
-                StatusMessage = ItemCategories.Count == 0
-                    ? "등록된 품목분류가 없습니다."
-                    : "품목분류를 선택한 뒤 품목을 연속으로 추가하세요.";
+                var matchedCategory = FindCategoryByName(SelectedCategory.Name);
+                if (matchedCategory is null)
+                {
+                    ClearSelectedCategory();
+                    StatusMessage = "선택된 분류를 찾지 못했습니다. 분류를 다시 선택하세요.";
+                }
+                else
+                {
+                    SelectedCategory = matchedCategory;
+                    await SearchItemsCoreAsync();
+                }
             }
 
             _lastRefreshUtc = DateTime.UtcNow;
@@ -231,8 +200,12 @@ public sealed class ItemsViewModel : ObservableObject
         if (resetSearch)
             SearchText = string.Empty;
 
-        SelectedCategory = category;
-        ResetSheetState(clearCategory: false);
+        SelectedCategory = new ItemCategorySummaryDto
+        {
+            Name = NormalizeCategoryName(category.Name),
+            ItemCount = category.ItemCount
+        };
+        ClearSelectedItem();
         await SearchItemsAsync();
     }
 
@@ -241,7 +214,7 @@ public sealed class ItemsViewModel : ObservableObject
         SelectedCategory = null;
         SearchText = string.Empty;
         Items.Clear();
-        ResetSheetState(clearCategory: false);
+        ClearSelectedItem();
         StatusMessage = "품목분류를 다시 선택하세요.";
         OnPropertyChanged(nameof(ItemListHeight));
     }
@@ -272,82 +245,54 @@ public sealed class ItemsViewModel : ObservableObject
         }
     }
 
-    public Task SelectItemAsync(ItemDto item)
-        => OpenItemEntrySheetAsync(item, recordRecent: true);
-
-    public async Task SelectRecentItemAsync(RecentItemSelectionRecord recent)
+    public async Task SelectItemAsync(ItemDto item)
     {
-        if (recent is null)
+        if (item is null)
             return;
 
-        var normalizedCategory = NormalizeCategoryName(recent.CategoryName);
-        if (SelectedCategory is null || !CategoryEquals(SelectedCategory.Name, normalizedCategory))
+        try
         {
-            var category = FindCategoryByName(normalizedCategory);
-            if (category is not null)
-                await SelectCategoryAsync(category);
-        }
+            IsBusy = true;
+            StatusMessage = $"{item.NameOriginal} 품목 정보를 불러오고 있습니다.";
 
-        var matched = Items.FirstOrDefault(item => item.Id == recent.ItemId);
-        if (matched is null)
+            ItemDetailDto? detail = null;
+            if (item.Id != Guid.Empty)
+                detail = await _api.GetItemDetailAsync(item.Id);
+
+            var selected = detail?.Item ?? item;
+            selected.CategoryName = NormalizeCategoryName(selected.CategoryName);
+            SelectedItem = selected;
+
+            SelectedItemBranchStocks.Clear();
+            var branchStocks = detail?.BranchStocks ?? new List<ItemWarehouseStockDto>();
+            foreach (var stock in branchStocks)
+                SelectedItemBranchStocks.Add(stock);
+
+            if (SelectedItemBranchStocks.Count == 0 && selected.Id != Guid.Empty)
+            {
+                SelectedItemBranchStocks.Add(new ItemWarehouseStockDto
+                {
+                    ItemId = selected.Id,
+                    WarehouseCode = "전체",
+                    Quantity = selected.CurrentStock,
+                    UpdatedAtUtc = DateTime.UtcNow
+                });
+            }
+
+            OnPropertyChanged(nameof(SelectedItemBranchStocksHeight));
+            StatusMessage = $"{selected.NameOriginal} 품목을 선택했습니다.";
+        }
+        catch (Exception ex)
         {
-            var categoryQuery = BuildCategoryQueryValue(normalizedCategory);
-            var candidates = await _api.GetItemsAsync(recent.ItemNameOriginal, categoryQuery);
-            matched = candidates.FirstOrDefault(item => item.Id == recent.ItemId)
-                      ?? candidates.FirstOrDefault(item => NameAndSpecEquals(item, recent));
+            SelectedItem = item;
+            SelectedItemBranchStocks.Clear();
+            OnPropertyChanged(nameof(SelectedItemBranchStocksHeight));
+            StatusMessage = $"품목 상세 조회 실패: {ex.Message}";
         }
-
-        if (matched is null)
+        finally
         {
-            StatusMessage = $"{recent.ItemNameOriginal} 품목을 찾지 못했습니다.";
-            return;
+            IsBusy = false;
         }
-
-        await OpenItemEntrySheetAsync(matched, recordRecent: true);
-    }
-
-    public Task CancelItemEntryAsync()
-    {
-        ResetSheetState(clearCategory: false);
-        return Task.CompletedTask;
-    }
-
-    public async Task AddDraftLineAsync()
-    {
-        if (SelectedItem is null)
-        {
-            StatusMessage = "품목을 먼저 선택하세요.";
-            return;
-        }
-
-        if (!decimal.TryParse(LineQuantityText, out var quantity) || quantity <= 0m)
-        {
-            StatusMessage = "수량을 올바르게 입력하세요.";
-            return;
-        }
-
-        if (!decimal.TryParse(LineUnitPriceText, out var unitPrice) || unitPrice < 0m)
-        {
-            StatusMessage = "단가를 올바르게 입력하세요.";
-            return;
-        }
-
-        var line = InvoiceLineDraftItem.FromItem(SelectedItem, quantity);
-        line.UnitPrice = unitPrice;
-        line.Remark = LineRemark.Trim();
-        line.CategoryName = NormalizeCategoryName(SelectedCategory?.Name ?? SelectedItem.CategoryName);
-        DraftLines.Add(line);
-
-        await RecordRecentSelectionAsync(SelectedItem);
-        ResetSheetState(clearCategory: false);
-        StatusMessage = $"{line.ItemNameOriginal} 품목을 전표 목록에 추가했습니다. 같은 분류에서 계속 선택하세요.";
-    }
-
-    public Task RemoveDraftLineAsync(InvoiceLineDraftItem line)
-    {
-        DraftLines.Remove(line);
-        StatusMessage = $"{line.ItemNameOriginal} 품목을 전표 목록에서 제거했습니다.";
-        return Task.CompletedTask;
     }
 
     private async Task SearchItemsCoreAsync()
@@ -366,93 +311,14 @@ public sealed class ItemsViewModel : ObservableObject
             Items.Add(item);
         }
 
+        if (SelectedItem is not null && Items.All(item => item.Id != SelectedItem.Id))
+            ClearSelectedItem();
+
         StatusMessage = items.Count == 0
-            ? "현재 분류에서 표시할 품목이 없습니다."
+            ? "현재 분류에 표시할 품목이 없습니다."
             : $"{normalizedCategory} 분류 품목 {items.Count:N0}건";
         OnPropertyChanged(nameof(ItemListHeight));
         OnPropertyChanged(nameof(SelectedCategorySummary));
-        RefreshVisibleRecentItems();
-    }
-
-    private async Task OpenItemEntrySheetAsync(ItemDto item, bool recordRecent)
-    {
-        if (item is null)
-            return;
-
-        ItemDetailDto? detail = null;
-        if (item.Id != Guid.Empty)
-        {
-            try
-            {
-                detail = await _api.GetItemDetailAsync(item.Id);
-            }
-            catch
-            {
-                detail = null;
-            }
-        }
-
-        var selected = detail?.Item ?? item;
-        selected.CategoryName = NormalizeCategoryName(selected.CategoryName);
-        SelectedItem = selected;
-
-        SelectedItemBranchStocks.Clear();
-        if (detail?.BranchStocks?.Count > 0)
-        {
-            foreach (var stock in detail.BranchStocks)
-                SelectedItemBranchStocks.Add(stock);
-        }
-
-        LineQuantityText = "1";
-        LineUnitPriceText = ResolveDefaultUnitPrice(selected).ToString("0.##");
-        LineRemark = selected.SimpleMemo ?? string.Empty;
-        IsItemEntrySheetVisible = true;
-        OnPropertyChanged(nameof(SelectedItemBranchStocksHeight));
-
-        if (recordRecent)
-            await RecordRecentSelectionAsync(selected);
-    }
-
-    private async Task LoadRecentSelectionsAsync()
-    {
-        var loaded = await _recentItemSelectionStore.LoadAsync(_sessionTenantCode, _sessionUsername);
-        _recentSelections.Clear();
-        _recentSelections.AddRange(loaded);
-        RefreshVisibleRecentItems();
-    }
-
-    private async Task RecordRecentSelectionAsync(ItemDto item)
-    {
-        var normalizedCategory = NormalizeCategoryName(item.CategoryName);
-        _recentSelections.RemoveAll(record => record.ItemId == item.Id);
-        _recentSelections.Insert(0, new RecentItemSelectionRecord
-        {
-            ItemId = item.Id,
-            CategoryName = normalizedCategory,
-            ItemNameOriginal = item.NameOriginal,
-            SpecificationOriginal = item.SpecificationOriginal,
-            SelectedAtUtc = DateTime.UtcNow
-        });
-
-        if (_recentSelections.Count > 5)
-            _recentSelections.RemoveRange(5, _recentSelections.Count - 5);
-
-        await _recentItemSelectionStore.SaveAsync(_sessionTenantCode, _sessionUsername, _recentSelections);
-        RefreshVisibleRecentItems();
-    }
-
-    private void RefreshVisibleRecentItems()
-    {
-        var currentCategory = NormalizeCategoryName(SelectedCategory?.Name);
-        var ordered = _recentSelections
-            .OrderByDescending(record => CategoryEquals(currentCategory, record.CategoryName))
-            .ThenByDescending(record => record.SelectedAtUtc)
-            .Take(5)
-            .ToList();
-
-        VisibleRecentItems.Clear();
-        foreach (var record in ordered)
-            VisibleRecentItems.Add(record);
     }
 
     private void ReplaceCategories(IEnumerable<ItemCategorySummaryDto> categories)
@@ -469,7 +335,8 @@ public sealed class ItemsViewModel : ObservableObject
                 Name = group.Key,
                 ItemCount = group.Sum(item => item.ItemCount)
             })
-            .OrderBy(category => category.Name == UncategorizedName ? "zzz" : category.Name)
+            .OrderBy(GetCategorySortKey)
+            .ThenBy(category => category.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
 
         ItemCategories.Clear();
@@ -492,43 +359,21 @@ public sealed class ItemsViewModel : ObservableObject
         if (!changed)
             return;
 
-        _recentSelections.Clear();
-        VisibleRecentItems.Clear();
-        DraftLines.Clear();
+        SearchText = string.Empty;
         SelectedCategory = null;
         Items.Clear();
-        ResetSheetState(clearCategory: false);
+        ClearSelectedItem();
     }
 
-    private void ResetSheetState(bool clearCategory)
+    private void ClearSelectedItem()
     {
         SelectedItem = null;
         SelectedItemBranchStocks.Clear();
-        LineQuantityText = "1";
-        LineUnitPriceText = "0";
-        LineRemark = string.Empty;
-        IsItemEntrySheetVisible = false;
         OnPropertyChanged(nameof(SelectedItemBranchStocksHeight));
-
-        if (clearCategory)
-        {
-            SelectedCategory = null;
-            SearchText = string.Empty;
-        }
     }
 
     private ItemCategorySummaryDto? FindCategoryByName(string? categoryName)
         => ItemCategories.FirstOrDefault(category => CategoryEquals(category.Name, categoryName));
-
-    private void HandleDraftLinesChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        OnPropertyChanged(nameof(HasDraftLines));
-        OnPropertyChanged(nameof(DraftSummary));
-        OnPropertyChanged(nameof(DraftLinesHeight));
-    }
-
-    private void HandleVisibleRecentItemsChanged(object? sender, NotifyCollectionChangedEventArgs e)
-        => OnPropertyChanged(nameof(HasVisibleRecentItems));
 
     private static double CalculateListHeight(int count, double rowHeight, double emptyHeight, int maxVisibleRows)
     {
@@ -537,17 +382,6 @@ public sealed class ItemsViewModel : ObservableObject
 
         var rows = Math.Min(count, maxVisibleRows);
         return rowHeight * rows;
-    }
-
-    private static decimal ResolveDefaultUnitPrice(ItemDto item)
-    {
-        if (item.SalePrice > 0m)
-            return item.SalePrice;
-        if (item.RetailPrice > 0m)
-            return item.RetailPrice;
-        if (item.PurchasePrice > 0m)
-            return item.PurchasePrice;
-        return 0m;
     }
 
     private static string NormalizeCategoryName(string? categoryName)
@@ -563,7 +397,15 @@ public sealed class ItemsViewModel : ObservableObject
     private static bool CategoryEquals(string? left, string? right)
         => string.Equals(NormalizeCategoryName(left), NormalizeCategoryName(right), StringComparison.OrdinalIgnoreCase);
 
-    private static bool NameAndSpecEquals(ItemDto item, RecentItemSelectionRecord record)
-        => string.Equals(item.NameOriginal?.Trim(), record.ItemNameOriginal?.Trim(), StringComparison.OrdinalIgnoreCase) &&
-           string.Equals(item.SpecificationOriginal?.Trim(), record.SpecificationOriginal?.Trim(), StringComparison.OrdinalIgnoreCase);
+    private static string GetCategorySortKey(ItemCategorySummaryDto category)
+    {
+        var normalized = NormalizeCategoryName(category.Name);
+        var preferredIndex = Array.FindIndex(
+            PreferredCategoryOrder,
+            item => string.Equals(item, normalized, StringComparison.OrdinalIgnoreCase));
+
+        return preferredIndex >= 0
+            ? preferredIndex.ToString("D2")
+            : $"90-{normalized}";
+    }
 }

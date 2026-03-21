@@ -1,8 +1,9 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using GeoraePlan.Mobile.App.Models;
+using Microsoft.Maui.ApplicationModel;
 using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Mobile.App.Services;
@@ -12,12 +13,17 @@ public sealed class GeoraePlanApiClient
     private readonly HttpClient _http = new();
     private readonly SettingsService _settings;
     private readonly SessionStore _sessionStore;
+    private readonly MobileSessionRecoveryService _sessionRecovery;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
 
-    public GeoraePlanApiClient(SettingsService settings, SessionStore sessionStore)
+    public GeoraePlanApiClient(
+        SettingsService settings,
+        SessionStore sessionStore,
+        MobileSessionRecoveryService sessionRecovery)
     {
         _settings = settings;
         _sessionStore = sessionStore;
+        _sessionRecovery = sessionRecovery;
     }
 
     public async Task<LoginResponse?> LoginAsync(LoginRequest request, CancellationToken ct = default)
@@ -31,7 +37,7 @@ public sealed class GeoraePlanApiClient
         if (response.StatusCode == HttpStatusCode.Unauthorized)
             return null;
 
-        await EnsureSuccessAsync(response, ct);
+        await EnsureSuccessAsync(response, "auth/login", ct);
         return await response.Content.ReadFromJsonAsync<LoginResponse>(_jsonOptions, ct);
     }
 
@@ -60,9 +66,11 @@ public sealed class GeoraePlanApiClient
         if (File.Exists(cachedPath) && new FileInfo(cachedPath).Length > 0)
             return cachedPath;
 
-        using var request = await CreateRequestAsync(HttpMethod.Get, $"customers/contracts/{contract.Id}/content");
-        using var response = await _http.SendAsync(request, ct);
-        await EnsureSuccessAsync(response, ct);
+        using var response = await SendAsync(
+            () => CreateRequestAsync(HttpMethod.Get, $"customers/contracts/{contract.Id}/content", cancellationToken: ct),
+            $"customers/contracts/{contract.Id}/content",
+            ct);
+        await EnsureSuccessAsync(response, $"customers/contracts/{contract.Id}/content", ct);
 
         await using var source = await response.Content.ReadAsStreamAsync(ct);
         await using var target = File.Create(cachedPath);
@@ -110,9 +118,11 @@ public sealed class GeoraePlanApiClient
             return cachedPath;
         }
 
-        using var request = await CreateRequestAsync(HttpMethod.Get, $"payments/attachments/{attachment.Id}/content");
-        using var response = await _http.SendAsync(request, ct);
-        await EnsureSuccessAsync(response, ct);
+        using var response = await SendAsync(
+            () => CreateRequestAsync(HttpMethod.Get, $"payments/attachments/{attachment.Id}/content", cancellationToken: ct),
+            $"payments/attachments/{attachment.Id}/content",
+            ct);
+        await EnsureSuccessAsync(response, $"payments/attachments/{attachment.Id}/content", ct);
 
         await using var source = await response.Content.ReadAsStreamAsync(ct);
         await using var target = File.Create(cachedPath);
@@ -150,7 +160,7 @@ public sealed class GeoraePlanApiClient
         => PostAsync<SyncPushRequest, SyncPushResult>("sync/push", request, ct);
 
     public Task<AppUpdateManifestDto?> GetUpdateManifestAsync(string channel = "stable", CancellationToken ct = default)
-        => GetAsync<AppUpdateManifestDto>($"updates/manifest?channel={Uri.EscapeDataString(channel)}", ct);
+        => GetAsync<AppUpdateManifestDto>($"updates/manifest?channel={Uri.EscapeDataString(channel)}", ct, requireAuthentication: false);
 
     public Task<InvoiceDto?> CreateInvoiceAsync(InvoiceDto request, CancellationToken ct = default)
         => PostAsync<InvoiceDto, InvoiceDto>("invoices", request, ct);
@@ -160,48 +170,74 @@ public sealed class GeoraePlanApiClient
 
     public async Task<PaymentAttachmentDto?> UploadPaymentAttachmentAsync(Guid paymentId, PendingPaymentAttachmentRecord attachment, CancellationToken ct = default)
     {
-        using var request = await CreateRequestAsync(HttpMethod.Post, $"payments/{paymentId}/attachments");
-        using var form = new MultipartFormDataContent();
-        await using var stream = File.OpenRead(attachment.StoredPath);
-        using var fileContent = new StreamContent(stream);
-        fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse(string.IsNullOrWhiteSpace(attachment.MimeType)
-            ? "application/octet-stream"
-            : attachment.MimeType);
+        using var response = await SendAsync(
+            async () =>
+            {
+                var request = await CreateRequestAsync(HttpMethod.Post, $"payments/{paymentId}/attachments", cancellationToken: ct);
+                var form = new MultipartFormDataContent();
+                var fileStream = File.OpenRead(attachment.StoredPath);
+                var fileContent = new StreamContent(fileStream);
+                fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse(string.IsNullOrWhiteSpace(attachment.MimeType)
+                    ? "application/octet-stream"
+                    : attachment.MimeType);
 
-        form.Add(fileContent, "file", attachment.FileName);
-        form.Add(new StringContent(attachment.AttachmentType ?? "내역첨부"), "attachmentType");
-        form.Add(new StringContent(attachment.Description ?? string.Empty), "description");
-        request.Content = form;
-
-        using var response = await _http.SendAsync(request, ct);
-        await EnsureSuccessAsync(response, ct);
+                form.Add(fileContent, "file", attachment.FileName);
+                form.Add(new StringContent(attachment.AttachmentType ?? "내역첨부"), "attachmentType");
+                form.Add(new StringContent(attachment.Description ?? string.Empty), "description");
+                request.Content = form;
+                return request;
+            },
+            $"payments/{paymentId}/attachments",
+            ct);
+        await EnsureSuccessAsync(response, $"payments/{paymentId}/attachments", ct);
         return await response.Content.ReadFromJsonAsync<PaymentAttachmentDto>(_jsonOptions, ct);
     }
 
-    private async Task<T?> GetAsync<T>(string relative, CancellationToken ct)
+    private async Task<T?> GetAsync<T>(string relative, CancellationToken ct, bool requireAuthentication = true)
     {
-        using var request = await CreateRequestAsync(HttpMethod.Get, relative);
-        using var response = await _http.SendAsync(request, ct);
-        await EnsureSuccessAsync(response, ct);
+        using var response = await SendAsync(
+            () => CreateRequestAsync(HttpMethod.Get, relative, requireAuthentication, ct),
+            relative,
+            ct,
+            requireAuthentication);
+        await EnsureSuccessAsync(response, relative, ct);
         return await response.Content.ReadFromJsonAsync<T>(_jsonOptions, ct);
     }
 
-    private async Task<TResponse?> PostAsync<TRequest, TResponse>(string relative, TRequest payload, CancellationToken ct)
+    private async Task<TResponse?> PostAsync<TRequest, TResponse>(string relative, TRequest payload, CancellationToken ct, bool requireAuthentication = true)
     {
-        using var request = await CreateRequestAsync(HttpMethod.Post, relative);
-        request.Content = JsonContent.Create(payload, options: _jsonOptions);
-        using var response = await _http.SendAsync(request, ct);
-        await EnsureSuccessAsync(response, ct);
+        using var response = await SendAsync(
+            async () =>
+            {
+                var request = await CreateRequestAsync(HttpMethod.Post, relative, requireAuthentication, ct);
+                request.Content = JsonContent.Create(payload, options: _jsonOptions);
+                return request;
+            },
+            relative,
+            ct,
+            requireAuthentication);
+        await EnsureSuccessAsync(response, relative, ct);
         return await response.Content.ReadFromJsonAsync<TResponse>(_jsonOptions, ct);
     }
 
-    private async Task<HttpRequestMessage> CreateRequestAsync(HttpMethod method, string relative)
+    private async Task<HttpRequestMessage> CreateRequestAsync(
+        HttpMethod method,
+        string relative,
+        bool requireAuthentication = true,
+        CancellationToken cancellationToken = default)
     {
         var request = new HttpRequestMessage(method, BuildUri(relative));
-        var token = await _sessionStore.GetTokenAsync();
-        if (!string.IsNullOrWhiteSpace(token))
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        if (!requireAuthentication)
+            return request;
 
+        var token = await GetAccessTokenAsync(relative, cancellationToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            await HandleAuthenticationFailureAsync();
+            throw new MobileAuthenticationException(relative, $"인증 토큰을 찾지 못해 Authorization 헤더 없이 요청하려고 했습니다. 다시 로그인해 주세요. (요청: {relative})");
+        }
+
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return request;
     }
 
@@ -249,7 +285,53 @@ public sealed class GeoraePlanApiClient
         return string.IsNullOrWhiteSpace(sanitized) ? "attachment.bin" : sanitized;
     }
 
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken ct)
+    private async Task<string?> GetAccessTokenAsync(string relative, CancellationToken ct)
+    {
+        var token = await _sessionStore.GetTokenAsync(clearStaleSession: false);
+        if (!string.IsNullOrWhiteSpace(token))
+            return token;
+
+        var recovery = await _sessionRecovery.TryRestoreSessionAsync($"token:{relative}", ct);
+        if (recovery.Success)
+            return await _sessionStore.GetTokenAsync(clearStaleSession: false);
+
+        return null;
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(
+        Func<Task<HttpRequestMessage>> requestFactory,
+        string relative,
+        CancellationToken ct,
+        bool requireAuthentication = true)
+    {
+        var response = await SendCoreAsync(requestFactory, ct);
+        if (!requireAuthentication || response.StatusCode != HttpStatusCode.Unauthorized)
+            return response;
+
+        response.Dispose();
+
+        var recovery = await _sessionRecovery.TryRestoreSessionAsync($"401:{relative}", ct);
+        if (recovery.Success)
+        {
+            var retryResponse = await SendCoreAsync(requestFactory, ct);
+            if (retryResponse.StatusCode != HttpStatusCode.Unauthorized)
+                return retryResponse;
+
+            retryResponse.Dispose();
+        }
+
+        await HandleAuthenticationFailureAsync();
+        throw new MobileAuthenticationException(relative,
+            $"401 Unauthorized ({relative}): 저장된 Bearer 토큰이 만료되었고 자동 로그인으로도 복구하지 못했습니다. 다시 로그인해 주세요.".Trim());
+    }
+
+    private async Task<HttpResponseMessage> SendCoreAsync(Func<Task<HttpRequestMessage>> requestFactory, CancellationToken ct)
+    {
+        using var request = await requestFactory();
+        return await _http.SendAsync(request, ct);
+    }
+
+    private async Task EnsureSuccessAsync(HttpResponseMessage response, string relative, CancellationToken ct)
     {
         if (response.IsSuccessStatusCode)
             return;
@@ -258,6 +340,19 @@ public sealed class GeoraePlanApiClient
         if (body.Length > 200)
             body = body[..200] + "...";
 
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            await HandleAuthenticationFailureAsync();
+            throw new MobileAuthenticationException(relative,
+                $"401 Unauthorized ({relative}): 서버가 Bearer 토큰을 거부했습니다. 세션이 만료되었거나 다시 로그인이 필요합니다. {body}".Trim());
+        }
+
         throw new HttpRequestException($"{(int)response.StatusCode} {response.ReasonPhrase} {body}".Trim(), null, response.StatusCode);
+    }
+
+    private async Task HandleAuthenticationFailureAsync()
+    {
+        await _sessionStore.ClearAsync();
+        MainThread.BeginInvokeOnMainThread(App.ShowLogin);
     }
 }

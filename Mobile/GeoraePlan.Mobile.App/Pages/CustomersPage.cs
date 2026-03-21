@@ -299,7 +299,14 @@ public sealed class CustomersPage : ContentPage
                     if (sender is not Button button || button.BindingContext is not CustomerDto customer)
                         return;
 
-                    await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(customer.Id, customer.NameOriginal));
+                    try
+                    {
+                        await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(customer.Id, customer.NameOriginal));
+                    }
+                    catch (Exception ex)
+                    {
+                        await DisplayAlert("전표작성 오류", $"전표작성 화면을 열지 못했습니다.\n{ex.Message}", "확인");
+                    }
                 };
 
                 var contractButton = GeoraePlanTheme.CreateCompactButton("거래처 계약서 보기", GeoraePlanTheme.Purple);
@@ -383,13 +390,21 @@ public sealed class CustomersPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        await _syncCoordinator.TryBackgroundSyncAsync("customers-page", TimeSpan.FromSeconds(45));
 
-        var versionChanged = _seenCustomersVersion != _refreshCoordinator.CustomersVersion;
-        if (versionChanged || _viewModel.NeedsRefresh(TimeSpan.FromSeconds(30)))
-            await _viewModel.RefreshAsync();
+        try
+        {
+            await _syncCoordinator.TryBackgroundSyncAsync("customers-page", TimeSpan.FromSeconds(45));
 
-        _seenCustomersVersion = _refreshCoordinator.CustomersVersion;
+            var versionChanged = _seenCustomersVersion != _refreshCoordinator.CustomersVersion;
+            if (versionChanged || _viewModel.NeedsRefresh(TimeSpan.FromSeconds(30)))
+                await _viewModel.RefreshAsync();
+
+            _seenCustomersVersion = _refreshCoordinator.CustomersVersion;
+        }
+        catch (Exception ex)
+        {
+            _viewModel.StatusMessage = $"거래처 화면 초기화 실패: {ex.Message}";
+        }
     }
 
     private static Button CreateDetailTabButton(string text)

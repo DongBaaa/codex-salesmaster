@@ -253,8 +253,6 @@ public sealed class InvoiceDraftViewModel : ObservableObject
                 return;
 
             StatusMessage = "전표 작성을 위한 분류 정보를 불러오고 있습니다.";
-            await _syncCoordinator.TryBackgroundSyncAsync("invoice-draft-load", TimeSpan.FromSeconds(30));
-
             var categories = await _api.GetItemCategoriesAsync();
             ItemCategories.Clear();
             foreach (var category in categories.OrderBy(x => x.Name))

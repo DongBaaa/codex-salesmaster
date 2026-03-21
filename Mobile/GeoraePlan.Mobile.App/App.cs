@@ -1,34 +1,84 @@
-﻿using System.Threading;
+using System.Threading;
+using GeoraePlan.Mobile.App.Pages;
+using GeoraePlan.Mobile.App.Theme;
 
 namespace GeoraePlan.Mobile.App;
 
 public sealed class App : Application
 {
     private readonly Services.SessionStore _sessionStore;
+    private readonly Services.MobileSessionRecoveryService _sessionRecoveryService;
     private readonly Services.SyncCoordinator _syncCoordinator;
     private IDispatcherTimer? _foregroundSyncTimer;
     private int _foregroundSyncRunning;
 
-    public App(Services.SessionStore sessionStore, Services.SyncCoordinator syncCoordinator)
+    public App(
+        Services.SessionStore sessionStore,
+        Services.MobileSessionRecoveryService sessionRecoveryService,
+        Services.SyncCoordinator syncCoordinator)
     {
         _sessionStore = sessionStore;
+        _sessionRecoveryService = sessionRecoveryService;
         _syncCoordinator = syncCoordinator;
         UserAppTheme = AppTheme.Light;
-        MainPage = CreateRootPage();
-#if DEBUG
-        _ = TryBootstrapDebugSessionAsync();
-#endif
-        if (_sessionStore.HasCachedSession())
-        {
-            StartForegroundSyncTimer();
-            _ = RunLaunchSyncAsync();
-        }
+        MainPage = CreateStartupPage();
+        _ = InitializeRootAsync();
     }
 
-    private Page CreateRootPage()
-        => _sessionStore.HasCachedSession()
-            ? new AppShell()
-            : new NavigationPage(new Pages.LoginPage());
+    private static Page CreateStartupPage()
+    {
+        return new ContentPage
+        {
+            BackgroundColor = GeoraePlanTheme.PageBackground,
+            Content = new VerticalStackLayout
+            {
+                Padding = new Thickness(24),
+                Spacing = 12,
+                VerticalOptions = LayoutOptions.Center,
+                HorizontalOptions = LayoutOptions.Center,
+                Children =
+                {
+                    new ActivityIndicator
+                    {
+                        IsRunning = true,
+                        Color = GeoraePlanTheme.Accent,
+                        WidthRequest = 28,
+                        HeightRequest = 28
+                    },
+                    new Label
+                    {
+                        Text = "거래플랜을 준비하고 있습니다.",
+                        TextColor = GeoraePlanTheme.TextSecondary,
+                        FontSize = 13,
+                        HorizontalTextAlignment = TextAlignment.Center
+                    }
+                }
+            }
+        };
+    }
+
+    private async Task InitializeRootAsync()
+    {
+#if DEBUG
+        if (!await _sessionStore.HasUsableSessionAsync().ConfigureAwait(false))
+            await Services.DebugSessionBootstrap.TryApplyAsync(_sessionStore).ConfigureAwait(false);
+#endif
+
+        var hasSession = await _sessionStore.HasUsableSessionAsync().ConfigureAwait(false);
+        if (!hasSession)
+        {
+            var recovery = await _sessionRecoveryService.TryRestoreSessionAsync("app-startup").ConfigureAwait(false);
+            hasSession = recovery.Success && await _sessionStore.HasUsableSessionAsync().ConfigureAwait(false);
+        }
+
+        MainThread.BeginInvokeOnMainThread(() =>
+        {
+            if (hasSession)
+                ShowShell();
+            else
+                ShowLogin();
+        });
+    }
 
     public static void ShowShell()
     {
@@ -37,6 +87,7 @@ public sealed class App : Application
 
         app.MainPage = new AppShell();
         app.StartForegroundSyncTimer();
+        _ = app.RunLaunchSyncAsync();
     }
 
     public static void ShowLogin()
@@ -45,7 +96,7 @@ public sealed class App : Application
             return;
 
         app.StopForegroundSyncTimer();
-        app.MainPage = new NavigationPage(new Pages.LoginPage());
+        app.MainPage = new NavigationPage(new LoginPage());
     }
 
     private async Task RunLaunchSyncAsync()
@@ -83,8 +134,15 @@ public sealed class App : Application
 
     private async Task RunForegroundSyncPulseAsync()
     {
-        if (!_sessionStore.HasCachedSession())
-            return;
+        if (!await _sessionStore.HasUsableSessionAsync().ConfigureAwait(false))
+        {
+            var recovery = await _sessionRecoveryService.TryRestoreSessionAsync("foreground-sync").ConfigureAwait(false);
+            if (!recovery.Success && !await _sessionStore.HasUsableSessionAsync().ConfigureAwait(false))
+            {
+                MainThread.BeginInvokeOnMainThread(ShowLogin);
+                return;
+            }
+        }
 
         if (Interlocked.Exchange(ref _foregroundSyncRunning, 1) == 1)
             return;
@@ -102,17 +160,4 @@ public sealed class App : Application
             Interlocked.Exchange(ref _foregroundSyncRunning, 0);
         }
     }
-
-#if DEBUG
-    private async Task TryBootstrapDebugSessionAsync()
-    {
-        if (_sessionStore.HasCachedSession())
-            return;
-
-        if (!await Services.DebugSessionBootstrap.TryApplyAsync(_sessionStore).ConfigureAwait(false))
-            return;
-
-        MainThread.BeginInvokeOnMainThread(ShowShell);
-    }
-#endif
 }
