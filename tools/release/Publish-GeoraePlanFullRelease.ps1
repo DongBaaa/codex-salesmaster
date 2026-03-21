@@ -6,6 +6,7 @@ param(
     [switch]$DeployToNas,
     [switch]$NoRestore,
     [switch]$AllowLegacyLiveMirror,
+    [switch]$AllowScheduledApplyTrigger,
     [string]$NasSshHost,
     [string]$NasSshUser,
     [int]$NasSshPort = 0,
@@ -117,6 +118,9 @@ if ($DeployToNas) {
 
     if ($AllowLegacyLiveMirror) {
         $nasArgs += '-AllowLegacyLiveMirror'
+    }
+    if ($AllowScheduledApplyTrigger) {
+        $nasArgs += '-AllowScheduledApplyTrigger'
     }
     if (-not [string]::IsNullOrWhiteSpace($NasSshHost)) {
         $nasArgs += @('-NasSshHost', $NasSshHost)

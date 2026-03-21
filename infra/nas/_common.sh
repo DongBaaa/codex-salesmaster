@@ -1,10 +1,11 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GEORAEPLAN_ROOT="${GEORAEPLAN_ROOT:-$(cd "$OPS_DIR/.." && pwd)}"
 ENV_FILE="${ENV_FILE:-$OPS_DIR/.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-$OPS_DIR/docker-compose.yml}"
+COMPOSE_PROJECT_NAME_VALUE="${COMPOSE_PROJECT_NAME_VALUE:-georaeplan}"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -29,24 +30,34 @@ ensure_state_dir() {
   mkdir -p "$STATE_DIR"
 }
 
+read_first_line_clean() {
+  local file_path="$1"
+  [[ -f "$file_path" ]] || return 1
+  LC_ALL=C sed $'1s/^\xEF\xBB\xBF//' "$file_path" | head -n 1 | tr -d -- '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+sanitize_release_id() {
+  printf '%s' "$1" | LC_ALL=C tr -cd -- '0-9A-Za-z._-'
+}
+
 compose() {
   local args=()
   if [[ -f "$ENV_FILE" ]]; then
     args+=(--env-file "$ENV_FILE")
   fi
-  args+=(-f "$COMPOSE_FILE")
+  args+=(-p "$COMPOSE_PROJECT_NAME_VALUE" -f "$COMPOSE_FILE")
 
   if docker compose version >/dev/null 2>&1; then
-    docker compose "${args[@]}" "$@"
+    COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME_VALUE" docker compose "${args[@]}" "$@"
     return
   fi
 
   if command -v docker-compose >/dev/null 2>&1; then
-    docker-compose "${args[@]}" "$@"
+    COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME_VALUE" docker-compose "${args[@]}" "$@"
     return
   fi
 
-  echo "docker compose 명령을 찾지 못했습니다." >&2
+  echo "docker compose command not found." >&2
   exit 1
 }
 

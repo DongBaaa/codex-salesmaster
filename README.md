@@ -87,7 +87,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\relea
 사전 조건:
 - `D:\거래플랜\infra\nas\.env.example` 또는 운영용 `.env`에 `NAS_SSH_USER`를 포함한 SSH 정보가 채워져 있어야 합니다.
 - `NAS_SSH_KEY_PATH`는 **Windows 배포 PC 기준 경로**입니다.
-- SSH 설정이 없으면 기본값으로는 배포를 중단하며, 정말 필요한 경우에만 `-AllowLegacyLiveMirror`를 명시해 예전 방식의 직접 미러링을 허용할 수 있습니다.
+- 권장 동작 순서:
+  1. SSH 설정이 있으면 배포 PC가 NAS의 `apply-release.sh`를 바로 실행
+  2. SSH 설정이 없고 `NAS_SCHEDULED_APPLY_ENABLED=true`이면 NAS 작업 스케줄러의 `auto-apply-release.sh`가 pending release를 감지해 로컬에서 `apply-release.sh`를 실행
+- 정말 필요한 경우에만 `-AllowLegacyLiveMirror`를 명시해 예전 방식의 직접 미러링을 허용할 수 있습니다.
 
 ## 인쇄 기본 동작
 - `[완료]` 판매(매출) 창에서 `출력물 편집` 후 데이터 저장

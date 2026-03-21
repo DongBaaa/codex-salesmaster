@@ -12,7 +12,8 @@ param(
     [string]$NasSshUser,
     [int]$NasSshPort = 0,
     [string]$NasSshKeyPath,
-    [string]$NasRemoteOpsPath
+    [string]$NasRemoteOpsPath,
+    [switch]$AllowScheduledApplyTrigger
 )
 
 function Invoke-RobocopyMirror {
@@ -140,6 +141,98 @@ function Test-NasSshConfigComplete {
            -not [string]::IsNullOrWhiteSpace($Config.RemoteOpsPath)
 }
 
+function Test-NasScheduledApplyEnabled {
+    param([Parameter(Mandatory = $true)][hashtable]$NasEnv)
+
+    $value = Get-FirstConfiguredValue @(
+        $env:NAS_SCHEDULED_APPLY_ENABLED,
+        ($NasEnv['NAS_SCHEDULED_APPLY_ENABLED'])
+    )
+
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return $false
+    }
+
+    return @('1', 'true', 'yes', 'on') -contains $value.Trim().ToLowerInvariant()
+}
+
+function Queue-NasScheduledApply {
+    param(
+        [Parameter(Mandatory = $true)][string]$NasRoot,
+        [Parameter(Mandatory = $true)][string]$ReleaseId,
+        [Parameter(Mandatory = $true)][hashtable]$NasEnv
+    )
+
+    $stateRelativePath = Get-FirstConfiguredValue @(
+        ($NasEnv['STATE_DIR']),
+        'ops/state'
+    )
+
+    $pendingRelativePath = Get-FirstConfiguredValue @(
+        ($NasEnv['PENDING_RELEASE_FILE'])
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($pendingRelativePath)) {
+        if ([System.IO.Path]::IsPathRooted($pendingRelativePath)) {
+            if ($pendingRelativePath -like '/volume1/*') {
+                $pendingRelativePath = $pendingRelativePath -replace '^/volume1/', ''
+                $pendingRelativePath = $pendingRelativePath -replace '/', '\'
+            }
+        }
+    }
+    else {
+        $pendingRelativePath = Join-Path $stateRelativePath 'pending-release.txt'
+    }
+
+    $pendingPath = if ($pendingRelativePath -like '\\*') {
+        $pendingRelativePath
+    }
+    else {
+        Join-Path $NasRoot $pendingRelativePath
+    }
+
+    $pendingDir = Split-Path -Parent $pendingPath
+    if (-not [string]::IsNullOrWhiteSpace($pendingDir)) {
+        New-Item -ItemType Directory -Force $pendingDir | Out-Null
+    }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($pendingPath, "$ReleaseId`n", $utf8NoBom)
+
+    return $pendingPath
+}
+
+function Wait-NasScheduledApply {
+    param(
+        [Parameter(Mandatory = $true)][string]$NasRoot,
+        [Parameter(Mandatory = $true)][string]$ReleaseId,
+        [Parameter(Mandatory = $true)][hashtable]$NasEnv,
+        [int]$TimeoutSeconds = 150
+    )
+
+    $stateRelativePath = Get-FirstConfiguredValue @(
+        ($NasEnv['STATE_DIR']),
+        'ops/state'
+    )
+    $currentReleasePath = Join-Path $NasRoot (Join-Path $stateRelativePath 'current-release.txt')
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $currentRelease = ''
+        if (Test-Path -LiteralPath $currentReleasePath) {
+            $currentRelease = (Get-Content -LiteralPath $currentReleasePath -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
+        }
+
+        if ($currentRelease -eq $ReleaseId) {
+            return $true
+        }
+
+        Start-Sleep -Seconds 5
+    }
+
+    return $false
+}
+
 function Invoke-NasApplyRelease {
     param(
         [Parameter(Mandatory = $true)][string]$ReleaseId,
@@ -193,6 +286,7 @@ $tempPublishRoot = Join-Path ([System.IO.Path]::GetTempPath()) "georaeplan-$Rele
 $metadataPath = Join-Path $tempPublishRoot 'release-info.txt'
 $nasEnv = Get-NasEnvMap -EnvPath $opsEnvPath
 $sshConfig = Resolve-NasSshConfig -NasRoot $NasRoot -NasEnv $nasEnv -NasSshHost $NasSshHost -NasSshUser $NasSshUser -NasSshPort $NasSshPort -NasSshKeyPath $NasSshKeyPath -NasRemoteOpsPath $NasRemoteOpsPath
+$scheduledApplyEnabled = Test-NasScheduledApplyEnabled -NasEnv $nasEnv
 
 if (-not (Test-Path -LiteralPath $serverProject)) {
     throw "Server project not found: $serverProject"
@@ -282,19 +376,45 @@ if (-not $SkipConfigSync) {
 Invoke-RobocopyMirror -Source $tempPublishRoot -Destination $releaseRoot
 
 $appliedRemotely = $false
+$queuedForNasApply = $false
+$queuedTriggerPath = ''
 if ($MirrorToLive) {
     if (Test-NasSshConfigComplete -Config $sshConfig) {
         Write-Host "nas_apply_release_mode=ssh host=$($sshConfig.Host) user=$($sshConfig.User) port=$($sshConfig.Port)"
-        Invoke-NasApplyRelease -ReleaseId $ReleaseId -Config $sshConfig
-        $appliedRemotely = $true
+        try {
+            Invoke-NasApplyRelease -ReleaseId $ReleaseId -Config $sshConfig
+            $appliedRemotely = $true
+        }
+        catch {
+            if ($AllowScheduledApplyTrigger -or $scheduledApplyEnabled) {
+                Write-Warning "SSH apply-release failed and the script will fall back to the NAS scheduled trigger. Reason: $($_.Exception.Message)"
+                $queuedTriggerPath = Queue-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv
+                Write-Host "nas_apply_release_mode=scheduled-trigger pending_path=$queuedTriggerPath"
+                if (-not (Wait-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv)) {
+                    throw "NAS scheduled apply trigger was queued after SSH fallback, but release '$ReleaseId' was not applied within the timeout. Confirm the NAS scheduled task runs auto-apply-release.sh and check ops/state/auto-apply.log."
+                }
+                $queuedForNasApply = $true
+            }
+            else {
+                throw
+            }
+        }
+    }
+    elseif ($AllowScheduledApplyTrigger -or $scheduledApplyEnabled) {
+        $queuedTriggerPath = Queue-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv
+        Write-Host "nas_apply_release_mode=scheduled-trigger pending_path=$queuedTriggerPath"
+        if (-not (Wait-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv)) {
+            throw "NAS scheduled apply trigger was queued but release '$ReleaseId' was not applied within the timeout. Confirm the NAS scheduled task runs auto-apply-release.sh and check ops/state/auto-apply.log."
+        }
+        $queuedForNasApply = $true
     }
     elseif ($AllowLegacyLiveMirror) {
         Write-Warning 'NAS SSH settings are missing. Because AllowLegacyLiveMirror was specified, the script will only copy the release and mirror app\\live directly.'
-        Write-Warning 'Recommended: configure NAS_SSH_USER, NAS_SSH_HOST, NAS_SSH_PORT, NAS_SSH_KEY_PATH, and NAS_REMOTE_OPS_PATH in ops/.env or Windows environment variables so the script can run apply-release.sh remotely.'
+        Write-Warning 'Recommended: configure NAS_SSH_USER/HOST/PORT/KEY_PATH/REMOTE_OPS_PATH for SSH apply, or enable NAS_SCHEDULED_APPLY_ENABLED with auto-apply-release.sh so the NAS can run apply-release.sh locally after the release is copied.'
         Invoke-RobocopyMirror -Source $tempPublishRoot -Destination $liveRoot
     }
     else {
-        throw 'MirrorToLive was requested, but NAS SSH settings are incomplete so apply-release.sh cannot be executed. Configure NAS_SSH_USER/HOST/PORT/KEY_PATH/REMOTE_OPS_PATH, or use -AllowLegacyLiveMirror only as a temporary fallback.'
+        throw 'MirrorToLive was requested, but NAS SSH settings are incomplete and NAS scheduled apply is disabled. Configure NAS_SSH_USER/HOST/PORT/KEY_PATH/REMOTE_OPS_PATH, set NAS_SCHEDULED_APPLY_ENABLED=true with auto-apply-release.sh configured on the NAS, or use -AllowLegacyLiveMirror only as a temporary fallback.'
     }
 }
 
@@ -304,6 +424,9 @@ Write-Host "publish_done release_id=$ReleaseId release_path=$releaseRoot"
 if ($MirrorToLive) {
     if ($appliedRemotely) {
         Write-Host "nas_apply_release_done release_id=$ReleaseId host=$($sshConfig.Host) user=$($sshConfig.User)"
+    }
+    elseif ($queuedForNasApply) {
+        Write-Host "nas_apply_release_done release_id=$ReleaseId mode=scheduled-trigger pending_path=$queuedTriggerPath"
     }
     elseif ($AllowLegacyLiveMirror) {
         Write-Host "live_mirror_done live_path=$liveRoot"

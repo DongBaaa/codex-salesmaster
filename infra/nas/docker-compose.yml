@@ -1,4 +1,4 @@
-name: georaeplan-nas
+name: georaeplan
 
 services:
   postgres:
