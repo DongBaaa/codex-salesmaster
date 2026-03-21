@@ -1,4 +1,4 @@
-﻿# 거래플랜
+# 거래플랜
 
 - 문서 기준시점: 2026-03-12
 - 반영 범위: 커밋 이력 + HEAD(`42a0d21`) 기준 구현 상태
@@ -77,6 +77,28 @@ dotnet test "거래플랜.sln" -c Release --no-build
 
 - 참고: 현재 솔루션에 별도 테스트 프로젝트는 없어 `dotnet test` 는 빌드/구성 검증 성격이 강합니다.
 
+## NAS 주기 점검 / 백업 / 인증서 갱신
+- infra/nas/run-auto-apply.sh 는 기존 자동 배포 확인 외에 주기 점검도 같이 수행합니다.
+- 매일 1회 실행되는 점검:
+  - https://api.example.invalid/healthz
+  - https://api.example.invalid/updates/manifest?channel=stable
+  - PostgreSQL DB 백업 생성 및 최신 백업 존재 확인
+  - 계약서/PDF/첨부파일을 실제 파일 스냅샷으로 추출 백업
+  - 1일 이상 지난 백업을 외부 복제 경로(\\192.0.2.10\\서비스기술자료\\거래플랜 백업)로 동기화
+- 주 1회 실행되는 점검:
+  - 외부 URL 재확인
+  - HTTPS 인증서 만료 상태 점검
+  - Let's Encrypt 인증서가 갱신 윈도우(기본 30일) 안에 들어오면 Synology syno-letsencrypt renew-all 시도
+- 상태 파일/로그:
+  - \\192.0.2.10\\docker\\georaeplan\\ops\\state\\daily-check-status.txt
+  - \\192.0.2.10\\docker\\georaeplan\\ops\\state\\weekly-check-status.txt
+  - \\192.0.2.10\\docker\\georaeplan\\ops\\state\\backup-status.txt
+  - \\192.0.2.10\\docker\\georaeplan\\ops\\state\\external-replica-status.txt
+  - \\192.0.2.10\\docker\\georaeplan\\ops\\state\\cert-status.txt
+  - \\192.0.2.10\\docker\\georaeplan\\ops\\state\\routine-ops.log
+  - DB 백업 폴더: \\192.0.2.10\\docker\\georaeplan\\backups\\db
+  - 파일 백업 폴더: \\192.0.2.10\\docker\\georaeplan\\backups\\files
+  - 외부 복제 폴더: \\192.0.2.10\\서비스기술자료\\거래플랜 백업
 ## NAS 자동 배포(권장)
 PC 설치파일, Android APK, 업데이트 자산 생성 후 NAS에 **파일 복사 + `apply-release.sh` 자동 실행 + 컨테이너 재기동**까지 한 번에 처리하려면 아래 명령을 사용합니다.
 
@@ -144,3 +166,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\relea
   - `D:\거래플랜\배포\관리자용\거래플랜-PC-설치패키지.zip`
 - 수정/업데이트 가이드:
   - `D:\거래플랜\수정_업데이트_가이드_2026-03-20.md`
+
+
