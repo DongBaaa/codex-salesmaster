@@ -132,14 +132,13 @@ public sealed class SessionState
 
     private static string ResolveScopeType(string? scopeType, string? role, string? officeCode)
     {
-        if (DomainConstants.IsAdminRole(role))
-            return TenantScopeCatalog.ScopeAdmin;
-
         return TenantScopeCatalog.NormalizeScopeTypeOrDefault(
             scopeType,
-            string.Equals(ResolveTenantCode(null, officeCode), TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
-                ? TenantScopeCatalog.ScopeTenantAll
-                : TenantScopeCatalog.ScopeOfficeOnly);
+            DomainConstants.IsAdminRole(role)
+                ? TenantScopeCatalog.ScopeAdmin
+                : string.Equals(ResolveTenantCode(null, officeCode), TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
+                    ? TenantScopeCatalog.ScopeTenantAll
+                    : TenantScopeCatalog.ScopeOfficeOnly);
     }
 
     private static string ResolveBusinessOfficeCode(string? tenantCode)

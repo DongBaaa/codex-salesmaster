@@ -38,9 +38,9 @@ public sealed class OfficeScopeService
 
     public string CurrentOfficeCode => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_currentUserContext.OfficeCode);
 
-    public string CurrentScopeType => IsAdmin
-        ? TenantScopeCatalog.ScopeAdmin
-        : TenantScopeCatalog.NormalizeScopeTypeOrDefault(_currentUserContext.ScopeType);
+    public string CurrentScopeType => TenantScopeCatalog.NormalizeScopeTypeOrDefault(
+        _currentUserContext.ScopeType,
+        IsAdmin ? TenantScopeCatalog.ScopeAdmin : TenantScopeCatalog.ScopeOfficeOnly);
 
     public string CurrentWarehouseCode => OfficeCodeCatalog.GetMainWarehouseCode(CurrentOfficeCode);
 

@@ -78,6 +78,8 @@ public sealed partial class LoginViewModel : ObservableObject
                 result.User.Username,
                 result.User.Role,
                 result.User.Permissions,
+                result.User.TenantCode,
+                result.User.ScopeType,
                 ResolveOfficeCode(result.User));
             await SaveRememberOptionsAsync();
             _session.SetSession(result.Token, result.User);

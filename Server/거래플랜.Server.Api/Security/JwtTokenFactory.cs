@@ -30,9 +30,11 @@ public sealed class JwtTokenFactory : IJwtTokenFactory
 
         var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(user.OfficeCode);
         var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(user.TenantCode, officeCode);
-        var scopeType = user.Role.Equals("Admin", StringComparison.OrdinalIgnoreCase)
-            ? TenantScopeCatalog.ScopeAdmin
-            : TenantScopeCatalog.NormalizeScopeTypeOrDefault(user.ScopeType);
+        var scopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(
+            user.ScopeType,
+            user.Role.Equals("Admin", StringComparison.OrdinalIgnoreCase)
+                ? TenantScopeCatalog.ScopeAdmin
+                : TenantScopeCatalog.ScopeOfficeOnly);
 
         var claims = new List<Claim>
         {

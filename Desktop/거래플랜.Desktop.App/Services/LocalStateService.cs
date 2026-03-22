@@ -2080,12 +2080,16 @@ public sealed partial class LocalStateService
         string username,
         string role,
         IEnumerable<string> permissions,
+        string? tenantCode = null,
+        string? scopeType = null,
         string? officeCode = null,
         CancellationToken ct = default)
     {
         await SetSettingAsync("CachedSession_Username", username, ct);
         await SetSettingAsync("CachedSession_Role", role, ct);
         await SetSettingAsync("CachedSession_Permissions", string.Join(',', permissions), ct);
+        await SetSettingAsync("CachedSession_TenantCode", TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode), ct);
+        await SetSettingAsync("CachedSession_ScopeType", TenantScopeCatalog.NormalizeScopeTypeOrDefault(scopeType, DomainConstants.IsAdminRole(role) ? TenantScopeCatalog.ScopeAdmin : TenantScopeCatalog.ScopeOfficeOnly), ct);
         await SetSettingAsync("CachedSession_OfficeCode", NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet), ct);
     }
 
@@ -2096,6 +2100,8 @@ public sealed partial class LocalStateService
             return null;
 
         var role = await GetSettingAsync("CachedSession_Role", ct) ?? "User";
+        var tenantCode = await GetSettingAsync("CachedSession_TenantCode", ct) ?? string.Empty;
+        var scopeType = await GetSettingAsync("CachedSession_ScopeType", ct) ?? string.Empty;
         var officeCode = await GetSettingAsync("CachedSession_OfficeCode", ct) ?? string.Empty;
         var permissionsRaw = await GetSettingAsync("CachedSession_Permissions", ct) ?? string.Empty;
         var permissions = permissionsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList();
@@ -2105,7 +2111,9 @@ public sealed partial class LocalStateService
             UserId = Guid.Empty,
             Username = cachedUsername ?? username,
             Role = role,
+            TenantCode = tenantCode,
             OfficeCode = officeCode,
+            ScopeType = scopeType,
             Permissions = permissions
         };
     }

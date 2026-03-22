@@ -773,7 +773,8 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
 
         if (string.Equals(EditingUserRole, "Admin", StringComparison.OrdinalIgnoreCase))
         {
-            EditingUserScopeType = TenantScopeCatalog.ScopeAdmin;
+            if (!TenantScopeCatalog.TryNormalizeScopeType(EditingUserScopeType, out _))
+                EditingUserScopeType = TenantScopeCatalog.ScopeAdmin;
             return;
         }
 
@@ -792,7 +793,8 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     {
         if (string.Equals(value, "Admin", StringComparison.OrdinalIgnoreCase))
         {
-            EditingUserScopeType = TenantScopeCatalog.ScopeAdmin;
+            if (!TenantScopeCatalog.TryNormalizeScopeType(EditingUserScopeType, out _))
+                EditingUserScopeType = TenantScopeCatalog.ScopeAdmin;
             return;
         }
 
