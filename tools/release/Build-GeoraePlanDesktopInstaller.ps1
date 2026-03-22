@@ -405,20 +405,22 @@ function Ensure-ElevatedIfNeeded {
         return
     }
 
-    `$arguments = @(
+    `$argumentParts = @(
         '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', `$PSCommandPath,
-        '-InstallRoot', `$InstallRoot
+        '-ExecutionPolicy Bypass',
+        ('-File "{0}"' -f `$PSCommandPath),
+        ('-InstallRoot "{0}"' -f `$InstallRoot)
     )
 
     if (`$NoLaunch) {
-        `$arguments += '-NoLaunch'
+        `$argumentParts += '-NoLaunch'
     }
 
     if (`$NoShortcuts) {
-        `$arguments += '-NoShortcuts'
+        `$argumentParts += '-NoShortcuts'
     }
+
+    `$arguments = `$argumentParts -join ' '
 
     try {
         `$elevated = Start-Process -FilePath 'powershell.exe' -ArgumentList `$arguments -Verb RunAs -Wait -PassThru
