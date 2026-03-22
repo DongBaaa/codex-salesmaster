@@ -89,10 +89,10 @@ public sealed partial class PaymentViewModel : ObservableObject
     public bool CanPreviewAttachment => SelectedAttachment is not null && File.Exists(SelectedAttachment.StoredPath);
     public bool CanDeleteAttachment =>
         SelectedAttachment is not null &&
-        (_session.IsAdmin || !string.Equals(SelectedAttachment.VerificationStatus, "확인완료", StringComparison.OrdinalIgnoreCase));
-    public bool CanVerifyAttachment => _session.IsAdmin && SelectedAttachment is not null;
-    public bool CanRejectAttachment => _session.IsAdmin && SelectedAttachment is not null;
-    public bool IsAdmin => _session.IsAdmin;
+        (_session.HasAdministrativePrivileges || !string.Equals(SelectedAttachment.VerificationStatus, "확인완료", StringComparison.OrdinalIgnoreCase));
+    public bool CanVerifyAttachment => _session.HasAdministrativePrivileges && SelectedAttachment is not null;
+    public bool CanRejectAttachment => _session.HasAdministrativePrivileges && SelectedAttachment is not null;
+    public bool IsAdmin => _session.HasAdministrativePrivileges;
 
     public PaymentViewModel(LocalStateService local, SessionState session)
     {

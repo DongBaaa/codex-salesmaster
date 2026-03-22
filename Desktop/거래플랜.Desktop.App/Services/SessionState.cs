@@ -23,6 +23,11 @@ public sealed class SessionState
     public Guid SessionId { get; private set; } = Guid.NewGuid();
     public bool IsLoggedIn => User is not null;
     public bool IsAdmin => DomainConstants.IsAdminRole(User?.Role);
+    public bool IsGodMode =>
+        string.Equals(OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(OfficeCode, DomainConstants.OfficeUsenet), DomainConstants.OfficeUsenet, StringComparison.OrdinalIgnoreCase);
+    public bool HasAdministrativePrivileges => IsAdmin || IsGodMode;
+    public bool HasGlobalDataScope =>
+        HasAdministrativePrivileges && string.Equals(ScopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase);
     public event EventHandler? BusinessDatabaseChanged;
 
     public void SetSession(string token, UserSessionDto user)
@@ -60,7 +65,7 @@ public sealed class SessionState
 
         OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, OfficeCode);
         AuthenticatedTenantCode = ResolveTenantCode(AuthenticatedTenantCode, OfficeCode);
-        if (!IsAdmin)
+        if (!HasAdministrativePrivileges)
         {
             TenantCode = AuthenticatedTenantCode;
             BusinessOfficeCode = ResolveBusinessOfficeCode(TenantCode);
@@ -70,7 +75,7 @@ public sealed class SessionState
 
     public void SetBusinessDatabase(string? databaseName, string? displayName = null)
     {
-        if (!IsAdmin)
+        if (!HasAdministrativePrivileges)
         {
             ResetBusinessDatabaseSelection();
             return;
@@ -113,7 +118,13 @@ public sealed class SessionState
     public bool HasPermission(string permissionName)
     {
         if (User is null) return false;
-        if (IsAdmin) return true;
+        if (HasAdministrativePrivileges) return true;
+        return User.Permissions.Contains(permissionName);
+    }
+
+    public bool HasAssignedPermission(string permissionName)
+    {
+        if (User is null) return false;
         return User.Permissions.Contains(permissionName);
     }
 

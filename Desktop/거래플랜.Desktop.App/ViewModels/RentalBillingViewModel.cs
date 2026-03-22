@@ -66,10 +66,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public ObservableCollection<string> BillingMethodOptions { get; } = new();
     public ObservableCollection<RentalBillingViewRow> Rows { get; } = new();
 
-    public bool CanViewAll => _session.IsAdmin ||
-                              _session.HasPermission(AppPermissionNames.RentalViewAll) ||
-                              _session.HasPermission(AppPermissionNames.RentalEditAll);
-    public bool CanManageAll => _session.IsAdmin || _session.HasPermission(AppPermissionNames.RentalEditAll);
+    public bool CanViewAll => _session.HasGlobalDataScope ||
+                              _session.HasAssignedPermission(AppPermissionNames.RentalViewAll) ||
+                              _session.HasAssignedPermission(AppPermissionNames.RentalEditAll);
+    public bool CanManageAll => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.RentalEditAll);
     public bool CanSave => SelectedRow is null || CanEditCurrentSelection;
     public bool CanStartBillingSelected => SelectedRow is not null && CanEditCurrentSelection;
     public bool CanHoldSelected => SelectedRow is not null && CanEditCurrentSelection;

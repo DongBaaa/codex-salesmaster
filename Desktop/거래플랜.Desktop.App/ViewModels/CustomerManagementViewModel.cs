@@ -31,7 +31,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
     public ObservableCollection<CustomerContractAlertItem> ContractAlerts { get; } = new();
     public ObservableCollection<string> OfficeCodes { get; } = new();
     public ObservableCollection<string> CategoryFilters { get; } = new();
-    public bool CanEditAllResponsibleOffices => _session.IsAdmin;
+    public bool CanEditAllResponsibleOffices => _session.HasAdministrativePrivileges;
     public bool HasContractAlerts => ContractAlerts.Count > 0;
 
     public CustomerManagementViewModel(LocalStateService local, SessionState session)
@@ -55,7 +55,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
             await ReloadOfficeCodesAsync();
             await ReloadCategoryFiltersAsync();
 
-            var customers = _session.IsAdmin
+            var customers = _session.HasGlobalDataScope
                 ? await _local.GetCustomersAsync()
                 : await _local.GetCustomersAsync(_session);
             _contractSummaryMap = await _local.GetCustomerContractSummaryMapAsync(_session, ContractAlertWindowDays);
@@ -97,7 +97,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
             {
                 row.ApplyToSource();
 
-                if (_session.IsAdmin)
+                if (_session.HasAdministrativePrivileges)
                 {
                     await _local.UpsertCustomerAsync(row.Source);
                     await _local.WaitForServerWriteAsync();
@@ -118,7 +118,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
                 row.AcceptChanges();
             }
 
-            StatusMessage = _session.IsAdmin
+            StatusMessage = _session.HasAdministrativePrivileges
                 ? $"담당지점 변경 {changed.Count:N0}건을 저장했습니다."
                 : grantedTemporaryAccess
                     ? "거래처를 저장했습니다. USENET 거래처는 당일만 계속 작업할 수 있습니다."

@@ -21,10 +21,13 @@ public partial class MainWindow : Window
     private readonly SessionState _session;
     private readonly ErpApiClient _api;
     private readonly SyncService _sync;
+    private readonly DesktopAppUpdateService _updateService;
     private readonly DispatcherTimer _centralRevisionPollTimer;
     private bool _isInitialized;
     private DateTime _lastCentralRefreshUtc = DateTime.MinValue;
     private bool _centralRefreshInProgress;
+    private bool _deactivateFlushInProgress;
+    private bool _updatePromptInProgress;
 
     public MainWindow(MainViewModel vm, LocalStateService local,
                       RentalStateService rental,
@@ -45,8 +48,10 @@ public partial class MainWindow : Window
         _session = session;
         _api = api;
         _sync = sync;
+        _updateService = new DesktopAppUpdateService(api);
         DataContext = vm;
         Activated += MainWindow_Activated;
+        Deactivated += MainWindow_Deactivated;
         Closed += (_, _) => _centralRevisionPollTimer?.Stop();
         _centralRevisionPollTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
@@ -79,6 +84,8 @@ public partial class MainWindow : Window
                 MessageBoxImage.Information);
         }
 
+        await CheckAndPromptForDesktopUpdateAsync();
+
         _isInitialized = true;
     }
 
@@ -105,6 +112,26 @@ public partial class MainWindow : Window
         finally
         {
             _centralRefreshInProgress = false;
+        }
+    }
+
+    private async void MainWindow_Deactivated(object? sender, EventArgs e)
+    {
+        if (!_isInitialized || _session.IsOfflineMode || _deactivateFlushInProgress)
+            return;
+
+        _deactivateFlushInProgress = true;
+        try
+        {
+            await FlushPendingChangesBeforeNavigationAsync("창 비활성화");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("SYNC", $"Window deactivation flush failed: {ex.Message}");
+        }
+        finally
+        {
+            _deactivateFlushInProgress = false;
         }
     }
 
@@ -449,16 +476,19 @@ public partial class MainWindow : Window
 
     private async Task OpenSalesWindowAsync(bool preselectSelectedCustomer)
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         await OpenNewInvoiceWindowAsync(거래플랜.Shared.Contracts.VoucherType.Sales, preselectSelectedCustomer);
     }
 
     private async Task OpenPurchaseWindowAsync(bool preselectSelectedCustomer)
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         await OpenNewInvoiceWindowAsync(거래플랜.Shared.Contracts.VoucherType.Purchase, preselectSelectedCustomer);
     }
 
     private async Task OpenProcurementWindowAsync(bool preselectSelectedCustomer)
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         await OpenNewInvoiceWindowAsync(거래플랜.Shared.Contracts.VoucherType.Procurement, preselectSelectedCustomer);
     }
 
@@ -485,6 +515,7 @@ public partial class MainWindow : Window
 
     private async Task OpenInvoiceWindowAsync(Data.LocalInvoice invoice)
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var entryType = invoice.VoucherType switch
         {
             거래플랜.Shared.Contracts.VoucherType.Purchase => 거래플랜.Shared.Contracts.VoucherType.Purchase,
@@ -503,6 +534,7 @@ public partial class MainWindow : Window
 
     private async Task OpenCustomerEditorAsync(Data.LocalCustomer? customer = null)
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new CustomerEditViewModel(_local, _session);
         await vm.LoadAsync(customer);
 
@@ -513,6 +545,7 @@ public partial class MainWindow : Window
 
     private async Task OpenInventoryWindowAsync()
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new InventoryViewModel(_local, _session);
         await vm.LoadAsync();
         var win = new InventoryWindow(vm) { Owner = this };
@@ -521,6 +554,7 @@ public partial class MainWindow : Window
 
     private async Task OpenPaymentPopupAsync()
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new PaymentViewModel(_local, _session);
 
         // 우선: 좌측 거래처 선택값, 없으면 선택 전표의 거래처를 사용
@@ -539,6 +573,7 @@ public partial class MainWindow : Window
 
     private async Task OpenYeonsuDeliveryWindowAsync()
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new YeonsuDeliveryViewModel(_local, _session);
         await vm.InitializeAsync();
         var win = new YeonsuDeliveryWindow(vm, _local, _print, _invoicePrintService, _session)
@@ -550,6 +585,7 @@ public partial class MainWindow : Window
 
     private async Task OpenEnvironmentSettingsWindowAsync(bool openRecycleBinTab = false)
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new EnvironmentSettingsViewModel(
             _local,
             _session,
@@ -568,6 +604,7 @@ public partial class MainWindow : Window
 
     private async Task OpenCustomerManagementWindowAsync()
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new CustomerManagementViewModel(_local, _session);
         await vm.InitializeAsync();
         var win = new CustomerManagementWindow(vm, _local, _session)
@@ -580,6 +617,7 @@ public partial class MainWindow : Window
 
     private async Task OpenRentalDashboardWindowAsync()
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalDashboardViewModel(_rental, _session);
         await vm.LoadAsync();
         var win = new RentalDashboardWindow(vm)
@@ -592,6 +630,7 @@ public partial class MainWindow : Window
 
     private async Task OpenRentalBillingWindowAsync()
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalBillingViewModel(_rental, _local, _session);
         await vm.LoadAsync();
         var win = new RentalBillingWindow(vm)
@@ -604,6 +643,7 @@ public partial class MainWindow : Window
 
     private async Task OpenRentalAssetWindowAsync()
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalAssetViewModel(_rental, _local, _rentalDocuments, _invoicePrintService, _session);
         await vm.LoadAsync();
         var win = new RentalAssetWindow(vm)
@@ -616,6 +656,7 @@ public partial class MainWindow : Window
 
     private async Task OpenRentalSettingsWindowAsync()
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalSettingsViewModel(_rental, _local, _session);
         await vm.LoadAsync();
         var win = new RentalSettingsWindow(vm)
@@ -624,5 +665,67 @@ public partial class MainWindow : Window
         };
         win.ShowDialog();
         await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+    }
+
+    private async Task FlushPendingChangesBeforeNavigationAsync(string reason)
+    {
+        if (_session.IsOfflineMode)
+            return;
+
+        if (await _local.CountDirtyAsync() == 0)
+            return;
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            _vm.SyncStatus = $"{reason} 전 중앙 서버에 변경사항 저장 중...";
+            await _sync.FlushPendingChangesAsync(cts.Token);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("SYNC", $"{reason} flush failed: {ex.Message}");
+        }
+    }
+
+    private async Task CheckAndPromptForDesktopUpdateAsync()
+    {
+        if (_updatePromptInProgress || _session.IsOfflineMode)
+            return;
+
+        _updatePromptInProgress = true;
+        try
+        {
+            var result = await _updateService.CheckForUpdatesAsync();
+            if (!result.IsUpdateAvailable || result.Package is null)
+                return;
+
+            var lastPromptedVersion = await _local.GetSettingAsync("Update.LastPromptedDesktopVersion");
+            if (string.Equals(lastPromptedVersion, result.LatestVersion, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            await _local.SetSettingAsync("Update.LastPromptedDesktopVersion", result.LatestVersion, CancellationToken.None);
+
+            var answer = MessageBox.Show(
+                $"새 PC 버전 {result.LatestVersion}이 준비되어 있습니다.{Environment.NewLine}{Environment.NewLine}" +
+                "지금 업데이트를 시작하시겠습니까?",
+                "업데이트 알림",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Information);
+
+            if (answer != MessageBoxResult.Yes)
+                return;
+
+            _updateService.StartUpdate(result.Package);
+            _vm.SyncStatus = $"업데이트 {result.LatestVersion} 설치를 시작했습니다.";
+            Application.Current?.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("UPDATE", $"Desktop update prompt failed: {ex.Message}");
+        }
+        finally
+        {
+            _updatePromptInProgress = false;
+        }
     }
 }

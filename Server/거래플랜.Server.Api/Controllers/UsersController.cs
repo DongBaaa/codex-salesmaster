@@ -10,7 +10,7 @@ using Microsoft.EntityFrameworkCore;
 namespace 거래플랜.Server.Api.Controllers;
 
 [ApiController]
-[Authorize(Roles = "Admin")]
+[Authorize(Policy = "AdminOrGod")]
 [Route("users")]
 public sealed class UsersController : ControllerBase
 {

@@ -58,11 +58,11 @@ public sealed partial class InventoryViewModel : ObservableObject
     [ObservableProperty] private string _statusMessage = "품목 정보는 공용으로 저장되고 재고 수량은 지점별로 계산됩니다.";
     [ObservableProperty] private bool _isNew = true;
 
-    public bool IsAdmin => _session.IsAdmin;
-    public bool CanSwitchOfficeTabs => _session.IsAdmin;
+    public bool IsAdmin => _session.HasAdministrativePrivileges;
+    public bool CanSwitchOfficeTabs => _session.HasGlobalDataScope;
     public string SelectedOfficeDisplay => OfficeCodeCatalog.GetOfficeDisplayName(SelectedOfficeCode);
     public string SelectedOfficeStockLabel => $"{SelectedOfficeDisplay} 재고";
-    public string InventoryScopeMessage => _session.IsAdmin
+    public string InventoryScopeMessage => _session.HasGlobalDataScope
         ? $"{SelectedOfficeDisplay} 재고를 보는 중입니다."
         : $"{SelectedOfficeDisplay} 재고만 조회할 수 있습니다.";
     public string TransferGuideMessage => IsAdmin
@@ -104,7 +104,9 @@ public sealed partial class InventoryViewModel : ObservableObject
         if (reloadCategories)
             await ReloadItemCategoryOptionsAsync();
 
-        _allItems = await _local.GetItemsAsync();
+        _allItems = _session.HasGlobalDataScope
+            ? await _local.GetItemsAsync()
+            : await _local.GetItemsAsync(_session);
         await LoadInventoryStateAsync();
         ApplyFilter();
 

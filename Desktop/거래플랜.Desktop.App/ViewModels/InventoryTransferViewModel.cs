@@ -92,7 +92,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     public ObservableCollection<InventoryTransferLineEditModel> Lines { get; } = new();
 
     public bool HasStatus => !string.IsNullOrWhiteSpace(StatusMessage);
-    public bool IsAdmin => _session.IsAdmin;
+    public bool IsAdmin => _session.HasAdministrativePrivileges;
     public bool HasSavedTransfer => TransferId != Guid.Empty;
     public bool CanDeleteTransfer => HasSavedTransfer;
     public bool CanConfirmReceipt => HasSavedTransfer && !IsFinalTransferStatus && CanCurrentUserReceive;
@@ -112,7 +112,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     {
         get
         {
-            if (_session.IsAdmin)
+            if (_session.HasAdministrativePrivileges)
                 return true;
 
             var destinationOfficeCode = ResolveOfficeCodeFromWarehouseCode(ToWarehouseCode);

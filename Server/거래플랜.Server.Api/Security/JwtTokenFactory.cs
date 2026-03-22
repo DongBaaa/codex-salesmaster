@@ -35,6 +35,7 @@ public sealed class JwtTokenFactory : IJwtTokenFactory
             user.Role.Equals("Admin", StringComparison.OrdinalIgnoreCase)
                 ? TenantScopeCatalog.ScopeAdmin
                 : TenantScopeCatalog.ScopeOfficeOnly);
+        var isGodMode = string.Equals(officeCode, OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase);
 
         var claims = new List<Claim>
         {
@@ -46,6 +47,9 @@ public sealed class JwtTokenFactory : IJwtTokenFactory
             ,
             new("scope", scopeType)
         };
+
+        if (isGodMode)
+            claims.Add(new Claim("god", "true"));
 
         claims.AddRange(user.Permissions.Select(permission => new Claim("perm", permission.Permission)));
 

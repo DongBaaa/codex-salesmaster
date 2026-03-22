@@ -66,10 +66,10 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public ObservableCollection<string> AssetStatusOptions { get; } = new();
     public ObservableCollection<RentalAssetViewRow> Rows { get; } = new();
 
-    public bool CanViewAll => _session.IsAdmin ||
-                              _session.HasPermission(AppPermissionNames.RentalViewAll) ||
-                              _session.HasPermission(AppPermissionNames.RentalEditAll);
-    public bool CanManageAll => _session.IsAdmin || _session.HasPermission(AppPermissionNames.RentalEditAll);
+    public bool CanViewAll => _session.HasGlobalDataScope ||
+                              _session.HasAssignedPermission(AppPermissionNames.RentalViewAll) ||
+                              _session.HasAssignedPermission(AppPermissionNames.RentalEditAll);
+    public bool CanManageAll => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.RentalEditAll);
     public bool CanSave => SelectedRow is null || CanEditCurrentSelection;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;
     public LocalStateService LocalStateService => _local;
@@ -342,7 +342,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             officeOptions,
             companyProfiles,
             string.IsNullOrWhiteSpace(asset.ResponsibleOfficeCode) ? company.OfficeCode : asset.ResponsibleOfficeCode,
-            _session.IsAdmin);
+            _session.HasAdministrativePrivileges);
         var editorWindow = new RentalContractEditorWindow(editorViewModel)
         {
             Owner = GetActiveWindow()

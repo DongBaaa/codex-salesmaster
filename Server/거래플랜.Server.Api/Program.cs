@@ -118,6 +118,10 @@ builder.Services
 builder.Services.AddAuthorization(options =>
 {
     options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
+    options.AddPolicy("AdminOrGod", policy =>
+    {
+        policy.RequireAssertion(context => IsGodUser(context.User) || context.User.IsInRole("Admin"));
+    });
     AddPermissionPolicy(options, PermissionNames.CompanyProfileEdit);
     AddPermissionPolicy(options, PermissionNames.AmountViewSales);
     AddPermissionPolicy(options, PermissionNames.AmountViewPurchase);
@@ -328,9 +332,17 @@ static void AddPermissionPolicy(AuthorizationOptions options, string permission)
     {
         policy.RequireAssertion(context =>
             context.User.IsInRole("Admin") ||
+            IsGodUser(context.User) ||
             context.User.Claims.Any(claim => claim.Type == "perm" && claim.Value == permission));
     });
 }
+
+static bool IsGodUser(System.Security.Claims.ClaimsPrincipal user)
+    => user.Claims.Any(claim => claim.Type == "god" && string.Equals(claim.Value, "true", StringComparison.OrdinalIgnoreCase))
+       || string.Equals(
+           OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(user.FindFirst("office")?.Value),
+           OfficeCodeCatalog.Usenet,
+           StringComparison.OrdinalIgnoreCase);
 
 static string ResolveRateLimitKey(HttpContext context, string path)
 {

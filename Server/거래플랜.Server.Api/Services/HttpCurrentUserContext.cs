@@ -36,11 +36,27 @@ public sealed class HttpCurrentUserContext : ICurrentUserContext
     public bool IsAdmin =>
         _httpContextAccessor.HttpContext?.User.IsInRole("Admin") ?? false;
 
+    public bool IsGodMode
+    {
+        get
+        {
+            var user = _httpContextAccessor.HttpContext?.User;
+            if (user is null)
+                return false;
+
+            if (user.Claims.Any(claim => claim.Type == "god" && string.Equals(claim.Value, "true", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            return string.Equals(OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(OfficeCode), OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     public bool HasPermission(string permission)
     {
         var user = _httpContextAccessor.HttpContext?.User;
         if (user is null) return false;
         return user.IsInRole("Admin") ||
+               IsGodMode ||
                user.Claims.Any(c => c.Type == "perm" && c.Value == permission);
     }
 }

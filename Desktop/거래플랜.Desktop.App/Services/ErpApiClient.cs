@@ -34,7 +34,7 @@ public sealed class ErpApiClient
         if (_http.DefaultRequestHeaders.Contains(tenantHeaderName))
             _http.DefaultRequestHeaders.Remove(tenantHeaderName);
 
-        if (!includeBusinessDatabaseHeader || !_session.IsAdmin || string.IsNullOrWhiteSpace(_session.SelectedBusinessDatabaseName))
+        if (!includeBusinessDatabaseHeader || !_session.HasAdministrativePrivileges || string.IsNullOrWhiteSpace(_session.SelectedBusinessDatabaseName))
             return;
 
         _http.DefaultRequestHeaders.TryAddWithoutValidation(tenantHeaderName, _session.SelectedBusinessDatabaseName);

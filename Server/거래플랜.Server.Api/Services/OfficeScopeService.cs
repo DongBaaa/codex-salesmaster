@@ -1,4 +1,4 @@
-using 거래플랜.Server.Api.Data;
+﻿using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
@@ -31,6 +31,8 @@ public sealed class OfficeScopeService
     }
 
     public bool IsAdmin => _currentUserContext.IsAdmin;
+    public bool HasGlobalDataScope =>
+        IsAdmin && string.Equals(CurrentScopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase);
 
     public string CurrentTenantCode => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
         _currentUserContext.TenantCode,
@@ -62,7 +64,7 @@ public sealed class OfficeScopeService
 
     public string ResolveTenantForCreate(string? requestedTenantCode, string? requestedOfficeCode, string? fallbackTenantCode = null, string? fallbackOfficeCode = null)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
         {
             return TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
                 requestedTenantCode,
@@ -76,7 +78,7 @@ public sealed class OfficeScopeService
 
     public string ResolveScopeForCreate(string? requestedOfficeCode, string? fallbackOfficeCode = null)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
         {
             return OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
                 requestedOfficeCode,
@@ -95,7 +97,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<CustomerMaster> ApplyCustomerMasterScope(IQueryable<CustomerMaster> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -107,7 +109,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<Customer> ApplyCustomerScope(IQueryable<Customer> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -119,7 +121,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<CustomerContract> ApplyCustomerContractScope(IQueryable<CustomerContract> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -132,7 +134,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<Item> ApplyItemScope(IQueryable<Item> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -144,7 +146,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<Invoice> ApplyInvoiceScope(IQueryable<Invoice> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -156,7 +158,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<Payment> ApplyPaymentScope(IQueryable<Payment> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -169,7 +171,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<TransactionRecord> ApplyTransactionScope(IQueryable<TransactionRecord> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -181,7 +183,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<TransactionAttachment> ApplyTransactionAttachmentScope(IQueryable<TransactionAttachment> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -194,7 +196,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<InventoryTransfer> ApplyInventoryTransferScope(IQueryable<InventoryTransfer> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -206,7 +208,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalManagementCompany> ApplyRentalManagementCompanyScope(IQueryable<RentalManagementCompany> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -215,7 +217,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalBillingProfile> ApplyRentalBillingProfileScope(IQueryable<RentalBillingProfile> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -227,7 +229,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalAsset> ApplyRentalAssetScope(IQueryable<RentalAsset> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -239,7 +241,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalBillingLog> ApplyRentalBillingLogScope(IQueryable<RentalBillingLog> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -251,7 +253,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<ItemWarehouseStock> ApplyWarehouseScope(IQueryable<ItemWarehouseStock> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var readableWarehouses = ResolveReadableOfficeCodes(DataArea.Items)
@@ -263,7 +265,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<ItemWarehouseStock> ApplyItemWarehouseStockScope(IQueryable<ItemWarehouseStock> query)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -326,7 +328,7 @@ public sealed class OfficeScopeService
 
     private bool CanReadOffice(string? officeCode, string? tenantCode, DataArea area)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return true;
 
         var normalizedTenant = ResolveEntityTenantCode(tenantCode, officeCode);
@@ -342,7 +344,7 @@ public sealed class OfficeScopeService
 
     private bool CanWriteOffice(string? officeCode, string? tenantCode, DataArea area)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return true;
 
         var normalizedTenant = ResolveEntityTenantCode(tenantCode, officeCode);
@@ -358,7 +360,7 @@ public sealed class OfficeScopeService
 
     private bool CanReadWarehouse(string? warehouseCode, string? officeCode, DataArea area)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return true;
 
         var normalizedWarehouse = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(warehouseCode, officeCode, CurrentOfficeCode);
@@ -370,7 +372,7 @@ public sealed class OfficeScopeService
 
     private bool CanWriteWarehouse(string? warehouseCode, string? officeCode, DataArea area)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return true;
 
         var normalizedWarehouse = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(warehouseCode, officeCode, CurrentOfficeCode);
@@ -385,7 +387,7 @@ public sealed class OfficeScopeService
 
     private IReadOnlyList<string> ResolveReadableOfficeCodes(DataArea area)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return OfficeCodeCatalog.All;
 
         if (string.Equals(CurrentScopeType, TenantScopeCatalog.ScopeOfficeOnly, StringComparison.OrdinalIgnoreCase))
@@ -415,7 +417,7 @@ public sealed class OfficeScopeService
 
     private IReadOnlyList<string> ResolveWritableOfficeCodes(DataArea area)
     {
-        if (IsAdmin)
+        if (HasGlobalDataScope)
             return OfficeCodeCatalog.All;
 
         var writable = new HashSet<string>(StringComparer.OrdinalIgnoreCase)

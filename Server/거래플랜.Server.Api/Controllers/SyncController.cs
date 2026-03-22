@@ -785,7 +785,7 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.RentalManagementCompanies.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.IsAdmin &&
+            if (existing is not null && !_officeScopeService.HasGlobalDataScope &&
                 !_officeScopeService.CanReadOffice(_officeScopeService.CurrentOfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(RentalManagementCompany), "Current account cannot modify this tenant scope.", result);

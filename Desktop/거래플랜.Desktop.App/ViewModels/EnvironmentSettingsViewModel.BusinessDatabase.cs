@@ -16,7 +16,7 @@ public sealed partial class EnvironmentSettingsViewModel
     [ObservableProperty] private string _currentBusinessDatabaseLabel = string.Empty;
 
     public ObservableCollection<BusinessDatabaseOption> BusinessDatabaseOptions { get; } = new();
-    public bool CanManageBusinessDatabaseSelection => _session.IsAdmin && !_session.IsOfflineMode;
+    public bool CanManageBusinessDatabaseSelection => _session.HasAdministrativePrivileges && !_session.IsOfflineMode;
     public bool CanLoadSelectedBusinessDatabase =>
         CanManageBusinessDatabaseSelection
         && SelectedBusinessDatabaseOption is not null

@@ -139,7 +139,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
         CustomerSearchText = string.Empty;
         SelectedCustomer = null;
         SelectedWarehouseOption = WarehouseOptionAll;
-        if (!string.IsNullOrWhiteSpace(_session.OfficeCode) && !_session.IsAdmin)
+        if (!string.IsNullOrWhiteSpace(_session.OfficeCode) && !_session.HasGlobalDataScope)
             SelectedOfficeCode = _session.OfficeCode;
         await LoadDeliveriesAsync();
     }
@@ -151,7 +151,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
         OfficeOptions.Clear();
         foreach (var office in offices.OrderBy(current => current.Name, StringComparer.CurrentCultureIgnoreCase))
         {
-            if (!_session.IsAdmin &&
+            if (!_session.HasGlobalDataScope &&
                 !readableOfficeCodes.Contains(office.Code))
             {
                 continue;
@@ -173,7 +173,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
             });
         }
 
-        if (_session.IsAdmin)
+        if (_session.HasGlobalDataScope)
         {
             SelectedOfficeCode = OfficeOptions.FirstOrDefault(option => string.Equals(option.Value, SelectedOfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
                 ?? OfficeOptions.First().Value;
@@ -191,7 +191,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     private HashSet<string> GetReadableOfficeCodes()
     {
-        if (_session.IsAdmin)
+        if (_session.HasGlobalDataScope)
             return OfficeCodeCatalog.All.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (string.Equals(_session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))

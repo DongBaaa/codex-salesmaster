@@ -365,7 +365,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             Notes = Notes,
         };
 
-        if (_session.IsAdmin)
+        if (_session.HasAdministrativePrivileges)
         {
             await _local.UpsertCustomerAsync(customer);
             await _local.WaitForServerWriteAsync();

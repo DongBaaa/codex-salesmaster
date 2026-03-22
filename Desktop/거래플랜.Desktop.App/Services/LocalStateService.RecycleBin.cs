@@ -891,7 +891,7 @@ public sealed partial class LocalStateService
     {
         RestoreEntity(customer, now);
 
-        if (!session.IsAdmin &&
+        if (!session.HasAdministrativePrivileges &&
             !string.Equals(
                 NormalizeOfficeCode(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
                 NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet),

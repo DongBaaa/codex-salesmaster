@@ -54,7 +54,7 @@ public sealed partial class LocalStateService
     private void HandleSavedChanges(object? sender, SavedChangesEventArgs args)
     {
         if (_hasPendingSyncEntityChanges)
-            _syncRequestDispatcher.RequestImmediateSync();
+            _syncRequestDispatcher.RequestDebouncedSync();
 
         _hasPendingSyncEntityChanges = false;
     }
@@ -69,7 +69,8 @@ public sealed partial class LocalStateService
         if (!_session.IsLoggedIn || _session.IsOfflineMode)
             return Task.FromResult(false);
 
-        return _syncRequestDispatcher.WaitForImmediateSyncCompletionAsync(ct);
+        _syncRequestDispatcher.RequestFlushSync();
+        return _syncRequestDispatcher.WaitForSyncCompletionAsync(ct);
     }
     // Customers
     public Task<List<LocalCustomer>> GetCustomersAsync(CancellationToken ct = default)
@@ -166,7 +167,7 @@ public sealed partial class LocalStateService
 
         await _db.SaveChangesAsync(ct);
 
-        var grantedTemporaryAccess = !session.IsAdmin &&
+        var grantedTemporaryAccess = !session.HasAdministrativePrivileges &&
                                      !IsSharedOfficeScope(normalizedOfficeCode) &&
                                      !string.Equals(normalizedOfficeCode, NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet), StringComparison.OrdinalIgnoreCase);
 
@@ -531,6 +532,9 @@ public sealed partial class LocalStateService
 
     // Items
     public Task<List<LocalItem>> GetItemsAsync(CancellationToken ct = default)
+        => _db.Items.AsNoTracking().OrderBy(i => i.NameOriginal).ToListAsync(ct);
+
+    public Task<List<LocalItem>> GetItemsAsync(SessionState session, CancellationToken ct = default)
         => _db.Items.AsNoTracking().OrderBy(i => i.NameOriginal).ToListAsync(ct);
 
     public Task<LocalItem?> GetItemAsync(Guid itemId, CancellationToken ct = default)
@@ -1029,7 +1033,7 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
-        var officeCode = session.IsAdmin
+        var officeCode = session.HasGlobalDataScope
             ? NormalizeOfficeCode(responsibleOfficeCode, DomainConstants.OfficeYeonsu)
             : NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeYeonsu);
 
@@ -2661,9 +2665,9 @@ public sealed partial class LocalStateService
     }
 
     private bool CanAccessRentalProfile(LocalRentalBillingProfile profile, SessionState session)
-        => session.IsAdmin ||
-           session.HasPermission(AppPermissionNames.RentalViewAll) ||
-           session.HasPermission(AppPermissionNames.RentalEditAll) ||
+        => session.HasGlobalDataScope ||
+           session.HasAssignedPermission(AppPermissionNames.RentalViewAll) ||
+           session.HasAssignedPermission(AppPermissionNames.RentalEditAll) ||
            string.Equals(
                NormalizeOfficeCode(profile.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
                NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet),
@@ -2793,7 +2797,7 @@ public sealed partial class LocalStateService
         if (!CanAccessTransaction(transaction, session))
             return OfficeMutationResult.Denied("沅뚰븳???놁뼱 ?대떦 利앸튃????젣?????놁뒿?덈떎.");
 
-        if (string.Equals(attachment.VerificationStatus, "?뺤씤?꾨즺", StringComparison.OrdinalIgnoreCase) && !session.IsAdmin)
+        if (string.Equals(attachment.VerificationStatus, "?뺤씤?꾨즺", StringComparison.OrdinalIgnoreCase) && !session.HasAdministrativePrivileges)
             return OfficeMutationResult.Denied("?뺤씤?꾨즺??利앸튃? 愿由ъ옄留???젣?????덉뒿?덈떎.");
 
         attachment.IsDeleted = true;
@@ -2830,7 +2834,7 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
-        if (!session.IsAdmin)
+        if (!session.HasAdministrativePrivileges)
             return OfficeMutationResult.Denied("利앸튃 ?뺤씤 ?곹깭??愿由ъ옄留?蹂寃쏀븷 ???덉뒿?덈떎.");
 
         var attachment = await _db.TransactionAttachments
@@ -3356,11 +3360,11 @@ public sealed partial class LocalStateService
     }
 
     private static bool HasFullAccess(SessionState? session)
-        => session is null || !session.IsLoggedIn || session.IsAdmin;
+        => session is null || !session.IsLoggedIn || session.HasGlobalDataScope;
 
     private static HashSet<string> GetReadableOfficeCodes(SessionState? session)
     {
-        if (session is null || !session.IsLoggedIn || session.IsAdmin)
+        if (session is null || !session.IsLoggedIn || session.HasGlobalDataScope)
             return OfficeCodeCatalog.All.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))

@@ -21,8 +21,8 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
 
     public ObservableCollection<LocalOffice> Offices { get; } = new();
 
-    public bool CanManage => _session.IsAdmin || _session.HasPermission(AppPermissionNames.RentalSettingsEdit);
-    public bool CanImport => _session.IsAdmin || _session.HasPermission(AppPermissionNames.RentalImport);
+    public bool CanManage => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.RentalSettingsEdit);
+    public bool CanImport => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.RentalImport);
 
     public RentalSettingsViewModel(RentalStateService rental, LocalStateService local, SessionState session)
     {

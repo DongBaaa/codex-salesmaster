@@ -1,31 +1,51 @@
-﻿namespace 거래플랜.Desktop.App.Services;
+namespace 거래플랜.Desktop.App.Services;
+
+public enum SyncRequestMode
+{
+    Debounced,
+    Flush
+}
 
 /// <summary>
-/// In-process dispatcher for requesting an accelerated sync after local data mutations.
+/// In-process dispatcher for debounced and forced sync requests after local mutations.
 /// </summary>
 public sealed class SyncRequestDispatcher
 {
     private readonly object _gate = new();
-    private TaskCompletionSource<bool>? _pendingImmediateSync;
+    private TaskCompletionSource<bool>? _pendingSync;
+    private SyncRequestMode _pendingMode = SyncRequestMode.Debounced;
 
-    public event Action? ImmediateSyncRequested;
+    public event Action<SyncRequestMode>? SyncRequested;
 
-    public void RequestImmediateSync()
+    public void RequestDebouncedSync()
     {
         lock (_gate)
         {
-            _pendingImmediateSync ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingSync ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (_pendingMode != SyncRequestMode.Flush)
+                _pendingMode = SyncRequestMode.Debounced;
         }
 
-        ImmediateSyncRequested?.Invoke();
+        SyncRequested?.Invoke(SyncRequestMode.Debounced);
     }
 
-    public Task<bool> WaitForImmediateSyncCompletionAsync(CancellationToken ct = default)
+    public void RequestFlushSync()
+    {
+        lock (_gate)
+        {
+            _pendingSync ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingMode = SyncRequestMode.Flush;
+        }
+
+        SyncRequested?.Invoke(SyncRequestMode.Flush);
+    }
+
+    public Task<bool> WaitForSyncCompletionAsync(CancellationToken ct = default)
     {
         Task<bool>? pendingTask;
         lock (_gate)
         {
-            pendingTask = _pendingImmediateSync?.Task;
+            pendingTask = _pendingSync?.Task;
         }
 
         if (pendingTask is null)
@@ -36,13 +56,14 @@ public sealed class SyncRequestDispatcher
             : pendingTask;
     }
 
-    public void CompleteImmediateSync(bool succeeded)
+    public void CompleteSync(bool succeeded)
     {
         TaskCompletionSource<bool>? pending;
         lock (_gate)
         {
-            pending = _pendingImmediateSync;
-            _pendingImmediateSync = null;
+            pending = _pendingSync;
+            _pendingSync = null;
+            _pendingMode = SyncRequestMode.Debounced;
         }
 
         pending?.TrySetResult(succeeded);

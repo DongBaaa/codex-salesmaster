@@ -8,5 +8,6 @@ public interface ICurrentUserContext
     string OfficeCode { get; }
     string ScopeType { get; }
     bool IsAdmin { get; }
+    bool IsGodMode { get; }
     bool HasPermission(string permission);
 }

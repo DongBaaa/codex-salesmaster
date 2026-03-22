@@ -14,7 +14,7 @@ public sealed class SyncService : IDisposable
 {
     private const int MaxRetryCount = 3;
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan ImmediateSyncDebounceDelay = TimeSpan.FromMilliseconds(750);
+    private static readonly TimeSpan DebouncedSyncDelay = TimeSpan.FromSeconds(15);
 
     private readonly LocalDbContext _db;
     private readonly LocalStateService _local;
@@ -26,6 +26,7 @@ public sealed class SyncService : IDisposable
     private CancellationTokenSource? _immediateSyncCts;
     private Task<bool>? _currentSyncTask;
     private bool _resyncRequested;
+    private bool _flushRequested;
 
     public event Action<string>? SyncStatusChanged;
 
@@ -41,7 +42,7 @@ public sealed class SyncService : IDisposable
         _api = api;
         _session = session;
         _dispatcher = dispatcher;
-        _dispatcher.ImmediateSyncRequested += HandleImmediateSyncRequested;
+        _dispatcher.SyncRequested += HandleSyncRequested;
     }
 
     public void Start(TimeSpan interval, bool runImmediately = false)
@@ -120,6 +121,7 @@ public sealed class SyncService : IDisposable
                 completedTask =>
                 {
                     CancellationTokenSource? rerunCts = null;
+                    var rerunImmediately = false;
                     lock (_immediateSyncGate)
                     {
                         if (ReferenceEquals(_currentSyncTask, completedTask))
@@ -130,8 +132,18 @@ public sealed class SyncService : IDisposable
                             _resyncRequested = false;
                             _immediateSyncCts?.Cancel();
                             _immediateSyncCts?.Dispose();
-                            _immediateSyncCts = new CancellationTokenSource();
-                            rerunCts = _immediateSyncCts;
+                            _immediateSyncCts = null;
+
+                            if (_flushRequested)
+                            {
+                                _flushRequested = false;
+                                rerunImmediately = true;
+                            }
+                            else
+                            {
+                                _immediateSyncCts = new CancellationTokenSource();
+                                rerunCts = _immediateSyncCts;
+                            }
                         }
                     }
 
@@ -139,10 +151,14 @@ public sealed class SyncService : IDisposable
                     {
                         _ = RunDeferredImmediateSyncAsync(rerunCts.Token);
                     }
+                    else if (rerunImmediately)
+                    {
+                        _ = StartSyncAsync(waitForRunningSync: true, CancellationToken.None);
+                    }
                     else
                     {
                         var succeeded = completedTask.Status == TaskStatus.RanToCompletion && completedTask.Result;
-                        _dispatcher.CompleteImmediateSync(succeeded);
+                        _dispatcher.CompleteSync(succeeded);
                     }
                 },
                 CancellationToken.None,
@@ -199,34 +215,50 @@ public sealed class SyncService : IDisposable
         return false;
     }
 
-    private void HandleImmediateSyncRequested()
+    private void HandleSyncRequested(SyncRequestMode mode)
     {
         if (!_session.IsLoggedIn || _session.IsOfflineMode)
             return;
 
-        CancellationTokenSource cts;
+        CancellationTokenSource? cts = null;
+        var runImmediately = false;
         lock (_immediateSyncGate)
         {
             if (_currentSyncTask is not null && !_currentSyncTask.IsCompleted)
             {
                 _resyncRequested = true;
+                if (mode == SyncRequestMode.Flush)
+                    _flushRequested = true;
                 return;
             }
 
             _immediateSyncCts?.Cancel();
             _immediateSyncCts?.Dispose();
-            _immediateSyncCts = new CancellationTokenSource();
-            cts = _immediateSyncCts;
+            _immediateSyncCts = null;
+
+            if (mode == SyncRequestMode.Flush)
+            {
+                _flushRequested = false;
+                runImmediately = true;
+            }
+            else
+            {
+                _immediateSyncCts = new CancellationTokenSource();
+                cts = _immediateSyncCts;
+            }
         }
 
-        _ = RunDeferredImmediateSyncAsync(cts.Token);
+        if (runImmediately)
+            _ = StartSyncAsync(waitForRunningSync: true, CancellationToken.None);
+        else if (cts is not null)
+            _ = RunDeferredImmediateSyncAsync(cts.Token);
     }
 
     private async Task RunDeferredImmediateSyncAsync(CancellationToken ct)
     {
         try
         {
-            await Task.Delay(ImmediateSyncDebounceDelay, ct);
+            await Task.Delay(DebouncedSyncDelay, ct);
             await StartSyncAsync(waitForRunningSync: true, ct);
         }
         catch (OperationCanceledException)
@@ -873,7 +905,7 @@ public sealed class SyncService : IDisposable
 
     public void Dispose()
     {
-        _dispatcher.ImmediateSyncRequested -= HandleImmediateSyncRequested;
+        _dispatcher.SyncRequested -= HandleSyncRequested;
         _timer?.Dispose();
 
         lock (_immediateSyncGate)
@@ -883,6 +915,7 @@ public sealed class SyncService : IDisposable
             _immediateSyncCts = null;
             _currentSyncTask = null;
             _resyncRequested = false;
+            _flushRequested = false;
         }
     }
 }

@@ -2913,6 +2913,7 @@ public static class DbInitializer
         public string OfficeCode => OfficeCodeCatalog.Usenet;
         public string ScopeType => TenantScopeCatalog.ScopeAdmin;
         public bool IsAdmin => true;
+        public bool IsGodMode => true;
         public bool HasPermission(string permission) => true;
     }
 }

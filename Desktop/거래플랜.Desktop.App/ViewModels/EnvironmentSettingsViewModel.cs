@@ -76,10 +76,10 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     public ObservableCollection<UserAccountDto> Users { get; } = new();
     public ObservableCollection<DisplayOption> CompanyProfileOptions { get; } = new();
 
-    public bool CanManageUsers => _session.IsAdmin && !_session.IsOfflineMode;
-    public bool CanManageTenantConfiguration => _session.IsAdmin && !_session.IsOfflineMode;
-    public bool CanManageSelectionOptions => _session.IsAdmin;
-    public bool CanEditCompanyProfiles => _session.IsAdmin;
+    public bool CanManageUsers => _session.HasAdministrativePrivileges && !_session.IsOfflineMode;
+    public bool CanManageTenantConfiguration => _session.HasAdministrativePrivileges && !_session.IsOfflineMode;
+    public bool CanManageSelectionOptions => _session.HasAdministrativePrivileges;
+    public bool CanEditCompanyProfiles => _session.HasAdministrativePrivileges;
     public bool CanEditOfficeCode => false;
     public bool CanEditOfficeName => false;
     public bool CanManageOffices => false;

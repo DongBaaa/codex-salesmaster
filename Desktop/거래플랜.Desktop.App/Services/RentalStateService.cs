@@ -1081,24 +1081,24 @@ public sealed class RentalStateService
 
     private bool CanViewAllRental(SessionState? session)
         => session is not null && session.IsLoggedIn && (
-            session.IsAdmin ||
-            session.HasPermission(AppPermissionNames.RentalViewAll) ||
-            session.HasPermission(AppPermissionNames.RentalEditAll));
+            session.HasGlobalDataScope ||
+            session.HasAssignedPermission(AppPermissionNames.RentalViewAll) ||
+            session.HasAssignedPermission(AppPermissionNames.RentalEditAll));
 
     private static bool CanViewTenantRental(SessionState? session)
         => session is not null &&
            session.IsLoggedIn &&
-           !session.IsAdmin &&
+           !session.HasGlobalDataScope &&
            string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase);
 
     private bool CanEditAllRental(SessionState? session)
         => session is not null && session.IsLoggedIn && (
-            session.IsAdmin ||
+            session.HasAdministrativePrivileges ||
             session.HasPermission(AppPermissionNames.RentalEditAll));
 
     private static HashSet<string> GetReadableOfficeCodes(SessionState session)
     {
-        if (session.IsAdmin)
+        if (session.HasGlobalDataScope)
             return OfficeCodeCatalog.All.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
@@ -1115,10 +1115,10 @@ public sealed class RentalStateService
     }
 
     private bool CanEditRentalSettings(SessionState? session)
-        => session is not null && (session.IsAdmin || session.HasPermission(AppPermissionNames.RentalSettingsEdit));
+        => session is not null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.RentalSettingsEdit));
 
     private bool CanImportRental(SessionState? session)
-        => session is not null && (session.IsAdmin || session.HasPermission(AppPermissionNames.RentalImport));
+        => session is not null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.RentalImport));
 
     private static string NormalizeAlertDaysText(string value)
     {
@@ -1412,7 +1412,7 @@ public sealed class RentalStateService
         if (!string.IsNullOrWhiteSpace(normalized))
             return normalized;
 
-        if (allowBlankForAdmin && session.IsAdmin)
+        if (allowBlankForAdmin && session.HasAdministrativePrivileges)
             return string.Empty;
 
         return NormalizeUsername(session.User?.Username);
