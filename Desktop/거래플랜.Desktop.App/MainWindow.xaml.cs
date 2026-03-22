@@ -19,6 +19,10 @@ public partial class MainWindow : Window
     private readonly IPrintService _invoicePrintService;
     private readonly SessionState _session;
     private readonly ErpApiClient _api;
+    private readonly SyncService _sync;
+    private bool _isInitialized;
+    private DateTime _lastCentralRefreshUtc = DateTime.MinValue;
+    private bool _centralRefreshInProgress;
 
     public MainWindow(MainViewModel vm, LocalStateService local,
                       RentalStateService rental,
@@ -26,7 +30,8 @@ public partial class MainWindow : Window
                       StatementPrintService print,
                       IPrintService invoicePrintService,
                       SessionState session,
-                      ErpApiClient api)
+                      ErpApiClient api,
+                      SyncService sync)
     {
         InitializeComponent();
         _vm = vm;
@@ -37,12 +42,16 @@ public partial class MainWindow : Window
         _invoicePrintService = invoicePrintService;
         _session = session;
         _api = api;
+        _sync = sync;
         DataContext = vm;
+        Activated += MainWindow_Activated;
     }
 
     public async Task InitAsync()
     {
         await _vm.LoadAsync();
+        if (!_session.IsOfflineMode)
+            _sync.Start(TimeSpan.FromMinutes(5));
 
         var popupSections = new List<string>();
         if (!string.IsNullOrWhiteSpace(_vm.ContractAlertPopupMessage))
@@ -57,6 +66,34 @@ public partial class MainWindow : Window
                 "대시보드 알림",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
+        }
+
+        _isInitialized = true;
+    }
+
+    private async void MainWindow_Activated(object? sender, EventArgs e)
+    {
+        if (!_isInitialized || _session.IsOfflineMode || _centralRefreshInProgress)
+            return;
+
+        var nowUtc = DateTime.UtcNow;
+        if (nowUtc - _lastCentralRefreshUtc < TimeSpan.FromSeconds(5))
+            return;
+
+        _centralRefreshInProgress = true;
+        try
+        {
+            _lastCentralRefreshUtc = nowUtc;
+            if (!_vm.ForceSyncCommand.IsRunning)
+                await _vm.ForceSyncCommand.ExecuteAsync(null);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("SYNC", $"Window activation refresh failed: {ex.Message}");
+        }
+        finally
+        {
+            _centralRefreshInProgress = false;
         }
     }
 

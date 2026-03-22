@@ -8,6 +8,36 @@ param(
     [switch]$SkipNativeInstallers
 )
 
+function Resolve-DotnetCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot
+    )
+
+    $candidates = @(
+        $env:DOTNET_EXE,
+        'C:\Users\beene\AppData\Local\GeoraePlan.Android\dotnet8\dotnet.exe',
+        'C:\Program Files\dotnet\dotnet.exe'
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            continue
+        }
+
+        try {
+            & $candidate --version *> $null
+            if ($LASTEXITCODE -eq 0) {
+                return (Resolve-Path -LiteralPath $candidate).Path
+            }
+        }
+        catch {
+            continue
+        }
+    }
+
+    throw "Unable to locate a working dotnet executable for packaging under $ProjectRoot."
+}
+
 function Get-Utf8String {
     param(
         [Parameter(Mandatory = $true)][string]$Base64
@@ -110,7 +140,8 @@ function Get-ProjectVersion {
 function Publish-DesktopApplication {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
-        [Parameter(Mandatory = $true)][string]$PublishRoot
+        [Parameter(Mandatory = $true)][string]$PublishRoot,
+        [Parameter(Mandatory = $true)][string]$DotnetExe
     )
 
     $desktopProject = Join-Path $ProjectRoot 'Desktop\거래플랜.Desktop.App\거래플랜.Desktop.App.csproj'
@@ -121,7 +152,7 @@ function Publish-DesktopApplication {
     Remove-Item -LiteralPath $PublishRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $PublishRoot | Out-Null
 
-    & dotnet publish $desktopProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $PublishRoot | Out-Null
+    & $DotnetExe publish $desktopProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $PublishRoot | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to publish desktop application for packaging.'
     }
@@ -148,11 +179,12 @@ endlocal
 function Prepare-DefaultClientSourceFolder {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
-        [Parameter(Mandatory = $true)][string]$AppDisplayName
+        [Parameter(Mandatory = $true)][string]$AppDisplayName,
+        [Parameter(Mandatory = $true)][string]$DotnetExe
     )
 
     $publishRoot = Join-Path $env:TEMP 'georaeplan-desktop-package-publish'
-    $sourceFolder = Publish-DesktopApplication -ProjectRoot $ProjectRoot -PublishRoot $publishRoot
+    $sourceFolder = Publish-DesktopApplication -ProjectRoot $ProjectRoot -PublishRoot $publishRoot -DotnetExe $DotnetExe
     $publishedExeCandidates = @(
         (Join-Path $sourceFolder '거래플랜.Desktop.App.exe'),
         (Join-Path $sourceFolder "$AppDisplayName.exe")
@@ -187,11 +219,14 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = (Resolve-Path (Join-Path $scriptRoot '..\..')).Path
 }
 
+$dotnetExe = Resolve-DotnetCommand -ProjectRoot $ProjectRoot
+$env:DOTNET_EXE = $dotnetExe
+
 $deploymentRoot = Get-DeploymentRoot -ProjectRoot $ProjectRoot
 $desktopVersion = Get-ProjectVersion -ProjectRoot $ProjectRoot
 
 if ([string]::IsNullOrWhiteSpace($SourceFolder)) {
-    $SourceFolder = Prepare-DefaultClientSourceFolder -ProjectRoot $ProjectRoot -AppDisplayName $AppDisplayName
+    $SourceFolder = Prepare-DefaultClientSourceFolder -ProjectRoot $ProjectRoot -AppDisplayName $AppDisplayName -DotnetExe $dotnetExe
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
@@ -231,7 +266,7 @@ $updaterProject = Join-Path $ProjectRoot 'Updater\거래플랜.Updater\거래플
 if (Test-Path -LiteralPath $updaterProject) {
     $updaterPublishRoot = Join-Path $env:TEMP 'georaeplan-updater-publish'
     Remove-Item -LiteralPath $updaterPublishRoot -Recurse -Force -ErrorAction SilentlyContinue
-    & dotnet publish $updaterProject -c Release -o $updaterPublishRoot | Out-Null
+    & $dotnetExe publish $updaterProject -c Release -o $updaterPublishRoot | Out-Null
     if ($LASTEXITCODE -eq 0) {
         Invoke-RobocopyMirror -Source $updaterPublishRoot -Destination (Join-Path $appRoot 'Updater')
     }

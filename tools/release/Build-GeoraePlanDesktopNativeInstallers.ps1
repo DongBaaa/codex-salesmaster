@@ -14,6 +14,39 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Resolve-DotnetCommand {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+
+    $candidates = @(
+        $env:DOTNET_EXE,
+        'C:\Users\beene\AppData\Local\GeoraePlan.Android\dotnet8\dotnet.exe',
+        'C:\Program Files\dotnet\dotnet.exe'
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            continue
+        }
+
+        try {
+            & $candidate --version *> $null
+            if ($LASTEXITCODE -eq 0) {
+                return (Resolve-Path -LiteralPath $candidate).Path
+            }
+        }
+        catch {
+            continue
+        }
+    }
+
+    $command = Get-Command dotnet -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    throw "Working dotnet executable not found. projectRoot=$ProjectRoot"
+}
+
 function Get-DeploymentRoot {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
 
@@ -80,7 +113,8 @@ function Get-ProjectVersion {
 function Ensure-WixTool {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
-        [string]$PreferredToolPath
+        [string]$PreferredToolPath,
+        [Parameter(Mandatory = $true)][string]$DotnetExe
     )
 
     $candidates = @()
@@ -112,7 +146,7 @@ function Ensure-WixTool {
 
     $toolPath = Join-Path $ProjectRoot '.tooling\wix'
     New-Item -ItemType Directory -Force -Path $toolPath | Out-Null
-    & dotnet tool install wix --tool-path $toolPath --version 6.0.2 | Out-Null
+    & $DotnetExe tool install wix --tool-path $toolPath --version 6.0.2 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to install WiX Toolset.'
     }
@@ -207,36 +241,78 @@ Option Explicit
 Dim shell
 Dim fso
 Dim installDir
-Dim desktopPath
-Dim shortcutPath
-Dim shortcut
+Dim resultMessage
 
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
 installDir = fso.GetParentFolderName(WScript.ScriptFullName)
-On Error Resume Next
-desktopPath = shell.SpecialFolders("Desktop")
-If Err.Number <> 0 Or Len(desktopPath) = 0 Then
-    Err.Clear
-    desktopPath = shell.SpecialFolders("AllUsersDesktop")
-End If
-On Error GoTo 0
-shortcutPath = fso.BuildPath(desktopPath, "$AppDisplayName.lnk")
+Dim createdPaths
+createdPaths = ""
+AppendCreatedPath createdPaths, CreateShortcutOnDesktop("Desktop")
+AppendCreatedPath createdPaths, CreateShortcutOnDesktop("AllUsersDesktop")
 
-Set shortcut = shell.CreateShortcut(shortcutPath)
-shortcut.TargetPath = fso.BuildPath(installDir, "$LaunchExeName")
-shortcut.WorkingDirectory = installDir
-shortcut.IconLocation = fso.BuildPath(installDir, "$ShortcutIconFileName")
-shortcut.Description = "$AppDisplayName"
-shortcut.Save
+If Len(createdPaths) > 0 Then
+    resultMessage = "바탕화면 바로가기를 생성했습니다." & vbCrLf & createdPaths & vbCrLf & vbCrLf & _
+        "위 경로 중 하나가 현재 바탕화면에 표시됩니다."
+    MsgBox resultMessage, vbInformation, "$AppDisplayName 설치"
+Else
+    resultMessage = "바탕화면 바로가기를 생성하지 못했습니다." & vbCrLf & _
+        "사용자 바탕화면과 공용 바탕화면을 모두 확인해 주세요."
+    MsgBox resultMessage, vbExclamation, "$AppDisplayName 설치"
+End If
+
+Sub AppendCreatedPath(ByRef buffer, ByVal newPath)
+    If Len(newPath) = 0 Then
+        Exit Sub
+    End If
+
+    If Len(buffer) > 0 Then
+        buffer = buffer & vbCrLf
+    End If
+
+    buffer = buffer & newPath
+End Sub
+
+Function CreateShortcutOnDesktop(folderKey)
+    Dim desktopPath
+    Dim shortcutPath
+    Dim shortcut
+
+    CreateShortcutOnDesktop = ""
+    On Error Resume Next
+    desktopPath = shell.SpecialFolders(folderKey)
+    If Err.Number <> 0 Or Len(desktopPath) = 0 Then
+        Err.Clear
+        Exit Function
+    End If
+
+    shortcutPath = fso.BuildPath(desktopPath, "$AppDisplayName.lnk")
+    If fso.FileExists(shortcutPath) Then
+        fso.DeleteFile shortcutPath, True
+    End If
+    Set shortcut = shell.CreateShortcut(shortcutPath)
+    shortcut.TargetPath = fso.BuildPath(installDir, "$LaunchExeName")
+    shortcut.WorkingDirectory = installDir
+    shortcut.IconLocation = fso.BuildPath(installDir, "$ShortcutIconFileName")
+    shortcut.Description = "$AppDisplayName"
+    shortcut.Save
+
+    If Err.Number = 0 And fso.FileExists(shortcutPath) Then
+        CreateShortcutOnDesktop = shortcutPath
+    Else
+        Err.Clear
+    End If
+    On Error GoTo 0
+End Function
 "@
 }
 
 function Publish-DesktopApplication {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
-        [Parameter(Mandatory = $true)][string]$PublishRoot
+        [Parameter(Mandatory = $true)][string]$PublishRoot,
+        [Parameter(Mandatory = $true)][string]$DotnetExe
     )
 
     $desktopProject = Join-Path $ProjectRoot 'Desktop\거래플랜.Desktop.App\거래플랜.Desktop.App.csproj'
@@ -247,7 +323,7 @@ function Publish-DesktopApplication {
     Remove-Item -LiteralPath $PublishRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $PublishRoot | Out-Null
 
-    & dotnet publish $desktopProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $PublishRoot | Out-Null
+    & $DotnetExe publish $desktopProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $PublishRoot | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to publish desktop application for installer packaging.'
     }
@@ -262,7 +338,8 @@ function Prepare-InstallerSourceFolder {
         [Parameter(Mandatory = $true)][string]$StagingRoot,
         [Parameter(Mandatory = $true)][string]$LaunchExeName,
         [Parameter(Mandatory = $true)][string]$AppDisplayName,
-        [Parameter(Mandatory = $true)][string]$ShortcutIconPath
+        [Parameter(Mandatory = $true)][string]$ShortcutIconPath,
+        [Parameter(Mandatory = $true)][string]$DotnetExe
     )
 
     $installerSourceRoot = Join-Path $StagingRoot 'installer-source'
@@ -275,7 +352,7 @@ function Prepare-InstallerSourceFolder {
     (New-DesktopShortcutVbsContent -AppDisplayName $AppDisplayName -LaunchExeName $LaunchExeName -ShortcutIconFileName $shortcutIconFileName) |
         Set-Content -LiteralPath (Join-Path $installerSourceRoot $desktopShortcutScriptName) -Encoding Unicode
 
-    $publishRoot = Publish-DesktopApplication -ProjectRoot $ProjectRoot -PublishRoot (Join-Path $StagingRoot 'desktop-publish')
+    $publishRoot = Publish-DesktopApplication -ProjectRoot $ProjectRoot -PublishRoot (Join-Path $StagingRoot 'desktop-publish') -DotnetExe $DotnetExe
 
     $publishedExeCandidates = @(
         (Join-Path $publishRoot '거래플랜.Desktop.App.exe'),
@@ -503,10 +580,10 @@ function New-ProductWxsContent {
   </Fragment>
 
   <Fragment>
-    <Component Id="DesktopShortcutCleanupComponent" Directory="INSTALLFOLDER" Guid="*">
+      <Component Id="DesktopShortcutCleanupComponent" Directory="INSTALLFOLDER" Guid="*">
       <RemoveFile Id="RemoveDesktopShortcut" Directory="DesktopFolder" Name="$productName.lnk" On="uninstall" />
       <RegistryValue Root="HKLM" Key="Software\$registryManufacturer\$registryProduct" Name="DesktopShortcutCleanup" Type="integer" Value="1" KeyPath="yes" />
-    </Component>
+      </Component>
   </Fragment>
 </Wix>
 "@
@@ -654,13 +731,14 @@ internal static class Program
 function Build-BootstrapperExe {
     param(
         [Parameter(Mandatory = $true)][string]$BootstrapperProjectPath,
-        [Parameter(Mandatory = $true)][string]$PublishRoot
+        [Parameter(Mandatory = $true)][string]$PublishRoot,
+        [Parameter(Mandatory = $true)][string]$DotnetExe
     )
 
     Remove-Item -LiteralPath $PublishRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $PublishRoot | Out-Null
 
-    & dotnet publish $BootstrapperProjectPath -c Release -r win-x86 --self-contained true -p:PublishSingleFile=true -o $PublishRoot | Out-Null
+    & $DotnetExe publish $BootstrapperProjectPath -c Release -r win-x86 --self-contained true -p:PublishSingleFile=true -o $PublishRoot | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to build installer bootstrapper executable.'
     }
@@ -738,7 +816,8 @@ if (Test-Path -LiteralPath $legacyPackageRoot) {
     Remove-Item -LiteralPath $legacyPackageRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$wixExe = Ensure-WixTool -ProjectRoot $ProjectRoot -PreferredToolPath $WixToolPath
+$dotnetExe = Resolve-DotnetCommand -ProjectRoot $ProjectRoot
+$wixExe = Ensure-WixTool -ProjectRoot $ProjectRoot -PreferredToolPath $WixToolPath -DotnetExe $dotnetExe
 Ensure-WixExtensions -WixExePath $wixExe
 $appIconsRoot = Get-AppIconsRoot -ProjectRoot $ProjectRoot
 $shortcutIconPath = Get-WindowsIconAsset -AppIconsRoot $appIconsRoot
@@ -747,7 +826,7 @@ $stagingRoot = Join-Path ([System.IO.Path]::GetPathRoot($ProjectRoot)) 'GeoraePl
 Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
 
-$preparedSource = Prepare-InstallerSourceFolder -ProjectRoot $ProjectRoot -OriginalSourceFolder $SourceFolder -StagingRoot $stagingRoot -LaunchExeName $LaunchExeName -AppDisplayName $AppDisplayName -ShortcutIconPath $shortcutIconPath
+$preparedSource = Prepare-InstallerSourceFolder -ProjectRoot $ProjectRoot -OriginalSourceFolder $SourceFolder -StagingRoot $stagingRoot -LaunchExeName $LaunchExeName -AppDisplayName $AppDisplayName -ShortcutIconPath $shortcutIconPath -DotnetExe $dotnetExe
 $sourceForPackaging = $preparedSource.SourceRoot
 $appIconForPackage = Join-Path $sourceForPackaging $preparedSource.ShortcutIconFileName
 
@@ -788,7 +867,7 @@ Write-Sha256File -Path $stableMsiPath
 
 $bootstrapperRoot = Join-Path $stagingRoot 'bootstrapper'
 $bootstrapperProject = New-BootstrapperProjectFiles -BootstrapperRoot $bootstrapperRoot -MsiPath $tempMsiPath -IconPath $shortcutIconPath -Version $Version -AppDisplayName $AppDisplayName
-$tempExePath = Build-BootstrapperExe -BootstrapperProjectPath $bootstrapperProject -PublishRoot (Join-Path $bootstrapperRoot 'publish')
+$tempExePath = Build-BootstrapperExe -BootstrapperProjectPath $bootstrapperProject -PublishRoot (Join-Path $bootstrapperRoot 'publish') -DotnetExe $dotnetExe
 
 $versionedExePath = Join-Path $archiveOutputRoot ("{0}-v{1}.exe" -f $PackageName, $Version)
 $stableExePath = Join-Path $OutputRoot ($PackageName + '.exe')

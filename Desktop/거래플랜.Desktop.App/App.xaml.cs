@@ -15,6 +15,8 @@ namespace 거래플랜.Desktop.App;
 
 public partial class App : Application
 {
+    private sealed record SaveCycleResult(bool SyncAttempted, bool SyncSucceeded, int RemainingDirtyCount, bool BackupSucceeded);
+
     private ServiceProvider? _services;
     private bool _shutdownInProgress;
     private readonly SemaphoreSlim _saveCycleLock = new(1, 1);
@@ -116,13 +118,13 @@ public partial class App : Application
                 sp.GetRequiredService<StatementPrintService>(),
                 sp.GetRequiredService<IPrintService>(),
                 sp.GetRequiredService<SessionState>(),
-                sp.GetRequiredService<ErpApiClient>());
+                sp.GetRequiredService<ErpApiClient>(),
+                sp.GetRequiredService<SyncService>());
 
             MainWindow = mainWin;
 
             StartAutoSaveTimer(sp, mainVm);
 
-            // Shutdown policy: save/sync before final close.
             mainWin.Closing += async (_, args) =>
             {
                 if (_shutdownInProgress)
@@ -132,18 +134,43 @@ public partial class App : Application
                 _shutdownInProgress = true;
                 _autoSaveTimer?.Stop();
 
-                mainVm.SyncStatus = "종료 시 저장중입니다. 데이터를 저장한 뒤 종료합니다.";
+                mainVm.SyncStatus = "종료 전 서버와 동기화하고 데이터를 저장합니다.";
                 var savingPopup = ShowShutdownSavingPopup(mainWin);
                 mainWin.IsEnabled = false;
                 await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
 
+                var shouldClose = true;
                 try
                 {
-                    await RunSaveCycleAsync(sp, mainVm, isShutdown: true);
+                    var result = await RunSaveCycleAsync(sp, mainVm, isShutdown: true);
+                    if (!result.SyncSucceeded && result.RemainingDirtyCount > 0)
+                    {
+                        shouldClose = false;
+                        _shutdownInProgress = false;
+                        mainWin.IsEnabled = true;
+                        StartAutoSaveTimer(sp, mainVm);
+                        mainVm.SyncStatus = "종료 전 서버 동기화가 완료되지 않았습니다. 동기화 후 다시 종료해 주세요.";
+                        MessageBox.Show(
+                            $"서버에 아직 반영되지 않은 변경 데이터가 {result.RemainingDirtyCount}건 남아 있습니다.{Environment.NewLine}" +
+                            "네트워크를 확인한 뒤 자동/수동 동기화를 완료하고 다시 종료해 주세요.",
+                            "거래플랜 동기화 필요",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    }
                 }
                 catch (Exception ex)
                 {
                     AppLogger.Error("APP", "Shutdown sync/backup failure", ex);
+                    shouldClose = false;
+                    _shutdownInProgress = false;
+                    mainWin.IsEnabled = true;
+                    StartAutoSaveTimer(sp, mainVm);
+                    mainVm.SyncStatus = "종료 전 서버 동기화 처리 중 오류가 발생했습니다.";
+                    MessageBox.Show(
+                        $"종료 전 동기화 처리 중 오류가 발생했습니다.{Environment.NewLine}{ex.Message}",
+                        "거래플랜 오류",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
                 }
                 finally
                 {
@@ -156,7 +183,8 @@ public partial class App : Application
                         // ignored
                     }
 
-                    mainWin.Close();
+                    if (shouldClose)
+                        mainWin.Close();
                 }
             };
 
@@ -215,7 +243,7 @@ public partial class App : Application
         _autoSaveTimer.Start();
     }
 
-    private async Task RunSaveCycleAsync(IServiceProvider sp, MainViewModel mainVm, bool isShutdown)
+    private async Task<SaveCycleResult> RunSaveCycleAsync(IServiceProvider sp, MainViewModel mainVm, bool isShutdown)
     {
         if (isShutdown)
         {
@@ -224,34 +252,44 @@ public partial class App : Application
         else
         {
             if (!await _saveCycleLock.WaitAsync(0))
-                return;
+                return new SaveCycleResult(false, false, 0, false);
         }
 
         try
         {
             if (!isShutdown)
-                mainVm.SyncStatus = "자동 저장중입니다...";
+                mainVm.SyncStatus = "자동 저장 중...";
 
             var session = sp.GetRequiredService<SessionState>();
+            var syncAttempted = false;
+            var syncSucceeded = true;
             if (isShutdown && !session.IsOfflineMode)
             {
                 var sync = sp.GetRequiredService<SyncService>();
-                await sync.TrySyncAsync();
+                syncAttempted = true;
+                syncSucceeded = await sync.FlushPendingChangesAsync();
             }
 
             var backup = sp.GetRequiredService<BackupService>();
             var backupOk = await backup.BackupNowAsync();
             if (!backupOk)
-            {
-                AppLogger.Warn(
-                    "APP",
-                    $"Background save completed but backup failed. isShutdown={isShutdown}");
-            }
+                AppLogger.Warn("APP", $"Background save completed but backup failed. isShutdown={isShutdown}");
+
+            var localState = sp.GetRequiredService<LocalStateService>();
+            var remainingDirtyCount = await localState.CountDirtyAsync();
 
             if (isShutdown)
-                mainVm.SyncStatus = "저장 완료. 종료합니다.";
+            {
+                mainVm.SyncStatus = remainingDirtyCount == 0
+                    ? "저장이 완료되었습니다. 종료합니다."
+                    : $"서버 반영 대기 데이터 {remainingDirtyCount}건이 남아 있습니다.";
+            }
             else
+            {
                 mainVm.SyncStatus = $"자동 저장 완료 {DateTime.Now:HH:mm:ss}";
+            }
+
+            return new SaveCycleResult(syncAttempted, syncSucceeded, remainingDirtyCount, backupOk);
         }
         finally
         {
@@ -263,7 +301,7 @@ public partial class App : Application
     {
         var text = new TextBlock
         {
-            Text = "종료 시 저장중입니다.\n데이터를 저장하고 있습니다...",
+            Text = "종료 전 저장 중입니다.\n데이터를 서버와 동기화하고 있습니다...",
             FontFamily = new FontFamily("맑은 고딕"),
             FontSize = 15,
             Foreground = Brushes.Black,

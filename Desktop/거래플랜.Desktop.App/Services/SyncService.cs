@@ -14,6 +14,7 @@ public sealed class SyncService : IDisposable
 {
     private const int MaxRetryCount = 3;
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ImmediateSyncDebounceDelay = TimeSpan.FromMilliseconds(750);
 
     private readonly LocalDbContext _db;
     private readonly LocalStateService _local;
@@ -22,8 +23,9 @@ public sealed class SyncService : IDisposable
     private readonly SyncRequestDispatcher _dispatcher;
     private readonly object _immediateSyncGate = new();
     private Timer? _timer;
-    private bool _syncInProgress;
     private CancellationTokenSource? _immediateSyncCts;
+    private Task<bool>? _currentSyncTask;
+    private bool _resyncRequested;
 
     public event Action<string>? SyncStatusChanged;
 
@@ -42,22 +44,89 @@ public sealed class SyncService : IDisposable
         _dispatcher.ImmediateSyncRequested += HandleImmediateSyncRequested;
     }
 
-    public void Start(int intervalMinutes = 3, bool runImmediately = false)
+    public void Start(TimeSpan interval, bool runImmediately = false)
     {
         _timer?.Dispose();
-        var due = runImmediately ? TimeSpan.Zero : TimeSpan.FromMinutes(intervalMinutes);
+        var normalizedInterval = interval <= TimeSpan.Zero ? TimeSpan.FromMinutes(5) : interval;
+        var due = runImmediately ? TimeSpan.Zero : normalizedInterval;
         _timer = new Timer(_ => _ = TrySyncAsync(), null,
-            due, TimeSpan.FromMinutes(intervalMinutes));
+            due, normalizedInterval);
     }
 
-    public async Task<bool> TrySyncAsync(CancellationToken ct = default)
+    public void Start(int intervalMinutes = 5, bool runImmediately = false)
+    {
+        Start(TimeSpan.FromMinutes(intervalMinutes), runImmediately);
+    }
+
+    public Task<bool> TrySyncAsync(CancellationToken ct = default)
+        => StartSyncAsync(waitForRunningSync: false, ct);
+
+    public async Task<bool> FlushPendingChangesAsync(CancellationToken ct = default)
     {
         if (!_session.IsLoggedIn)
             return false;
-        if (_syncInProgress)
-            return false;
 
-        _syncInProgress = true;
+        CancelPendingImmediateSync();
+
+        var attempts = 0;
+        while (attempts < 3)
+        {
+            attempts++;
+            var synced = await StartSyncAsync(waitForRunningSync: true, ct);
+            var dirtyCount = await _local.CountDirtyAsync(ct);
+            if (dirtyCount == 0)
+                return synced;
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
+        }
+
+        return await _local.CountDirtyAsync(ct) == 0;
+    }
+
+    private Task<bool> StartSyncAsync(bool waitForRunningSync, CancellationToken ct)
+    {
+        if (!_session.IsLoggedIn)
+            return Task.FromResult(false);
+
+        lock (_immediateSyncGate)
+        {
+            if (_currentSyncTask is not null && !_currentSyncTask.IsCompleted)
+                return waitForRunningSync ? _currentSyncTask : Task.FromResult(false);
+
+            var syncTask = RunSyncCoreAsync(ct);
+            _currentSyncTask = syncTask;
+            _ = syncTask.ContinueWith(
+                completedTask =>
+                {
+                    CancellationTokenSource? rerunCts = null;
+                    lock (_immediateSyncGate)
+                    {
+                        if (ReferenceEquals(_currentSyncTask, completedTask))
+                            _currentSyncTask = null;
+
+                        if (_resyncRequested && _session.IsLoggedIn && !_session.IsOfflineMode)
+                        {
+                            _resyncRequested = false;
+                            _immediateSyncCts?.Cancel();
+                            _immediateSyncCts?.Dispose();
+                            _immediateSyncCts = new CancellationTokenSource();
+                            rerunCts = _immediateSyncCts;
+                        }
+                    }
+
+                    if (rerunCts is not null)
+                        _ = RunDeferredImmediateSyncAsync(rerunCts.Token);
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                TaskScheduler.Default);
+
+            return syncTask;
+        }
+    }
+
+    private async Task<bool> RunSyncCoreAsync(CancellationToken ct)
+    {
         try
         {
             SetStatus("동기화 중...");
@@ -86,10 +155,6 @@ public sealed class SyncService : IDisposable
             AppLogger.Error("SYNC", "동기화 실패", ex);
             return false;
         }
-        finally
-        {
-            _syncInProgress = false;
-        }
     }
 
     private static bool IsTransient(Exception ex, CancellationToken ct)
@@ -114,6 +179,12 @@ public sealed class SyncService : IDisposable
         CancellationTokenSource cts;
         lock (_immediateSyncGate)
         {
+            if (_currentSyncTask is not null && !_currentSyncTask.IsCompleted)
+            {
+                _resyncRequested = true;
+                return;
+            }
+
             _immediateSyncCts?.Cancel();
             _immediateSyncCts?.Dispose();
             _immediateSyncCts = new CancellationTokenSource();
@@ -127,8 +198,8 @@ public sealed class SyncService : IDisposable
     {
         try
         {
-            await Task.Delay(TimeSpan.FromSeconds(2), ct);
-            await TrySyncAsync(ct);
+            await Task.Delay(ImmediateSyncDebounceDelay, ct);
+            await StartSyncAsync(waitForRunningSync: true, ct);
         }
         catch (OperationCanceledException)
         {
@@ -673,6 +744,17 @@ public sealed class SyncService : IDisposable
         }
     }
 
+    private void CancelPendingImmediateSync()
+    {
+        lock (_immediateSyncGate)
+        {
+            _immediateSyncCts?.Cancel();
+            _immediateSyncCts?.Dispose();
+            _immediateSyncCts = null;
+            _resyncRequested = false;
+        }
+    }
+
     private static string PersistTransactionAttachment(TransactionAttachmentDto dto, string? existingPath = null)
     {
         if (dto.IsDeleted)
@@ -766,6 +848,8 @@ public sealed class SyncService : IDisposable
             _immediateSyncCts?.Cancel();
             _immediateSyncCts?.Dispose();
             _immediateSyncCts = null;
+            _currentSyncTask = null;
+            _resyncRequested = false;
         }
     }
 }
