@@ -88,6 +88,89 @@ function Get-DefaultOutputRoot {
     return $DeploymentRoot
 }
 
+function Get-ProjectVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot
+    )
+
+    $projectPath = Join-Path $ProjectRoot 'Desktop\거래플랜.Desktop.App\거래플랜.Desktop.App.csproj'
+    if (-not (Test-Path -LiteralPath $projectPath)) {
+        throw "Desktop project not found: $projectPath"
+    }
+
+    [xml]$projectXml = Get-Content -LiteralPath $projectPath -Raw
+    $versionNode = $projectXml.Project.PropertyGroup.Version | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($versionNode)) {
+        throw "Desktop project version not found: $projectPath"
+    }
+
+    return [string]$versionNode
+}
+
+function Publish-DesktopApplication {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$PublishRoot
+    )
+
+    $desktopProject = Join-Path $ProjectRoot 'Desktop\거래플랜.Desktop.App\거래플랜.Desktop.App.csproj'
+    if (-not (Test-Path -LiteralPath $desktopProject)) {
+        throw "Desktop project not found: $desktopProject"
+    }
+
+    Remove-Item -LiteralPath $PublishRoot -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $PublishRoot | Out-Null
+
+    & dotnet publish $desktopProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $PublishRoot | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to publish desktop application for packaging.'
+    }
+
+    return $PublishRoot
+}
+
+function Ensure-DesktopLaunchCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceFolder,
+        [Parameter(Mandatory = $true)][string]$AppDisplayName
+    )
+
+    $launchScriptPath = Join-Path $SourceFolder '앱실행.cmd'
+    $launchScript = @"
+@echo off
+setlocal
+start "" "%~dp0$AppDisplayName.exe"
+endlocal
+"@
+    $launchScript | Set-Content -LiteralPath $launchScriptPath -Encoding ASCII
+}
+
+function Prepare-DefaultClientSourceFolder {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$AppDisplayName
+    )
+
+    $publishRoot = Join-Path $env:TEMP 'georaeplan-desktop-package-publish'
+    $sourceFolder = Publish-DesktopApplication -ProjectRoot $ProjectRoot -PublishRoot $publishRoot
+    $publishedExeCandidates = @(
+        (Join-Path $sourceFolder '거래플랜.Desktop.App.exe'),
+        (Join-Path $sourceFolder "$AppDisplayName.exe")
+    )
+    $publishedExe = $publishedExeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($publishedExe)) {
+        throw "Published desktop executable not found under $sourceFolder"
+    }
+
+    $displayExePath = Join-Path $sourceFolder "$AppDisplayName.exe"
+    if (-not (Test-Path -LiteralPath $displayExePath)) {
+        Copy-Item -LiteralPath $publishedExe -Destination $displayExePath -Force
+    }
+
+    Ensure-DesktopLaunchCommand -SourceFolder $sourceFolder -AppDisplayName $AppDisplayName
+    return $sourceFolder
+}
+
 if ([string]::IsNullOrWhiteSpace($AppDisplayName)) {
     $AppDisplayName = Get-Utf8String '6rGw656Y7ZSM656c'
 }
@@ -105,9 +188,10 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
 }
 
 $deploymentRoot = Get-DeploymentRoot -ProjectRoot $ProjectRoot
+$desktopVersion = Get-ProjectVersion -ProjectRoot $ProjectRoot
 
 if ([string]::IsNullOrWhiteSpace($SourceFolder)) {
-    $SourceFolder = Get-DefaultClientSourceFolder -DeploymentRoot $deploymentRoot
+    $SourceFolder = Prepare-DefaultClientSourceFolder -ProjectRoot $ProjectRoot -AppDisplayName $AppDisplayName
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
@@ -117,6 +201,9 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 if (-not (Test-Path -LiteralPath $SourceFolder)) {
     throw "Source folder not found: $SourceFolder"
 }
+
+$SourceFolder = (Resolve-Path -LiteralPath $SourceFolder).Path
+Write-Host "source_folder=$SourceFolder"
 
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 $adminOutputRoot = Join-Path $OutputRoot '관리자용'
@@ -192,6 +279,8 @@ param(
     [switch]`$NoShortcuts
 )
 
+`$ExpectedVersion = '__EXPECTED_VERSION__'
+
 function Invoke-RobocopyMirror {
     param(
         [Parameter(Mandatory = `$true)][string]`$Source,
@@ -238,6 +327,43 @@ function Format-Size {
     }
 
     return ('{0:0.##} {1}' -f `$value, `$units[`$unitIndex])
+}
+
+function Normalize-VersionText {
+    param([string]`$Value)
+
+    if (`$null -eq `$Value) {
+        `$normalized = ''
+    }
+    else {
+        `$normalized = `$Value.Trim()
+    }
+
+    if (`$normalized.StartsWith('v', [System.StringComparison]::OrdinalIgnoreCase)) {
+        `$normalized = `$normalized.Substring(1)
+    }
+
+    `$plusIndex = `$normalized.IndexOf('+')
+    if (`$plusIndex -ge 0) {
+        `$normalized = `$normalized.Substring(0, `$plusIndex)
+    }
+
+    return `$normalized
+}
+
+function Compare-Version {
+    param(
+        [string]`$Left,
+        [string]`$Right
+    )
+
+    `$leftVersion = [Version]'0.0.0'
+    `$rightVersion = [Version]'0.0.0'
+
+    [Version]::TryParse((Normalize-VersionText `$Left), [ref]`$leftVersion) | Out-Null
+    [Version]::TryParse((Normalize-VersionText `$Right), [ref]`$rightVersion) | Out-Null
+
+    return `$leftVersion.CompareTo(`$rightVersion)
 }
 
 function Show-InstallError {
@@ -336,6 +462,19 @@ try {
     Ensure-SufficientInstallSpace -SourceRoot `$sourceRoot
     Invoke-RobocopyMirror -Source `$sourceRoot -Destination `$InstallRoot
 
+    if (-not (Test-Path -LiteralPath `$exePath)) {
+        throw "설치된 실행 파일을 찾지 못했습니다: `$exePath"
+    }
+
+    `$installedVersion = (Get-Item -LiteralPath `$exePath).VersionInfo.ProductVersion
+    if ([string]::IsNullOrWhiteSpace(`$installedVersion)) {
+        throw '설치된 실행 파일 버전을 확인하지 못했습니다.'
+    }
+
+    if (Compare-Version `$installedVersion `$ExpectedVersion -lt 0) {
+        throw ("설치된 실행 파일 버전이 예상보다 낮습니다. 기대 버전: {0}, 실제 버전: {1}" -f `$ExpectedVersion, (Normalize-VersionText `$installedVersion))
+    }
+
     `$uninstallScriptContent = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('__UNINSTALL_SCRIPT_B64__'))
     `$uninstallScriptContent | Set-Content -LiteralPath `$uninstallScriptPath -Encoding UTF8
 
@@ -375,6 +514,7 @@ catch {
 
 $installScript = $installScriptTemplate
 $installScript = $installScript.Replace('__APP_DISPLAY_NAME__', $AppDisplayName)
+$installScript = $installScript.Replace('__EXPECTED_VERSION__', $desktopVersion)
 $installScript = $installScript.Replace('__UNINSTALL_PS1_NAME__', $uninstallPs1Name)
 $installScript = $installScript.Replace('__UNINSTALL_SCRIPT_B64__', $uninstallScriptBodyBase64)
 $installScript = $installScript.Replace('__REMOVE_SHORTCUT_SUFFIX__', $removeShortcutSuffix)

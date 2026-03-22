@@ -111,7 +111,7 @@ if ([string]::IsNullOrWhiteSpace($AndroidVersion)) {
     $AndroidVersion = Get-CsprojPropertyValue -ProjectFile $androidProject -PropertyName 'ApplicationDisplayVersion'
 }
 if ([string]::IsNullOrWhiteSpace($DesktopNotes)) {
-    $DesktopNotes = '내부 업데이트, 거래처 상세/첨부/동기화 개선 반영'
+    $DesktopNotes = '내부 업데이트 패키지/동기화 안정화 개선 반영'
 }
 if ([string]::IsNullOrWhiteSpace($AndroidNotes)) {
     $AndroidNotes = '모바일 상세탭/첨부 보기/내부 업데이트 확인 기능 반영'
