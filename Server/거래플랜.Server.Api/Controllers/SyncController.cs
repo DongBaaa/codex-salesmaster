@@ -3,6 +3,7 @@ using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Services;
+using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -252,6 +253,9 @@ public sealed class SyncController : ControllerBase
                 AddClientConflict(dto, nameof(Customer), "Current account cannot modify this office scope.", result);
                 continue;
             }
+
+            if (existing is not null)
+                PreserveCustomerTextWhenIncomingLooksLossy(dto, existing);
 
             dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
             dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
@@ -729,6 +733,24 @@ public sealed class SyncController : ControllerBase
             DateTimeKind.Local => value.ToUniversalTime(),
             _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
         };
+    }
+
+    private static void PreserveCustomerTextWhenIncomingLooksLossy(CustomerDto dto, Customer existing)
+    {
+        var preservedName = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.NameOriginal, dto.NameOriginal);
+        if (!string.Equals(preservedName, dto.NameOriginal, StringComparison.Ordinal))
+        {
+            dto.NameOriginal = preservedName;
+            dto.NameMatchKey = MatchKeyNormalizer.Normalize(preservedName);
+        }
+
+        dto.TradeType = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.TradeType, dto.TradeType);
+        dto.Department = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Department, dto.Department);
+        dto.ContactPerson = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.ContactPerson, dto.ContactPerson);
+        dto.Address = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Address, dto.Address);
+        dto.Notes = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Notes, dto.Notes);
+        dto.Phone = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Phone, dto.Phone);
+        dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Email, dto.Email);
     }
 }
 
