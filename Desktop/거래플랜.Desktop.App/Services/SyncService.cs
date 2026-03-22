@@ -1,6 +1,8 @@
-﻿using System.Net.Http;
+﻿using System.IO;
+using System.Net.Http;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -222,6 +224,35 @@ public sealed class SyncService : IDisposable
                 .ToListAsync(ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
+            Transactions = await _db.Transactions.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
+            TransactionAttachments = await _db.TransactionAttachments.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(e => LocalMappings.ToDto(e, ReadTransactionAttachmentContent(e))).ToList(), ct),
+
+            InventoryTransfers = await _db.InventoryTransfers.IgnoreQueryFilters()
+                .Include(transfer => transfer.Lines)
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
+            RentalManagementCompanies = await _db.RentalManagementCompanies.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
+            RentalBillingProfiles = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
+            RentalAssets = await _db.RentalAssets.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
+            RentalBillingLogs = await _db.RentalBillingLogs.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
             Invoices = await _db.Invoices.IgnoreQueryFilters()
                 .Include(i => i.Lines)
                 .Include(i => i.Payments)
@@ -243,6 +274,13 @@ public sealed class SyncService : IDisposable
                        req.Customers.Count +
                        req.CustomerContracts.Count +
                        req.Items.Count +
+                       req.Transactions.Count +
+                       req.TransactionAttachments.Count +
+                       req.InventoryTransfers.Count +
+                       req.RentalManagementCompanies.Count +
+                       req.RentalBillingProfiles.Count +
+                       req.RentalAssets.Count +
+                       req.RentalBillingLogs.Count +
                        req.Invoices.Count +
                        req.Payments.Count > 0;
         if (!hasDirty)
@@ -301,6 +339,13 @@ public sealed class SyncService : IDisposable
         await MarkCleanAsync<LocalCustomer>(ct);
         await MarkCleanAsync<LocalCustomerContract>(ct);
         await MarkCleanAsync<LocalItem>(ct);
+        await MarkCleanAsync<LocalTransaction>(ct);
+        await MarkCleanAsync<LocalTransactionAttachment>(ct);
+        await MarkCleanInventoryTransfersAsync(ct);
+        await MarkCleanAsync<LocalRentalManagementCompany>(ct);
+        await MarkCleanAsync<LocalRentalBillingProfile>(ct);
+        await MarkCleanAsync<LocalRentalAsset>(ct);
+        await MarkCleanAsync<LocalRentalBillingLog>(ct);
         await MarkCleanInvoicesAsync(ct);
         await MarkCleanAsync<LocalPayment>(ct);
 
@@ -360,6 +405,27 @@ public sealed class SyncService : IDisposable
                 case "Payment":
                     await MarkServerNewerConflictsCleanAsync<LocalPayment>(ids, ct);
                     break;
+                case "TransactionRecord":
+                    await MarkServerNewerConflictsCleanAsync<LocalTransaction>(ids, ct);
+                    break;
+                case "TransactionAttachment":
+                    await MarkServerNewerConflictsCleanAsync<LocalTransactionAttachment>(ids, ct);
+                    break;
+                case "InventoryTransfer":
+                    await MarkServerNewerConflictsCleanAsync<LocalInventoryTransfer>(ids, ct);
+                    break;
+                case "RentalManagementCompany":
+                    await MarkServerNewerConflictsCleanAsync<LocalRentalManagementCompany>(ids, ct);
+                    break;
+                case "RentalBillingProfile":
+                    await MarkServerNewerConflictsCleanAsync<LocalRentalBillingProfile>(ids, ct);
+                    break;
+                case "RentalAsset":
+                    await MarkServerNewerConflictsCleanAsync<LocalRentalAsset>(ids, ct);
+                    break;
+                case "RentalBillingLog":
+                    await MarkServerNewerConflictsCleanAsync<LocalRentalBillingLog>(ids, ct);
+                    break;
             }
         }
 
@@ -388,6 +454,13 @@ public sealed class SyncService : IDisposable
             .ExecuteUpdateAsync(s => s.SetProperty(e => e.IsDirty, false), ct);
     }
 
+    private async Task MarkCleanInventoryTransfersAsync(CancellationToken ct)
+    {
+        await _db.InventoryTransfers.IgnoreQueryFilters()
+            .Where(e => e.IsDirty)
+            .ExecuteUpdateAsync(s => s.SetProperty(e => e.IsDirty, false), ct);
+    }
+
     private async Task PullNewAsync(CancellationToken ct)
     {
         var revStr = await _local.GetSettingAsync("LastSyncRevision", ct) ?? "0";
@@ -408,6 +481,13 @@ public sealed class SyncService : IDisposable
         await UpsertPulledAsync(pull.CustomerContracts, _db.CustomerContracts, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.Items, _db.Items, LocalMappings.ToLocal, ct);
         await UpsertPulledItemWarehouseStocksAsync(pull.ItemWarehouseStocks, ct);
+        await UpsertPulledAsync(pull.Transactions, _db.Transactions, LocalMappings.ToLocal, ct);
+        await UpsertPulledTransactionAttachmentsAsync(pull.TransactionAttachments, ct);
+        await UpsertPulledInventoryTransfersAsync(pull.InventoryTransfers, ct);
+        await UpsertPulledAsync(pull.RentalManagementCompanies, _db.RentalManagementCompanies, LocalMappings.ToLocal, ct);
+        await UpsertPulledAsync(pull.RentalBillingProfiles, _db.RentalBillingProfiles, LocalMappings.ToLocal, ct);
+        await UpsertPulledAsync(pull.RentalAssets, _db.RentalAssets, LocalMappings.ToLocal, ct);
+        await UpsertPulledAsync(pull.RentalBillingLogs, _db.RentalBillingLogs, LocalMappings.ToLocal, ct);
         await UpsertPulledInvoicesAsync(pull.Invoices, ct);
         await UpsertPulledAsync(pull.Payments, _db.Payments, LocalMappings.ToLocal, ct);
 
@@ -508,6 +588,124 @@ public sealed class SyncService : IDisposable
         }
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task UpsertPulledTransactionAttachmentsAsync(
+        IReadOnlyList<TransactionAttachmentDto> dtos,
+        CancellationToken ct)
+    {
+        foreach (var dto in dtos)
+        {
+            var existing = await _db.TransactionAttachments.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == dto.Id, ct);
+            if (dto.IsDeleted && existing is not null && !string.IsNullOrWhiteSpace(existing.StoredPath) && File.Exists(existing.StoredPath))
+            {
+                try { File.Delete(existing.StoredPath); } catch { /* ignore local cleanup failure */ }
+            }
+
+            var attachmentPath = PersistTransactionAttachment(dto, existing?.StoredPath);
+            var local = LocalMappings.ToLocal(dto, storedFileName: Path.GetFileName(attachmentPath), storedPath: attachmentPath);
+            local.IsDirty = false;
+
+            if (existing is null)
+            {
+                _db.TransactionAttachments.Add(local);
+            }
+            else if (!existing.IsDirty)
+            {
+                _db.Entry(existing).CurrentValues.SetValues(local);
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task UpsertPulledInventoryTransfersAsync(
+        IReadOnlyList<InventoryTransferDto> dtos,
+        CancellationToken ct)
+    {
+        foreach (var dto in dtos)
+        {
+            var local = LocalMappings.ToLocal(dto);
+            local.IsDirty = false;
+
+            var existing = await _db.InventoryTransfers.IgnoreQueryFilters()
+                .Include(transfer => transfer.Lines)
+                .FirstOrDefaultAsync(transfer => transfer.Id == local.Id, ct);
+
+            if (existing is null)
+            {
+                _db.InventoryTransfers.Add(local);
+            }
+            else if (!existing.IsDirty)
+            {
+                _db.Entry(existing).CurrentValues.SetValues(local);
+
+                foreach (var line in local.Lines)
+                {
+                    var existingLine = existing.Lines.FirstOrDefault(current => current.Id == line.Id);
+                    if (existingLine is null)
+                        existing.Lines.Add(line);
+                    else
+                        _db.Entry(existingLine).CurrentValues.SetValues(line);
+                }
+
+                foreach (var existingLine in existing.Lines.Where(line => !local.Lines.Any(current => current.Id == line.Id)))
+                    existingLine.IsDeleted = true;
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private static byte[] ReadTransactionAttachmentContent(LocalTransactionAttachment attachment)
+    {
+        if (string.IsNullOrWhiteSpace(attachment.StoredPath) || !File.Exists(attachment.StoredPath))
+            return [];
+
+        try
+        {
+            return File.ReadAllBytes(attachment.StoredPath);
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static string PersistTransactionAttachment(TransactionAttachmentDto dto, string? existingPath = null)
+    {
+        if (dto.IsDeleted)
+            return string.Empty;
+
+        var attachmentDir = Path.Combine(AppPaths.TransactionAttachmentsDir, dto.TransactionId.ToString("N"));
+        Directory.CreateDirectory(attachmentDir);
+
+        var fileName = SanitizeAttachmentFileName(dto.FileName, dto.Id);
+        var storedPath = Path.Combine(attachmentDir, fileName);
+        var content = dto.FileContent ?? [];
+        File.WriteAllBytes(storedPath, content);
+
+        if (!string.IsNullOrWhiteSpace(existingPath) &&
+            !string.Equals(existingPath, storedPath, StringComparison.OrdinalIgnoreCase) &&
+            File.Exists(existingPath))
+        {
+            try { File.Delete(existingPath); } catch { /* ignore rename cleanup failure */ }
+        }
+
+        return storedPath;
+    }
+
+    private static string SanitizeAttachmentFileName(string? fileName, Guid attachmentId)
+    {
+        var safeName = Path.GetFileName(fileName ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(safeName))
+            safeName = $"{attachmentId:N}.bin";
+
+        foreach (var invalidChar in Path.GetInvalidFileNameChars())
+            safeName = safeName.Replace(invalidChar, '_');
+
+        return safeName;
     }
 
     private static string NormalizeOptionName(string? value)

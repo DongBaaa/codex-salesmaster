@@ -354,6 +354,193 @@ public sealed class PaymentAttachmentDto : SyncEntityDto
     public byte[] FileContent { get; set; } = [];
 }
 
+public sealed class TransactionDto : SyncEntityDto
+{
+    public Guid CustomerId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public DateOnly TransactionDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    public string TransactionKind { get; set; } = string.Empty;
+    public Guid? LinkedInvoiceId { get; set; }
+    public string LinkedInvoiceNumber { get; set; } = string.Empty;
+    public Guid? LinkedRentalBillingProfileId { get; set; }
+    public decimal SettlementAmount { get; set; }
+    public decimal AdvanceDelta { get; set; }
+    public decimal CashReceipt { get; set; }
+    public decimal CardReceipt { get; set; }
+    public decimal BankReceipt { get; set; }
+    public decimal DiscountApplied { get; set; }
+    public decimal ReceiptTotal { get; set; }
+    public decimal CashPayment { get; set; }
+    public decimal CardPayment { get; set; }
+    public decimal BankPayment { get; set; }
+    public decimal DiscountReceived { get; set; }
+    public decimal PaymentTotal { get; set; }
+    public string Note { get; set; } = string.Empty;
+    public string Memo { get; set; } = string.Empty;
+}
+
+public sealed class TransactionAttachmentDto : SyncEntityDto
+{
+    public Guid TransactionId { get; set; }
+    public string AttachmentType { get; set; } = "기타";
+    public string FileName { get; set; } = string.Empty;
+    public string MimeType { get; set; } = string.Empty;
+    public long FileSize { get; set; }
+    public string FileHash { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public string UploadedByUsername { get; set; } = string.Empty;
+    public DateTime UploadedAtUtc { get; set; } = DateTime.UtcNow;
+    public string VerificationStatus { get; set; } = "미확인";
+    public string VerifiedByUsername { get; set; } = string.Empty;
+    public DateTime? VerifiedAtUtc { get; set; }
+    public string VerificationMemo { get; set; } = string.Empty;
+    public int SortOrder { get; set; }
+    public byte[] FileContent { get; set; } = [];
+}
+
+public sealed class InventoryTransferDto : SyncEntityDto
+{
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string SourceOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
+    public string TargetOfficeCode { get; set; } = OfficeCodeCatalog.Yeonsu;
+    public string TransferNumber { get; set; } = string.Empty;
+    public DateOnly TransferDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    public string FromWarehouseCode { get; set; } = string.Empty;
+    public string ToWarehouseCode { get; set; } = string.Empty;
+    public string Memo { get; set; } = string.Empty;
+    public string CreatedByUsername { get; set; } = string.Empty;
+    public string LastSavedByUsername { get; set; } = string.Empty;
+    public DateTime LastSavedAtUtc { get; set; } = DateTime.UtcNow;
+    public string TransferStatus { get; set; } = "수령대기";
+    public string RequestedByUsername { get; set; } = string.Empty;
+    public DateTime? RequestedAtUtc { get; set; }
+    public string ReceivedByUsername { get; set; } = string.Empty;
+    public DateTime? ReceivedAtUtc { get; set; }
+    public string ReceiveMemo { get; set; } = string.Empty;
+    public string ReceiveEvidencePath { get; set; } = string.Empty;
+    public string RejectedByUsername { get; set; } = string.Empty;
+    public DateTime? RejectedAtUtc { get; set; }
+    public string RejectReason { get; set; } = string.Empty;
+    public string LastStatusChangedByUsername { get; set; } = string.Empty;
+    public DateTime? LastStatusChangedAtUtc { get; set; }
+    public List<InventoryTransferLineDto> Lines { get; set; } = new();
+}
+
+public sealed class InventoryTransferLineDto
+{
+    public Guid Id { get; set; }
+    public Guid TransferId { get; set; }
+    public Guid? ItemId { get; set; }
+    public string ItemNameOriginal { get; set; } = string.Empty;
+    public string SpecificationOriginal { get; set; } = string.Empty;
+    public string Unit { get; set; } = string.Empty;
+    public decimal Quantity { get; set; }
+    public decimal? ReceivedQuantity { get; set; }
+    public decimal? QuantityDifference { get; set; }
+    public string Remark { get; set; } = string.Empty;
+    public string ReceiptRemark { get; set; } = string.Empty;
+    public bool IsDeleted { get; set; }
+}
+
+public sealed class RentalManagementCompanyDto : SyncEntityDto
+{
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string Code { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public bool IsSystemDefault { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class RentalBillingProfileDto : SyncEntityDto
+{
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ProfileKey { get; set; } = string.Empty;
+    public Guid? CustomerId { get; set; }
+    public string CustomerName { get; set; } = string.Empty;
+    public string BusinessNumber { get; set; } = string.Empty;
+    public string RealCustomerName { get; set; } = string.Empty;
+    public string ModelName { get; set; } = string.Empty;
+    public string ManagementCompanyCode { get; set; } = string.Empty;
+    public string BillingMethod { get; set; } = string.Empty;
+    public string PaymentMethod { get; set; } = string.Empty;
+    public string BillingStatus { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public int BillingDay { get; set; } = 25;
+    public int BillingCycleMonths { get; set; } = 1;
+    public decimal MonthlyAmount { get; set; }
+    public decimal DepositAmount { get; set; }
+    public string SubmissionDocuments { get; set; } = string.Empty;
+    public string Notes { get; set; } = string.Empty;
+    public DateOnly? BillingAnchorDate { get; set; }
+    public DateOnly? ContractDate { get; set; }
+    public DateOnly? ContractStartDate { get; set; }
+    public DateOnly? ContractEndDate { get; set; }
+    public DateOnly? LastBilledDate { get; set; }
+    public string SettlementStatus { get; set; } = string.Empty;
+    public string CompletionStatus { get; set; } = string.Empty;
+    public decimal SettledAmount { get; set; }
+    public decimal OutstandingAmount { get; set; }
+    public bool RequiresFollowUp { get; set; }
+    public string FollowUpNote { get; set; } = string.Empty;
+    public DateOnly? LastSettledDate { get; set; }
+    public string AssignedUsername { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class RentalAssetDto : SyncEntityDto
+{
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string AssetKey { get; set; } = string.Empty;
+    public Guid? CustomerId { get; set; }
+    public Guid? ItemId { get; set; }
+    public Guid? BillingProfileId { get; set; }
+    public string ManagementId { get; set; } = string.Empty;
+    public string ManagementNumber { get; set; } = string.Empty;
+    public string ManagementCompanyCode { get; set; } = string.Empty;
+    public string CurrentLocation { get; set; } = string.Empty;
+    public string ProductCategory { get; set; } = string.Empty;
+    public string Manufacturer { get; set; } = string.Empty;
+    public string ModelName { get; set; } = string.Empty;
+    public string MachineNumber { get; set; } = string.Empty;
+    public string PurchaseVendor { get; set; } = string.Empty;
+    public DateOnly? PurchaseDate { get; set; }
+    public DateOnly? DisposalDate { get; set; }
+    public decimal PurchasePrice { get; set; }
+    public decimal SalePrice { get; set; }
+    public string CustomerName { get; set; } = string.Empty;
+    public string InstallLocation { get; set; } = string.Empty;
+    public string DepositText { get; set; } = string.Empty;
+    public decimal MonthlyFee { get; set; }
+    public int ContractMonths { get; set; }
+    public DateOnly? ContractDate { get; set; }
+    public DateOnly? InstallDate { get; set; }
+    public DateOnly? ContractStartDate { get; set; }
+    public DateOnly? RentalEndDate { get; set; }
+    public string FreeSupplyItems { get; set; } = string.Empty;
+    public string PaidSupplyItems { get; set; } = string.Empty;
+    public string AssignedUsername { get; set; } = string.Empty;
+    public string AssetStatus { get; set; } = string.Empty;
+    public string Notes { get; set; } = string.Empty;
+}
+
+public sealed class RentalBillingLogDto : SyncEntityDto
+{
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public Guid BillingProfileId { get; set; }
+    public string BillingYearMonth { get; set; } = string.Empty;
+    public DateOnly ScheduledDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    public DateOnly? ProcessedDate { get; set; }
+    public string ProcessedByUsername { get; set; } = string.Empty;
+    public string Status { get; set; } = "예정";
+    public decimal BilledAmount { get; set; }
+    public string Note { get; set; } = string.Empty;
+    public string AssignedUsername { get; set; } = string.Empty;
+}
+
 public sealed class ItemWarehouseStockDto
 {
     public Guid ItemId { get; set; }
@@ -421,6 +608,13 @@ public sealed class SyncPullResponse
     public List<CustomerContractDto> CustomerContracts { get; set; } = new();
     public List<ItemDto> Items { get; set; } = new();
     public List<ItemWarehouseStockDto> ItemWarehouseStocks { get; set; } = new();
+    public List<TransactionDto> Transactions { get; set; } = new();
+    public List<TransactionAttachmentDto> TransactionAttachments { get; set; } = new();
+    public List<InventoryTransferDto> InventoryTransfers { get; set; } = new();
+    public List<RentalManagementCompanyDto> RentalManagementCompanies { get; set; } = new();
+    public List<RentalBillingProfileDto> RentalBillingProfiles { get; set; } = new();
+    public List<RentalAssetDto> RentalAssets { get; set; } = new();
+    public List<RentalBillingLogDto> RentalBillingLogs { get; set; } = new();
     public List<InvoiceDto> Invoices { get; set; } = new();
     public List<PaymentDto> Payments { get; set; } = new();
 }
@@ -439,6 +633,13 @@ public sealed class SyncPushRequest
     public List<CustomerContractDto> CustomerContracts { get; set; } = new();
     public List<ItemDto> Items { get; set; } = new();
     public List<ItemWarehouseStockDto> ItemWarehouseStocks { get; set; } = new();
+    public List<TransactionDto> Transactions { get; set; } = new();
+    public List<TransactionAttachmentDto> TransactionAttachments { get; set; } = new();
+    public List<InventoryTransferDto> InventoryTransfers { get; set; } = new();
+    public List<RentalManagementCompanyDto> RentalManagementCompanies { get; set; } = new();
+    public List<RentalBillingProfileDto> RentalBillingProfiles { get; set; } = new();
+    public List<RentalAssetDto> RentalAssets { get; set; } = new();
+    public List<RentalBillingLogDto> RentalBillingLogs { get; set; } = new();
     public List<InvoiceDto> Invoices { get; set; } = new();
     public List<PaymentDto> Payments { get; set; } = new();
 }

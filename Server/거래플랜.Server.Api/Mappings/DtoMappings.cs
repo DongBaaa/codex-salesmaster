@@ -401,6 +401,456 @@ public static class DtoMappings
             entity.OfficeCode = OfficeCodeCatalog.Shared;
     }
 
+    public static TransactionDto ToDto(this TransactionRecord entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            CustomerId = entity.CustomerId,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            TransactionDate = entity.TransactionDate,
+            TransactionKind = entity.TransactionKind,
+            LinkedInvoiceId = entity.LinkedInvoiceId,
+            LinkedInvoiceNumber = entity.LinkedInvoiceNumber,
+            LinkedRentalBillingProfileId = entity.LinkedRentalBillingProfileId,
+            SettlementAmount = entity.SettlementAmount,
+            AdvanceDelta = entity.AdvanceDelta,
+            CashReceipt = entity.CashReceipt,
+            CardReceipt = entity.CardReceipt,
+            BankReceipt = entity.BankReceipt,
+            DiscountApplied = entity.DiscountApplied,
+            ReceiptTotal = entity.ReceiptTotal,
+            CashPayment = entity.CashPayment,
+            CardPayment = entity.CardPayment,
+            BankPayment = entity.BankPayment,
+            DiscountReceived = entity.DiscountReceived,
+            PaymentTotal = entity.PaymentTotal,
+            Note = entity.Note,
+            Memo = entity.Memo
+        };
+
+    public static void Apply(this TransactionRecord entity, TransactionDto dto)
+    {
+        entity.CustomerId = dto.CustomerId;
+        entity.TransactionDate = dto.TransactionDate;
+        entity.TransactionKind = dto.TransactionKind?.Trim() ?? string.Empty;
+        entity.LinkedInvoiceId = dto.LinkedInvoiceId;
+        entity.LinkedInvoiceNumber = dto.LinkedInvoiceNumber?.Trim() ?? string.Empty;
+        entity.LinkedRentalBillingProfileId = dto.LinkedRentalBillingProfileId;
+        entity.SettlementAmount = dto.SettlementAmount;
+        entity.AdvanceDelta = dto.AdvanceDelta;
+        entity.CashReceipt = dto.CashReceipt;
+        entity.CardReceipt = dto.CardReceipt;
+        entity.BankReceipt = dto.BankReceipt;
+        entity.DiscountApplied = dto.DiscountApplied;
+        entity.ReceiptTotal = dto.ReceiptTotal;
+        entity.CashPayment = dto.CashPayment;
+        entity.CardPayment = dto.CardPayment;
+        entity.BankPayment = dto.BankPayment;
+        entity.DiscountReceived = dto.DiscountReceived;
+        entity.PaymentTotal = dto.PaymentTotal;
+        entity.Note = dto.Note?.Trim() ?? string.Empty;
+        entity.Memo = dto.Memo?.Trim() ?? string.Empty;
+        entity.IsDeleted = dto.IsDeleted;
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            dto.TenantCode,
+            dto.OfficeCode,
+            entity.TenantCode,
+            entity.OfficeCode);
+        entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+            dto.OfficeCode,
+            entity.OfficeCode);
+    }
+
+    public static TransactionAttachmentDto ToDto(this TransactionAttachment entity, bool includeContent = true) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            TransactionId = entity.TransactionId,
+            AttachmentType = entity.AttachmentType,
+            FileName = entity.FileName,
+            MimeType = entity.MimeType,
+            FileSize = entity.FileSize,
+            FileHash = entity.FileHash,
+            Description = entity.Description,
+            UploadedByUsername = entity.UploadedByUsername,
+            UploadedAtUtc = entity.UploadedAtUtc,
+            VerificationStatus = entity.VerificationStatus,
+            VerifiedByUsername = entity.VerifiedByUsername,
+            VerifiedAtUtc = entity.VerifiedAtUtc,
+            VerificationMemo = entity.VerificationMemo,
+            SortOrder = entity.SortOrder,
+            FileContent = includeContent ? entity.FileContent ?? [] : []
+        };
+
+    public static void Apply(this TransactionAttachment entity, TransactionAttachmentDto dto)
+    {
+        entity.TransactionId = dto.TransactionId;
+        entity.AttachmentType = dto.AttachmentType?.Trim() ?? "기타";
+        entity.FileName = dto.FileName?.Trim() ?? string.Empty;
+        entity.MimeType = dto.MimeType?.Trim() ?? string.Empty;
+        entity.FileSize = dto.FileSize;
+        entity.FileHash = dto.FileHash?.Trim() ?? string.Empty;
+        entity.Description = dto.Description?.Trim() ?? string.Empty;
+        entity.UploadedByUsername = dto.UploadedByUsername?.Trim() ?? string.Empty;
+        entity.UploadedAtUtc = dto.UploadedAtUtc;
+        entity.VerificationStatus = dto.VerificationStatus?.Trim() ?? "미확인";
+        entity.VerifiedByUsername = dto.VerifiedByUsername?.Trim() ?? string.Empty;
+        entity.VerifiedAtUtc = dto.VerifiedAtUtc;
+        entity.VerificationMemo = dto.VerificationMemo?.Trim() ?? string.Empty;
+        entity.SortOrder = dto.SortOrder;
+        entity.FileContent = dto.FileContent ?? [];
+        entity.IsDeleted = dto.IsDeleted;
+    }
+
+    public static InventoryTransferDto ToDto(this InventoryTransfer entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.SourceOfficeCode),
+            SourceOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(entity.SourceOfficeCode),
+            TargetOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(entity.TargetOfficeCode),
+            TransferNumber = entity.TransferNumber,
+            TransferDate = entity.TransferDate,
+            FromWarehouseCode = entity.FromWarehouseCode,
+            ToWarehouseCode = entity.ToWarehouseCode,
+            Memo = entity.Memo,
+            CreatedByUsername = entity.CreatedByUsername,
+            LastSavedByUsername = entity.LastSavedByUsername,
+            LastSavedAtUtc = entity.LastSavedAtUtc,
+            TransferStatus = entity.TransferStatus,
+            RequestedByUsername = entity.RequestedByUsername,
+            RequestedAtUtc = entity.RequestedAtUtc,
+            ReceivedByUsername = entity.ReceivedByUsername,
+            ReceivedAtUtc = entity.ReceivedAtUtc,
+            ReceiveMemo = entity.ReceiveMemo,
+            ReceiveEvidencePath = entity.ReceiveEvidencePath,
+            RejectedByUsername = entity.RejectedByUsername,
+            RejectedAtUtc = entity.RejectedAtUtc,
+            RejectReason = entity.RejectReason,
+            LastStatusChangedByUsername = entity.LastStatusChangedByUsername,
+            LastStatusChangedAtUtc = entity.LastStatusChangedAtUtc,
+            Lines = entity.Lines
+                .Where(line => !line.IsDeleted)
+                .OrderBy(line => line.Id)
+                .Select(line => line.ToDto())
+                .ToList()
+        };
+
+    public static InventoryTransferLineDto ToDto(this InventoryTransferLine entity) =>
+        new()
+        {
+            Id = entity.Id,
+            TransferId = entity.TransferId,
+            ItemId = entity.ItemId,
+            ItemNameOriginal = entity.ItemNameOriginal,
+            SpecificationOriginal = entity.SpecificationOriginal,
+            Unit = entity.Unit,
+            Quantity = entity.Quantity,
+            ReceivedQuantity = entity.ReceivedQuantity,
+            QuantityDifference = entity.QuantityDifference,
+            Remark = entity.Remark,
+            ReceiptRemark = entity.ReceiptRemark,
+            IsDeleted = entity.IsDeleted
+        };
+
+    public static void Apply(this InventoryTransfer entity, InventoryTransferDto dto)
+    {
+        entity.TransferNumber = dto.TransferNumber?.Trim() ?? string.Empty;
+        entity.TransferDate = dto.TransferDate;
+        entity.FromWarehouseCode = dto.FromWarehouseCode?.Trim() ?? string.Empty;
+        entity.ToWarehouseCode = dto.ToWarehouseCode?.Trim() ?? string.Empty;
+        entity.Memo = dto.Memo?.Trim() ?? string.Empty;
+        entity.CreatedByUsername = dto.CreatedByUsername?.Trim() ?? string.Empty;
+        entity.LastSavedByUsername = dto.LastSavedByUsername?.Trim() ?? string.Empty;
+        entity.LastSavedAtUtc = dto.LastSavedAtUtc;
+        entity.TransferStatus = dto.TransferStatus?.Trim() ?? "수령대기";
+        entity.RequestedByUsername = dto.RequestedByUsername?.Trim() ?? string.Empty;
+        entity.RequestedAtUtc = dto.RequestedAtUtc;
+        entity.ReceivedByUsername = dto.ReceivedByUsername?.Trim() ?? string.Empty;
+        entity.ReceivedAtUtc = dto.ReceivedAtUtc;
+        entity.ReceiveMemo = dto.ReceiveMemo?.Trim() ?? string.Empty;
+        entity.ReceiveEvidencePath = dto.ReceiveEvidencePath?.Trim() ?? string.Empty;
+        entity.RejectedByUsername = dto.RejectedByUsername?.Trim() ?? string.Empty;
+        entity.RejectedAtUtc = dto.RejectedAtUtc;
+        entity.RejectReason = dto.RejectReason?.Trim() ?? string.Empty;
+        entity.LastStatusChangedByUsername = dto.LastStatusChangedByUsername?.Trim() ?? string.Empty;
+        entity.LastStatusChangedAtUtc = dto.LastStatusChangedAtUtc;
+        entity.IsDeleted = dto.IsDeleted;
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            dto.TenantCode,
+            dto.SourceOfficeCode,
+            entity.TenantCode,
+            entity.SourceOfficeCode);
+        entity.SourceOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(dto.SourceOfficeCode, entity.SourceOfficeCode);
+        entity.TargetOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(dto.TargetOfficeCode, entity.TargetOfficeCode);
+    }
+
+    public static InventoryTransferLine ToEntity(this InventoryTransferLineDto dto, Guid transferId) =>
+        new()
+        {
+            Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id,
+            TransferId = transferId,
+            ItemId = dto.ItemId,
+            ItemNameOriginal = dto.ItemNameOriginal?.Trim() ?? string.Empty,
+            SpecificationOriginal = dto.SpecificationOriginal?.Trim() ?? string.Empty,
+            Unit = dto.Unit?.Trim() ?? string.Empty,
+            Quantity = dto.Quantity,
+            ReceivedQuantity = dto.ReceivedQuantity,
+            QuantityDifference = dto.QuantityDifference,
+            Remark = dto.Remark?.Trim() ?? string.Empty,
+            ReceiptRemark = dto.ReceiptRemark?.Trim() ?? string.Empty,
+            IsDeleted = dto.IsDeleted
+        };
+
+    public static RentalManagementCompanyDto ToDto(this RentalManagementCompany entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(entity.TenantCode),
+            Code = entity.Code,
+            Name = entity.Name,
+            IsSystemDefault = entity.IsSystemDefault,
+            IsActive = entity.IsActive
+        };
+
+    public static void Apply(this RentalManagementCompany entity, RentalManagementCompanyDto dto)
+    {
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(dto.TenantCode, entity.TenantCode);
+        entity.Code = dto.Code?.Trim() ?? string.Empty;
+        entity.Name = dto.Name?.Trim() ?? string.Empty;
+        entity.IsSystemDefault = dto.IsSystemDefault;
+        entity.IsActive = dto.IsActive;
+        entity.IsDeleted = dto.IsDeleted;
+    }
+
+    public static RentalBillingProfileDto ToDto(this RentalBillingProfile entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            ProfileKey = entity.ProfileKey,
+            CustomerId = entity.CustomerId,
+            CustomerName = entity.CustomerName,
+            BusinessNumber = entity.BusinessNumber,
+            RealCustomerName = entity.RealCustomerName,
+            ModelName = entity.ModelName,
+            ManagementCompanyCode = entity.ManagementCompanyCode,
+            BillingMethod = entity.BillingMethod,
+            PaymentMethod = entity.PaymentMethod,
+            BillingStatus = entity.BillingStatus,
+            Email = entity.Email,
+            BillingDay = entity.BillingDay,
+            BillingCycleMonths = entity.BillingCycleMonths,
+            MonthlyAmount = entity.MonthlyAmount,
+            DepositAmount = entity.DepositAmount,
+            SubmissionDocuments = entity.SubmissionDocuments,
+            Notes = entity.Notes,
+            BillingAnchorDate = entity.BillingAnchorDate,
+            ContractDate = entity.ContractDate,
+            ContractStartDate = entity.ContractStartDate,
+            ContractEndDate = entity.ContractEndDate,
+            LastBilledDate = entity.LastBilledDate,
+            SettlementStatus = entity.SettlementStatus,
+            CompletionStatus = entity.CompletionStatus,
+            SettledAmount = entity.SettledAmount,
+            OutstandingAmount = entity.OutstandingAmount,
+            RequiresFollowUp = entity.RequiresFollowUp,
+            FollowUpNote = entity.FollowUpNote,
+            LastSettledDate = entity.LastSettledDate,
+            AssignedUsername = entity.AssignedUsername,
+            IsActive = entity.IsActive
+        };
+
+    public static void Apply(this RentalBillingProfile entity, RentalBillingProfileDto dto)
+    {
+        entity.ProfileKey = dto.ProfileKey?.Trim() ?? string.Empty;
+        entity.CustomerId = dto.CustomerId;
+        entity.CustomerName = dto.CustomerName?.Trim() ?? string.Empty;
+        entity.BusinessNumber = dto.BusinessNumber?.Trim() ?? string.Empty;
+        entity.RealCustomerName = dto.RealCustomerName?.Trim() ?? string.Empty;
+        entity.ModelName = dto.ModelName?.Trim() ?? string.Empty;
+        entity.ManagementCompanyCode = dto.ManagementCompanyCode?.Trim() ?? string.Empty;
+        entity.BillingMethod = dto.BillingMethod?.Trim() ?? string.Empty;
+        entity.PaymentMethod = dto.PaymentMethod?.Trim() ?? string.Empty;
+        entity.BillingStatus = dto.BillingStatus?.Trim() ?? string.Empty;
+        entity.Email = dto.Email?.Trim() ?? string.Empty;
+        entity.BillingDay = dto.BillingDay;
+        entity.BillingCycleMonths = dto.BillingCycleMonths;
+        entity.MonthlyAmount = dto.MonthlyAmount;
+        entity.DepositAmount = dto.DepositAmount;
+        entity.SubmissionDocuments = dto.SubmissionDocuments?.Trim() ?? string.Empty;
+        entity.Notes = dto.Notes?.Trim() ?? string.Empty;
+        entity.BillingAnchorDate = dto.BillingAnchorDate;
+        entity.ContractDate = dto.ContractDate;
+        entity.ContractStartDate = dto.ContractStartDate;
+        entity.ContractEndDate = dto.ContractEndDate;
+        entity.LastBilledDate = dto.LastBilledDate;
+        entity.SettlementStatus = dto.SettlementStatus?.Trim() ?? string.Empty;
+        entity.CompletionStatus = dto.CompletionStatus?.Trim() ?? string.Empty;
+        entity.SettledAmount = dto.SettledAmount;
+        entity.OutstandingAmount = dto.OutstandingAmount;
+        entity.RequiresFollowUp = dto.RequiresFollowUp;
+        entity.FollowUpNote = dto.FollowUpNote?.Trim() ?? string.Empty;
+        entity.LastSettledDate = dto.LastSettledDate;
+        entity.AssignedUsername = dto.AssignedUsername?.Trim() ?? string.Empty;
+        entity.IsActive = dto.IsActive;
+        entity.IsDeleted = dto.IsDeleted;
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            dto.TenantCode,
+            dto.OfficeCode,
+            entity.TenantCode,
+            entity.OfficeCode);
+        entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
+    }
+
+    public static RentalAssetDto ToDto(this RentalAsset entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            AssetKey = entity.AssetKey,
+            CustomerId = entity.CustomerId,
+            ItemId = entity.ItemId,
+            BillingProfileId = entity.BillingProfileId,
+            ManagementId = entity.ManagementId,
+            ManagementNumber = entity.ManagementNumber,
+            ManagementCompanyCode = entity.ManagementCompanyCode,
+            CurrentLocation = entity.CurrentLocation,
+            ProductCategory = entity.ProductCategory,
+            Manufacturer = entity.Manufacturer,
+            ModelName = entity.ModelName,
+            MachineNumber = entity.MachineNumber,
+            PurchaseVendor = entity.PurchaseVendor,
+            PurchaseDate = entity.PurchaseDate,
+            DisposalDate = entity.DisposalDate,
+            PurchasePrice = entity.PurchasePrice,
+            SalePrice = entity.SalePrice,
+            CustomerName = entity.CustomerName,
+            InstallLocation = entity.InstallLocation,
+            DepositText = entity.DepositText,
+            MonthlyFee = entity.MonthlyFee,
+            ContractMonths = entity.ContractMonths,
+            ContractDate = entity.ContractDate,
+            InstallDate = entity.InstallDate,
+            ContractStartDate = entity.ContractStartDate,
+            RentalEndDate = entity.RentalEndDate,
+            FreeSupplyItems = entity.FreeSupplyItems,
+            PaidSupplyItems = entity.PaidSupplyItems,
+            AssignedUsername = entity.AssignedUsername,
+            AssetStatus = entity.AssetStatus,
+            Notes = entity.Notes
+        };
+
+    public static void Apply(this RentalAsset entity, RentalAssetDto dto)
+    {
+        entity.AssetKey = dto.AssetKey?.Trim() ?? string.Empty;
+        entity.CustomerId = dto.CustomerId;
+        entity.ItemId = dto.ItemId;
+        entity.BillingProfileId = dto.BillingProfileId;
+        entity.ManagementId = dto.ManagementId?.Trim() ?? string.Empty;
+        entity.ManagementNumber = dto.ManagementNumber?.Trim() ?? string.Empty;
+        entity.ManagementCompanyCode = dto.ManagementCompanyCode?.Trim() ?? string.Empty;
+        entity.CurrentLocation = dto.CurrentLocation?.Trim() ?? string.Empty;
+        entity.ProductCategory = dto.ProductCategory?.Trim() ?? string.Empty;
+        entity.Manufacturer = dto.Manufacturer?.Trim() ?? string.Empty;
+        entity.ModelName = dto.ModelName?.Trim() ?? string.Empty;
+        entity.MachineNumber = dto.MachineNumber?.Trim() ?? string.Empty;
+        entity.PurchaseVendor = dto.PurchaseVendor?.Trim() ?? string.Empty;
+        entity.PurchaseDate = dto.PurchaseDate;
+        entity.DisposalDate = dto.DisposalDate;
+        entity.PurchasePrice = dto.PurchasePrice;
+        entity.SalePrice = dto.SalePrice;
+        entity.CustomerName = dto.CustomerName?.Trim() ?? string.Empty;
+        entity.InstallLocation = dto.InstallLocation?.Trim() ?? string.Empty;
+        entity.DepositText = dto.DepositText?.Trim() ?? string.Empty;
+        entity.MonthlyFee = dto.MonthlyFee;
+        entity.ContractMonths = dto.ContractMonths;
+        entity.ContractDate = dto.ContractDate;
+        entity.InstallDate = dto.InstallDate;
+        entity.ContractStartDate = dto.ContractStartDate;
+        entity.RentalEndDate = dto.RentalEndDate;
+        entity.FreeSupplyItems = dto.FreeSupplyItems?.Trim() ?? string.Empty;
+        entity.PaidSupplyItems = dto.PaidSupplyItems?.Trim() ?? string.Empty;
+        entity.AssignedUsername = dto.AssignedUsername?.Trim() ?? string.Empty;
+        entity.AssetStatus = dto.AssetStatus?.Trim() ?? string.Empty;
+        entity.Notes = dto.Notes?.Trim() ?? string.Empty;
+        entity.IsDeleted = dto.IsDeleted;
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            dto.TenantCode,
+            dto.OfficeCode,
+            entity.TenantCode,
+            entity.OfficeCode);
+        entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
+    }
+
+    public static RentalBillingLogDto ToDto(this RentalBillingLog entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            BillingProfileId = entity.BillingProfileId,
+            BillingYearMonth = entity.BillingYearMonth,
+            ScheduledDate = entity.ScheduledDate,
+            ProcessedDate = entity.ProcessedDate,
+            ProcessedByUsername = entity.ProcessedByUsername,
+            Status = entity.Status,
+            BilledAmount = entity.BilledAmount,
+            Note = entity.Note,
+            AssignedUsername = entity.AssignedUsername
+        };
+
+    public static void Apply(this RentalBillingLog entity, RentalBillingLogDto dto)
+    {
+        entity.BillingProfileId = dto.BillingProfileId;
+        entity.BillingYearMonth = dto.BillingYearMonth?.Trim() ?? string.Empty;
+        entity.ScheduledDate = dto.ScheduledDate;
+        entity.ProcessedDate = dto.ProcessedDate;
+        entity.ProcessedByUsername = dto.ProcessedByUsername?.Trim() ?? string.Empty;
+        entity.Status = dto.Status?.Trim() ?? "예정";
+        entity.BilledAmount = dto.BilledAmount;
+        entity.Note = dto.Note?.Trim() ?? string.Empty;
+        entity.AssignedUsername = dto.AssignedUsername?.Trim() ?? string.Empty;
+        entity.IsDeleted = dto.IsDeleted;
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            dto.TenantCode,
+            dto.OfficeCode,
+            entity.TenantCode,
+            entity.OfficeCode);
+        entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
+    }
+
     public static InvoiceDto ToDto(this Invoice entity) =>
         new()
         {

@@ -65,6 +65,26 @@ public sealed class SyncController : ControllerBase
             ItemWarehouseStocks = await _officeScopeService.ApplyItemWarehouseStockScope(_dbContext.ItemWarehouseStocks.AsNoTracking())
                 .OrderBy(x => x.ItemId).ThenBy(x => x.WarehouseCode)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            Transactions = await _officeScopeService.ApplyTransactionScope(_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking())
+                .Where(x => x.Revision > sinceRev).OrderBy(x => x.TransactionDate).ThenBy(x => x.CreatedAtUtc)
+                .Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            TransactionAttachments = await _officeScopeService.ApplyTransactionAttachmentScope(_dbContext.TransactionAttachments.IgnoreQueryFilters().AsNoTracking().Include(x => x.Transaction))
+                .Where(x => x.Revision > sinceRev).OrderBy(x => x.UploadedAtUtc).ThenBy(x => x.SortOrder)
+                .Select(x => x.ToDto(true)).ToListAsync(cancellationToken),
+            InventoryTransfers = await _officeScopeService.ApplyInventoryTransferScope(_dbContext.InventoryTransfers.IgnoreQueryFilters().AsNoTracking().Include(x => x.Lines))
+                .Where(x => x.Revision > sinceRev).OrderBy(x => x.TransferDate).ThenBy(x => x.CreatedAtUtc)
+                .Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            RentalManagementCompanies = await _officeScopeService.ApplyRentalManagementCompanyScope(_dbContext.RentalManagementCompanies.IgnoreQueryFilters().AsNoTracking())
+                .Where(x => x.Revision > sinceRev).OrderBy(x => x.Code).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            RentalBillingProfiles = await _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+                .Where(x => x.Revision > sinceRev).OrderBy(x => x.CustomerName).ThenBy(x => x.ProfileKey)
+                .Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            RentalAssets = await _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
+                .Where(x => x.Revision > sinceRev).OrderBy(x => x.CustomerName).ThenBy(x => x.AssetKey)
+                .Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            RentalBillingLogs = await _officeScopeService.ApplyRentalBillingLogScope(_dbContext.RentalBillingLogs.IgnoreQueryFilters().AsNoTracking())
+                .Where(x => x.Revision > sinceRev).OrderBy(x => x.ScheduledDate).ThenBy(x => x.BillingYearMonth)
+                .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             Invoices = await _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().Include(x => x.Customer).Include(x => x.Lines).Include(x => x.Payments).AsNoTracking())
                 .Where(x => x.Revision > sinceRev).OrderBy(x => x.CreatedAtUtc)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
@@ -107,6 +127,31 @@ public sealed class SyncController : ControllerBase
         await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
             (e, d) => e.Apply(d), d => new Item { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
         await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], cancellationToken);
+        var scopedTransactions = await PrepareScopedTransactionsAsync(request.Transactions ?? [], result, cancellationToken);
+        var validTransactions = await FilterValidTransactionsAsync(scopedTransactions, result, cancellationToken);
+        await UpsertEntitiesAsync(validTransactions, _dbContext.Transactions,
+            (e, d) => e.Apply(d), d => new TransactionRecord { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        var validTransactionAttachments = await FilterValidTransactionAttachmentsAsync(request.TransactionAttachments ?? [], result, cancellationToken);
+        await UpsertEntitiesAsync(validTransactionAttachments, _dbContext.TransactionAttachments,
+            (e, d) => e.Apply(d), d => new TransactionAttachment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        var scopedInventoryTransfers = await PrepareScopedInventoryTransfersAsync(request.InventoryTransfers ?? [], result, cancellationToken);
+        var validInventoryTransfers = await FilterValidInventoryTransfersAsync(scopedInventoryTransfers, result, cancellationToken);
+        await UpsertInventoryTransfersAsync(validInventoryTransfers, result, cancellationToken);
+        var scopedRentalCompanies = await PrepareScopedRentalManagementCompaniesAsync(request.RentalManagementCompanies ?? [], result, cancellationToken);
+        await UpsertEntitiesAsync(scopedRentalCompanies, _dbContext.RentalManagementCompanies,
+            (e, d) => e.Apply(d), d => new RentalManagementCompany { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        var scopedRentalProfiles = await PrepareScopedRentalBillingProfilesAsync(request.RentalBillingProfiles ?? [], result, cancellationToken);
+        var validRentalProfiles = await FilterValidRentalBillingProfilesAsync(scopedRentalProfiles, result, cancellationToken);
+        await UpsertEntitiesAsync(validRentalProfiles, _dbContext.RentalBillingProfiles,
+            (e, d) => e.Apply(d), d => new RentalBillingProfile { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        var scopedRentalAssets = await PrepareScopedRentalAssetsAsync(request.RentalAssets ?? [], result, cancellationToken);
+        var validRentalAssets = await FilterValidRentalAssetsAsync(scopedRentalAssets, result, cancellationToken);
+        await UpsertEntitiesAsync(validRentalAssets, _dbContext.RentalAssets,
+            (e, d) => e.Apply(d), d => new RentalAsset { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        var scopedRentalBillingLogs = await PrepareScopedRentalBillingLogsAsync(request.RentalBillingLogs ?? [], result, cancellationToken);
+        var validRentalBillingLogs = await FilterValidRentalBillingLogsAsync(scopedRentalBillingLogs, result, cancellationToken);
+        await UpsertEntitiesAsync(validRentalBillingLogs, _dbContext.RentalBillingLogs,
+            (e, d) => e.Apply(d), d => new RentalBillingLog { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
         var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
         await UpsertInvoicesAsync(validInvoices, result, cancellationToken);
         var validPayments = await FilterValidPaymentsAsync(request.Payments ?? [], result, cancellationToken);
@@ -440,6 +485,501 @@ public sealed class SyncController : ControllerBase
         return scoped;
     }
 
+    private async Task<List<TransactionDto>> PrepareScopedTransactionsAsync(
+        IEnumerable<TransactionDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var scoped = new List<TransactionDto>();
+
+        foreach (var dto in payload)
+        {
+            var existing = await _dbContext.Transactions.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForPayments(existing.OfficeCode, existing.TenantCode))
+            {
+                AddClientConflict(dto, nameof(TransactionRecord), "Current account cannot modify this office scope.", result);
+                continue;
+            }
+
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
+            scoped.Add(dto);
+        }
+
+        return scoped;
+    }
+
+    private async Task<List<TransactionDto>> FilterValidTransactionsAsync(
+        IEnumerable<TransactionDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var valid = new List<TransactionDto>();
+
+        foreach (var dto in payload)
+        {
+            var customer = await _dbContext.Customers.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
+            if (dto.CustomerId == Guid.Empty || customer is null || customer.IsDeleted)
+            {
+                AddClientConflict(dto, nameof(TransactionRecord),
+                    $"Referenced customer was not found: {dto.CustomerId}.", result);
+                continue;
+            }
+
+            if (!_officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
+            {
+                AddClientConflict(dto, nameof(TransactionRecord),
+                    $"Referenced customer is outside the readable office scope: {dto.CustomerId}.", result);
+                continue;
+            }
+
+            if (dto.LinkedInvoiceId.HasValue && dto.LinkedInvoiceId.Value != Guid.Empty)
+            {
+                var invoice = await _dbContext.Invoices.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(x => x.Id == dto.LinkedInvoiceId.Value, cancellationToken);
+                if (invoice is null || invoice.IsDeleted)
+                {
+                    AddClientConflict(dto, nameof(TransactionRecord),
+                        $"Referenced invoice was not found: {dto.LinkedInvoiceId}.", result);
+                    continue;
+                }
+
+                if (!_officeScopeService.CanReadOfficeForInvoices(invoice.OfficeCode, invoice.TenantCode))
+                {
+                    AddClientConflict(dto, nameof(TransactionRecord),
+                        $"Referenced invoice is outside the readable office scope: {dto.LinkedInvoiceId}.", result);
+                    continue;
+                }
+            }
+
+            if (dto.LinkedRentalBillingProfileId.HasValue && dto.LinkedRentalBillingProfileId.Value != Guid.Empty)
+            {
+                var profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(x => x.Id == dto.LinkedRentalBillingProfileId.Value, cancellationToken);
+                if (profile is null || profile.IsDeleted)
+                {
+                    AddClientConflict(dto, nameof(TransactionRecord),
+                        $"Referenced rental billing profile was not found: {dto.LinkedRentalBillingProfileId}.", result);
+                    continue;
+                }
+
+                if (!_officeScopeService.CanReadOfficeForRentals(profile.OfficeCode, profile.TenantCode))
+                {
+                    AddClientConflict(dto, nameof(TransactionRecord),
+                        $"Referenced rental billing profile is outside the readable office scope: {dto.LinkedRentalBillingProfileId}.", result);
+                    continue;
+                }
+            }
+
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
+                dto.TenantCode,
+                dto.OfficeCode,
+                customer.TenantCode,
+                customer.OfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, customer.OfficeCode);
+            valid.Add(dto);
+        }
+
+        return valid;
+    }
+
+    private async Task<List<TransactionAttachmentDto>> FilterValidTransactionAttachmentsAsync(
+        IEnumerable<TransactionAttachmentDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var valid = new List<TransactionAttachmentDto>();
+
+        foreach (var dto in payload)
+        {
+            var transaction = await _dbContext.Transactions.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.TransactionId, cancellationToken);
+            if (dto.TransactionId == Guid.Empty || transaction is null || transaction.IsDeleted)
+            {
+                AddClientConflict(dto, nameof(TransactionAttachment),
+                    $"Referenced transaction was not found: {dto.TransactionId}.", result);
+                continue;
+            }
+
+            if (!_officeScopeService.CanWriteOfficeForPayments(transaction.OfficeCode, transaction.TenantCode))
+            {
+                AddClientConflict(dto, nameof(TransactionAttachment),
+                    $"Referenced transaction is outside the writable office scope: {dto.TransactionId}.", result);
+                continue;
+            }
+
+            if (!dto.IsDeleted)
+            {
+                var fileContent = dto.FileContent ?? [];
+                if (fileContent.Length == 0)
+                {
+                    AddClientConflict(dto, nameof(TransactionAttachment), "Attachment file content is required.", result);
+                    continue;
+                }
+
+                dto.FileSize = dto.FileSize <= 0 ? fileContent.LongLength : dto.FileSize;
+            }
+
+            valid.Add(dto);
+        }
+
+        return valid;
+    }
+
+    private async Task<List<InventoryTransferDto>> PrepareScopedInventoryTransfersAsync(
+        IEnumerable<InventoryTransferDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var scoped = new List<InventoryTransferDto>();
+
+        foreach (var dto in payload)
+        {
+            var existing = await _dbContext.InventoryTransfers.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            var canWriteExisting = existing is null
+                || _officeScopeService.CanWriteOfficeForDeliveries(existing.SourceOfficeCode, existing.TenantCode)
+                || _officeScopeService.CanWriteOfficeForDeliveries(existing.TargetOfficeCode, existing.TenantCode);
+            if (!canWriteExisting)
+            {
+                AddClientConflict(dto, nameof(InventoryTransfer), "Current account cannot modify this office scope.", result);
+                continue;
+            }
+
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
+                dto.TenantCode,
+                dto.SourceOfficeCode,
+                existing?.TenantCode,
+                existing?.SourceOfficeCode);
+            dto.SourceOfficeCode = _officeScopeService.ResolveScopeForCreate(dto.SourceOfficeCode, existing?.SourceOfficeCode);
+            dto.TargetOfficeCode = _officeScopeService.ResolveScopeForCreate(dto.TargetOfficeCode, existing?.TargetOfficeCode ?? dto.TargetOfficeCode);
+
+            if (string.IsNullOrWhiteSpace(dto.FromWarehouseCode))
+                dto.FromWarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(dto.SourceOfficeCode);
+            if (string.IsNullOrWhiteSpace(dto.ToWarehouseCode))
+                dto.ToWarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(dto.TargetOfficeCode);
+
+            scoped.Add(dto);
+        }
+
+        return scoped;
+    }
+
+    private async Task<List<InventoryTransferDto>> FilterValidInventoryTransfersAsync(
+        IEnumerable<InventoryTransferDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var valid = new List<InventoryTransferDto>();
+
+        foreach (var dto in payload)
+        {
+            var canAccessTransfer =
+                _officeScopeService.CanWriteOfficeForDeliveries(dto.SourceOfficeCode, dto.TenantCode) ||
+                _officeScopeService.CanWriteOfficeForDeliveries(dto.TargetOfficeCode, dto.TenantCode);
+            if (!canAccessTransfer)
+            {
+                AddClientConflict(dto, nameof(InventoryTransfer),
+                    "Current account cannot modify the source or target office scope.", result);
+                continue;
+            }
+
+            var lines = dto.Lines ?? [];
+            var lineConflict = false;
+            foreach (var line in lines.Where(line => line.ItemId.HasValue && line.ItemId.Value != Guid.Empty))
+            {
+                var item = await _dbContext.Items.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(x => x.Id == line.ItemId!.Value, cancellationToken);
+                if (item is null || item.IsDeleted)
+                {
+                    AddClientConflict(dto, nameof(InventoryTransfer),
+                        $"Referenced item was not found: {line.ItemId}.", result);
+                    lineConflict = true;
+                    break;
+                }
+            }
+
+            if (lineConflict)
+                continue;
+
+            valid.Add(dto);
+        }
+
+        return valid;
+    }
+
+    private async Task UpsertInventoryTransfersAsync(
+        IEnumerable<InventoryTransferDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        foreach (var dto in payload)
+        {
+            var entity = await _dbContext.InventoryTransfers.IgnoreQueryFilters()
+                .Include(x => x.Lines)
+                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+
+            if (entity is null)
+            {
+                entity = new InventoryTransfer { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
+                entity.Apply(dto);
+                ApplyInventoryTransferLines(entity, dto.Lines ?? []);
+                _dbContext.InventoryTransfers.Add(entity);
+                result.AcceptedCount++;
+                continue;
+            }
+
+            var canWriteExisting =
+                _officeScopeService.CanWriteOfficeForDeliveries(entity.SourceOfficeCode, entity.TenantCode) ||
+                _officeScopeService.CanWriteOfficeForDeliveries(entity.TargetOfficeCode, entity.TenantCode);
+            if (!canWriteExisting)
+            {
+                AddClientConflict(dto, nameof(InventoryTransfer), "Current account cannot modify this office scope.", result);
+                continue;
+            }
+
+            if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
+            {
+                var conflict = BuildConflict(dto, entity, nameof(InventoryTransfer), "Server version is newer.");
+                _dbContext.ConflictLogs.Add(conflict);
+                continue;
+            }
+
+            entity.Apply(dto);
+            _dbContext.InventoryTransferLines.RemoveRange(entity.Lines);
+            entity.Lines.Clear();
+            ApplyInventoryTransferLines(entity, dto.Lines ?? []);
+            result.AcceptedCount++;
+        }
+    }
+
+    private async Task<List<RentalManagementCompanyDto>> PrepareScopedRentalManagementCompaniesAsync(
+        IEnumerable<RentalManagementCompanyDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var scoped = new List<RentalManagementCompanyDto>();
+
+        foreach (var dto in payload)
+        {
+            var existing = await _dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            if (existing is not null && !_officeScopeService.IsAdmin &&
+                !_officeScopeService.CanReadOffice(_officeScopeService.CurrentOfficeCode, existing.TenantCode))
+            {
+                AddClientConflict(dto, nameof(RentalManagementCompany), "Current account cannot modify this tenant scope.", result);
+                continue;
+            }
+
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, _officeScopeService.CurrentOfficeCode, existing?.TenantCode);
+            scoped.Add(dto);
+        }
+
+        return scoped;
+    }
+
+    private async Task<List<RentalBillingProfileDto>> PrepareScopedRentalBillingProfilesAsync(
+        IEnumerable<RentalBillingProfileDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var scoped = new List<RentalBillingProfileDto>();
+
+        foreach (var dto in payload)
+        {
+            var existing = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.OfficeCode, existing.TenantCode))
+            {
+                AddClientConflict(dto, nameof(RentalBillingProfile), "Current account cannot modify this office scope.", result);
+                continue;
+            }
+
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
+            scoped.Add(dto);
+        }
+
+        return scoped;
+    }
+
+    private async Task<List<RentalBillingProfileDto>> FilterValidRentalBillingProfilesAsync(
+        IEnumerable<RentalBillingProfileDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var valid = new List<RentalBillingProfileDto>();
+
+        foreach (var dto in payload)
+        {
+            if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
+            {
+                var customer = await _dbContext.Customers.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(x => x.Id == dto.CustomerId.Value, cancellationToken);
+                if (customer is null || customer.IsDeleted)
+                {
+                    AddClientConflict(dto, nameof(RentalBillingProfile),
+                        $"Referenced customer was not found: {dto.CustomerId}.", result);
+                    continue;
+                }
+
+                if (!_officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
+                {
+                    AddClientConflict(dto, nameof(RentalBillingProfile),
+                        $"Referenced customer is outside the readable office scope: {dto.CustomerId}.", result);
+                    continue;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(dto.ManagementCompanyCode))
+            {
+                var managementCompanyCode = dto.ManagementCompanyCode.Trim();
+                var exists = await _dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+                    .AnyAsync(x => x.TenantCode == dto.TenantCode && x.Code == managementCompanyCode && !x.IsDeleted, cancellationToken);
+                if (!exists)
+                {
+                    AddClientConflict(dto, nameof(RentalBillingProfile),
+                        $"Referenced management company was not found: {dto.ManagementCompanyCode}.", result);
+                    continue;
+                }
+            }
+
+            valid.Add(dto);
+        }
+
+        return valid;
+    }
+
+    private async Task<List<RentalAssetDto>> PrepareScopedRentalAssetsAsync(
+        IEnumerable<RentalAssetDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var scoped = new List<RentalAssetDto>();
+
+        foreach (var dto in payload)
+        {
+            var existing = await _dbContext.RentalAssets.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.OfficeCode, existing.TenantCode))
+            {
+                AddClientConflict(dto, nameof(RentalAsset), "Current account cannot modify this office scope.", result);
+                continue;
+            }
+
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
+            scoped.Add(dto);
+        }
+
+        return scoped;
+    }
+
+    private async Task<List<RentalAssetDto>> FilterValidRentalAssetsAsync(
+        IEnumerable<RentalAssetDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var valid = new List<RentalAssetDto>();
+
+        foreach (var dto in payload)
+        {
+            if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
+            {
+                var customer = await _dbContext.Customers.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(x => x.Id == dto.CustomerId.Value, cancellationToken);
+                if (customer is null || customer.IsDeleted)
+                {
+                    AddClientConflict(dto, nameof(RentalAsset),
+                        $"Referenced customer was not found: {dto.CustomerId}.", result);
+                    continue;
+                }
+            }
+
+            if (dto.ItemId.HasValue && dto.ItemId.Value != Guid.Empty &&
+                !await ExistsOrTrackedAsync(_dbContext.Items, dto.ItemId.Value, cancellationToken))
+            {
+                AddClientConflict(dto, nameof(RentalAsset),
+                    $"Referenced item was not found: {dto.ItemId}.", result);
+                continue;
+            }
+
+            if (dto.BillingProfileId.HasValue && dto.BillingProfileId.Value != Guid.Empty)
+            {
+                var billingProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(x => x.Id == dto.BillingProfileId.Value, cancellationToken);
+                if (billingProfile is null || billingProfile.IsDeleted)
+                {
+                    AddClientConflict(dto, nameof(RentalAsset),
+                        $"Referenced rental billing profile was not found: {dto.BillingProfileId}.", result);
+                    continue;
+                }
+            }
+
+            valid.Add(dto);
+        }
+
+        return valid;
+    }
+
+    private async Task<List<RentalBillingLogDto>> PrepareScopedRentalBillingLogsAsync(
+        IEnumerable<RentalBillingLogDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var scoped = new List<RentalBillingLogDto>();
+
+        foreach (var dto in payload)
+        {
+            var existing = await _dbContext.RentalBillingLogs.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.OfficeCode, existing.TenantCode))
+            {
+                AddClientConflict(dto, nameof(RentalBillingLog), "Current account cannot modify this office scope.", result);
+                continue;
+            }
+
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
+            scoped.Add(dto);
+        }
+
+        return scoped;
+    }
+
+    private async Task<List<RentalBillingLogDto>> FilterValidRentalBillingLogsAsync(
+        IEnumerable<RentalBillingLogDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var valid = new List<RentalBillingLogDto>();
+
+        foreach (var dto in payload)
+        {
+            var billingProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.BillingProfileId, cancellationToken);
+            if (dto.BillingProfileId == Guid.Empty || billingProfile is null || billingProfile.IsDeleted)
+            {
+                AddClientConflict(dto, nameof(RentalBillingLog),
+                    $"Referenced rental billing profile was not found: {dto.BillingProfileId}.", result);
+                continue;
+            }
+
+            if (!_officeScopeService.CanReadOfficeForRentals(billingProfile.OfficeCode, billingProfile.TenantCode))
+            {
+                AddClientConflict(dto, nameof(RentalBillingLog),
+                    $"Referenced rental billing profile is outside the readable office scope: {dto.BillingProfileId}.", result);
+                continue;
+            }
+
+            valid.Add(dto);
+        }
+
+        return valid;
+    }
+
     private async Task<List<InvoiceDto>> FilterValidInvoicesAsync(
         IEnumerable<InvoiceDto> payload, SyncPushResult result, CancellationToken cancellationToken)
     {
@@ -677,6 +1217,14 @@ public sealed class SyncController : ControllerBase
         }
     }
 
+    private static void ApplyInventoryTransferLines(InventoryTransfer transfer, IEnumerable<InventoryTransferLineDto> lines)
+    {
+        foreach (var line in lines)
+        {
+            transfer.Lines.Add(line.ToEntity(transfer.Id));
+        }
+    }
+
     private async Task<bool> ExistsOrTrackedAsync<TEntity>(
         DbSet<TEntity> dbSet, Guid id, CancellationToken cancellationToken)
         where TEntity : TrackedEntity
@@ -746,6 +1294,13 @@ public sealed class SyncController : ControllerBase
             Customer entity => entity.ToDto(),
             CustomerContract entity => entity.ToDto(false),
             Item entity => entity.ToDto(),
+            TransactionRecord entity => entity.ToDto(),
+            TransactionAttachment entity => entity.ToDto(false),
+            InventoryTransfer entity => entity.ToDto(),
+            RentalManagementCompany entity => entity.ToDto(),
+            RentalBillingProfile entity => entity.ToDto(),
+            RentalAsset entity => entity.ToDto(),
+            RentalBillingLog entity => entity.ToDto(),
             Invoice entity => entity.ToDto(),
             Payment entity => entity.ToDto(),
             _ => CreateScalarSnapshot(server)
@@ -830,6 +1385,13 @@ public sealed class SyncController : ControllerBase
         maxRevision = Math.Max(maxRevision, await _dbContext.Customers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.CustomerContracts.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Items.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.Transactions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.TransactionAttachments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.InventoryTransfers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.RentalManagementCompanies.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.RentalAssets.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.RentalBillingLogs.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Invoices.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Payments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         return maxRevision;

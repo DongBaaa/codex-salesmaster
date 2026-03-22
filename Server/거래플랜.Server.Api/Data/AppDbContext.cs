@@ -39,6 +39,14 @@ public sealed class AppDbContext : DbContext
     public DbSet<CustomerContract> CustomerContracts => Set<CustomerContract>();
     public DbSet<Item> Items => Set<Item>();
     public DbSet<ItemWarehouseStock> ItemWarehouseStocks => Set<ItemWarehouseStock>();
+    public DbSet<TransactionRecord> Transactions => Set<TransactionRecord>();
+    public DbSet<TransactionAttachment> TransactionAttachments => Set<TransactionAttachment>();
+    public DbSet<InventoryTransfer> InventoryTransfers => Set<InventoryTransfer>();
+    public DbSet<InventoryTransferLine> InventoryTransferLines => Set<InventoryTransferLine>();
+    public DbSet<RentalManagementCompany> RentalManagementCompanies => Set<RentalManagementCompany>();
+    public DbSet<RentalBillingProfile> RentalBillingProfiles => Set<RentalBillingProfile>();
+    public DbSet<RentalAsset> RentalAssets => Set<RentalAsset>();
+    public DbSet<RentalBillingLog> RentalBillingLogs => Set<RentalBillingLog>();
     public DbSet<Invoice> Invoices => Set<Invoice>();
     public DbSet<InvoiceLine> InvoiceLines => Set<InvoiceLine>();
     public DbSet<Payment> Payments => Set<Payment>();
@@ -85,6 +93,12 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<Payment>()
             .HasMany(x => x.Attachments).WithOne(x => x.Payment)
             .HasForeignKey(x => x.PaymentId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<TransactionRecord>()
+            .HasMany(x => x.Attachments).WithOne(x => x.Transaction)
+            .HasForeignKey(x => x.TransactionId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<InventoryTransfer>()
+            .HasMany(x => x.Lines).WithOne(x => x.Transfer)
+            .HasForeignKey(x => x.TransferId).OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<Invoice>().Property(x => x.TotalAmount).HasPrecision(18, 2);
         modelBuilder.Entity<Invoice>().Property(x => x.SupplyAmount).HasPrecision(18, 2);
@@ -102,6 +116,29 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<InvoiceLine>().Property(x => x.LineAmount).HasPrecision(18, 2);
         modelBuilder.Entity<Payment>().Property(x => x.Amount).HasPrecision(18, 2);
         modelBuilder.Entity<ItemWarehouseStock>().Property(x => x.Quantity).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.SettlementAmount).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.AdvanceDelta).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.CashReceipt).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.CardReceipt).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.BankReceipt).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.DiscountApplied).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.ReceiptTotal).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.CashPayment).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.CardPayment).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.BankPayment).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.DiscountReceived).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.PaymentTotal).HasPrecision(18, 2);
+        modelBuilder.Entity<InventoryTransferLine>().Property(x => x.Quantity).HasPrecision(18, 2);
+        modelBuilder.Entity<InventoryTransferLine>().Property(x => x.ReceivedQuantity).HasPrecision(18, 2);
+        modelBuilder.Entity<InventoryTransferLine>().Property(x => x.QuantityDifference).HasPrecision(18, 2);
+        modelBuilder.Entity<RentalBillingProfile>().Property(x => x.MonthlyAmount).HasPrecision(18, 2);
+        modelBuilder.Entity<RentalBillingProfile>().Property(x => x.DepositAmount).HasPrecision(18, 2);
+        modelBuilder.Entity<RentalBillingProfile>().Property(x => x.SettledAmount).HasPrecision(18, 2);
+        modelBuilder.Entity<RentalBillingProfile>().Property(x => x.OutstandingAmount).HasPrecision(18, 2);
+        modelBuilder.Entity<RentalAsset>().Property(x => x.PurchasePrice).HasPrecision(18, 2);
+        modelBuilder.Entity<RentalAsset>().Property(x => x.SalePrice).HasPrecision(18, 2);
+        modelBuilder.Entity<RentalAsset>().Property(x => x.MonthlyFee).HasPrecision(18, 2);
+        modelBuilder.Entity<RentalBillingLog>().Property(x => x.BilledAmount).HasPrecision(18, 2);
 
         modelBuilder.Entity<Customer>().HasIndex(x => x.NameMatchKey);
         modelBuilder.Entity<Customer>().HasIndex(x => x.TenantCode);
@@ -121,6 +158,22 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<ItemWarehouseStock>().HasKey(x => new { x.ItemId, x.WarehouseCode });
         modelBuilder.Entity<ItemWarehouseStock>().HasIndex(x => x.WarehouseCode);
         modelBuilder.Entity<PaymentAttachment>().HasIndex(x => x.PaymentId);
+        modelBuilder.Entity<TransactionRecord>().HasIndex(x => x.CustomerId);
+        modelBuilder.Entity<TransactionRecord>().HasIndex(x => x.TenantCode);
+        modelBuilder.Entity<TransactionRecord>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<TransactionAttachment>().HasIndex(x => x.TransactionId);
+        modelBuilder.Entity<InventoryTransfer>().HasIndex(x => x.TenantCode);
+        modelBuilder.Entity<InventoryTransfer>().HasIndex(x => x.SourceOfficeCode);
+        modelBuilder.Entity<InventoryTransfer>().HasIndex(x => x.TargetOfficeCode);
+        modelBuilder.Entity<InventoryTransfer>().HasIndex(x => x.TransferNumber);
+        modelBuilder.Entity<InventoryTransferLine>().HasIndex(x => x.TransferId);
+        modelBuilder.Entity<RentalManagementCompany>().HasIndex(x => new { x.TenantCode, x.Code }).IsUnique();
+        modelBuilder.Entity<RentalBillingProfile>().HasIndex(x => new { x.TenantCode, x.ProfileKey }).IsUnique();
+        modelBuilder.Entity<RentalBillingProfile>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<RentalAsset>().HasIndex(x => new { x.TenantCode, x.AssetKey }).IsUnique();
+        modelBuilder.Entity<RentalAsset>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<RentalBillingLog>().HasIndex(x => new { x.BillingProfileId, x.BillingYearMonth }).IsUnique();
+        modelBuilder.Entity<RentalBillingLog>().HasIndex(x => x.OfficeCode);
 
         ApplySoftDeleteFilter<UserAccount>(modelBuilder);
         ApplySoftDeleteFilter<CompanyProfile>(modelBuilder);
@@ -136,6 +189,13 @@ public sealed class AppDbContext : DbContext
         ApplySoftDeleteFilter<Customer>(modelBuilder);
         ApplySoftDeleteFilter<CustomerContract>(modelBuilder);
         ApplySoftDeleteFilter<Item>(modelBuilder);
+        ApplySoftDeleteFilter<TransactionRecord>(modelBuilder);
+        ApplySoftDeleteFilter<TransactionAttachment>(modelBuilder);
+        ApplySoftDeleteFilter<InventoryTransfer>(modelBuilder);
+        ApplySoftDeleteFilter<RentalManagementCompany>(modelBuilder);
+        ApplySoftDeleteFilter<RentalBillingProfile>(modelBuilder);
+        ApplySoftDeleteFilter<RentalAsset>(modelBuilder);
+        ApplySoftDeleteFilter<RentalBillingLog>(modelBuilder);
         ApplySoftDeleteFilter<Invoice>(modelBuilder);
         ApplySoftDeleteFilter<Payment>(modelBuilder);
         ApplySoftDeleteFilter<PaymentAttachment>(modelBuilder);

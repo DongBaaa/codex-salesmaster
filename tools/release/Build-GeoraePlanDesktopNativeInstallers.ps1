@@ -216,10 +216,10 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 
 installDir = fso.GetParentFolderName(WScript.ScriptFullName)
 On Error Resume Next
-desktopPath = shell.SpecialFolders("AllUsersDesktop")
+desktopPath = shell.SpecialFolders("Desktop")
 If Err.Number <> 0 Or Len(desktopPath) = 0 Then
     Err.Clear
-    desktopPath = shell.SpecialFolders("Desktop")
+    desktopPath = shell.SpecialFolders("AllUsersDesktop")
 End If
 On Error GoTo 0
 shortcutPath = fso.BuildPath(desktopPath, "$AppDisplayName.lnk")

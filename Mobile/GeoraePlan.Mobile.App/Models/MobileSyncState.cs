@@ -37,6 +37,13 @@ public sealed class MobileSyncState
         PendingPush.CustomerContracts ??= new List<CustomerContractDto>();
         PendingPush.Items ??= new List<ItemDto>();
         PendingPush.ItemWarehouseStocks ??= new List<ItemWarehouseStockDto>();
+        PendingPush.Transactions ??= new List<TransactionDto>();
+        PendingPush.TransactionAttachments ??= new List<TransactionAttachmentDto>();
+        PendingPush.InventoryTransfers ??= new List<InventoryTransferDto>();
+        PendingPush.RentalManagementCompanies ??= new List<RentalManagementCompanyDto>();
+        PendingPush.RentalBillingProfiles ??= new List<RentalBillingProfileDto>();
+        PendingPush.RentalAssets ??= new List<RentalAssetDto>();
+        PendingPush.RentalBillingLogs ??= new List<RentalBillingLogDto>();
         PendingPush.Invoices ??= new List<InvoiceDto>();
         PendingPush.Payments ??= new List<PaymentDto>();
         PendingPaymentAttachments ??= new List<PendingPaymentAttachmentRecord>();

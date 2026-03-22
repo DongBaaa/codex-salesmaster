@@ -167,6 +167,88 @@ public sealed class OfficeScopeService
             (entity.Invoice.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.Invoice.OfficeCode)));
     }
 
+    public IQueryable<TransactionRecord> ApplyTransactionScope(IQueryable<TransactionRecord> query)
+    {
+        if (IsAdmin)
+            return query;
+
+        var tenantCode = CurrentTenantCode;
+        var readableOffices = ResolveReadableOfficeCodes(DataArea.Payments);
+        return query.Where(entity =>
+            entity.TenantCode == tenantCode &&
+            (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+    }
+
+    public IQueryable<TransactionAttachment> ApplyTransactionAttachmentScope(IQueryable<TransactionAttachment> query)
+    {
+        if (IsAdmin)
+            return query;
+
+        var tenantCode = CurrentTenantCode;
+        var readableOffices = ResolveReadableOfficeCodes(DataArea.Payments);
+        return query.Where(entity =>
+            entity.Transaction != null &&
+            entity.Transaction.TenantCode == tenantCode &&
+            (entity.Transaction.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.Transaction.OfficeCode)));
+    }
+
+    public IQueryable<InventoryTransfer> ApplyInventoryTransferScope(IQueryable<InventoryTransfer> query)
+    {
+        if (IsAdmin)
+            return query;
+
+        var tenantCode = CurrentTenantCode;
+        var readableOffices = ResolveReadableOfficeCodes(DataArea.Deliveries);
+        return query.Where(entity =>
+            entity.TenantCode == tenantCode &&
+            (readableOffices.Contains(entity.SourceOfficeCode) || readableOffices.Contains(entity.TargetOfficeCode)));
+    }
+
+    public IQueryable<RentalManagementCompany> ApplyRentalManagementCompanyScope(IQueryable<RentalManagementCompany> query)
+    {
+        if (IsAdmin)
+            return query;
+
+        var tenantCode = CurrentTenantCode;
+        return query.Where(entity => entity.TenantCode == tenantCode);
+    }
+
+    public IQueryable<RentalBillingProfile> ApplyRentalBillingProfileScope(IQueryable<RentalBillingProfile> query)
+    {
+        if (IsAdmin)
+            return query;
+
+        var tenantCode = CurrentTenantCode;
+        var readableOffices = ResolveReadableOfficeCodes(DataArea.Rentals);
+        return query.Where(entity =>
+            entity.TenantCode == tenantCode &&
+            (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+    }
+
+    public IQueryable<RentalAsset> ApplyRentalAssetScope(IQueryable<RentalAsset> query)
+    {
+        if (IsAdmin)
+            return query;
+
+        var tenantCode = CurrentTenantCode;
+        var readableOffices = ResolveReadableOfficeCodes(DataArea.Rentals);
+        return query.Where(entity =>
+            entity.TenantCode == tenantCode &&
+            (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+    }
+
+    public IQueryable<RentalBillingLog> ApplyRentalBillingLogScope(IQueryable<RentalBillingLog> query)
+    {
+        if (IsAdmin)
+            return query;
+
+        var tenantCode = CurrentTenantCode;
+        var readableOffices = ResolveReadableOfficeCodes(DataArea.Rentals);
+        return query.Where(entity =>
+            entity.TenantCode == tenantCode &&
+            (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+    }
+
     public IQueryable<ItemWarehouseStock> ApplyWarehouseScope(IQueryable<ItemWarehouseStock> query)
     {
         if (IsAdmin)
@@ -238,6 +320,9 @@ public sealed class OfficeScopeService
 
     public bool CanReadOfficeForDeliveries(string? officeCode, string? tenantCode = null)
         => CanReadOffice(officeCode, tenantCode, DataArea.Deliveries);
+
+    public bool CanWriteOfficeForDeliveries(string? officeCode, string? tenantCode = null)
+        => CanWriteOffice(officeCode, tenantCode, DataArea.Deliveries);
 
     private bool CanReadOffice(string? officeCode, string? tenantCode, DataArea area)
     {

@@ -3271,6 +3271,8 @@ public sealed partial class LocalStateService
         count += await _db.Invoices.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         count += await _db.Payments.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         count += await _db.Transactions.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        count += await _db.TransactionAttachments.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        count += await _db.InventoryTransfers.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         count += await _db.RentalManagementCompanies.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         count += await _db.RentalBillingProfiles.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         count += await _db.RentalAssets.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);

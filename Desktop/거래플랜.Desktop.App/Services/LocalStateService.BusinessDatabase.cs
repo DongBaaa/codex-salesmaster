@@ -28,6 +28,13 @@ public sealed partial class LocalStateService
                || await _db.Customers.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.CustomerContracts.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.Items.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.Transactions.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.TransactionAttachments.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.InventoryTransfers.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.RentalManagementCompanies.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.RentalAssets.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.RentalBillingLogs.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.Invoices.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.Payments.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct);
     }

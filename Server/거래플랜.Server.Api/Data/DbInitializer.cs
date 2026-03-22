@@ -144,6 +144,13 @@ public static class DbInitializer
         await EnsureCustomerContractsTableAsync(dbContext, cancellationToken);
         await EnsurePaymentAttachmentsTableAsync(dbContext, cancellationToken);
         await EnsureItemWarehouseStocksTableAsync(dbContext, cancellationToken);
+        await EnsureTransactionsTableAsync(dbContext, cancellationToken);
+        await EnsureTransactionAttachmentsTableAsync(dbContext, cancellationToken);
+        await EnsureInventoryTransfersTableAsync(dbContext, cancellationToken);
+        await EnsureRentalManagementCompaniesTableAsync(dbContext, cancellationToken);
+        await EnsureRentalBillingProfilesTableAsync(dbContext, cancellationToken);
+        await EnsureRentalAssetsTableAsync(dbContext, cancellationToken);
+        await EnsureRentalBillingLogsTableAsync(dbContext, cancellationToken);
         await EnsureCustomerTradeTypeColumnAsync(dbContext, cancellationToken);
         await EnsureUserOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureUserTenantScopeColumnsAsync(dbContext, cancellationToken);
@@ -955,6 +962,13 @@ public static class DbInitializer
               await dbContext.Customers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.CustomerContracts.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Items.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.Transactions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.TransactionAttachments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.InventoryTransfers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.RentalManagementCompanies.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.RentalBillingProfiles.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.RentalAssets.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.RentalBillingLogs.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Invoices.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Payments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0
         };
@@ -1708,6 +1722,691 @@ public static class DbInitializer
         }
         catch
         {
+        }
+    }
+
+    private static async Task EnsureTransactionsTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "Transactions" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_Transactions" PRIMARY KEY,
+                        "CustomerId" TEXT NOT NULL,
+                        "TenantCode" TEXT NOT NULL DEFAULT 'USENET_GROUP',
+                        "OfficeCode" TEXT NOT NULL DEFAULT 'ALL',
+                        "TransactionDate" TEXT NOT NULL,
+                        "TransactionKind" TEXT NOT NULL DEFAULT '',
+                        "LinkedInvoiceId" TEXT NULL,
+                        "LinkedInvoiceNumber" TEXT NOT NULL DEFAULT '',
+                        "LinkedRentalBillingProfileId" TEXT NULL,
+                        "SettlementAmount" REAL NOT NULL DEFAULT 0,
+                        "AdvanceDelta" REAL NOT NULL DEFAULT 0,
+                        "CashReceipt" REAL NOT NULL DEFAULT 0,
+                        "CardReceipt" REAL NOT NULL DEFAULT 0,
+                        "BankReceipt" REAL NOT NULL DEFAULT 0,
+                        "DiscountApplied" REAL NOT NULL DEFAULT 0,
+                        "ReceiptTotal" REAL NOT NULL DEFAULT 0,
+                        "CashPayment" REAL NOT NULL DEFAULT 0,
+                        "CardPayment" REAL NOT NULL DEFAULT 0,
+                        "BankPayment" REAL NOT NULL DEFAULT 0,
+                        "DiscountReceived" REAL NOT NULL DEFAULT 0,
+                        "PaymentTotal" REAL NOT NULL DEFAULT 0,
+                        "Note" TEXT NOT NULL DEFAULT '',
+                        "Memo" TEXT NOT NULL DEFAULT '',
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "Transactions" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "CustomerId" uuid NOT NULL,
+                        "TenantCode" text NOT NULL DEFAULT 'USENET_GROUP',
+                        "OfficeCode" text NOT NULL DEFAULT 'ALL',
+                        "TransactionDate" date NOT NULL,
+                        "TransactionKind" text NOT NULL DEFAULT '',
+                        "LinkedInvoiceId" uuid NULL,
+                        "LinkedInvoiceNumber" text NOT NULL DEFAULT '',
+                        "LinkedRentalBillingProfileId" uuid NULL,
+                        "SettlementAmount" numeric(18,2) NOT NULL DEFAULT 0,
+                        "AdvanceDelta" numeric(18,2) NOT NULL DEFAULT 0,
+                        "CashReceipt" numeric(18,2) NOT NULL DEFAULT 0,
+                        "CardReceipt" numeric(18,2) NOT NULL DEFAULT 0,
+                        "BankReceipt" numeric(18,2) NOT NULL DEFAULT 0,
+                        "DiscountApplied" numeric(18,2) NOT NULL DEFAULT 0,
+                        "ReceiptTotal" numeric(18,2) NOT NULL DEFAULT 0,
+                        "CashPayment" numeric(18,2) NOT NULL DEFAULT 0,
+                        "CardPayment" numeric(18,2) NOT NULL DEFAULT 0,
+                        "BankPayment" numeric(18,2) NOT NULL DEFAULT 0,
+                        "DiscountReceived" numeric(18,2) NOT NULL DEFAULT 0,
+                        "PaymentTotal" numeric(18,2) NOT NULL DEFAULT 0,
+                        "Note" text NOT NULL DEFAULT '',
+                        "Memo" text NOT NULL DEFAULT '',
+                        "IsDeleted" boolean NOT NULL DEFAULT false,
+                        "CreatedAtUtc" timestamp with time zone NOT NULL,
+                        "UpdatedAtUtc" timestamp with time zone NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        foreach (var sql in new[]
+                 {
+                     "CREATE INDEX IF NOT EXISTS \"IX_Transactions_CustomerId\" ON \"Transactions\" (\"CustomerId\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_Transactions_TenantCode\" ON \"Transactions\" (\"TenantCode\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_Transactions_OfficeCode\" ON \"Transactions\" (\"OfficeCode\");"
+                 })
+        {
+            try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
+        }
+    }
+
+    private static async Task EnsureTransactionAttachmentsTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "TransactionAttachments" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_TransactionAttachments" PRIMARY KEY,
+                        "TransactionId" TEXT NOT NULL,
+                        "AttachmentType" TEXT NOT NULL DEFAULT '기타',
+                        "FileName" TEXT NOT NULL DEFAULT '',
+                        "MimeType" TEXT NOT NULL DEFAULT '',
+                        "FileSize" INTEGER NOT NULL DEFAULT 0,
+                        "FileHash" TEXT NOT NULL DEFAULT '',
+                        "Description" TEXT NOT NULL DEFAULT '',
+                        "UploadedByUsername" TEXT NOT NULL DEFAULT '',
+                        "UploadedAtUtc" TEXT NOT NULL,
+                        "VerificationStatus" TEXT NOT NULL DEFAULT '미확인',
+                        "VerifiedByUsername" TEXT NOT NULL DEFAULT '',
+                        "VerifiedAtUtc" TEXT NULL,
+                        "VerificationMemo" TEXT NOT NULL DEFAULT '',
+                        "SortOrder" INTEGER NOT NULL DEFAULT 0,
+                        "FileContent" BLOB NOT NULL DEFAULT X'',
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "TransactionAttachments" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "TransactionId" uuid NOT NULL,
+                        "AttachmentType" text NOT NULL DEFAULT '기타',
+                        "FileName" text NOT NULL DEFAULT '',
+                        "MimeType" text NOT NULL DEFAULT '',
+                        "FileSize" bigint NOT NULL DEFAULT 0,
+                        "FileHash" text NOT NULL DEFAULT '',
+                        "Description" text NOT NULL DEFAULT '',
+                        "UploadedByUsername" text NOT NULL DEFAULT '',
+                        "UploadedAtUtc" timestamp with time zone NOT NULL,
+                        "VerificationStatus" text NOT NULL DEFAULT '미확인',
+                        "VerifiedByUsername" text NOT NULL DEFAULT '',
+                        "VerifiedAtUtc" timestamp with time zone NULL,
+                        "VerificationMemo" text NOT NULL DEFAULT '',
+                        "SortOrder" integer NOT NULL DEFAULT 0,
+                        "FileContent" bytea NOT NULL DEFAULT ''::bytea,
+                        "IsDeleted" boolean NOT NULL DEFAULT false,
+                        "CreatedAtUtc" timestamp with time zone NOT NULL,
+                        "UpdatedAtUtc" timestamp with time zone NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionId\" ON \"TransactionAttachments\" (\"TransactionId\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task EnsureInventoryTransfersTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "InventoryTransfers" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_InventoryTransfers" PRIMARY KEY,
+                        "TenantCode" TEXT NOT NULL DEFAULT 'USENET_GROUP',
+                        "SourceOfficeCode" TEXT NOT NULL DEFAULT 'USENET',
+                        "TargetOfficeCode" TEXT NOT NULL DEFAULT 'YEONSU',
+                        "TransferNumber" TEXT NOT NULL DEFAULT '',
+                        "TransferDate" TEXT NOT NULL,
+                        "FromWarehouseCode" TEXT NOT NULL DEFAULT '',
+                        "ToWarehouseCode" TEXT NOT NULL DEFAULT '',
+                        "Memo" TEXT NOT NULL DEFAULT '',
+                        "CreatedByUsername" TEXT NOT NULL DEFAULT '',
+                        "LastSavedByUsername" TEXT NOT NULL DEFAULT '',
+                        "LastSavedAtUtc" TEXT NOT NULL,
+                        "TransferStatus" TEXT NOT NULL DEFAULT '수령대기',
+                        "RequestedByUsername" TEXT NOT NULL DEFAULT '',
+                        "RequestedAtUtc" TEXT NULL,
+                        "ReceivedByUsername" TEXT NOT NULL DEFAULT '',
+                        "ReceivedAtUtc" TEXT NULL,
+                        "ReceiveMemo" TEXT NOT NULL DEFAULT '',
+                        "ReceiveEvidencePath" TEXT NOT NULL DEFAULT '',
+                        "RejectedByUsername" TEXT NOT NULL DEFAULT '',
+                        "RejectedAtUtc" TEXT NULL,
+                        "RejectReason" TEXT NOT NULL DEFAULT '',
+                        "LastStatusChangedByUsername" TEXT NOT NULL DEFAULT '',
+                        "LastStatusChangedAtUtc" TEXT NULL,
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "InventoryTransferLines" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_InventoryTransferLines" PRIMARY KEY,
+                        "TransferId" TEXT NOT NULL,
+                        "ItemId" TEXT NULL,
+                        "ItemNameOriginal" TEXT NOT NULL DEFAULT '',
+                        "SpecificationOriginal" TEXT NOT NULL DEFAULT '',
+                        "Unit" TEXT NOT NULL DEFAULT '',
+                        "Quantity" REAL NOT NULL DEFAULT 0,
+                        "ReceivedQuantity" REAL NULL,
+                        "QuantityDifference" REAL NULL,
+                        "Remark" TEXT NOT NULL DEFAULT '',
+                        "ReceiptRemark" TEXT NOT NULL DEFAULT '',
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "InventoryTransfers" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "TenantCode" text NOT NULL DEFAULT 'USENET_GROUP',
+                        "SourceOfficeCode" text NOT NULL DEFAULT 'USENET',
+                        "TargetOfficeCode" text NOT NULL DEFAULT 'YEONSU',
+                        "TransferNumber" text NOT NULL DEFAULT '',
+                        "TransferDate" date NOT NULL,
+                        "FromWarehouseCode" text NOT NULL DEFAULT '',
+                        "ToWarehouseCode" text NOT NULL DEFAULT '',
+                        "Memo" text NOT NULL DEFAULT '',
+                        "CreatedByUsername" text NOT NULL DEFAULT '',
+                        "LastSavedByUsername" text NOT NULL DEFAULT '',
+                        "LastSavedAtUtc" timestamp with time zone NOT NULL,
+                        "TransferStatus" text NOT NULL DEFAULT '수령대기',
+                        "RequestedByUsername" text NOT NULL DEFAULT '',
+                        "RequestedAtUtc" timestamp with time zone NULL,
+                        "ReceivedByUsername" text NOT NULL DEFAULT '',
+                        "ReceivedAtUtc" timestamp with time zone NULL,
+                        "ReceiveMemo" text NOT NULL DEFAULT '',
+                        "ReceiveEvidencePath" text NOT NULL DEFAULT '',
+                        "RejectedByUsername" text NOT NULL DEFAULT '',
+                        "RejectedAtUtc" timestamp with time zone NULL,
+                        "RejectReason" text NOT NULL DEFAULT '',
+                        "LastStatusChangedByUsername" text NOT NULL DEFAULT '',
+                        "LastStatusChangedAtUtc" timestamp with time zone NULL,
+                        "IsDeleted" boolean NOT NULL DEFAULT false,
+                        "CreatedAtUtc" timestamp with time zone NOT NULL,
+                        "UpdatedAtUtc" timestamp with time zone NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "InventoryTransferLines" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "TransferId" uuid NOT NULL,
+                        "ItemId" uuid NULL,
+                        "ItemNameOriginal" text NOT NULL DEFAULT '',
+                        "SpecificationOriginal" text NOT NULL DEFAULT '',
+                        "Unit" text NOT NULL DEFAULT '',
+                        "Quantity" numeric(18,2) NOT NULL DEFAULT 0,
+                        "ReceivedQuantity" numeric(18,2) NULL,
+                        "QuantityDifference" numeric(18,2) NULL,
+                        "Remark" text NOT NULL DEFAULT '',
+                        "ReceiptRemark" text NOT NULL DEFAULT '',
+                        "IsDeleted" boolean NOT NULL DEFAULT false
+                    );
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        foreach (var sql in new[]
+                 {
+                     "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TenantCode\" ON \"InventoryTransfers\" (\"TenantCode\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_SourceOfficeCode\" ON \"InventoryTransfers\" (\"SourceOfficeCode\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TargetOfficeCode\" ON \"InventoryTransfers\" (\"TargetOfficeCode\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TransferNumber\" ON \"InventoryTransfers\" (\"TransferNumber\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransferLines_TransferId\" ON \"InventoryTransferLines\" (\"TransferId\");"
+                 })
+        {
+            try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
+        }
+    }
+
+    private static async Task EnsureRentalManagementCompaniesTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "RentalManagementCompanies" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_RentalManagementCompanies" PRIMARY KEY,
+                        "TenantCode" TEXT NOT NULL DEFAULT 'USENET_GROUP',
+                        "Code" TEXT NOT NULL DEFAULT '',
+                        "Name" TEXT NOT NULL DEFAULT '',
+                        "IsSystemDefault" INTEGER NOT NULL DEFAULT 0,
+                        "IsActive" INTEGER NOT NULL DEFAULT 1,
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "RentalManagementCompanies" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "TenantCode" text NOT NULL DEFAULT 'USENET_GROUP',
+                        "Code" text NOT NULL DEFAULT '',
+                        "Name" text NOT NULL DEFAULT '',
+                        "IsSystemDefault" boolean NOT NULL DEFAULT false,
+                        "IsActive" boolean NOT NULL DEFAULT true,
+                        "IsDeleted" boolean NOT NULL DEFAULT false,
+                        "CreatedAtUtc" timestamp with time zone NOT NULL,
+                        "UpdatedAtUtc" timestamp with time zone NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalManagementCompanies_TenantCode_Code\" ON \"RentalManagementCompanies\" (\"TenantCode\", \"Code\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task EnsureRentalBillingProfilesTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "RentalBillingProfiles" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_RentalBillingProfiles" PRIMARY KEY,
+                        "TenantCode" TEXT NOT NULL DEFAULT 'USENET_GROUP',
+                        "OfficeCode" TEXT NOT NULL DEFAULT 'ALL',
+                        "ProfileKey" TEXT NOT NULL DEFAULT '',
+                        "CustomerId" TEXT NULL,
+                        "CustomerName" TEXT NOT NULL DEFAULT '',
+                        "BusinessNumber" TEXT NOT NULL DEFAULT '',
+                        "RealCustomerName" TEXT NOT NULL DEFAULT '',
+                        "ModelName" TEXT NOT NULL DEFAULT '',
+                        "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
+                        "BillingMethod" TEXT NOT NULL DEFAULT '',
+                        "PaymentMethod" TEXT NOT NULL DEFAULT '',
+                        "BillingStatus" TEXT NOT NULL DEFAULT '',
+                        "Email" TEXT NOT NULL DEFAULT '',
+                        "BillingDay" INTEGER NOT NULL DEFAULT 25,
+                        "BillingCycleMonths" INTEGER NOT NULL DEFAULT 1,
+                        "MonthlyAmount" REAL NOT NULL DEFAULT 0,
+                        "DepositAmount" REAL NOT NULL DEFAULT 0,
+                        "SubmissionDocuments" TEXT NOT NULL DEFAULT '',
+                        "Notes" TEXT NOT NULL DEFAULT '',
+                        "BillingAnchorDate" TEXT NULL,
+                        "ContractDate" TEXT NULL,
+                        "ContractStartDate" TEXT NULL,
+                        "ContractEndDate" TEXT NULL,
+                        "LastBilledDate" TEXT NULL,
+                        "SettlementStatus" TEXT NOT NULL DEFAULT '',
+                        "CompletionStatus" TEXT NOT NULL DEFAULT '',
+                        "SettledAmount" REAL NOT NULL DEFAULT 0,
+                        "OutstandingAmount" REAL NOT NULL DEFAULT 0,
+                        "RequiresFollowUp" INTEGER NOT NULL DEFAULT 0,
+                        "FollowUpNote" TEXT NOT NULL DEFAULT '',
+                        "LastSettledDate" TEXT NULL,
+                        "AssignedUsername" TEXT NOT NULL DEFAULT '',
+                        "IsActive" INTEGER NOT NULL DEFAULT 1,
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "RentalBillingProfiles" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "TenantCode" text NOT NULL DEFAULT 'USENET_GROUP',
+                        "OfficeCode" text NOT NULL DEFAULT 'ALL',
+                        "ProfileKey" text NOT NULL DEFAULT '',
+                        "CustomerId" uuid NULL,
+                        "CustomerName" text NOT NULL DEFAULT '',
+                        "BusinessNumber" text NOT NULL DEFAULT '',
+                        "RealCustomerName" text NOT NULL DEFAULT '',
+                        "ModelName" text NOT NULL DEFAULT '',
+                        "ManagementCompanyCode" text NOT NULL DEFAULT '',
+                        "BillingMethod" text NOT NULL DEFAULT '',
+                        "PaymentMethod" text NOT NULL DEFAULT '',
+                        "BillingStatus" text NOT NULL DEFAULT '',
+                        "Email" text NOT NULL DEFAULT '',
+                        "BillingDay" integer NOT NULL DEFAULT 25,
+                        "BillingCycleMonths" integer NOT NULL DEFAULT 1,
+                        "MonthlyAmount" numeric(18,2) NOT NULL DEFAULT 0,
+                        "DepositAmount" numeric(18,2) NOT NULL DEFAULT 0,
+                        "SubmissionDocuments" text NOT NULL DEFAULT '',
+                        "Notes" text NOT NULL DEFAULT '',
+                        "BillingAnchorDate" date NULL,
+                        "ContractDate" date NULL,
+                        "ContractStartDate" date NULL,
+                        "ContractEndDate" date NULL,
+                        "LastBilledDate" date NULL,
+                        "SettlementStatus" text NOT NULL DEFAULT '',
+                        "CompletionStatus" text NOT NULL DEFAULT '',
+                        "SettledAmount" numeric(18,2) NOT NULL DEFAULT 0,
+                        "OutstandingAmount" numeric(18,2) NOT NULL DEFAULT 0,
+                        "RequiresFollowUp" boolean NOT NULL DEFAULT false,
+                        "FollowUpNote" text NOT NULL DEFAULT '',
+                        "LastSettledDate" date NULL,
+                        "AssignedUsername" text NOT NULL DEFAULT '',
+                        "IsActive" boolean NOT NULL DEFAULT true,
+                        "IsDeleted" boolean NOT NULL DEFAULT false,
+                        "CreatedAtUtc" timestamp with time zone NOT NULL,
+                        "UpdatedAtUtc" timestamp with time zone NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        foreach (var sql in new[]
+                 {
+                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_TenantCode_ProfileKey\" ON \"RentalBillingProfiles\" (\"TenantCode\", \"ProfileKey\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_OfficeCode\" ON \"RentalBillingProfiles\" (\"OfficeCode\");"
+                 })
+        {
+            try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
+        }
+    }
+
+    private static async Task EnsureRentalAssetsTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "RentalAssets" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_RentalAssets" PRIMARY KEY,
+                        "TenantCode" TEXT NOT NULL DEFAULT 'USENET_GROUP',
+                        "OfficeCode" TEXT NOT NULL DEFAULT 'ALL',
+                        "AssetKey" TEXT NOT NULL DEFAULT '',
+                        "CustomerId" TEXT NULL,
+                        "ItemId" TEXT NULL,
+                        "BillingProfileId" TEXT NULL,
+                        "ManagementId" TEXT NOT NULL DEFAULT '',
+                        "ManagementNumber" TEXT NOT NULL DEFAULT '',
+                        "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
+                        "CurrentLocation" TEXT NOT NULL DEFAULT '',
+                        "ProductCategory" TEXT NOT NULL DEFAULT '',
+                        "Manufacturer" TEXT NOT NULL DEFAULT '',
+                        "ModelName" TEXT NOT NULL DEFAULT '',
+                        "MachineNumber" TEXT NOT NULL DEFAULT '',
+                        "PurchaseVendor" TEXT NOT NULL DEFAULT '',
+                        "PurchaseDate" TEXT NULL,
+                        "DisposalDate" TEXT NULL,
+                        "PurchasePrice" REAL NOT NULL DEFAULT 0,
+                        "SalePrice" REAL NOT NULL DEFAULT 0,
+                        "CustomerName" TEXT NOT NULL DEFAULT '',
+                        "InstallLocation" TEXT NOT NULL DEFAULT '',
+                        "DepositText" TEXT NOT NULL DEFAULT '',
+                        "MonthlyFee" REAL NOT NULL DEFAULT 0,
+                        "ContractMonths" INTEGER NOT NULL DEFAULT 0,
+                        "ContractDate" TEXT NULL,
+                        "InstallDate" TEXT NULL,
+                        "ContractStartDate" TEXT NULL,
+                        "RentalEndDate" TEXT NULL,
+                        "FreeSupplyItems" TEXT NOT NULL DEFAULT '',
+                        "PaidSupplyItems" TEXT NOT NULL DEFAULT '',
+                        "AssignedUsername" TEXT NOT NULL DEFAULT '',
+                        "AssetStatus" TEXT NOT NULL DEFAULT '',
+                        "Notes" TEXT NOT NULL DEFAULT '',
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "RentalAssets" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "TenantCode" text NOT NULL DEFAULT 'USENET_GROUP',
+                        "OfficeCode" text NOT NULL DEFAULT 'ALL',
+                        "AssetKey" text NOT NULL DEFAULT '',
+                        "CustomerId" uuid NULL,
+                        "ItemId" uuid NULL,
+                        "BillingProfileId" uuid NULL,
+                        "ManagementId" text NOT NULL DEFAULT '',
+                        "ManagementNumber" text NOT NULL DEFAULT '',
+                        "ManagementCompanyCode" text NOT NULL DEFAULT '',
+                        "CurrentLocation" text NOT NULL DEFAULT '',
+                        "ProductCategory" text NOT NULL DEFAULT '',
+                        "Manufacturer" text NOT NULL DEFAULT '',
+                        "ModelName" text NOT NULL DEFAULT '',
+                        "MachineNumber" text NOT NULL DEFAULT '',
+                        "PurchaseVendor" text NOT NULL DEFAULT '',
+                        "PurchaseDate" date NULL,
+                        "DisposalDate" date NULL,
+                        "PurchasePrice" numeric(18,2) NOT NULL DEFAULT 0,
+                        "SalePrice" numeric(18,2) NOT NULL DEFAULT 0,
+                        "CustomerName" text NOT NULL DEFAULT '',
+                        "InstallLocation" text NOT NULL DEFAULT '',
+                        "DepositText" text NOT NULL DEFAULT '',
+                        "MonthlyFee" numeric(18,2) NOT NULL DEFAULT 0,
+                        "ContractMonths" integer NOT NULL DEFAULT 0,
+                        "ContractDate" date NULL,
+                        "InstallDate" date NULL,
+                        "ContractStartDate" date NULL,
+                        "RentalEndDate" date NULL,
+                        "FreeSupplyItems" text NOT NULL DEFAULT '',
+                        "PaidSupplyItems" text NOT NULL DEFAULT '',
+                        "AssignedUsername" text NOT NULL DEFAULT '',
+                        "AssetStatus" text NOT NULL DEFAULT '',
+                        "Notes" text NOT NULL DEFAULT '',
+                        "IsDeleted" boolean NOT NULL DEFAULT false,
+                        "CreatedAtUtc" timestamp with time zone NOT NULL,
+                        "UpdatedAtUtc" timestamp with time zone NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        foreach (var sql in new[]
+                 {
+                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_TenantCode_AssetKey\" ON \"RentalAssets\" (\"TenantCode\", \"AssetKey\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_OfficeCode\" ON \"RentalAssets\" (\"OfficeCode\");"
+                 })
+        {
+            try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
+        }
+    }
+
+    private static async Task EnsureRentalBillingLogsTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "RentalBillingLogs" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_RentalBillingLogs" PRIMARY KEY,
+                        "TenantCode" TEXT NOT NULL DEFAULT 'USENET_GROUP',
+                        "OfficeCode" TEXT NOT NULL DEFAULT 'ALL',
+                        "BillingProfileId" TEXT NOT NULL,
+                        "BillingYearMonth" TEXT NOT NULL DEFAULT '',
+                        "ScheduledDate" TEXT NOT NULL,
+                        "ProcessedDate" TEXT NULL,
+                        "ProcessedByUsername" TEXT NOT NULL DEFAULT '',
+                        "Status" TEXT NOT NULL DEFAULT '예정',
+                        "BilledAmount" REAL NOT NULL DEFAULT 0,
+                        "Note" TEXT NOT NULL DEFAULT '',
+                        "AssignedUsername" TEXT NOT NULL DEFAULT '',
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "RentalBillingLogs" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "TenantCode" text NOT NULL DEFAULT 'USENET_GROUP',
+                        "OfficeCode" text NOT NULL DEFAULT 'ALL',
+                        "BillingProfileId" uuid NOT NULL,
+                        "BillingYearMonth" text NOT NULL DEFAULT '',
+                        "ScheduledDate" date NOT NULL,
+                        "ProcessedDate" date NULL,
+                        "ProcessedByUsername" text NOT NULL DEFAULT '',
+                        "Status" text NOT NULL DEFAULT '예정',
+                        "BilledAmount" numeric(18,2) NOT NULL DEFAULT 0,
+                        "Note" text NOT NULL DEFAULT '',
+                        "AssignedUsername" text NOT NULL DEFAULT '',
+                        "IsDeleted" boolean NOT NULL DEFAULT false,
+                        "CreatedAtUtc" timestamp with time zone NOT NULL,
+                        "UpdatedAtUtc" timestamp with time zone NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0
+                    );
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        foreach (var sql in new[]
+                 {
+                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalBillingLogs_BillingProfileId_BillingYearMonth\" ON \"RentalBillingLogs\" (\"BillingProfileId\", \"BillingYearMonth\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingLogs_OfficeCode\" ON \"RentalBillingLogs\" (\"OfficeCode\");"
+                 })
+        {
+            try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
         }
     }
 
