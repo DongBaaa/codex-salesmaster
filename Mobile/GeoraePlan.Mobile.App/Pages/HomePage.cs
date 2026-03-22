@@ -71,6 +71,14 @@ public sealed class HomePage : ContentPage
         createPaymentButton.Clicked += async (_, _) =>
             await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>());
 
+        var inventoryTransferButton = GeoraePlanTheme.CreateButton("재고이동", GeoraePlanTheme.Accent);
+        inventoryTransferButton.Clicked += async (_, _) =>
+            await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InventoryTransfersPage>());
+
+        var rentalsButton = GeoraePlanTheme.CreateButton("렌탈", GeoraePlanTheme.SecondaryButton);
+        rentalsButton.Clicked += async (_, _) =>
+            await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<RentalsPage>());
+
         var quickActionGrid = new Grid
         {
             ColumnDefinitions =
@@ -78,12 +86,20 @@ public sealed class HomePage : ContentPage
                 new ColumnDefinition(GridLength.Star),
                 new ColumnDefinition(GridLength.Star)
             },
-            ColumnSpacing = 12
+            RowDefinitions =
+            {
+                new RowDefinition(GridLength.Auto),
+                new RowDefinition(GridLength.Auto)
+            },
+            ColumnSpacing = 12,
+            RowSpacing = 12
         };
         quickActionGrid.Add(createInvoiceButton);
         Grid.SetColumn(createInvoiceButton, 0);
         quickActionGrid.Add(createPaymentButton);
         Grid.SetColumn(createPaymentButton, 1);
+        quickActionGrid.Add(inventoryTransferButton, 0, 1);
+        quickActionGrid.Add(rentalsButton, 1, 1);
 
         Content = new ScrollView
         {
@@ -102,7 +118,7 @@ public sealed class HomePage : ContentPage
                     GeoraePlanTheme.CreateCard(
                         GeoraePlanTheme.CreateSectionTitle("빠른 안내"),
                         GeoraePlanTheme.CreateBodyText("PC 버전과 같은 진한 네이비/블루 톤을 유지합니다."),
-                        GeoraePlanTheme.CreateBodyText("거래처, 품목, 전표, 수금, 휴지통은 같은 NAS 서버 데이터와 연동됩니다."),
+                        GeoraePlanTheme.CreateBodyText("거래처, 품목, 전표, 수금, 재고이동, 렌탈 화면은 같은 NAS 서버 sync 데이터를 기준으로 동작합니다."),
                         quickActionGrid,
                         refreshButton,
                         statusLabel)

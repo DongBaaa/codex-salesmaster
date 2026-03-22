@@ -31,6 +31,8 @@ public static class MauiProgram
         builder.Services.AddTransient<PaymentAttachmentsViewModel>();
         builder.Services.AddSingleton<ItemsViewModel>();
         builder.Services.AddSingleton<InvoicesViewModel>();
+        builder.Services.AddSingleton<InventoryTransfersViewModel>();
+        builder.Services.AddSingleton<RentalsViewModel>();
         builder.Services.AddSingleton<RecycleBinViewModel>();
         builder.Services.AddSingleton<SyncViewModel>();
         builder.Services.AddSingleton<SettingsViewModel>();
@@ -43,6 +45,8 @@ public static class MauiProgram
         builder.Services.AddTransient<CustomerContractsPage>();
         builder.Services.AddTransient<ItemsPage>();
         builder.Services.AddTransient<InvoicesPage>();
+        builder.Services.AddTransient<InventoryTransfersPage>();
+        builder.Services.AddTransient<RentalsPage>();
         builder.Services.AddTransient<RecycleBinPage>();
         builder.Services.AddTransient<SyncPage>();
         builder.Services.AddTransient<SettingsPage>();

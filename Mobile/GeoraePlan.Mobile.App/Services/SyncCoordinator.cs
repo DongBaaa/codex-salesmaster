@@ -32,16 +32,7 @@ public sealed class SyncCoordinator
             {
                 var response = await _api.PullAsync(state.LastRevision, ct);
                 if (response is not null)
-                {
-                    state.LastRevision = Math.Max(state.LastRevision, response.CurrentServerRevision);
-                    state.LastSuccessUtc = DateTime.UtcNow;
-                    state.LastError = string.Empty;
-                    state.ConsecutiveFailureCount = 0;
-                    state.LastPulledCustomerCount = response.Customers.Count;
-                    state.LastPulledItemCount = response.Items.Count;
-                    state.LastPulledInvoiceCount = response.Invoices.Count;
-                    state.LastPulledPaymentCount = response.Payments.Count;
-                }
+                    ApplyPullResponse(state, response);
             }
             catch (Exception ex)
             {
@@ -363,6 +354,7 @@ public sealed class SyncCoordinator
 
     private static void ApplyPullResponse(MobileSyncState state, SyncPullResponse response)
     {
+        state.Normalize();
         state.LastRevision = Math.Max(state.LastRevision, response.CurrentServerRevision);
         state.LastSuccessUtc = DateTime.UtcNow;
         state.LastError = string.Empty;
@@ -378,5 +370,32 @@ public sealed class SyncCoordinator
         state.LastPulledRentalBillingProfileCount = response.RentalBillingProfiles.Count;
         state.LastPulledRentalAssetCount = response.RentalAssets.Count;
         state.LastPulledRentalBillingLogCount = response.RentalBillingLogs.Count;
+        state.SyncedTransactions = MergeById(state.SyncedTransactions, response.Transactions);
+        state.SyncedTransactionAttachments = MergeById(state.SyncedTransactionAttachments, response.TransactionAttachments);
+        state.SyncedInventoryTransfers = MergeById(state.SyncedInventoryTransfers, response.InventoryTransfers);
+        state.SyncedRentalManagementCompanies = MergeById(state.SyncedRentalManagementCompanies, response.RentalManagementCompanies);
+        state.SyncedRentalBillingProfiles = MergeById(state.SyncedRentalBillingProfiles, response.RentalBillingProfiles);
+        state.SyncedRentalAssets = MergeById(state.SyncedRentalAssets, response.RentalAssets);
+        state.SyncedRentalBillingLogs = MergeById(state.SyncedRentalBillingLogs, response.RentalBillingLogs);
+    }
+
+    private static List<T> MergeById<T>(IEnumerable<T>? existing, IEnumerable<T>? incoming) where T : SyncEntityDto
+    {
+        var map = (existing ?? Enumerable.Empty<T>())
+            .Where(item => item.Id != Guid.Empty && !item.IsDeleted)
+            .ToDictionary(item => item.Id, item => item);
+
+        foreach (var item in incoming ?? Enumerable.Empty<T>())
+        {
+            if (item.Id == Guid.Empty)
+                continue;
+
+            if (item.IsDeleted)
+                map.Remove(item.Id);
+            else
+                map[item.Id] = item;
+        }
+
+        return map.Values.ToList();
     }
 }
