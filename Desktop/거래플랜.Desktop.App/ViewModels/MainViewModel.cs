@@ -212,6 +212,36 @@ public sealed partial class MainViewModel : ObservableObject
             SyncStatus = "?ㅽ봽?쇱씤 紐⑤뱶 ???쒕쾭 ?곌껐 ???먮룞 ?숆린?붾맗?덈떎";
     }
 
+    public async Task RunPostLoginSyncAsync()
+    {
+        if (_session.IsOfflineMode)
+        {
+            SyncStatus = "오프라인 로그인 상태라 자동 동기화를 건너뜁니다.";
+            return;
+        }
+
+        var dirtyBefore = await _local.CountDirtyAsync();
+        SyncStatus = "로그인 후 자동 동기화 중...";
+
+        var syncOk = await _sync.TrySyncAsync();
+        if (syncOk)
+        {
+            await LoadCustomersAsync();
+            await LoadInvoiceListAsync();
+            SyncStatus = $"로그인 후 자동 동기화 완료 {DateTime.Now:HH:mm:ss}";
+            return;
+        }
+
+        var dirtyAfter = await _local.CountDirtyAsync();
+        if (dirtyBefore > 0 || dirtyAfter > 0)
+        {
+            var backupOk = await _backup.BackupNowAsync();
+            AppLogger.Warn(
+                "APP",
+                $"Post-login auto sync failed with {dirtyAfter} dirty rows. Auto-backup {(backupOk ? "succeeded" : "failed")}.");
+        }
+    }
+
     // ?? Customer Filter (Left Panel) ???????????????????????????????????????
     private async Task LoadCustomersAsync()
     {

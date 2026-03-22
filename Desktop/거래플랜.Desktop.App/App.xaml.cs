@@ -105,33 +105,6 @@ public partial class App : Application
                 return;
             }
 
-            // Startup policy: try one immediate sync; on failure auto-backup only (no blocking popup).
-            await using (var startupScope = _services.CreateAsyncScope())
-            {
-                var session = startupScope.ServiceProvider.GetRequiredService<SessionState>();
-                var localState = startupScope.ServiceProvider.GetRequiredService<LocalStateService>();
-                var dirtyBefore = await localState.CountDirtyAsync();
-
-                if (!session.IsOfflineMode)
-                {
-                    var sync = startupScope.ServiceProvider.GetRequiredService<SyncService>();
-                    var syncOk = await sync.TrySyncAsync();
-
-                    if (!syncOk)
-                    {
-                        var dirtyAfter = await localState.CountDirtyAsync();
-                        if (dirtyBefore > 0 || dirtyAfter > 0)
-                        {
-                            var backup = startupScope.ServiceProvider.GetRequiredService<BackupService>();
-                            var backupOk = await backup.BackupNowAsync();
-                            AppLogger.Warn(
-                                "APP",
-                                $"Startup sync failed with {dirtyAfter} dirty rows. Auto-backup {(backupOk ? "succeeded" : "failed")}.");
-                        }
-                    }
-                }
-            }
-
             var mainScope = _services.CreateScope();
             var sp = mainScope.ServiceProvider;
             var mainVm = sp.GetRequiredService<MainViewModel>();
@@ -197,6 +170,7 @@ public partial class App : Application
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             mainWin.Show();
             await mainWin.InitAsync();
+            await mainVm.RunPostLoginSyncAsync();
         }
         catch (Exception ex)
         {
