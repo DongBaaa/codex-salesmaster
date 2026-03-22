@@ -195,6 +195,33 @@ public sealed class CustomerCategoryDto : SyncEntityDto
     public bool IsSystemDefault { get; set; }
 }
 
+public sealed class PriceGradeOptionDto : SyncEntityDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string PriceSource { get; set; } = "Sales";
+    public int SortOrder { get; set; }
+    public bool IsSystemDefault { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class TradeTypeOptionDto : SyncEntityDto
+{
+    public string Name { get; set; } = string.Empty;
+    public bool AllowsSales { get; set; } = true;
+    public bool AllowsPurchase { get; set; }
+    public int SortOrder { get; set; }
+    public bool IsSystemDefault { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class ItemCategoryOptionDto : SyncEntityDto
+{
+    public string Name { get; set; } = string.Empty;
+    public int SortOrder { get; set; }
+    public bool IsSystemDefault { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
 public sealed class CustomerMasterDto : SyncEntityDto
 {
     public string NameOriginal { get; set; } = string.Empty;
@@ -386,6 +413,9 @@ public sealed class SyncPullResponse
     public List<CompanyProfileDto> CompanyProfiles { get; set; } = new();
     public List<UnitDto> Units { get; set; } = new();
     public List<CustomerCategoryDto> CustomerCategories { get; set; } = new();
+    public List<PriceGradeOptionDto> PriceGradeOptions { get; set; } = new();
+    public List<TradeTypeOptionDto> TradeTypeOptions { get; set; } = new();
+    public List<ItemCategoryOptionDto> ItemCategoryOptions { get; set; } = new();
     public List<CustomerMasterDto> CustomerMasters { get; set; } = new();
     public List<CustomerDto> Customers { get; set; } = new();
     public List<CustomerContractDto> CustomerContracts { get; set; } = new();
@@ -401,6 +431,9 @@ public sealed class SyncPushRequest
     public List<CompanyProfileDto> CompanyProfiles { get; set; } = new();
     public List<UnitDto> Units { get; set; } = new();
     public List<CustomerCategoryDto> CustomerCategories { get; set; } = new();
+    public List<PriceGradeOptionDto> PriceGradeOptions { get; set; } = new();
+    public List<TradeTypeOptionDto> TradeTypeOptions { get; set; } = new();
+    public List<ItemCategoryOptionDto> ItemCategoryOptions { get; set; } = new();
     public List<CustomerMasterDto> CustomerMasters { get; set; } = new();
     public List<CustomerDto> Customers { get; set; } = new();
     public List<CustomerContractDto> CustomerContracts { get; set; } = new();

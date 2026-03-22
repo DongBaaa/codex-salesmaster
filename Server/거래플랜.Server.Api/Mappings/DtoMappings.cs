@@ -165,6 +165,81 @@ public static class DtoMappings
         entity.Name = dto.Name; entity.IsSystemDefault = dto.IsSystemDefault; entity.IsDeleted = dto.IsDeleted;
     }
 
+    public static PriceGradeOptionDto ToDto(this PriceGradeOption entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            Name = entity.Name,
+            PriceSource = entity.PriceSource,
+            SortOrder = entity.SortOrder,
+            IsSystemDefault = entity.IsSystemDefault,
+            IsActive = entity.IsActive
+        };
+
+    public static void Apply(this PriceGradeOption entity, PriceGradeOptionDto dto)
+    {
+        entity.Name = dto.Name?.Trim() ?? string.Empty;
+        entity.PriceSource = string.IsNullOrWhiteSpace(dto.PriceSource) ? "Sales" : dto.PriceSource.Trim();
+        entity.SortOrder = dto.SortOrder;
+        entity.IsSystemDefault = dto.IsSystemDefault;
+        entity.IsActive = dto.IsActive;
+        entity.IsDeleted = dto.IsDeleted;
+    }
+
+    public static TradeTypeOptionDto ToDto(this TradeTypeOption entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            Name = entity.Name,
+            AllowsSales = entity.AllowsSales,
+            AllowsPurchase = entity.AllowsPurchase,
+            SortOrder = entity.SortOrder,
+            IsSystemDefault = entity.IsSystemDefault,
+            IsActive = entity.IsActive
+        };
+
+    public static void Apply(this TradeTypeOption entity, TradeTypeOptionDto dto)
+    {
+        entity.Name = dto.Name?.Trim() ?? string.Empty;
+        entity.AllowsSales = dto.AllowsSales;
+        entity.AllowsPurchase = dto.AllowsPurchase;
+        entity.SortOrder = dto.SortOrder;
+        entity.IsSystemDefault = dto.IsSystemDefault;
+        entity.IsActive = dto.IsActive;
+        entity.IsDeleted = dto.IsDeleted;
+    }
+
+    public static ItemCategoryOptionDto ToDto(this ItemCategoryOption entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            Name = entity.Name,
+            SortOrder = entity.SortOrder,
+            IsSystemDefault = entity.IsSystemDefault,
+            IsActive = entity.IsActive
+        };
+
+    public static void Apply(this ItemCategoryOption entity, ItemCategoryOptionDto dto)
+    {
+        entity.Name = dto.Name?.Trim() ?? string.Empty;
+        entity.SortOrder = dto.SortOrder;
+        entity.IsSystemDefault = dto.IsSystemDefault;
+        entity.IsActive = dto.IsActive;
+        entity.IsDeleted = dto.IsDeleted;
+    }
+
     public static CustomerMasterDto ToDto(this CustomerMaster entity) =>
         new()
         {

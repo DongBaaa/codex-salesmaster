@@ -181,6 +181,30 @@ public sealed class SyncService : IDisposable
                 .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
+            Units = await _db.Units.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
+            CustomerCategories = await _db.CustomerCategories.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
+            PriceGradeOptions = await _db.PriceGradeOptions.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
+            TradeTypeOptions = await _db.TradeTypeOptions.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
+            ItemCategoryOptions = await _db.ItemCategoryOptions.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
+            CustomerMasters = await _db.CustomerMasters.IgnoreQueryFilters()
+                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
+
             Customers = await _db.Customers.IgnoreQueryFilters()
                 .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
@@ -209,8 +233,18 @@ public sealed class SyncService : IDisposable
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct)
         };
 
-        var hasDirty = req.CompanyProfiles.Count + req.Customers.Count + req.CustomerContracts.Count +
-                       req.Items.Count + req.Invoices.Count + req.Payments.Count > 0;
+        var hasDirty = req.CompanyProfiles.Count +
+                       req.Units.Count +
+                       req.CustomerCategories.Count +
+                       req.PriceGradeOptions.Count +
+                       req.TradeTypeOptions.Count +
+                       req.ItemCategoryOptions.Count +
+                       req.CustomerMasters.Count +
+                       req.Customers.Count +
+                       req.CustomerContracts.Count +
+                       req.Items.Count +
+                       req.Invoices.Count +
+                       req.Payments.Count > 0;
         if (!hasDirty)
             return;
 
@@ -258,6 +292,12 @@ public sealed class SyncService : IDisposable
         }
 
         await MarkCleanAsync<LocalCompanyProfile>(ct);
+        await MarkCleanAsync<LocalUnit>(ct);
+        await MarkCleanAsync<LocalCustomerCategory>(ct);
+        await MarkCleanAsync<LocalPriceGradeOption>(ct);
+        await MarkCleanAsync<LocalTradeTypeOption>(ct);
+        await MarkCleanAsync<LocalItemCategoryOption>(ct);
+        await MarkCleanAsync<LocalCustomerMaster>(ct);
         await MarkCleanAsync<LocalCustomer>(ct);
         await MarkCleanAsync<LocalCustomerContract>(ct);
         await MarkCleanAsync<LocalItem>(ct);
@@ -290,11 +330,29 @@ public sealed class SyncService : IDisposable
                 case "Customer":
                     await MarkServerNewerConflictsCleanAsync<LocalCustomer>(ids, ct);
                     break;
+                case "CustomerCategory":
+                    await MarkServerNewerConflictsCleanAsync<LocalCustomerCategory>(ids, ct);
+                    break;
+                case "CustomerMaster":
+                    await MarkServerNewerConflictsCleanAsync<LocalCustomerMaster>(ids, ct);
+                    break;
                 case "CustomerContract":
                     await MarkServerNewerConflictsCleanAsync<LocalCustomerContract>(ids, ct);
                     break;
                 case "Item":
                     await MarkServerNewerConflictsCleanAsync<LocalItem>(ids, ct);
+                    break;
+                case "ItemCategoryOption":
+                    await MarkServerNewerConflictsCleanAsync<LocalItemCategoryOption>(ids, ct);
+                    break;
+                case "PriceGradeOption":
+                    await MarkServerNewerConflictsCleanAsync<LocalPriceGradeOption>(ids, ct);
+                    break;
+                case "TradeTypeOption":
+                    await MarkServerNewerConflictsCleanAsync<LocalTradeTypeOption>(ids, ct);
+                    break;
+                case "Unit":
+                    await MarkServerNewerConflictsCleanAsync<LocalUnit>(ids, ct);
                     break;
                 case "Invoice":
                     await MarkServerNewerConflictsCleanAsync<LocalInvoice>(ids, ct);
@@ -342,6 +400,10 @@ public sealed class SyncService : IDisposable
         await UpsertPulledAsync(pull.CompanyProfiles, _db.CompanyProfiles, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.Units, _db.Units, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.CustomerCategories, _db.CustomerCategories, LocalMappings.ToLocal, ct);
+        await UpsertPulledSelectionOptionsAsync(pull.PriceGradeOptions, _db.PriceGradeOptions, LocalMappings.ToLocal, option => option.Name, ct);
+        await UpsertPulledSelectionOptionsAsync(pull.TradeTypeOptions, _db.TradeTypeOptions, LocalMappings.ToLocal, option => option.Name, ct);
+        await UpsertPulledSelectionOptionsAsync(pull.ItemCategoryOptions, _db.ItemCategoryOptions, LocalMappings.ToLocal, option => option.Name, ct);
+        await UpsertPulledAsync(pull.CustomerMasters, _db.CustomerMasters, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.Customers, _db.Customers, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.CustomerContracts, _db.CustomerContracts, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.Items, _db.Items, LocalMappings.ToLocal, ct);
@@ -379,6 +441,56 @@ public sealed class SyncService : IDisposable
         await _db.SaveChangesAsync(ct);
     }
 
+    private async Task UpsertPulledSelectionOptionsAsync<TLocal, TDto>(
+        IReadOnlyList<TDto> dtos,
+        DbSet<TLocal> set,
+        Func<TDto, TLocal> toLocal,
+        Func<TLocal, string> nameSelector,
+        CancellationToken ct)
+        where TLocal : class, ILocalSyncEntity
+        where TDto : class
+    {
+        var existingEntities = await set.IgnoreQueryFilters().ToListAsync(ct);
+
+        foreach (var dto in dtos)
+        {
+            var local = toLocal(dto);
+            local.IsDirty = false;
+
+            var existing = existingEntities.FirstOrDefault(entity => entity.Id == local.Id);
+            if (existing is null)
+            {
+                var normalizedName = NormalizeOptionName(nameSelector(local));
+                var existingByName = existingEntities.FirstOrDefault(entity =>
+                    string.Equals(NormalizeOptionName(nameSelector(entity)), normalizedName, StringComparison.CurrentCultureIgnoreCase));
+
+                if (existingByName is not null)
+                {
+                    if (existingByName.IsDirty)
+                        continue;
+
+                    existingByName.IsDeleted = true;
+                    existingByName.IsDirty = false;
+                    _db.Entry(existingByName).CurrentValues[nameof(ILocalSyncEntity.UpdatedAtUtc)] = local.UpdatedAtUtc;
+                    _db.Entry(existingByName).CurrentValues[nameof(ILocalSyncEntity.Revision)] = local.Revision;
+
+                    set.Add(local);
+                    existingEntities.Add(local);
+                    continue;
+                }
+
+                set.Add(local);
+                existingEntities.Add(local);
+            }
+            else if (!existing.IsDirty)
+            {
+                _db.Entry(existing).CurrentValues.SetValues(local);
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
     private async Task UpsertPulledItemWarehouseStocksAsync(IReadOnlyList<ItemWarehouseStockDto> dtos, CancellationToken ct)
     {
         foreach (var dto in dtos)
@@ -397,6 +509,9 @@ public sealed class SyncService : IDisposable
 
         await _db.SaveChangesAsync(ct);
     }
+
+    private static string NormalizeOptionName(string? value)
+        => (value ?? string.Empty).Trim();
 
     private async Task UpsertPulledInvoicesAsync(IReadOnlyList<InvoiceDto> dtos, CancellationToken ct)
     {

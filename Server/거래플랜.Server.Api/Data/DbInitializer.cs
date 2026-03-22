@@ -16,6 +16,34 @@ namespace 거래플랜.Server.Api.Data;
 
 public static class DbInitializer
 {
+    private static readonly (Guid Id, string Name, string PriceSource, int SortOrder)[] DefaultPriceGradeOptions =
+    [
+        (Guid.Parse("1b5ea4f8-ff61-4fc6-ac79-175e2125cba0"), "매출단가", "Sales", 0),
+        (Guid.Parse("c8a868c6-3f8d-4e29-a2c9-ec00d68f20a1"), "A_단가 적용", "A", 10),
+        (Guid.Parse("b1af9d5e-33e1-4e4c-bf0c-2fb437d4f1c6"), "B_단가 적용", "B", 20),
+        (Guid.Parse("8aa3856d-3133-4b38-b7f3-ce83cb2fe82d"), "C_단가 적용", "C", 30),
+        (Guid.Parse("2e99b0b8-7f53-4dbc-a3c8-0dce274235a6"), "소매단가", "Retail", 40)
+    ];
+
+    private static readonly (Guid Id, string Name, bool AllowsSales, bool AllowsPurchase, int SortOrder)[] DefaultTradeTypeOptions =
+    [
+        (Guid.Parse("8ce85079-4f9f-49a1-bcd2-dbc653f54025"), "매출", true, false, 0),
+        (Guid.Parse("4ab67a47-1b4e-4f17-8b3c-761023c2c3e3"), "매입", false, true, 10),
+        (Guid.Parse("9c305d74-3dd4-4fff-9679-dbd4dd6fdb49"), "매출/매입", true, true, 20)
+    ];
+
+    private static readonly (Guid Id, string Name, int SortOrder)[] DefaultItemCategoryOptions =
+    [
+        (Guid.Parse("93b57e9c-718b-4681-9eb0-dadfc1b1032d"), "기타", 0),
+        (Guid.Parse("fd74f88a-a4d2-45b8-b1cc-36a13150e1c0"), "흑백프린터", 10),
+        (Guid.Parse("e6599678-ec29-4a79-9234-07ca959d48f9"), "컬러프린터", 20),
+        (Guid.Parse("6fd94157-1d79-4c92-a7c1-7db89cff531e"), "흑백복합기", 30),
+        (Guid.Parse("d69d30ae-f1b4-4b3b-a850-2d5cd92d8d1d"), "컬러복합기", 40),
+        (Guid.Parse("f55b6bcf-cde2-4f1a-91c4-7d8d78f9f4fd"), "하드웨어", 50),
+        (Guid.Parse("3443493a-660f-49e0-b626-e282640db690"), "소모품", 60),
+        (Guid.Parse("3f5e8f32-eb5d-4957-a291-7e0cb09049b6"), "렌탈료", 70)
+    ];
+
     public static async Task InitializeAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken = default)
     {
         await using var scope = serviceProvider.CreateAsyncScope();
@@ -122,6 +150,9 @@ public static class DbInitializer
         await EnsureTenantDefinitionsTableAsync(dbContext, cancellationToken);
         await EnsureTenantOfficeDefinitionsTableAsync(dbContext, cancellationToken);
         await EnsureDataSharingPoliciesTableAsync(dbContext, cancellationToken);
+        await EnsurePriceGradeOptionsTableAsync(dbContext, cancellationToken);
+        await EnsureTradeTypeOptionsTableAsync(dbContext, cancellationToken);
+        await EnsureItemCategoryOptionsTableAsync(dbContext, cancellationToken);
         await EnsureItemCatalogColumnsAsync(dbContext, cancellationToken);
         await EnsureCustomerMasterOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureCustomerMasterTenantCodeColumnAsync(dbContext, cancellationToken);
@@ -148,6 +179,78 @@ public static class DbInitializer
                 new Unit { Name = "대", IsActive = true },
                 new Unit { Name = "개", IsActive = true },
                 new Unit { Name = "박스", IsActive = true });
+        }
+
+        foreach (var definition in DefaultPriceGradeOptions)
+        {
+            var existing = await dbContext.PriceGradeOptions.IgnoreQueryFilters().FirstOrDefaultAsync(option => option.Id == definition.Id, cancellationToken)
+                ?? await dbContext.PriceGradeOptions.IgnoreQueryFilters().FirstOrDefaultAsync(option => option.Name == definition.Name, cancellationToken);
+            if (existing is null)
+            {
+                dbContext.PriceGradeOptions.Add(new PriceGradeOption
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    PriceSource = definition.PriceSource,
+                    SortOrder = definition.SortOrder,
+                    IsActive = true
+                });
+                continue;
+            }
+
+            existing.Name = definition.Name;
+            existing.PriceSource = definition.PriceSource;
+            existing.SortOrder = definition.SortOrder;
+            existing.IsActive = true;
+            existing.IsDeleted = false;
+        }
+
+        foreach (var definition in DefaultTradeTypeOptions)
+        {
+            var existing = await dbContext.TradeTypeOptions.IgnoreQueryFilters().FirstOrDefaultAsync(option => option.Id == definition.Id, cancellationToken)
+                ?? await dbContext.TradeTypeOptions.IgnoreQueryFilters().FirstOrDefaultAsync(option => option.Name == definition.Name, cancellationToken);
+            if (existing is null)
+            {
+                dbContext.TradeTypeOptions.Add(new TradeTypeOption
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    AllowsSales = definition.AllowsSales,
+                    AllowsPurchase = definition.AllowsPurchase,
+                    SortOrder = definition.SortOrder,
+                    IsActive = true
+                });
+                continue;
+            }
+
+            existing.Name = definition.Name;
+            existing.AllowsSales = definition.AllowsSales;
+            existing.AllowsPurchase = definition.AllowsPurchase;
+            existing.SortOrder = definition.SortOrder;
+            existing.IsActive = true;
+            existing.IsDeleted = false;
+        }
+
+        foreach (var definition in DefaultItemCategoryOptions)
+        {
+            var existing = await dbContext.ItemCategoryOptions.IgnoreQueryFilters().FirstOrDefaultAsync(option => option.Id == definition.Id, cancellationToken)
+                ?? await dbContext.ItemCategoryOptions.IgnoreQueryFilters().FirstOrDefaultAsync(option => option.Name == definition.Name, cancellationToken);
+            if (existing is null)
+            {
+                dbContext.ItemCategoryOptions.Add(new ItemCategoryOption
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    SortOrder = definition.SortOrder,
+                    IsActive = true
+                });
+                continue;
+            }
+
+            existing.Name = definition.Name;
+            existing.SortOrder = definition.SortOrder;
+            existing.IsActive = true;
+            existing.IsDeleted = false;
         }
 
         if (!await dbContext.CompanyProfiles.IgnoreQueryFilters().AnyAsync(cancellationToken))
@@ -568,6 +671,183 @@ public static class DbInitializer
         }
     }
 
+    private static async Task EnsurePriceGradeOptionsTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "PriceGradeOptions" (
+                        "Id" TEXT NOT NULL PRIMARY KEY,
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0,
+                        "Name" TEXT NOT NULL,
+                        "PriceSource" TEXT NOT NULL DEFAULT 'Sales',
+                        "SortOrder" INTEGER NOT NULL DEFAULT 0,
+                        "IsSystemDefault" INTEGER NOT NULL DEFAULT 0,
+                        "IsActive" INTEGER NOT NULL DEFAULT 1
+                    );
+                    """,
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_PriceGradeOptions_Name\" ON \"PriceGradeOptions\" (\"Name\");",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "PriceGradeOptions" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "IsDeleted" boolean NOT NULL DEFAULT FALSE,
+                        "CreatedAtUtc" timestamptz NOT NULL,
+                        "UpdatedAtUtc" timestamptz NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0,
+                        "Name" text NOT NULL,
+                        "PriceSource" text NOT NULL DEFAULT 'Sales',
+                        "SortOrder" integer NOT NULL DEFAULT 0,
+                        "IsSystemDefault" boolean NOT NULL DEFAULT FALSE,
+                        "IsActive" boolean NOT NULL DEFAULT TRUE
+                    );
+                    """,
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_PriceGradeOptions_Name\" ON \"PriceGradeOptions\" (\"Name\");",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+            // Table may already exist or provider may not support IF NOT EXISTS in the same way.
+        }
+    }
+
+    private static async Task EnsureTradeTypeOptionsTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "TradeTypeOptions" (
+                        "Id" TEXT NOT NULL PRIMARY KEY,
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0,
+                        "Name" TEXT NOT NULL,
+                        "AllowsSales" INTEGER NOT NULL DEFAULT 1,
+                        "AllowsPurchase" INTEGER NOT NULL DEFAULT 0,
+                        "SortOrder" INTEGER NOT NULL DEFAULT 0,
+                        "IsSystemDefault" INTEGER NOT NULL DEFAULT 0,
+                        "IsActive" INTEGER NOT NULL DEFAULT 1
+                    );
+                    """,
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_TradeTypeOptions_Name\" ON \"TradeTypeOptions\" (\"Name\");",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "TradeTypeOptions" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "IsDeleted" boolean NOT NULL DEFAULT FALSE,
+                        "CreatedAtUtc" timestamptz NOT NULL,
+                        "UpdatedAtUtc" timestamptz NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0,
+                        "Name" text NOT NULL,
+                        "AllowsSales" boolean NOT NULL DEFAULT TRUE,
+                        "AllowsPurchase" boolean NOT NULL DEFAULT FALSE,
+                        "SortOrder" integer NOT NULL DEFAULT 0,
+                        "IsSystemDefault" boolean NOT NULL DEFAULT FALSE,
+                        "IsActive" boolean NOT NULL DEFAULT TRUE
+                    );
+                    """,
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_TradeTypeOptions_Name\" ON \"TradeTypeOptions\" (\"Name\");",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+            // Table may already exist or provider may not support IF NOT EXISTS in the same way.
+        }
+    }
+
+    private static async Task EnsureItemCategoryOptionsTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "ItemCategoryOptions" (
+                        "Id" TEXT NOT NULL PRIMARY KEY,
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0,
+                        "Name" TEXT NOT NULL,
+                        "SortOrder" INTEGER NOT NULL DEFAULT 0,
+                        "IsSystemDefault" INTEGER NOT NULL DEFAULT 0,
+                        "IsActive" INTEGER NOT NULL DEFAULT 1
+                    );
+                    """,
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ItemCategoryOptions_Name\" ON \"ItemCategoryOptions\" (\"Name\");",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "ItemCategoryOptions" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "IsDeleted" boolean NOT NULL DEFAULT FALSE,
+                        "CreatedAtUtc" timestamptz NOT NULL,
+                        "UpdatedAtUtc" timestamptz NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0,
+                        "Name" text NOT NULL,
+                        "SortOrder" integer NOT NULL DEFAULT 0,
+                        "IsSystemDefault" boolean NOT NULL DEFAULT FALSE,
+                        "IsActive" boolean NOT NULL DEFAULT TRUE
+                    );
+                    """,
+                    cancellationToken);
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ItemCategoryOptions_Name\" ON \"ItemCategoryOptions\" (\"Name\");",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+            // Table may already exist or provider may not support IF NOT EXISTS in the same way.
+        }
+    }
+
     private static async Task EnsureDefaultTenantConfigurationAsync(
         AppDbContext dbContext,
         CancellationToken cancellationToken)
@@ -666,10 +946,13 @@ public static class DbInitializer
             await dbContext.TenantDefinitions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.TenantOfficeDefinitions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.DataSharingPolicies.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
-            await dbContext.Units.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
-            await dbContext.CustomerCategories.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
-            await dbContext.CustomerMasters.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
-            await dbContext.Customers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+              await dbContext.Units.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+              await dbContext.CustomerCategories.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+              await dbContext.PriceGradeOptions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+              await dbContext.TradeTypeOptions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+              await dbContext.ItemCategoryOptions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+              await dbContext.CustomerMasters.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+              await dbContext.Customers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.CustomerContracts.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Items.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Invoices.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,

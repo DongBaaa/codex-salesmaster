@@ -102,6 +102,33 @@ public sealed class CustomerCategory : TrackedEntity
     public bool IsSystemDefault { get; set; }
 }
 
+public sealed class PriceGradeOption : TrackedEntity
+{
+    public string Name { get; set; } = string.Empty;
+    public string PriceSource { get; set; } = "Sales";
+    public int SortOrder { get; set; }
+    public bool IsSystemDefault { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class TradeTypeOption : TrackedEntity
+{
+    public string Name { get; set; } = string.Empty;
+    public bool AllowsSales { get; set; } = true;
+    public bool AllowsPurchase { get; set; }
+    public int SortOrder { get; set; }
+    public bool IsSystemDefault { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class ItemCategoryOption : TrackedEntity
+{
+    public string Name { get; set; } = string.Empty;
+    public int SortOrder { get; set; }
+    public bool IsSystemDefault { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
 public sealed class CustomerMaster : TrackedEntity
 {
     public string NameOriginal { get; set; } = string.Empty;

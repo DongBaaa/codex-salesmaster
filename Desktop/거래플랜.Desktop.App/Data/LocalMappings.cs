@@ -96,6 +96,118 @@ public static class LocalMappings
         IsDeleted = e.IsDeleted
     };
 
+    public static LocalPriceGradeOption ToLocal(PriceGradeOptionDto dto) => new()
+    {
+        Id = dto.Id,
+        Name = dto.Name,
+        PriceSource = dto.PriceSource,
+        SortOrder = dto.SortOrder,
+        IsSystemDefault = dto.IsSystemDefault,
+        IsActive = dto.IsActive,
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
+        Revision = dto.Revision,
+        IsDeleted = dto.IsDeleted,
+        IsDirty = false
+    };
+
+    public static PriceGradeOptionDto ToDto(LocalPriceGradeOption e) => new()
+    {
+        Id = e.Id,
+        Name = e.Name,
+        PriceSource = e.PriceSource,
+        SortOrder = e.SortOrder,
+        IsSystemDefault = e.IsSystemDefault,
+        IsActive = e.IsActive,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
+        Revision = e.Revision,
+        IsDeleted = e.IsDeleted
+    };
+
+    public static LocalTradeTypeOption ToLocal(TradeTypeOptionDto dto) => new()
+    {
+        Id = dto.Id,
+        Name = dto.Name,
+        AllowsSales = dto.AllowsSales,
+        AllowsPurchase = dto.AllowsPurchase,
+        SortOrder = dto.SortOrder,
+        IsSystemDefault = dto.IsSystemDefault,
+        IsActive = dto.IsActive,
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
+        Revision = dto.Revision,
+        IsDeleted = dto.IsDeleted,
+        IsDirty = false
+    };
+
+    public static TradeTypeOptionDto ToDto(LocalTradeTypeOption e) => new()
+    {
+        Id = e.Id,
+        Name = e.Name,
+        AllowsSales = e.AllowsSales,
+        AllowsPurchase = e.AllowsPurchase,
+        SortOrder = e.SortOrder,
+        IsSystemDefault = e.IsSystemDefault,
+        IsActive = e.IsActive,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
+        Revision = e.Revision,
+        IsDeleted = e.IsDeleted
+    };
+
+    public static LocalItemCategoryOption ToLocal(ItemCategoryOptionDto dto) => new()
+    {
+        Id = dto.Id,
+        Name = dto.Name,
+        SortOrder = dto.SortOrder,
+        IsSystemDefault = dto.IsSystemDefault,
+        IsActive = dto.IsActive,
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
+        Revision = dto.Revision,
+        IsDeleted = dto.IsDeleted,
+        IsDirty = false
+    };
+
+    public static ItemCategoryOptionDto ToDto(LocalItemCategoryOption e) => new()
+    {
+        Id = e.Id,
+        Name = e.Name,
+        SortOrder = e.SortOrder,
+        IsSystemDefault = e.IsSystemDefault,
+        IsActive = e.IsActive,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
+        Revision = e.Revision,
+        IsDeleted = e.IsDeleted
+    };
+
+    public static LocalCustomerMaster ToLocal(CustomerMasterDto dto) => new()
+    {
+        Id = dto.Id,
+        NameOriginal = dto.NameOriginal,
+        NameMatchKey = dto.NameMatchKey,
+        CategoryId = dto.CategoryId,
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
+        Revision = dto.Revision,
+        IsDeleted = dto.IsDeleted,
+        IsDirty = false
+    };
+
+    public static CustomerMasterDto ToDto(LocalCustomerMaster e) => new()
+    {
+        Id = e.Id,
+        NameOriginal = e.NameOriginal,
+        NameMatchKey = e.NameMatchKey,
+        CategoryId = e.CategoryId,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
+        Revision = e.Revision,
+        IsDeleted = e.IsDeleted
+    };
+
     // ── Customer ────────────────────────────────────────────────────────────
     public static LocalCustomer ToLocal(CustomerDto dto) => new()
     {

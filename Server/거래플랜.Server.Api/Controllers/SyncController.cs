@@ -1,15 +1,15 @@
-using System.Text.Json;
-using °Å·¡ÇÃ·£.Server.Api.Data;
-using °Å·¡ÇÃ·£.Server.Api.Domain;
-using °Å·¡ÇÃ·£.Server.Api.Mappings;
-using °Å·¡ÇÃ·£.Server.Api.Services;
-using °Å·¡ÇÃ·£.Server.Api.Utilities;
-using °Å·¡ÇÃ·£.Shared.Contracts;
+ï»¿using System.Text.Json;
+using ê±°ëž˜í”Œëžœ.Server.Api.Data;
+using ê±°ëž˜í”Œëžœ.Server.Api.Domain;
+using ê±°ëž˜í”Œëžœ.Server.Api.Mappings;
+using ê±°ëž˜í”Œëžœ.Server.Api.Services;
+using ê±°ëž˜í”Œëžœ.Server.Api.Utilities;
+using ê±°ëž˜í”Œëžœ.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace °Å·¡ÇÃ·£.Server.Api.Controllers;
+namespace ê±°ëž˜í”Œëžœ.Server.Api.Controllers;
 
 [ApiController]
 [Authorize]
@@ -48,6 +48,12 @@ public sealed class SyncController : ControllerBase
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
             CustomerCategories = await _dbContext.CustomerCategories.IgnoreQueryFilters().AsNoTracking()
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            PriceGradeOptions = await _dbContext.PriceGradeOptions.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.Revision > sinceRev).OrderBy(x => x.SortOrder).ThenBy(x => x.Name).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            TradeTypeOptions = await _dbContext.TradeTypeOptions.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.Revision > sinceRev).OrderBy(x => x.SortOrder).ThenBy(x => x.Name).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            ItemCategoryOptions = await _dbContext.ItemCategoryOptions.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.Revision > sinceRev).OrderBy(x => x.SortOrder).ThenBy(x => x.Name).Select(x => x.ToDto()).ToListAsync(cancellationToken),
             CustomerMasters = await _officeScopeService.ApplyCustomerMasterScope(_dbContext.CustomerMasters.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
             Customers = await _officeScopeService.ApplyCustomerScope(_dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
@@ -82,6 +88,9 @@ public sealed class SyncController : ControllerBase
             (e, d) => e.Apply(d), d => new Unit { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
         await UpsertEntitiesAsync(request.CustomerCategories ?? [], _dbContext.CustomerCategories,
             (e, d) => e.Apply(d), d => new CustomerCategory { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        await UpsertPriceGradeOptionsAsync(request.PriceGradeOptions ?? [], result, cancellationToken);
+        await UpsertTradeTypeOptionsAsync(request.TradeTypeOptions ?? [], result, cancellationToken);
+        await UpsertItemCategoryOptionsAsync(request.ItemCategoryOptions ?? [], result, cancellationToken);
         var scopedCustomerMasters = await PrepareScopedCustomerMastersAsync(request.CustomerMasters ?? [], result, cancellationToken);
         var validCustomerMasters = await FilterValidCustomerMastersAsync(scopedCustomerMasters, result, cancellationToken);
         await UpsertEntitiesAsync(validCustomerMasters, _dbContext.CustomerMasters,
@@ -131,6 +140,107 @@ public sealed class SyncController : ControllerBase
             if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
             {
                 var conflict = BuildConflict(dto, entity, typeof(TEntity).Name, "Server version is newer.");
+                _dbContext.ConflictLogs.Add(conflict);
+                continue;
+            }
+
+            apply(entity, dto);
+            result.AcceptedCount++;
+        }
+    }
+
+    private async Task UpsertPriceGradeOptionsAsync(
+        IEnumerable<PriceGradeOptionDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        await UpsertSelectionOptionEntitiesAsync(
+            payload,
+            _dbContext.PriceGradeOptions,
+            entity => entity.Name,
+            dto => dto.Name,
+            (entity, dto) => entity.Apply(dto),
+            dto => new PriceGradeOption { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id },
+            nameof(PriceGradeOption),
+            result,
+            cancellationToken);
+    }
+
+    private async Task UpsertTradeTypeOptionsAsync(
+        IEnumerable<TradeTypeOptionDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        await UpsertSelectionOptionEntitiesAsync(
+            payload,
+            _dbContext.TradeTypeOptions,
+            entity => entity.Name,
+            dto => dto.Name,
+            (entity, dto) => entity.Apply(dto),
+            dto => new TradeTypeOption { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id },
+            nameof(TradeTypeOption),
+            result,
+            cancellationToken);
+    }
+
+    private async Task UpsertItemCategoryOptionsAsync(
+        IEnumerable<ItemCategoryOptionDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        await UpsertSelectionOptionEntitiesAsync(
+            payload,
+            _dbContext.ItemCategoryOptions,
+            entity => entity.Name,
+            dto => dto.Name,
+            (entity, dto) => entity.Apply(dto),
+            dto => new ItemCategoryOption { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id },
+            nameof(ItemCategoryOption),
+            result,
+            cancellationToken);
+    }
+
+    private async Task UpsertSelectionOptionEntitiesAsync<TEntity, TDto>(
+        IEnumerable<TDto> payload,
+        DbSet<TEntity> dbSet,
+        Func<TEntity, string> entityNameSelector,
+        Func<TDto, string> dtoNameSelector,
+        Action<TEntity, TDto> apply,
+        Func<TDto, TEntity> create,
+        string entityName,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+        where TEntity : TrackedEntity
+        where TDto : SyncEntityDto
+    {
+        var existingEntities = await dbSet.IgnoreQueryFilters().ToListAsync(cancellationToken);
+
+        foreach (var dto in payload)
+        {
+            var normalizedName = NormalizeOptionName(dtoNameSelector(dto));
+            if (string.IsNullOrWhiteSpace(normalizedName))
+            {
+                AddClientConflict(dto, entityName, "Option name is required.", result);
+                continue;
+            }
+
+            var entity = existingEntities.FirstOrDefault(current => current.Id == dto.Id)
+                ?? existingEntities.FirstOrDefault(current =>
+                    string.Equals(NormalizeOptionName(entityNameSelector(current)), normalizedName, StringComparison.CurrentCultureIgnoreCase));
+
+            if (entity is null)
+            {
+                var newEntity = create(dto);
+                apply(newEntity, dto);
+                dbSet.Add(newEntity);
+                existingEntities.Add(newEntity);
+                result.AcceptedCount++;
+                continue;
+            }
+
+            if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
+            {
+                var conflict = BuildConflict(dto, entity, entityName, "Server version is newer.");
                 _dbContext.ConflictLogs.Add(conflict);
                 continue;
             }
@@ -713,6 +823,9 @@ public sealed class SyncController : ControllerBase
         maxRevision = Math.Max(maxRevision, await _dbContext.CompanyProfiles.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Units.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.CustomerCategories.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.PriceGradeOptions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.TradeTypeOptions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.ItemCategoryOptions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.CustomerMasters.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Customers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.CustomerContracts.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
@@ -735,6 +848,9 @@ public sealed class SyncController : ControllerBase
         };
     }
 
+    private static string NormalizeOptionName(string? value)
+        => (value ?? string.Empty).Trim();
+
     private static void PreserveCustomerTextWhenIncomingLooksLossy(CustomerDto dto, Customer existing)
     {
         var preservedName = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.NameOriginal, dto.NameOriginal);
@@ -753,6 +869,7 @@ public sealed class SyncController : ControllerBase
         dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Email, dto.Email);
     }
 }
+
 
 
 

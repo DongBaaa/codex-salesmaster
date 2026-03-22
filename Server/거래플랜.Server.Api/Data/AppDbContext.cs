@@ -31,6 +31,9 @@ public sealed class AppDbContext : DbContext
     public DbSet<DataSharingPolicy> DataSharingPolicies => Set<DataSharingPolicy>();
     public DbSet<Unit> Units => Set<Unit>();
     public DbSet<CustomerCategory> CustomerCategories => Set<CustomerCategory>();
+    public DbSet<PriceGradeOption> PriceGradeOptions => Set<PriceGradeOption>();
+    public DbSet<TradeTypeOption> TradeTypeOptions => Set<TradeTypeOption>();
+    public DbSet<ItemCategoryOption> ItemCategoryOptions => Set<ItemCategoryOption>();
     public DbSet<CustomerMaster> CustomerMasters => Set<CustomerMaster>();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<CustomerContract> CustomerContracts => Set<CustomerContract>();
@@ -56,6 +59,9 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<TenantDefinition>().HasIndex(x => x.TenantCode).IsUnique();
         modelBuilder.Entity<TenantOfficeDefinition>().HasIndex(x => x.OfficeCode).IsUnique();
         modelBuilder.Entity<TenantOfficeDefinition>().HasIndex(x => new { x.TenantCode, x.OfficeCode }).IsUnique();
+        modelBuilder.Entity<PriceGradeOption>().HasIndex(x => x.Name).IsUnique();
+        modelBuilder.Entity<TradeTypeOption>().HasIndex(x => x.Name).IsUnique();
+        modelBuilder.Entity<ItemCategoryOption>().HasIndex(x => x.Name).IsUnique();
         modelBuilder.Entity<DataSharingPolicy>().HasIndex(x => new
         {
             x.SourceTenantCode,
@@ -123,6 +129,9 @@ public sealed class AppDbContext : DbContext
         ApplySoftDeleteFilter<DataSharingPolicy>(modelBuilder);
         ApplySoftDeleteFilter<Unit>(modelBuilder);
         ApplySoftDeleteFilter<CustomerCategory>(modelBuilder);
+        ApplySoftDeleteFilter<PriceGradeOption>(modelBuilder);
+        ApplySoftDeleteFilter<TradeTypeOption>(modelBuilder);
+        ApplySoftDeleteFilter<ItemCategoryOption>(modelBuilder);
         ApplySoftDeleteFilter<CustomerMaster>(modelBuilder);
         ApplySoftDeleteFilter<Customer>(modelBuilder);
         ApplySoftDeleteFilter<CustomerContract>(modelBuilder);
