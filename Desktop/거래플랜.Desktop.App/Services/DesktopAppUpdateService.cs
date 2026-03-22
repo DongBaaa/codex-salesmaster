@@ -98,7 +98,7 @@ public sealed class DesktopAppUpdateService
 
         var updaterPath = ResolveUpdaterPath();
         if (string.IsNullOrWhiteSpace(updaterPath))
-            throw new FileNotFoundException("거래플랜.Updater.exe를 찾지 못했습니다.");
+            throw new FileNotFoundException("거래플랜.Updater.exe를 찾지 못했습니다. 현재 설치본에는 내부 업데이트 도우미가 없어 1회 수동 재설치가 필요할 수 있습니다.");
 
         var stagedUpdaterPath = StageUpdaterForExecution(updaterPath);
 

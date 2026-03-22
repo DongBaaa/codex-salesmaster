@@ -592,7 +592,7 @@ Write-Host "package_zip=$zipPath"
 if (-not $SkipNativeInstallers) {
     $nativeInstallerScript = Join-Path $scriptRoot 'Build-GeoraePlanDesktopNativeInstallers.ps1'
     if (Test-Path -LiteralPath $nativeInstallerScript) {
-        & powershell -ExecutionPolicy Bypass -File $nativeInstallerScript -ProjectRoot $ProjectRoot -SourceFolder $SourceFolder -OutputRoot $OutputRoot -PackageName $PackageName -AppDisplayName $AppDisplayName
+        & powershell -ExecutionPolicy Bypass -File $nativeInstallerScript -ProjectRoot $ProjectRoot -SourceFolder $appRoot -OutputRoot $OutputRoot -PackageName $PackageName -AppDisplayName $AppDisplayName
         if ($LASTEXITCODE -ne 0) {
             throw 'Native installer generation failed.'
         }
