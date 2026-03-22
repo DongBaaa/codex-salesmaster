@@ -144,6 +144,69 @@ public sealed class SyncCoordinator
         return state;
     }
 
+    public async Task<MobileSyncState> QueueTransactionDraftAsync(TransactionDto transaction, CancellationToken ct = default)
+    {
+        var state = await _store.LoadAsync(ct);
+        state.PendingPush.Transactions.RemoveAll(x => x.Id == transaction.Id);
+        state.PendingPush.Transactions.Add(transaction);
+        await _store.SaveAsync(state, ct);
+        return state;
+    }
+
+    public async Task<MobileSyncState> QueueTransactionAttachmentDraftAsync(TransactionAttachmentDto attachment, CancellationToken ct = default)
+    {
+        var state = await _store.LoadAsync(ct);
+        state.PendingPush.TransactionAttachments.RemoveAll(x => x.Id == attachment.Id);
+        state.PendingPush.TransactionAttachments.Add(attachment);
+        await _store.SaveAsync(state, ct);
+        return state;
+    }
+
+    public async Task<MobileSyncState> QueueInventoryTransferDraftAsync(InventoryTransferDto transfer, CancellationToken ct = default)
+    {
+        var state = await _store.LoadAsync(ct);
+        state.PendingPush.InventoryTransfers.RemoveAll(x => x.Id == transfer.Id);
+        state.PendingPush.InventoryTransfers.Add(transfer);
+        await _store.SaveAsync(state, ct);
+        return state;
+    }
+
+    public async Task<MobileSyncState> QueueRentalManagementCompanyDraftAsync(RentalManagementCompanyDto company, CancellationToken ct = default)
+    {
+        var state = await _store.LoadAsync(ct);
+        state.PendingPush.RentalManagementCompanies.RemoveAll(x => x.Id == company.Id);
+        state.PendingPush.RentalManagementCompanies.Add(company);
+        await _store.SaveAsync(state, ct);
+        return state;
+    }
+
+    public async Task<MobileSyncState> QueueRentalBillingProfileDraftAsync(RentalBillingProfileDto profile, CancellationToken ct = default)
+    {
+        var state = await _store.LoadAsync(ct);
+        state.PendingPush.RentalBillingProfiles.RemoveAll(x => x.Id == profile.Id);
+        state.PendingPush.RentalBillingProfiles.Add(profile);
+        await _store.SaveAsync(state, ct);
+        return state;
+    }
+
+    public async Task<MobileSyncState> QueueRentalAssetDraftAsync(RentalAssetDto asset, CancellationToken ct = default)
+    {
+        var state = await _store.LoadAsync(ct);
+        state.PendingPush.RentalAssets.RemoveAll(x => x.Id == asset.Id);
+        state.PendingPush.RentalAssets.Add(asset);
+        await _store.SaveAsync(state, ct);
+        return state;
+    }
+
+    public async Task<MobileSyncState> QueueRentalBillingLogDraftAsync(RentalBillingLogDto log, CancellationToken ct = default)
+    {
+        var state = await _store.LoadAsync(ct);
+        state.PendingPush.RentalBillingLogs.RemoveAll(x => x.Id == log.Id);
+        state.PendingPush.RentalBillingLogs.Add(log);
+        await _store.SaveAsync(state, ct);
+        return state;
+    }
+
     public async Task<MobileSyncState> QueuePaymentAttachmentsAsync(
         Guid paymentId,
         IEnumerable<PendingPaymentAttachmentRecord> attachments,
@@ -170,14 +233,7 @@ public sealed class SyncCoordinator
             var response = await _api.PullAsync(state.LastRevision, ct);
             if (response is not null)
             {
-                state.LastRevision = Math.Max(state.LastRevision, response.CurrentServerRevision);
-                state.LastSuccessUtc = DateTime.UtcNow;
-                state.LastError = string.Empty;
-                state.ConsecutiveFailureCount = 0;
-                state.LastPulledCustomerCount = response.Customers.Count;
-                state.LastPulledItemCount = response.Items.Count;
-                state.LastPulledInvoiceCount = response.Invoices.Count;
-                state.LastPulledPaymentCount = response.Payments.Count;
+                ApplyPullResponse(state, response);
             }
         }
         catch (Exception ex)
@@ -195,7 +251,7 @@ public sealed class SyncCoordinator
         try
         {
             state.Normalize();
-            if (state.PendingInvoiceCount > 0 || state.PendingPaymentCount > 0)
+            if (HasPendingServerSyncPayload(state))
             {
                 var result = await _api.PushAsync(state.PendingPush, ct);
                 if (result is not null)
@@ -278,5 +334,49 @@ public sealed class SyncCoordinator
     {
         state.LastError = ex.Message;
         state.ConsecutiveFailureCount++;
+    }
+
+    private static bool HasPendingServerSyncPayload(MobileSyncState state)
+    {
+        state.Normalize();
+        return (state.PendingPush.CompanyProfiles?.Count ?? 0) > 0
+            || (state.PendingPush.Units?.Count ?? 0) > 0
+            || (state.PendingPush.CustomerCategories?.Count ?? 0) > 0
+            || (state.PendingPush.PriceGradeOptions?.Count ?? 0) > 0
+            || (state.PendingPush.TradeTypeOptions?.Count ?? 0) > 0
+            || (state.PendingPush.ItemCategoryOptions?.Count ?? 0) > 0
+            || (state.PendingPush.CustomerMasters?.Count ?? 0) > 0
+            || (state.PendingPush.Customers?.Count ?? 0) > 0
+            || (state.PendingPush.CustomerContracts?.Count ?? 0) > 0
+            || (state.PendingPush.Items?.Count ?? 0) > 0
+            || (state.PendingPush.ItemWarehouseStocks?.Count ?? 0) > 0
+            || (state.PendingPush.Transactions?.Count ?? 0) > 0
+            || (state.PendingPush.TransactionAttachments?.Count ?? 0) > 0
+            || (state.PendingPush.InventoryTransfers?.Count ?? 0) > 0
+            || (state.PendingPush.RentalManagementCompanies?.Count ?? 0) > 0
+            || (state.PendingPush.RentalBillingProfiles?.Count ?? 0) > 0
+            || (state.PendingPush.RentalAssets?.Count ?? 0) > 0
+            || (state.PendingPush.RentalBillingLogs?.Count ?? 0) > 0
+            || (state.PendingPush.Invoices?.Count ?? 0) > 0
+            || (state.PendingPush.Payments?.Count ?? 0) > 0;
+    }
+
+    private static void ApplyPullResponse(MobileSyncState state, SyncPullResponse response)
+    {
+        state.LastRevision = Math.Max(state.LastRevision, response.CurrentServerRevision);
+        state.LastSuccessUtc = DateTime.UtcNow;
+        state.LastError = string.Empty;
+        state.ConsecutiveFailureCount = 0;
+        state.LastPulledCustomerCount = response.Customers.Count;
+        state.LastPulledItemCount = response.Items.Count;
+        state.LastPulledInvoiceCount = response.Invoices.Count;
+        state.LastPulledPaymentCount = response.Payments.Count;
+        state.LastPulledTransactionCount = response.Transactions.Count;
+        state.LastPulledTransactionAttachmentCount = response.TransactionAttachments.Count;
+        state.LastPulledInventoryTransferCount = response.InventoryTransfers.Count;
+        state.LastPulledRentalManagementCompanyCount = response.RentalManagementCompanies.Count;
+        state.LastPulledRentalBillingProfileCount = response.RentalBillingProfiles.Count;
+        state.LastPulledRentalAssetCount = response.RentalAssets.Count;
+        state.LastPulledRentalBillingLogCount = response.RentalBillingLogs.Count;
     }
 }

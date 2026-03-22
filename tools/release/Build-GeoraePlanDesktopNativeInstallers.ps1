@@ -333,9 +333,14 @@ function New-GeneratedWxsContent {
         $files = Get-ChildItem -LiteralPath $DirectoryPath -File | Sort-Object Name
         foreach ($file in $files) {
             $componentId = 'CMP{0:D4}' -f $script:__TradePlanComponentIndex
-            $fileId = 'FIL{0:D4}' -f $script:__TradePlanFileIndex
+            $fileId = switch -Regex ($file.Name) {
+                '^CreateDesktopShortcut\.vbs$' { 'DesktopShortcutScriptFile'; break }
+                default { 'FIL{0:D4}' -f $script:__TradePlanFileIndex }
+            }
             $script:__TradePlanComponentIndex++
-            $script:__TradePlanFileIndex++
+            if ($fileId -like 'FIL*') {
+                $script:__TradePlanFileIndex++
+            }
             $script:__TradePlanComponentIds.Add($componentId)
 
             $sourcePath = '$(var.SourceDir)\' + (Get-RelativeWindowsPath -Root $SourceRoot -Path $file.FullName)
@@ -401,7 +406,6 @@ function New-ProductWxsContent {
     $manufacturerName = Convert-ToXmlAttribute $Manufacturer
     $launchExe = Convert-ToXmlAttribute $LaunchExeName
     $upgradeCodeValue = Convert-ToXmlAttribute $UpgradeCode
-    $desktopScript = Convert-ToXmlAttribute $DesktopShortcutScriptName
     $downgradeMessage = Convert-ToXmlAttribute '이미 최신 버전의 거래플랜이 설치되어 있습니다.'
     $desktopShortcutText = Convert-ToXmlAttribute '바탕화면 바로가기 만들기'
     $uninstallShortcutName = Convert-ToXmlAttribute '거래플랜 제거'
@@ -462,14 +466,14 @@ function New-ProductWxsContent {
       <Publish Dialog="ExitDialog"
                Control="Finish"
                Event="SetProperty"
-               Value="WixShellExecTarget=[INSTALLFOLDER]$desktopScript"
-               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed"
+               Value="WixShellExecTarget=[#DesktopShortcutScriptFile]"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND (NOT Installed OR WIX_UPGRADE_DETECTED)"
                Order="1" />
       <Publish Dialog="ExitDialog"
                Control="Finish"
                Event="DoAction"
                Value="CreateDesktopShortcutAction"
-               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND (NOT Installed OR WIX_UPGRADE_DETECTED)"
                Order="2" />
     </UI>
   </Package>

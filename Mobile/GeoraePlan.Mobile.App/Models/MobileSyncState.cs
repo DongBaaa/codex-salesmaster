@@ -15,11 +15,25 @@ public sealed class MobileSyncState
     public int LastPulledItemCount { get; set; }
     public int LastPulledInvoiceCount { get; set; }
     public int LastPulledPaymentCount { get; set; }
+    public int LastPulledTransactionCount { get; set; }
+    public int LastPulledTransactionAttachmentCount { get; set; }
+    public int LastPulledInventoryTransferCount { get; set; }
+    public int LastPulledRentalManagementCompanyCount { get; set; }
+    public int LastPulledRentalBillingProfileCount { get; set; }
+    public int LastPulledRentalAssetCount { get; set; }
+    public int LastPulledRentalBillingLogCount { get; set; }
     public SyncPushRequest PendingPush { get; set; } = new();
     public List<PendingPaymentAttachmentRecord> PendingPaymentAttachments { get; set; } = new();
 
     public int PendingInvoiceCount => PendingPush.Invoices?.Count ?? 0;
     public int PendingPaymentCount => PendingPush.Payments?.Count ?? 0;
+    public int PendingTransactionCount => PendingPush.Transactions?.Count ?? 0;
+    public int PendingTransactionAttachmentCount => PendingPush.TransactionAttachments?.Count ?? 0;
+    public int PendingInventoryTransferCount => PendingPush.InventoryTransfers?.Count ?? 0;
+    public int PendingRentalManagementCompanyCount => PendingPush.RentalManagementCompanies?.Count ?? 0;
+    public int PendingRentalBillingProfileCount => PendingPush.RentalBillingProfiles?.Count ?? 0;
+    public int PendingRentalAssetCount => PendingPush.RentalAssets?.Count ?? 0;
+    public int PendingRentalBillingLogCount => PendingPush.RentalBillingLogs?.Count ?? 0;
     public int PendingPaymentAttachmentCount => PendingPaymentAttachments?.Count ?? 0;
 
     public void Normalize()
@@ -32,6 +46,9 @@ public sealed class MobileSyncState
         PendingPush.CompanyProfiles ??= new List<CompanyProfileDto>();
         PendingPush.Units ??= new List<UnitDto>();
         PendingPush.CustomerCategories ??= new List<CustomerCategoryDto>();
+        PendingPush.PriceGradeOptions ??= new List<PriceGradeOptionDto>();
+        PendingPush.TradeTypeOptions ??= new List<TradeTypeOptionDto>();
+        PendingPush.ItemCategoryOptions ??= new List<ItemCategoryOptionDto>();
         PendingPush.CustomerMasters ??= new List<CustomerMasterDto>();
         PendingPush.Customers ??= new List<CustomerDto>();
         PendingPush.CustomerContracts ??= new List<CustomerContractDto>();

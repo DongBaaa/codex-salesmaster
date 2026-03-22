@@ -152,8 +152,14 @@ public sealed class SyncViewModel : ObservableObject
     private void ApplyState(Models.MobileSyncState state)
     {
         LastRevisionText = state.LastRevision.ToString("N0");
-        PendingText = $"대기 전표 {state.PendingInvoiceCount}건 / 대기 수금 {state.PendingPaymentCount}건 / 대기 첨부 {state.PendingPaymentAttachmentCount}건";
-        LastPullSummary = $"최근 pull: 거래처 {state.LastPulledCustomerCount} / 품목 {state.LastPulledItemCount} / 전표 {state.LastPulledInvoiceCount} / 수금 {state.LastPulledPaymentCount}";
+        PendingText =
+            $"대기 전표 {state.PendingInvoiceCount}건 / 대기 수금 {state.PendingPaymentCount}건 / 대기 첨부 {state.PendingPaymentAttachmentCount}건"
+            + $" / 거래 {state.PendingTransactionCount}건 / 거래첨부 {state.PendingTransactionAttachmentCount}건 / 재고이동 {state.PendingInventoryTransferCount}건"
+            + $" / 렌탈 {state.PendingRentalBillingProfileCount + state.PendingRentalAssetCount + state.PendingRentalBillingLogCount}건";
+        LastPullSummary =
+            $"최근 pull: 거래처 {state.LastPulledCustomerCount} / 품목 {state.LastPulledItemCount} / 전표 {state.LastPulledInvoiceCount} / 수금 {state.LastPulledPaymentCount}"
+            + $" / 거래 {state.LastPulledTransactionCount} / 거래첨부 {state.LastPulledTransactionAttachmentCount}"
+            + $" / 재고이동 {state.LastPulledInventoryTransferCount} / 렌탈 {state.LastPulledRentalBillingProfileCount + state.LastPulledRentalAssetCount + state.LastPulledRentalBillingLogCount}";
 
         if (state.PendingPaymentAttachmentCount > 0)
         {
