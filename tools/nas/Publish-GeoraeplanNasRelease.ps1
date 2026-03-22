@@ -16,6 +16,36 @@ param(
     [switch]$AllowScheduledApplyTrigger
 )
 
+function Resolve-DotnetCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot
+    )
+
+    $candidates = @(
+        $env:DOTNET_EXE,
+        'C:\Users\beene\AppData\Local\GeoraePlan.Android\dotnet8\dotnet.exe',
+        'C:\Program Files\dotnet\dotnet.exe'
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            continue
+        }
+
+        try {
+            & $candidate --version *> $null
+            if ($LASTEXITCODE -eq 0) {
+                return (Resolve-Path -LiteralPath $candidate).Path
+            }
+        }
+        catch {
+            continue
+        }
+    }
+
+    throw "Unable to locate a working dotnet executable for NAS publish under $ProjectRoot."
+}
+
 function Invoke-RobocopyMirror {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
@@ -277,6 +307,9 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = (Resolve-Path (Join-Path $scriptRoot '..\..')).Path
 }
 
+$dotnetExe = Resolve-DotnetCommand -ProjectRoot $ProjectRoot
+$env:DOTNET_EXE = $dotnetExe
+
 $solutionPath = (Get-ChildItem -LiteralPath $ProjectRoot -File -Filter '*.sln' | Select-Object -First 1 -ExpandProperty FullName)
 $serverProject = (Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'Server') -Recurse -File -Filter '*.Server.Api.csproj' | Select-Object -First 1 -ExpandProperty FullName)
 $releaseRoot = Join-Path $NasRoot "releases\$ReleaseId"
@@ -300,13 +333,13 @@ Remove-Item $tempPublishRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $tempPublishRoot | Out-Null
 
 if (-not $SkipBuild) {
-    & dotnet build $solutionPath -c $Configuration
+    & $dotnetExe build $solutionPath -c $Configuration
     if ($LASTEXITCODE -ne 0) {
         throw 'dotnet build failed.'
     }
 }
 
-& dotnet publish $serverProject -c $Configuration -o $tempPublishRoot
+& $dotnetExe publish $serverProject -c $Configuration -o $tempPublishRoot
 if ($LASTEXITCODE -ne 0) {
     throw 'dotnet publish failed.'
 }
