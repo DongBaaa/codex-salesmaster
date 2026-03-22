@@ -208,29 +208,29 @@ public sealed partial class MainViewModel : ObservableObject
         await LoadInvoiceListAsync();
         await LoadCompanyProfileAsync();
         await LoadLegacyMigrationSettingsAsync();
-        if (!_session.IsOfflineMode)
-            _sync.Start(1);
-        else
-            SyncStatus = "?ㅽ봽?쇱씤 紐⑤뱶 ???쒕쾭 ?곌껐 ???먮룞 ?숆린?붾맗?덈떎";
+        if (_session.IsOfflineMode)
+            SyncStatus = "???? ?? ?? ?? ?? ?? ?? ???? ?????";
     }
 
     public async Task RunPostLoginSyncAsync()
     {
         if (_session.IsOfflineMode)
         {
-            SyncStatus = "오프라인 로그인 상태라 자동 동기화를 건너뜁니다.";
+            SyncStatus = "???? ??? ??? ?? ???? ?????.";
             return;
         }
 
         var dirtyBefore = await _local.CountDirtyAsync();
-        SyncStatus = "로그인 후 자동 동기화 중...";
+        SyncStatus = "??? ? ?? ??? ?...";
 
         var syncOk = await _sync.TrySyncAsync();
         if (syncOk)
         {
+            if (await _local.CountDirtyAsync() == 0)
+                await _sync.RefreshSharedMirrorFromServerAsync();
             await LoadCustomersAsync();
             await LoadInvoiceListAsync();
-            SyncStatus = $"로그인 후 자동 동기화 완료 {DateTime.Now:HH:mm:ss}";
+            SyncStatus = $"??? ? ?? ??? ?? {DateTime.Now:HH:mm:ss}";
             return;
         }
 
@@ -1289,6 +1289,8 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task ForceSyncAsync()
     {
         await _sync.TrySyncAsync();
+        if (await _local.CountDirtyAsync() == 0)
+            await _sync.RefreshSharedMirrorFromServerAsync();
         await LoadCustomersAsync();
         await LoadInvoiceListAsync();
     }

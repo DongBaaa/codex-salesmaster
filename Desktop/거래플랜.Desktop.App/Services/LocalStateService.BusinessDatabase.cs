@@ -1,3 +1,4 @@
+using System.IO;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
 
@@ -5,6 +6,13 @@ namespace 거래플랜.Desktop.App.Services;
 
 public sealed partial class LocalStateService
 {
+    private static readonly string[] ServerMirrorStateSettingKeys =
+    [
+        "LastSyncRevision",
+        "Sync.LastSuccessAt",
+        "Sync.LastError"
+    ];
+
     private static readonly string[] BusinessScopedSettingKeys =
     [
         "LastSyncRevision",
@@ -37,6 +45,66 @@ public sealed partial class LocalStateService
                || await _db.RentalBillingLogs.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.Invoices.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.Payments.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct);
+    }
+
+    public async Task ResetSharedMirrorCacheAsync(CancellationToken ct = default)
+    {
+        _db.ChangeTracker.Clear();
+        _officeAccess.ClearSessionAccess(_session);
+
+        foreach (var attachment in await _db.TransactionAttachments.IgnoreQueryFilters()
+                     .Where(current => !string.IsNullOrWhiteSpace(current.StoredPath))
+                     .Select(current => current.StoredPath)
+                     .ToListAsync(ct))
+        {
+            if (string.IsNullOrWhiteSpace(attachment) || !File.Exists(attachment))
+                continue;
+
+            try
+            {
+                File.Delete(attachment);
+            }
+            catch
+            {
+                // ignore local cached attachment cleanup failure
+            }
+        }
+
+        await _db.Payments.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.InvoiceLineSerials.ExecuteDeleteAsync(ct);
+        await _db.InventoryMovements.ExecuteDeleteAsync(ct);
+        await _db.CostAllocations.ExecuteDeleteAsync(ct);
+        await _db.StockLayers.ExecuteDeleteAsync(ct);
+        await _db.SerialLedgers.ExecuteDeleteAsync(ct);
+        await _db.InventoryTransferLines.ExecuteDeleteAsync(ct);
+        await _db.TransactionAttachments.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.Transactions.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.CustomerContracts.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.InvoiceLines.ExecuteDeleteAsync(ct);
+        await _db.Invoices.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.ItemWarehouseStocks.ExecuteDeleteAsync(ct);
+        await _db.RentalBillingLogs.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.RentalAssets.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.RentalBillingProfiles.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.RentalManagementCompanies.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.Customers.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.CustomerMasters.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.Items.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.CompanyProfiles.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.Units.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.CustomerCategories.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.PriceGradeOptions.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.TradeTypeOptions.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.ItemCategoryOptions.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+
+        foreach (var key in ServerMirrorStateSettingKeys)
+        {
+            var setting = await _db.Settings.FindAsync([key], ct);
+            if (setting is not null)
+                _db.Settings.Remove(setting);
+        }
+
+        await _db.SaveChangesAsync(ct);
     }
 
     public async Task ResetBusinessDataCacheAsync(SessionState session, CancellationToken ct = default)

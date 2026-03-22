@@ -83,6 +83,27 @@ public sealed class SyncService : IDisposable
         return await _local.CountDirtyAsync(ct) == 0;
     }
 
+    public async Task<bool> RefreshSharedMirrorFromServerAsync(CancellationToken ct = default)
+    {
+        if (!_session.IsLoggedIn || _session.IsOfflineMode)
+            return false;
+
+        if (await _local.CountDirtyAsync(ct) > 0)
+            return false;
+
+        SetStatus("중앙 서버 기준 캐시를 다시 불러오는 중...");
+
+        var pull = await _api.PullAsync(0, ct);
+        if (pull is null)
+            return false;
+
+        await _local.ResetSharedMirrorCacheAsync(ct);
+        await ApplyPullAsync(pull, 0L, ct);
+        await _local.SetSettingAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
+        SetStatus($"중앙 서버 기준 캐시 재구성 완료 {DateTime.Now:HH:mm:ss}");
+        return true;
+    }
+
     private Task<bool> StartSyncAsync(bool waitForRunningSync, CancellationToken ct)
     {
         if (!_session.IsLoggedIn)
@@ -548,6 +569,11 @@ public sealed class SyncService : IDisposable
         if (pull is null)
             return;
 
+        await ApplyPullAsync(pull, sinceRev, ct);
+    }
+
+    private async Task ApplyPullAsync(SyncPullResponse pull, long sinceRev, CancellationToken ct)
+    {
         await UpsertPulledAsync(pull.CompanyProfiles, _db.CompanyProfiles, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.Units, _db.Units, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.CustomerCategories, _db.CustomerCategories, LocalMappings.ToLocal, ct);
