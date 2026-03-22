@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
 using 거래플랜.Desktop.App.Views;
@@ -20,6 +21,7 @@ public partial class MainWindow : Window
     private readonly SessionState _session;
     private readonly ErpApiClient _api;
     private readonly SyncService _sync;
+    private readonly DispatcherTimer _centralRevisionPollTimer;
     private bool _isInitialized;
     private DateTime _lastCentralRefreshUtc = DateTime.MinValue;
     private bool _centralRefreshInProgress;
@@ -45,13 +47,22 @@ public partial class MainWindow : Window
         _sync = sync;
         DataContext = vm;
         Activated += MainWindow_Activated;
+        Closed += (_, _) => _centralRevisionPollTimer?.Stop();
+        _centralRevisionPollTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromSeconds(20)
+        };
+        _centralRevisionPollTimer.Tick += async (_, _) => await PollCentralRevisionAsync();
     }
 
     public async Task InitAsync()
     {
         await _vm.LoadAsync();
         if (!_session.IsOfflineMode)
+        {
             _sync.Start(TimeSpan.FromMinutes(5));
+            _centralRevisionPollTimer.Start();
+        }
 
         var popupSections = new List<string>();
         if (!string.IsNullOrWhiteSpace(_vm.ContractAlertPopupMessage))
@@ -90,6 +101,36 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppLogger.Warn("SYNC", $"Window activation refresh failed: {ex.Message}");
+        }
+        finally
+        {
+            _centralRefreshInProgress = false;
+        }
+    }
+
+    private async Task PollCentralRevisionAsync()
+    {
+        if (!_isInitialized || _session.IsOfflineMode || _centralRefreshInProgress || _vm.ForceSyncCommand.IsRunning)
+            return;
+
+        try
+        {
+            var status = await _api.GetSyncStatusAsync();
+            if (status is null)
+                return;
+
+            var lastSyncRevisionRaw = await _local.GetSettingAsync("LastSyncRevision");
+            _ = long.TryParse(lastSyncRevisionRaw, out var lastSyncRevision);
+            if (status.CurrentServerRevision <= lastSyncRevision)
+                return;
+
+            _centralRefreshInProgress = true;
+            _lastCentralRefreshUtc = DateTime.UtcNow;
+            await _vm.ForceSyncCommand.ExecuteAsync(null);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("SYNC", $"Central revision poll failed: {ex.Message}");
         }
         finally
         {

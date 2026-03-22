@@ -912,6 +912,7 @@ public sealed partial class SalesViewModel : ObservableObject
             return false;
         }
 
+        await _local.WaitForServerWriteAsync();
         var savedInvoice = await _local.GetInvoiceAsync(saveResult.SavedInvoiceId, _session);
         if (savedInvoice is not null)
         {

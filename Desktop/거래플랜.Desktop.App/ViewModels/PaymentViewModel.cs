@@ -791,6 +791,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             return;
         }
 
+        await _local.WaitForServerWriteAsync();
         await LoadHistoryAsync(SelectedCustomer.Id);
         SelectedHistory = History.FirstOrDefault(current => current.Id == result.EntityId);
         NewEntry();

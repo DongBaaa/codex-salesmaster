@@ -3,6 +3,7 @@ using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
 using 거래플랜.Shared.Contracts;
 using System.Data;
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -54,6 +55,7 @@ public static class DbInitializer
         var logger = loggerFactory.CreateLogger(typeof(DbInitializer).FullName ?? nameof(DbInitializer));
         var seedUsersOptions = scope.ServiceProvider.GetRequiredService<IOptions<SeedUsersOptions>>().Value;
         var connectionResolver = scope.ServiceProvider.GetRequiredService<ITenantDatabaseConnectionResolver>();
+        var fileStorage = scope.ServiceProvider.GetRequiredService<ICentralFileStorage>();
 
         await EnsureBusinessDatabaseSchemaAsync(dbContext, cancellationToken);
 
@@ -123,6 +125,7 @@ public static class DbInitializer
         }
 
         await EnsureReferenceDataAsync(dbContext, cancellationToken);
+        await MigrateStoredFilesToCentralStorageAsync(dbContext, fileStorage, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
 
         foreach (var connectionInfo in dedicatedBusinessConnections)
@@ -130,6 +133,7 @@ public static class DbInitializer
             await using var tenantDbContext = CreateDbContext(connectionInfo, revisionClock);
             await SyncTenantConfigurationAsync(dbContext, tenantDbContext, cancellationToken);
             await EnsureReferenceDataAsync(tenantDbContext, cancellationToken);
+            await MigrateStoredFilesToCentralStorageAsync(tenantDbContext, fileStorage, cancellationToken);
             await tenantDbContext.SaveChangesAsync(cancellationToken);
             logger.LogInformation("Dedicated business database initialized for tenant {TenantCode}.", connectionInfo.TenantCode);
         }
@@ -169,6 +173,9 @@ public static class DbInitializer
         await EnsureItemTenantCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceTenantCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureCustomerContractStoragePathColumnAsync(dbContext, cancellationToken);
+        await EnsurePaymentAttachmentStoragePathColumnAsync(dbContext, cancellationToken);
+        await EnsureTransactionAttachmentStoragePathColumnAsync(dbContext, cancellationToken);
     }
 
     private static async Task EnsureReferenceDataAsync(
@@ -2773,6 +2780,127 @@ public static class DbInitializer
         category.Name = normalizedName;
         category.IsSystemDefault = category.IsSystemDefault || isSystemDefault;
         category.IsDeleted = false;
+    }
+
+    private static Task EnsureCustomerContractStoragePathColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+        => EnsureNullableTextColumnAsync(dbContext, "CustomerContracts", "StoragePath", cancellationToken);
+
+    private static Task EnsurePaymentAttachmentStoragePathColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+        => EnsureNullableTextColumnAsync(dbContext, "PaymentAttachments", "StoragePath", cancellationToken);
+
+    private static Task EnsureTransactionAttachmentStoragePathColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+        => EnsureNullableTextColumnAsync(dbContext, "TransactionAttachments", "StoragePath", cancellationToken);
+
+    private static async Task EnsureNullableTextColumnAsync(
+        AppDbContext dbContext,
+        string tableName,
+        string columnName,
+        CancellationToken cancellationToken)
+    {
+        if (dbContext.Database.IsSqlite())
+        {
+            var connection = dbContext.Database.GetDbConnection();
+            await using var _ = await EnsureConnectionAsync(connection, cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"PRAGMA table_info(\"{tableName}\")";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (string.Equals(reader["name"]?.ToString(), columnName, StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
+
+            await dbContext.Database.ExecuteSqlRawAsync(
+                $"ALTER TABLE \"{tableName}\" ADD COLUMN \"{columnName}\" TEXT NULL;",
+                cancellationToken);
+            return;
+        }
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            $"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS \"{columnName}\" text NULL;",
+            cancellationToken);
+    }
+
+    private static async Task<IAsyncDisposable> EnsureConnectionAsync(
+        DbConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (connection.State == ConnectionState.Open)
+            return new AsyncNoopDisposable();
+
+        await connection.OpenAsync(cancellationToken);
+        return new AsyncCloseConnection(connection);
+    }
+
+    private static async Task MigrateStoredFilesToCentralStorageAsync(
+        AppDbContext dbContext,
+        ICentralFileStorage fileStorage,
+        CancellationToken cancellationToken)
+    {
+        var contracts = await dbContext.CustomerContracts.IgnoreQueryFilters()
+            .Where(entity => !entity.IsDeleted && entity.FileContent.Length > 0 && string.IsNullOrWhiteSpace(entity.StoragePath))
+            .ToListAsync(cancellationToken);
+        foreach (var contract in contracts)
+        {
+            contract.StoragePath = await fileStorage.SaveBytesAsync(
+                "customer-contracts",
+                contract.CustomerId.ToString("N"),
+                contract.Id,
+                contract.FileName,
+                contract.FileContent,
+                cancellationToken);
+            contract.FileContent = [];
+        }
+
+        var paymentAttachments = await dbContext.PaymentAttachments.IgnoreQueryFilters()
+            .Where(entity => !entity.IsDeleted && entity.FileContent.Length > 0 && string.IsNullOrWhiteSpace(entity.StoragePath))
+            .ToListAsync(cancellationToken);
+        foreach (var attachment in paymentAttachments)
+        {
+            attachment.StoragePath = await fileStorage.SaveBytesAsync(
+                "payment-attachments",
+                attachment.PaymentId.ToString("N"),
+                attachment.Id,
+                attachment.FileName,
+                attachment.FileContent,
+                cancellationToken);
+            attachment.FileContent = [];
+        }
+
+        var transactionAttachments = await dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .Where(entity => !entity.IsDeleted && entity.FileContent.Length > 0 && string.IsNullOrWhiteSpace(entity.StoragePath))
+            .ToListAsync(cancellationToken);
+        foreach (var attachment in transactionAttachments)
+        {
+            attachment.StoragePath = await fileStorage.SaveBytesAsync(
+                "transaction-attachments",
+                attachment.TransactionId.ToString("N"),
+                attachment.Id,
+                attachment.FileName,
+                attachment.FileContent,
+                cancellationToken);
+            attachment.FileContent = [];
+        }
+    }
+
+    private sealed class AsyncNoopDisposable : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class AsyncCloseConnection(DbConnection connection) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync()
+        {
+            connection.Close();
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class SystemCurrentUserContext : ICurrentUserContext

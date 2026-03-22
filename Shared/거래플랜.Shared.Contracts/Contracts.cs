@@ -654,6 +654,12 @@ public sealed class SyncPushResult
     public Dictionary<Guid, string> AssignedInvoiceNumbers { get; set; } = new();
 }
 
+public sealed class SyncStatusDto
+{
+    public long CurrentServerRevision { get; set; }
+    public DateTime ServerUtc { get; set; } = DateTime.UtcNow;
+}
+
 public sealed class RecycleBinEntryDto
 {
     public Guid EntityId { get; set; }

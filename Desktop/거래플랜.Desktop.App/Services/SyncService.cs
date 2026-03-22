@@ -115,7 +115,14 @@ public sealed class SyncService : IDisposable
                     }
 
                     if (rerunCts is not null)
+                    {
                         _ = RunDeferredImmediateSyncAsync(rerunCts.Token);
+                    }
+                    else
+                    {
+                        var succeeded = completedTask.Status == TaskStatus.RanToCompletion && completedTask.Result;
+                        _dispatcher.CompleteImmediateSync(succeeded);
+                    }
                 },
                 CancellationToken.None,
                 TaskContinuationOptions.None,

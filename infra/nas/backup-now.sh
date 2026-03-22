@@ -150,6 +150,13 @@ if [[ -n "$ITWORLD_POSTGRES_DB" && "$ITWORLD_POSTGRES_DB" != "$POSTGRES_DB" ]]; 
 fi
 
 if [[ "${FILE_EXPORT_ENABLED,,}" == "true" ]]; then
+  if [[ -d "$FILE_STORAGE_SOURCE_PATH" ]]; then
+    central_storage_backup_dir="$file_backup_dir/central-file-store"
+    mkdir -p "$central_storage_backup_dir"
+    cp -a "$FILE_STORAGE_SOURCE_PATH"/. "$central_storage_backup_dir"/ 2>/dev/null || true
+    file_export_summaries+=("central-file-store:copied")
+  fi
+
   for database_name in "${file_backup_roots[@]}"; do
     database_root="$file_backup_dir/$database_name"
     mkdir -p "$database_root"

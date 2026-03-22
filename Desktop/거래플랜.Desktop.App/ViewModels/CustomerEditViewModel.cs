@@ -368,6 +368,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         if (_session.IsAdmin)
         {
             await _local.UpsertCustomerAsync(customer);
+            await _local.WaitForServerWriteAsync();
             StatusMessage = "거래처를 저장했습니다.";
             IsNew = false;
             return true;
@@ -376,7 +377,10 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         var result = await _local.UpsertCustomerAsync(customer, _session);
         StatusMessage = result.Message;
         if (result.Success)
+        {
+            await _local.WaitForServerWriteAsync();
             IsNew = false;
+        }
         return result.Success;
     }
 

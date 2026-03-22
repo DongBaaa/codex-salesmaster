@@ -1,14 +1,14 @@
 using System.Security.Cryptography;
-using °Å·¡ÇÃ·£.Server.Api.Data;
-using °Å·¡ÇÃ·£.Server.Api.Domain;
-using °Å·¡ÇÃ·£.Server.Api.Mappings;
-using °Å·¡ÇÃ·£.Server.Api.Services;
-using °Å·¡ÇÃ·£.Shared.Contracts;
+using ê±°ë˜í”Œëœ.Server.Api.Data;
+using ê±°ë˜í”Œëœ.Server.Api.Domain;
+using ê±°ë˜í”Œëœ.Server.Api.Mappings;
+using ê±°ë˜í”Œëœ.Server.Api.Services;
+using ê±°ë˜í”Œëœ.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace °Å·¡ÇÃ·£.Server.Api.Controllers;
+namespace ê±°ë˜í”Œëœ.Server.Api.Controllers;
 
 [ApiController]
 [Authorize]
@@ -35,11 +35,16 @@ public sealed class PaymentsController : ControllerBase
 
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
+    private readonly ICentralFileStorage _fileStorage;
 
-    public PaymentsController(AppDbContext dbContext, OfficeScopeService officeScopeService)
+    public PaymentsController(
+        AppDbContext dbContext,
+        OfficeScopeService officeScopeService,
+        ICentralFileStorage fileStorage)
     {
         _dbContext = dbContext;
         _officeScopeService = officeScopeService;
+        _fileStorage = fileStorage;
     }
 
     [HttpGet]
@@ -96,7 +101,8 @@ public sealed class PaymentsController : ControllerBase
         if (!IsAllowedAttachment(fileName, contentType))
             contentType = "application/octet-stream";
 
-        return File(attachment.FileContent ?? [], contentType, fileName);
+        var bytes = _fileStorage.ReadBytes(attachment.StoragePath, attachment.FileContent);
+        return File(bytes, contentType, fileName);
     }
 
     [HttpPost("{paymentId:guid}/attachments")]
@@ -118,14 +124,14 @@ public sealed class PaymentsController : ControllerBase
             return NotFound();
 
         if (file is null || file.Length <= 0)
-            return BadRequest(new { error = "empty_file", message = "¾÷·ÎµåÇÒ ÆÄÀÏÀ» ¼±ÅÃÇÏ¼¼¿ä." });
+            return BadRequest(new { error = "empty_file", message = "ì—…ë¡œë“œí•  íŒŒì¼ì„ ì„ íƒí•˜ì„¸ìš”." });
 
         if (file.Length > 15 * 1024 * 1024)
-            return BadRequest(new { error = "file_too_large", message = "Ã·ºÎ ÆÄÀÏÀº 15MB ÀÌÇÏ¸¸ ¾÷·ÎµåÇÒ ¼ö ÀÖ½À´Ï´Ù." });
+            return BadRequest(new { error = "file_too_large", message = "ì²¨ë¶€ íŒŒì¼ì€ 15MB ì´í•˜ë§Œ ì—…ë¡œë“œí•  ìˆ˜ ìˆìŠµë‹ˆë‹¤." });
 
         var safeFileName = Path.GetFileName(file.FileName ?? string.Empty);
         if (string.IsNullOrWhiteSpace(safeFileName))
-            return BadRequest(new { error = "invalid_file_name", message = "À¯È¿ÇÑ Ã·ºÎ ÆÄÀÏ¸íÀ» È®ÀÎÇÒ ¼ö ¾ø½À´Ï´Ù." });
+            return BadRequest(new { error = "invalid_file_name", message = "ìœ íš¨í•œ ì²¨ë¶€ íŒŒì¼ëª…ì„ í™•ì¸í•  ìˆ˜ ì—†ìŠµë‹ˆë‹¤." });
 
         var normalizedContentType = NormalizeContentType(file.ContentType, safeFileName);
         if (!IsAllowedAttachment(safeFileName, normalizedContentType))
@@ -133,7 +139,7 @@ public sealed class PaymentsController : ControllerBase
             return BadRequest(new
             {
                 error = "unsupported_file_type",
-                message = "Ã·ºÎ ÆÄÀÏÀº PDF ¶Ç´Â ÀÌ¹ÌÁö ÆÄÀÏ¸¸ ¾÷·ÎµåÇÒ ¼ö ÀÖ½À´Ï´Ù."
+                message = "ì²¨ë¶€ íŒŒì¼ì€ PDF ë˜ëŠ” ì´ë¯¸ì§€ íŒŒì¼ë§Œ ì—…ë¡œë“œí•  ìˆ˜ ìˆìŠµë‹ˆë‹¤."
             });
         }
 
@@ -145,7 +151,7 @@ public sealed class PaymentsController : ControllerBase
         {
             Id = Guid.NewGuid(),
             PaymentId = paymentId,
-            AttachmentType = string.IsNullOrWhiteSpace(attachmentType) ? "³»¿ªÃ·ºÎ" : attachmentType.Trim(),
+            AttachmentType = string.IsNullOrWhiteSpace(attachmentType) ? "ë‚´ì—­ì²¨ë¶€" : attachmentType.Trim(),
             Description = description?.Trim() ?? string.Empty,
             FileName = safeFileName,
             MimeType = normalizedContentType,
@@ -156,6 +162,15 @@ public sealed class PaymentsController : ControllerBase
         };
 
         _dbContext.PaymentAttachments.Add(entity);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        entity.StoragePath = await _fileStorage.SaveBytesAsync(
+            "payment-attachments",
+            paymentId.ToString("N"),
+            entity.Id,
+            safeFileName,
+            bytes,
+            cancellationToken);
+        entity.FileContent = [];
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto(false));
     }

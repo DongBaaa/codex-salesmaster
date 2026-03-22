@@ -17,11 +17,13 @@ public sealed class CustomersController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
+    private readonly ICentralFileStorage _fileStorage;
 
-    public CustomersController(AppDbContext dbContext, OfficeScopeService officeScopeService)
+    public CustomersController(AppDbContext dbContext, OfficeScopeService officeScopeService, ICentralFileStorage fileStorage)
     {
         _dbContext = dbContext;
         _officeScopeService = officeScopeService;
+        _fileStorage = fileStorage;
     }
 
     [HttpGet]
@@ -98,7 +100,7 @@ public sealed class CustomersController : ControllerBase
             .AsNoTracking()
             .Include(x => x.Customer))
             .FirstOrDefaultAsync(x => x.Id == contractId, cancellationToken);
-        if (contract is null || contract.FileContent is not { Length: > 0 })
+        if (contract is null || (string.IsNullOrWhiteSpace(contract.StoragePath) && contract.FileContent is not { Length: > 0 }))
             return NotFound();
 
         var fileName = Path.GetFileName(string.IsNullOrWhiteSpace(contract.FileName)
@@ -107,8 +109,8 @@ public sealed class CustomersController : ControllerBase
         var contentType = string.Equals(contract.MimeType?.Trim(), "application/pdf", StringComparison.OrdinalIgnoreCase)
             ? "application/pdf"
             : "application/octet-stream";
-
-        return File(contract.FileContent, contentType, fileName);
+        var bytes = _fileStorage.ReadBytes(contract.StoragePath, contract.FileContent);
+        return File(bytes, contentType, fileName);
     }
 
     [HttpPost]

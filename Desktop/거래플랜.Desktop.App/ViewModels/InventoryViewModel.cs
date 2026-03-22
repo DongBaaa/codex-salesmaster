@@ -243,6 +243,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         };
 
         await _local.UpsertItemAsync(item, SelectedOfficeCode);
+        await _local.WaitForServerWriteAsync();
         await LoadAsync();
 
         SelectedItem = FilteredItems.FirstOrDefault(row => row.Id == EditId);
@@ -257,6 +258,7 @@ public sealed partial class InventoryViewModel : ObservableObject
             return;
 
         await _local.DeleteItemAsync(SelectedItem.Id);
+        await _local.WaitForServerWriteAsync();
         await LoadAsync();
         NewItem();
         StatusMessage = "품목을 삭제했습니다.";

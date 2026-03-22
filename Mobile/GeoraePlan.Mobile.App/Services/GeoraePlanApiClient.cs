@@ -159,6 +159,9 @@ public sealed class GeoraePlanApiClient
     public Task<SyncPushResult?> PushAsync(SyncPushRequest request, CancellationToken ct = default)
         => PostAsync<SyncPushRequest, SyncPushResult>("sync/push", request, ct);
 
+    public Task<SyncStatusDto?> GetSyncStatusAsync(CancellationToken ct = default)
+        => GetAsync<SyncStatusDto>("sync/status", ct);
+
     public Task<AppUpdateManifestDto?> GetUpdateManifestAsync(string channel = "stable", CancellationToken ct = default)
         => GetAsync<AppUpdateManifestDto>($"updates/manifest?channel={Uri.EscapeDataString(channel)}", ct, requireAuthentication: false);
 

@@ -23,17 +23,34 @@ public sealed class SyncController : ControllerBase
     private readonly ICurrentUserContext _currentUserContext;
     private readonly IInvoiceNumberService _invoiceNumberService;
     private readonly OfficeScopeService _officeScopeService;
+    private readonly ICentralFileStorage _fileStorage;
+    private readonly RevisionClock _revisionClock;
 
     public SyncController(
         AppDbContext dbContext,
         ICurrentUserContext currentUserContext,
         IInvoiceNumberService invoiceNumberService,
-        OfficeScopeService officeScopeService)
+        OfficeScopeService officeScopeService,
+        ICentralFileStorage fileStorage,
+        RevisionClock revisionClock)
     {
         _dbContext = dbContext;
         _currentUserContext = currentUserContext;
         _invoiceNumberService = invoiceNumberService;
         _officeScopeService = officeScopeService;
+        _fileStorage = fileStorage;
+        _revisionClock = revisionClock;
+    }
+
+    [HttpGet("status")]
+    [ProducesResponseType(typeof(SyncStatusDto), StatusCodes.Status200OK)]
+    public ActionResult<SyncStatusDto> GetStatus(CancellationToken cancellationToken)
+    {
+        return Ok(new SyncStatusDto
+        {
+            CurrentServerRevision = _revisionClock.Current,
+            ServerUtc = DateTime.UtcNow
+        });
     }
 
     [HttpGet("pull")]
@@ -123,6 +140,7 @@ public sealed class SyncController : ControllerBase
         var validCustomerContracts = await FilterValidCustomerContractsAsync(request.CustomerContracts ?? [], result, cancellationToken);
         await UpsertEntitiesAsync(validCustomerContracts, _dbContext.CustomerContracts,
             (e, d) => e.Apply(d), d => new CustomerContract { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        await PersistCustomerContractsToStorageAsync(validCustomerContracts, cancellationToken);
         var scopedItems = await PrepareScopedItemsAsync(request.Items ?? [], result, cancellationToken);
         await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
             (e, d) => e.Apply(d), d => new Item { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
@@ -134,6 +152,7 @@ public sealed class SyncController : ControllerBase
         var validTransactionAttachments = await FilterValidTransactionAttachmentsAsync(request.TransactionAttachments ?? [], result, cancellationToken);
         await UpsertEntitiesAsync(validTransactionAttachments, _dbContext.TransactionAttachments,
             (e, d) => e.Apply(d), d => new TransactionAttachment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        await PersistTransactionAttachmentsToStorageAsync(validTransactionAttachments, cancellationToken);
         var scopedInventoryTransfers = await PrepareScopedInventoryTransfersAsync(request.InventoryTransfers ?? [], result, cancellationToken);
         var validInventoryTransfers = await FilterValidInventoryTransfersAsync(scopedInventoryTransfers, result, cancellationToken);
         await UpsertInventoryTransfersAsync(validInventoryTransfers, result, cancellationToken);
@@ -1369,6 +1388,52 @@ public sealed class SyncController : ControllerBase
             contract.IsDeleted = true;
             contract.IsPrimary = false;
             contract.UpdatedAtUtc = DateTime.UtcNow;
+        }
+    }
+
+    private async Task PersistCustomerContractsToStorageAsync(
+        IEnumerable<CustomerContractDto> contracts,
+        CancellationToken cancellationToken)
+    {
+        foreach (var dto in contracts.Where(current => !current.IsDeleted && (current.FileContent?.Length ?? 0) > 0))
+        {
+            var entity = await _dbContext.CustomerContracts
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == dto.Id, cancellationToken);
+            if (entity is null)
+                continue;
+
+            entity.StoragePath = await _fileStorage.SaveBytesAsync(
+                "customer-contracts",
+                entity.CustomerId.ToString("N"),
+                entity.Id,
+                entity.FileName,
+                dto.FileContent ?? [],
+                cancellationToken);
+            entity.FileContent = [];
+        }
+    }
+
+    private async Task PersistTransactionAttachmentsToStorageAsync(
+        IEnumerable<TransactionAttachmentDto> attachments,
+        CancellationToken cancellationToken)
+    {
+        foreach (var dto in attachments.Where(current => !current.IsDeleted && (current.FileContent?.Length ?? 0) > 0))
+        {
+            var entity = await _dbContext.TransactionAttachments
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == dto.Id, cancellationToken);
+            if (entity is null)
+                continue;
+
+            entity.StoragePath = await _fileStorage.SaveBytesAsync(
+                "transaction-attachments",
+                entity.TransactionId.ToString("N"),
+                entity.Id,
+                entity.FileName,
+                dto.FileContent ?? [],
+                cancellationToken);
+            entity.FileContent = [];
         }
     }
 

@@ -21,6 +21,7 @@ public sealed partial class LocalStateService
     private readonly LocalDbContext _db;
     private readonly OfficeAccessService _officeAccess;
     private readonly SyncRequestDispatcher _syncRequestDispatcher;
+    private readonly SessionState _session;
     private bool _hasPendingSyncEntityChanges;
     public event EventHandler? InventoryStateChanged;
 
@@ -29,11 +30,12 @@ public sealed partial class LocalStateService
         WriteIndented = false
     };
 
-    public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, SyncRequestDispatcher syncRequestDispatcher)
+    public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, SyncRequestDispatcher syncRequestDispatcher, SessionState session)
     {
         _db = db;
         _officeAccess = officeAccess;
         _syncRequestDispatcher = syncRequestDispatcher;
+        _session = session;
 
         _db.SavingChanges += HandleSavingChanges;
         _db.SavedChanges += HandleSavedChanges;
@@ -60,6 +62,14 @@ public sealed partial class LocalStateService
     private void HandleSaveChangesFailed(object? sender, SaveChangesFailedEventArgs args)
     {
         _hasPendingSyncEntityChanges = false;
+    }
+
+    public Task<bool> WaitForServerWriteAsync(CancellationToken ct = default)
+    {
+        if (!_session.IsLoggedIn || _session.IsOfflineMode)
+            return Task.FromResult(false);
+
+        return _syncRequestDispatcher.WaitForImmediateSyncCompletionAsync(ct);
     }
     // Customers
     public Task<List<LocalCustomer>> GetCustomersAsync(CancellationToken ct = default)

@@ -176,6 +176,7 @@ public sealed class CustomerContract : TrackedEntity
     public bool IsPrimary { get; set; }
     public string UploadedByUsername { get; set; } = string.Empty;
     public DateTime UploadedAtUtc { get; set; } = DateTime.UtcNow;
+    public string StoragePath { get; set; } = string.Empty;
     public byte[] FileContent { get; set; } = [];
 }
 
@@ -268,6 +269,7 @@ public sealed class PaymentAttachment : TrackedEntity
     public string FileHash { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public DateTime UploadedAtUtc { get; set; } = DateTime.UtcNow;
+    public string StoragePath { get; set; } = string.Empty;
     public byte[] FileContent { get; set; } = [];
 }
 
@@ -325,6 +327,7 @@ public sealed class TransactionAttachment : TrackedEntity
     public DateTime? VerifiedAtUtc { get; set; }
     public string VerificationMemo { get; set; } = string.Empty;
     public int SortOrder { get; set; }
+    public string StoragePath { get; set; } = string.Empty;
     public byte[] FileContent { get; set; } = [];
 }
 

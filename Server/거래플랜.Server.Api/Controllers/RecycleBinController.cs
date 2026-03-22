@@ -15,11 +15,13 @@ public sealed class RecycleBinController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
+    private readonly ICentralFileStorage _fileStorage;
 
-    public RecycleBinController(AppDbContext dbContext, OfficeScopeService officeScopeService)
+    public RecycleBinController(AppDbContext dbContext, OfficeScopeService officeScopeService, ICentralFileStorage fileStorage)
     {
         _dbContext = dbContext;
         _officeScopeService = officeScopeService;
+        _fileStorage = fileStorage;
     }
 
     [HttpGet]
@@ -451,6 +453,7 @@ public sealed class RecycleBinController : ControllerBase
         if (!contract.IsDeleted)
             return (false, "활성 상태 계약서는 휴지통에서 영구삭제할 수 없습니다.");
 
+        _fileStorage.DeleteIfExists(contract.StoragePath);
         _dbContext.CustomerContracts.Remove(contract);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return (true, "계약서를 영구삭제했습니다.");
@@ -510,6 +513,13 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "현재 계정으로 영구삭제할 수 없는 수금/지급 기록입니다.");
         if (!payment.IsDeleted)
             return (false, "활성 상태 수금/지급 기록은 휴지통에서 영구삭제할 수 없습니다.");
+
+        var attachments = await _dbContext.PaymentAttachments
+            .IgnoreQueryFilters()
+            .Where(current => current.PaymentId == paymentId)
+            .ToListAsync(cancellationToken);
+        foreach (var attachment in attachments)
+            _fileStorage.DeleteIfExists(attachment.StoragePath);
 
         _dbContext.Payments.Remove(payment);
         await _dbContext.SaveChangesAsync(cancellationToken);

@@ -100,6 +100,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
                 if (_session.IsAdmin)
                 {
                     await _local.UpsertCustomerAsync(row.Source);
+                    await _local.WaitForServerWriteAsync();
                 }
                 else
                 {
@@ -110,6 +111,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
                         return;
                     }
 
+                    await _local.WaitForServerWriteAsync();
                     grantedTemporaryAccess |= result.GrantedTemporaryAccess;
                 }
 

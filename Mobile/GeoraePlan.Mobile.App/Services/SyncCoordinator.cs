@@ -102,6 +102,20 @@ public sealed class SyncCoordinator
             state.LastBackgroundSyncUtc = now;
             await _store.SaveAsync(state, ct);
 
+            if (!HasPendingServerSyncPayload(state) && state.PendingPaymentAttachments.Count == 0)
+            {
+                try
+                {
+                    var syncStatus = await _api.GetSyncStatusAsync(ct);
+                    if (syncStatus is not null && syncStatus.CurrentServerRevision <= state.LastRevision)
+                        return state;
+                }
+                catch
+                {
+                    // lightweight revision check failure should not block background sync decisions
+                }
+            }
+
             state = await PushInternalAsync(state, ct);
             if (string.IsNullOrWhiteSpace(state.LastError))
                 state = await UploadPendingPaymentAttachmentsInternalAsync(state, ct);

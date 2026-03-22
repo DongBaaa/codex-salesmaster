@@ -25,6 +25,7 @@ builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptio
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
 builder.Services.Configure<SeedUsersOptions>(builder.Configuration.GetSection(SeedUsersOptions.SectionName));
 builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(UpdateOptions.SectionName));
+builder.Services.Configure<CentralFileStorageOptions>(builder.Configuration.GetSection(CentralFileStorageOptions.SectionName));
 
 var jwtOptions = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
 var securityOptions = builder.Configuration.GetSection(SecurityOptions.SectionName).Get<SecurityOptions>() ?? new SecurityOptions();
@@ -94,6 +95,7 @@ builder.Services.AddScoped<OfficeScopeService>();
 builder.Services.AddScoped<IJwtTokenFactory, JwtTokenFactory>();
 builder.Services.AddScoped<IInvoiceNumberService, InvoiceNumberService>();
 builder.Services.AddSingleton<RevisionClock>();
+builder.Services.AddSingleton<ICentralFileStorage, CentralFileStorage>();
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)

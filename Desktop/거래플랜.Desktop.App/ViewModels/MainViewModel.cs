@@ -90,6 +90,8 @@ public sealed partial class MainViewModel : ObservableObject
         var result = await _local.UpsertCustomerAsync(customer, _session);
         if (!result.Success)
             AppLogger.Warn("AUTOSAVE", $"Customer inline auto-save failed for '{customer.NameOriginal}'. {result.Message}");
+        else
+            await _local.WaitForServerWriteAsync();
     }
 
     // ?? ?꾪몴 紐⑸줉 ?? Bottom panel (?좏깮???꾪몴 ?쇱씤 誘몃━蹂닿린) ???????????????
@@ -762,6 +764,7 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
+        await _local.WaitForServerWriteAsync();
         _editConcurrencyStamp = saveResult.SavedConcurrencyStamp;
         await LoadInvoiceListAsync();
         System.Windows.MessageBox.Show("??λ릺?덉뒿?덈떎.", "?뚮┝", System.Windows.MessageBoxButton.OK);
@@ -789,6 +792,7 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
+        await _local.WaitForServerWriteAsync();
         await LoadInvoiceListAsync();
     }
 
@@ -883,6 +887,8 @@ public sealed partial class MainViewModel : ObservableObject
                         : System.Windows.MessageBoxImage.Error);
                 return;
             }
+
+            await _local.WaitForServerWriteAsync();
         }
 
         var inv = await _local.GetInvoiceAsync(PaymentInvoice.Id, _session);

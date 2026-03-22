@@ -322,7 +322,7 @@ public static class DtoMappings
             IsPrimary = entity.IsPrimary,
             UploadedByUsername = entity.UploadedByUsername,
             UploadedAtUtc = entity.UploadedAtUtc,
-            FileContent = includeContent ? entity.FileContent ?? [] : []
+            FileContent = includeContent ? ReadStoredContent(entity.StoragePath, entity.FileContent) : []
         };
 
     public static void Apply(this CustomerContract entity, CustomerContractDto dto)
@@ -488,7 +488,7 @@ public static class DtoMappings
             VerifiedAtUtc = entity.VerifiedAtUtc,
             VerificationMemo = entity.VerificationMemo,
             SortOrder = entity.SortOrder,
-            FileContent = includeContent ? entity.FileContent ?? [] : []
+            FileContent = includeContent ? ReadStoredContent(entity.StoragePath, entity.FileContent) : []
         };
 
     public static void Apply(this TransactionAttachment entity, TransactionAttachmentDto dto)
@@ -935,7 +935,7 @@ public static class DtoMappings
             FileHash = entity.FileHash,
             Description = entity.Description,
             UploadedAtUtc = entity.UploadedAtUtc,
-            FileContent = includeContent ? entity.FileContent ?? [] : []
+            FileContent = includeContent ? ReadStoredContent(entity.StoragePath, entity.FileContent) : []
         };
 
     public static void Apply(this PaymentAttachment entity, PaymentAttachmentDto dto)
@@ -950,6 +950,23 @@ public static class DtoMappings
         entity.UploadedAtUtc = dto.UploadedAtUtc;
         entity.FileContent = dto.FileContent ?? [];
         entity.IsDeleted = dto.IsDeleted;
+    }
+
+    private static byte[] ReadStoredContent(string? storedPath, byte[]? fallback)
+    {
+        if (!string.IsNullOrWhiteSpace(storedPath) && File.Exists(storedPath))
+        {
+            try
+            {
+                return File.ReadAllBytes(storedPath);
+            }
+            catch
+            {
+                // fallback below
+            }
+        }
+
+        return fallback ?? [];
     }
 
     public static ItemWarehouseStockDto ToDto(this ItemWarehouseStock entity) =>

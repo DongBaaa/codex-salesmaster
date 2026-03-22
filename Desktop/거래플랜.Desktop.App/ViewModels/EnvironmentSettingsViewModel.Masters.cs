@@ -241,6 +241,7 @@ public sealed partial class EnvironmentSettingsViewModel
         if (!result.Success)
             return;
 
+        await _local.WaitForServerWriteAsync();
         await ReloadCustomerCategoriesAsync();
         SelectedCategoryOption = CustomerCategories.FirstOrDefault(option => option.Id == result.EntityId);
     }
@@ -259,6 +260,7 @@ public sealed partial class EnvironmentSettingsViewModel
         if (!result.Success)
             return;
 
+        await _local.WaitForServerWriteAsync();
         await ReloadCustomerCategoriesAsync();
         NewCategoryOption();
     }
@@ -291,6 +293,7 @@ public sealed partial class EnvironmentSettingsViewModel
         if (!result.Success)
             return;
 
+        await _local.WaitForServerWriteAsync();
         await ReloadPriceGradeOptionsAsync();
         SelectedPriceGradeOption = PriceGradeOptions.FirstOrDefault(option => option.Id == result.EntityId);
     }
@@ -309,6 +312,7 @@ public sealed partial class EnvironmentSettingsViewModel
         if (!result.Success)
             return;
 
+        await _local.WaitForServerWriteAsync();
         await ReloadPriceGradeOptionsAsync();
         NewPriceGradeOption();
     }
@@ -343,6 +347,7 @@ public sealed partial class EnvironmentSettingsViewModel
         if (!result.Success)
             return;
 
+        await _local.WaitForServerWriteAsync();
         await ReloadTradeTypeOptionsAsync();
         SelectedTradeTypeOption = TradeTypeOptions.FirstOrDefault(option => option.Id == result.EntityId);
     }
@@ -361,6 +366,7 @@ public sealed partial class EnvironmentSettingsViewModel
         if (!result.Success)
             return;
 
+        await _local.WaitForServerWriteAsync();
         await ReloadTradeTypeOptionsAsync();
         NewTradeTypeOption();
     }
@@ -391,6 +397,7 @@ public sealed partial class EnvironmentSettingsViewModel
         if (!result.Success)
             return;
 
+        await _local.WaitForServerWriteAsync();
         await ReloadItemCategoryOptionsAsync();
         SelectedItemCategoryOption = ItemCategoryOptions.FirstOrDefault(option => option.Id == result.EntityId);
     }
@@ -409,6 +416,7 @@ public sealed partial class EnvironmentSettingsViewModel
         if (!result.Success)
             return;
 
+        await _local.WaitForServerWriteAsync();
         await ReloadItemCategoryOptionsAsync();
         NewItemCategoryOption();
     }

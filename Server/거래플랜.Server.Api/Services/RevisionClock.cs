@@ -5,6 +5,17 @@ public sealed class RevisionClock
     private long _current;
     private readonly object _lock = new();
 
+    public long Current
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _current;
+            }
+        }
+    }
+
     public void Initialize(long maxExisting)
     {
         lock (_lock)

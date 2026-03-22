@@ -221,6 +221,19 @@ public sealed class ErpApiClient
             ct);
     }
 
+    public async Task<SyncStatusDto?> GetSyncStatusAsync(CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "동기화 상태 조회(sync/status)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader(includeBusinessDatabaseHeader: true);
+                return await _http.GetAsync("sync/status", token);
+            },
+            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<SyncStatusDto>(token),
+            ct);
+    }
+
     public async Task<AppUpdateManifestDto?> GetUpdateManifestAsync(string channel = "stable", CancellationToken ct = default)
     {
         return await ExecuteWithRetryAsync(
