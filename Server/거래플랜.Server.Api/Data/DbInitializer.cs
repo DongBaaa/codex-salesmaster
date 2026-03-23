@@ -1081,7 +1081,9 @@ public static class DbInitializer
                     ELSE '{TenantScopeCatalog.UsenetGroup}'
                 END,
                     "ScopeType" = CASE
-                    WHEN LOWER(COALESCE(TRIM("Role"), '')) = 'admin' THEN '{TenantScopeCatalog.ScopeAdmin}'
+                    WHEN UPPER(TRIM(COALESCE("ScopeType", ''))) IN ('OFFICEONLY', 'OFFICE_ONLY', 'OFFICE') THEN '{TenantScopeCatalog.ScopeOfficeOnly}'
+                    WHEN UPPER(TRIM(COALESCE("ScopeType", ''))) IN ('TENANTALL', 'TENANT_ALL', 'TENANT', 'COMPANY') THEN '{TenantScopeCatalog.ScopeTenantAll}'
+                    WHEN UPPER(TRIM(COALESCE("ScopeType", ''))) = 'ADMIN' THEN '{TenantScopeCatalog.ScopeAdmin}'
                     WHEN UPPER(TRIM(COALESCE("OfficeCode", ''))) = '{OfficeCodeCatalog.Itworld}' THEN '{TenantScopeCatalog.ScopeTenantAll}'
                     WHEN UPPER(TRIM(COALESCE("OfficeCode", ''))) = '{OfficeCodeCatalog.Usenet}' THEN '{TenantScopeCatalog.ScopeTenantAll}'
                     ELSE '{TenantScopeCatalog.ScopeOfficeOnly}'
