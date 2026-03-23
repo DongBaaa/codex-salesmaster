@@ -21,12 +21,12 @@ public sealed class CustomersViewModel : ObservableObject
     private readonly SyncCoordinator _syncCoordinator;
 
     private string _searchText = string.Empty;
-    private string _statusMessage = "嫄곕옒泥섎? 遺덈윭?ㅼ꽭??";
+    private string _statusMessage = "거래처를 불러오세요.";
     private bool _isBusy;
     private DateTime? _lastRefreshUtc;
     private CustomerDto? _selectedCustomer;
     private bool _isDetailBusy;
-    private string _detailStatusMessage = "嫄곕옒泥섎? ?좏깮?섎㈃ ?곸꽭 ?뺣낫媛 ?쒖떆?⑸땲??";
+    private string _detailStatusMessage = "거래처를 선택하면 상세 정보가 표시됩니다.";
     private CustomerDetailSection _selectedDetailSection = CustomerDetailSection.Summary;
 
     public CustomersViewModel(GeoraePlanApiClient api, CustomerContractCacheStore cacheStore, SyncCoordinator syncCoordinator)
@@ -71,13 +71,13 @@ public sealed class CustomersViewModel : ObservableObject
         get => _selectedCustomer;
         private set
         {
-            if (SetProperty(ref _selectedCustomer, value))
-            {
-                OnPropertyChanged(nameof(SelectedCustomerName));
-                OnPropertyChanged(nameof(SelectedCustomerPhone));
-                OnPropertyChanged(nameof(SelectedCustomerNotes));
-                OnPropertyChanged(nameof(HasSelectedCustomer));
-            }
+            if (!SetProperty(ref _selectedCustomer, value))
+                return;
+
+            OnPropertyChanged(nameof(SelectedCustomerName));
+            OnPropertyChanged(nameof(SelectedCustomerPhone));
+            OnPropertyChanged(nameof(SelectedCustomerNotes));
+            OnPropertyChanged(nameof(HasSelectedCustomer));
         }
     }
 
@@ -98,22 +98,22 @@ public sealed class CustomersViewModel : ObservableObject
         get => _selectedDetailSection;
         private set
         {
-            if (SetProperty(ref _selectedDetailSection, value))
-            {
-                OnPropertyChanged(nameof(ShowSummarySection));
-                OnPropertyChanged(nameof(ShowContractsSection));
-                OnPropertyChanged(nameof(ShowInvoicesSection));
-                OnPropertyChanged(nameof(ShowPaymentsSection));
-            }
+            if (!SetProperty(ref _selectedDetailSection, value))
+                return;
+
+            OnPropertyChanged(nameof(ShowSummarySection));
+            OnPropertyChanged(nameof(ShowContractsSection));
+            OnPropertyChanged(nameof(ShowInvoicesSection));
+            OnPropertyChanged(nameof(ShowPaymentsSection));
         }
     }
 
     public bool HasSelectedCustomer => SelectedCustomer is not null;
     public bool HasSearchText => !string.IsNullOrWhiteSpace(SearchText);
     public string SelectedCustomerName => SelectedCustomer?.NameOriginal ?? string.Empty;
-    public string SelectedCustomerPhone => string.IsNullOrWhiteSpace(SelectedCustomer?.Phone) ? "?깅줉????쒖쟾???놁쓬" : SelectedCustomer!.Phone;
-    public string SelectedCustomerNotes => string.IsNullOrWhiteSpace(SelectedCustomer?.Notes) ? "?깅줉??硫붾え ?놁쓬" : SelectedCustomer!.Notes;
-    public string SelectedCustomerSummaryCounts => $"?? {SelectedCustomerContracts.Count:N0}? ? ?? ?? {SelectedCustomerInvoices.Count:N0}? ? ?? ?? {SelectedCustomerPayments.Count:N0}?";
+    public string SelectedCustomerPhone => string.IsNullOrWhiteSpace(SelectedCustomer?.Phone) ? "등록된 전화번호 없음" : SelectedCustomer!.Phone;
+    public string SelectedCustomerNotes => string.IsNullOrWhiteSpace(SelectedCustomer?.Notes) ? "등록된 메모 없음" : SelectedCustomer!.Notes;
+    public string SelectedCustomerSummaryCounts => $"계약 {SelectedCustomerContracts.Count:N0}건 · 거래내역 {SelectedCustomerInvoices.Count:N0}건 · 수금 {SelectedCustomerPayments.Count:N0}건";
     public bool ShowSummarySection => SelectedDetailSection == CustomerDetailSection.Summary;
     public bool ShowContractsSection => SelectedDetailSection == CustomerDetailSection.Contracts;
     public bool ShowInvoicesSection => SelectedDetailSection == CustomerDetailSection.Invoices;
@@ -135,7 +135,7 @@ public sealed class CustomersViewModel : ObservableObject
         try
         {
             IsBusy = true;
-            StatusMessage = "嫄곕옒泥섎? 議고쉶?섍퀬 ?덉뒿?덈떎.";
+            StatusMessage = "거래처를 조회하고 있습니다.";
             await _syncCoordinator.RefreshIfServerChangedAsync("customers-refresh", TimeSpan.FromSeconds(5));
 
             var result = await _api.GetCustomersAsync(SearchText);
@@ -145,16 +145,16 @@ public sealed class CustomersViewModel : ObservableObject
                 await _cacheStore.SaveCustomersAsync(result);
 
             _lastRefreshUtc = DateTime.UtcNow;
-            StatusMessage = $"??? {Customers.Count:N0}?";
+            StatusMessage = $"거래처 {Customers.Count:N0}건";
 
-            if (SelectedCustomer is not null)
-            {
-                var updatedSelection = Customers.FirstOrDefault(customer => customer.Id == SelectedCustomer.Id);
-                if (updatedSelection is not null)
-                    await SelectCustomerAsync(updatedSelection);
-                else
-                    ClearSelectedCustomer();
-            }
+            if (SelectedCustomer is null)
+                return;
+
+            var updatedSelection = Customers.FirstOrDefault(customer => customer.Id == SelectedCustomer.Id);
+            if (updatedSelection is not null)
+                await SelectCustomerAsync(updatedSelection);
+            else
+                ClearSelectedCustomer();
         }
         catch (Exception ex)
         {
@@ -163,11 +163,11 @@ public sealed class CustomersViewModel : ObservableObject
             {
                 ReplaceCustomers(cached);
                 _lastRefreshUtc = DateTime.UtcNow;
-                StatusMessage = $"?쒕쾭 ?곌껐 ?ㅽ뙣: {ex.Message} / 罹먯떆 {Customers.Count:N0}嫄??쒖떆";
+                StatusMessage = $"서버 연결 실패: {ex.Message} / 캐시 {Customers.Count:N0}건 표시";
             }
             else
             {
-                StatusMessage = $"嫄곕옒泥?議고쉶 ?ㅽ뙣: {ex.Message}";
+                StatusMessage = $"거래처 조회 실패: {ex.Message}";
             }
         }
         finally
@@ -187,7 +187,7 @@ public sealed class CustomersViewModel : ObservableObject
         ReplaceContracts(Array.Empty<CustomerContractDto>());
         ReplacePayments(Array.Empty<CustomerPaymentHistoryRow>());
         IsDetailBusy = true;
-        DetailStatusMessage = "嫄곕옒泥??곸꽭 ?뺣낫瑜?遺덈윭?ㅺ퀬 ?덉뒿?덈떎.";
+        DetailStatusMessage = "거래처 상세 정보를 불러오고 있습니다.";
 
         Exception? detailError = null;
         Exception? contractError = null;
@@ -228,15 +228,15 @@ public sealed class CustomersViewModel : ObservableObject
             }
             else if (detailError is not null && contractError is null)
             {
-                DetailStatusMessage = $"嫄곕옒?댁뿭? ?ㅼ쓬 ?숆린?????ㅼ떆 遺덈윭?듬땲?? / {SelectedCustomerSummaryCounts}";
+                DetailStatusMessage = $"거래내역은 다음 동기화 때 다시 불러옵니다. / {SelectedCustomerSummaryCounts}";
             }
             else if (detailError is null && contractError is not null)
             {
-                DetailStatusMessage = $"怨꾩빟?쒕뒗 罹먯떆瑜??쒖떆?⑸땲?? / {SelectedCustomerSummaryCounts}";
+                DetailStatusMessage = $"계약서는 캐시를 표시합니다. / {SelectedCustomerSummaryCounts}";
             }
             else
             {
-                DetailStatusMessage = $"?곸꽭 議고쉶 ?ㅽ뙣: {detailError?.Message ?? contractError?.Message}";
+                DetailStatusMessage = $"상세 조회 실패: {detailError?.Message ?? contractError?.Message}";
             }
         }
         finally
@@ -258,7 +258,7 @@ public sealed class CustomersViewModel : ObservableObject
         ReplaceContracts(Array.Empty<CustomerContractDto>());
         ReplacePayments(Array.Empty<CustomerPaymentHistoryRow>());
         IsDetailBusy = false;
-        DetailStatusMessage = "嫄곕옒泥섎? ?좏깮?섎㈃ ?곸꽭 ?뺣낫媛 ?쒖떆?⑸땲??";
+        DetailStatusMessage = "거래처를 선택하면 상세 정보가 표시됩니다.";
     }
 
     public void ClearSearch()
@@ -268,7 +268,7 @@ public sealed class CustomersViewModel : ObservableObject
     {
         if (contract is null || SelectedCustomer is null)
         {
-            DetailStatusMessage = "??怨꾩빟?쒕? ?좏깮?섏꽭??";
+            DetailStatusMessage = "계약서를 선택하세요.";
             return;
         }
 
@@ -277,16 +277,16 @@ public sealed class CustomersViewModel : ObservableObject
             var path = await _cacheStore.EnsureCachedPdfAsync(SelectedCustomer.Id, contract);
             if (string.IsNullOrWhiteSpace(path))
             {
-                DetailStatusMessage = "怨꾩빟??PDF 罹먯떆媛 ?놁뒿?덈떎. ?덈줈怨좎묠 ???ㅼ떆 ?쒕룄?섏꽭??";
+                DetailStatusMessage = "계약서 PDF 캐시가 없습니다. 네트워크 연결 후 다시 시도하세요.";
                 return;
             }
 
             await Launcher.Default.OpenAsync(new OpenFileRequest(contract.FileName, new ReadOnlyFile(path)));
-            DetailStatusMessage = $"怨꾩빟???닿린 ?꾨즺: {contract.FileName}";
+            DetailStatusMessage = $"계약서 열기 완료: {contract.FileName}";
         }
         catch (Exception ex)
         {
-            DetailStatusMessage = $"怨꾩빟???닿린 ?ㅽ뙣: {ex.Message}";
+            DetailStatusMessage = $"계약서 열기 실패: {ex.Message}";
         }
     }
 

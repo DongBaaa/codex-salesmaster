@@ -15,14 +15,14 @@ public sealed class InvoicesPage : ContentPage
 
     public InvoicesPage()
     {
-        GeoraePlanTheme.ApplyPage(this, "?꾪몴");
+        GeoraePlanTheme.ApplyPage(this, "전표");
 
         _viewModel = ServiceHelper.GetRequiredService<InvoicesViewModel>();
         _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
         _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
         BindingContext = _viewModel;
 
-        var searchBar = GeoraePlanTheme.CreateSearchBar("嫄곕옒泥섎챸 / ?꾪몴踰덊샇 / 硫붾え");
+        var searchBar = GeoraePlanTheme.CreateSearchBar("거래처명 / 전표번호 / 메모");
         searchBar.SetBinding(SearchBar.TextProperty, nameof(InvoicesViewModel.SearchText));
         searchBar.SearchButtonPressed += async (_, _) => await _viewModel.RefreshAsync();
         searchBar.TextChanged += async (_, args) =>
@@ -31,7 +31,7 @@ public sealed class InvoicesPage : ContentPage
                 await _viewModel.RefreshAsync();
         };
 
-        var clearSearchButton = GeoraePlanTheme.CreateCompactButton("???", GeoraePlanTheme.SecondaryButton);
+        var clearSearchButton = GeoraePlanTheme.CreateCompactButton("초기화", GeoraePlanTheme.SecondaryButton);
         clearSearchButton.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoicesViewModel.HasSearchText));
         clearSearchButton.Clicked += async (_, _) =>
         {
@@ -39,7 +39,7 @@ public sealed class InvoicesPage : ContentPage
             await _viewModel.RefreshAsync();
         };
 
-        var refreshButton = GeoraePlanTheme.CreateCompactButton("議고쉶", GeoraePlanTheme.SecondaryButton);
+        var refreshButton = GeoraePlanTheme.CreateCompactButton("조회", GeoraePlanTheme.SecondaryButton);
         refreshButton.SetBinding(Button.CommandProperty, nameof(InvoicesViewModel.RefreshCommand));
 
         var searchGrid = new Grid
@@ -56,11 +56,11 @@ public sealed class InvoicesPage : ContentPage
         searchGrid.Add(clearSearchButton, 1, 0);
         searchGrid.Add(refreshButton, 2, 0);
 
-        var createInvoiceButton = GeoraePlanTheme.CreateCompactButton("?꾪몴 ?묒꽦", GeoraePlanTheme.Success);
+        var createInvoiceButton = GeoraePlanTheme.CreateCompactButton("전표 작성", GeoraePlanTheme.Success);
         createInvoiceButton.Clicked += async (_, _) =>
             await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InvoiceDraftPage>());
 
-        var createPaymentButton = GeoraePlanTheme.CreateCompactButton("?섍툑 ?낅젰", GeoraePlanTheme.Purple);
+        var createPaymentButton = GeoraePlanTheme.CreateCompactButton("수금 입력", GeoraePlanTheme.Purple);
         createPaymentButton.Clicked += async (_, _) =>
             await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>());
 
@@ -79,8 +79,8 @@ public sealed class InvoicesPage : ContentPage
         var statusLabel = GeoraePlanTheme.CreateStatusLabel();
         statusLabel.SetBinding(Label.TextProperty, nameof(InvoicesViewModel.StatusMessage));
 
-        var detailHeaderTitle = GeoraePlanTheme.CreateSectionTitle("?좏깮 ?꾪몴 ?곸꽭", 15);
-        var closeDetailButton = GeoraePlanTheme.CreateCompactButton("?リ린", GeoraePlanTheme.SecondaryButton);
+        var detailHeaderTitle = GeoraePlanTheme.CreateSectionTitle("선택 전표 상세", 15);
+        var closeDetailButton = GeoraePlanTheme.CreateCompactButton("닫기", GeoraePlanTheme.SecondaryButton);
         closeDetailButton.Clicked += (_, _) => _viewModel.ClearSelectedInvoice();
 
         var detailHeader = new Grid
@@ -110,17 +110,17 @@ public sealed class InvoicesPage : ContentPage
         detailAmount.LineHeight = 1.0;
         detailAmount.SetBinding(Label.TextProperty, nameof(InvoicesViewModel.SelectedInvoiceAmountSummary));
 
-        var detailMemoTitle = GeoraePlanTheme.CreateFieldLabel("硫붾え");
+        var detailMemoTitle = GeoraePlanTheme.CreateFieldLabel("메모");
         var detailMemo = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
         detailMemo.LineHeight = 1.0;
         detailMemo.SetBinding(Label.TextProperty, nameof(InvoicesViewModel.SelectedInvoiceMemo));
 
-        var linesLabel = GeoraePlanTheme.CreateFieldLabel("?덈ぉ 紐⑸줉");
+        var linesLabel = GeoraePlanTheme.CreateFieldLabel("품목 목록");
         var linesView = new CollectionView
         {
             SelectionMode = SelectionMode.None,
             BackgroundColor = Colors.Transparent,
-            EmptyView = GeoraePlanTheme.CreateBodyText("?낅젰???덈ぉ???놁뒿?덈떎.", true, 11),
+            EmptyView = GeoraePlanTheme.CreateBodyText("입력된 품목이 없습니다.", true, 11),
             ItemTemplate = new DataTemplate(() =>
             {
                 var nameLabel = GeoraePlanTheme.CreateBodyText(string.Empty, false, 12);
@@ -160,7 +160,7 @@ public sealed class InvoicesPage : ContentPage
         linesView.SetBinding(ItemsView.ItemsSourceProperty, nameof(InvoicesViewModel.SelectedInvoiceLines));
         linesView.SetBinding(VisualElement.HeightRequestProperty, nameof(InvoicesViewModel.SelectedInvoiceLinesHeight));
 
-        var paymentsLabel = GeoraePlanTheme.CreateFieldLabel("?섍툑 ?뺣낫");
+        var paymentsLabel = GeoraePlanTheme.CreateFieldLabel("수금 정보");
         var paymentSummary = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
         paymentSummary.LineHeight = 1.0;
         paymentSummary.SetBinding(Label.TextProperty, nameof(InvoicesViewModel.SelectedInvoicePaymentSummary));
@@ -169,7 +169,7 @@ public sealed class InvoicesPage : ContentPage
         {
             SelectionMode = SelectionMode.None,
             BackgroundColor = Colors.Transparent,
-            EmptyView = GeoraePlanTheme.CreateBodyText("?곌껐???섍툑 ?뺣낫媛 ?놁뒿?덈떎.", true, 11),
+            EmptyView = GeoraePlanTheme.CreateBodyText("연결된 수금 정보가 없습니다.", true, 11),
             ItemTemplate = new DataTemplate(() =>
             {
                 var dateLabel = GeoraePlanTheme.CreateBodyText(string.Empty, false, 12);
@@ -179,7 +179,7 @@ public sealed class InvoicesPage : ContentPage
 
                 var amountLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 amountLabel.LineHeight = 1.0;
-                amountLabel.SetBinding(Label.TextProperty, new Binding(nameof(PaymentDto.Amount), stringFormat: "{0:N0}?"));
+                amountLabel.SetBinding(Label.TextProperty, new Binding(nameof(PaymentDto.Amount), stringFormat: "{0:N0}원"));
 
                 var noteLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 noteLabel.LineHeight = 1.0;
@@ -233,7 +233,7 @@ public sealed class InvoicesPage : ContentPage
 
                 var numberLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
                 numberLabel.LineHeight = 1.0;
-                numberLabel.SetBinding(Label.TextProperty, nameof(InvoiceListItem.InvoiceNumberDisplay), stringFormat: "?꾪몴踰덊샇 {0}");
+                numberLabel.SetBinding(Label.TextProperty, nameof(InvoiceListItem.InvoiceNumberDisplay), stringFormat: "전표번호 {0}");
 
                 var dateAmountLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 dateAmountLabel.LineHeight = 1.0;
@@ -319,7 +319,7 @@ public sealed class InvoicesPage : ContentPage
         }
         catch (Exception ex)
         {
-            _viewModel.StatusMessage = $"?꾪몴 ?붾㈃ 珥덇린???ㅽ뙣: {ex.Message}";
+            _viewModel.StatusMessage = $"전표 화면 초기화 실패: {ex.Message}";
         }
     }
 
@@ -330,7 +330,7 @@ public sealed class InvoicesPage : ContentPage
             if (value is not InvoiceListItem invoice)
                 return string.Empty;
 
-            return $"{invoice.DateDisplay} 쨌 ?⑷퀎 {invoice.AmountDisplay}";
+            return $"{invoice.DateDisplay} · 합계 {invoice.AmountDisplay}";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
@@ -344,9 +344,9 @@ public sealed class InvoicesPage : ContentPage
             if (value is not InvoiceLineDto line)
                 return string.Empty;
 
-            var spec = string.IsNullOrWhiteSpace(line.SpecificationOriginal) ? "洹쒓꺽 ?놁쓬" : line.SpecificationOriginal;
+            var spec = string.IsNullOrWhiteSpace(line.SpecificationOriginal) ? "규격 없음" : line.SpecificationOriginal;
             var unit = string.IsNullOrWhiteSpace(line.Unit) ? "EA" : line.Unit;
-            return $"{spec} 쨌 ?섎웾 {line.Quantity:N0} {unit}";
+            return $"{spec} · 수량 {line.Quantity:N0} {unit}";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
@@ -360,7 +360,7 @@ public sealed class InvoicesPage : ContentPage
             if (value is not InvoiceLineDto line)
                 return string.Empty;
 
-            return $"?? {line.UnitPrice:N0}? ? ?? {line.LineAmount:N0}?";
+            return $"단가 {line.UnitPrice:N0}원 · 금액 {line.LineAmount:N0}원";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)

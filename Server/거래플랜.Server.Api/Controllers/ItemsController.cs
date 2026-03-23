@@ -52,6 +52,7 @@ public sealed class ItemsController : ControllerBase
             {
                 query = query.Where(x =>
                     string.IsNullOrWhiteSpace(x.CategoryName) ||
+                    IsInvalidCategoryName(x.CategoryName) ||
                     !activeCategoryNames.Contains(x.CategoryName));
             }
             else
@@ -72,6 +73,7 @@ public sealed class ItemsController : ControllerBase
             .OrderBy(option => option.SortOrder)
             .ThenBy(option => option.Name)
             .Select(option => new { option.Name, option.SortOrder })
+            .Where(option => !IsInvalidCategoryName(option.Name))
             .ToListAsync(cancellationToken);
         var activeCategoryNames = masterCategories
             .Select(option => option.Name)
@@ -97,7 +99,7 @@ public sealed class ItemsController : ControllerBase
             .ToList();
 
         var uncategorizedCount = rawCounts
-            .Where(count => string.IsNullOrWhiteSpace(count.Name) || !activeCategoryNames.Contains(count.Name.Trim()))
+            .Where(count => string.IsNullOrWhiteSpace(count.Name) || IsInvalidCategoryName(count.Name) || !activeCategoryNames.Contains(count.Name.Trim()))
             .Sum(count => count.ItemCount);
 
         if (uncategorizedCount > 0 || result.Count == 0)
@@ -110,6 +112,15 @@ public sealed class ItemsController : ControllerBase
         }
 
         return Ok(result);
+    }
+
+    private static bool IsInvalidCategoryName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+
+        var normalized = value.Trim();
+        return normalized.All(ch => ch == '?' || ch == '�');
     }
 
     [HttpGet("{id:guid}")]

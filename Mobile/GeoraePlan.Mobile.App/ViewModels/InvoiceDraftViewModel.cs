@@ -25,7 +25,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     private string _lineUnitPriceText = "0";
     private string _lineRemark = string.Empty;
     private string _memo = string.Empty;
-    private string _statusMessage = "嫄곕옒泥섎? 李얘퀬 ?덈ぉ??異붽??????꾪몴瑜???ν븯?몄슂.";
+    private string _statusMessage = "거래처를 찾고 품목을 추가한 뒤 전표를 저장하세요.";
     private bool _isBusy;
     private bool _isLoaded;
     private bool _isItemEntrySheetVisible;
@@ -194,42 +194,42 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public bool CanChooseInvoiceOffice => InvoiceOfficeOptions.Count > 1;
     public string SelectedInvoiceOfficeCode => SelectedInvoiceOffice?.Code ?? _sessionOfficeCode;
     public string SelectedInvoiceOfficeSummary => SelectedInvoiceOffice is null
-        ? "?꾪몴 ?뚯냽???좏깮?섏꽭??"
-        : $"?좏깮 ?뚯냽: {SelectedInvoiceOffice.DisplayName}";
+        ? "전표 담당지점을 선택하세요."
+        : $"선택 담당지점: {SelectedInvoiceOffice.DisplayName}";
     public string SelectedCustomerSummary => SelectedCustomer is null
-        ? "嫄곕옒泥섎? ?꾩쭅 ?좏깮?섏? ?딆븯?듬땲??"
-        : $"?좏깮 嫄곕옒泥? {SelectedCustomer.NameOriginal}";
+        ? "거래처를 아직 선택하지 않았습니다."
+        : $"선택 거래처: {SelectedCustomer.NameOriginal}";
     public string SelectedCategoryHeader => SelectedCategory is null
-        ? "?덈ぉ遺꾨쪟瑜??좏깮?섏꽭??"
-        : $"?좏깮??遺꾨쪟: {SelectedCategory.Name}";
+        ? "품목분류를 선택하세요."
+        : $"선택 분류: {SelectedCategory.Name}";
     public string SelectedCategorySummary => SelectedCategory is null
-        ? "?덈ぉ遺꾨쪟瑜??좏깮?섏꽭??"
-        : $"?? ?? ?? {ItemSearchResults.Count:N0}?";
+        ? "품목분류를 먼저 선택하세요."
+        : $"해당 분류 품목 {ItemSearchResults.Count:N0}건";
     public string SelectedItemSheetTitle => SelectedItem is null
-        ? "?좏깮 ?덈ぉ"
-        : $"?좏깮 ?덈ぉ: {SelectedItem.NameOriginal}";
+        ? "선택 품목"
+        : $"선택 품목: {SelectedItem.NameOriginal}";
     public string SelectedItemSheetSpecification => SelectedItem is null
-        ? "洹쒓꺽 ?뺣낫 ?놁쓬"
+        ? "규격 정보 없음"
         : string.IsNullOrWhiteSpace(SelectedItem.SpecificationOriginal)
-            ? "洹쒓꺽 ?뺣낫 ?놁쓬"
-            : $"洹쒓꺽: {SelectedItem.SpecificationOriginal}";
+            ? "규격 정보 없음"
+            : $"규격: {SelectedItem.SpecificationOriginal}";
     public string SelectedItemPriceSummary => SelectedItem is null
-        ? "?④? ?뺣낫 ?놁쓬"
-        : $"留ㅼ엯 {SelectedItem.PurchasePrice:N0} / ?먮ℓ {SelectedItem.SalePrice:N0} / ?뚮ℓ {SelectedItem.RetailPrice:N0}";
+        ? "단가 정보 없음"
+        : $"매입 {SelectedItem.PurchasePrice:N0} / 판매 {SelectedItem.SalePrice:N0} / 소매 {SelectedItem.RetailPrice:N0}";
     public string SelectedItemMemo => SelectedItem is null
-        ? "硫붾え ?놁쓬"
+        ? "메모 없음"
         : string.IsNullOrWhiteSpace(SelectedItem.SimpleMemo) && string.IsNullOrWhiteSpace(SelectedItem.Notes)
-            ? "硫붾え ?놁쓬"
+            ? "메모 없음"
             : string.IsNullOrWhiteSpace(SelectedItem.SimpleMemo)
                 ? SelectedItem.Notes
                 : SelectedItem.SimpleMemo;
     public string SelectedItemStockSummary => SelectedItem is null
-        ? "?ш퀬 ?뺣낫 ?놁쓬"
-        : $"?꾩옱?ш퀬 {SelectedItem.CurrentStock:N0} / ?덉쟾?ш퀬 {SelectedItem.SafetyStock:N0}";
-    public string LineActionText => _editingLineId.HasValue ? "?덈ぉ ?섏젙" : "?덈ぉ 異붽?";
+        ? "재고 정보 없음"
+        : $"현재재고 {SelectedItem.CurrentStock:N0} / 안전재고 {SelectedItem.SafetyStock:N0}";
+    public string LineActionText => _editingLineId.HasValue ? "품목 수정" : "품목 추가";
     public string DraftSummary => LineItems.Count == 0
-        ? "異붽????덈ぉ???놁뒿?덈떎."
-        : $"?? {LineItems.Count:N0}? / ?? {LineItems.Sum(x => x.LineAmount):N0}?";
+        ? "추가된 품목이 없습니다."
+        : $"총 {LineItems.Count:N0}건 / 합계 {LineItems.Sum(x => x.LineAmount):N0}원";
     public double CustomerSearchResultsHeight => CalculateListHeight(CustomerSearchResults.Count, 56, 42, 2);
     public double ItemSearchResultsHeight => CalculateListHeight(ItemSearchResults.Count, 64, 48, 5);
     public double SelectedItemBranchStocksHeight => CalculateListHeight(SelectedItemBranchStocks.Count, 32, 40, 4);
@@ -252,7 +252,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             if (_isLoaded)
                 return;
 
-            StatusMessage = "?꾪몴 ?묒꽦???꾪븳 遺꾨쪟 ?뺣낫瑜?遺덈윭?ㅺ퀬 ?덉뒿?덈떎.";
+            StatusMessage = "전표 작성에 필요한 분류 정보를 불러오고 있습니다.";
             var categories = await _api.GetItemCategoriesAsync();
             ItemCategories.Clear();
             foreach (var category in categories.OrderBy(x => x.Name))
@@ -260,12 +260,12 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
             _isLoaded = true;
             StatusMessage = ItemCategories.Count == 0
-                ? "?깅줉???덈ぉ遺꾨쪟媛 ?놁뒿?덈떎."
-                : "?덈ぉ遺꾨쪟瑜??좏깮?????щ윭 ?덈ぉ???곗냽 異붽??섏꽭??";
+                ? "등록된 품목분류가 없습니다."
+                : "품목분류를 선택한 뒤 품목을 연속해서 추가하세요.";
         }
         catch (Exception ex)
         {
-            StatusMessage = $"湲곗큹 紐⑸줉 遺덈윭?ㅺ린 ?ㅽ뙣: {ex.Message}";
+            StatusMessage = $"기초 목록 불러오기 실패: {ex.Message}";
         }
         finally
         {
@@ -281,26 +281,26 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         var keyword = CustomerSearchText.Trim();
         if (string.IsNullOrWhiteSpace(keyword))
         {
-            StatusMessage = "嫄곕옒泥?寃?됱뼱瑜??낅젰?섏꽭??";
+            StatusMessage = "거래처 검색어를 입력하세요.";
             return;
         }
 
         try
         {
             IsBusy = true;
-            StatusMessage = "嫄곕옒泥섎? 李얘퀬 ?덉뒿?덈떎.";
+            StatusMessage = "거래처를 찾고 있습니다.";
             var customers = await _api.GetCustomersAsync(keyword);
             CustomerSearchResults.Clear();
             foreach (var customer in customers)
                 CustomerSearchResults.Add(customer);
 
             StatusMessage = customers.Count == 0
-                ? "議곌굔??留욌뒗 嫄곕옒泥섍? ?놁뒿?덈떎."
-                : $"??? ?? ?? {customers.Count:N0}?";
+                ? "조건에 맞는 거래처가 없습니다."
+                : $"검색 결과 {customers.Count:N0}건";
         }
         catch (Exception ex)
         {
-            StatusMessage = $"嫄곕옒泥?寃???ㅽ뙣: {ex.Message}";
+            StatusMessage = $"거래처 검색 실패: {ex.Message}";
         }
         finally
         {
@@ -311,7 +311,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public Task SelectCustomerAsync(CustomerDto customer)
     {
         SelectedCustomer = customer;
-        StatusMessage = $"{customer.NameOriginal} 嫄곕옒泥섍? ?좏깮?섏뿀?듬땲??";
+        StatusMessage = $"{customer.NameOriginal} 거래처를 선택했습니다.";
         return Task.CompletedTask;
     }
 
@@ -330,7 +330,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
         SelectedCustomer = customer;
         CustomerSearchText = customer.NameOriginal;
-        StatusMessage = $"{customer.NameOriginal} 嫄곕옒泥?湲곗??쇰줈 ?꾪몴瑜??낅젰?섏꽭??";
+        StatusMessage = $"{customer.NameOriginal} 거래처 기준으로 전표를 입력하세요.";
     }
 
     public async Task SelectCategoryAsync(ItemCategorySummaryDto category, bool resetSearch = true)
@@ -352,7 +352,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         ItemSearchText = string.Empty;
         ItemSearchResults.Clear();
         ResetItemSelection(clearCategory: false);
-        StatusMessage = "?덈ぉ遺꾨쪟瑜??ㅼ떆 ?좏깮?섏꽭??";
+        StatusMessage = "품목분류를 다시 선택하세요.";
     }
 
     public async Task SearchItemsAsync()
@@ -362,27 +362,27 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
         if (SelectedCategory is null)
         {
-            StatusMessage = "?덈ぉ遺꾨쪟瑜?癒쇱? ?좏깮?섏꽭??";
+            StatusMessage = "품목분류를 먼저 선택하세요.";
             return;
         }
 
         try
         {
             IsBusy = true;
-            StatusMessage = $"{SelectedCategory.Name} 遺꾨쪟 ?덈ぉ??議고쉶?섍퀬 ?덉뒿?덈떎.";
+            StatusMessage = $"{SelectedCategory.Name} 분류 품목을 조회하고 있습니다.";
             var items = await _api.GetItemsAsync(ItemSearchText, SelectedCategory.Name);
             ItemSearchResults.Clear();
             foreach (var item in items.OrderBy(x => x.NameOriginal))
                 ItemSearchResults.Add(item);
 
             StatusMessage = items.Count == 0
-                ? "?꾩옱 遺꾨쪟?먯꽌 議곌굔??留욌뒗 ?덈ぉ???놁뒿?덈떎."
-                : $"{SelectedCategory.Name} ?? ?? {items.Count:N0}?";
+                ? "현재 분류에서 조건에 맞는 품목이 없습니다."
+                : $"{SelectedCategory.Name} 품목 {items.Count:N0}건";
             OnPropertyChanged(nameof(SelectedCategorySummary));
         }
         catch (Exception ex)
         {
-            StatusMessage = $"?덈ぉ 寃???ㅽ뙣: {ex.Message}";
+            StatusMessage = $"품목 검색 실패: {ex.Message}";
         }
         finally
         {
@@ -427,19 +427,19 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     {
         if (SelectedItem is null)
         {
-            StatusMessage = "異붽????덈ぉ??癒쇱? ?좏깮?섏꽭??";
+            StatusMessage = "추가할 품목을 먼저 선택하세요.";
             return;
         }
 
         if (!decimal.TryParse(LineQuantityText, out var quantity) || quantity <= 0m)
         {
-            StatusMessage = "?섎웾???щ컮瑜닿쾶 ?낅젰?섏꽭??";
+            StatusMessage = "수량을 올바르게 입력하세요.";
             return;
         }
 
         if (!decimal.TryParse(LineUnitPriceText, out var unitPrice) || unitPrice < 0m)
         {
-            StatusMessage = "?④?瑜??щ컮瑜닿쾶 ?낅젰?섏꽭??";
+            StatusMessage = "단가를 올바르게 입력하세요.";
             return;
         }
 
@@ -458,12 +458,12 @@ public sealed class InvoiceDraftViewModel : ObservableObject
                 LineItems[index] = draft;
             }
 
-            StatusMessage = "?꾪몴 ?덈ぉ???섏젙?덉뒿?덈떎. 媛숈? 遺꾨쪟?먯꽌 ?ㅼ쓬 ?덈ぉ??怨꾩냽 異붽??섏꽭??";
+            StatusMessage = "전표 품목을 수정했습니다. 같은 분류에서 다음 품목을 계속 추가하세요.";
         }
         else
         {
             LineItems.Add(draft);
-            StatusMessage = "?꾪몴 ?덈ぉ??異붽??덉뒿?덈떎. 媛숈? 遺꾨쪟?먯꽌 ?ㅼ쓬 ?덈ぉ??怨꾩냽 ?좏깮?섏꽭??";
+            StatusMessage = "전표 품목을 추가했습니다. 같은 분류에서 다음 품목을 계속 선택하세요.";
         }
 
         await RecordRecentSelectionAsync(SelectedItem);
@@ -518,7 +518,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         LineUnitPriceText = line.UnitPrice.ToString("0.##");
         LineRemark = line.Remark;
         OnPropertyChanged(nameof(LineActionText));
-        StatusMessage = $"{line.ItemNameOriginal} ?덈ぉ???섏젙 以묒엯?덈떎.";
+        StatusMessage = $"{line.ItemNameOriginal} 품목을 수정 중입니다.";
     }
 
     public Task RemoveLineAsync(InvoiceLineDraftItem line)
@@ -528,7 +528,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             ResetItemSelection(clearCategory: false);
 
         OnPropertyChanged(nameof(DraftSummary));
-        StatusMessage = $"{line.ItemNameOriginal} ?덈ぉ??紐⑸줉?먯꽌 ?쒓굅?덉뒿?덈떎.";
+        StatusMessage = $"{line.ItemNameOriginal} 품목을 목록에서 제거했습니다.";
         return Task.CompletedTask;
     }
 
@@ -539,13 +539,13 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
         if (SelectedCustomer is null)
         {
-            StatusMessage = "嫄곕옒泥섎? 癒쇱? ?좏깮?섏꽭??";
+            StatusMessage = "거래처를 먼저 선택하세요.";
             return;
         }
 
         if (LineItems.Count == 0)
         {
-            StatusMessage = "?꾪몴??異붽????덈ぉ???섎굹 ?댁긽 ?낅젰?섏꽭??";
+            StatusMessage = "전표에 추가할 품목을 하나 이상 입력하세요.";
             return;
         }
 
@@ -577,15 +577,15 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         try
         {
             IsBusy = true;
-            StatusMessage = "?꾪몴瑜???ν븯怨??덉뒿?덈떎.";
+            StatusMessage = "전표를 저장하고 있습니다.";
             var state = await _syncCoordinator.SaveInvoiceImmediatelyAsync(invoice);
 
             if (state.PendingInvoiceCount == 0)
             {
                 _refreshCoordinator.MarkInvoicesChanged();
                 StatusMessage = string.IsNullOrWhiteSpace(state.LastError)
-                    ? "?꾪몴 ???諛??쒕쾭 諛섏쁺 ?꾨즺"
-                    : $"?꾪몴 ????꾨즺 / 理쒖떊 ?곗씠???덈줈怨좎묠 ?湲? {state.LastError}";
+                    ? "전표 저장 및 서버 반영 완료"
+                    : $"전표 저장 완료 / 최신 데이터 새로고침 대기: {state.LastError}";
 
                 if (SavedSuccessfully is not null)
                     await SavedSuccessfully.Invoke();
@@ -597,7 +597,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            StatusMessage = $"?꾪몴 ????ㅽ뙣: {ex.Message}";
+            StatusMessage = $"전표 저장 실패: {ex.Message}";
         }
         finally
         {
@@ -636,7 +636,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
                 SelectedItemBranchStocks.Add(new ItemWarehouseStockDto
                 {
                     ItemId = item.Id,
-                    WarehouseCode = "?꾩껜",
+                    WarehouseCode = "전체",
                     Quantity = item.CurrentStock,
                     UpdatedAtUtc = DateTime.UtcNow
                 });
@@ -647,7 +647,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             await RecordRecentSelectionAsync(SelectedItem);
 
         IsItemEntrySheetVisible = true;
-        StatusMessage = $"{item.NameOriginal} ?덈ぉ???좏깮?덉뒿?덈떎. ?섎웾怨??④?瑜??낅젰?섏꽭??";
+        StatusMessage = $"{item.NameOriginal} 품목을 선택했습니다. 수량과 단가를 입력하세요.";
     }
 
     private void ResetItemSelection(bool clearCategory)
@@ -758,21 +758,21 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     private ItemCategorySummaryDto? FindCategoryByName(string? categoryName)
     {
         if (string.IsNullOrWhiteSpace(categoryName))
-            return ItemCategories.FirstOrDefault(category => string.Equals(category.Name, "???", StringComparison.OrdinalIgnoreCase));
+            return ItemCategories.FirstOrDefault(category => string.Equals(category.Name, "미분류", StringComparison.OrdinalIgnoreCase));
 
         return ItemCategories.FirstOrDefault(category => CategoryEquals(category.Name, categoryName));
     }
 
     private static bool CategoryEquals(string? left, string? right)
     {
-        var normalizedLeft = string.IsNullOrWhiteSpace(left) ? "???" : left.Trim();
-        var normalizedRight = string.IsNullOrWhiteSpace(right) ? "???" : right.Trim();
+        var normalizedLeft = string.IsNullOrWhiteSpace(left) ? "미분류" : left.Trim();
+        var normalizedRight = string.IsNullOrWhiteSpace(right) ? "미분류" : right.Trim();
         return string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string GetOfficeDisplayName(string code)
         => OfficeCodeCatalog.IsSharedOfficeCode(code)
-            ? "怨듭슜"
+            ? "공용"
             : OfficeCodeCatalog.GetOfficeDisplayName(code);
 
     private void HandleCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)

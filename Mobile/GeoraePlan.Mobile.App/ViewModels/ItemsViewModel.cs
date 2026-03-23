@@ -385,9 +385,19 @@ public sealed class ItemsViewModel : ObservableObject
     }
 
     private static string NormalizeCategoryName(string? categoryName)
-        => string.IsNullOrWhiteSpace(categoryName)
-            ? UncategorizedName
-            : categoryName.Trim();
+    {
+        if (string.IsNullOrWhiteSpace(categoryName))
+            return UncategorizedName;
+
+        var normalized = categoryName.Trim();
+        if (normalized.Length == 0)
+            return UncategorizedName;
+
+        if (normalized.All(ch => ch == '?' || ch == '�'))
+            return UncategorizedName;
+
+        return normalized;
+    }
 
     private static string BuildCategoryQueryValue(string categoryName)
         => string.Equals(NormalizeCategoryName(categoryName), UncategorizedName, StringComparison.OrdinalIgnoreCase)
