@@ -32,9 +32,7 @@ public sealed class JwtTokenFactory : IJwtTokenFactory
         var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(user.TenantCode, officeCode);
         var scopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(
             user.ScopeType,
-            user.Role.Equals("Admin", StringComparison.OrdinalIgnoreCase)
-                ? TenantScopeCatalog.ScopeAdmin
-                : TenantScopeCatalog.ScopeOfficeOnly);
+            TenantScopeCatalog.ScopeOfficeOnly);
         var isGodMode = string.Equals(officeCode, OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase);
 
         var claims = new List<Claim>

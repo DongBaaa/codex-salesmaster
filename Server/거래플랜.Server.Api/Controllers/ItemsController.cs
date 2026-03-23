@@ -122,6 +122,9 @@ public sealed class ItemsController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<ItemDto>> Create([FromBody] ItemDto dto, CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasAdministrativeWriteAccess)
+            return Forbid();
+
         var entity = new Item { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode);
@@ -134,6 +137,9 @@ public sealed class ItemsController : ControllerBase
     [HttpPut("{id:guid}")]
     public async Task<ActionResult<ItemDto>> Update(Guid id, [FromBody] ItemDto dto, CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasAdministrativeWriteAccess)
+            return Forbid();
+
         var entity = await _dbContext.Items.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
         if (!_officeScopeService.CanWriteOfficeForItems(entity.OfficeCode, entity.TenantCode))
@@ -149,6 +155,9 @@ public sealed class ItemsController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasAdministrativeWriteAccess)
+            return Forbid();
+
         var entity = await _dbContext.Items.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
         if (!_officeScopeService.CanWriteOfficeForItems(entity.OfficeCode, entity.TenantCode))

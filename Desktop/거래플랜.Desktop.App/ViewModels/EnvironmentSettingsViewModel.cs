@@ -112,19 +112,21 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     public async Task InitializeAsync()
     {
         IsBusy = true;
+        var hadInitializationWarning = false;
         try
         {
-            await ReloadCompanyProfilesAsync();
-            await LoadLegacyMigrationSettingsAsync();
-            await ReloadOfficesAsync();
-            await ReloadMasterOptionsAsync();
-            await ReloadTenantConfigurationAsync();
-            await ReloadUsersAsync();
-            await LoadCurrentUserCompanyProfileAsync();
-            await ReloadRecycleBinAsync();
+            await RunInitializationStepAsync(ReloadCompanyProfilesAsync, "회사 설정", () => hadInitializationWarning = true);
+            await RunInitializationStepAsync(LoadLegacyMigrationSettingsAsync, "레거시 마이그레이션 설정", () => hadInitializationWarning = true);
+            await RunInitializationStepAsync(ReloadOfficesAsync, "담당지점", () => hadInitializationWarning = true);
+            await RunInitializationStepAsync(ReloadMasterOptionsAsync, "선택값", () => hadInitializationWarning = true);
+            await RunInitializationStepAsync(ReloadTenantConfigurationAsync, "업체/데이터 권한", () => hadInitializationWarning = true);
+            await RunInitializationStepAsync(ReloadUsersAsync, "사용자", () => hadInitializationWarning = true);
+            await RunInitializationStepAsync(LoadCurrentUserCompanyProfileAsync, "현재 사용자 회사설정", () => hadInitializationWarning = true);
+            await RunInitializationStepAsync(ReloadRecycleBinAsync, "휴지통", () => hadInitializationWarning = true);
             NewOffice();
             NewUser();
-            StatusMessage = "환경설정을 불러왔습니다.";
+            if (!hadInitializationWarning)
+                StatusMessage = "환경설정을 불러왔습니다.";
         }
         finally
         {
@@ -697,6 +699,23 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         CurrentUserCompanyProfileId = profile?.Id.ToString("D") ?? string.Empty;
     }
 
+    private async Task RunInitializationStepAsync(Func<Task> action, string sectionName, Action? onFailure = null)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            onFailure?.Invoke();
+            거래플랜.Desktop.App.Services.AppLogger.Error(
+                "SETTINGS",
+                $"환경설정 초기화 실패: {sectionName}",
+                ex);
+            StatusMessage = $"{sectionName}을(를) 불러오지 못했습니다: {ex.Message}";
+        }
+    }
+
     private async Task LoadLegacyMigrationSettingsAsync()
     {
         var defaultDb = GetDefaultLegacySourceDbPath();
@@ -774,7 +793,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         if (string.Equals(EditingUserRole, "Admin", StringComparison.OrdinalIgnoreCase))
         {
             if (!TenantScopeCatalog.TryNormalizeScopeType(EditingUserScopeType, out _))
-                EditingUserScopeType = TenantScopeCatalog.ScopeAdmin;
+                EditingUserScopeType = TenantScopeCatalog.ScopeOfficeOnly;
             return;
         }
 
@@ -794,7 +813,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         if (string.Equals(value, "Admin", StringComparison.OrdinalIgnoreCase))
         {
             if (!TenantScopeCatalog.TryNormalizeScopeType(EditingUserScopeType, out _))
-                EditingUserScopeType = TenantScopeCatalog.ScopeAdmin;
+                EditingUserScopeType = TenantScopeCatalog.ScopeOfficeOnly;
             return;
         }
 

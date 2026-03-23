@@ -585,21 +585,33 @@ public partial class MainWindow : Window
 
     private async Task OpenEnvironmentSettingsWindowAsync(bool openRecycleBinTab = false)
     {
-        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
-        var vm = new EnvironmentSettingsViewModel(
-            _local,
-            _session,
-            _api,
-            async () => await _vm.ReloadForBusinessDatabaseChangeAsync());
-        await vm.InitializeAsync();
-        var win = new EnvironmentSettingsWindow(vm, openRecycleBinTab)
+        try
         {
-            Owner = this
-        };
-        win.ShowDialog();
+            await FlushPendingChangesBeforeNavigationAsync("화면 전환");
+            var vm = new EnvironmentSettingsViewModel(
+                _local,
+                _session,
+                _api,
+                async () => await _vm.ReloadForBusinessDatabaseChangeAsync());
+            await vm.InitializeAsync();
+            var win = new EnvironmentSettingsWindow(vm, openRecycleBinTab)
+            {
+                Owner = this
+            };
+            win.ShowDialog();
 
-        if (!vm.BusinessDatabaseChanged)
-            await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+            if (!vm.BusinessDatabaseChanged)
+                await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("SETTINGS", "환경설정 창 열기 실패", ex);
+            MessageBox.Show(
+                $"환경설정을 여는 중 오류가 발생했습니다.{Environment.NewLine}{ex.Message}",
+                "환경설정",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     private async Task OpenCustomerManagementWindowAsync()

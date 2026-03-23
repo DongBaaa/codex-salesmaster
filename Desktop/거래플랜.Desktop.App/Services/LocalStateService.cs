@@ -72,6 +72,9 @@ public sealed partial class LocalStateService
         _syncRequestDispatcher.RequestFlushSync();
         return _syncRequestDispatcher.WaitForSyncCompletionAsync(ct);
     }
+
+    private static bool CanModifySharedBusinessData(SessionState? session)
+        => session is not null && session.HasAdministrativePrivileges;
     // Customers
     public Task<List<LocalCustomer>> GetCustomersAsync(CancellationToken ct = default)
         => _db.Customers.AsNoTracking().OrderBy(c => c.NameOriginal).ToListAsync(ct);
@@ -144,6 +147,9 @@ public sealed partial class LocalStateService
         if (customer is null)
             throw new ArgumentNullException(nameof(customer));
 
+        if (!CanModifySharedBusinessData(session))
+            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 거래처를 저장할 수 있습니다.");
+
         var normalizedOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
         var existing = await _db.Customers
             .IgnoreQueryFilters()
@@ -202,6 +208,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanModifySharedBusinessData(session))
+            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 거래처를 삭제할 수 있습니다.");
+
         var customer = await _db.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == id, ct);
@@ -358,6 +367,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanModifySharedBusinessData(session))
+            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 계약서를 등록할 수 있습니다.");
+
         if (customerId == Guid.Empty)
             return OfficeMutationResult.Denied("계약서를 등록할 거래처를 먼저 저장하세요.");
 
@@ -440,6 +452,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanModifySharedBusinessData(session))
+            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 계약서를 삭제할 수 있습니다.");
+
         var contract = await _db.CustomerContracts
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == contractId, ct);
@@ -487,6 +502,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanModifySharedBusinessData(session))
+            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 기본 계약서를 변경할 수 있습니다.");
+
         var contract = await _db.CustomerContracts
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == contractId, ct);
@@ -1119,6 +1137,9 @@ public sealed partial class LocalStateService
         if (invoice is null)
             throw new ArgumentNullException(nameof(invoice));
 
+        if (session is not null && !CanModifySharedBusinessData(session))
+            return InvoiceSaveResult.Denied("관리자 또는 god 권한 계정만 전표를 저장할 수 있습니다.");
+
         var context = NormalizeSaveContext(saveContext);
         var now = DateTime.UtcNow;
 
@@ -1325,6 +1346,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanModifySharedBusinessData(session))
+            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 전표를 삭제할 수 있습니다.");
+
         var target = await _db.Invoices
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(invoice => invoice.Id == id, ct);
@@ -1399,6 +1423,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanModifySharedBusinessData(session))
+            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 전표 결제를 저장할 수 있습니다.");
+
         var invoice = await _db.Invoices
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -2329,6 +2356,9 @@ public sealed partial class LocalStateService
         if (transaction is null)
             throw new ArgumentNullException(nameof(transaction));
 
+        if (!CanModifySharedBusinessData(session))
+            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 수금/지급을 저장할 수 있습니다.");
+
         var customer = await _db.Customers
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -2702,6 +2732,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanModifySharedBusinessData(session))
+            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 증빙 파일을 등록할 수 있습니다.");
+
         if (transactionId == Guid.Empty)
             return OfficeMutationResult.Denied("利앸튃???곌껐???섍툑/吏湲??댁뿭??癒쇱? ?좏깮?섏꽭??");
 

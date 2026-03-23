@@ -71,6 +71,9 @@ public sealed class InvoicesController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<InvoiceDto>> Create([FromBody] InvoiceDto dto, CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasAdministrativeWriteAccess)
+            return Forbid();
+
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
@@ -109,6 +112,9 @@ public sealed class InvoicesController : ControllerBase
     [HttpPut("{id:guid}")]
     public async Task<ActionResult<InvoiceDto>> Update(Guid id, [FromBody] InvoiceDto dto, CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasAdministrativeWriteAccess)
+            return Forbid();
+
         var entity = await _dbContext.Invoices.Include(x => x.Customer).Include(x => x.Lines)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
@@ -148,6 +154,9 @@ public sealed class InvoicesController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasAdministrativeWriteAccess)
+            return Forbid();
+
         var entity = await _dbContext.Invoices.Include(x => x.Customer).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
         if (!_officeScopeService.CanWriteOfficeForInvoices(entity.OfficeCode, entity.TenantCode))

@@ -114,6 +114,9 @@ public sealed class PaymentsController : ControllerBase
         [FromForm] string? description,
         CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasAdministrativeWriteAccess)
+            return Forbid();
+
         var payment = await _dbContext.Payments
             .Include(x => x.Invoice)
             .ThenInclude(invoice => invoice!.Customer)
@@ -211,6 +214,9 @@ public sealed class PaymentsController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<PaymentDto>> Create([FromBody] PaymentDto dto, CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasAdministrativeWriteAccess)
+            return Forbid();
+
         var invoice = await _dbContext.Invoices
             .IgnoreQueryFilters()
             .Include(x => x.Customer)
@@ -235,6 +241,9 @@ public sealed class PaymentsController : ControllerBase
     [HttpPut("{id:guid}")]
     public async Task<ActionResult<PaymentDto>> Update(Guid id, [FromBody] PaymentDto dto, CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasAdministrativeWriteAccess)
+            return Forbid();
+
         var entity = await _dbContext.Payments
             .Include(x => x.Invoice)
             .ThenInclude(invoice => invoice!.Customer)
@@ -253,6 +262,9 @@ public sealed class PaymentsController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasAdministrativeWriteAccess)
+            return Forbid();
+
         var entity = await _dbContext.Payments
             .Include(x => x.Invoice)
             .ThenInclude(invoice => invoice!.Customer)

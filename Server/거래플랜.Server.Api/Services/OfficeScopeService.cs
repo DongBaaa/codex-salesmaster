@@ -31,6 +31,7 @@ public sealed class OfficeScopeService
     }
 
     public bool IsAdmin => _currentUserContext.IsAdmin;
+    public bool HasAdministrativeWriteAccess => _currentUserContext.IsAdmin || _currentUserContext.IsGodMode;
     public bool HasGlobalDataScope =>
         IsAdmin && string.Equals(CurrentScopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase);
 
@@ -42,7 +43,7 @@ public sealed class OfficeScopeService
 
     public string CurrentScopeType => TenantScopeCatalog.NormalizeScopeTypeOrDefault(
         _currentUserContext.ScopeType,
-        IsAdmin ? TenantScopeCatalog.ScopeAdmin : TenantScopeCatalog.ScopeOfficeOnly);
+        TenantScopeCatalog.ScopeOfficeOnly);
 
     public string CurrentWarehouseCode => OfficeCodeCatalog.GetMainWarehouseCode(CurrentOfficeCode);
 

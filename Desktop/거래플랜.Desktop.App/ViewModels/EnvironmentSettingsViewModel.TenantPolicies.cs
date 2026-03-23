@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Net;
+using System.Net.Http;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Shared.Contracts;
@@ -76,7 +78,18 @@ public sealed partial class EnvironmentSettingsViewModel
             return;
         }
 
-        var snapshot = await _api.GetTenantConfigurationAsync();
+        TenantConfigurationSnapshotDto? snapshot;
+        try
+        {
+            snapshot = await _api.GetTenantConfigurationAsync();
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Forbidden || ex.Message.Contains("403", StringComparison.Ordinal))
+        {
+            StatusMessage = "업체/데이터 권한은 관리자 또는 god 권한 계정만 조회할 수 있습니다.";
+            NewSharingPolicy();
+            return;
+        }
+
         if (snapshot is null)
         {
             StatusMessage = "업체/데이터 권한 설정을 불러오지 못했습니다.";

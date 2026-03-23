@@ -212,6 +212,12 @@ public sealed partial class InventoryViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveItemAsync()
     {
+        if (!_session.HasAdministrativePrivileges)
+        {
+            StatusMessage = "관리자 또는 god 권한 계정만 품목을 저장할 수 있습니다.";
+            return;
+        }
+
         if (!await ValidateBeforeSaveAsync())
             return;
 
@@ -256,6 +262,12 @@ public sealed partial class InventoryViewModel : ObservableObject
     [RelayCommand]
     private async Task DeleteItemAsync()
     {
+        if (!_session.HasAdministrativePrivileges)
+        {
+            StatusMessage = "관리자 또는 god 권한 계정만 품목을 삭제할 수 있습니다.";
+            return;
+        }
+
         if (SelectedItem is null)
             return;
 

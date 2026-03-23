@@ -183,11 +183,14 @@ public sealed class UsersController : ControllerBase
         => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode);
 
     private static string NormalizeScopeType(string? scopeType, string? role)
-        => TenantScopeCatalog.NormalizeScopeTypeOrDefault(
-            scopeType,
-            string.Equals(role, "admin", StringComparison.OrdinalIgnoreCase)
-                ? TenantScopeCatalog.ScopeAdmin
-                : TenantScopeCatalog.ScopeOfficeOnly);
+    {
+        if (TenantScopeCatalog.TryNormalizeScopeType(scopeType, out var normalized))
+            return normalized;
+
+        return string.Equals(role, "admin", StringComparison.OrdinalIgnoreCase)
+            ? TenantScopeCatalog.ScopeOfficeOnly
+            : TenantScopeCatalog.ScopeOfficeOnly;
+    }
 
     private void ApplyPermissions(UserAccount user, IEnumerable<string> permissions)
     {

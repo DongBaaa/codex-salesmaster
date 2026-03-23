@@ -17,9 +17,7 @@ public static class DtoMappings
             OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(entity.OfficeCode),
             ScopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(
                 entity.ScopeType,
-                entity.Role.Equals("Admin", StringComparison.OrdinalIgnoreCase)
-                    ? TenantScopeCatalog.ScopeAdmin
-                    : TenantScopeCatalog.ScopeOfficeOnly),
+                TenantScopeCatalog.ScopeOfficeOnly),
             IsActive = entity.IsActive,
             Permissions = entity.Permissions.Select(x => x.Permission).Distinct().OrderBy(x => x).ToList()
         };
