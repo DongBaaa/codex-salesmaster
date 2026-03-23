@@ -63,6 +63,11 @@ public static class LocalDbInitializer
         await db.SaveChangesAsync();
     }
 
+    private static void LogSchemaStepFailure(string stepName, Exception ex)
+    {
+        AppLogger.Warn("LOCALDB", $"로컬 DB 보강 단계 '{stepName}' 실패: {ex.Message}");
+    }
+
     private static async Task NormalizeSelectionOptionSystemDefaultsAsync(LocalDbContext db)
     {
         var now = DateTime.UtcNow;
@@ -1482,7 +1487,10 @@ public static class LocalDbInitializer
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_Offices_Code\" ON \"Offices\" (\"Code\");");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateOfficeTableAsync), ex);
+        }
     }
 
     private static async Task TryCreateWarehouseTableAsync(LocalDbContext db)
@@ -1508,7 +1516,10 @@ public static class LocalDbInitializer
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_Warehouses_Code\" ON \"Warehouses\" (\"Code\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Warehouses_OfficeCode\" ON \"Warehouses\" (\"OfficeCode\");");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateWarehouseTableAsync), ex);
+        }
     }
 
     private static async Task TryCreateInvoiceLineSerialsTableAsync(LocalDbContext db)
@@ -1528,7 +1539,10 @@ public static class LocalDbInitializer
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InvoiceLineSerials_InvoiceLine\" ON \"InvoiceLineSerials\" (\"InvoiceId\", \"InvoiceLineId\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InvoiceLineSerials_Serial\" ON \"InvoiceLineSerials\" (\"SerialNumber\");");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateInvoiceLineSerialsTableAsync), ex);
+        }
     }
 
     private static async Task TryCreateInventoryMovementsTableAsync(LocalDbContext db)
@@ -1558,7 +1572,10 @@ public static class LocalDbInitializer
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryMovements_ItemWhDate\" ON \"InventoryMovements\" (\"ItemId\", \"WarehouseCode\", \"OccurredDate\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryMovements_Invoice\" ON \"InventoryMovements\" (\"InvoiceId\");");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateInventoryMovementsTableAsync), ex);
+        }
     }
 
     private static async Task TryCreateStockLayersTableAsync(LocalDbContext db)
@@ -1583,7 +1600,10 @@ public static class LocalDbInitializer
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_StockLayers_ItemWhDate\" ON \"StockLayers\" (\"ItemId\", \"WarehouseCode\", \"ReceiptDate\");");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateStockLayersTableAsync), ex);
+        }
     }
 
     private static async Task TryCreateCostAllocationsTableAsync(LocalDbContext db)
@@ -1609,7 +1629,10 @@ public static class LocalDbInitializer
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CostAllocations_SalesLine\" ON \"CostAllocations\" (\"SalesInvoiceId\", \"SalesInvoiceLineId\");");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateCostAllocationsTableAsync), ex);
+        }
     }
 
     private static async Task TryCreateItemWarehouseStocksTableAsync(LocalDbContext db)
@@ -1627,7 +1650,10 @@ public static class LocalDbInitializer
                                """;
             await db.Database.ExecuteSqlRawAsync(sql);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateItemWarehouseStocksTableAsync), ex);
+        }
     }
 
     private static async Task TryCreateSerialLedgersTableAsync(LocalDbContext db)
@@ -1652,7 +1678,10 @@ public static class LocalDbInitializer
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_SerialLedgers_SerialNumber\" ON \"SerialLedgers\" (\"SerialNumber\");");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateSerialLedgersTableAsync), ex);
+        }
     }
 
     private static async Task TryCreatePriceGradeOptionsTableAsync(LocalDbContext db)
@@ -1677,7 +1706,10 @@ public static class LocalDbInitializer
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_PriceGradeOptions_Name\" ON \"PriceGradeOptions\" (\"Name\");");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreatePriceGradeOptionsTableAsync), ex);
+        }
     }
 
     private static async Task TryCreateTradeTypeOptionsTableAsync(LocalDbContext db)
@@ -1703,7 +1735,10 @@ public static class LocalDbInitializer
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TradeTypeOptions_Name\" ON \"TradeTypeOptions\" (\"Name\");");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateTradeTypeOptionsTableAsync), ex);
+        }
     }
 
     private static async Task TryCreateItemCategoryOptionsTableAsync(LocalDbContext db)
@@ -1727,7 +1762,10 @@ public static class LocalDbInitializer
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_ItemCategoryOptions_Name\" ON \"ItemCategoryOptions\" (\"Name\");");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateItemCategoryOptionsTableAsync), ex);
+        }
     }
 
     private static async Task TryCreateAuditLogsTableAsync(LocalDbContext db)
@@ -1751,7 +1789,10 @@ public static class LocalDbInitializer
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_AuditLogs_EntityAt\" ON \"AuditLogs\" (\"EntityName\", \"EntityId\", \"CreatedAtUtc\");");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateAuditLogsTableAsync), ex);
+        }
     }
 
     private static async Task TryCreateInventoryTransfersTableAsync(LocalDbContext db)

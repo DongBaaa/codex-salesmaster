@@ -27,8 +27,29 @@ public sealed class SyncService : IDisposable
     private Task<bool>? _currentSyncTask;
     private bool _resyncRequested;
     private bool _flushRequested;
+    private bool _disposed;
+    private DateTime _lastSyncStartedUtc = DateTime.MinValue;
+    private DateTime _lastSyncCompletedUtc = DateTime.MinValue;
 
     public event Action<string>? SyncStatusChanged;
+
+    public bool HasRecentSuccessfulSync(TimeSpan window)
+        => !_disposed
+           && _lastSyncCompletedUtc != DateTime.MinValue
+           && DateTime.UtcNow - _lastSyncCompletedUtc < window;
+
+    public bool HasActiveOrQueuedSync
+    {
+        get
+        {
+            lock (_immediateSyncGate)
+            {
+                return (_currentSyncTask is not null && !_currentSyncTask.IsCompleted)
+                       || _resyncRequested
+                       || (_immediateSyncCts is not null && !_immediateSyncCts.IsCancellationRequested);
+            }
+        }
+    }
 
     public SyncService(
         LocalDbContext db,
@@ -47,6 +68,9 @@ public sealed class SyncService : IDisposable
 
     public void Start(TimeSpan interval, bool runImmediately = false)
     {
+        if (_disposed)
+            return;
+
         _timer?.Dispose();
         var normalizedInterval = interval <= TimeSpan.Zero ? TimeSpan.FromMinutes(5) : interval;
         var due = runImmediately ? TimeSpan.Zero : normalizedInterval;
@@ -60,11 +84,11 @@ public sealed class SyncService : IDisposable
     }
 
     public Task<bool> TrySyncAsync(CancellationToken ct = default)
-        => StartSyncAsync(waitForRunningSync: false, ct);
+        => _disposed ? Task.FromResult(false) : StartSyncAsync(waitForRunningSync: false, ct);
 
     public async Task<bool> FlushPendingChangesAsync(CancellationToken ct = default)
     {
-        if (!_session.IsLoggedIn)
+        if (_disposed || !_session.IsLoggedIn)
             return false;
 
         CancelPendingImmediateSync();
@@ -86,7 +110,7 @@ public sealed class SyncService : IDisposable
 
     public async Task<bool> RefreshSharedMirrorFromServerAsync(CancellationToken ct = default)
     {
-        if (!_session.IsLoggedIn || _session.IsOfflineMode)
+        if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
             return false;
 
         if (await _local.CountDirtyAsync(ct) > 0)
@@ -98,16 +122,20 @@ public sealed class SyncService : IDisposable
         if (pull is null)
             return false;
 
-        await _local.ResetSharedMirrorCacheAsync(ct);
-        await ApplyPullAsync(pull, 0L, ct);
+        using (_local.SuppressSyncDispatch())
+        {
+            await _local.ResetSharedMirrorCacheAsync(ct);
+            await ApplyPullAsync(pull, 0L, ct);
+        }
         await _local.SetSettingAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
+        _lastSyncCompletedUtc = DateTime.UtcNow;
         SetStatus($"중앙 서버 기준 캐시 재구성 완료 {DateTime.Now:HH:mm:ss}");
         return true;
     }
 
     private Task<bool> StartSyncAsync(bool waitForRunningSync, CancellationToken ct)
     {
-        if (!_session.IsLoggedIn)
+        if (_disposed || !_session.IsLoggedIn)
             return Task.FromResult(false);
 
         lock (_immediateSyncGate)
@@ -173,6 +201,7 @@ public sealed class SyncService : IDisposable
     {
         try
         {
+            _lastSyncStartedUtc = DateTime.UtcNow;
             SetStatus("동기화 중...");
             AppLogger.Info("SYNC", "동기화 시작");
 
@@ -180,9 +209,15 @@ public sealed class SyncService : IDisposable
             await ExecuteWithRetryAsync(PullNewAsync, "다운로드", ct);
 
             await _local.SetSettingAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
+            _lastSyncCompletedUtc = DateTime.UtcNow;
             SetStatus($"동기화 완료 {DateTime.Now:HH:mm:ss}");
             AppLogger.Info("SYNC", "동기화 완료");
             return true;
+        }
+        catch (Exception ex) when (IsDisposedContextException(ex))
+        {
+            AppLogger.Warn("SYNC", $"동기화 종료 중 안전 무시: {ex.Message}");
+            return false;
         }
         catch (Exception ex)
         {
@@ -201,6 +236,16 @@ public sealed class SyncService : IDisposable
         }
     }
 
+    private static bool IsDisposedContextException(Exception ex)
+    {
+        if (ex is ObjectDisposedException)
+            return true;
+
+        var details = ex.ToString();
+        return details.Contains("disposed context", StringComparison.OrdinalIgnoreCase)
+               || details.Contains("Object name: 'LocalDbContext'", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IsTransient(Exception ex, CancellationToken ct)
     {
         if (ex is TaskCanceledException && !ct.IsCancellationRequested)
@@ -217,7 +262,7 @@ public sealed class SyncService : IDisposable
 
     private void HandleSyncRequested(SyncRequestMode mode)
     {
-        if (!_session.IsLoggedIn || _session.IsOfflineMode)
+        if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
             return;
 
         CancellationTokenSource? cts = null;
@@ -256,9 +301,22 @@ public sealed class SyncService : IDisposable
 
     private async Task RunDeferredImmediateSyncAsync(CancellationToken ct)
     {
+        if (_disposed)
+            return;
+
         try
         {
             await Task.Delay(DebouncedSyncDelay, ct);
+
+            if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
+                return;
+
+            if (await _local.CountDirtyAsync(ct) == 0 && HasRecentSuccessfulSync(TimeSpan.FromSeconds(30)))
+            {
+                AppLogger.Info("SYNC", "로컬 변경 없는 중복 즉시 동기화 요청을 건너뜁니다.");
+                return;
+            }
+
             await StartSyncAsync(waitForRunningSync: true, ct);
         }
         catch (OperationCanceledException)
@@ -601,7 +659,10 @@ public sealed class SyncService : IDisposable
         if (pull is null)
             return;
 
-        await ApplyPullAsync(pull, sinceRev, ct);
+        using (_local.SuppressSyncDispatch())
+        {
+            await ApplyPullAsync(pull, sinceRev, ct);
+        }
     }
 
     private async Task ApplyPullAsync(SyncPullResponse pull, long sinceRev, CancellationToken ct)
@@ -905,6 +966,10 @@ public sealed class SyncService : IDisposable
 
     public void Dispose()
     {
+        if (_disposed)
+            return;
+
+        _disposed = true;
         _dispatcher.SyncRequested -= HandleSyncRequested;
         _timer?.Dispose();
 

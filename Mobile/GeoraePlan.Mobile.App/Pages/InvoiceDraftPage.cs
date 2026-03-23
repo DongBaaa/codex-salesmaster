@@ -35,7 +35,10 @@ public sealed class InvoiceDraftPage : ContentPage
         customerSearchEntry.SetBinding(Entry.TextProperty, nameof(InvoiceDraftViewModel.CustomerSearchText));
 
         var customerSearchButton = GeoraePlanTheme.CreateCompactButton("찾기", GeoraePlanTheme.SecondaryButton);
-        customerSearchButton.Clicked += async (_, _) => await _viewModel.SearchCustomersAsync();
+        customerSearchButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.SearchCustomersAsync(),
+                "전표 작성 작업");
 
         var customerSearchGrid = new Grid
         {
@@ -66,11 +69,14 @@ public sealed class InvoiceDraftPage : ContentPage
                 infoLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new CustomerInfoConverter()));
 
                 var selectButton = GeoraePlanTheme.CreateCompactButton("선택", GeoraePlanTheme.Success);
-                selectButton.Clicked += async (sender, _) =>
-                {
+                selectButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is Button button && button.BindingContext is CustomerDto customer)
                         await _viewModel.SelectCustomerAsync(customer);
-                };
+                },
+                        "전표 작성 작업");
 
                 return new Border
                 {
@@ -144,10 +150,16 @@ public sealed class InvoiceDraftPage : ContentPage
         var itemSearchEntry = GeoraePlanTheme.CreateCompactEntry("품목명 / 규격 검색");
         itemSearchEntry.SetBinding(Entry.TextProperty, nameof(InvoiceDraftViewModel.ItemSearchText));
         itemSearchEntry.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasSelectedCategory));
-        itemSearchEntry.Completed += async (_, _) => await _viewModel.SearchItemsAsync();
+        itemSearchEntry.Completed += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.SearchItemsAsync(),
+                "전표 작성 작업");
 
         var itemSearchButton = GeoraePlanTheme.CreateCompactButton("찾기", GeoraePlanTheme.SecondaryButton);
-        itemSearchButton.Clicked += async (_, _) => await _viewModel.SearchItemsAsync();
+        itemSearchButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.SearchItemsAsync(),
+                "전표 작성 작업");
         itemSearchButton.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasSelectedCategory));
 
         var itemSearchGrid = new Grid
@@ -225,11 +237,14 @@ public sealed class InvoiceDraftPage : ContentPage
                 };
 
                 var tap = new TapGestureRecognizer();
-                tap.Tapped += async (sender, _) =>
-                {
+                tap.Tapped += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is Border card && card.BindingContext is ItemDto item)
                         await _viewModel.SelectItemAsync(item);
-                };
+                },
+                        "전표 작성 작업");
                 border.GestureRecognizers.Add(tap);
                 return border;
             })
@@ -267,18 +282,24 @@ public sealed class InvoiceDraftPage : ContentPage
                 summaryLabel.SetBinding(Label.TextProperty, new Binding(nameof(InvoiceLineDraftItem.LineAmount), stringFormat: "합계 {0:N0}원"));
 
                 var editButton = GeoraePlanTheme.CreateCompactButton("수정", GeoraePlanTheme.SecondaryButton);
-                editButton.Clicked += async (sender, _) =>
-                {
+                editButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is Button button && button.BindingContext is InvoiceLineDraftItem line)
                         await _viewModel.EditLineAsync(line);
-                };
+                },
+                        "전표 작성 작업");
 
                 var deleteButton = GeoraePlanTheme.CreateCompactButton("삭제", GeoraePlanTheme.Danger);
-                deleteButton.Clicked += async (sender, _) =>
-                {
+                deleteButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is Button button && button.BindingContext is InvoiceLineDraftItem line)
                         await _viewModel.RemoveLineAsync(line);
-                };
+                },
+                        "전표 작성 작업");
 
                 var actionGrid = new Grid
                 {
@@ -473,10 +494,16 @@ public sealed class InvoiceDraftPage : ContentPage
 
         var addLineButton = GeoraePlanTheme.CreateCompactButton("품목 추가", GeoraePlanTheme.Accent);
         addLineButton.SetBinding(Button.TextProperty, nameof(InvoiceDraftViewModel.LineActionText));
-        addLineButton.Clicked += async (_, _) => await _viewModel.AddOrUpdateLineAsync();
+        addLineButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.AddOrUpdateLineAsync(),
+                "전표 작성 작업");
 
         var cancelButton = GeoraePlanTheme.CreateCompactButton("취소", GeoraePlanTheme.SecondaryButton);
-        cancelButton.Clicked += async (_, _) => await _viewModel.CancelItemEntryAsync();
+        cancelButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.CancelItemEntryAsync(),
+                "전표 작성 작업");
 
         actionGrid.Add(addLineButton);
         actionGrid.Add(cancelButton, 1, 0);
@@ -519,7 +546,10 @@ public sealed class InvoiceDraftPage : ContentPage
         };
         backdrop.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.IsItemEntrySheetVisible));
         var backdropTap = new TapGestureRecognizer();
-        backdropTap.Tapped += async (_, _) => await _viewModel.CancelItemEntryAsync();
+        backdropTap.Tapped += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.CancelItemEntryAsync(),
+                "전표 작성 작업");
         backdrop.GestureRecognizers.Add(backdropTap);
 
         var root = new Grid();
@@ -537,7 +567,10 @@ public sealed class InvoiceDraftPage : ContentPage
     {
         base.OnAppearing();
 
-        try
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+try
         {
             await _viewModel.LoadAsync();
         }
@@ -570,6 +603,8 @@ public sealed class InvoiceDraftPage : ContentPage
 
         RebuildCategoryButtons();
         RebuildRecentItems();
+            },
+            "전표 작성 화면 초기화");
     }
 
     protected override void OnDisappearing()
@@ -637,7 +672,10 @@ public sealed class InvoiceDraftPage : ContentPage
             button.HeightRequest = 48;
             button.CornerRadius = 12;
             button.Padding = new Thickness(10, 4);
-            button.Clicked += async (_, _) => await _viewModel.SelectCategoryAsync(category);
+            button.Clicked += (_, _) =>
+                MobileErrorHandler.FireAndForget(
+                    async () => await _viewModel.SelectCategoryAsync(category),
+                    "전표 작성 작업");
             _categoryButtonGrid.Add(button, column, row);
         }
     }
@@ -652,7 +690,10 @@ public sealed class InvoiceDraftPage : ContentPage
             var button = GeoraePlanTheme.CreateCompactButton(recent.ItemNameOriginal, matchesCurrentCategory ? GeoraePlanTheme.Accent : GeoraePlanTheme.SecondaryButton);
             button.Margin = new Thickness(0, 0, 8, 8);
             button.Padding = new Thickness(12, 0);
-            button.Clicked += async (_, _) => await _viewModel.SelectRecentItemAsync(recent);
+            button.Clicked += (_, _) =>
+                MobileErrorHandler.FireAndForget(
+                    async () => await _viewModel.SelectRecentItemAsync(recent),
+                    "전표 작성 작업");
             _recentItemsLayout.Children.Add(button);
         }
     }

@@ -85,9 +85,16 @@ public sealed class MobileSessionRecoveryService
             await _sessionStore.SaveAsync(loginResponse).ConfigureAwait(false);
             return SessionRecoveryResult.SuccessResult($"자동 로그인으로 세션을 복구했습니다. ({reason})");
         }
+        catch (HttpRequestException ex)
+        {
+            return SessionRecoveryResult.FailureResult($"세션 복구 요청이 실패했습니다. ({reason}) {ex.Message}".Trim());
+        }
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            return SessionRecoveryResult.FailureResult($"세션 복구 요청이 지연되었습니다. ({reason}) {ex.Message}".Trim());
+        }
         catch (Exception ex)
         {
-            await _sessionStore.ClearAsync().ConfigureAwait(false);
             return SessionRecoveryResult.FailureResult($"세션 복구 중 오류가 발생했습니다. ({reason}) {ex.Message}".Trim());
         }
         finally

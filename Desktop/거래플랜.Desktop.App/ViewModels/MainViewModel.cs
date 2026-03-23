@@ -210,28 +210,27 @@ public sealed partial class MainViewModel : ObservableObject
         await LoadCompanyProfileAsync();
         await LoadLegacyMigrationSettingsAsync();
         if (_session.IsOfflineMode)
-            SyncStatus = "???? ?? ?? ?? ?? ?? ?? ???? ?????";
+            SyncStatus = "오프라인 모드에서는 자동 동기화를 진행하지 않습니다.";
     }
 
     public async Task RunPostLoginSyncAsync()
     {
         if (_session.IsOfflineMode)
         {
-            SyncStatus = "???? ??? ??? ?? ???? ?????.";
+            SyncStatus = "로그인 후 서버 동기화를 진행하지 못했습니다.";
             return;
         }
 
         var dirtyBefore = await _local.CountDirtyAsync();
-        SyncStatus = "??? ? ?? ??? ?...";
+        SyncStatus = "로그인 후 서버 동기화 중...";
 
         var syncOk = await _sync.TrySyncAsync();
         if (syncOk)
         {
             if (await _local.CountDirtyAsync() == 0)
                 await _sync.RefreshSharedMirrorFromServerAsync();
-            await LoadCustomersAsync();
-            await LoadInvoiceListAsync();
-            SyncStatus = $"??? ? ?? ??? ?? {DateTime.Now:HH:mm:ss}";
+            await ReloadAfterPassiveSyncAsync();
+            SyncStatus = $"로그인 후 서버 동기화 완료 {DateTime.Now:HH:mm:ss}";
             return;
         }
 
@@ -736,7 +735,7 @@ public sealed partial class MainViewModel : ObservableObject
     {
         if (EditCustomer is null)
         {
-            System.Windows.MessageBox.Show("嫄곕옒泥섎? ?좏깮?섏꽭??", "?뚮┝", System.Windows.MessageBoxButton.OK);
+            System.Windows.MessageBox.Show("嫄곕옒泥섎? ?좏깮?섏꽭??", "알림", System.Windows.MessageBoxButton.OK);
             return;
         }
 
@@ -780,7 +779,7 @@ public sealed partial class MainViewModel : ObservableObject
         await _local.WaitForServerWriteAsync();
         _editConcurrencyStamp = saveResult.SavedConcurrencyStamp;
         await LoadInvoiceListAsync();
-        System.Windows.MessageBox.Show("??λ릺?덉뒿?덈떎.", "?뚮┝", System.Windows.MessageBoxButton.OK);
+        System.Windows.MessageBox.Show("저장되었습니다.", "알림", System.Windows.MessageBoxButton.OK);
     }
 
     [RelayCommand]
@@ -788,7 +787,7 @@ public sealed partial class MainViewModel : ObservableObject
     {
         if (SelectedInvoiceRow is null) return;
         var confirm = System.Windows.MessageBox.Show(
-            "?좏깮???꾪몴瑜???젣?섏떆寃좎뒿?덇퉴?", "??젣 ?뺤씤",
+            "선택한 전표를 삭제하시겠습니까?", "삭제 확인",
             System.Windows.MessageBoxButton.YesNo);
         if (confirm != System.Windows.MessageBoxResult.Yes) return;
 
@@ -1055,7 +1054,7 @@ public sealed partial class MainViewModel : ObservableObject
         if (!_session.HasPermission("CompanyProfile.Edit")
             && _session.User?.Role != "Admin")
         {
-            System.Windows.MessageBox.Show("沅뚰븳???놁뒿?덈떎.", "?ㅻ쪟", System.Windows.MessageBoxButton.OK);
+            System.Windows.MessageBox.Show("권한이 없습니다.", "오류", System.Windows.MessageBoxButton.OK);
             return;
         }
 
@@ -1075,7 +1074,7 @@ public sealed partial class MainViewModel : ObservableObject
         };
 
         await _local.SaveCompanyProfileAsync(profile);
-        System.Windows.MessageBox.Show("?뚯궗 ?뺣낫媛 ??λ릺?덉뒿?덈떎.", "?뚮┝", System.Windows.MessageBoxButton.OK);
+        System.Windows.MessageBox.Show("회사 정보가 저장되었습니다.", "알림", System.Windows.MessageBoxButton.OK);
     }
 
     [RelayCommand]
@@ -1298,6 +1297,12 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     // ?? Sync ??????????????????????????????????????????????????????????????
+    public async Task ReloadAfterPassiveSyncAsync()
+    {
+        await LoadCustomersAsync();
+        await LoadInvoiceListAsync();
+    }
+
     [RelayCommand]
     private async Task ForceSyncAsync()
     {
@@ -1314,7 +1319,7 @@ public sealed partial class MainViewModel : ObservableObject
     {
         var ok = await _backup.BackupNowAsync();
         System.Windows.MessageBox.Show(
-            ok ? "諛깆뾽???꾨즺?섏뿀?듬땲??" : "諛깆뾽 以??ㅻ쪟媛 諛쒖깮?덉뒿?덈떎.",
-            "諛깆뾽", System.Windows.MessageBoxButton.OK);
+            ok ? "백업이 완료되었습니다." : "백업 중 오류가 발생했습니다.",
+            "백업", System.Windows.MessageBoxButton.OK);
     }
 }

@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Models;
+using GeoraePlan.Mobile.App.Models;
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using 거래플랜.Shared.Contracts;
@@ -48,7 +48,10 @@ public sealed class PaymentDraftPage : ContentPage
         attachmentSummary.SetBinding(Label.TextProperty, nameof(PaymentDraftViewModel.AttachmentSummary));
 
         var attachButton = GeoraePlanTheme.CreateButton("내역 첨부하기", GeoraePlanTheme.Purple);
-        attachButton.Clicked += async (_, _) => await ShowAttachmentMenuAsync();
+        attachButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await ShowAttachmentMenuAsync(),
+                "수금 입력 작업");
 
         var attachmentsView = new CollectionView
         {
@@ -67,19 +70,25 @@ public sealed class PaymentDraftPage : ContentPage
 
                 var openButton = GeoraePlanTheme.CreateButton("열기", GeoraePlanTheme.SecondaryButton);
                 openButton.HeightRequest = 38;
-                openButton.Clicked += async (sender, _) =>
-                {
+                openButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is Button button && button.BindingContext is PendingPaymentAttachmentRecord attachment)
                         await _viewModel.OpenAttachmentAsync(attachment);
-                };
+                },
+                        "수금 입력 작업");
 
                 var deleteButton = GeoraePlanTheme.CreateButton("삭제", GeoraePlanTheme.Danger);
                 deleteButton.HeightRequest = 38;
-                deleteButton.Clicked += async (sender, _) =>
-                {
+                deleteButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is Button button && button.BindingContext is PendingPaymentAttachmentRecord attachment)
                         await _viewModel.RemoveAttachmentAsync(attachment);
-                };
+                },
+                        "수금 입력 작업");
 
                 var actionGrid = new Grid
                 {
@@ -144,7 +153,13 @@ public sealed class PaymentDraftPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        await _viewModel.LoadAsync();
+
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+await _viewModel.LoadAsync();
+            },
+            "수금 입력 화면 초기화");
     }
 
     protected override void OnDisappearing()

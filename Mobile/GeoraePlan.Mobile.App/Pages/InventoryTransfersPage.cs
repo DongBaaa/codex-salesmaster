@@ -21,7 +21,10 @@ public sealed class InventoryTransfersPage : ContentPage
 
         var searchBar = GeoraePlanTheme.CreateSearchBar("이동번호 / 메모 / 창고 검색");
         searchBar.SetBinding(SearchBar.TextProperty, nameof(InventoryTransfersViewModel.SearchText));
-        searchBar.SearchButtonPressed += async (_, _) => await _viewModel.RefreshAsync();
+        searchBar.SearchButtonPressed += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.RefreshAsync(),
+                "재고이동 작업");
 
         var refreshButton = GeoraePlanTheme.CreateButton("새로고침", GeoraePlanTheme.SecondaryButton);
         refreshButton.SetBinding(Button.CommandProperty, nameof(InventoryTransfersViewModel.RefreshCommand));
@@ -82,11 +85,14 @@ public sealed class InventoryTransfersPage : ContentPage
                 };
 
                 var tap = new TapGestureRecognizer();
-                tap.Tapped += async (sender, _) =>
-                {
+                tap.Tapped += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is Border card && card.BindingContext is InventoryTransferDto transfer)
                         await _viewModel.SelectTransferAsync(transfer);
-                };
+                },
+                        "재고이동 작업");
                 border.GestureRecognizers.Add(tap);
                 return border;
             })
@@ -187,9 +193,15 @@ public sealed class InventoryTransfersPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        await _syncCoordinator.RefreshIfServerChangedAsync("inventory-transfers-page", TimeSpan.FromSeconds(5));
+
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+await _syncCoordinator.RefreshIfServerChangedAsync("inventory-transfers-page", TimeSpan.FromSeconds(5));
         if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             await _viewModel.RefreshAsync();
+            },
+            "재고이동 화면 초기화");
     }
 
     protected override bool OnBackButtonPressed()

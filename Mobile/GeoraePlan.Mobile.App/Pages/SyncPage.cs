@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Theme;
+using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using Microsoft.Maui.Controls.Shapes;
 
@@ -90,6 +90,12 @@ public sealed class SyncPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        await _viewModel.RefreshAsync();
+
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+await _viewModel.RefreshAsync();
+            },
+            "동기화 화면 초기화");
     }
 }

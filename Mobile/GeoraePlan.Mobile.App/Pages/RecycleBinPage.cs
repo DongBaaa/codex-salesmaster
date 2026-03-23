@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Theme;
+using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
@@ -57,8 +57,10 @@ public sealed class RecycleBinPage : ContentPage
                 deletedLabel.SetBinding(Label.TextProperty, new Binding(nameof(RecycleBinEntryDto.DeletedAtUtc), stringFormat: "삭제시각 {0:yyyy-MM-dd HH:mm}"));
 
                 var restoreButton = GeoraePlanTheme.CreateButton("복원", GeoraePlanTheme.Success);
-                restoreButton.Clicked += async (sender, _) =>
-                {
+                restoreButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is not Button button || button.BindingContext is not RecycleBinEntryDto entry)
                         return;
 
@@ -71,11 +73,14 @@ public sealed class RecycleBinPage : ContentPage
                         return;
 
                     await _viewModel.RestoreAsync(entry);
-                };
+                },
+                        "휴지통 작업");
 
                 var purgeButton = GeoraePlanTheme.CreateButton("영구삭제", GeoraePlanTheme.Danger);
-                purgeButton.Clicked += async (sender, _) =>
-                {
+                purgeButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is not Button button || button.BindingContext is not RecycleBinEntryDto entry)
                         return;
 
@@ -88,7 +93,8 @@ public sealed class RecycleBinPage : ContentPage
                         return;
 
                     await _viewModel.PurgeAsync(entry);
-                };
+                },
+                        "휴지통 작업");
 
                 var actionGrid = new Grid
                 {
@@ -159,8 +165,14 @@ public sealed class RecycleBinPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        if (_viewModel.Entries.Count == 0)
+
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+if (_viewModel.Entries.Count == 0)
             await _viewModel.RefreshAsync();
+            },
+            "휴지통 화면 초기화");
     }
 }
 

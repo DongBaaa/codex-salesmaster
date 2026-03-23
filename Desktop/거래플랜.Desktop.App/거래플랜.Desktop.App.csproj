@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\거래플랜.Shared.Contracts\거래플랜.Shared.Contracts.csproj" />
   </ItemGroup>
@@ -27,8 +27,8 @@
     <AssemblyTitle>거래플랜</AssemblyTitle>
     <Product>거래플랜</Product>
     <ApplicationIcon>..\..\AppIcons\tradeplan-windows.ico</ApplicationIcon>
-    <Version>1.1.21</Version>
-    <FileVersion>1.1.21.0</FileVersion>
+    <Version>1.1.22</Version>
+    <FileVersion>1.1.22.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>

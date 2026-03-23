@@ -65,11 +65,17 @@ public sealed class ItemsPage : ContentPage
 
         var searchEntry = GeoraePlanTheme.CreateCompactEntry("품목명 / 규격 검색");
         searchEntry.SetBinding(Entry.TextProperty, nameof(ItemsViewModel.SearchText));
-        searchEntry.Completed += async (_, _) => await _viewModel.SearchItemsAsync();
+        searchEntry.Completed += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.SearchItemsAsync(),
+                "품목 작업");
         searchEntry.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
 
         var searchButton = GeoraePlanTheme.CreateCompactButton("찾기", GeoraePlanTheme.SecondaryButton);
-        searchButton.Clicked += async (_, _) => await _viewModel.SearchItemsAsync();
+        searchButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.SearchItemsAsync(),
+                "품목 작업");
         searchButton.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
 
         var searchGrid = new Grid
@@ -127,11 +133,14 @@ public sealed class ItemsPage : ContentPage
                 };
 
                 var tap = new TapGestureRecognizer();
-                tap.Tapped += async (sender, _) =>
-                {
+                tap.Tapped += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is Border card && card.BindingContext is ItemDto item)
                         await _viewModel.SelectItemAsync(item);
-                };
+                },
+                        "품목 작업");
                 border.GestureRecognizers.Add(tap);
                 return border;
             })
@@ -236,7 +245,10 @@ public sealed class ItemsPage : ContentPage
     {
         base.OnAppearing();
 
-        try
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+try
         {
             await _viewModel.PrepareForEntryAsync();
             RebuildCategoryButtons();
@@ -245,6 +257,8 @@ public sealed class ItemsPage : ContentPage
         {
             _viewModel.StatusMessage = $"품목 화면 진입 실패: {ex.Message}";
         }
+            },
+            "품목 화면 초기화");
     }
 
     protected override bool OnBackButtonPressed()
@@ -292,7 +306,10 @@ public sealed class ItemsPage : ContentPage
             button.HeightRequest = 48;
             button.CornerRadius = 12;
             button.Padding = new Thickness(10, 4);
-            button.Clicked += async (_, _) => await _viewModel.SelectCategoryAsync(category);
+            button.Clicked += (_, _) =>
+                MobileErrorHandler.FireAndForget(
+                    async () => await _viewModel.SelectCategoryAsync(category),
+                    "품목 작업");
             _categoryButtonGrid.Add(button, column, row);
         }
     }

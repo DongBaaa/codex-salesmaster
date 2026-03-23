@@ -24,21 +24,30 @@ public sealed class InvoicesPage : ContentPage
 
         var searchBar = GeoraePlanTheme.CreateSearchBar("거래처명 / 전표번호 / 메모");
         searchBar.SetBinding(SearchBar.TextProperty, nameof(InvoicesViewModel.SearchText));
-        searchBar.SearchButtonPressed += async (_, _) => await _viewModel.RefreshAsync();
-        searchBar.TextChanged += async (_, args) =>
-        {
+        searchBar.SearchButtonPressed += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.RefreshAsync(),
+                "전표 작업");
+        searchBar.TextChanged += (_, args) =>
+            MobileErrorHandler.FireAndForget(
+                async () =>
+                {
             if (!string.IsNullOrWhiteSpace(args.OldTextValue) && string.IsNullOrWhiteSpace(args.NewTextValue))
                 await _viewModel.RefreshAsync();
-        };
+        },
+                "전표 작업");
 
         var clearSearchButton = GeoraePlanTheme.CreateCompactButton("초기화", GeoraePlanTheme.SecondaryButton);
         clearSearchButton.WidthRequest = 78;
         clearSearchButton.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoicesViewModel.HasSearchText));
-        clearSearchButton.Clicked += async (_, _) =>
-        {
+        clearSearchButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () =>
+                {
             _viewModel.ClearSearch();
             await _viewModel.RefreshAsync();
-        };
+        },
+                "전표 작업");
 
         var refreshButton = GeoraePlanTheme.CreateCompactButton("조회", GeoraePlanTheme.SecondaryButton);
         refreshButton.WidthRequest = 86;
@@ -71,12 +80,16 @@ public sealed class InvoicesPage : ContentPage
         searchGrid.Add(searchActions, 1, 0);
 
         var createInvoiceButton = GeoraePlanTheme.CreateCompactButton("전표 작성", GeoraePlanTheme.Success);
-        createInvoiceButton.Clicked += async (_, _) =>
-            await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InvoiceDraftPage>());
+        createInvoiceButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InvoiceDraftPage>()),
+                "전표 작업");
 
         var createPaymentButton = GeoraePlanTheme.CreateCompactButton("수금 입력", GeoraePlanTheme.Purple);
-        createPaymentButton.Clicked += async (_, _) =>
-            await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>());
+        createPaymentButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>()),
+                "전표 작업");
 
         var actionGrid = new Grid
         {
@@ -278,11 +291,14 @@ public sealed class InvoicesPage : ContentPage
                 };
 
                 var tap = new TapGestureRecognizer();
-                tap.Tapped += async (_, _) =>
-                {
+                tap.Tapped += (_, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (border.BindingContext is InvoiceListItem invoice)
                         await _viewModel.SelectInvoiceAsync(invoice);
-                };
+                },
+                        "전표 작업");
                 border.GestureRecognizers.Add(tap);
 
                 return border;
@@ -321,7 +337,10 @@ public sealed class InvoicesPage : ContentPage
     {
         base.OnAppearing();
 
-        try
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+try
         {
             await _syncCoordinator.RefreshIfServerChangedAsync("invoices-page", TimeSpan.FromSeconds(5));
 
@@ -335,6 +354,8 @@ public sealed class InvoicesPage : ContentPage
         {
             _viewModel.StatusMessage = $"전표 화면 초기화 실패: {ex.Message}";
         }
+            },
+            "전표 화면 초기화");
     }
 
     protected override bool OnBackButtonPressed()

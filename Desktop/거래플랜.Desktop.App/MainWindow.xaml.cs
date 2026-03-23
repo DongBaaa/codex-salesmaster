@@ -25,9 +25,11 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _centralRevisionPollTimer;
     private bool _isInitialized;
     private DateTime _lastCentralRefreshUtc = DateTime.MinValue;
+    private long _lastPassiveServerRevisionHint;
     private bool _centralRefreshInProgress;
     private bool _deactivateFlushInProgress;
     private bool _updatePromptInProgress;
+    private bool _isClosingOrClosed;
 
     public MainWindow(MainViewModel vm, LocalStateService local,
                       RentalStateService rental,
@@ -52,16 +54,34 @@ public partial class MainWindow : Window
         DataContext = vm;
         Activated += MainWindow_Activated;
         Deactivated += MainWindow_Deactivated;
-        Closed += (_, _) => _centralRevisionPollTimer?.Stop();
+        Closed += (_, _) => BeginShutdownProtection();
         _centralRevisionPollTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
-            Interval = TimeSpan.FromSeconds(20)
+            Interval = TimeSpan.FromSeconds(60)
         };
         _centralRevisionPollTimer.Tick += async (_, _) => await PollCentralRevisionAsync();
     }
 
+    public void BeginShutdownProtection()
+    {
+        if (_isClosingOrClosed)
+            return;
+
+        _isClosingOrClosed = true;
+        _centralRevisionPollTimer?.Stop();
+    }
+
+    public void EndShutdownProtection()
+    {
+        _isClosingOrClosed = false;
+        if (_isInitialized && !_session.IsOfflineMode)
+            _centralRevisionPollTimer?.Start();
+    }
     public async Task InitAsync()
     {
+        if (_isClosingOrClosed)
+            return;
+
         await _vm.LoadAsync();
         if (!_session.IsOfflineMode)
         {
@@ -91,33 +111,15 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Activated(object? sender, EventArgs e)
     {
-        if (!_isInitialized || _session.IsOfflineMode || _centralRefreshInProgress)
+        if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode)
             return;
 
-        var nowUtc = DateTime.UtcNow;
-        if (nowUtc - _lastCentralRefreshUtc < TimeSpan.FromSeconds(5))
-            return;
-
-        _centralRefreshInProgress = true;
-        try
-        {
-            _lastCentralRefreshUtc = nowUtc;
-            if (!_vm.ForceSyncCommand.IsRunning)
-                await _vm.ForceSyncCommand.ExecuteAsync(null);
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Warn("SYNC", $"Window activation refresh failed: {ex.Message}");
-        }
-        finally
-        {
-            _centralRefreshInProgress = false;
-        }
+        await RunPassiveSyncRefreshAsync("창 활성화", TimeSpan.FromMinutes(1), requireServerRevisionChange: true);
     }
 
     private async void MainWindow_Deactivated(object? sender, EventArgs e)
     {
-        if (!_isInitialized || _session.IsOfflineMode || _deactivateFlushInProgress)
+        if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode || _deactivateFlushInProgress)
             return;
 
         _deactivateFlushInProgress = true;
@@ -137,32 +139,77 @@ public partial class MainWindow : Window
 
     private async Task PollCentralRevisionAsync()
     {
-        if (!_isInitialized || _session.IsOfflineMode || _centralRefreshInProgress || _vm.ForceSyncCommand.IsRunning)
+        if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode)
             return;
 
+        await RunPassiveSyncRefreshAsync("중앙 revision polling", TimeSpan.FromMinutes(2), requireServerRevisionChange: true);
+    }
+
+    private async Task RunPassiveSyncRefreshAsync(string reason, TimeSpan minInterval, bool requireServerRevisionChange)
+    {
+        if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode || _centralRefreshInProgress || _vm.ForceSyncCommand.IsRunning)
+            return;
+
+        _centralRefreshInProgress = true;
         try
         {
-            var status = await _api.GetSyncStatusAsync();
-            if (status is null)
+            var pendingServerRevision = await GetPendingPassiveServerRevisionAsync(minInterval, requireServerRevisionChange);
+            if (!pendingServerRevision.HasValue)
                 return;
 
-            var lastSyncRevisionRaw = await _local.GetSettingAsync("LastSyncRevision");
-            _ = long.TryParse(lastSyncRevisionRaw, out var lastSyncRevision);
-            if (status.CurrentServerRevision <= lastSyncRevision)
+            var syncOk = await _sync.TrySyncAsync();
+            if (!syncOk)
                 return;
 
-            _centralRefreshInProgress = true;
             _lastCentralRefreshUtc = DateTime.UtcNow;
-            await _vm.ForceSyncCommand.ExecuteAsync(null);
+            if (pendingServerRevision.Value > 0)
+            {
+                var lastSyncRevisionRaw = await _local.GetSettingAsync("LastSyncRevision");
+                _ = long.TryParse(lastSyncRevisionRaw, out var lastSyncRevision);
+                _lastPassiveServerRevisionHint = Math.Max(_lastPassiveServerRevisionHint, Math.Max(pendingServerRevision.Value, lastSyncRevision));
+            }
+
+            await _vm.ReloadAfterPassiveSyncAsync();
+            AppLogger.Info("SYNC", $"{reason} 후 경량 재동기화 완료");
         }
         catch (Exception ex)
         {
-            AppLogger.Warn("SYNC", $"Central revision poll failed: {ex.Message}");
+            AppLogger.Warn("SYNC", $"{reason} refresh failed: {ex.Message}");
         }
         finally
         {
             _centralRefreshInProgress = false;
         }
+    }
+
+    private async Task<long?> GetPendingPassiveServerRevisionAsync(TimeSpan minInterval, bool requireServerRevisionChange)
+    {
+        if (_sync.HasActiveOrQueuedSync)
+            return null;
+
+        var nowUtc = DateTime.UtcNow;
+        if (nowUtc - _lastCentralRefreshUtc < minInterval)
+            return null;
+
+        if (_sync.HasRecentSuccessfulSync(minInterval))
+            return null;
+
+        if (await _local.CountDirtyAsync() > 0)
+            return 0L;
+
+        if (!requireServerRevisionChange)
+            return 0L;
+
+        var status = await _api.GetSyncStatusAsync();
+        if (status is null)
+            return null;
+
+        var lastSyncRevisionRaw = await _local.GetSettingAsync("LastSyncRevision");
+        _ = long.TryParse(lastSyncRevisionRaw, out var lastSyncRevision);
+        var baselineRevision = Math.Max(lastSyncRevision, _lastPassiveServerRevisionHint);
+        return status.CurrentServerRevision > baselineRevision
+            ? status.CurrentServerRevision
+            : null;
     }
 
     // F9: 거래명세서 인쇄, F6: 신규 판매작성
@@ -681,7 +728,7 @@ public partial class MainWindow : Window
 
     private async Task FlushPendingChangesBeforeNavigationAsync(string reason)
     {
-        if (_session.IsOfflineMode)
+        if (_isClosingOrClosed || _session.IsOfflineMode)
             return;
 
         if (await _local.CountDirtyAsync() == 0)
@@ -701,7 +748,7 @@ public partial class MainWindow : Window
 
     private async Task CheckAndPromptForDesktopUpdateAsync()
     {
-        if (_updatePromptInProgress || _session.IsOfflineMode)
+        if (_isClosingOrClosed || _updatePromptInProgress || _session.IsOfflineMode)
             return;
 
         _updatePromptInProgress = true;

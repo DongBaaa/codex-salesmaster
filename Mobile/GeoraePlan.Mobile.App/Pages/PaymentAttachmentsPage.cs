@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Theme;
+using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
@@ -52,11 +52,14 @@ public sealed class PaymentAttachmentsPage : ContentPage
                 descriptionLabel.SetBinding(Label.TextProperty, nameof(PaymentAttachmentDto.Description));
 
                 var openButton = GeoraePlanTheme.CreateButton("열기", GeoraePlanTheme.Purple);
-                openButton.Clicked += async (sender, _) =>
-                {
+                openButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is Button button && button.BindingContext is PaymentAttachmentDto attachment)
                         await _viewModel.OpenAttachmentAsync(attachment);
-                };
+                },
+                        "수금 첨부 열기");
 
                 return new Border
                 {
@@ -112,11 +115,16 @@ public sealed class PaymentAttachmentsPage : ContentPage
     {
         base.OnAppearing();
 
-        if (_initialized)
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+if (_initialized)
             return;
 
         _initialized = true;
         await _viewModel.InitializeAsync(_paymentId, _titleText);
+            },
+            "수금 첨부 화면 초기화");
     }
 
     private sealed class PaymentAttachmentMetaConverter : IValueConverter

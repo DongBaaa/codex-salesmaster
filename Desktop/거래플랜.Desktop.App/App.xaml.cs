@@ -1,4 +1,4 @@
-using System.Threading;
+﻿using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -21,23 +21,16 @@ public partial class App : Application
     private bool _shutdownInProgress;
     private readonly SemaphoreSlim _saveCycleLock = new(1, 1);
     private DispatcherTimer? _autoSaveTimer;
+    private int _unexpectedErrorDialogOpen;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
-        DispatcherUnhandledException += (_, args) =>
-        {
-            AppLogger.Error("APP", "UI Thread Unhandled Exception", args.Exception);
-        };
-        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
-        {
-            if (args.ExceptionObject is Exception ex)
-                AppLogger.Error("APP", "AppDomain Unhandled Exception", ex);
-            else
-                AppLogger.Error("APP", "AppDomain Unhandled Exception (non-exception payload)");
-        };
+        DispatcherUnhandledException += HandleDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += HandleAppDomainUnhandledException;
+        TaskScheduler.UnobservedTaskException += HandleTaskSchedulerUnhandledException;
 
         try
         {
@@ -61,14 +54,14 @@ public partial class App : Application
             services.AddSingleton<SessionState>();
             services.AddSingleton<OfficeAccessService>();
             services.AddSingleton<SyncRequestDispatcher>();
-            services.AddTransient<LocalStateService>();
-            services.AddTransient<RentalStateService>();
-            services.AddTransient<RentalDocumentService>();
-            services.AddTransient<SyncService>();
+            services.AddScoped<LocalStateService>();
+            services.AddScoped<RentalStateService>();
+            services.AddScoped<RentalDocumentService>();
+            services.AddScoped<SyncService>();
+            services.AddScoped<BackupService>();
+            services.AddScoped<RecentSelectionService>();
             services.AddTransient<StatementPrintService>();
             services.AddTransient<IPrintService, WpfInvoicePrintService>();
-            services.AddTransient<BackupService>();
-            services.AddTransient<RecentSelectionService>();
             services.AddTransient<LoginViewModel>();
             services.AddTransient<MainViewModel>();
 
@@ -96,10 +89,14 @@ public partial class App : Application
                 }
             }
 
-            var loginVm = _services.GetRequiredService<LoginViewModel>();
-            await loginVm.InitializeAsync();
-            var loginWin = new LoginWindow(loginVm);
-            var loggedIn = loginWin.ShowDialog();
+            bool? loggedIn;
+            using (var loginScope = _services.CreateScope())
+            {
+                var loginVm = loginScope.ServiceProvider.GetRequiredService<LoginViewModel>();
+                await loginVm.InitializeAsync();
+                var loginWin = new LoginWindow(loginVm);
+                loggedIn = loginWin.ShowDialog();
+            }
 
             if (loggedIn != true)
             {
@@ -133,6 +130,7 @@ public partial class App : Application
                 args.Cancel = true;
                 _shutdownInProgress = true;
                 _autoSaveTimer?.Stop();
+                mainWin.BeginShutdownProtection();
 
                 mainVm.SyncStatus = "종료 전 서버와 동기화하고 데이터를 저장합니다.";
                 var savingPopup = ShowShutdownSavingPopup(mainWin);
@@ -148,6 +146,7 @@ public partial class App : Application
                         shouldClose = false;
                         _shutdownInProgress = false;
                         mainWin.IsEnabled = true;
+                        mainWin.EndShutdownProtection();
                         StartAutoSaveTimer(sp, mainVm);
                         mainVm.SyncStatus = "종료 전 서버 동기화가 완료되지 않았습니다. 동기화 후 다시 종료해 주세요.";
                         MessageBox.Show(
@@ -164,6 +163,7 @@ public partial class App : Application
                     shouldClose = false;
                     _shutdownInProgress = false;
                     mainWin.IsEnabled = true;
+                    mainWin.EndShutdownProtection();
                     StartAutoSaveTimer(sp, mainVm);
                     mainVm.SyncStatus = "종료 전 서버 동기화 처리 중 오류가 발생했습니다.";
                     MessageBox.Show(
@@ -215,11 +215,74 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _autoSaveTimer?.Stop();
+        DispatcherUnhandledException -= HandleDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException -= HandleAppDomainUnhandledException;
+        TaskScheduler.UnobservedTaskException -= HandleTaskSchedulerUnhandledException;
         _saveCycleLock.Dispose();
         _services?.Dispose();
         base.OnExit(e);
     }
 
+    private void HandleDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs args)
+    {
+        ReportUnexpectedException("UI Thread Unhandled Exception", args.Exception, showAlert: !_shutdownInProgress);
+        args.Handled = true;
+    }
+
+    private void HandleAppDomainUnhandledException(object? sender, UnhandledExceptionEventArgs args)
+    {
+        if (args.ExceptionObject is Exception ex)
+            ReportUnexpectedException("AppDomain Unhandled Exception", ex, showAlert: !args.IsTerminating && !_shutdownInProgress);
+        else
+            AppLogger.Error("APP", "AppDomain Unhandled Exception (non-exception payload)");
+    }
+
+    private void HandleTaskSchedulerUnhandledException(object? sender, UnobservedTaskExceptionEventArgs args)
+    {
+        ReportUnexpectedException("TaskScheduler Unobserved Exception", args.Exception, showAlert: !_shutdownInProgress);
+        args.SetObserved();
+    }
+
+    private void ReportUnexpectedException(string context, Exception ex, bool showAlert)
+    {
+        if (IsBenignShutdownException(ex))
+        {
+            AppLogger.Warn("APP", $"{context} during shutdown ignored: {ex.Message}");
+            return;
+        }
+
+        AppLogger.Error("APP", context, ex);
+
+        if (!showAlert)
+            return;
+
+        if (Interlocked.Exchange(ref _unexpectedErrorDialogOpen, 1) == 1)
+            return;
+
+        try
+        {
+            MessageBox.Show(
+                $"예기치 않은 오류가 발생했습니다.{Environment.NewLine}{ex.Message}",
+                "거래플랜 오류",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _unexpectedErrorDialogOpen, 0);
+        }
+    }
+
+    private static bool IsBenignShutdownException(Exception ex)
+    {
+        if (ex is ObjectDisposedException)
+            return true;
+
+        var message = ex.ToString();
+        return message.Contains("disposed context", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("Object name: 'LocalDbContext'", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("The application is shutting down", StringComparison.OrdinalIgnoreCase);
+    }
     private void StartAutoSaveTimer(IServiceProvider sp, MainViewModel mainVm)
     {
         _autoSaveTimer?.Stop();

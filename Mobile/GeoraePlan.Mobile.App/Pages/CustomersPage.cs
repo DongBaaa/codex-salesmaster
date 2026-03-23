@@ -26,21 +26,30 @@ public sealed class CustomersPage : ContentPage
         var searchBar = GeoraePlanTheme.CreateSearchBar("거래처명 / 전화 / 사업자번호");
         searchBar.HeightRequest = 42;
         searchBar.SetBinding(SearchBar.TextProperty, nameof(CustomersViewModel.SearchText));
-        searchBar.SearchButtonPressed += async (_, _) => await _viewModel.RefreshAsync();
-        searchBar.TextChanged += async (_, args) =>
-        {
+        searchBar.SearchButtonPressed += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.RefreshAsync(),
+                "거래처 작업");
+        searchBar.TextChanged += (_, args) =>
+            MobileErrorHandler.FireAndForget(
+                async () =>
+                {
             if (!string.IsNullOrWhiteSpace(args.OldTextValue) && string.IsNullOrWhiteSpace(args.NewTextValue))
                 await _viewModel.RefreshAsync();
-        };
+        },
+                "거래처 작업");
 
         var clearSearchButton = GeoraePlanTheme.CreateCompactButton("초기화", GeoraePlanTheme.SecondaryButton);
         clearSearchButton.WidthRequest = 78;
         clearSearchButton.SetBinding(VisualElement.IsVisibleProperty, nameof(CustomersViewModel.HasSearchText));
-        clearSearchButton.Clicked += async (_, _) =>
-        {
+        clearSearchButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () =>
+                {
             _viewModel.ClearSearch();
             await _viewModel.RefreshAsync();
-        };
+        },
+                "거래처 작업");
 
         var refreshButton = GeoraePlanTheme.CreateCompactButton("조회", GeoraePlanTheme.SecondaryButton);
         refreshButton.WidthRequest = 86;
@@ -142,11 +151,14 @@ public sealed class CustomersPage : ContentPage
                 dateLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new ContractDateSummaryConverter()));
 
                 var openButton = GeoraePlanTheme.CreateCompactButton("PDF 열기", GeoraePlanTheme.Purple);
-                openButton.Clicked += async (sender, _) =>
-                {
+                openButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is Button button && button.BindingContext is CustomerContractDto contract)
                         await _viewModel.OpenContractAsync(contract);
-                };
+                },
+                        "거래처 작업");
 
                 return new Border
                 {
@@ -236,13 +248,16 @@ public sealed class CustomersPage : ContentPage
 
                 var attachmentButton = GeoraePlanTheme.CreateCompactButton("첨부 보기", GeoraePlanTheme.Purple);
                 attachmentButton.SetBinding(VisualElement.IsVisibleProperty, nameof(CustomerPaymentHistoryRow.HasAttachments));
-                attachmentButton.Clicked += async (sender, _) =>
-                {
+                attachmentButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is not Button button || button.BindingContext is not CustomerPaymentHistoryRow row)
                         return;
 
                     await Shell.Current.Navigation.PushAsync(new PaymentAttachmentsPage(row.PaymentId, $"{row.InvoiceDisplay} 수금 첨부"));
-                };
+                },
+                        "거래처 작업");
 
                 return new Border
                 {
@@ -341,8 +356,10 @@ public sealed class CustomersPage : ContentPage
 
                 var invoiceButton = GeoraePlanTheme.CreateCompactButton("전표작성", GeoraePlanTheme.Success);
                 invoiceButton.HorizontalOptions = LayoutOptions.Fill;
-                invoiceButton.Clicked += async (sender, _) =>
-                {
+                invoiceButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is not Button button || button.BindingContext is not CustomerDto customer)
                         return;
 
@@ -354,17 +371,21 @@ public sealed class CustomersPage : ContentPage
                     {
                         await DisplayAlert("전표작성 오류", $"전표작성 화면을 열지 못했습니다.\n{ex.Message}", "확인");
                     }
-                };
+                },
+                        "거래처 작업");
 
                 var contractButton = GeoraePlanTheme.CreateCompactButton("거래처 계약서 보기", GeoraePlanTheme.Purple);
                 contractButton.HorizontalOptions = LayoutOptions.Fill;
-                contractButton.Clicked += async (sender, _) =>
-                {
+                contractButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is not Button button || button.BindingContext is not CustomerDto customer)
                         return;
 
                     await Shell.Current.Navigation.PushAsync(new CustomerContractsPage(customer.Id, customer.NameOriginal));
-                };
+                },
+                        "거래처 작업");
 
                 var actionGrid = new Grid
                 {
@@ -395,11 +416,14 @@ public sealed class CustomersPage : ContentPage
                 };
 
                 var tap = new TapGestureRecognizer();
-                tap.Tapped += async (_, _) =>
-                {
+                tap.Tapped += (_, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (border.BindingContext is CustomerDto customer)
                         await _viewModel.SelectCustomerAsync(customer);
-                };
+                },
+                        "거래처 작업");
                 border.GestureRecognizers.Add(tap);
 
                 return border;
@@ -438,7 +462,10 @@ public sealed class CustomersPage : ContentPage
     {
         base.OnAppearing();
 
-        try
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+try
         {
             await _syncCoordinator.RefreshIfServerChangedAsync("customers-page", TimeSpan.FromSeconds(5));
 
@@ -452,6 +479,8 @@ public sealed class CustomersPage : ContentPage
         {
             _viewModel.StatusMessage = $"거래처 화면 초기화 실패: {ex.Message}";
         }
+            },
+            "거래처 화면 초기화");
     }
 
     protected override bool OnBackButtonPressed()

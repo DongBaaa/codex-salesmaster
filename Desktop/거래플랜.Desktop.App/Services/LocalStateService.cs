@@ -23,6 +23,8 @@ public sealed partial class LocalStateService
     private readonly SyncRequestDispatcher _syncRequestDispatcher;
     private readonly SessionState _session;
     private bool _hasPendingSyncEntityChanges;
+    private int _suppressSyncDispatchCount;
+    private string _pendingSyncEntityTypeSummary = string.Empty;
     public event EventHandler? InventoryStateChanged;
 
     private static readonly JsonSerializerOptions AuditJsonOptions = new(JsonSerializerDefaults.Web)
@@ -44,24 +46,38 @@ public sealed partial class LocalStateService
 
     private void HandleSavingChanges(object? sender, SavingChangesEventArgs args)
     {
-        _hasPendingSyncEntityChanges = _db.ChangeTracker
+        var pendingSyncEntityTypes = _db.ChangeTracker
             .Entries()
-            .Any(entry =>
+            .Where(entry =>
                 entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted &&
-                entry.Entity is ILocalSyncEntity);
+                entry.Entity is ILocalSyncEntity)
+            .Select(entry => entry.Entity.GetType().Name)
+            .Distinct()
+            .OrderBy(name => name)
+            .ToArray();
+
+        _hasPendingSyncEntityChanges = pendingSyncEntityTypes.Length > 0;
+        _pendingSyncEntityTypeSummary = pendingSyncEntityTypes.Length == 0
+            ? string.Empty
+            : string.Join(", ", pendingSyncEntityTypes);
     }
 
     private void HandleSavedChanges(object? sender, SavedChangesEventArgs args)
     {
-        if (_hasPendingSyncEntityChanges)
+        if (_hasPendingSyncEntityChanges && _suppressSyncDispatchCount == 0)
+        {
+            AppLogger.Info("SYNC", $"로컬 변경으로 동기화 예약: {_pendingSyncEntityTypeSummary}");
             _syncRequestDispatcher.RequestDebouncedSync();
+        }
 
         _hasPendingSyncEntityChanges = false;
+        _pendingSyncEntityTypeSummary = string.Empty;
     }
 
     private void HandleSaveChangesFailed(object? sender, SaveChangesFailedEventArgs args)
     {
         _hasPendingSyncEntityChanges = false;
+        _pendingSyncEntityTypeSummary = string.Empty;
     }
 
     public Task<bool> WaitForServerWriteAsync(CancellationToken ct = default)
@@ -71,6 +87,29 @@ public sealed partial class LocalStateService
 
         _syncRequestDispatcher.RequestFlushSync();
         return _syncRequestDispatcher.WaitForSyncCompletionAsync(ct);
+    }
+
+    public IDisposable SuppressSyncDispatch()
+    {
+        Interlocked.Increment(ref _suppressSyncDispatchCount);
+        return new SyncDispatchSuppressionScope(this);
+    }
+
+    private sealed class SyncDispatchSuppressionScope : IDisposable
+    {
+        private LocalStateService? _owner;
+
+        public SyncDispatchSuppressionScope(LocalStateService owner)
+        {
+            _owner = owner;
+        }
+
+        public void Dispose()
+        {
+            var owner = Interlocked.Exchange(ref _owner, null);
+            if (owner is not null)
+                Interlocked.Decrement(ref owner._suppressSyncDispatchCount);
+        }
     }
 
     private static bool CanModifySharedBusinessData(SessionState? session)
@@ -156,7 +195,7 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == customer.Id, ct);
 
         if (existing is not null && !CanAccessCustomer(existing, session))
-            return OfficeMutationResult.Denied("沅뚰븳???놁뼱 ?대떦 嫄곕옒泥섎? ??ν븷 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Denied("권한이 없어 해당 거래처를 저장할 수 없습니다.");
 
         customer.ResponsibleOfficeCode = normalizedOfficeCode;
         customer.IsDirty = true;
@@ -185,8 +224,8 @@ public sealed partial class LocalStateService
         return OfficeMutationResult.Ok(
             customer.Id,
             grantedTemporaryAccess
-                ? $"嫄곕옒泥섎? ??ν뻽?듬땲?? {normalizedOfficeCode} 嫄곕옒泥섎뒗 ?뱀씪留?怨꾩냽 ?묒뾽?????덉뒿?덈떎."
-                : "嫄곕옒泥섎? ??ν뻽?듬땲??",
+                ? $"거래처를 저장했습니다. {normalizedOfficeCode} 거래처는 임시 권한으로 계속 작업할 수 있습니다."
+                : "거래처를 저장했습니다.",
             grantedTemporaryAccess);
     }
 
@@ -215,10 +254,10 @@ public sealed partial class LocalStateService
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == id, ct);
         if (customer is null)
-            return OfficeMutationResult.Missing("嫄곕옒泥섎? 李얠쓣 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Missing("거래처를 찾을 수 없습니다.");
 
         if (!CanAccessCustomer(customer, session))
-            return OfficeMutationResult.Denied("沅뚰븳???놁뼱 ?대떦 嫄곕옒泥섎? ??젣?????놁뒿?덈떎.");
+            return OfficeMutationResult.Denied("권한이 없어 해당 거래처를 삭제할 수 없습니다.");
 
         customer.IsDeleted = true;
         customer.IsDirty = true;
@@ -227,7 +266,7 @@ public sealed partial class LocalStateService
         await _db.SaveChangesAsync(ct);
         _officeAccess.RevokeTemporaryCustomerAccess(session, id);
 
-        return OfficeMutationResult.Ok(id, "嫄곕옒泥섎? ??젣?덉뒿?덈떎.");
+        return OfficeMutationResult.Ok(id, "거래처를 삭제했습니다.");
     }
 
     public async Task<List<LocalCustomerContract>> GetCustomerContractsAsync(
@@ -642,7 +681,7 @@ public sealed partial class LocalStateService
             throw new ArgumentNullException(nameof(office));
 
         if (!OfficeCodeCatalog.TryNormalizeOfficeCode(office.Code, out var code))
-            return OfficeMutationResult.Denied("?대떦吏??肄붾뱶??USENET, ITWORLD, YEONSU留??ъ슜?????덉뒿?덈떎.");
+            return OfficeMutationResult.Denied("담당지점 코드는 USENET, ITWORLD, YEONSU만 사용할 수 있습니다.");
 
         var name = OfficeCodeCatalog.GetOfficeDisplayName(code);
 
@@ -658,7 +697,7 @@ public sealed partial class LocalStateService
                 current.Code == code,
                 ct);
         if (duplicated)
-            return OfficeMutationResult.Denied("?숈씪???대떦吏??肄붾뱶媛 ?대? 議댁옱?⑸땲??");
+            return OfficeMutationResult.Denied("동일한 담당지점 코드가 이미 존재합니다.");
 
         office.Id = office.Id == Guid.Empty ? Guid.NewGuid() : office.Id;
         office.Code = code;
@@ -693,8 +732,8 @@ public sealed partial class LocalStateService
         return OfficeMutationResult.Ok(
             office.Id,
             existing is null
-                ? "?대떦吏?먯쓣 異붽??덉뒿?덈떎."
-                : "?대떦吏?먯쓣 ??ν뻽?듬땲??");
+                ? "담당지점을 추가했습니다."
+                : "담당지점을 저장했습니다.");
     }
 
     public async Task<OfficeMutationResult> DeleteOfficeAsync(Guid officeId, CancellationToken ct = default)
@@ -703,10 +742,10 @@ public sealed partial class LocalStateService
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == officeId, ct);
         if (office is null)
-            return OfficeMutationResult.Missing("?대떦吏?먯쓣 李얠쓣 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Missing("담당지점을 찾을 수 없습니다.");
 
         if (IsSystemOfficeCode(office.Code))
-            return OfficeMutationResult.Denied("湲곕낯 ?대떦吏?먯? ??젣?????놁뒿?덈떎.");
+            return OfficeMutationResult.Denied("기본 담당지점은 삭제할 수 없습니다.");
 
         var officeCode = NormalizeOfficeCode(office.Code, string.Empty);
         var isInUse =
@@ -716,13 +755,13 @@ public sealed partial class LocalStateService
             await _db.Warehouses.IgnoreQueryFilters().AnyAsync(warehouse => warehouse.OfficeCode == officeCode, ct);
 
         if (isInUse)
-            return OfficeMutationResult.Denied("?ъ슜 以묒씤 ?대떦吏?먯? ??젣?????놁뒿?덈떎.");
+            return OfficeMutationResult.Denied("사용 중인 담당지점은 삭제할 수 없습니다.");
 
         office.IsDeleted = true;
         office.IsDirty = true;
         office.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
-        return OfficeMutationResult.Ok(office.Id, "?대떦吏?먯쓣 ??젣?덉뒿?덈떎.");
+        return OfficeMutationResult.Ok(office.Id, "담당지점을 삭제했습니다.");
     }
 
     public Task<List<LocalWarehouse>> GetWarehousesAsync(bool onlyActive = true, CancellationToken ct = default)
@@ -1123,7 +1162,7 @@ public sealed partial class LocalStateService
 
         var saved = await GetInvoiceAsync(result.SavedInvoiceId, ct);
         if (saved is null)
-            throw new InvalidOperationException("??????꾪몴瑜??ㅼ떆 遺덈윭?????놁뒿?덈떎.");
+            throw new InvalidOperationException("저장한 전표를 다시 불러올 수 없습니다.");
 
         return saved;
     }
@@ -1148,22 +1187,22 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(c => c.Id == invoice.CustomerId, ct);
 
         if (customer is null)
-            return InvoiceSaveResult.Missing("嫄곕옒泥??뺣낫瑜?李얠쓣 ???놁뒿?덈떎.");
+            return InvoiceSaveResult.Missing("거래처 정보를 찾을 수 없습니다.");
 
         var customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
         if (!CanAccessCustomer(customer.Id, customerOfficeCode, session, context.Role))
-            return InvoiceSaveResult.Denied("沅뚰븳???놁뼱 ?대떦 嫄곕옒泥??꾪몴瑜???ν븷 ???놁뒿?덈떎.");
+            return InvoiceSaveResult.Denied("권한이 없어 해당 거래처 전표를 저장할 수 없습니다.");
 
         var latest = await ResolveLatestVersionAsync(invoice, ct);
         if (latest is not null && !CanAccessInvoice(latest, session))
-            return InvoiceSaveResult.Denied("沅뚰븳???놁뼱 ?대떦 嫄곕옒泥??꾪몴瑜???ν븷 ???놁뒿?덈떎.");
+            return InvoiceSaveResult.Denied("권한이 없어 해당 거래처 전표를 저장할 수 없습니다.");
 
         if (latest is not null &&
             !context.ForceOverride &&
             !string.IsNullOrWhiteSpace(context.ExpectedConcurrencyStamp) &&
             !string.Equals(context.ExpectedConcurrencyStamp, latest.ConcurrencyStamp, StringComparison.OrdinalIgnoreCase))
         {
-            return InvoiceSaveResult.Conflict("?ㅻⅨ ?ъ슜?먭? 癒쇱? ??ν뻽?듬땲?? 理쒖떊 ?꾪몴瑜??ㅼ떆 遺덈윭?????ъ떆?꾪븯?몄슂.");
+            return InvoiceSaveResult.Conflict("다른 사용자가 먼저 저장했습니다. 최신 전표를 다시 불러온 뒤 다시 시도하세요.");
         }
 
         var versionGroupId = ResolveVersionGroupId(invoice, latest);
@@ -1289,7 +1328,7 @@ public sealed partial class LocalStateService
         return InvoiceSaveResult.Ok(
             newInvoice.Id,
             newInvoice.ConcurrencyStamp,
-            latest is null ? "?꾪몴瑜???ν뻽?듬땲??" : $"?꾪몴 {newInvoice.VersionNumber}李?踰꾩쟾????ν뻽?듬땲??");
+            latest is null ? "전표를 저장했습니다." : $"전표 {newInvoice.VersionNumber}차 버전으로 저장했습니다.");
     }
 
     public async Task DeleteInvoiceAsync(Guid id, CancellationToken ct = default)
@@ -1353,10 +1392,10 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(invoice => invoice.Id == id, ct);
 
         if (target is null)
-            return OfficeMutationResult.Missing("?꾪몴瑜?李얠쓣 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Missing("전표를 찾을 수 없습니다.");
 
         if (!CanAccessInvoice(target, session))
-            return OfficeMutationResult.Denied("沅뚰븳???놁뼱 ?대떦 ?꾪몴瑜???젣?????놁뒿?덈떎.");
+            return OfficeMutationResult.Denied("권한이 없어 해당 전표를 삭제할 수 없습니다.");
 
         var now = DateTime.UtcNow;
         var versionGroupId = target.VersionGroupId == Guid.Empty ? target.Id : target.VersionGroupId;
@@ -1398,7 +1437,7 @@ public sealed partial class LocalStateService
             ForceOverride = false
         }, ct);
 
-        return OfficeMutationResult.Ok(id, "?꾪몴瑜???젣?덉뒿?덈떎.");
+        return OfficeMutationResult.Ok(id, "전표를 삭제했습니다.");
     }
 
     // Payments
@@ -1430,10 +1469,10 @@ public sealed partial class LocalStateService
             .AsNoTracking()
             .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
         if (invoice is null)
-            return OfficeMutationResult.Missing("?꾪몴瑜?李얠쓣 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Missing("전표를 찾을 수 없습니다.");
 
         if (!CanAccessInvoice(invoice, session))
-            return OfficeMutationResult.Denied("沅뚰븳???놁뼱 ?대떦 ?꾪몴???섍툑/吏遺덉쓣 ??ν븷 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Denied("권한이 없어 해당 전표 수금/지급을 저장할 수 없습니다.");
 
         payment.IsDirty = true;
         payment.UpdatedAtUtc = DateTime.UtcNow;
@@ -1445,7 +1484,7 @@ public sealed partial class LocalStateService
             _db.Entry(existing).CurrentValues.SetValues(payment);
 
         await _db.SaveChangesAsync(ct);
-        return OfficeMutationResult.Ok(payment.Id, "?섍툑/吏遺덉쓣 ??ν뻽?듬땲??");
+        return OfficeMutationResult.Ok(payment.Id, "수금/지급을 저장했습니다.");
     }
 
     public async Task DeletePaymentAsync(Guid id, CancellationToken ct = default)
@@ -1511,7 +1550,7 @@ public sealed partial class LocalStateService
     public async Task SaveCompanyProfileAsync(LocalCompanyProfile profile, CancellationToken ct = default)
     {
         profile.ProfileName = string.IsNullOrWhiteSpace(profile.ProfileName)
-            ? (string.IsNullOrWhiteSpace(profile.TradeName) ? "?뚯궗?ㅼ젙" : $"{profile.TradeName.Trim()} ?ㅼ젙")
+            ? (string.IsNullOrWhiteSpace(profile.TradeName) ? "회사설정" : $"{profile.TradeName.Trim()} 설정")
             : profile.ProfileName.Trim();
         profile.OfficeCode = NormalizeOfficeCode(profile.OfficeCode, DomainConstants.OfficeUsenet);
         profile.TradeName = (profile.TradeName ?? string.Empty).Trim();
@@ -1561,7 +1600,7 @@ public sealed partial class LocalStateService
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == profileId, ct);
         if (profile is null)
-            return LocalMutationResult.Missing("?뚯궗?ㅼ젙??李얠쓣 ???놁뒿?덈떎.");
+            return LocalMutationResult.Missing("회사설정을 찾을 수 없습니다.");
 
         var assignedKeys = await _db.Settings
             .AsNoTracking()
@@ -1571,14 +1610,14 @@ public sealed partial class LocalStateService
             .Select(setting => setting.Key.Substring(CompanyProfileAssignmentPrefix.Length))
             .ToList();
         if (assignedUsers.Count > 0)
-            return LocalMutationResult.Denied($"?대떦 ?뚯궗?ㅼ젙???ъ슜?섎뒗 ?ъ슜??{string.Join(", ", assignedUsers)})瑜?癒쇱? 蹂寃쏀븯?몄슂.");
+            return LocalMutationResult.Denied($"해당 회사설정을 사용하는 사용자({string.Join(", ", assignedUsers)})를 먼저 변경하세요.");
 
         profile.IsDeleted = true;
         profile.IsActive = false;
         profile.IsDirty = true;
         profile.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
-        return LocalMutationResult.Ok(profileId, "?뚯궗?ㅼ젙????젣?덉뒿?덈떎.");
+        return LocalMutationResult.Ok(profileId, "회사설정을 삭제했습니다.");
     }
 
     public async Task<Guid?> GetAssignedCompanyProfileIdAsync(string? username, CancellationToken ct = default)
@@ -2363,17 +2402,17 @@ public sealed partial class LocalStateService
             .AsNoTracking()
             .FirstOrDefaultAsync(current => current.Id == transaction.CustomerId, ct);
         if (customer is null)
-            return OfficeMutationResult.Missing("嫄곕옒泥섎? 李얠쓣 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Missing("거래처를 찾을 수 없습니다.");
 
         var customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
         if (!CanAccessCustomer(customer.Id, customerOfficeCode, session, session.User?.Role))
-            return OfficeMutationResult.Denied("沅뚰븳???놁뼱 ?대떦 嫄곕옒泥섏쓽 ?섍툑/吏遺덉쓣 ??ν븷 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
 
         var existing = await _db.Transactions
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == transaction.Id, ct);
         if (existing is not null && !CanAccessTransaction(existing, session))
-            return OfficeMutationResult.Denied("沅뚰븳???놁뼱 ?대떦 嫄곕옒泥섏쓽 ?섍툑/吏遺덉쓣 ??ν븷 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
 
         var previousLinkedInvoiceId = existing?.LinkedInvoiceId;
         var previousLinkedRentalId = existing?.LinkedRentalBillingProfileId;
@@ -2532,7 +2571,7 @@ public sealed partial class LocalStateService
             await RecalculateRentalSettlementAsync(previousLinkedRentalId.Value, ct);
         }
 
-        return OfficeMutationResult.Ok(transaction.Id, "?섍툑/吏遺덉쓣 ??ν뻽?듬땲??");
+        return OfficeMutationResult.Ok(transaction.Id, "수금/지급을 저장했습니다.");
     }
 
     private async Task<decimal> GetAdvanceBalanceCoreAsync(Guid customerId, CancellationToken ct)
@@ -2742,19 +2781,19 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 증빙 파일을 등록할 수 있습니다.");
 
         if (transactionId == Guid.Empty)
-            return OfficeMutationResult.Denied("利앸튃???곌껐???섍툑/吏湲??댁뿭??癒쇱? ?좏깮?섏꽭??");
+            return OfficeMutationResult.Denied("증빙을 연결할 수금/지급 내역을 먼저 선택하세요.");
 
         if (string.IsNullOrWhiteSpace(sourceFilePath) || !File.Exists(sourceFilePath))
-            return OfficeMutationResult.Missing("泥⑤????뚯씪??李얠쓣 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Missing("첨부할 파일을 찾을 수 없습니다.");
 
         var transaction = await _db.Transactions
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == transactionId, ct);
         if (transaction is null)
-            return OfficeMutationResult.Missing("?섍툑/吏湲??댁뿭??李얠쓣 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Missing("수금/지급 내역을 찾을 수 없습니다.");
 
         if (!CanAccessTransaction(transaction, session))
-            return OfficeMutationResult.Denied("沅뚰븳???놁뼱 ?대떦 嫄곕옒??利앸튃????ν븷 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Denied("권한이 없어 해당 거래의 증빙을 저장할 수 없습니다.");
 
         var now = DateTime.UtcNow;
         var originalFileName = Path.GetFileName(sourceFilePath);
@@ -2813,7 +2852,7 @@ public sealed partial class LocalStateService
         });
 
         await _db.SaveChangesAsync(ct);
-        return OfficeMutationResult.Ok(attachment.Id, "?섍툑 利앸튃??泥⑤??덉뒿?덈떎.");
+        return OfficeMutationResult.Ok(attachment.Id, "수금/지급 증빙을 첨부했습니다.");
     }
 
     public async Task<OfficeMutationResult> DeleteTransactionAttachmentAsync(
@@ -2825,19 +2864,19 @@ public sealed partial class LocalStateService
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == attachmentId, ct);
         if (attachment is null)
-            return OfficeMutationResult.Missing("??젣??利앸튃??李얠쓣 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Missing("삭제할 증빙을 찾을 수 없습니다.");
 
         var transaction = await _db.Transactions
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == attachment.TransactionId, ct);
         if (transaction is null)
-            return OfficeMutationResult.Missing("利앸튃???곌껐???섍툑/吏湲??댁뿭??李얠쓣 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Missing("증빙과 연결된 수금/지급 내역을 찾을 수 없습니다.");
 
         if (!CanAccessTransaction(transaction, session))
-            return OfficeMutationResult.Denied("沅뚰븳???놁뼱 ?대떦 利앸튃????젣?????놁뒿?덈떎.");
+            return OfficeMutationResult.Denied("권한이 없어 해당 증빙을 삭제할 수 없습니다.");
 
-        if (string.Equals(attachment.VerificationStatus, "?뺤씤?꾨즺", StringComparison.OrdinalIgnoreCase) && !session.HasAdministrativePrivileges)
-            return OfficeMutationResult.Denied("?뺤씤?꾨즺??利앸튃? 愿由ъ옄留???젣?????덉뒿?덈떎.");
+        if (string.Equals(attachment.VerificationStatus, "확인완료", StringComparison.OrdinalIgnoreCase) && !session.HasAdministrativePrivileges)
+            return OfficeMutationResult.Denied("확인완료된 증빙은 관리자만 삭제할 수 있습니다.");
 
         attachment.IsDeleted = true;
         attachment.IsDirty = true;
@@ -2863,7 +2902,7 @@ public sealed partial class LocalStateService
         });
 
         await _db.SaveChangesAsync(ct);
-        return OfficeMutationResult.Ok(attachment.Id, "?섍툑 利앸튃????젣?덉뒿?덈떎.");
+        return OfficeMutationResult.Ok(attachment.Id, "수금/지급 증빙을 삭제했습니다.");
     }
 
     public async Task<OfficeMutationResult> UpdateTransactionAttachmentVerificationAsync(
@@ -2874,19 +2913,19 @@ public sealed partial class LocalStateService
         CancellationToken ct = default)
     {
         if (!session.HasAdministrativePrivileges)
-            return OfficeMutationResult.Denied("利앸튃 ?뺤씤 ?곹깭??愿由ъ옄留?蹂寃쏀븷 ???덉뒿?덈떎.");
+            return OfficeMutationResult.Denied("증빙 확인 상태는 관리자만 변경할 수 있습니다.");
 
         var attachment = await _db.TransactionAttachments
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == attachmentId, ct);
         if (attachment is null)
-            return OfficeMutationResult.Missing("利앸튃??李얠쓣 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Missing("증빙을 찾을 수 없습니다.");
 
         var transaction = await _db.Transactions
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == attachment.TransactionId, ct);
         if (transaction is null)
-            return OfficeMutationResult.Missing("利앸튃???곌껐???섍툑/吏湲??댁뿭??李얠쓣 ???놁뒿?덈떎.");
+            return OfficeMutationResult.Missing("증빙과 연결된 수금/지급 내역을 찾을 수 없습니다.");
 
         var normalizedStatus = NormalizeAttachmentVerificationStatus(verificationStatus);
         var beforeJson = JsonSerializer.Serialize(new
@@ -2924,7 +2963,7 @@ public sealed partial class LocalStateService
         });
 
         await _db.SaveChangesAsync(ct);
-        return OfficeMutationResult.Ok(attachment.Id, $"利앸튃 ?곹깭瑜?{normalizedStatus}(??濡?蹂寃쏀뻽?듬땲??");
+        return OfficeMutationResult.Ok(attachment.Id, $"증빙 상태를 {normalizedStatus}(으)로 변경했습니다.");
     }
 
     // Inventory transfers

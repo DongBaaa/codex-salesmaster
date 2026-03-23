@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Theme;
+using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
@@ -73,11 +73,14 @@ public sealed class CustomerContractsPage : ContentPage
 
                 var openButton = GeoraePlanTheme.CreateButton("PDF 열기", GeoraePlanTheme.Purple);
                 openButton.HorizontalOptions = LayoutOptions.End;
-                openButton.Clicked += async (sender, _) =>
-                {
+                openButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
                     if (sender is Button button && button.BindingContext is CustomerContractDto contract)
                         await _viewModel.OpenContractAsync(contract);
-                };
+                },
+                        "거래처 계약서 열기");
 
                 return new Border
                 {
@@ -136,11 +139,16 @@ public sealed class CustomerContractsPage : ContentPage
     {
         base.OnAppearing();
 
-        if (_initialized)
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+if (_initialized)
             return;
 
         _initialized = true;
         await _viewModel.InitializeAsync(_customerId, _customerName);
+            },
+            "거래처 계약서 화면 초기화");
     }
 }
 

@@ -1,4 +1,5 @@
-﻿using GeoraePlan.Mobile.App.Models;
+using System.Net;
+using GeoraePlan.Mobile.App.Models;
 using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Mobile.App.Services;
@@ -448,8 +449,30 @@ public sealed class SyncCoordinator
 
     private static void MarkFailure(MobileSyncState state, Exception ex)
     {
-        state.LastError = ex.Message;
+        state.LastError = TranslateFailureMessage(ex);
         state.ConsecutiveFailureCount++;
+        MobileAppLogger.Warn("SYNC", $"모바일 동기화 실패: {state.LastError}");
+    }
+
+    private static string TranslateFailureMessage(Exception ex)
+    {
+        return ex switch
+        {
+            MobileAuthenticationException => "인증이 만료되었거나 복구되지 않았습니다. 다시 로그인해 주세요.",
+            HttpRequestException httpEx when httpEx.StatusCode == HttpStatusCode.Unauthorized
+                => "인증이 만료되었거나 복구되지 않았습니다. 다시 로그인해 주세요.",
+            HttpRequestException httpEx when httpEx.StatusCode == HttpStatusCode.InternalServerError
+                => "서버 오류(500)가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+            HttpRequestException httpEx when httpEx.StatusCode.HasValue
+                => $"서버 요청에 실패했습니다. ({(int)httpEx.StatusCode.Value} {httpEx.StatusCode.Value})",
+            TaskCanceledException or TimeoutException
+                => "네트워크 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
+            HttpRequestException
+                => "네트워크 연결을 확인한 후 다시 시도해 주세요.",
+            _ => string.IsNullOrWhiteSpace(ex.Message)
+                ? "알 수 없는 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
+                : ex.Message
+        };
     }
 
     private static bool HasPendingServerSyncPayload(MobileSyncState state)

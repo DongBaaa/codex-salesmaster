@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Theme;
+using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
@@ -45,7 +45,10 @@ public sealed class RentalsPage : ContentPage
 
         var searchBar = GeoraePlanTheme.CreateSearchBar("거래처 / 모델 / 상태 검색");
         searchBar.SetBinding(SearchBar.TextProperty, nameof(RentalsViewModel.SearchText));
-        searchBar.SearchButtonPressed += async (_, _) => await _viewModel.RefreshAsync();
+        searchBar.SearchButtonPressed += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.RefreshAsync(),
+                "렌탈 작업");
 
         var refreshButton = GeoraePlanTheme.CreateButton("새로고침", GeoraePlanTheme.SecondaryButton);
         refreshButton.SetBinding(Button.CommandProperty, nameof(RentalsViewModel.RefreshCommand));
@@ -117,8 +120,14 @@ public sealed class RentalsPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
+
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             await _viewModel.RefreshAsync();
+            },
+            "렌탈 화면 초기화");
     }
 
     protected override bool OnBackButtonPressed()

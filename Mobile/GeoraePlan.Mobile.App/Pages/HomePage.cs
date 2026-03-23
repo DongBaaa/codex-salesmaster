@@ -64,20 +64,28 @@ public sealed class HomePage : ContentPage
         refreshButton.SetBinding(Button.CommandProperty, nameof(HomeViewModel.RefreshCommand));
 
         var createInvoiceButton = GeoraePlanTheme.CreateButton("전표 작성", GeoraePlanTheme.Success);
-        createInvoiceButton.Clicked += async (_, _) =>
-            await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InvoiceDraftPage>());
+        createInvoiceButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InvoiceDraftPage>()),
+                "빠른 메뉴 이동");
 
         var createPaymentButton = GeoraePlanTheme.CreateButton("수금 입력", GeoraePlanTheme.Purple);
-        createPaymentButton.Clicked += async (_, _) =>
-            await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>());
+        createPaymentButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>()),
+                "빠른 메뉴 이동");
 
         var inventoryTransferButton = GeoraePlanTheme.CreateButton("재고이동", GeoraePlanTheme.Accent);
-        inventoryTransferButton.Clicked += async (_, _) =>
-            await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InventoryTransfersPage>());
+        inventoryTransferButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InventoryTransfersPage>()),
+                "빠른 메뉴 이동");
 
         var rentalsButton = GeoraePlanTheme.CreateButton("렌탈", GeoraePlanTheme.SecondaryButton);
-        rentalsButton.Clicked += async (_, _) =>
-            await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<RentalsPage>());
+        rentalsButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<RentalsPage>()),
+                "빠른 메뉴 이동");
 
         var quickActionGrid = new Grid
         {
@@ -130,7 +138,13 @@ public sealed class HomePage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        await _syncCoordinator.RefreshIfServerChangedAsync("home-page", TimeSpan.FromSeconds(5));
+
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+await _syncCoordinator.RefreshIfServerChangedAsync("home-page", TimeSpan.FromSeconds(5));
         await _viewModel.RefreshAsync();
+            },
+            "홈 화면 초기화");
     }
 }

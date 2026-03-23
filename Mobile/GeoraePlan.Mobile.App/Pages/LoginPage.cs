@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Theme;
+using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 
 namespace GeoraePlan.Mobile.App.Pages;
@@ -112,7 +112,13 @@ public sealed class LoginPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        await _viewModel.InitializeAsync();
+
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+await _viewModel.InitializeAsync();
+            },
+            "로그인 화면 초기화");
     }
 
     private static void HandleLoginSucceeded()

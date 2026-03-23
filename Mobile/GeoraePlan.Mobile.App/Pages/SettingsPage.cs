@@ -17,8 +17,10 @@ public sealed class SettingsPage : ContentPage
         BindingContext = _viewModel;
 
         var recycleBinButton = GeoraePlanTheme.CreateButton("휴지통 보기", GeoraePlanTheme.Brown);
-        recycleBinButton.Clicked += async (_, _) =>
-            await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<RecycleBinPage>());
+        recycleBinButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<RecycleBinPage>()),
+                "설정 메뉴 이동");
 
         var checkUpdateButton = GeoraePlanTheme.CreateButton("업데이트 확인", GeoraePlanTheme.SecondaryButton);
         checkUpdateButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.CheckForUpdatesCommand));
@@ -72,7 +74,13 @@ public sealed class SettingsPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        await _viewModel.LoadAsync();
+
+        await MobileErrorHandler.RunGuardedAsync(
+            async () =>
+            {
+await _viewModel.LoadAsync();
+            },
+            "설정 화면 초기화");
     }
 
     private static Grid CreateInfoRow(string labelText, string bindingPath)

@@ -1,4 +1,7 @@
 ﻿using System.Threading;
+#if ANDROID
+using Android.Runtime;
+#endif
 using GeoraePlan.Mobile.App.Pages;
 using GeoraePlan.Mobile.App.Theme;
 
@@ -13,6 +16,7 @@ public sealed class App : Application
     private readonly Services.MobileAppUpdateService _updateService;
     private int _resumeSyncRunning;
     private int _updatePromptRunning;
+    private int _globalErrorDialogOpen;
 
     public App(
         Services.SessionStore sessionStore,
@@ -24,6 +28,7 @@ public sealed class App : Application
         _sessionRecoveryService = sessionRecoveryService;
         _syncCoordinator = syncCoordinator;
         _updateService = updateService;
+        RegisterGlobalExceptionHandlers();
         UserAppTheme = AppTheme.Light;
         MainPage = CreateStartupPage();
         _ = InitializeRootAsync();
@@ -116,9 +121,9 @@ public sealed class App : Application
         {
             await _syncCoordinator.RefreshIfServerChangedAsync("app-start", TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
-            // 시작 UX를 막지 않습니다.
+            MobileAppLogger.Warn("SYNC", $"앱 시작 동기화 실패: {ex.Message}");
         }
     }
 
@@ -141,9 +146,9 @@ public sealed class App : Application
         {
             await _syncCoordinator.RefreshIfServerChangedAsync(reason, TimeSpan.FromSeconds(8)).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
-            // 앱 복귀 자동 재조회 실패는 조용히 무시합니다.
+            MobileAppLogger.Warn("SYNC", $"앱 복귀 동기화 실패: {ex.Message}");
         }
         finally
         {
@@ -199,13 +204,72 @@ public sealed class App : Application
                 }
             });
         }
-        catch
+        catch (Exception ex)
         {
-            // 자동 업데이트 알림 실패는 조용히 무시합니다.
+            MobileAppLogger.Warn("UPDATE", $"자동 업데이트 알림 실패: {ex.Message}");
         }
         finally
         {
             Interlocked.Exchange(ref _updatePromptRunning, 0);
         }
+    }
+
+    private void RegisterGlobalExceptionHandlers()
+    {
+        AppDomain.CurrentDomain.UnhandledException += HandleUnhandledException;
+        TaskScheduler.UnobservedTaskException += HandleUnobservedTaskException;
+#if ANDROID
+        AndroidEnvironment.UnhandledExceptionRaiser += HandleAndroidUnhandledException;
+#endif
+    }
+
+    private void HandleUnhandledException(object? sender, UnhandledExceptionEventArgs args)
+    {
+        if (args.ExceptionObject is Exception ex)
+            ReportUnexpectedException("AppDomain Unhandled Exception", ex, showAlert: !args.IsTerminating);
+        else
+            MobileAppLogger.Error("APP", "AppDomain Unhandled Exception (non-exception payload)");
+    }
+
+    private void HandleUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs args)
+    {
+        ReportUnexpectedException("TaskScheduler Unobserved Exception", args.Exception, showAlert: true);
+        args.SetObserved();
+    }
+
+#if ANDROID
+    private void HandleAndroidUnhandledException(object? sender, RaiseThrowableEventArgs args)
+    {
+        ReportUnexpectedException("Android Unhandled Exception", args.Exception, showAlert: true);
+        args.Handled = true;
+    }
+#endif
+
+    private void ReportUnexpectedException(string context, Exception ex, bool showAlert)
+    {
+        MobileAppLogger.Error("APP", context, ex);
+        if (!showAlert)
+            return;
+
+        if (Interlocked.Exchange(ref _globalErrorDialogOpen, 1) == 1)
+            return;
+
+        MainThread.BeginInvokeOnMainThread(async () =>
+        {
+            try
+            {
+                if (Current?.MainPage is not null)
+                {
+                    await Current.MainPage.DisplayAlert(
+                        "오류",
+                        $"예기치 않은 오류가 발생했습니다.{Environment.NewLine}{ex.Message}",
+                        "확인");
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _globalErrorDialogOpen, 0);
+            }
+        });
     }
 }

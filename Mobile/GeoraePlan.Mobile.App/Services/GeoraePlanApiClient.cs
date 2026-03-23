@@ -310,6 +310,9 @@ public sealed class GeoraePlanApiClient
         CancellationToken ct,
         bool requireAuthentication = true)
     {
+#if DEBUG
+        await MobileDiagnosticFaultInjector.ThrowIfConfiguredAsync(relative, ct);
+#endif
         var response = await SendCoreAsync(requestFactory, ct);
         if (!requireAuthentication || response.StatusCode != HttpStatusCode.Unauthorized)
             return response;
