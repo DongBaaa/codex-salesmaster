@@ -355,6 +355,26 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         StatusMessage = "품목분류를 다시 선택하세요.";
     }
 
+    public bool TryNavigateBackOneStep()
+    {
+        if (IsItemEntrySheetVisible || HasSelectedItem)
+        {
+            ResetItemSelection(clearCategory: false);
+            StatusMessage = SelectedCategory is null
+                ? "품목 선택 단계로 돌아왔습니다."
+                : $"{SelectedCategory.Name} 분류 품목 목록으로 돌아왔습니다.";
+            return true;
+        }
+
+        if (HasSelectedCategory)
+        {
+            ClearSelectedCategory();
+            return true;
+        }
+
+        return false;
+    }
+
     public async Task SearchItemsAsync()
     {
         if (IsBusy)

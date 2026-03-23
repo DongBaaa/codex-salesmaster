@@ -192,6 +192,14 @@ public sealed class InventoryTransfersPage : ContentPage
             await _viewModel.RefreshAsync();
     }
 
+    protected override bool OnBackButtonPressed()
+    {
+        if (_viewModel.TryNavigateBackOneStep())
+            return true;
+
+        return base.OnBackButtonPressed();
+    }
+
     private sealed class InventoryTransferRouteConverter : IValueConverter
     {
         public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)

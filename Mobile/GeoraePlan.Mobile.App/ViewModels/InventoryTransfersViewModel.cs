@@ -157,6 +157,23 @@ public sealed class InventoryTransfersViewModel : ObservableObject
         }
     }
 
+    public void ClearSelectedTransfer()
+    {
+        SelectedTransfer = null;
+        SelectedTransferLines.Clear();
+        OnPropertyChanged(nameof(SelectedTransferLinesHeight));
+        StatusMessage = SummaryText;
+    }
+
+    public bool TryNavigateBackOneStep()
+    {
+        if (!HasSelectedTransfer)
+            return false;
+
+        ClearSelectedTransfer();
+        return true;
+    }
+
     public Task SelectTransferAsync(InventoryTransferDto transfer)
     {
         SelectedTransfer = transfer;
@@ -228,9 +245,7 @@ public sealed class InventoryTransfersViewModel : ObservableObject
 
     private void ClearSelection()
     {
-        SelectedTransfer = null;
-        SelectedTransferLines.Clear();
-        OnPropertyChanged(nameof(SelectedTransferLinesHeight));
+        ClearSelectedTransfer();
     }
 
     private static bool Contains(string? source, string query)

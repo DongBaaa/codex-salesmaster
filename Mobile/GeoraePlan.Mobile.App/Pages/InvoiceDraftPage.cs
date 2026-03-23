@@ -602,6 +602,14 @@ public sealed class InvoiceDraftPage : ContentPage
         }
     }
 
+    protected override bool OnBackButtonPressed()
+    {
+        if (_viewModel.TryNavigateBackOneStep())
+            return true;
+
+        return base.OnBackButtonPressed();
+    }
+
     private void RebuildCategoryButtons()
     {
         _categoryButtonGrid.Children.Clear();

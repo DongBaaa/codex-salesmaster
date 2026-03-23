@@ -181,6 +181,16 @@ public sealed class InvoicesViewModel : ObservableObject
         ReplaceSelectedInvoicePayments(Array.Empty<PaymentDto>());
     }
 
+    public bool TryNavigateBackOneStep()
+    {
+        if (!HasSelectedInvoice)
+            return false;
+
+        ClearSelectedInvoice();
+        StatusMessage = $"{Invoices.Count:N0}건 전표 목록으로 돌아왔습니다.";
+        return true;
+    }
+
     public void ClearSearch()
         => SearchText = string.Empty;
 

@@ -247,6 +247,14 @@ public sealed class ItemsPage : ContentPage
         }
     }
 
+    protected override bool OnBackButtonPressed()
+    {
+        if (_viewModel.TryNavigateBackOneStep())
+            return true;
+
+        return base.OnBackButtonPressed();
+    }
+
     private void HandleCategoryCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
         => RebuildCategoryButtons();
 

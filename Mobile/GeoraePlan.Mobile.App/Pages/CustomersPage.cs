@@ -454,6 +454,14 @@ public sealed class CustomersPage : ContentPage
         }
     }
 
+    protected override bool OnBackButtonPressed()
+    {
+        if (_viewModel.TryNavigateBackOneStep())
+            return true;
+
+        return base.OnBackButtonPressed();
+    }
+
     private static Button CreateDetailTabButton(string text)
     {
         var button = GeoraePlanTheme.CreateCompactButton(text, GeoraePlanTheme.SecondaryButton);

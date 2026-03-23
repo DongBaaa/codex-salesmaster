@@ -219,6 +219,24 @@ public sealed class ItemsViewModel : ObservableObject
         OnPropertyChanged(nameof(ItemListHeight));
     }
 
+    public bool TryNavigateBackOneStep()
+    {
+        if (HasSelectedItem)
+        {
+            ClearSelectedItem();
+            StatusMessage = "품목 목록으로 돌아왔습니다.";
+            return true;
+        }
+
+        if (HasSelectedCategory)
+        {
+            ClearSelectedCategory();
+            return true;
+        }
+
+        return false;
+    }
+
     public async Task SearchItemsAsync()
     {
         if (IsBusy)

@@ -337,6 +337,14 @@ public sealed class InvoicesPage : ContentPage
         }
     }
 
+    protected override bool OnBackButtonPressed()
+    {
+        if (_viewModel.TryNavigateBackOneStep())
+            return true;
+
+        return base.OnBackButtonPressed();
+    }
+
     private sealed class InvoiceRowSummaryConverter : IValueConverter
     {
         public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)

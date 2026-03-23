@@ -114,6 +114,16 @@ public sealed class RentalsViewModel : ObservableObject
     public void ShowRentalAssets() => SelectedSection = RentalMobileSection.Assets;
     public void ShowBillingLogs() => SelectedSection = RentalMobileSection.BillingLogs;
 
+    public bool TryNavigateBackOneStep()
+    {
+        if (SelectedSection == RentalMobileSection.BillingProfiles)
+            return false;
+
+        ShowBillingProfiles();
+        StatusMessage = "렌탈 기본 목록으로 돌아왔습니다.";
+        return true;
+    }
+
     public async Task RefreshAsync()
     {
         if (IsBusy)

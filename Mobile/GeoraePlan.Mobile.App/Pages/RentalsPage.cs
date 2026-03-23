@@ -121,6 +121,14 @@ public sealed class RentalsPage : ContentPage
             await _viewModel.RefreshAsync();
     }
 
+    protected override bool OnBackButtonPressed()
+    {
+        if (_viewModel.TryNavigateBackOneStep())
+            return true;
+
+        return base.OnBackButtonPressed();
+    }
+
     private static CollectionView CreateProfilesView()
     {
         return new CollectionView

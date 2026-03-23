@@ -261,6 +261,15 @@ public sealed class CustomersViewModel : ObservableObject
         DetailStatusMessage = "거래처를 선택하면 상세 정보가 표시됩니다.";
     }
 
+    public bool TryNavigateBackOneStep()
+    {
+        if (!HasSelectedCustomer)
+            return false;
+
+        ClearSelectedCustomer();
+        return true;
+    }
+
     public void ClearSearch()
         => SearchText = string.Empty;
 
