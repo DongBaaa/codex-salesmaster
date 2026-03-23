@@ -37,13 +37,15 @@ if [[ -f "$CURRENT_RELEASE_FILE" ]]; then
 fi
 
 mirror_dir "$release_dir" "$APP_LIVE_PATH"
-compose up -d postgres api
+compose up -d postgres
+compose up -d --force-recreate api
 
 if ! wait_for_health 45; then
   if [[ -n "$previous_release_id" && -d "$RELEASES_PATH/$previous_release_id" ]]; then
     echo "health check failed; rolling back to $previous_release_id" >&2
     mirror_dir "$RELEASES_PATH/$previous_release_id" "$APP_LIVE_PATH"
-    compose up -d postgres api
+    compose up -d postgres
+    compose up -d --force-recreate api
     if wait_for_health 30; then
       printf '%s\n' "$previous_release_id" > "$CURRENT_RELEASE_FILE"
       echo "rollback_release_done release=$previous_release_id"
