@@ -173,10 +173,14 @@ public partial class SalesWindow : Window
 
         if (saved) return;
 
-        AppLogger.Warn("AUTOSAVE", "Sales window close auto-save did not complete successfully. Showing generic discard prompt without failure details.");
+        var failureMessage = string.IsNullOrWhiteSpace(_vm.LastAutoSaveFailureMessage)
+            ? "자동저장에 실패했습니다."
+            : _vm.LastAutoSaveFailureMessage;
+
+        AppLogger.Warn("AUTOSAVE", $"Sales window close auto-save did not complete successfully. {failureMessage}");
 
         var discard = MessageBox.Show(
-            "저장되지 않은 변경사항이 있습니다. 저장 없이 닫을까요?",
+            $"{failureMessage}\n\n저장되지 않은 변경사항이 있습니다. 저장 없이 닫을까요?",
             "확인",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);

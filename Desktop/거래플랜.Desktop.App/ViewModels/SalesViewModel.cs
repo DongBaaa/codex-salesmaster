@@ -27,6 +27,7 @@ public sealed partial class SalesViewModel : ObservableObject
     private readonly Dictionary<string, (bool AllowsSales, bool AllowsPurchase)> _tradeTypeRuleMap = new(StringComparer.CurrentCultureIgnoreCase);
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
     private string _baselineStateSignature = string.Empty;
+    public string LastAutoSaveFailureMessage { get; private set; } = string.Empty;
 
     public event Action? InvoiceSaved;
 
@@ -490,6 +491,17 @@ public sealed partial class SalesViewModel : ObservableObject
     partial void OnSelectedResponsibleOfficeCodeChanged(string value)
     {
         var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(value, DomainConstants.OfficeUsenet);
+
+        if (!string.Equals(value, officeCode, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.Equals(SelectedResponsibleOfficeCode, officeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                SelectedResponsibleOfficeCode = officeCode;
+            }
+
+            return;
+        }
+
         var selectedWarehouse = Warehouses.FirstOrDefault(warehouse =>
             string.Equals(warehouse.Code, SelectedWarehouseCode, StringComparison.OrdinalIgnoreCase));
 
@@ -667,12 +679,15 @@ public sealed partial class SalesViewModel : ObservableObject
 
     private string BuildStateSignature()
     {
+        var effectiveResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            SelectedResponsibleOfficeCode,
+            DomainConstants.OfficeUsenet);
         var builder = new StringBuilder();
         builder.Append(SelectedCustomer?.Id.ToString("D") ?? string.Empty)
             .Append('|').Append(WorkDate.ToString("yyyy-MM-dd"))
             .Append('|').Append(VoucherType)
             .Append('|').Append(NormalizeProcurementDocumentTitle(SelectedProcurementDocumentTitle))
-            .Append('|').Append(SelectedResponsibleOfficeCode ?? string.Empty)
+            .Append('|').Append(effectiveResponsibleOfficeCode)
             .Append('|').Append(SelectedWarehouseCode ?? string.Empty)
             .Append('|').Append(InvoiceMemo ?? string.Empty)
             .Append('|').Append(InputItemName ?? string.Empty)
@@ -893,6 +908,7 @@ public sealed partial class SalesViewModel : ObservableObject
         var saveResult = await _local.SaveInvoiceAsync(inv, saveContext, _session);
         if (!saveResult.Success)
         {
+            LastAutoSaveFailureMessage = saveResult.Message;
             if (showFailureStatus)
                 StatusMessage = saveResult.Message;
             else
@@ -913,6 +929,7 @@ public sealed partial class SalesViewModel : ObservableObject
         }
 
         await _local.WaitForServerWriteAsync();
+        LastAutoSaveFailureMessage = string.Empty;
         var savedInvoice = await _local.GetInvoiceAsync(saveResult.SavedInvoiceId, _session);
         if (savedInvoice is not null)
         {

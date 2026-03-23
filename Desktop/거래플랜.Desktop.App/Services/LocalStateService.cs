@@ -1176,21 +1176,20 @@ public sealed partial class LocalStateService
 
         var versionNumber = (latest?.VersionNumber ?? 0) + 1;
 
-        var sourceWarehouseCode = NormalizeWarehouseCode(
-            invoice.SourceWarehouseCode,
-            context.OfficeCode,
+        var responsibleOfficeCode = NormalizeOfficeScope(
+            string.IsNullOrWhiteSpace(invoice.ResponsibleOfficeCode)
+                ? latest?.ResponsibleOfficeCode
+                : invoice.ResponsibleOfficeCode,
             customerOfficeCode);
 
-        var responsibleOfficeCode = IsSharedOfficeScope(customerOfficeCode)
-            ? NormalizeOfficeScope(
-                string.IsNullOrWhiteSpace(invoice.ResponsibleOfficeCode)
-                    ? latest?.ResponsibleOfficeCode
-                    : invoice.ResponsibleOfficeCode,
-                context.OfficeCode)
-            : customerOfficeCode;
+        var warehouseOfficeCode = IsSharedOfficeScope(responsibleOfficeCode)
+            ? NormalizeOfficeCode(context.OfficeCode, DomainConstants.OfficeUsenet)
+            : NormalizeOfficeCode(responsibleOfficeCode, customerOfficeCode);
 
-        if (IsSharedOfficeScope(responsibleOfficeCode))
-            responsibleOfficeCode = NormalizeOfficeScope(context.OfficeCode, DomainConstants.OfficeUsenet);
+        var sourceWarehouseCode = NormalizeWarehouseCode(
+            invoice.SourceWarehouseCode,
+            warehouseOfficeCode,
+            warehouseOfficeCode);
 
         var validLines = (invoice.Lines ?? new List<LocalInvoiceLine>())
             .Where(line => !line.IsDeleted && !string.IsNullOrWhiteSpace(line.ItemNameOriginal))
@@ -2379,9 +2378,6 @@ public sealed partial class LocalStateService
         var previousLinkedInvoiceId = existing?.LinkedInvoiceId;
         var previousLinkedRentalId = existing?.LinkedRentalBillingProfileId;
 
-        transaction.ResponsibleOfficeCode = existing is null
-            ? customerOfficeCode
-            : NormalizeOfficeCode(existing.ResponsibleOfficeCode, customerOfficeCode);
         transaction.TransactionKind = PaymentFlowConstants.NormalizeTransactionKind(
             transaction.TransactionKind,
             preferPayment: transaction.PaymentTotal > 0m && transaction.ReceiptTotal <= 0m);
@@ -2433,6 +2429,16 @@ public sealed partial class LocalStateService
         {
             transaction.LinkedRentalBillingProfileId = null;
         }
+
+        var derivedResponsibleOfficeCode = string.IsNullOrWhiteSpace(transaction.ResponsibleOfficeCode)
+            ? linkedInvoice?.ResponsibleOfficeCode
+                ?? linkedRentalProfile?.ResponsibleOfficeCode
+                ?? linkedRentalProfile?.ManagementCompanyCode
+                ?? existing?.ResponsibleOfficeCode
+                ?? customerOfficeCode
+            : transaction.ResponsibleOfficeCode;
+
+        transaction.ResponsibleOfficeCode = NormalizeOfficeScope(derivedResponsibleOfficeCode, customerOfficeCode);
 
         var receiptTotal = Math.Max(0m, transaction.ReceiptTotal);
         var paymentTotal = Math.Max(0m, transaction.PaymentTotal);
