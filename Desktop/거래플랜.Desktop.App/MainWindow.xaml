@@ -335,6 +335,14 @@
                             <TextBlock Text="유형" VerticalAlignment="Center" Margin="0,0,6,0"/>
                             <ComboBox ItemsSource="{Binding VoucherTypeFilterOptions}" SelectedItem="{Binding SelectedVoucherTypeFilter}" Width="100" Margin="0,0,10,0"/>
 
+                            <TextBlock Text="담당지점" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <ComboBox ItemsSource="{Binding InvoiceOfficeFilterOptions}"
+                                      SelectedValue="{Binding SelectedInvoiceOfficeFilterCode}"
+                                      SelectedValuePath="Code"
+                                      DisplayMemberPath="DisplayName"
+                                      Width="120"
+                                      Margin="0,0,10,0"/>
+
                             <Button Content="조회" Background="#37474F" Command="{Binding LoadInvoiceListCommand}" Margin="0,0,6,0"/>
                             <Button Content="필터초기화" Background="#455A64" Command="{Binding ResetInvoiceFiltersCommand}" Margin="0,0,6,0"/>
                             <ComboBox ItemsSource="{Binding FavoriteInvoices}" SelectedItem="{Binding SelectedFavoriteInvoice}" DisplayMemberPath="DisplayText" Width="380" Margin="0,0,6,0"/>

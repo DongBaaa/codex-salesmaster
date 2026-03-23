@@ -27,6 +27,7 @@ public sealed partial class SalesViewModel : ObservableObject
     private readonly Dictionary<string, (bool AllowsSales, bool AllowsPurchase)> _tradeTypeRuleMap = new(StringComparer.CurrentCultureIgnoreCase);
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
     private string _baselineStateSignature = string.Empty;
+    private bool _lastSaveWasConcurrencyConflict;
     public string LastAutoSaveFailureMessage { get; private set; } = string.Empty;
 
     public event Action? InvoiceSaved;
@@ -778,7 +779,21 @@ public sealed partial class SalesViewModel : ObservableObject
         if (!HasPendingChanges || !HasMeaningfulDraftContent())
             return true;
 
-        return await SaveCoreAsync(showValidationFeedback: false, statusPrefix: "자동저장", showFailureStatus: false);
+        var saved = await SaveCoreAsync(
+            showValidationFeedback: false,
+            statusPrefix: "자동저장",
+            showFailureStatus: false,
+            forceOverride: false);
+
+        if (saved || !_lastSaveWasConcurrencyConflict)
+            return saved;
+
+        AppLogger.Warn("AUTOSAVE", "Sales window close auto-save detected a concurrency conflict. Retrying with force override.");
+        return await SaveCoreAsync(
+            showValidationFeedback: false,
+            statusPrefix: "자동저장",
+            showFailureStatus: false,
+            forceOverride: true);
     }
 
     private bool HasMeaningfulDraftContent()
@@ -861,8 +876,11 @@ public sealed partial class SalesViewModel : ObservableObject
     private async Task<bool> SaveCoreAsync(
         bool showValidationFeedback = true,
         string statusPrefix = "저장",
-        bool showFailureStatus = true)
+        bool showFailureStatus = true,
+        bool forceOverride = false)
     {
+        _lastSaveWasConcurrencyConflict = false;
+
         if (SelectedCustomer is null)
         {
             if (showFailureStatus)
@@ -899,7 +917,7 @@ public sealed partial class SalesViewModel : ObservableObject
             Username = _session.User?.Username ?? "local-user",
             Role = _session.User?.Role ?? DomainConstants.RoleUser,
             OfficeCode = _session.OfficeCode,
-            ForceOverride = false,
+            ForceOverride = forceOverride,
             ExpectedConcurrencyStamp = string.IsNullOrWhiteSpace(CurrentConcurrencyStamp)
                 ? null
                 : CurrentConcurrencyStamp
@@ -908,6 +926,7 @@ public sealed partial class SalesViewModel : ObservableObject
         var saveResult = await _local.SaveInvoiceAsync(inv, saveContext, _session);
         if (!saveResult.Success)
         {
+            _lastSaveWasConcurrencyConflict = saveResult.ConcurrencyConflict;
             LastAutoSaveFailureMessage = saveResult.Message;
             if (showFailureStatus)
                 StatusMessage = saveResult.Message;
@@ -929,6 +948,7 @@ public sealed partial class SalesViewModel : ObservableObject
         }
 
         await _local.WaitForServerWriteAsync();
+        _lastSaveWasConcurrencyConflict = false;
         LastAutoSaveFailureMessage = string.Empty;
         var savedInvoice = await _local.GetInvoiceAsync(saveResult.SavedInvoiceId, _session);
         if (savedInvoice is not null)

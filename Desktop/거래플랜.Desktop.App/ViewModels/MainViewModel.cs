@@ -126,6 +126,7 @@ public sealed partial class MainViewModel : ObservableObject
     private const string InvoiceFilterToSettingKey = "InvoiceFilter.To";
     private const string InvoiceFilterCustomerSettingKey = "InvoiceFilter.CustomerName";
     private const string InvoiceFilterVoucherTypeSettingKey = "InvoiceFilter.VoucherType";
+    private const string InvoiceFilterOfficeCodeSettingKey = "InvoiceFilter.OfficeCode";
     private const string InvoiceFilterMinAmountSettingKey = "InvoiceFilter.MinAmount";
     private const string InvoiceFilterMaxAmountSettingKey = "InvoiceFilter.MaxAmount";
     private const string FavoriteInvoiceIdsSettingKey = "InvoiceFavorites.Ids";
@@ -298,6 +299,7 @@ public sealed partial class MainViewModel : ObservableObject
         FilterTo = DateOnly.FromDateTime(DateTime.Today);
         FilterCustomerName = string.Empty;
         SelectedVoucherTypeFilter = "전체";
+        SelectedInvoiceOfficeFilterCode = GetDefaultInvoiceOfficeFilterCode();
         FilterMinAmountText = string.Empty;
         FilterMaxAmountText = string.Empty;
         SelectedCustomerFilter = null;
@@ -458,6 +460,8 @@ public sealed partial class MainViewModel : ObservableObject
         var customerMap = await _local.GetCustomerNameMapAsync(invoices.Select(invoice => invoice.CustomerId));
         IEnumerable<LocalInvoice> filteredInvoices = invoices;
 
+        filteredInvoices = filteredInvoices.Where(MatchesSelectedInvoiceOffice);
+
         if (!string.IsNullOrWhiteSpace(FilterCustomerName))
         {
             var needle = FilterCustomerName.Trim();
@@ -572,24 +576,28 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task PersistInvoiceFiltersAsync()
     {
-        await _local.SetSettingAsync(InvoiceFilterFromSettingKey, FilterFrom.ToString("yyyy-MM-dd"));
-        await _local.SetSettingAsync(InvoiceFilterToSettingKey, FilterTo.ToString("yyyy-MM-dd"));
-        await _local.SetSettingAsync(InvoiceFilterCustomerSettingKey, FilterCustomerName ?? string.Empty);
-        await _local.SetSettingAsync(InvoiceFilterVoucherTypeSettingKey, SelectedVoucherTypeFilter ?? "전체");
-        await _local.SetSettingAsync(InvoiceFilterMinAmountSettingKey, FilterMinAmountText ?? string.Empty);
-        await _local.SetSettingAsync(InvoiceFilterMaxAmountSettingKey, FilterMaxAmountText ?? string.Empty);
+        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterFromSettingKey), FilterFrom.ToString("yyyy-MM-dd"));
+        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterToSettingKey), FilterTo.ToString("yyyy-MM-dd"));
+        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterCustomerSettingKey), FilterCustomerName ?? string.Empty);
+        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterVoucherTypeSettingKey), SelectedVoucherTypeFilter ?? "전체");
+        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterOfficeCodeSettingKey), SelectedInvoiceOfficeFilterCode ?? GetDefaultInvoiceOfficeFilterCode());
+        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMinAmountSettingKey), FilterMinAmountText ?? string.Empty);
+        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMaxAmountSettingKey), FilterMaxAmountText ?? string.Empty);
     }
 
     private async Task LoadInvoiceFilterSettingsAsync()
     {
         _suppressFilterAutoSave = true;
 
-        var fromValue = await _local.GetSettingAsync(InvoiceFilterFromSettingKey);
-        var toValue = await _local.GetSettingAsync(InvoiceFilterToSettingKey);
-        var customerNameValue = await _local.GetSettingAsync(InvoiceFilterCustomerSettingKey);
-        var voucherTypeValue = await _local.GetSettingAsync(InvoiceFilterVoucherTypeSettingKey);
-        var minAmountValue = await _local.GetSettingAsync(InvoiceFilterMinAmountSettingKey);
-        var maxAmountValue = await _local.GetSettingAsync(InvoiceFilterMaxAmountSettingKey);
+        InitializeInvoiceOfficeFilterOptions();
+
+        var fromValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterFromSettingKey));
+        var toValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterToSettingKey));
+        var customerNameValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterCustomerSettingKey));
+        var voucherTypeValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterVoucherTypeSettingKey));
+        var officeCodeValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterOfficeCodeSettingKey));
+        var minAmountValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMinAmountSettingKey));
+        var maxAmountValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMaxAmountSettingKey));
 
         if (DateOnly.TryParse(fromValue, out var parsedFrom))
             FilterFrom = parsedFrom;
@@ -600,6 +608,11 @@ public sealed partial class MainViewModel : ObservableObject
         SelectedVoucherTypeFilter = VoucherTypeFilterOptions.Contains(voucherTypeValue ?? string.Empty)
             ? voucherTypeValue!
             : "전체";
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCodeValue, GetDefaultInvoiceOfficeFilterCode());
+        SelectedInvoiceOfficeFilterCode = InvoiceOfficeFilterOptions.Any(option =>
+            string.Equals(option.Code, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
+            ? normalizedOfficeCode
+            : GetDefaultInvoiceOfficeFilterCode();
         FilterMinAmountText = minAmountValue ?? string.Empty;
         FilterMaxAmountText = maxAmountValue ?? string.Empty;
 
@@ -622,7 +635,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task<List<Guid>> GetFavoriteInvoiceIdsAsync()
     {
-        var raw = await _local.GetSettingAsync(FavoriteInvoiceIdsSettingKey);
+        var raw = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(FavoriteInvoiceIdsSettingKey));
         if (string.IsNullOrWhiteSpace(raw))
             return new List<Guid>();
 
@@ -641,7 +654,7 @@ public sealed partial class MainViewModel : ObservableObject
     private Task SaveFavoriteInvoiceIdsAsync(IEnumerable<Guid> ids)
     {
         var payload = string.Join(',', ids.Select(id => id.ToString("D")));
-        return _local.SetSettingAsync(FavoriteInvoiceIdsSettingKey, payload);
+        return _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(FavoriteInvoiceIdsSettingKey), payload);
     }
 
     private async Task LoadInvoiceFavoritesAsync()
