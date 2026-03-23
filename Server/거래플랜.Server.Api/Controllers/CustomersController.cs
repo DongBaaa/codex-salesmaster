@@ -118,7 +118,7 @@ public sealed class CustomersController : ControllerBase
     [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<CustomerDto>> Create([FromBody] CustomerDto dto, CancellationToken cancellationToken)
     {
-        if (!HasAdministrativeAccess())
+        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
             return Forbid();
 
         var entity = new Customer { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
@@ -134,7 +134,7 @@ public sealed class CustomersController : ControllerBase
     [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<CustomerDto>> Update(Guid id, [FromBody] CustomerDto dto, CancellationToken cancellationToken)
     {
-        if (!HasAdministrativeAccess())
+        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
             return Forbid();
 
         var entity = await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
@@ -154,7 +154,7 @@ public sealed class CustomersController : ControllerBase
     [Authorize(Policy = "AdminOrGod")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
-        if (!HasAdministrativeAccess())
+        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
             return Forbid();
 
         var entity = await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
@@ -196,8 +196,4 @@ public sealed class CustomersController : ControllerBase
         dto.Phone = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Phone, dto.Phone);
         dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Email, dto.Email);
     }
-
-    private bool HasAdministrativeAccess()
-        => User.IsInRole("Admin") ||
-           User.Claims.Any(claim => claim.Type == "god" && string.Equals(claim.Value, "true", StringComparison.OrdinalIgnoreCase));
 }

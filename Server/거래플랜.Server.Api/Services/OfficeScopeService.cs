@@ -327,6 +327,30 @@ public sealed class OfficeScopeService
     public bool CanWriteOfficeForDeliveries(string? officeCode, string? tenantCode = null)
         => CanWriteOffice(officeCode, tenantCode, DataArea.Deliveries);
 
+    public async Task<bool> HasAdministrativeWriteAccessAsync(CancellationToken cancellationToken = default)
+    {
+        if (HasAdministrativeWriteAccess)
+            return true;
+
+        if (_currentUserContext.UserId is not Guid userId)
+            return false;
+
+        var user = await _dbContext.Users
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == userId, cancellationToken);
+        if (user is null)
+            return false;
+
+        if (string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return string.Equals(
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(user.OfficeCode),
+            OfficeCodeCatalog.Usenet,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     private bool CanReadOffice(string? officeCode, string? tenantCode, DataArea area)
     {
         if (HasGlobalDataScope)

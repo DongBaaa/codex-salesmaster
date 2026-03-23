@@ -7,7 +7,6 @@ using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System.Security.Claims;
 
 namespace 거래플랜.Server.Api.Controllers;
 
@@ -73,7 +72,7 @@ public sealed class InvoicesController : ControllerBase
     [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<InvoiceDto>> Create([FromBody] InvoiceDto dto, CancellationToken cancellationToken)
     {
-        if (!HasAdministrativeAccess())
+        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
             return Forbid();
 
         var customer = await _dbContext.Customers
@@ -115,7 +114,7 @@ public sealed class InvoicesController : ControllerBase
     [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<InvoiceDto>> Update(Guid id, [FromBody] InvoiceDto dto, CancellationToken cancellationToken)
     {
-        if (!HasAdministrativeAccess())
+        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
             return Forbid();
 
         var entity = await _dbContext.Invoices.Include(x => x.Customer).Include(x => x.Lines)
@@ -158,7 +157,7 @@ public sealed class InvoicesController : ControllerBase
     [Authorize(Policy = "AdminOrGod")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
-        if (!HasAdministrativeAccess())
+        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
             return Forbid();
 
         var entity = await _dbContext.Invoices.Include(x => x.Customer).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
@@ -170,8 +169,4 @@ public sealed class InvoicesController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
-
-    private bool HasAdministrativeAccess()
-        => User.IsInRole("Admin") ||
-           User.Claims.Any(claim => claim.Type == "god" && string.Equals(claim.Value, "true", StringComparison.OrdinalIgnoreCase));
 }

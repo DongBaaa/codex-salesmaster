@@ -903,6 +903,24 @@ public static class DbInitializer
             allowTargetWrite: false,
             note: "연수구에서 등록/수정한 데이터는 유즈넷 상급권한 계정에서 조회할 수 있습니다.",
             cancellationToken);
+
+        await UpsertDataSharingPolicyAsync(
+            dbContext,
+            sourceTenantCode: TenantScopeCatalog.UsenetGroup,
+            sourceOfficeCode: OfficeCodeCatalog.Usenet,
+            targetTenantCode: TenantScopeCatalog.UsenetGroup,
+            targetOfficeCode: OfficeCodeCatalog.Yeonsu,
+            shareCustomers: true,
+            shareItems: true,
+            shareInvoices: true,
+            sharePayments: true,
+            shareContracts: true,
+            shareReports: true,
+            shareRentals: true,
+            shareDeliveries: true,
+            allowTargetWrite: false,
+            note: "유즈넷에서 등록/수정한 데이터는 연수구 계정에서도 조회할 수 있습니다.",
+            cancellationToken);
     }
 
     private static async Task EnsureCustomerTradeTypeColumnAsync(
