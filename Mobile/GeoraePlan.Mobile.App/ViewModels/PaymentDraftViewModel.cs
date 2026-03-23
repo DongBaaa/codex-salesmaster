@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using GeoraePlan.Mobile.App.Models;
 using GeoraePlan.Mobile.App.Services;
 using Microsoft.Maui.ApplicationModel;
@@ -91,7 +91,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
         {
             IsBusy = true;
             StatusMessage = "전표 목록을 불러오고 있습니다.";
-            await _syncCoordinator.TryBackgroundSyncAsync("payment-draft-load", TimeSpan.FromSeconds(30));
+            await _syncCoordinator.RefreshIfServerChangedAsync("payment-draft-load", TimeSpan.FromSeconds(5));
 
             var invoices = await _api.GetInvoicesAsync(null);
             Invoices.Clear();
@@ -232,16 +232,10 @@ public sealed class PaymentDraftViewModel : ObservableObject
             IsBusy = true;
             StatusMessage = "수금 정보를 저장하고 있습니다.";
 
-            await _syncCoordinator.QueuePaymentDraftAsync(payment);
-            if (Attachments.Count > 0)
-            {
-                foreach (var attachment in Attachments)
-                    attachment.PaymentId = payment.Id;
+            foreach (var attachment in Attachments)
+                attachment.PaymentId = payment.Id;
 
-                await _syncCoordinator.QueuePaymentAttachmentsAsync(payment.Id, Attachments);
-            }
-
-            var state = await _syncCoordinator.SynchronizeNowAsync();
+            var state = await _syncCoordinator.SavePaymentImmediatelyAsync(payment, Attachments);
             if (state.PendingPaymentCount == 0)
             {
                 _refreshCoordinator.MarkInvoicesChanged();

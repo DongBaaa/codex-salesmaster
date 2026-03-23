@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using GeoraePlan.Mobile.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -123,7 +123,7 @@ public sealed class RentalsViewModel : ObservableObject
         {
             IsBusy = true;
             StatusMessage = "렌탈 서버 동기화 데이터를 확인하고 있습니다.";
-            await _syncCoordinator.TryBackgroundSyncAsync("rentals-page", TimeSpan.FromSeconds(30));
+            await _syncCoordinator.RefreshIfServerChangedAsync("rentals-refresh", TimeSpan.FromSeconds(5));
             await LoadFromStateAsync();
         }
         catch (Exception ex)

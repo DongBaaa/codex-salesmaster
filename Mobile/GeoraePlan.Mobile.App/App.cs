@@ -1,4 +1,4 @@
-using System.Threading;
+﻿using System.Threading;
 using GeoraePlan.Mobile.App.Pages;
 using GeoraePlan.Mobile.App.Theme;
 
@@ -11,8 +11,7 @@ public sealed class App : Application
     private readonly Services.MobileSessionRecoveryService _sessionRecoveryService;
     private readonly Services.SyncCoordinator _syncCoordinator;
     private readonly Services.MobileAppUpdateService _updateService;
-    private IDispatcherTimer? _foregroundSyncTimer;
-    private int _foregroundSyncRunning;
+    private int _resumeSyncRunning;
     private int _updatePromptRunning;
 
     public App(
@@ -62,6 +61,14 @@ public sealed class App : Application
         };
     }
 
+    protected override Window CreateWindow(IActivationState? activationState)
+    {
+        var window = base.CreateWindow(activationState);
+        window.Activated += async (_, _) => await RunResumeRevisionSyncAsync("window-activated");
+        window.Resumed += async (_, _) => await RunResumeRevisionSyncAsync("window-resumed");
+        return window;
+    }
+
     private async Task InitializeRootAsync()
     {
 #if DEBUG
@@ -91,7 +98,6 @@ public sealed class App : Application
             return;
 
         app.MainPage = new AppShell();
-        app.StartForegroundSyncTimer();
         _ = app.RunLaunchSyncAsync();
         _ = app.RunUpdatePromptAsync();
     }
@@ -101,7 +107,6 @@ public sealed class App : Application
         if (Current is not App app)
             return;
 
-        app.StopForegroundSyncTimer();
         app.MainPage = new NavigationPage(new LoginPage());
     }
 
@@ -109,40 +114,19 @@ public sealed class App : Application
     {
         try
         {
-            await _syncCoordinator.TryBackgroundSyncAsync("app-start", TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            await _syncCoordinator.RefreshIfServerChangedAsync("app-start", TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
         catch
         {
-            // 앱 시작 UX를 막지 않습니다.
+            // 시작 UX를 막지 않습니다.
         }
     }
 
-    private void StartForegroundSyncTimer()
-    {
-        var dispatcher = MainPage?.Dispatcher ?? Current?.Dispatcher;
-        if (dispatcher is null)
-            return;
-
-        if (_foregroundSyncTimer is null)
-        {
-            _foregroundSyncTimer = dispatcher.CreateTimer();
-            _foregroundSyncTimer.Interval = TimeSpan.FromSeconds(25);
-            _foregroundSyncTimer.IsRepeating = true;
-            _foregroundSyncTimer.Tick += async (_, _) => await RunForegroundSyncPulseAsync();
-        }
-
-        if (!_foregroundSyncTimer.IsRunning)
-            _foregroundSyncTimer.Start();
-    }
-
-    private void StopForegroundSyncTimer()
-        => _foregroundSyncTimer?.Stop();
-
-    private async Task RunForegroundSyncPulseAsync()
+    private async Task RunResumeRevisionSyncAsync(string reason)
     {
         if (!await _sessionStore.HasUsableSessionAsync().ConfigureAwait(false))
         {
-            var recovery = await _sessionRecoveryService.TryRestoreSessionAsync("foreground-sync").ConfigureAwait(false);
+            var recovery = await _sessionRecoveryService.TryRestoreSessionAsync(reason).ConfigureAwait(false);
             if (!recovery.Success && !await _sessionStore.HasUsableSessionAsync().ConfigureAwait(false))
             {
                 MainThread.BeginInvokeOnMainThread(ShowLogin);
@@ -150,20 +134,20 @@ public sealed class App : Application
             }
         }
 
-        if (Interlocked.Exchange(ref _foregroundSyncRunning, 1) == 1)
+        if (Interlocked.Exchange(ref _resumeSyncRunning, 1) == 1)
             return;
 
         try
         {
-            await _syncCoordinator.TryBackgroundSyncAsync("app-foreground-timer", TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+            await _syncCoordinator.RefreshIfServerChangedAsync(reason, TimeSpan.FromSeconds(8)).ConfigureAwait(false);
         }
         catch
         {
-            // 백그라운드 타이머는 조용히 재시도합니다.
+            // 앱 복귀 자동 재조회 실패는 조용히 무시합니다.
         }
         finally
         {
-            Interlocked.Exchange(ref _foregroundSyncRunning, 0);
+            Interlocked.Exchange(ref _resumeSyncRunning, 0);
         }
     }
 
@@ -191,7 +175,7 @@ public sealed class App : Application
 
                 var installNow = await Current.MainPage.DisplayAlert(
                     "업데이트 알림",
-                    $"새 안드로이드 버전 {result.LatestVersion}이 준비되어 있습니다.{Environment.NewLine}{Environment.NewLine}지금 설치하시겠습니까?",
+                    $"안드로이드 버전 {result.LatestVersion}이 준비되었습니다.{Environment.NewLine}{Environment.NewLine}지금 설치하시겠습니까?",
                     "설치",
                     "나중에");
 

@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Services;
+using GeoraePlan.Mobile.App.Services;
 
 namespace GeoraePlan.Mobile.App.ViewModels;
 
@@ -76,7 +76,7 @@ public sealed class HomeViewModel : ObservableObject
             ? $"권한: {session.Role}"
             : "권한 정보 없음";
         AutoSyncText = session.IsAuthenticated
-            ? "앱 활성 중에는 약 25초 간격으로 자동 동기화를 시도합니다."
+            ? "저장 시 즉시 서버 반영하고, 화면 진입/복귀 시 최신 변경만 재확인합니다."
             : "로그인 후 자동 동기화가 시작됩니다.";
 
         var sync = await _syncStateStore.LoadAsync();

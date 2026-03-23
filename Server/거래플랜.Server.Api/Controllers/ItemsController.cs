@@ -29,6 +29,13 @@ public sealed class ItemsController : ControllerBase
         [FromQuery] string? category,
         CancellationToken cancellationToken)
     {
+        var activeCategoryNames = await _dbContext.ItemCategoryOptions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(option => option.IsActive && !option.IsDeleted)
+            .Select(option => option.Name)
+            .ToListAsync(cancellationToken);
+
         var query = _officeScopeService.ApplyItemScope(_dbContext.Items.AsNoTracking());
         if (!string.IsNullOrWhiteSpace(q))
         {
@@ -42,7 +49,11 @@ public sealed class ItemsController : ControllerBase
         if (!string.IsNullOrWhiteSpace(category))
         {
             if (string.Equals(category.Trim(), "미분류", StringComparison.OrdinalIgnoreCase))
-                query = query.Where(x => string.IsNullOrWhiteSpace(x.CategoryName));
+            {
+                query = query.Where(x =>
+                    string.IsNullOrWhiteSpace(x.CategoryName) ||
+                    !activeCategoryNames.Contains(x.CategoryName));
+            }
             else
                 query = query.Where(x => x.CategoryName == category);
         }
@@ -54,20 +65,42 @@ public sealed class ItemsController : ControllerBase
     public async Task<IActionResult> GetCategories(CancellationToken cancellationToken)
     {
         var scopedItems = _officeScopeService.ApplyItemScope(_dbContext.Items.AsNoTracking());
+        var masterCategories = await _dbContext.ItemCategoryOptions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(option => option.IsActive && !option.IsDeleted)
+            .OrderBy(option => option.SortOrder)
+            .ThenBy(option => option.Name)
+            .Select(option => new { option.Name, option.SortOrder })
+            .ToListAsync(cancellationToken);
+        var activeCategoryNames = masterCategories
+            .Select(option => option.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var result = await scopedItems
-            .Where(item => !string.IsNullOrWhiteSpace(item.CategoryName))
+        var rawCounts = await scopedItems
             .GroupBy(item => item.CategoryName)
-            .OrderBy(group => group.Key)
-            .Select(group => new ItemCategorySummaryDto
+            .Select(group => new
             {
-                Name = group.Key ?? string.Empty,
+                Name = group.Key,
                 ItemCount = group.Count()
             })
             .ToListAsync(cancellationToken);
 
-        var uncategorizedCount = await scopedItems.CountAsync(item => string.IsNullOrWhiteSpace(item.CategoryName), cancellationToken);
-        if (uncategorizedCount > 0)
+        var result = masterCategories
+            .Select(option => new ItemCategorySummaryDto
+            {
+                Name = option.Name,
+                ItemCount = rawCounts
+                    .Where(count => string.Equals(count.Name, option.Name, StringComparison.OrdinalIgnoreCase))
+                    .Sum(count => count.ItemCount)
+            })
+            .ToList();
+
+        var uncategorizedCount = rawCounts
+            .Where(count => string.IsNullOrWhiteSpace(count.Name) || !activeCategoryNames.Contains(count.Name.Trim()))
+            .Sum(count => count.ItemCount);
+
+        if (uncategorizedCount > 0 || result.Count == 0)
         {
             result.Add(new ItemCategorySummaryDto
             {
@@ -76,7 +109,7 @@ public sealed class ItemsController : ControllerBase
             });
         }
 
-        return Ok(result.OrderBy(item => item.Name == "미분류" ? "zzz" : item.Name).ToList());
+        return Ok(result);
     }
 
     [HttpGet("{id:guid}")]

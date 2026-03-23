@@ -89,7 +89,7 @@ public sealed class SyncCoordinator
         }
     }
 
-    public async Task<MobileSyncState> TryBackgroundSyncAsync(string reason, TimeSpan minInterval, CancellationToken ct = default)
+    public async Task<MobileSyncState> RefreshIfServerChangedAsync(string reason, TimeSpan minInterval, CancellationToken ct = default)
     {
         await _syncLock.WaitAsync(ct);
         try
@@ -100,27 +100,34 @@ public sealed class SyncCoordinator
                 return state;
 
             state.LastBackgroundSyncUtc = now;
-            await _store.SaveAsync(state, ct);
 
-            if (!HasPendingServerSyncPayload(state) && state.PendingPaymentAttachments.Count == 0)
+            if (HasPendingServerSyncPayload(state) || state.PendingPaymentAttachments.Count > 0)
             {
-                try
-                {
-                    var syncStatus = await _api.GetSyncStatusAsync(ct);
-                    if (syncStatus is not null && syncStatus.CurrentServerRevision <= state.LastRevision)
-                        return state;
-                }
-                catch
-                {
-                    // lightweight revision check failure should not block background sync decisions
-                }
+                state = await PushInternalAsync(state, ct);
+                if (string.IsNullOrWhiteSpace(state.LastError))
+                    state = await UploadPendingPaymentAttachmentsInternalAsync(state, ct);
+                if (string.IsNullOrWhiteSpace(state.LastError))
+                    state = await PullInternalAsync(state, ct);
+
+                await _store.SaveAsync(state, ct);
+                return state;
             }
 
-            state = await PushInternalAsync(state, ct);
-            if (string.IsNullOrWhiteSpace(state.LastError))
-                state = await UploadPendingPaymentAttachmentsInternalAsync(state, ct);
-            if (string.IsNullOrWhiteSpace(state.LastError))
-                state = await PullInternalAsync(state, ct);
+            try
+            {
+                var syncStatus = await _api.GetSyncStatusAsync(ct);
+                if (syncStatus is not null && syncStatus.CurrentServerRevision > state.LastRevision)
+                    state = await PullInternalAsync(state, ct);
+                else
+                {
+                    state.LastSuccessUtc ??= now;
+                    state.LastError = string.Empty;
+                }
+            }
+            catch (Exception ex)
+            {
+                MarkFailure(state, ex);
+            }
 
             await _store.SaveAsync(state, ct);
             return state;
@@ -130,6 +137,110 @@ public sealed class SyncCoordinator
             _syncLock.Release();
         }
     }
+
+    public async Task<MobileSyncState> SaveInvoiceImmediatelyAsync(InvoiceDto invoice, CancellationToken ct = default)
+    {
+        await _syncLock.WaitAsync(ct);
+        try
+        {
+            var state = await _store.LoadAsync(ct);
+            state.LastAttemptUtc = DateTime.UtcNow;
+            state.Normalize();
+            state.PendingPush.Invoices.RemoveAll(x => x.Id == invoice.Id);
+
+            try
+            {
+                var saved = await _api.CreateInvoiceAsync(invoice, ct);
+                if (saved is not null)
+                    state.LastRevision = Math.Max(state.LastRevision, saved.Revision);
+
+                state.LastSuccessUtc = DateTime.UtcNow;
+                state.LastError = string.Empty;
+                state.ConsecutiveFailureCount = 0;
+                state = await PullInternalAsync(state, ct);
+            }
+            catch (Exception ex)
+            {
+                state.PendingPush.Invoices.Add(invoice);
+                MarkFailure(state, ex);
+            }
+
+            await _store.SaveAsync(state, ct);
+            return state;
+        }
+        finally
+        {
+            _syncLock.Release();
+        }
+    }
+
+    public async Task<MobileSyncState> SavePaymentImmediatelyAsync(
+        PaymentDto payment,
+        IEnumerable<PendingPaymentAttachmentRecord>? attachments = null,
+        CancellationToken ct = default)
+    {
+        await _syncLock.WaitAsync(ct);
+        try
+        {
+            var state = await _store.LoadAsync(ct);
+            state.LastAttemptUtc = DateTime.UtcNow;
+            state.Normalize();
+            state.PendingPush.Payments.RemoveAll(x => x.Id == payment.Id);
+
+            var attachmentList = attachments?.ToList() ?? [];
+
+            try
+            {
+                var saved = await _api.CreatePaymentAsync(payment, ct);
+                if (saved is not null)
+                    state.LastRevision = Math.Max(state.LastRevision, saved.Revision);
+
+                foreach (var attachment in attachmentList)
+                {
+                    attachment.PaymentId = payment.Id;
+                    state.PendingPaymentAttachments.RemoveAll(x => x.LocalId == attachment.LocalId);
+
+                    try
+                    {
+                        await _api.UploadPaymentAttachmentAsync(payment.Id, attachment, ct);
+                        await _attachmentStore.RemoveAsync(attachment, ct);
+                    }
+                    catch (Exception uploadEx)
+                    {
+                        state.PendingPaymentAttachments.Add(attachment);
+                        if (string.IsNullOrWhiteSpace(state.LastError))
+                            state.LastError = uploadEx.Message;
+                    }
+                }
+
+                state.LastSuccessUtc = DateTime.UtcNow;
+                state.ConsecutiveFailureCount = 0;
+                state = await PullInternalAsync(state, ct);
+            }
+            catch (Exception ex)
+            {
+                state.PendingPush.Payments.Add(payment);
+                foreach (var attachment in attachmentList)
+                {
+                    attachment.PaymentId = payment.Id;
+                    state.PendingPaymentAttachments.RemoveAll(x => x.LocalId == attachment.LocalId);
+                    state.PendingPaymentAttachments.Add(attachment);
+                }
+
+                MarkFailure(state, ex);
+            }
+
+            await _store.SaveAsync(state, ct);
+            return state;
+        }
+        finally
+        {
+            _syncLock.Release();
+        }
+    }
+
+    public async Task<MobileSyncState> TryBackgroundSyncAsync(string reason, TimeSpan minInterval, CancellationToken ct = default)
+        => await RefreshIfServerChangedAsync(reason, minInterval, ct);
 
     public async Task<MobileSyncState> QueueInvoiceDraftAsync(InvoiceDto invoice, CancellationToken ct = default)
     {

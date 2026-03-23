@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Services;
+using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using Microsoft.Maui.Controls.Shapes;
@@ -130,7 +130,7 @@ public sealed class HomePage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        await _syncCoordinator.TryBackgroundSyncAsync("home-page", TimeSpan.FromSeconds(45));
+        await _syncCoordinator.RefreshIfServerChangedAsync("home-page", TimeSpan.FromSeconds(5));
         await _viewModel.RefreshAsync();
     }
 }

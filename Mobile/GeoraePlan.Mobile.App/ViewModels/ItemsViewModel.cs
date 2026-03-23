@@ -12,7 +12,7 @@ public sealed class ItemsViewModel : ObservableObject
         "기타",
         "흑백프린터",
         "컬러프린터",
-        "복합기",
+        "흑백복합기",
         "컬러복합기",
         "하드웨어",
         "소모품",

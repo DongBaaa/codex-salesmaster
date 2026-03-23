@@ -96,6 +96,9 @@ public sealed class GeoraePlanApiClient
                 ("take", take.ToString())),
             ct) ?? new List<InvoiceDto>();
 
+    public async Task<InvoiceDto?> GetInvoiceByIdAsync(Guid invoiceId, CancellationToken ct = default)
+        => await GetAsync<InvoiceDto>($"invoices/{invoiceId}", ct);
+
     public async Task<List<PaymentAttachmentDto>> GetPaymentAttachmentsAsync(Guid paymentId, CancellationToken ct = default)
         => await GetAsync<List<PaymentAttachmentDto>>($"payments/{paymentId}/attachments", ct) ?? new List<PaymentAttachmentDto>();
 

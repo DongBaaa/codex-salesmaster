@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Services;
+using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using Microsoft.Maui.Controls.Shapes;
@@ -187,7 +187,7 @@ public sealed class InventoryTransfersPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
-        await _syncCoordinator.TryBackgroundSyncAsync("inventory-transfers-page", TimeSpan.FromSeconds(30));
+        await _syncCoordinator.RefreshIfServerChangedAsync("inventory-transfers-page", TimeSpan.FromSeconds(5));
         if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             await _viewModel.RefreshAsync();
     }

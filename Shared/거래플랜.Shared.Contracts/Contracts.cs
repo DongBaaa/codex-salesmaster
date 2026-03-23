@@ -298,6 +298,7 @@ public sealed class ItemDto : SyncEntityDto
 public sealed class InvoiceDto : SyncEntityDto
 {
     public Guid CustomerId { get; set; }
+    public string CustomerName { get; set; } = string.Empty;
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string InvoiceNumber { get; set; } = string.Empty;

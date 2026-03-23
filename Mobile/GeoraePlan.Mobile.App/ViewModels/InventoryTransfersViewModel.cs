@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using GeoraePlan.Mobile.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -119,7 +119,7 @@ public sealed class InventoryTransfersViewModel : ObservableObject
         {
             IsBusy = true;
             StatusMessage = "재고이동 서버 동기화 데이터를 확인하고 있습니다.";
-            await _syncCoordinator.TryBackgroundSyncAsync("inventory-transfers-page", TimeSpan.FromSeconds(30));
+            await _syncCoordinator.RefreshIfServerChangedAsync("inventory-transfers-page", TimeSpan.FromSeconds(5));
             await LoadFromStateAsync(preserveSelection: true);
         }
         catch (Exception ex)

@@ -48,7 +48,10 @@ public sealed class InvoicesController : ControllerBase
         if (customerId.HasValue) query = query.Where(x => x.CustomerId == customerId.Value);
         if (!string.IsNullOrWhiteSpace(q))
         {
-            query = query.Where(x => x.InvoiceNumber.Contains(q) || x.Memo.Contains(q));
+            query = query.Where(x =>
+                x.InvoiceNumber.Contains(q) ||
+                x.Memo.Contains(q) ||
+                (x.Customer != null && x.Customer.NameOriginal.Contains(q)));
         }
 
         return Ok(await query.OrderByDescending(x => x.InvoiceDate)

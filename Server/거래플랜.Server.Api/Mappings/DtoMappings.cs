@@ -857,6 +857,7 @@ public static class DtoMappings
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
             CustomerId = entity.CustomerId,
+            CustomerName = entity.Customer?.NameOriginal ?? string.Empty,
             TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
             OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
             InvoiceNumber = entity.InvoiceNumber,

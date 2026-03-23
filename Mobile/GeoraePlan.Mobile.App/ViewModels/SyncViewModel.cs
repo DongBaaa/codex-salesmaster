@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Services;
+using GeoraePlan.Mobile.App.Services;
 
 namespace GeoraePlan.Mobile.App.ViewModels;
 
@@ -10,7 +10,7 @@ public sealed class SyncViewModel : ObservableObject
     private string _lastPullSummary = "-";
     private string _pendingText = "대기 전표 0건 / 대기 수금 0건 / 대기 첨부 0건";
     private string _statusMessage = "동기화 준비";
-    private string _autoSyncText = "앱 활성 중에는 약 25초 간격으로 자동 동기화를 시도합니다.";
+    private string _autoSyncText = "저장 시 즉시 서버 반영하고, 화면 진입/복귀 시 서버 revision을 재확인합니다. 필요할 때만 수동 동기화를 사용하세요.";
     private string _attentionText = string.Empty;
     private bool _hasAttention;
     private bool _isBusy;
