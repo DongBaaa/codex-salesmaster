@@ -31,7 +31,9 @@ public static class GeoraePlanTheme
             BackgroundColor = InputBackground,
             TextColor = Colors.Black,
             PlaceholderColor = Colors.Gray,
-            CancelButtonColor = Accent
+            CancelButtonColor = Accent,
+            HorizontalOptions = LayoutOptions.Fill,
+            MinimumWidthRequest = 0
         };
 
     public static Entry CreateEntry(string placeholder, bool isPassword = false)

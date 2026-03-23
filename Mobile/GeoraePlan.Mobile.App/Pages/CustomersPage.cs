@@ -34,6 +34,7 @@ public sealed class CustomersPage : ContentPage
         };
 
         var clearSearchButton = GeoraePlanTheme.CreateCompactButton("초기화", GeoraePlanTheme.SecondaryButton);
+        clearSearchButton.WidthRequest = 78;
         clearSearchButton.SetBinding(VisualElement.IsVisibleProperty, nameof(CustomersViewModel.HasSearchText));
         clearSearchButton.Clicked += async (_, _) =>
         {
@@ -42,21 +43,34 @@ public sealed class CustomersPage : ContentPage
         };
 
         var refreshButton = GeoraePlanTheme.CreateCompactButton("조회", GeoraePlanTheme.SecondaryButton);
+        refreshButton.WidthRequest = 86;
         refreshButton.SetBinding(Button.CommandProperty, nameof(CustomersViewModel.RefreshCommand));
+
+        var searchActions = new HorizontalStackLayout
+        {
+            Spacing = 8,
+            HorizontalOptions = LayoutOptions.End,
+            VerticalOptions = LayoutOptions.Center,
+            Children =
+            {
+                clearSearchButton,
+                refreshButton
+            }
+        };
 
         var searchGrid = new Grid
         {
+            HorizontalOptions = LayoutOptions.Fill,
             ColumnSpacing = 8,
             ColumnDefinitions =
             {
                 new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(new GridLength(86)),
-                new ColumnDefinition(new GridLength(86))
+                new ColumnDefinition(GridLength.Auto)
             }
         };
+        searchBar.HorizontalOptions = LayoutOptions.Fill;
         searchGrid.Add(searchBar);
-        searchGrid.Add(clearSearchButton, 1, 0);
-        searchGrid.Add(refreshButton, 2, 0);
+        searchGrid.Add(searchActions, 1, 0);
 
         var activity = new ActivityIndicator { Color = GeoraePlanTheme.Accent, HeightRequest = 18 };
         activity.SetBinding(ActivityIndicator.IsRunningProperty, nameof(CustomersViewModel.IsBusy));

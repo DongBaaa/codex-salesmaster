@@ -29,12 +29,16 @@ public sealed class ItemsController : ControllerBase
         [FromQuery] string? category,
         CancellationToken cancellationToken)
     {
-        var activeCategoryNames = await _dbContext.ItemCategoryOptions
+        var activeCategoryNames = (await _dbContext.ItemCategoryOptions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(option => option.IsActive && !option.IsDeleted)
             .Select(option => option.Name)
-            .ToListAsync(cancellationToken);
+            .ToListAsync(cancellationToken))
+            .Where(name => !IsInvalidCategoryName(name))
+            .Select(name => name!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         var query = _officeScopeService.ApplyItemScope(_dbContext.Items.AsNoTracking());
         if (!string.IsNullOrWhiteSpace(q))
@@ -52,8 +56,7 @@ public sealed class ItemsController : ControllerBase
             {
                 query = query.Where(x =>
                     string.IsNullOrWhiteSpace(x.CategoryName) ||
-                    IsInvalidCategoryName(x.CategoryName) ||
-                    !activeCategoryNames.Contains(x.CategoryName));
+                    !activeCategoryNames.Contains(x.CategoryName.Trim()));
             }
             else
                 query = query.Where(x => x.CategoryName == category);
@@ -66,15 +69,17 @@ public sealed class ItemsController : ControllerBase
     public async Task<IActionResult> GetCategories(CancellationToken cancellationToken)
     {
         var scopedItems = _officeScopeService.ApplyItemScope(_dbContext.Items.AsNoTracking());
-        var masterCategories = await _dbContext.ItemCategoryOptions
+        var masterCategories = (await _dbContext.ItemCategoryOptions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(option => option.IsActive && !option.IsDeleted)
             .OrderBy(option => option.SortOrder)
             .ThenBy(option => option.Name)
             .Select(option => new { option.Name, option.SortOrder })
+            .ToListAsync(cancellationToken))
             .Where(option => !IsInvalidCategoryName(option.Name))
-            .ToListAsync(cancellationToken);
+            .Select(option => new { Name = option.Name!.Trim(), option.SortOrder })
+            .ToList();
         var activeCategoryNames = masterCategories
             .Select(option => option.Name)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -99,7 +104,7 @@ public sealed class ItemsController : ControllerBase
             .ToList();
 
         var uncategorizedCount = rawCounts
-            .Where(count => string.IsNullOrWhiteSpace(count.Name) || IsInvalidCategoryName(count.Name) || !activeCategoryNames.Contains(count.Name.Trim()))
+            .Where(count => string.IsNullOrWhiteSpace(count.Name) || !activeCategoryNames.Contains(count.Name!.Trim()))
             .Sum(count => count.ItemCount);
 
         if (uncategorizedCount > 0 || result.Count == 0)
