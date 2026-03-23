@@ -69,6 +69,7 @@ public sealed class InvoicesController : ControllerBase
     }
 
     [HttpPost]
+    [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<InvoiceDto>> Create([FromBody] InvoiceDto dto, CancellationToken cancellationToken)
     {
         if (!_officeScopeService.HasAdministrativeWriteAccess)
@@ -110,6 +111,7 @@ public sealed class InvoicesController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
+    [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<InvoiceDto>> Update(Guid id, [FromBody] InvoiceDto dto, CancellationToken cancellationToken)
     {
         if (!_officeScopeService.HasAdministrativeWriteAccess)
@@ -152,6 +154,7 @@ public sealed class InvoicesController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [Authorize(Policy = "AdminOrGod")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
         if (!_officeScopeService.HasAdministrativeWriteAccess)

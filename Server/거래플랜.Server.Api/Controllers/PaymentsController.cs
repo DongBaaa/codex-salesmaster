@@ -106,6 +106,7 @@ public sealed class PaymentsController : ControllerBase
     }
 
     [HttpPost("{paymentId:guid}/attachments")]
+    [Authorize(Policy = "AdminOrGod")]
     [RequestSizeLimit(20 * 1024 * 1024)]
     public async Task<ActionResult<PaymentAttachmentDto>> UploadAttachment(
         Guid paymentId,
@@ -212,6 +213,7 @@ public sealed class PaymentsController : ControllerBase
     }
 
     [HttpPost]
+    [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<PaymentDto>> Create([FromBody] PaymentDto dto, CancellationToken cancellationToken)
     {
         if (!_officeScopeService.HasAdministrativeWriteAccess)
@@ -239,6 +241,7 @@ public sealed class PaymentsController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
+    [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<PaymentDto>> Update(Guid id, [FromBody] PaymentDto dto, CancellationToken cancellationToken)
     {
         if (!_officeScopeService.HasAdministrativeWriteAccess)
@@ -260,6 +263,7 @@ public sealed class PaymentsController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [Authorize(Policy = "AdminOrGod")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
         if (!_officeScopeService.HasAdministrativeWriteAccess)

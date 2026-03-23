@@ -69,6 +69,8 @@ public sealed class UsersController : ControllerBase
         ApplyPermissions(user, request.Permissions);
         _dbContext.Users.Add(user);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await PersistScopeTypeAsync(user.Id, normalizedScopeType, cancellationToken);
+        await _dbContext.Entry(user).ReloadAsync(cancellationToken);
 
         return CreatedAtAction(nameof(GetAll), new { id = user.Id }, user.ToDto());
     }
@@ -113,6 +115,8 @@ public sealed class UsersController : ControllerBase
         ApplyPermissions(user, request.Permissions);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await PersistScopeTypeAsync(user.Id, normalizedScopeType, cancellationToken);
+        await _dbContext.Entry(user).ReloadAsync(cancellationToken);
         return Ok(user.ToDto());
     }
 
@@ -190,6 +194,13 @@ public sealed class UsersController : ControllerBase
         return string.Equals(role, "admin", StringComparison.OrdinalIgnoreCase)
             ? TenantScopeCatalog.ScopeOfficeOnly
             : TenantScopeCatalog.ScopeOfficeOnly;
+    }
+
+    private async Task PersistScopeTypeAsync(Guid userId, string normalizedScopeType, CancellationToken cancellationToken)
+    {
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""UPDATE "Users" SET "ScopeType" = {normalizedScopeType} WHERE "Id" = {userId};""",
+            cancellationToken);
     }
 
     private void ApplyPermissions(UserAccount user, IEnumerable<string> permissions)

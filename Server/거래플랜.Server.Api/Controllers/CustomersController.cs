@@ -114,6 +114,7 @@ public sealed class CustomersController : ControllerBase
     }
 
     [HttpPost]
+    [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<CustomerDto>> Create([FromBody] CustomerDto dto, CancellationToken cancellationToken)
     {
         if (!_officeScopeService.HasAdministrativeWriteAccess)
@@ -129,6 +130,7 @@ public sealed class CustomersController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
+    [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<CustomerDto>> Update(Guid id, [FromBody] CustomerDto dto, CancellationToken cancellationToken)
     {
         if (!_officeScopeService.HasAdministrativeWriteAccess)
@@ -148,6 +150,7 @@ public sealed class CustomersController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [Authorize(Policy = "AdminOrGod")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
         if (!_officeScopeService.HasAdministrativeWriteAccess)
