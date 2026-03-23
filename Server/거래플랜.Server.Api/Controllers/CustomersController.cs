@@ -7,6 +7,7 @@ using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace 거래플랜.Server.Api.Controllers;
 
@@ -117,7 +118,7 @@ public sealed class CustomersController : ControllerBase
     [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<CustomerDto>> Create([FromBody] CustomerDto dto, CancellationToken cancellationToken)
     {
-        if (!_officeScopeService.HasAdministrativeWriteAccess)
+        if (!HasAdministrativeAccess())
             return Forbid();
 
         var entity = new Customer { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
@@ -133,7 +134,7 @@ public sealed class CustomersController : ControllerBase
     [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<CustomerDto>> Update(Guid id, [FromBody] CustomerDto dto, CancellationToken cancellationToken)
     {
-        if (!_officeScopeService.HasAdministrativeWriteAccess)
+        if (!HasAdministrativeAccess())
             return Forbid();
 
         var entity = await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
@@ -153,7 +154,7 @@ public sealed class CustomersController : ControllerBase
     [Authorize(Policy = "AdminOrGod")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
-        if (!_officeScopeService.HasAdministrativeWriteAccess)
+        if (!HasAdministrativeAccess())
             return Forbid();
 
         var entity = await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
@@ -195,4 +196,8 @@ public sealed class CustomersController : ControllerBase
         dto.Phone = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Phone, dto.Phone);
         dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Email, dto.Email);
     }
+
+    private bool HasAdministrativeAccess()
+        => User.IsInRole("Admin") ||
+           User.Claims.Any(claim => claim.Type == "god" && string.Equals(claim.Value, "true", StringComparison.OrdinalIgnoreCase));
 }

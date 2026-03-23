@@ -7,6 +7,7 @@ using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace 거래플랜.Server.Api.Controllers;
 
@@ -115,7 +116,7 @@ public sealed class PaymentsController : ControllerBase
         [FromForm] string? description,
         CancellationToken cancellationToken)
     {
-        if (!_officeScopeService.HasAdministrativeWriteAccess)
+        if (!HasAdministrativeAccess())
             return Forbid();
 
         var payment = await _dbContext.Payments
@@ -216,7 +217,7 @@ public sealed class PaymentsController : ControllerBase
     [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<PaymentDto>> Create([FromBody] PaymentDto dto, CancellationToken cancellationToken)
     {
-        if (!_officeScopeService.HasAdministrativeWriteAccess)
+        if (!HasAdministrativeAccess())
             return Forbid();
 
         var invoice = await _dbContext.Invoices
@@ -244,7 +245,7 @@ public sealed class PaymentsController : ControllerBase
     [Authorize(Policy = "AdminOrGod")]
     public async Task<ActionResult<PaymentDto>> Update(Guid id, [FromBody] PaymentDto dto, CancellationToken cancellationToken)
     {
-        if (!_officeScopeService.HasAdministrativeWriteAccess)
+        if (!HasAdministrativeAccess())
             return Forbid();
 
         var entity = await _dbContext.Payments
@@ -266,7 +267,7 @@ public sealed class PaymentsController : ControllerBase
     [Authorize(Policy = "AdminOrGod")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
-        if (!_officeScopeService.HasAdministrativeWriteAccess)
+        if (!HasAdministrativeAccess())
             return Forbid();
 
         var entity = await _dbContext.Payments
@@ -289,5 +290,9 @@ public sealed class PaymentsController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
+
+    private bool HasAdministrativeAccess()
+        => User.IsInRole("Admin") ||
+           User.Claims.Any(claim => claim.Type == "god" && string.Equals(claim.Value, "true", StringComparison.OrdinalIgnoreCase));
 }
 
