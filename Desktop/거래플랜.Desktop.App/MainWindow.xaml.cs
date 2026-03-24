@@ -486,6 +486,32 @@ public partial class MainWindow : Window
         await OpenEnvironmentSettingsWindowAsync(openRecycleBinTab: true);
     }
 
+    private async void LogoutButton_Click(object sender, RoutedEventArgs e)
+    {
+        var answer = MessageBox.Show(
+            "현재 로그인 상태를 해제하고 로그인 화면으로 이동하시겠습니까?",
+            "로그아웃",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        if (answer != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            await FlushPendingChangesBeforeNavigationAsync("로그아웃");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("AUTH", $"로그아웃 전 변경사항 저장 시도 실패: {ex.Message}");
+        }
+
+        if (Application.Current is App app)
+            app.RequestRestartToLogin();
+
+        Close();
+    }
+
     private void RentalManagementButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button button || button.ContextMenu is null)

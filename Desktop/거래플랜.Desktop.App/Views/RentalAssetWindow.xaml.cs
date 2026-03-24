@@ -2,6 +2,7 @@
 using System.Windows.Input;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.ViewModels;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Views;
 
@@ -53,14 +54,16 @@ public partial class RentalAssetWindow : Window
     private async void ItemLookupButton_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new LookupWindow(
-            "재고관리 품목 조회",
+            "자산 품목 조회",
             await _viewModel.BuildItemLookupRowsAsync(),
-            "품목 등록",
+            "자산 품목 등록",
             async () =>
             {
                 var inventoryVm = new InventoryViewModel(_viewModel.LocalStateService, _viewModel.SessionState);
                 await inventoryVm.LoadAsync();
+                inventoryVm.SelectedTrackingTypeFilter = ItemTrackingTypes.Asset;
                 inventoryVm.NewItemCommand.Execute(null);
+                inventoryVm.EditTrackingType = ItemTrackingTypes.Asset;
                 var inventoryWindow = new InventoryWindow(inventoryVm) { Owner = this };
                 inventoryWindow.ShowDialog();
                 return await _viewModel.BuildItemLookupRowsAsync();

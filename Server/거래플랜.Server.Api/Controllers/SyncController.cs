@@ -1437,7 +1437,8 @@ public sealed class SyncController : ControllerBase
                 LineAmount = lineAmount, Remark = line.Remark,
                 SerialNumber = line.SerialNumber, MaterialNumber = line.MaterialNumber,
                 InstallLocation = line.InstallLocation, RentalStartDate = line.RentalStartDate,
-                RentalEndDate = line.RentalEndDate
+                RentalEndDate = line.RentalEndDate,
+                ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType)
             });
         }
     }

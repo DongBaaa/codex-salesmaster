@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
+using System.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using 거래플랜.Desktop.App.Configuration;
@@ -22,6 +23,10 @@ public partial class App : Application
     private readonly SemaphoreSlim _saveCycleLock = new(1, 1);
     private DispatcherTimer? _autoSaveTimer;
     private int _unexpectedErrorDialogOpen;
+    private bool _restartToLoginRequested;
+
+    internal void RequestRestartToLogin()
+        => _restartToLoginRequested = true;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -124,6 +129,14 @@ public partial class App : Application
 
             mainWin.Closing += async (_, args) =>
             {
+                if (_restartToLoginRequested)
+                {
+                    _autoSaveTimer?.Stop();
+                    mainWin.BeginShutdownProtection();
+                    _shutdownInProgress = true;
+                    return;
+                }
+
                 if (_shutdownInProgress)
                     return;
 
@@ -191,7 +204,11 @@ public partial class App : Application
             mainWin.Closed += (_, _) =>
             {
                 _autoSaveTimer?.Stop();
+                var session = sp.GetRequiredService<SessionState>();
+                _services?.GetRequiredService<OfficeAccessService>().ClearSessionAccess(session);
+                session.Clear();
                 mainScope.Dispose();
+                RestartToLoginIfRequested();
                 Shutdown();
             };
 
@@ -404,5 +421,34 @@ public partial class App : Application
 
         popup.Show();
         return popup;
+    }
+
+    private void RestartToLoginIfRequested()
+    {
+        if (!_restartToLoginRequested)
+            return;
+
+        _restartToLoginRequested = false;
+
+        try
+        {
+            var executablePath = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(executablePath))
+                executablePath = Process.GetCurrentProcess().MainModule?.FileName;
+
+            if (string.IsNullOrWhiteSpace(executablePath))
+                return;
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = executablePath,
+                WorkingDirectory = AppContext.BaseDirectory,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("AUTH", $"로그아웃 후 로그인 화면 재시작 실패: {ex.Message}");
+        }
     }
 }

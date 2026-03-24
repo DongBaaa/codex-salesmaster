@@ -586,16 +586,24 @@ public sealed class RentalStateService
         {
             var existing = await _db.RentalAssets.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id == asset.Id, ct);
-            if (existing is not null && !CanAccessRental(existing.AssignedUsername, existing.ResponsibleOfficeCode, session))
+            if (existing is not null && !CanEditAssetScope(existing.AssignedUsername, existing.ResponsibleOfficeCode, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 수정할 수 없습니다.");
 
             var officeCode = await ResolveRentalOfficeCodeAsync(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, session.OfficeCode, ct);
             if (string.IsNullOrWhiteSpace(officeCode))
                 return LocalMutationResult.Denied("담당지점을 선택하세요.");
 
+            if (!CanManageAllAssetScope(session) &&
+                !string.Equals(officeCode, GetDefaultAssetOfficeCode(session), StringComparison.OrdinalIgnoreCase))
+            {
+                return LocalMutationResult.Denied("일반 사용자는 본인 담당지점 자산만 등록/수정할 수 있습니다.");
+            }
+
             asset.ManagementCompanyCode = officeCode;
             asset.ResponsibleOfficeCode = officeCode;
             asset.AssignedUsername = NormalizeAssignedUsername(asset.AssignedUsername, session, allowBlankForAdmin: true);
+            if (!CanEditAssetScope(asset.AssignedUsername, officeCode, session))
+                return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 저장할 수 없습니다.");
             asset.ManagementNumber = existing is null
                 ? string.Empty
                 : (asset.ManagementNumber ?? existing.ManagementNumber ?? string.Empty).Trim();
@@ -669,7 +677,7 @@ public sealed class RentalStateService
             .FirstOrDefaultAsync(current => current.Id == assetId, ct);
         if (asset is null)
             return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
-        if (!CanAccessRental(asset.AssignedUsername, asset.ResponsibleOfficeCode, session))
+        if (!CanEditAssetScope(asset.AssignedUsername, asset.ResponsibleOfficeCode, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 삭제할 수 없습니다.");
 
         asset.IsDeleted = true;
@@ -1177,20 +1185,13 @@ public sealed class RentalStateService
         IQueryable<LocalRentalAsset> query,
         SessionState session)
     {
-        if (CanViewAllRental(session))
+        if (CanViewAllAssetScope(session))
             return query;
 
-        if (CanViewTenantRental(session))
-        {
-            var readableOfficeCodes = GetReadableOfficeCodes(session);
-            return query.Where(asset => readableOfficeCodes.Contains(asset.ResponsibleOfficeCode));
-        }
-
-        var username = NormalizeUsername(session.User?.Username);
-        var officeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
+        var officeCode = GetDefaultAssetOfficeCode(session);
         return query.Where(asset =>
-            asset.AssignedUsername == username ||
-            (asset.AssignedUsername == string.Empty && asset.ResponsibleOfficeCode == officeCode));
+            asset.ResponsibleOfficeCode == officeCode ||
+            asset.ManagementCompanyCode == officeCode);
     }
 
     private bool CanAccessRental(string? assignedUsername, string? officeCode, SessionState session)
@@ -1227,6 +1228,58 @@ public sealed class RentalStateService
         => session is not null && session.IsLoggedIn && (
             session.HasAdministrativePrivileges ||
             session.HasPermission(AppPermissionNames.RentalEditAll));
+
+    public bool CanViewAllAssetScope(SessionState? session)
+        => session is not null && session.IsLoggedIn && (
+            session.IsAdmin ||
+            session.HasAssignedPermission(AppPermissionNames.RentalViewAll) ||
+            session.HasAssignedPermission(AppPermissionNames.RentalEditAll));
+
+    public bool CanManageAllAssetScope(SessionState? session)
+        => session is not null && session.IsLoggedIn && (
+            session.IsAdmin ||
+            session.HasPermission(AppPermissionNames.RentalEditAll));
+
+    public HashSet<string> GetReadableAssetOfficeCodes(SessionState? session)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (CanViewAllAssetScope(session))
+        {
+            return OfficeCodeCatalog.All
+                .Select(code => NormalizeOfficeCode(code, DomainConstants.OfficeUsenet))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            GetDefaultAssetOfficeCode(session)
+        };
+    }
+
+    public string GetDefaultAssetOfficeCode(SessionState session)
+        => NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
+
+    public bool CanEditAssetScope(string? assignedUsername, string? officeCode, SessionState? session)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return false;
+
+        if (CanManageAllAssetScope(session))
+            return true;
+
+        var normalizedOfficeCode = NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet);
+        var defaultOfficeCode = GetDefaultAssetOfficeCode(session);
+        if (!string.Equals(normalizedOfficeCode, defaultOfficeCode, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var normalizedAssigned = NormalizeUsername(assignedUsername);
+        if (string.IsNullOrWhiteSpace(normalizedAssigned))
+            return true;
+
+        return string.Equals(normalizedAssigned, NormalizeUsername(session.User?.Username), StringComparison.OrdinalIgnoreCase);
+    }
 
     private static HashSet<string> GetReadableOfficeCodes(SessionState session)
     {
@@ -1944,13 +1997,17 @@ public sealed class RentalStateService
             return null;
 
         var matches = await GetNameMatchedItemsAsync(normalizedItemName, ct);
-        if (matches.Count == 1)
-            return matches[0];
+        var assetMatches = matches
+            .Where(item => ItemOperationalPolicy.IsAsset(item.TrackingType))
+            .ToList();
+
+        if (assetMatches.Count == 1)
+            return assetMatches[0];
 
         var normalizedCategoryKey = RentalCatalogValueNormalizer.NormalizeLooseKey(itemCategoryName);
         if (!string.IsNullOrWhiteSpace(normalizedCategoryKey))
         {
-            var categoryMatches = matches
+            var categoryMatches = assetMatches
                 .Where(item =>
                     string.Equals(
                         RentalCatalogValueNormalizer.NormalizeLooseKey(item.CategoryName),
@@ -1964,7 +2021,7 @@ public sealed class RentalStateService
                 return categoryMatches[0];
         }
 
-        var displayMatches = matches
+        var displayMatches = assetMatches
             .Where(item =>
                 string.Equals(
                     RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(item.NameOriginal),
@@ -2055,7 +2112,9 @@ public sealed class RentalStateService
         if (string.IsNullOrWhiteSpace(normalizedItemName))
             return null;
 
-        var nameMatches = await GetNameMatchedItemsAsync(normalizedItemName, ct);
+        var nameMatches = (await GetNameMatchedItemsAsync(normalizedItemName, ct))
+            .Where(item => ItemOperationalPolicy.IsAsset(item.TrackingType))
+            .ToList();
         if (nameMatches.Count > 1)
         {
             TryAddUnique(repairResult?.AmbiguousItemNames, normalizedItemName);
@@ -2071,13 +2130,15 @@ public sealed class RentalStateService
             SpecificationOriginal = string.Empty,
             SpecificationMatchKey = string.Empty,
             CategoryName = asset.ItemCategoryName,
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
             StorageLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CurrentLocation),
             PurchasePrice = asset.PurchasePrice,
             SalePrice = asset.SalePrice,
             RetailPrice = asset.SalePrice,
             SimpleMemo = "렌탈 자산/설치현황 자동 동기화 생성",
             IsRental = true,
-            IsSale = true,
+            IsSale = false,
             SerialNumber = (asset.MachineNumber ?? string.Empty).Trim(),
             MaterialNumber = (asset.ManagementNumber ?? string.Empty).Trim(),
             InstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation),
@@ -2201,9 +2262,21 @@ public sealed class RentalStateService
             itemChanged = true;
         }
 
-        if (!item.IsSale)
+        if (!string.Equals(item.TrackingType, ItemTrackingTypes.Asset, StringComparison.Ordinal))
         {
-            item.IsSale = true;
+            item.TrackingType = ItemTrackingTypes.Asset;
+            itemChanged = true;
+        }
+
+        if (!string.Equals(item.ItemKind, ItemKinds.Asset, StringComparison.Ordinal))
+        {
+            item.ItemKind = ItemKinds.Asset;
+            itemChanged = true;
+        }
+
+        if (item.IsSale)
+        {
+            item.IsSale = false;
             itemChanged = true;
         }
 

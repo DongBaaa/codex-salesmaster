@@ -1,5 +1,6 @@
 ﻿using CommunityToolkit.Mvvm.ComponentModel;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
@@ -10,6 +11,7 @@ public sealed partial class InvoiceLineEditModel : ObservableObject
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid? ItemId { get; set; }
+    public string ItemTrackingType { get; set; } = ItemTrackingTypes.Stock;
 
     [ObservableProperty][NotifyPropertyChangedFor(nameof(LineAmount))]
     private string _itemName = string.Empty;
@@ -46,7 +48,8 @@ public sealed partial class InvoiceLineEditModel : ObservableObject
         MaterialNumber = l.MaterialNumber,
         InstallLocation = l.InstallLocation,
         RentalStartDate = l.RentalStartDate,
-        RentalEndDate = l.RentalEndDate
+        RentalEndDate = l.RentalEndDate,
+        ItemTrackingType = ItemTrackingTypes.Normalize(l.ItemTrackingType)
     };
 
     public LocalInvoiceLine ToLocal(Guid invoiceId) => new()
@@ -65,6 +68,7 @@ public sealed partial class InvoiceLineEditModel : ObservableObject
         MaterialNumber = MaterialNumber,
         InstallLocation = InstallLocation,
         RentalStartDate = RentalStartDate,
-        RentalEndDate = RentalEndDate
+        RentalEndDate = RentalEndDate,
+        ItemTrackingType = ItemTrackingTypes.Normalize(ItemTrackingType)
     };
 }

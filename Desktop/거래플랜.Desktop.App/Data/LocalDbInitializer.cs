@@ -155,6 +155,8 @@ public static class LocalDbInitializer
         var itemCols = new (string col, string def)[]
         {
             ("CategoryName", "TEXT NOT NULL DEFAULT ''"),
+            ("ItemKind", "TEXT NOT NULL DEFAULT '일반상품'"),
+            ("TrackingType", "TEXT NOT NULL DEFAULT '재고'"),
             ("BoxQuantity", "REAL NOT NULL DEFAULT 0"),
             ("StorageLocation", "TEXT NOT NULL DEFAULT ''"),
             ("CurrentStock", "REAL NOT NULL DEFAULT 0"),
@@ -249,6 +251,13 @@ public static class LocalDbInitializer
         foreach (var (col, def) in invoiceCols)
             await TryAddColumnAsync(db, "Invoices", col, def);
 
+        var invoiceLineCols = new (string col, string def)[]
+        {
+            ("ItemTrackingType", "TEXT NOT NULL DEFAULT '재고'")
+        };
+        foreach (var (col, def) in invoiceLineCols)
+            await TryAddColumnAsync(db, "InvoiceLines", col, def);
+
         var companyProfileCols = new (string col, string def)[]
         {
             ("ProfileName", "TEXT NOT NULL DEFAULT ''"),
@@ -323,6 +332,8 @@ public static class LocalDbInitializer
         await BackfillTransactionResponsibleOfficeCodeAsync(db);
         await NormalizeCompanyProfilesAsync(db);
         await NormalizeCustomerTradeTypeAsync(db);
+        await BackfillItemOperationalFieldsAsync(db);
+        await BackfillInvoiceLineTrackingTypesAsync(db);
     }
 
     private static void SeedSelectionOptions(LocalDbContext db)
@@ -1273,6 +1284,139 @@ public static class LocalDbInitializer
         await EnsureRenamedTextColumnAsync(db, "RentalAssets", "ProductCategory", "ItemCategoryName", "TEXT NOT NULL DEFAULT ''");
         await EnsureRenamedTextColumnAsync(db, "RentalAssets", "ModelName", "ItemName", "TEXT NOT NULL DEFAULT ''");
         await EnsureRenamedTextColumnAsync(db, "RentalBillingProfiles", "ModelName", "ItemName", "TEXT NOT NULL DEFAULT ''");
+    }
+
+    private static async Task BackfillItemOperationalFieldsAsync(LocalDbContext db)
+    {
+        var now = DateTime.UtcNow;
+        var items = await db.Items.IgnoreQueryFilters().ToListAsync();
+
+        foreach (var item in items)
+        {
+            var normalizedTrackingType = ItemOperationalPolicy.NormalizeTrackingType(item.TrackingType, item.ItemKind, item.CategoryName, item.IsRental);
+            var normalizedItemKind = ItemOperationalPolicy.NormalizeItemKind(item.ItemKind, normalizedTrackingType, item.CategoryName, item.IsRental);
+            var shouldRemoveInventoryStock = !ItemOperationalPolicy.SupportsInventory(normalizedTrackingType);
+            var changed = false;
+
+            if (!string.Equals(item.TrackingType, normalizedTrackingType, StringComparison.Ordinal))
+            {
+                item.TrackingType = normalizedTrackingType;
+                changed = true;
+            }
+
+            if (!string.Equals(item.ItemKind, normalizedItemKind, StringComparison.Ordinal))
+            {
+                item.ItemKind = normalizedItemKind;
+                changed = true;
+            }
+
+            var expectedIsRental = string.Equals(normalizedTrackingType, ItemTrackingTypes.Asset, StringComparison.Ordinal);
+            var expectedIsSale = !string.Equals(normalizedTrackingType, ItemTrackingTypes.Asset, StringComparison.Ordinal);
+
+            if (item.IsRental != expectedIsRental)
+            {
+                item.IsRental = expectedIsRental;
+                changed = true;
+            }
+
+            if (item.IsSale != expectedIsSale)
+            {
+                item.IsSale = expectedIsSale;
+                changed = true;
+            }
+
+            if (shouldRemoveInventoryStock && item.CurrentStock != 0m)
+            {
+                item.CurrentStock = 0m;
+                changed = true;
+            }
+
+            if (changed)
+            {
+                item.IsDirty = true;
+                item.UpdatedAtUtc = now;
+            }
+        }
+
+        var nonStockOrAssetItemIds = items
+            .Where(item => !item.IsDeleted && !ItemOperationalPolicy.SupportsInventory(item.TrackingType))
+            .Select(item => item.Id)
+            .ToList();
+
+        if (nonStockOrAssetItemIds.Count > 0)
+        {
+            var warehouseStocks = await db.ItemWarehouseStocks
+                .Where(stock => nonStockOrAssetItemIds.Contains(stock.ItemId))
+                .ToListAsync();
+            if (warehouseStocks.Count > 0)
+                db.ItemWarehouseStocks.RemoveRange(warehouseStocks);
+        }
+
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task BackfillInvoiceLineTrackingTypesAsync(LocalDbContext db)
+    {
+        var now = DateTime.UtcNow;
+        var itemTrackingMap = await db.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => !item.IsDeleted)
+            .ToDictionaryAsync(
+                item => item.Id,
+                item => ItemOperationalPolicy.NormalizeTrackingType(item.TrackingType, item.ItemKind, item.CategoryName, item.IsRental));
+
+        var lines = await db.InvoiceLines
+            .IgnoreQueryFilters()
+            .ToListAsync();
+        var changedInvoiceIds = new HashSet<Guid>();
+
+        foreach (var line in lines)
+        {
+            var normalizedTrackingType = ResolveInvoiceLineTrackingType(line, itemTrackingMap);
+            if (string.Equals(line.ItemTrackingType, normalizedTrackingType, StringComparison.Ordinal))
+                continue;
+
+            line.ItemTrackingType = normalizedTrackingType;
+            if (line.InvoiceId != Guid.Empty)
+                changedInvoiceIds.Add(line.InvoiceId);
+        }
+
+        if (changedInvoiceIds.Count > 0)
+        {
+            var invoices = await db.Invoices
+                .IgnoreQueryFilters()
+                .Where(invoice => changedInvoiceIds.Contains(invoice.Id))
+                .ToListAsync();
+            foreach (var invoice in invoices)
+            {
+                invoice.IsDirty = true;
+                invoice.UpdatedAtUtc = now;
+            }
+        }
+
+        await db.SaveChangesAsync();
+    }
+
+    private static string ResolveInvoiceLineTrackingType(
+        LocalInvoiceLine line,
+        IReadOnlyDictionary<Guid, string> itemTrackingMap)
+    {
+        if (!string.IsNullOrWhiteSpace(line.ItemTrackingType))
+            return ItemTrackingTypes.Normalize(
+                line.ItemTrackingType,
+                line.ItemId.HasValue ? ItemTrackingTypes.Stock : ItemTrackingTypes.NonStock);
+
+        if (line.ItemId.HasValue &&
+            itemTrackingMap.TryGetValue(line.ItemId.Value, out var trackingType) &&
+            !string.IsNullOrWhiteSpace(trackingType))
+        {
+            return ItemTrackingTypes.Normalize(trackingType);
+        }
+
+        return line.ItemId.HasValue
+            ? ItemTrackingTypes.Stock
+            : ItemTrackingTypes.NonStock;
     }
 
     private static async Task EnsureRenamedTextColumnAsync(

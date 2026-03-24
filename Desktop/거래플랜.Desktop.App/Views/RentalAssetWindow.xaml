@@ -117,7 +117,7 @@
                 <TextBlock Text="검색" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <TextBox Width="240" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0"/>
                 <TextBlock Text="담당지점" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <ComboBox Width="150" ItemsSource="{Binding OfficeOptions}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedOfficeFilter}" Margin="0,0,12,0"/>
+                <ComboBox Width="150" ItemsSource="{Binding FilterOfficeOptions}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedOfficeFilter}" Margin="0,0,12,0"/>
                 <TextBlock Text="담당계정" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <ComboBox Width="130" ItemsSource="{Binding AssignedUsernameOptions}" SelectedItem="{Binding SelectedAssignedUsernameFilter}" IsEnabled="{Binding CanViewAll}" Margin="0,0,12,0"/>
                 <TextBlock Text="상태" VerticalAlignment="Center" Margin="0,0,8,0"/>
@@ -208,7 +208,7 @@
                         <TextBlock Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="4" Text="관리ID와 관리번호는 신규 저장 시 자동 생성됩니다." Foreground="#9FB3C8" FontSize="11" Margin="0,-2,0,8"/>
 
                         <TextBlock Grid.Row="3" Grid.Column="0" Text="담당지점" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                        <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding OfficeOptions}" DisplayMemberPath="DisplayName" SelectedValuePath="Value" SelectedValue="{Binding EditOfficeCode}" Margin="0,0,0,8"/>
+                        <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding EditOfficeOptions}" DisplayMemberPath="DisplayName" SelectedValuePath="Value" SelectedValue="{Binding EditOfficeCode}" IsEnabled="{Binding CanEditOfficeSelection}" Margin="0,0,0,8"/>
                         <TextBlock Grid.Row="3" Grid.Column="3" Text="상태" VerticalAlignment="Center" Margin="0,0,10,8"/>
                         <ComboBox Grid.Row="3" Grid.Column="4" ItemsSource="{Binding AssetStatusOptions}" SelectedItem="{Binding EditAssetStatus}" Margin="0,0,0,8"/>
 

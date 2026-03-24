@@ -166,6 +166,7 @@ public static class DbInitializer
         await EnsureTradeTypeOptionsTableAsync(dbContext, cancellationToken);
         await EnsureItemCategoryOptionsTableAsync(dbContext, cancellationToken);
         await EnsureItemCatalogColumnsAsync(dbContext, cancellationToken);
+        await EnsureInvoiceLineOperationalColumnsAsync(dbContext, cancellationToken);
         await EnsureCustomerMasterOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureCustomerMasterTenantCodeColumnAsync(dbContext, cancellationToken);
         await EnsureCustomerOfficeCodeColumnAsync(dbContext, cancellationToken);
@@ -1649,6 +1650,8 @@ public static class DbInitializer
         var columns = new (string Name, string SqliteDefinition, string PostgresDefinition)[]
         {
             ("CategoryName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''"),
+            ("ItemKind", "TEXT NOT NULL DEFAULT '일반상품'", "text NOT NULL DEFAULT '일반상품'"),
+            ("TrackingType", "TEXT NOT NULL DEFAULT '재고'", "text NOT NULL DEFAULT '재고'"),
             ("CurrentStock", "REAL NOT NULL DEFAULT 0", "numeric(18,2) NOT NULL DEFAULT 0"),
             ("SafetyStock", "REAL NOT NULL DEFAULT 0", "numeric(18,2) NOT NULL DEFAULT 0"),
             ("PurchasePrice", "REAL NOT NULL DEFAULT 0", "numeric(18,2) NOT NULL DEFAULT 0"),
@@ -1691,6 +1694,8 @@ public static class DbInitializer
                 """
                 UPDATE "Items"
                 SET "CategoryName" = COALESCE("CategoryName", ''),
+                    "ItemKind" = COALESCE(NULLIF(TRIM("ItemKind"), ''), '일반상품'),
+                    "TrackingType" = COALESCE(NULLIF(TRIM("TrackingType"), ''), '재고'),
                     "SimpleMemo" = COALESCE("SimpleMemo", '');
                 """,
                 cancellationToken);
@@ -1703,6 +1708,47 @@ public static class DbInitializer
         {
             await dbContext.Database.ExecuteSqlRawAsync(
                 "CREATE INDEX IF NOT EXISTS \"IX_Items_CategoryName\" ON \"Items\" (\"CategoryName\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task EnsureInvoiceLineOperationalColumnsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+#pragma warning disable EF1002
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"InvoiceLines\" ADD COLUMN \"ItemTrackingType\" TEXT NOT NULL DEFAULT '재고';",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"InvoiceLines\" ADD COLUMN IF NOT EXISTS \"ItemTrackingType\" text NOT NULL DEFAULT '재고';",
+                    cancellationToken);
+            }
+#pragma warning restore EF1002
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE "InvoiceLines"
+                SET "ItemTrackingType" = COALESCE(NULLIF(TRIM("ItemTrackingType"), ''), '재고');
+                """,
                 cancellationToken);
         }
         catch

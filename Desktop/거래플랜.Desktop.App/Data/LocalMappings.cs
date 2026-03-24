@@ -308,6 +308,8 @@ public static class LocalMappings
         SpecificationOriginal = dto.SpecificationOriginal,
         SpecificationMatchKey = dto.SpecificationMatchKey,
         CategoryName = dto.CategoryName,
+        ItemKind = ItemOperationalPolicy.NormalizeItemKind(dto.ItemKind, dto.TrackingType, dto.CategoryName, dto.IsRental),
+        TrackingType = ItemOperationalPolicy.NormalizeTrackingType(dto.TrackingType, dto.ItemKind, dto.CategoryName, dto.IsRental),
         Unit = dto.Unit,
         CurrentStock = dto.CurrentStock,
         SafetyStock = dto.SafetyStock,
@@ -341,6 +343,8 @@ public static class LocalMappings
         SpecificationOriginal = e.SpecificationOriginal,
         SpecificationMatchKey = e.SpecificationMatchKey,
         CategoryName = e.CategoryName,
+        ItemKind = ItemOperationalPolicy.NormalizeItemKind(e.ItemKind, e.TrackingType, e.CategoryName, e.IsRental),
+        TrackingType = ItemOperationalPolicy.NormalizeTrackingType(e.TrackingType, e.ItemKind, e.CategoryName, e.IsRental),
         Unit = e.Unit,
         CurrentStock = e.CurrentStock,
         SafetyStock = e.SafetyStock,
@@ -427,6 +431,7 @@ public static class LocalMappings
         InstallLocation = dto.InstallLocation,
         RentalStartDate = dto.RentalStartDate,
         RentalEndDate = dto.RentalEndDate,
+        ItemTrackingType = ItemTrackingTypes.Normalize(dto.ItemTrackingType),
         IsDeleted = dto.IsDeleted
     };
 
@@ -447,6 +452,7 @@ public static class LocalMappings
         InstallLocation = e.InstallLocation,
         RentalStartDate = e.RentalStartDate,
         RentalEndDate = e.RentalEndDate,
+        ItemTrackingType = ItemTrackingTypes.Normalize(e.ItemTrackingType),
         IsDeleted = e.IsDeleted
     };
 

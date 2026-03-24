@@ -21,8 +21,12 @@ public sealed partial class InventoryViewModel : ObservableObject
     public ObservableCollection<InventoryItemRow> FilteredItems { get; } = new();
     public ObservableCollection<InventoryMovementRow> SelectedItemMovements { get; } = new();
     public ObservableCollection<LocalItemCategoryOption> ItemCategoryOptions { get; } = new();
+    public IReadOnlyList<string> TrackingTypeFilterOptions { get; } = ["전체", ItemTrackingTypes.Stock, ItemTrackingTypes.Asset, ItemTrackingTypes.NonStock];
+    public IReadOnlyList<string> ItemKindOptions { get; } = ItemKinds.All;
+    public IReadOnlyList<string> TrackingTypeOptions { get; } = ItemTrackingTypes.All;
 
     [ObservableProperty] private string _searchText = string.Empty;
+    [ObservableProperty] private string _selectedTrackingTypeFilter = ItemTrackingTypes.Stock;
     [ObservableProperty] private InventoryItemRow? _selectedItem;
     [ObservableProperty] private int _totalCount;
     [ObservableProperty] private string _selectedOfficeCode;
@@ -33,6 +37,8 @@ public sealed partial class InventoryViewModel : ObservableObject
     [ObservableProperty] private Guid _editId = Guid.NewGuid();
     [ObservableProperty] private string _editName = string.Empty;
     [ObservableProperty] private string _editCategoryName = string.Empty;
+    [ObservableProperty] private string _editItemKind = ItemKinds.Product;
+    [ObservableProperty] private string _editTrackingType = ItemTrackingTypes.Stock;
     [ObservableProperty] private string _editSpec = string.Empty;
     [ObservableProperty] private string _editUnit = string.Empty;
     [ObservableProperty] private decimal _editBoxQty;
@@ -55,7 +61,7 @@ public sealed partial class InventoryViewModel : ObservableObject
     [ObservableProperty] private bool _editIsSale = true;
     [ObservableProperty] private bool _editIsRental;
 
-    [ObservableProperty] private string _statusMessage = "품목 정보는 공용으로 저장되고 재고 수량은 지점별로 계산됩니다.";
+    [ObservableProperty] private string _statusMessage = "품목은 재고/자산/비재고 청구항목으로 구분되며 재고 방식이 '재고'인 품목만 수량을 계산합니다.";
     [ObservableProperty] private bool _isNew = true;
 
     public bool IsAdmin => _session.HasAdministrativePrivileges;
@@ -74,6 +80,13 @@ public sealed partial class InventoryViewModel : ObservableObject
     public decimal BoxCurrentStock => EditBoxQty > 0 ? Math.Floor(EditSelectedOfficeStock / EditBoxQty) : 0;
     public decimal AssetValue => EditSelectedOfficeStock * EditPurchasePrice;
     public decimal ShortageStock => EditSelectedOfficeStock < EditSafetyStock ? EditSafetyStock - EditSelectedOfficeStock : 0;
+    public bool IsInventoryTrackedItem => ItemOperationalPolicy.SupportsInventory(EditTrackingType);
+    public string TrackingTypeGuideText => EditTrackingType switch
+    {
+        ItemTrackingTypes.Asset => "자산: 렌탈 자산/설치현황에서 개별 장비로 관리하고 재고 수량은 반영하지 않습니다.",
+        ItemTrackingTypes.NonStock => "비재고: 렌탈료·설치비·관리비 같은 청구용 항목으로 전표에만 반영하고 재고 수량은 차감하지 않습니다.",
+        _ => "재고: 입출고/재고이동/원가 계산 대상 품목입니다."
+    };
     public LocalStateService LocalStateService => _local;
     public SessionState SessionState => _session;
 
@@ -168,6 +181,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         => IsAdmin && !string.Equals(SelectedOfficeCode, DomainConstants.OfficeYeonsu, StringComparison.OrdinalIgnoreCase);
 
     partial void OnSearchTextChanged(string value) => ApplyFilter();
+    partial void OnSelectedTrackingTypeFilterChanged(string value) => ApplyFilter();
 
     partial void OnSelectedItemChanged(InventoryItemRow? value)
     {
@@ -194,6 +208,63 @@ public sealed partial class InventoryViewModel : ObservableObject
         ShowItworldOfficeCommand.NotifyCanExecuteChanged();
         ShowYeonsuOfficeCommand.NotifyCanExecuteChanged();
         ApplyFilter();
+    }
+
+    partial void OnEditItemKindChanged(string value)
+    {
+        var normalizedItemKind = ItemKinds.Normalize(value);
+        if (!string.Equals(value, normalizedItemKind, StringComparison.Ordinal))
+        {
+            EditItemKind = normalizedItemKind;
+            return;
+        }
+
+        var desiredTrackingType = normalizedItemKind switch
+        {
+            ItemKinds.Asset => ItemTrackingTypes.Asset,
+            ItemKinds.Billing => ItemTrackingTypes.NonStock,
+            _ => ItemTrackingTypes.Stock
+        };
+
+        if (!string.Equals(EditTrackingType, desiredTrackingType, StringComparison.Ordinal))
+            EditTrackingType = desiredTrackingType;
+    }
+
+    partial void OnEditTrackingTypeChanged(string value)
+    {
+        var normalizedTrackingType = ItemTrackingTypes.Normalize(value);
+        if (!string.Equals(value, normalizedTrackingType, StringComparison.Ordinal))
+        {
+            EditTrackingType = normalizedTrackingType;
+            return;
+        }
+
+        var desiredItemKind = normalizedTrackingType switch
+        {
+            ItemTrackingTypes.Asset => ItemKinds.Asset,
+            ItemTrackingTypes.NonStock => ItemKinds.Billing,
+            _ when string.Equals(EditItemKind, ItemKinds.Consumable, StringComparison.Ordinal) => ItemKinds.Consumable,
+            _ => ItemKinds.Product
+        };
+
+        if (!string.Equals(EditItemKind, desiredItemKind, StringComparison.Ordinal))
+            EditItemKind = desiredItemKind;
+
+        if (!ItemOperationalPolicy.SupportsInventory(normalizedTrackingType))
+        {
+            EditSafetyStock = 0m;
+            EditUsenetStock = 0m;
+            EditItworldStock = 0m;
+            EditYeonsuStock = 0m;
+            EditSelectedOfficeStock = 0m;
+            EditTotalStock = 0m;
+        }
+
+        OnPropertyChanged(nameof(IsInventoryTrackedItem));
+        OnPropertyChanged(nameof(TrackingTypeGuideText));
+        OnPropertyChanged(nameof(BoxCurrentStock));
+        OnPropertyChanged(nameof(AssetValue));
+        OnPropertyChanged(nameof(ShortageStock));
     }
 
     partial void OnUsenetTotalQuantityChanged(decimal value) => OnPropertyChanged(nameof(UsenetTabText));
@@ -230,6 +301,8 @@ public sealed partial class InventoryViewModel : ObservableObject
             NameOriginal = normalizedName,
             NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName),
             CategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(EditCategoryName),
+            ItemKind = ItemKinds.Normalize(EditItemKind),
+            TrackingType = ItemTrackingTypes.Normalize(EditTrackingType),
             SpecificationOriginal = normalizedSpec,
             SpecificationMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedSpec),
             Unit = EditUnit,
@@ -246,8 +319,8 @@ public sealed partial class InventoryViewModel : ObservableObject
             LastPurchaseDate = EditLastPurchaseDate,
             LastSaleDate = EditLastSaleDate,
             SimpleMemo = EditSimpleMemo,
-            IsSale = EditIsSale,
-            IsRental = EditIsRental,
+            IsSale = !string.Equals(ItemTrackingTypes.Normalize(EditTrackingType), ItemTrackingTypes.Asset, StringComparison.Ordinal),
+            IsRental = string.Equals(ItemTrackingTypes.Normalize(EditTrackingType), ItemTrackingTypes.Asset, StringComparison.Ordinal),
         };
 
         await _local.UpsertItemAsync(item, SelectedOfficeCode);
@@ -347,18 +420,34 @@ public sealed partial class InventoryViewModel : ObservableObject
     {
         var selectedItemId = SelectedItem?.Id;
         var keyword = (SearchText ?? string.Empty).Trim();
+        var trackingFilter = (SelectedTrackingTypeFilter ?? string.Empty).Trim();
 
         IEnumerable<LocalItem> filtered = _allItems;
+        if (!string.IsNullOrWhiteSpace(trackingFilter) &&
+            !string.Equals(trackingFilter, "전체", StringComparison.OrdinalIgnoreCase))
+        {
+            filtered = filtered.Where(item =>
+                string.Equals(
+                    ItemTrackingTypes.Normalize(item.TrackingType),
+                    ItemTrackingTypes.Normalize(trackingFilter),
+                    StringComparison.OrdinalIgnoreCase));
+        }
+
         if (!string.IsNullOrWhiteSpace(keyword))
         {
             filtered = filtered.Where(item =>
                 item.NameOriginal.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
                 item.CategoryName.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
-                item.SpecificationOriginal.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+                item.SpecificationOriginal.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                ItemOperationalPolicy.NormalizeItemKind(item.ItemKind, item.TrackingType, item.CategoryName, item.IsRental)
+                    .Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                ItemOperationalPolicy.NormalizeTrackingType(item.TrackingType, item.ItemKind, item.CategoryName, item.IsRental)
+                    .Contains(keyword, StringComparison.OrdinalIgnoreCase));
         }
 
         var rows = filtered
-            .OrderBy(item => item.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
+            .OrderBy(item => ItemOperationalPolicy.NormalizeTrackingType(item.TrackingType, item.ItemKind, item.CategoryName, item.IsRental), StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(item => item.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(item => item.SpecificationOriginal, StringComparer.CurrentCultureIgnoreCase)
             .Select(BuildRow)
             .ToList();
@@ -394,6 +483,8 @@ public sealed partial class InventoryViewModel : ObservableObject
         EditId = item.Id;
         EditName = item.NameOriginal;
         EditCategoryName = item.CategoryName;
+        EditItemKind = ItemOperationalPolicy.NormalizeItemKind(item.ItemKind, item.TrackingType, item.CategoryName, item.IsRental);
+        EditTrackingType = ItemOperationalPolicy.NormalizeTrackingType(item.TrackingType, item.ItemKind, item.CategoryName, item.IsRental);
         EditSpec = item.SpecificationOriginal;
         EditUnit = item.Unit;
         EditBoxQty = item.BoxQuantity;
@@ -427,6 +518,8 @@ public sealed partial class InventoryViewModel : ObservableObject
         EditId = Guid.NewGuid();
         EditName = string.Empty;
         EditCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
+        EditItemKind = ItemKinds.Product;
+        EditTrackingType = ItemTrackingTypes.Stock;
         EditSpec = string.Empty;
         EditUnit = string.Empty;
         EditBoxQty = 0m;
@@ -507,15 +600,22 @@ public sealed partial class InventoryViewModel : ObservableObject
         var normalizedSpec = RentalCatalogValueNormalizer.NormalizeDisplayText(EditSpec);
         var normalizedNameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName);
         var normalizedSpecKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedSpec);
+        var normalizedTrackingType = ItemTrackingTypes.Normalize(EditTrackingType);
         var allItems = await _local.GetItemsAsync();
-        var duplicated = allItems.Any(item =>
-            item.Id != EditId &&
-            string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal), normalizedNameKey, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(item.SpecificationOriginal), normalizedSpecKey, StringComparison.OrdinalIgnoreCase));
+        var duplicated = normalizedTrackingType == ItemTrackingTypes.Asset
+            ? false
+            : allItems.Any(item =>
+                item.Id != EditId &&
+                string.Equals(
+                    ItemTrackingTypes.Normalize(item.TrackingType),
+                    normalizedTrackingType,
+                    StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal), normalizedNameKey, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(item.SpecificationOriginal), normalizedSpecKey, StringComparison.OrdinalIgnoreCase));
 
         if (duplicated)
         {
-            StatusMessage = "동일한 품명/규격 조합이 이미 존재합니다.";
+            StatusMessage = "동일한 품명/규격/재고방식 조합이 이미 존재합니다.";
             return false;
         }
 

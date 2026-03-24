@@ -28,6 +28,8 @@ public sealed class InventoryItemRow
     public string NameOriginal => Source.NameOriginal;
     public string SpecificationOriginal => Source.SpecificationOriginal;
     public string CategoryName => Source.CategoryName;
+    public string ItemKind => ItemOperationalPolicy.NormalizeItemKind(Source.ItemKind, Source.TrackingType, Source.CategoryName, Source.IsRental);
+    public string TrackingType => ItemOperationalPolicy.NormalizeTrackingType(Source.TrackingType, Source.ItemKind, Source.CategoryName, Source.IsRental);
     public decimal UsenetQuantity { get; }
     public decimal ItworldQuantity { get; }
     public decimal YeonsuQuantity { get; }

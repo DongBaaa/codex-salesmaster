@@ -328,7 +328,7 @@
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
-                            <TextBlock Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Text="품명 [바코드사용가능]" Margin="2,0,0,1"/>
+                            <TextBlock Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Text="품명/청구항목 [바코드사용가능]" Margin="2,0,0,1"/>
                             <TextBlock Grid.Row="0" Grid.Column="2" Text="규격" Margin="2,0,0,1"/>
                             <TextBlock Grid.Row="0" Grid.Column="3" Text="수량" Margin="2,0,0,1"/>
                             <TextBlock Grid.Row="0" Grid.Column="4" Text="단위" Margin="2,0,0,1"/>
@@ -434,7 +434,7 @@
                     </Grid.ColumnDefinitions>
 
                     <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
-                        <TextBlock Text="[상품 정보]" FontWeight="Bold" Margin="0,0,12,0"/>
+                        <TextBlock Text="[전표 입력 가능 품목 - 재고/비재고 청구항목]" FontWeight="Bold" Margin="0,0,12,0"/>
                         <TextBlock Text="검색" Margin="0,0,6,0"/>
                         <TextBox Width="220" Text="{Binding ItemSearchText, UpdateSourceTrigger=PropertyChanged}"/>
                     </StackPanel>
@@ -442,6 +442,8 @@
                     <DataGrid Grid.Row="1" ItemsSource="{Binding ItemSearchResults}" SelectedItem="{Binding SelectedInputItem}" IsReadOnly="True" BorderThickness="0" FontSize="12" MouseDoubleClick="ItemSearchResultsDataGrid_MouseDoubleClick">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="품목명" Binding="{Binding NameOriginal}" Width="*"/>
+                            <DataGridTextColumn Header="운영유형" Binding="{Binding ItemKind}" Width="86"/>
+                            <DataGridTextColumn Header="재고방식" Binding="{Binding TrackingType}" Width="72"/>
                             <DataGridTextColumn Header="규격" Binding="{Binding SpecificationOriginal}" Width="116"/>
                             <DataGridTextColumn Header="현재재고" Binding="{Binding CurrentStock, StringFormat=N0}" Width="84"/>
                             <DataGridTextColumn Header="매출단가" Binding="{Binding SalePrice, StringFormat=N0}" Width="84"/>

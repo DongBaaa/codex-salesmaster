@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:거래플랜.Desktop.App.Converters"
-        Title="상품/재고 관리"
+        Title="품목/재고 관리"
         Height="900"
         Width="1220"
         MinHeight="860"
@@ -24,6 +24,15 @@
             <Setter Property="Padding" Value="8,4"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="CaretBrush" Value="Black"/>
+            <Setter Property="MinHeight" Value="34"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="MinHeight" Value="34"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
@@ -112,7 +121,7 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Orientation="Horizontal">
-                    <TextBlock Text="상품/재고 관리 - 품목 정보는 공용, 재고 수량은 지점별 관리"
+                    <TextBlock Text="품목/재고 관리 - 재고품목, 자산, 비재고 청구항목을 분리 관리"
                                FontSize="14"
                                FontWeight="Bold"
                                Foreground="#4FC3F7"/>
@@ -163,13 +172,21 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="120"/>
                         <ColumnDefinition Width="12"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="140"/>
+                        <ColumnDefinition Width="12"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="검색:" Margin="0,0,6,0"/>
                     <TextBox Grid.Column="1"
                              Width="120"
                              Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"/>
-                    <StackPanel Grid.Column="3" Orientation="Vertical" VerticalAlignment="Center">
+                    <TextBlock Grid.Column="3" Text="재고방식:" Margin="0,0,6,0"/>
+                    <ComboBox Grid.Column="4"
+                              Width="140"
+                              ItemsSource="{Binding TrackingTypeFilterOptions}"
+                              SelectedItem="{Binding SelectedTrackingTypeFilter}"/>
+                    <StackPanel Grid.Column="6" Orientation="Vertical" VerticalAlignment="Center">
                         <TextBlock Text="{Binding InventoryScopeMessage}"
                                    Foreground="#90CAF9"/>
                         <TextBlock Text="{Binding TransferGuideMessage}"
@@ -220,6 +237,8 @@
                       BorderThickness="0">
                 <DataGrid.Columns>
                     <DataGridTextColumn Header="품목명" Binding="{Binding NameOriginal}" Width="*"/>
+                    <DataGridTextColumn Header="운영유형" Binding="{Binding ItemKind}" Width="92"/>
+                    <DataGridTextColumn Header="재고방식" Binding="{Binding TrackingType}" Width="72"/>
                     <DataGridTextColumn Header="규격" Binding="{Binding SpecificationOriginal}" Width="118"/>
                     <DataGridTextColumn Header="선택 재고" Binding="{Binding DisplayedQuantity, StringFormat=N0}" Width="74"/>
                 </DataGrid.Columns>
@@ -290,6 +309,7 @@
                                         <RowDefinition Height="32"/>
                                         <RowDefinition Height="32"/>
                                         <RowDefinition Height="32"/>
+                                        <RowDefinition Height="32"/>
                                     </Grid.RowDefinitions>
 
                                     <Label Grid.Row="0" Grid.Column="0" Content="품명"/>
@@ -298,30 +318,45 @@
                                     <ComboBox Grid.Row="0"
                                               Grid.Column="3"
                                               ItemsSource="{Binding ItemCategoryOptions}"
-                                              DisplayMemberPath="Name"
-                                              SelectedValuePath="Name"
-                                              SelectedValue="{Binding EditCategoryName, UpdateSourceTrigger=PropertyChanged}"/>
+                                               DisplayMemberPath="Name"
+                                               SelectedValuePath="Name"
+                                               SelectedValue="{Binding EditCategoryName, UpdateSourceTrigger=PropertyChanged}"/>
 
-                                    <Label Grid.Row="1" Grid.Column="0" Content="규격"/>
-                                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditSpec, UpdateSourceTrigger=PropertyChanged}"/>
-                                    <Label Grid.Row="1" Grid.Column="2" Content="단위"/>
-                                    <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding EditUnit, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="1" Grid.Column="0" Content="운영유형"/>
+                                    <ComboBox Grid.Row="1"
+                                              Grid.Column="1"
+                                              ItemsSource="{Binding ItemKindOptions}"
+                                              SelectedItem="{Binding EditItemKind, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="1" Grid.Column="2" Content="재고방식"/>
+                                    <ComboBox Grid.Row="1"
+                                              Grid.Column="3"
+                                              ItemsSource="{Binding TrackingTypeOptions}"
+                                              SelectedItem="{Binding EditTrackingType, UpdateSourceTrigger=PropertyChanged}"/>
 
-                                    <Label Grid.Row="2" Grid.Column="0" Content="기본Box수량"/>
-                                    <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding EditBoxQty, UpdateSourceTrigger=PropertyChanged}"/>
-                                    <Label Grid.Row="2" Grid.Column="2" Content="보관위치"/>
-                                    <TextBox Grid.Row="2" Grid.Column="3" Text="{Binding EditStorageLocation, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="2" Grid.Column="0" Content="규격"/>
+                                    <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding EditSpec, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="2" Grid.Column="2" Content="단위"/>
+                                    <TextBox Grid.Row="2" Grid.Column="3" Text="{Binding EditUnit, UpdateSourceTrigger=PropertyChanged}"/>
+
+                                    <Label Grid.Row="3" Grid.Column="0" Content="기본Box수량"/>
+                                    <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding EditBoxQty, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="3" Grid.Column="2" Content="보관위치"/>
+                                    <TextBox Grid.Row="3" Grid.Column="3" Text="{Binding EditStorageLocation, UpdateSourceTrigger=PropertyChanged}"/>
                                 </Grid>
 
                                 <Separator Background="#2E4060" Margin="0,8,0,8"/>
 
-                                <TextBlock Text="지점별 재고 현황"
+                                <TextBlock Text="재고 수량 현황"
                                            FontSize="14"
                                            FontWeight="Bold"
                                            Foreground="#4FC3F7"/>
-                                <TextBlock Text="품목 등록 내용은 세 지점이 공유하고, 재고 개수는 USENET/ITWORLD/YEONSU별로 따로 계산됩니다."
+                                <TextBlock Text="품목 등록 내용은 세 지점이 공유하고, 재고 방식이 '재고'인 품목만 수량과 원가를 계산합니다."
                                            Foreground="#9FB3C8"
                                            Margin="0,6,0,0"/>
+                                <TextBlock Text="{Binding TrackingTypeGuideText}"
+                                           Foreground="#90CAF9"
+                                           Margin="0,4,0,0"
+                                           TextWrapping="Wrap"/>
 
                                 <StackPanel Margin="0,8,0,0">
                                     <WrapPanel>
@@ -395,9 +430,10 @@
                                         <StackPanel Orientation="Horizontal" Margin="0,0,18,8">
                                             <TextBlock Text="안전재고"/>
                                             <TextBox Width="90"
-                                                     Height="30"
-                                                     Margin="8,0,10,0"
-                                                     Text="{Binding EditSafetyStock, UpdateSourceTrigger=PropertyChanged}"/>
+                                                      Height="30"
+                                                      Margin="8,0,10,0"
+                                                      IsEnabled="{Binding IsInventoryTrackedItem}"
+                                                      Text="{Binding EditSafetyStock, UpdateSourceTrigger=PropertyChanged}"/>
                                             <TextBlock Text="선택 지점 기준으로 부족수량 계산"
                                                        Style="{StaticResource SectionDescriptionStyle}"
                                                        VerticalAlignment="Center"/>
@@ -519,18 +555,23 @@
                                             Padding="14,12"
                                             VerticalAlignment="Top">
                                         <StackPanel>
-                                            <TextBlock Text="품목 구분"
+                                            <TextBlock Text="운영 기준"
                                                        Style="{StaticResource MetricCaptionStyle}"/>
-                                            <CheckBox Content="판매"
-                                                      IsChecked="{Binding EditIsSale}"
-                                                      Foreground="#E0E0E0"
-                                                      FontFamily="맑은 고딕"
-                                                      Margin="0,12,0,0"/>
-                                            <CheckBox Content="렌탈"
-                                                      IsChecked="{Binding EditIsRental}"
-                                                      Foreground="#E0E0E0"
-                                                      FontFamily="맑은 고딕"
-                                                      Margin="0,10,0,0"/>
+                                            <TextBlock Text="{Binding EditItemKind}"
+                                                       Style="{StaticResource MetricValueTextStyle}"
+                                                       Margin="0,8,0,0"/>
+                                            <TextBlock Text="{Binding EditTrackingType, StringFormat='재고방식: {0}'}"
+                                                       Foreground="#E0E0E0"
+                                                       Margin="0,6,0,0"/>
+                                            <TextBlock Text="재고 = 입출고/원가 반영"
+                                                       Foreground="#9FB3C8"
+                                                       Margin="0,12,0,0"/>
+                                            <TextBlock Text="자산 = 렌탈 자산/설치현황용"
+                                                       Foreground="#9FB3C8"
+                                                       Margin="0,6,0,0"/>
+                                            <TextBlock Text="비재고 = 렌탈료/설치비 청구용"
+                                                       Foreground="#9FB3C8"
+                                                       Margin="0,6,0,0"/>
                                         </StackPanel>
                                     </Border>
                                 </Grid>
@@ -553,7 +594,7 @@
                         </Grid.RowDefinitions>
 
                         <DockPanel Grid.Row="0" Margin="0,0,0,8">
-                            <TextBlock Text="재고 이동 / 입출고 내역"
+                            <TextBlock Text="재고 이동 / 입출고 내역 (재고 품목만)"
                                        FontSize="14"
                                        FontWeight="Bold"
                                        Foreground="#4FC3F7"/>

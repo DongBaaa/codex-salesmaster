@@ -104,7 +104,8 @@ public sealed class InvoicesController : ControllerBase
                 ItemNameOriginal = line.ItemNameOriginal, SpecificationOriginal = line.SpecificationOriginal,
                 Unit = line.Unit, Quantity = line.Quantity, UnitPrice = line.UnitPrice,
                 LineAmount = line.LineAmount == 0 ? line.Quantity * line.UnitPrice : line.LineAmount,
-                Remark = line.Remark
+                Remark = line.Remark,
+                ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType)
             });
         }
 
@@ -148,7 +149,8 @@ public sealed class InvoicesController : ControllerBase
                 ItemNameOriginal = line.ItemNameOriginal, SpecificationOriginal = line.SpecificationOriginal,
                 Unit = line.Unit, Quantity = line.Quantity, UnitPrice = line.UnitPrice,
                 LineAmount = line.LineAmount == 0 ? line.Quantity * line.UnitPrice : line.LineAmount,
-                Remark = line.Remark
+                Remark = line.Remark,
+                ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType)
             });
         }
 

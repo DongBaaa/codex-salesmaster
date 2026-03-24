@@ -353,6 +353,8 @@ public static class DtoMappings
             NameOriginal = entity.NameOriginal, NameMatchKey = entity.NameMatchKey,
             SpecificationOriginal = entity.SpecificationOriginal, SpecificationMatchKey = entity.SpecificationMatchKey,
             CategoryName = entity.CategoryName,
+            ItemKind = ItemOperationalPolicy.NormalizeItemKind(entity.ItemKind, entity.TrackingType, entity.CategoryName, entity.IsRental),
+            TrackingType = ItemOperationalPolicy.NormalizeTrackingType(entity.TrackingType, entity.ItemKind, entity.CategoryName, entity.IsRental),
             Unit = entity.Unit,
             CurrentStock = entity.CurrentStock,
             SafetyStock = entity.SafetyStock,
@@ -376,6 +378,8 @@ public static class DtoMappings
         entity.SpecificationOriginal = dto.SpecificationOriginal;
         entity.SpecificationMatchKey = string.IsNullOrWhiteSpace(dto.SpecificationMatchKey) ? MatchKeyNormalizer.Normalize(dto.SpecificationOriginal) : dto.SpecificationMatchKey;
         entity.CategoryName = dto.CategoryName;
+        entity.ItemKind = ItemOperationalPolicy.NormalizeItemKind(dto.ItemKind, dto.TrackingType, dto.CategoryName, dto.IsRental);
+        entity.TrackingType = ItemOperationalPolicy.NormalizeTrackingType(dto.TrackingType, dto.ItemKind, dto.CategoryName, dto.IsRental);
         entity.Unit = dto.Unit;
         entity.CurrentStock = dto.CurrentStock;
         entity.SafetyStock = dto.SafetyStock;
@@ -877,7 +881,7 @@ public static class DtoMappings
             LineAmount = entity.LineAmount, Remark = entity.Remark,
             SerialNumber = entity.SerialNumber, MaterialNumber = entity.MaterialNumber,
             InstallLocation = entity.InstallLocation, RentalStartDate = entity.RentalStartDate,
-            RentalEndDate = entity.RentalEndDate, IsDeleted = entity.IsDeleted
+            RentalEndDate = entity.RentalEndDate, ItemTrackingType = ItemTrackingTypes.Normalize(entity.ItemTrackingType), IsDeleted = entity.IsDeleted
         };
 
     public static void Apply(this Invoice entity, InvoiceDto dto)

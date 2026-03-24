@@ -634,6 +634,7 @@ public sealed partial class LocalStateService
         item.SpecificationOriginal = RentalCatalogValueNormalizer.NormalizeDisplayText(item.SpecificationOriginal);
         item.SpecificationMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.SpecificationOriginal);
         item.CategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(item.CategoryName);
+        NormalizeItemOperationalState(item);
         item.IsDirty = true;
         item.UpdatedAtUtc = DateTime.UtcNow;
 
@@ -645,7 +646,12 @@ public sealed partial class LocalStateService
         else
             _db.Entry(existing).CurrentValues.SetValues(item);
 
-        await SyncItemWarehouseStocksAsync(item.Id, item.CurrentStock, preferredOfficeCode, removeStocks: false, ct);
+        await SyncItemWarehouseStocksAsync(
+            item.Id,
+            item.CurrentStock,
+            preferredOfficeCode,
+            removeStocks: !ItemOperationalPolicy.SupportsInventory(item.TrackingType),
+            ct);
         await _db.SaveChangesAsync(ct);
         RaiseInventoryStateChanged();
         return item;
@@ -1240,6 +1246,10 @@ public sealed partial class LocalStateService
         var validLines = (invoice.Lines ?? new List<LocalInvoiceLine>())
             .Where(line => !line.IsDeleted && !string.IsNullOrWhiteSpace(line.ItemNameOriginal))
             .ToList();
+
+        var itemTrackingMap = await BuildItemTrackingMapAsync(ct);
+        foreach (var line in validLines)
+            line.ItemTrackingType = ResolveInvoiceLineTrackingType(line, itemTrackingMap);
 
         var totalAmount = validLines.Sum(line => line.LineAmount);
         var supplyAmount = Math.Round(totalAmount / 1.1m, 0, MidpointRounding.AwayFromZero);
@@ -3641,6 +3651,7 @@ public sealed partial class LocalStateService
             InstallLocation = line.InstallLocation ?? string.Empty,
             RentalStartDate = line.RentalStartDate,
             RentalEndDate = line.RentalEndDate,
+            ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType),
             IsDeleted = false
         }).ToList();
     }
@@ -3905,6 +3916,7 @@ public sealed partial class LocalStateService
         var stockMap = new Dictionary<(Guid ItemId, string WarehouseCode), decimal>();
         var layerMap = new Dictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>>();
         var serialMap = new Dictionary<string, LocalSerialLedger>(StringComparer.OrdinalIgnoreCase);
+        var itemTrackingMap = await BuildItemTrackingMapAsync(ct);
         var timeline = invoices
             .Select(invoice => new InventoryTimelineEntry(
                 invoice.InvoiceDate,
@@ -3927,7 +3939,7 @@ public sealed partial class LocalStateService
         {
             if (entry.Invoice is not null)
             {
-                ApplyInvoiceInventoryEntry(entry.Invoice, context, stockMap, layerMap, serialMap);
+                ApplyInvoiceInventoryEntry(entry.Invoice, context, stockMap, layerMap, serialMap, itemTrackingMap);
             }
             else if (entry.Transfer is not null)
             {
@@ -4034,6 +4046,32 @@ ON CONFLICT(ItemId, WarehouseCode) DO UPDATE SET
         };
     }
 
+    private static void NormalizeItemOperationalState(LocalItem item)
+    {
+        item.TrackingType = ItemOperationalPolicy.NormalizeTrackingType(item.TrackingType, item.ItemKind, item.CategoryName, item.IsRental);
+        item.ItemKind = ItemOperationalPolicy.NormalizeItemKind(item.ItemKind, item.TrackingType, item.CategoryName, item.IsRental);
+
+        switch (item.TrackingType)
+        {
+            case ItemTrackingTypes.Asset:
+                item.IsRental = true;
+                item.IsSale = false;
+                item.CurrentStock = 0m;
+                break;
+
+            case ItemTrackingTypes.NonStock:
+                item.IsRental = false;
+                item.IsSale = true;
+                item.CurrentStock = 0m;
+                break;
+
+            default:
+                item.IsRental = false;
+                item.IsSale = true;
+                break;
+        }
+    }
+
     private async Task<string> EnsureItemCategoryOptionExistsAsync(string? categoryName, CancellationToken ct)
     {
         var normalizedName = SelectionOptionDefaults.NormalizeItemCategoryName(categoryName);
@@ -4093,12 +4131,46 @@ ON CONFLICT(ItemId, WarehouseCode) DO UPDATE SET
     private void RaiseInventoryStateChanged()
         => InventoryStateChanged?.Invoke(this, EventArgs.Empty);
 
+    private async Task<Dictionary<Guid, string>> BuildItemTrackingMapAsync(CancellationToken ct)
+    {
+        return await _db.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => !item.IsDeleted)
+            .ToDictionaryAsync(
+                item => item.Id,
+                item => ItemOperationalPolicy.NormalizeTrackingType(item.TrackingType, item.ItemKind, item.CategoryName, item.IsRental),
+                ct);
+    }
+
+    private static string ResolveInvoiceLineTrackingType(
+        LocalInvoiceLine line,
+        IReadOnlyDictionary<Guid, string> itemTrackingMap)
+    {
+        if (!string.IsNullOrWhiteSpace(line.ItemTrackingType))
+            return ItemTrackingTypes.Normalize(
+                line.ItemTrackingType,
+                line.ItemId.HasValue ? ItemTrackingTypes.Stock : ItemTrackingTypes.NonStock);
+
+        if (line.ItemId.HasValue &&
+            itemTrackingMap.TryGetValue(line.ItemId.Value, out var trackingType) &&
+            !string.IsNullOrWhiteSpace(trackingType))
+        {
+            return ItemTrackingTypes.Normalize(trackingType);
+        }
+
+        return line.ItemId.HasValue
+            ? ItemTrackingTypes.Stock
+            : ItemTrackingTypes.NonStock;
+    }
+
     private void ApplyInvoiceInventoryEntry(
         LocalInvoice invoice,
         InvoiceSaveContext context,
         IDictionary<(Guid ItemId, string WarehouseCode), decimal> stockMap,
         IDictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>> layerMap,
-        IDictionary<string, LocalSerialLedger> serialMap)
+        IDictionary<string, LocalSerialLedger> serialMap,
+        IReadOnlyDictionary<Guid, string> itemTrackingMap)
     {
         var warehouseCode = NormalizeWarehouseCode(
             invoice.SourceWarehouseCode,
@@ -4110,6 +4182,12 @@ ON CONFLICT(ItemId, WarehouseCode) DO UPDATE SET
         foreach (var line in invoice.Lines)
         {
             if (line.ItemId is null)
+                continue;
+
+            var lineTrackingType = ResolveInvoiceLineTrackingType(line, itemTrackingMap);
+            if (!string.Equals(line.ItemTrackingType, lineTrackingType, StringComparison.Ordinal))
+                line.ItemTrackingType = lineTrackingType;
+            if (!ItemOperationalPolicy.SupportsInventory(lineTrackingType))
                 continue;
 
             var quantity = Math.Abs(line.Quantity);

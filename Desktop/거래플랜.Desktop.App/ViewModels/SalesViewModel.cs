@@ -449,10 +449,11 @@ public sealed partial class SalesViewModel : ObservableObject
     public List<LocalItem> FindItemsForQuickInput(string keyword, int maxCount = 300)
     {
         var text = (keyword ?? string.Empty).Trim();
+        var lookupItems = GetInvoiceLookupItems();
         if (string.IsNullOrEmpty(text))
-            return _allItems.Take(maxCount).ToList();
+            return lookupItems.Take(maxCount).ToList();
 
-        return _allItems
+        return lookupItems
             .Where(i =>
                 i.NameOriginal.Contains(text, StringComparison.OrdinalIgnoreCase) ||
                 i.SpecificationOriginal.Contains(text, StringComparison.OrdinalIgnoreCase) ||
@@ -573,6 +574,9 @@ public sealed partial class SalesViewModel : ObservableObject
         var line = new InvoiceLineEditModel
         {
             ItemId = SelectedInputItem?.Id,
+            ItemTrackingType = SelectedInputItem is null
+                ? ItemTrackingTypes.NonStock
+                : ItemTrackingTypes.Normalize(SelectedInputItem.TrackingType),
             ItemName = InputItemName,
             Specification = InputSpec,
             Unit = InputUnit,
@@ -591,6 +595,18 @@ public sealed partial class SalesViewModel : ObservableObject
     private void UpdateLine()
     {
         if (SelectedLine is null || string.IsNullOrWhiteSpace(InputItemName)) return;
+        var shouldKeepExistingItemLink = SelectedInputItem is null &&
+            string.Equals(SelectedLine.ItemName, InputItemName, StringComparison.Ordinal) &&
+            string.Equals(SelectedLine.Specification, InputSpec, StringComparison.Ordinal);
+
+        SelectedLine.ItemId = SelectedInputItem?.Id ?? (shouldKeepExistingItemLink ? SelectedLine.ItemId : null);
+        SelectedLine.ItemTrackingType = SelectedInputItem is not null
+            ? ItemTrackingTypes.Normalize(SelectedInputItem.TrackingType)
+            : shouldKeepExistingItemLink
+                ? ItemTrackingTypes.Normalize(
+                    SelectedLine.ItemTrackingType,
+                    SelectedLine.ItemId.HasValue ? ItemTrackingTypes.Stock : ItemTrackingTypes.NonStock)
+                : ItemTrackingTypes.NonStock;
         SelectedLine.ItemName = InputItemName;
         SelectedLine.Specification = InputSpec;
         SelectedLine.Unit = InputUnit;
@@ -657,9 +673,10 @@ public sealed partial class SalesViewModel : ObservableObject
     {
         var text = ItemSearchText.Trim();
         ItemSearchResults.Clear();
+        var lookupItems = GetInvoiceLookupItems();
         var list = string.IsNullOrEmpty(text)
-            ? _allItems.Take(50)
-            : _allItems.Where(i =>
+            ? lookupItems.Take(50)
+            : lookupItems.Where(i =>
                 i.NameOriginal.Contains(text, StringComparison.OrdinalIgnoreCase) ||
                 i.SpecificationOriginal.Contains(text, StringComparison.OrdinalIgnoreCase));
         foreach (var i in list)
@@ -704,6 +721,7 @@ public sealed partial class SalesViewModel : ObservableObject
         {
             builder.Append("||")
                 .Append(line.ItemId?.ToString("D") ?? string.Empty)
+                .Append('|').Append(line.ItemTrackingType ?? string.Empty)
                 .Append('|').Append(line.ItemName ?? string.Empty)
                 .Append('|').Append(line.Specification ?? string.Empty)
                 .Append('|').Append(line.Unit ?? string.Empty)
@@ -716,6 +734,9 @@ public sealed partial class SalesViewModel : ObservableObject
 
         return builder.ToString();
     }
+
+    private IEnumerable<LocalItem> GetInvoiceLookupItems()
+        => _allItems.Where(item => ItemOperationalPolicy.SupportsInvoiceLookup(item.TrackingType));
 
     private void CaptureBaselineState()
     {

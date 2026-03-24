@@ -20,6 +20,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private readonly RentalDocumentService _documents;
     private readonly IPrintService _printService;
     private readonly SessionState _session;
+    private bool _suppressFilterReload;
+    private bool _pendingFilterReload;
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private DisplayOption? _selectedOfficeFilter;
@@ -61,24 +63,28 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private DateTime? _editContractStartDate;
     [ObservableProperty] private DateTime? _editRentalEndDate;
 
-    public ObservableCollection<DisplayOption> OfficeOptions { get; } = new();
+    public ObservableCollection<DisplayOption> FilterOfficeOptions { get; } = new();
+    public ObservableCollection<DisplayOption> EditOfficeOptions { get; } = new();
     public ObservableCollection<string> AssignedUsernameOptions { get; } = new();
     public ObservableCollection<string> AssetStatusOptions { get; } = new();
     public ObservableCollection<LocalItemCategoryOption> ItemCategoryOptions { get; } = new();
     public ObservableCollection<RentalAssetViewRow> Rows { get; } = new();
 
-    public bool CanViewAll => _session.HasAdministrativePrivileges ||
-                              _session.HasGlobalDataScope ||
-                              _session.HasAssignedPermission(AppPermissionNames.RentalViewAll) ||
-                              _session.HasAssignedPermission(AppPermissionNames.RentalEditAll);
-    public bool CanManageAll => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.RentalEditAll);
+    public bool CanViewAll => _rental.CanViewAllAssetScope(_session);
+    public bool CanManageAll => _rental.CanManageAllAssetScope(_session);
+    public bool CanEditOfficeSelection => CanManageAll;
     public bool CanSave => SelectedRow is null || CanEditCurrentSelection;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;
     public bool IsNewAsset => SelectedRow is null;
     public LocalStateService LocalStateService => _local;
     public SessionState SessionState => _session;
 
-    private bool CanEditCurrentSelection => SelectedRow is null || CanEditScope(SelectedRow.Source.AssignedUsername, SelectedRow.Source.ResponsibleOfficeCode);
+    private bool CanEditCurrentSelection => SelectedRow is null || _rental.CanEditAssetScope(
+        SelectedRow.Source.AssignedUsername,
+        string.IsNullOrWhiteSpace(SelectedRow.Source.ResponsibleOfficeCode)
+            ? SelectedRow.Source.ManagementCompanyCode
+            : SelectedRow.Source.ResponsibleOfficeCode,
+        _session);
 
     public RentalAssetViewModel(
         RentalStateService rental,
@@ -110,33 +116,58 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         NewAsset();
     }
 
+    partial void OnSearchTextChanged(string value) => RequestFilterReload();
+    partial void OnSelectedOfficeFilterChanged(DisplayOption? value) => RequestFilterReload();
+    partial void OnSelectedAssignedUsernameFilterChanged(string value) => RequestFilterReload();
+    partial void OnSelectedStatusFilterChanged(string value) => RequestFilterReload();
+    partial void OnReferenceDateChanged(DateOnly value) => RequestFilterReload();
+
     [RelayCommand]
     private async Task ReloadAsync()
     {
-        IsBusy = true;
-        try
+        if (IsBusy)
         {
-            var rows = await _rental.GetAssetRowsAsync(new RentalAssetFilter
+            _pendingFilterReload = true;
+            return;
+        }
+
+        do
+        {
+            _pendingFilterReload = false;
+            IsBusy = true;
+            try
             {
-                SearchText = SearchText,
-                OfficeCode = SelectedOfficeFilter?.Value == AllOption ? string.Empty : SelectedOfficeFilter?.Value ?? string.Empty,
-                AssignedUsername = SelectedAssignedUsernameFilter == AllOption ? string.Empty : SelectedAssignedUsernameFilter,
-                AssetStatus = SelectedStatusFilter == AllOption ? string.Empty : SelectedStatusFilter,
-                ReferenceDate = ReferenceDate
-            }, _session);
+                var selectedRowId = SelectedRow?.Source.Id;
+                var rows = await _rental.GetAssetRowsAsync(new RentalAssetFilter
+                {
+                    SearchText = SearchText,
+                    OfficeCode = SelectedOfficeFilter?.Value == AllOption ? string.Empty : SelectedOfficeFilter?.Value ?? string.Empty,
+                    AssignedUsername = SelectedAssignedUsernameFilter == AllOption ? string.Empty : SelectedAssignedUsernameFilter,
+                    AssetStatus = SelectedStatusFilter == AllOption ? string.Empty : SelectedStatusFilter,
+                    ReferenceDate = ReferenceDate
+                }, _session);
 
-            Rows.Clear();
-            foreach (var row in rows)
-                Rows.Add(row);
+                Rows.Clear();
+                foreach (var row in rows)
+                    Rows.Add(row);
 
-            StatusMessage = rows.Count == 0
-                ? "조건에 맞는 렌탈 자산이 없습니다."
-                : $"렌탈 자산 {rows.Count:N0}건을 조회했습니다.";
+                if (selectedRowId.HasValue)
+                {
+                    SelectedRow = Rows.FirstOrDefault(row => row.Source.Id == selectedRowId.Value);
+                    if (SelectedRow is null)
+                        NewAsset();
+                }
+
+                StatusMessage = rows.Count == 0
+                    ? "조건에 맞는 렌탈 자산이 없습니다."
+                    : $"렌탈 자산 {rows.Count:N0}건을 조회했습니다.";
+            }
+            finally
+            {
+                IsBusy = false;
+            }
         }
-        finally
-        {
-            IsBusy = false;
-        }
+        while (_pendingFilterReload);
     }
 
     [RelayCommand]
@@ -258,8 +289,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         EditItemId = null;
         EditManagementId = string.Empty;
         EditManagementNumber = string.Empty;
-        EditOfficeCode = OfficeOptions.FirstOrDefault(option => option.Value != AllOption)?.Value
-            ?? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
+        EditOfficeCode = EditOfficeOptions.FirstOrDefault()?.Value
+            ?? _rental.GetDefaultAssetOfficeCode(_session);
         EditCurrentLocation = string.Empty;
         EditItemCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
         EditManufacturer = string.Empty;
@@ -332,8 +363,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
 
         var customer = await ResolveDocumentCustomerAsync(asset);
-        var officeOptions = OfficeOptions
-            .Where(option => !string.Equals(option.Value, AllOption, StringComparison.OrdinalIgnoreCase))
+        var officeOptions = EditOfficeOptions
             .Select(option => new DisplayOption
             {
                 Value = option.Value,
@@ -349,7 +379,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             officeOptions,
             companyProfiles,
             string.IsNullOrWhiteSpace(asset.ResponsibleOfficeCode) ? company.OfficeCode : asset.ResponsibleOfficeCode,
-            _session.HasAdministrativePrivileges);
+            CanManageAll);
         var editorWindow = new RentalContractEditorWindow(editorViewModel)
         {
             Owner = GetActiveWindow()
@@ -530,7 +560,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     public async Task<IReadOnlyList<LookupRow>> BuildItemLookupRowsAsync()
     {
-        var items = await _local.GetItemsAsync();
+        var items = (await _local.GetItemsAsync())
+            .Where(item => ItemOperationalPolicy.IsAsset(item.TrackingType))
+            .ToList();
         return items
             .OrderBy(item => item.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
             .Select(item => new LookupRow
@@ -541,7 +573,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 {
                     item.SpecificationOriginal,
                     item.MaterialNumber,
-                    $"재고 {item.CurrentStock:N0}"
+                    item.SerialNumber
                 }.Where(value => !string.IsNullOrWhiteSpace(value))),
                 Tag = item
             })
@@ -609,27 +641,75 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private async Task ReloadFiltersAsync()
     {
-        OfficeOptions.Clear();
-        OfficeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
-        foreach (var office in await _local.GetOfficesAsync())
+        var offices = await _local.GetOfficesAsync();
+        var readableOfficeCodes = _rental.GetReadableAssetOfficeCodes(_session);
+        var currentFilterValue = SelectedOfficeFilter?.Value;
+        var currentEditOfficeCode = EditOfficeCode;
+
+        _suppressFilterReload = true;
+        try
         {
-            OfficeOptions.Add(new DisplayOption
+            FilterOfficeOptions.Clear();
+            FilterOfficeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
+            EditOfficeOptions.Clear();
+
+            foreach (var office in offices
+                         .Where(office => readableOfficeCodes.Contains(office.Code))
+                         .OrderBy(office => office.Name, StringComparer.CurrentCultureIgnoreCase))
             {
-                Value = office.Code,
-                DisplayName = office.Name
-            });
+                var option = new DisplayOption
+                {
+                    Value = office.Code,
+                    DisplayName = office.Name
+                };
+                FilterOfficeOptions.Add(option);
+                EditOfficeOptions.Add(new DisplayOption
+                {
+                    Value = office.Code,
+                    DisplayName = office.Name
+                });
+            }
+
+            if (EditOfficeOptions.Count == 0)
+            {
+                var fallbackOfficeCode = _rental.GetDefaultAssetOfficeCode(_session);
+                var fallbackDisplayName = OfficeCodeCatalog.GetOfficeDisplayName(fallbackOfficeCode);
+                EditOfficeOptions.Add(new DisplayOption
+                {
+                    Value = fallbackOfficeCode,
+                    DisplayName = fallbackDisplayName
+                });
+                FilterOfficeOptions.Add(new DisplayOption
+                {
+                    Value = fallbackOfficeCode,
+                    DisplayName = fallbackDisplayName
+                });
+            }
+
+            SelectedOfficeFilter = FilterOfficeOptions.FirstOrDefault(option =>
+                                       string.Equals(option.Value, currentFilterValue, StringComparison.OrdinalIgnoreCase))
+                                   ?? FilterOfficeOptions.FirstOrDefault(option => option.Value == AllOption)
+                                   ?? FilterOfficeOptions.FirstOrDefault();
+
+            EditOfficeCode = EditOfficeOptions.FirstOrDefault(option =>
+                               string.Equals(option.Value, currentEditOfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
+                           ?? EditOfficeOptions.First().Value;
+
+            AssignedUsernameOptions.Clear();
+            AssignedUsernameOptions.Add(AllOption);
+            if (CanViewAll)
+            {
+                foreach (var username in await _rental.GetAssignedUsernamesAsync())
+                    AssignedUsernameOptions.Add(username);
+            }
+
+            if (!AssignedUsernameOptions.Contains(SelectedAssignedUsernameFilter))
+                SelectedAssignedUsernameFilter = AllOption;
         }
-
-        SelectedOfficeFilter ??= OfficeOptions.FirstOrDefault();
-        if (!OfficeOptions.Any(option => option.Value == EditOfficeCode) && OfficeOptions.Count > 1)
-            EditOfficeCode = OfficeOptions[1].Value;
-
-        AssignedUsernameOptions.Clear();
-        AssignedUsernameOptions.Add(AllOption);
-        foreach (var username in await _rental.GetAssignedUsernamesAsync())
-            AssignedUsernameOptions.Add(username);
-        if (!AssignedUsernameOptions.Contains(SelectedAssignedUsernameFilter))
-            SelectedAssignedUsernameFilter = AllOption;
+        finally
+        {
+            _suppressFilterReload = false;
+        }
     }
 
     private async void HandleInventoryStateChanged(object? sender, EventArgs e)
@@ -671,24 +751,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         SelectedRow = Rows.FirstOrDefault(row => row.Source.Id == entityId);
     }
 
-    private bool CanEditScope(string? assignedUsername, string? officeCode)
+    private void RequestFilterReload()
     {
-        if (CanManageAll)
-            return true;
+        if (_suppressFilterReload)
+            return;
 
-        var username = (_session.User?.Username ?? string.Empty).Trim();
-        var normalizedAssigned = (assignedUsername ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(normalizedAssigned) &&
-            string.Equals(normalizedAssigned, username, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var rowOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, DomainConstants.OfficeUsenet);
-        var userOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
-        return string.IsNullOrWhiteSpace(normalizedAssigned) &&
-               !string.IsNullOrWhiteSpace(rowOffice) &&
-               string.Equals(rowOffice, userOffice, StringComparison.OrdinalIgnoreCase);
+        _ = ReloadAsync();
     }
 
     private static DateOnly? ToDateOnly(DateTime? value)

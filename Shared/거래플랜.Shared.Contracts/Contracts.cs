@@ -275,6 +275,8 @@ public sealed class ItemDto : SyncEntityDto
     public string SpecificationOriginal { get; set; } = string.Empty;
     public string SpecificationMatchKey { get; set; } = string.Empty;
     public string CategoryName { get; set; } = string.Empty;
+    public string ItemKind { get; set; } = ItemKinds.Product;
+    public string TrackingType { get; set; } = ItemTrackingTypes.Stock;
     public string Unit { get; set; } = string.Empty;
     public decimal CurrentStock { get; set; }
     public decimal SafetyStock { get; set; }
@@ -330,6 +332,7 @@ public sealed class InvoiceLineDto
     public string InstallLocation { get; set; } = string.Empty;
     public DateOnly? RentalStartDate { get; set; }
     public DateOnly? RentalEndDate { get; set; }
+    public string ItemTrackingType { get; set; } = ItemTrackingTypes.Stock;
     public bool IsDeleted { get; set; }
 }
 
