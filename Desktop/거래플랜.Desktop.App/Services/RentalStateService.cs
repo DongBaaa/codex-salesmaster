@@ -14,6 +14,24 @@ public sealed class RentalStateService
     private const string AlertDaysSettingKey = "Rental.AlertDaysBefore";
     private const string BillingWorkbookPathSettingKey = "Rental.ImportBillingWorkbookPath";
     private const string AssetWorkbookPathSettingKey = "Rental.ImportAssetWorkbookPath";
+    private static readonly TimeZoneInfo KoreaTimeZone = ResolveKoreaTimeZone();
+    private static readonly SemaphoreSlim AssetSaveLock = new(1, 1);
+    private static readonly IReadOnlyDictionary<string, string> ImportLocationStatusMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["렌탈"] = "임대진행중",
+        ["창고"] = "회수",
+        ["판매"] = "판매",
+        ["폐기"] = "폐기"
+    };
+    private static readonly IReadOnlyDictionary<string, string> ImportManagementOfficeMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["아이티월드"] = DomainConstants.OfficeItworld,
+        ["ITWORLD"] = DomainConstants.OfficeItworld,
+        ["유즈넷"] = DomainConstants.OfficeUsenet,
+        ["USENET"] = DomainConstants.OfficeUsenet,
+        ["연수구"] = DomainConstants.OfficeYeonsu,
+        ["YEONSU"] = DomainConstants.OfficeYeonsu
+    };
 
     private readonly LocalDbContext _db;
 
@@ -563,59 +581,71 @@ public sealed class RentalStateService
         if (asset is null)
             throw new ArgumentNullException(nameof(asset));
 
-        var existing = await _db.RentalAssets.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(current => current.Id == asset.Id, ct);
-        if (existing is not null && !CanAccessRental(existing.AssignedUsername, existing.ResponsibleOfficeCode, session))
-            return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 수정할 수 없습니다.");
-
-        if (string.IsNullOrWhiteSpace(asset.ManagementNumber) && string.IsNullOrWhiteSpace(asset.ManagementId))
-            return LocalMutationResult.Denied("관리번호 또는 관리ID를 입력하세요.");
-
-        var officeCode = await ResolveRentalOfficeCodeAsync(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, session.OfficeCode, ct);
-        if (string.IsNullOrWhiteSpace(officeCode))
-            return LocalMutationResult.Denied("담당지점을 선택하세요.");
-
-        asset.ManagementCompanyCode = officeCode;
-        asset.ResponsibleOfficeCode = officeCode;
-        asset.AssignedUsername = NormalizeAssignedUsername(asset.AssignedUsername, session, allowBlankForAdmin: true);
-        asset.ManagementNumber = (asset.ManagementNumber ?? string.Empty).Trim();
-        asset.ManagementId = (asset.ManagementId ?? string.Empty).Trim();
-        asset.CustomerName = (asset.CustomerName ?? string.Empty).Trim();
-        asset.ModelName = (asset.ModelName ?? string.Empty).Trim();
-        await EnrichAssetReferencesAsync(asset, ct);
-        asset.AssetKey = string.IsNullOrWhiteSpace(asset.AssetKey)
-            ? BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ModelName)
-            : asset.AssetKey;
-        asset.AssetStatus = ResolveAssetStatus(asset.AssetStatus, asset.CurrentLocation, asset.DisposalDate);
-        asset.IsDeleted = false;
-
-        var duplicate = await _db.RentalAssets.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(current => current.Id != asset.Id && current.AssetKey == asset.AssetKey, ct);
-        if (duplicate is not null)
-            return LocalMutationResult.Denied("같은 렌탈 자산이 이미 존재합니다.");
-
-        var now = DateTime.UtcNow;
-        if (existing is null)
+        await AssetSaveLock.WaitAsync(ct);
+        try
         {
-            asset.Id = asset.Id == Guid.Empty ? Guid.NewGuid() : asset.Id;
-            asset.CreatedAtUtc = now;
-            asset.UpdatedAtUtc = now;
-            asset.IsDirty = true;
-            _db.RentalAssets.Add(asset);
+            var existing = await _db.RentalAssets.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == asset.Id, ct);
+            if (existing is not null && !CanAccessRental(existing.AssignedUsername, existing.ResponsibleOfficeCode, session))
+                return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 수정할 수 없습니다.");
+
+            var officeCode = await ResolveRentalOfficeCodeAsync(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, session.OfficeCode, ct);
+            if (string.IsNullOrWhiteSpace(officeCode))
+                return LocalMutationResult.Denied("담당지점을 선택하세요.");
+
+            asset.ManagementCompanyCode = officeCode;
+            asset.ResponsibleOfficeCode = officeCode;
+            asset.AssignedUsername = NormalizeAssignedUsername(asset.AssignedUsername, session, allowBlankForAdmin: true);
+            asset.ManagementNumber = existing is null
+                ? string.Empty
+                : (asset.ManagementNumber ?? existing.ManagementNumber ?? string.Empty).Trim();
+            asset.ManagementId = existing is null
+                ? string.Empty
+                : (asset.ManagementId ?? existing.ManagementId ?? string.Empty).Trim();
+            asset.CustomerName = (asset.CustomerName ?? string.Empty).Trim();
+            asset.ModelName = (asset.ModelName ?? string.Empty).Trim();
+            await EnrichAssetReferencesAsync(asset, ct);
+            await EnsureAssetManagementIdentifiersAsync(
+                asset,
+                existing,
+                existing?.CreatedAtUtc ?? DateTime.UtcNow,
+                ct);
+            asset.AssetKey = BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ModelName);
+            asset.AssetStatus = ResolveAssetStatus(asset.AssetStatus, asset.CurrentLocation, asset.DisposalDate);
+            asset.IsDeleted = false;
+
+            var duplicate = await _db.RentalAssets.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id != asset.Id && current.AssetKey == asset.AssetKey, ct);
+            if (duplicate is not null)
+                return LocalMutationResult.Denied("같은 렌탈 자산이 이미 존재합니다.");
+
+            var now = DateTime.UtcNow;
+            if (existing is null)
+            {
+                asset.Id = asset.Id == Guid.Empty ? Guid.NewGuid() : asset.Id;
+                asset.CreatedAtUtc = now;
+                asset.UpdatedAtUtc = now;
+                asset.IsDirty = true;
+                _db.RentalAssets.Add(asset);
+            }
+            else
+            {
+                asset.CreatedAtUtc = existing.CreatedAtUtc;
+                asset.UpdatedAtUtc = now;
+                asset.IsDirty = true;
+                _db.Entry(existing).CurrentValues.SetValues(asset);
+            }
+
+            if (asset.BillingProfileId is null && !string.IsNullOrWhiteSpace(asset.CustomerName))
+                asset.BillingProfileId = await FindMatchingBillingProfileIdAsync(asset, ct);
+
+            await _db.SaveChangesAsync(ct);
+            return LocalMutationResult.Ok(asset.Id, "렌탈 자산을 저장했습니다.");
         }
-        else
+        finally
         {
-            asset.CreatedAtUtc = existing.CreatedAtUtc;
-            asset.UpdatedAtUtc = now;
-            asset.IsDirty = true;
-            _db.Entry(existing).CurrentValues.SetValues(asset);
+            AssetSaveLock.Release();
         }
-
-        if (asset.BillingProfileId is null && !string.IsNullOrWhiteSpace(asset.CustomerName))
-            asset.BillingProfileId = await FindMatchingBillingProfileIdAsync(asset, ct);
-
-        await _db.SaveChangesAsync(ct);
-        return LocalMutationResult.Ok(asset.Id, "렌탈 자산을 저장했습니다.");
     }
 
     public async Task<LocalMutationResult> DeleteAssetAsync(Guid assetId, SessionState session, CancellationToken ct = default)
@@ -873,45 +903,80 @@ public sealed class RentalStateService
         for (var rowIndex = headerRowIndex + 1; rowIndex < table.Rows.Count; rowIndex++)
         {
             var row = table.Rows[rowIndex];
-            var managementNumber = GetCellString(row, headerMap, "관리번호");
+            var sourceManagementId = GetCellString(row, headerMap, "관리ID");
+            var sourceManagementNumber = GetCellString(row, headerMap, "관리번호");
+            var officeValue = GetCellString(row, headerMap, "관리업체", "담당지점");
+            var currentLocation = GetCellString(row, headerMap, "현재위치").Trim();
+            var productCategory = GetCellString(row, headerMap, "상품분류");
+            var manufacturer = GetCellString(row, headerMap, "제조사");
             var customerName = GetCellString(row, headerMap, "고객명");
             var modelName = GetCellString(row, headerMap, "모델명");
-            if (string.IsNullOrWhiteSpace(managementNumber) && string.IsNullOrWhiteSpace(customerName) && string.IsNullOrWhiteSpace(modelName))
+            var machineNumber = GetCellString(row, headerMap, "기계번호");
+            var installLocation = GetCellString(row, headerMap, "설치위치");
+            if (string.IsNullOrWhiteSpace(sourceManagementNumber) && string.IsNullOrWhiteSpace(customerName) && string.IsNullOrWhiteSpace(modelName))
                 continue;
+            if (IsRentalAssetSummaryRow(
+                    sourceManagementId,
+                    sourceManagementNumber,
+                    officeValue,
+                    currentLocation,
+                    productCategory,
+                    manufacturer,
+                    modelName,
+                    machineNumber,
+                    customerName,
+                    installLocation))
+            {
+                continue;
+            }
 
             try
             {
-                var officeValue = GetCellString(row, headerMap, "담당지점", "관리업체");
-                var officeCode = await ResolveRentalOfficeCodeAsync(officeValue, officeValue, session.OfficeCode, ct);
-                var managementId = GetCellString(row, headerMap, "관리ID");
-                var machineNumber = GetCellString(row, headerMap, "기계번호");
-                var assetKey = BuildAssetKey(officeCode, managementNumber, managementId, machineNumber, customerName, modelName);
-                var existing = await _db.RentalAssets.IgnoreQueryFilters()
-                    .FirstOrDefaultAsync(current => current.AssetKey == assetKey, ct);
+                if (!TryResolveImportManagementOfficeCode(officeValue, out var officeCode, out var officeError))
+                    throw new InvalidOperationException(officeError);
 
-                var asset = existing ?? new LocalRentalAsset
+                var disposalDate = ParseDateValue(GetCellValue(row, headerMap, "폐기일"));
+                if (!TryResolveImportAssetStatus(currentLocation, disposalDate, out var assetStatus, out var statusError))
+                    throw new InvalidOperationException(statusError);
+
+                var existing = await FindExistingAssetForImportAsync(
+                    officeCode,
+                    sourceManagementId,
+                    sourceManagementNumber,
+                    machineNumber,
+                    customerName,
+                    modelName,
+                    installLocation,
+                    ct);
+                var wasExisting = existing is not null;
+
+                var asset = new LocalRentalAsset
                 {
-                    Id = Guid.NewGuid(),
-                    AssetKey = assetKey,
-                    CreatedAtUtc = DateTime.UtcNow
+                    Id = existing?.Id ?? Guid.NewGuid(),
+                    CustomerId = existing?.CustomerId,
+                    ItemId = existing?.ItemId,
+                    BillingProfileId = existing?.BillingProfileId,
+                    ManagementId = existing?.ManagementId ?? string.Empty,
+                    ManagementNumber = existing?.ManagementNumber ?? string.Empty,
+                    AssignedUsername = existing?.AssignedUsername ?? string.Empty,
+                    CreatedAtUtc = existing?.CreatedAtUtc ?? DateTime.UtcNow,
+                    Notes = BuildImportedAssetNotes(existing?.Notes, sourceManagementId, sourceManagementNumber)
                 };
 
-                asset.ManagementId = managementId.Trim();
-                asset.ManagementNumber = managementNumber.Trim();
                 asset.ManagementCompanyCode = officeCode;
                 asset.ResponsibleOfficeCode = officeCode;
-                asset.CurrentLocation = GetCellString(row, headerMap, "현재위치").Trim();
-                asset.ProductCategory = GetCellString(row, headerMap, "상품분류").Trim();
-                asset.Manufacturer = GetCellString(row, headerMap, "제조사").Trim();
+                asset.CurrentLocation = currentLocation;
+                asset.ProductCategory = productCategory.Trim();
+                asset.Manufacturer = manufacturer.Trim();
                 asset.ModelName = modelName.Trim();
                 asset.MachineNumber = machineNumber.Trim();
                 asset.PurchaseVendor = GetCellString(row, headerMap, "매입처").Trim();
                 asset.PurchaseDate = ParseDateValue(GetCellValue(row, headerMap, "매입일"));
-                asset.DisposalDate = ParseDateValue(GetCellValue(row, headerMap, "폐기일"));
+                asset.DisposalDate = disposalDate;
                 asset.PurchasePrice = ParseDecimalValue(GetCellValue(row, headerMap, "매입가"));
                 asset.SalePrice = ParseDecimalValue(GetCellValue(row, headerMap, "판매가"));
                 asset.CustomerName = customerName.Trim();
-                asset.InstallLocation = GetCellString(row, headerMap, "설치위치").Trim();
+                asset.InstallLocation = installLocation.Trim();
                 asset.DepositText = GetCellString(row, headerMap, "보증금").Trim();
                 asset.MonthlyFee = ParseDecimalValue(GetCellValue(row, headerMap, "렌탈요금"));
                 asset.ContractMonths = ParseIntValue(GetCellValue(row, headerMap, "계약기간")) ?? 0;
@@ -921,28 +986,16 @@ public sealed class RentalStateService
                 asset.RentalEndDate = ParseDateValue(GetCellValue(row, headerMap, "렌탈만료"));
                 asset.FreeSupplyItems = GetCellString(row, headerMap, "무상품목").Trim();
                 asset.PaidSupplyItems = GetCellString(row, headerMap, "유상품목").Trim();
-                asset.CustomerId = existing?.CustomerId ?? await ResolveCustomerIdAsync(asset.CustomerName, null, ct);
-                asset.ItemId = existing?.ItemId;
-                await EnrichAssetReferencesAsync(asset, ct);
-                asset.BillingProfileId = await FindMatchingBillingProfileIdAsync(asset, ct);
-                asset.AssignedUsername = string.IsNullOrWhiteSpace(existing?.AssignedUsername)
-                    ? NormalizeAssignedUsername(existing?.AssignedUsername, session, allowBlankForAdmin: false)
-                    : existing!.AssignedUsername;
-                asset.AssetStatus = ResolveAssetStatus(existing?.AssetStatus, asset.CurrentLocation, asset.DisposalDate);
-                asset.IsDeleted = false;
-                asset.IsDirty = true;
-                asset.UpdatedAtUtc = DateTime.UtcNow;
+                asset.AssetStatus = assetStatus;
 
-                if (existing is null)
-                {
-                    _db.RentalAssets.Add(asset);
-                    result.CreatedCount++;
-                }
-                else
-                {
-                    _db.Entry(existing).CurrentValues.SetValues(asset);
+                var saveResult = await SaveAssetAsync(asset, session, ct);
+                if (!saveResult.Success)
+                    throw new InvalidOperationException(saveResult.Message);
+
+                if (wasExisting)
                     result.UpdatedCount++;
-                }
+                else
+                    result.CreatedCount++;
             }
             catch (Exception ex)
             {
@@ -951,7 +1004,6 @@ public sealed class RentalStateService
             }
         }
 
-        await _db.SaveChangesAsync(ct);
         return result;
     }
 
@@ -1081,6 +1133,7 @@ public sealed class RentalStateService
 
     private bool CanViewAllRental(SessionState? session)
         => session is not null && session.IsLoggedIn && (
+            session.HasAdministrativePrivileges ||
             session.HasGlobalDataScope ||
             session.HasAssignedPermission(AppPermissionNames.RentalViewAll) ||
             session.HasAssignedPermission(AppPermissionNames.RentalEditAll));
@@ -1135,6 +1188,300 @@ public sealed class RentalStateService
             parsed.AddRange([7, 3, 1, 0]);
 
         return string.Join(',', parsed);
+    }
+
+    private async Task EnsureAssetManagementIdentifiersAsync(
+        LocalRentalAsset asset,
+        LocalRentalAsset? existing,
+        DateTime registeredAtUtc,
+        CancellationToken ct)
+    {
+        if (existing is not null)
+        {
+            asset.ManagementId = string.IsNullOrWhiteSpace(asset.ManagementId)
+                ? existing.ManagementId
+                : asset.ManagementId.Trim();
+            asset.ManagementNumber = string.IsNullOrWhiteSpace(asset.ManagementNumber)
+                ? existing.ManagementNumber
+                : asset.ManagementNumber.Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(asset.ManagementId))
+            asset.ManagementId = await GenerateNextManagementIdAsync(asset.Id, ct);
+
+        if (string.IsNullOrWhiteSpace(asset.ManagementNumber))
+            asset.ManagementNumber = await GenerateNextManagementNumberAsync(asset.Id, registeredAtUtc, ct);
+    }
+
+    private async Task<string> GenerateNextManagementIdAsync(Guid currentAssetId, CancellationToken ct)
+    {
+        var usedManagementIds = await _db.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.Id != currentAssetId)
+            .Select(asset => asset.ManagementId)
+            .ToListAsync(ct);
+
+        var nextValue = usedManagementIds
+            .Select(ParseManagementId)
+            .DefaultIfEmpty(0)
+            .Max() + 1;
+
+        return nextValue.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private async Task<string> GenerateNextManagementNumberAsync(Guid currentAssetId, DateTime registeredAtUtc, CancellationToken ct)
+    {
+        var registeredLocalDate = ConvertUtcToKoreaDate(registeredAtUtc);
+        var prefix = registeredLocalDate.ToString("yyMM", CultureInfo.InvariantCulture);
+        var usedManagementNumbers = await _db.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.Id != currentAssetId)
+            .Select(asset => asset.ManagementNumber)
+            .ToListAsync(ct);
+
+        var nextSequence = usedManagementNumbers
+            .Select(number => ParseManagementNumberSequence(number, prefix))
+            .DefaultIfEmpty(0)
+            .Max() + 1;
+
+        return $"{prefix}-{nextSequence:000}";
+    }
+
+    private async Task<LocalRentalAsset?> FindExistingAssetForImportAsync(
+        string officeCode,
+        string? sourceManagementId,
+        string? sourceManagementNumber,
+        string? machineNumber,
+        string? customerName,
+        string? modelName,
+        string? installLocation,
+        CancellationToken ct)
+    {
+        var normalizedOfficeCode = NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet);
+        var candidates = await _db.RentalAssets.IgnoreQueryFilters()
+            .Where(asset =>
+                asset.ManagementCompanyCode == normalizedOfficeCode ||
+                asset.ResponsibleOfficeCode == normalizedOfficeCode)
+            .ToListAsync(ct);
+
+        var normalizedManagementNumber = NormalizeProfileKeyPart(sourceManagementNumber);
+        if (!string.IsNullOrWhiteSpace(normalizedManagementNumber))
+        {
+            var byManagementNumber = candidates.FirstOrDefault(asset =>
+                string.Equals(NormalizeProfileKeyPart(asset.ManagementNumber), normalizedManagementNumber, StringComparison.Ordinal));
+            if (byManagementNumber is not null)
+                return byManagementNumber;
+
+            var bySourceManagementNumber = candidates.FirstOrDefault(asset =>
+                HasImportedSourceIdentifier(asset.Notes, "원본 관리번호", sourceManagementNumber));
+            if (bySourceManagementNumber is not null)
+                return bySourceManagementNumber;
+        }
+
+        var normalizedManagementId = NormalizeProfileKeyPart(sourceManagementId);
+        if (!string.IsNullOrWhiteSpace(normalizedManagementId))
+        {
+            var byManagementId = candidates.FirstOrDefault(asset =>
+                string.Equals(NormalizeProfileKeyPart(asset.ManagementId), normalizedManagementId, StringComparison.Ordinal));
+            if (byManagementId is not null)
+                return byManagementId;
+
+            var bySourceManagementId = candidates.FirstOrDefault(asset =>
+                HasImportedSourceIdentifier(asset.Notes, "원본 관리ID", sourceManagementId));
+            if (bySourceManagementId is not null)
+                return bySourceManagementId;
+        }
+
+        var normalizedMachineNumber = NormalizeProfileKeyPart(machineNumber);
+        if (!string.IsNullOrWhiteSpace(normalizedMachineNumber))
+        {
+            var byMachineNumber = candidates.FirstOrDefault(asset =>
+                string.Equals(NormalizeProfileKeyPart(asset.MachineNumber), normalizedMachineNumber, StringComparison.Ordinal));
+            if (byMachineNumber is not null)
+                return byMachineNumber;
+
+            return null;
+        }
+
+        var normalizedCustomerName = NormalizeProfileKeyPart(customerName);
+        var normalizedModelName = NormalizeProfileKeyPart(modelName);
+        var normalizedInstallLocation = NormalizeProfileKeyPart(installLocation);
+        if (string.IsNullOrWhiteSpace(normalizedCustomerName) ||
+            string.IsNullOrWhiteSpace(normalizedModelName) ||
+            string.IsNullOrWhiteSpace(normalizedInstallLocation))
+        return null;
+
+        return candidates.FirstOrDefault(asset =>
+            string.Equals(NormalizeProfileKeyPart(asset.CustomerName), normalizedCustomerName, StringComparison.Ordinal) &&
+            string.Equals(NormalizeProfileKeyPart(asset.ModelName), normalizedModelName, StringComparison.Ordinal) &&
+            string.Equals(NormalizeProfileKeyPart(asset.InstallLocation), normalizedInstallLocation, StringComparison.Ordinal));
+    }
+
+    private static bool TryResolveImportManagementOfficeCode(string? rawValue, out string officeCode, out string errorMessage)
+    {
+        var normalizedValue = (rawValue ?? string.Empty).Trim();
+        if (ImportManagementOfficeMap.TryGetValue(normalizedValue, out var mappedOfficeCode))
+        {
+            officeCode = mappedOfficeCode;
+            errorMessage = string.Empty;
+            return true;
+        }
+
+        officeCode = string.Empty;
+        errorMessage = string.IsNullOrWhiteSpace(normalizedValue)
+            ? "관리업체 값이 비어 있어 담당지점을 변환할 수 없습니다."
+            : $"관리업체 '{normalizedValue}'는 담당지점 변환 규칙에 없습니다.";
+        return false;
+    }
+
+    private static bool IsRentalAssetSummaryRow(
+        string? sourceManagementId,
+        string? sourceManagementNumber,
+        string? officeValue,
+        string? currentLocation,
+        string? productCategory,
+        string? manufacturer,
+        string? modelName,
+        string? machineNumber,
+        string? customerName,
+        string? installLocation)
+    {
+        if (!string.IsNullOrWhiteSpace(sourceManagementId) ||
+            !string.IsNullOrWhiteSpace(sourceManagementNumber) ||
+            !string.IsNullOrWhiteSpace(officeValue) ||
+            !string.IsNullOrWhiteSpace(productCategory) ||
+            !string.IsNullOrWhiteSpace(manufacturer) ||
+            !string.IsNullOrWhiteSpace(machineNumber) ||
+            !string.IsNullOrWhiteSpace(customerName) ||
+            !string.IsNullOrWhiteSpace(installLocation))
+        {
+            return false;
+        }
+
+        return IsBlankOrNumericSummaryValue(currentLocation) &&
+               IsBlankOrNumericSummaryValue(modelName);
+    }
+
+    private static bool TryResolveImportAssetStatus(
+        string? currentLocation,
+        DateOnly? disposalDate,
+        out string assetStatus,
+        out string errorMessage)
+    {
+        var normalizedLocation = (currentLocation ?? string.Empty).Trim();
+        if (ImportLocationStatusMap.TryGetValue(normalizedLocation, out var mappedStatus))
+        {
+            assetStatus = mappedStatus;
+            errorMessage = string.Empty;
+            return true;
+        }
+
+        if (disposalDate.HasValue)
+        {
+            assetStatus = "폐기";
+            errorMessage = string.Empty;
+            return true;
+        }
+
+        assetStatus = string.Empty;
+        errorMessage = string.IsNullOrWhiteSpace(normalizedLocation)
+            ? "현재 위치 값이 비어 있어 상태를 변환할 수 없습니다."
+            : $"현재 위치 '{normalizedLocation}'는 상태 변환 규칙에 없습니다.";
+        return false;
+    }
+
+    private static bool IsBlankOrNumericSummaryValue(string? value)
+    {
+        var normalizedValue = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedValue))
+            return true;
+
+        normalizedValue = normalizedValue.Replace(",", string.Empty, StringComparison.Ordinal);
+        return decimal.TryParse(normalizedValue, NumberStyles.Number, CultureInfo.InvariantCulture, out _);
+    }
+
+    private static int ParseManagementId(string? managementId)
+        => int.TryParse((managementId ?? string.Empty).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : 0;
+
+    private static int ParseManagementNumberSequence(string? managementNumber, string prefix)
+    {
+        var normalizedValue = (managementNumber ?? string.Empty).Trim();
+        if (!normalizedValue.StartsWith($"{prefix}-", StringComparison.OrdinalIgnoreCase))
+            return 0;
+
+        var sequenceText = normalizedValue[(prefix.Length + 1)..];
+        return int.TryParse(sequenceText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : 0;
+    }
+
+    private static DateOnly ConvertUtcToKoreaDate(DateTime utcDateTime)
+    {
+        var normalizedUtc = utcDateTime.Kind == DateTimeKind.Utc
+            ? utcDateTime
+            : utcDateTime.Kind == DateTimeKind.Unspecified
+                ? DateTime.SpecifyKind(utcDateTime, DateTimeKind.Utc)
+                : utcDateTime.ToUniversalTime();
+        var koreaDateTime = TimeZoneInfo.ConvertTimeFromUtc(normalizedUtc, KoreaTimeZone);
+        return DateOnly.FromDateTime(koreaDateTime);
+    }
+
+    private static TimeZoneInfo ResolveKoreaTimeZone()
+    {
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("Korea Standard Time");
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("Asia/Seoul");
+        }
+    }
+
+    private static string BuildImportedAssetNotes(string? existingNotes, string? sourceManagementId, string? sourceManagementNumber)
+    {
+        var lines = new List<string>();
+        AddDistinctNoteLines(lines, existingNotes);
+
+        if (!string.IsNullOrWhiteSpace(sourceManagementId))
+            AddDistinctNoteLine(lines, $"원본 관리ID: {sourceManagementId.Trim()}");
+        if (!string.IsNullOrWhiteSpace(sourceManagementNumber))
+            AddDistinctNoteLine(lines, $"원본 관리번호: {sourceManagementNumber.Trim()}");
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static void AddDistinctNoteLines(ICollection<string> lines, string? source)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+            return;
+
+        foreach (var line in source
+                     .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                     .Select(current => current.Trim())
+                     .Where(current => !string.IsNullOrWhiteSpace(current)))
+        {
+            AddDistinctNoteLine(lines, line);
+        }
+    }
+
+    private static void AddDistinctNoteLine(ICollection<string> lines, string line)
+    {
+        if (!lines.Any(existing => string.Equals(existing, line, StringComparison.OrdinalIgnoreCase)))
+            lines.Add(line);
+    }
+
+    private static bool HasImportedSourceIdentifier(string? notes, string label, string? value)
+    {
+        var normalizedValue = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedValue) || string.IsNullOrWhiteSpace(notes))
+            return false;
+
+        var expectedLine = $"{label}: {normalizedValue}";
+        return notes
+            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .Any(line => string.Equals(line, expectedLine, StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<List<int>> GetAlertDayValuesAsync(CancellationToken ct)
@@ -1611,14 +1958,18 @@ public sealed class RentalStateService
 
     private static string ResolveAssetStatus(string? requestedStatus, string? currentLocation, DateOnly? disposalDate)
     {
-        if (disposalDate.HasValue)
-            return "폐기";
-
         var status = (requestedStatus ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(status))
             return status;
 
+        if (disposalDate.HasValue)
+            return "폐기";
+
         var location = (currentLocation ?? string.Empty).Trim();
+        if (location.Contains("판매", StringComparison.OrdinalIgnoreCase))
+            return "판매";
+        if (location.Contains("폐기", StringComparison.OrdinalIgnoreCase))
+            return "폐기";
         if (location.Contains("회수", StringComparison.OrdinalIgnoreCase))
             return "회수";
         if (location.Contains("대기", StringComparison.OrdinalIgnoreCase))

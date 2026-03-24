@@ -9,6 +9,8 @@ namespace 거래플랜.Desktop.App.ViewModels;
 public sealed partial class CustomerManagementViewModel : ObservableObject
 {
     private const string AllCategoriesOption = "전체";
+    private const string SortByNameOption = "거래처명순";
+    private const string SortByOfficeOption = "담당지점별 정렬";
     private const int ContractAlertWindowDays = 30;
 
     private readonly LocalStateService _local;
@@ -19,6 +21,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private string _selectedCategoryFilter = AllCategoriesOption;
+    [ObservableProperty] private string _selectedSortOption = SortByNameOption;
     [ObservableProperty] private EnvironmentCustomerRow? _selectedCustomer;
     [ObservableProperty] private string _statusMessage = "거래처 등록, 수정, 담당지점 변경을 관리합니다.";
     [ObservableProperty] private bool _isBusy;
@@ -31,6 +34,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
     public ObservableCollection<CustomerContractAlertItem> ContractAlerts { get; } = new();
     public ObservableCollection<string> OfficeCodes { get; } = new();
     public ObservableCollection<string> CategoryFilters { get; } = new();
+    public ObservableCollection<string> SortOptions { get; } = new();
     public bool CanEditAllResponsibleOffices => _session.HasAdministrativePrivileges;
     public bool HasContractAlerts => ContractAlerts.Count > 0;
 
@@ -38,6 +42,8 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
     {
         _local = local;
         _session = session;
+        SortOptions.Add(SortByNameOption);
+        SortOptions.Add(SortByOfficeOption);
     }
 
     public async Task InitializeAsync()
@@ -216,9 +222,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
                 string.Equals(row.CategoryName, SelectedCategoryFilter, StringComparison.CurrentCultureIgnoreCase));
         }
 
-        var list = filtered
-            .OrderBy(row => row.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
+        var list = ApplySorting(filtered).ToList();
 
         Customers.Clear();
         foreach (var row in list)
@@ -237,6 +241,11 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
     }
 
     partial void OnSelectedCategoryFilterChanged(string value)
+    {
+        ApplyFilter();
+    }
+
+    partial void OnSelectedSortOptionChanged(string value)
     {
         ApplyFilter();
     }
@@ -281,12 +290,38 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
             : $"{baseText} 만료 계약 {ExpiredContractCount:N0}곳, {ContractAlertWindowDays}일 내 만료 예정 {ExpiringSoonContractCount:N0}곳입니다.";
     }
 
+    private IEnumerable<EnvironmentCustomerRow> ApplySorting(IEnumerable<EnvironmentCustomerRow> rows)
+    {
+        if (string.Equals(SelectedSortOption, SortByOfficeOption, StringComparison.CurrentCultureIgnoreCase))
+        {
+            return rows
+                .OrderBy(row => GetOfficeSortOrder(row.Source.ResponsibleOfficeCode))
+                .ThenBy(row => GetOfficeSortName(row.Source.ResponsibleOfficeCode), StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(row => row.NameOriginal, StringComparer.CurrentCultureIgnoreCase);
+        }
+
+        return rows
+            .OrderBy(row => row.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(row => GetOfficeSortOrder(row.Source.ResponsibleOfficeCode))
+            .ThenBy(row => GetOfficeSortName(row.Source.ResponsibleOfficeCode), StringComparer.CurrentCultureIgnoreCase);
+    }
+
+    private static string GetOfficeSortName(string? officeCode)
+        => string.IsNullOrWhiteSpace(officeCode)
+            ? "미지정"
+            : OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, DomainConstants.OfficeUsenet));
+
     private static int GetOfficeSortOrder(string? officeCode)
-        => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, DomainConstants.OfficeUsenet) switch
+    {
+        if (string.IsNullOrWhiteSpace(officeCode))
+            return 99;
+
+        return OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, DomainConstants.OfficeUsenet) switch
         {
             var value when string.Equals(value, DomainConstants.OfficeUsenet, StringComparison.OrdinalIgnoreCase) => 0,
             var value when string.Equals(value, DomainConstants.OfficeItworld, StringComparison.OrdinalIgnoreCase) => 1,
             var value when string.Equals(value, DomainConstants.OfficeYeonsu, StringComparison.OrdinalIgnoreCase) => 2,
             _ => 99
         };
+    }
 }

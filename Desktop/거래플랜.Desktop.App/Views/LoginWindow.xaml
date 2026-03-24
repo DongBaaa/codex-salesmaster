@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="거래플랜 - 로그인" Width="480" MinWidth="480" MinHeight="450"
         SizeToContent="Height" WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
-        Background="#1A2B4A">
+        Background="#1A2B4A"
+        PreviewKeyDown="Window_PreviewKeyDown">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility"/>
         <Style x:Key="FieldLabelStyle" TargetType="TextBlock">
@@ -74,8 +75,7 @@
                 <TextBlock Text="비밀번호" Style="{StaticResource FieldLabelStyle}"/>
                 <PasswordBox x:Name="PasswordBox"
                              Style="{StaticResource FieldPasswordBoxStyle}"
-                             PasswordChanged="PasswordBox_PasswordChanged"
-                             KeyDown="PasswordBox_KeyDown"/>
+                             PasswordChanged="PasswordBox_PasswordChanged"/>
 
                 <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
                     <CheckBox Content="아이디 저장"
@@ -97,7 +97,8 @@
                 <Button Content="로그인"
                         Command="{Binding LoginCommand}"
                         Style="{StaticResource PrimaryActionButtonStyle}"
-                        Background="#0D47A1"/>
+                        Background="#0D47A1"
+                        IsDefault="True"/>
 
                 <Button Content="오프라인 모드로 시작"
                         Command="{Binding OfflineLoginCommand}"

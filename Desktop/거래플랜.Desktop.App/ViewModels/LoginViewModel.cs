@@ -62,6 +62,9 @@ public sealed partial class LoginViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanLogin))]
     private async Task LoginAsync()
     {
+        if (!CanLogin())
+            return;
+
         IsLoading = true;
         ErrorMessage = string.Empty;
         ShowOfflineButton = false;
@@ -127,7 +130,17 @@ public sealed partial class LoginViewModel : ObservableObject
         LoginSucceeded?.Invoke();
     }
 
-    private bool CanLogin() => !string.IsNullOrWhiteSpace(Username) && !IsLoading;
+    public void SubmitLogin()
+    {
+        if (LoginCommand.CanExecute(null))
+            LoginCommand.Execute(null);
+    }
+
+    private bool CanLogin()
+        => !IsLoading &&
+           !string.IsNullOrWhiteSpace(Username) &&
+           !string.IsNullOrWhiteSpace(Password);
+
     private bool CanOfflineLogin() => ShowOfflineButton && !string.IsNullOrWhiteSpace(Username);
 
     partial void OnUsernameChanged(string value)
@@ -136,6 +149,14 @@ public sealed partial class LoginViewModel : ObservableObject
         ShowOfflineButton = false;
         ErrorMessage = string.Empty;
     }
+
+    partial void OnPasswordChanged(string value)
+    {
+        LoginCommand.NotifyCanExecuteChanged();
+        ShowOfflineButton = false;
+        ErrorMessage = string.Empty;
+    }
+
     partial void OnIsLoadingChanged(bool value) => LoginCommand.NotifyCanExecuteChanged();
     partial void OnShowOfflineButtonChanged(bool value) => OfflineLoginCommand.NotifyCanExecuteChanged();
 

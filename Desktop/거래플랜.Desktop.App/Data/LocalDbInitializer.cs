@@ -1980,6 +1980,8 @@ public static class LocalDbInitializer
                                """;
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_AssetKey\" ON \"RentalAssets\" (\"AssetKey\");");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"ManagementId\") WHERE TRIM(\"ManagementId\") <> '';");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"ManagementNumber\") WHERE TRIM(\"ManagementNumber\") <> '';");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_Assignee\" ON \"RentalAssets\" (\"AssignedUsername\", \"ResponsibleOfficeCode\", \"ManagementCompanyCode\");");
         }
         catch

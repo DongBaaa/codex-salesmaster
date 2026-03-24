@@ -33,14 +33,17 @@ public partial class LoginWindow : Window
         _vm.Password = PasswordBox.Password;
     }
 
-    private void PasswordBox_KeyDown(object sender, KeyEventArgs e)
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter)
-        {
-            _vm.Password = PasswordBox.Password;
-            if (_vm.LoginCommand.CanExecute(null))
-                _vm.LoginCommand.Execute(null);
-        }
+        if (e.Key != Key.Enter)
+            return;
+
+        _vm.Password = PasswordBox.Password;
+        if (!_vm.LoginCommand.CanExecute(null))
+            return;
+
+        _vm.SubmitLogin();
+        e.Handled = true;
     }
 
     protected override void OnClosed(EventArgs e)

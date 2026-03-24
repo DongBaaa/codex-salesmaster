@@ -120,8 +120,10 @@
                 <Grid Grid.Row="0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" SharedSizeGroup="CustomerFilterLabel"/>
-                        <ColumnDefinition Width="360"/>
+                        <ColumnDefinition Width="320"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto" SharedSizeGroup="CustomerFilterLabel"/>
+                        <ColumnDefinition Width="180"/>
                         <ColumnDefinition Width="Auto" SharedSizeGroup="CustomerFilterLabel"/>
                         <ColumnDefinition Width="180"/>
                         <ColumnDefinition Width="*"/>
@@ -146,11 +148,20 @@
                                Margin="0,0,10,0"
                                VerticalAlignment="Center"
                                Foreground="#9FB3C8"/>
-                    <ComboBox Grid.Column="4"
-                              ItemsSource="{Binding CategoryFilters}"
-                              SelectedItem="{Binding SelectedCategoryFilter}"
-                              VerticalAlignment="Center"/>
-                </Grid>
+                     <ComboBox Grid.Column="4"
+                               ItemsSource="{Binding CategoryFilters}"
+                               SelectedItem="{Binding SelectedCategoryFilter}"
+                               VerticalAlignment="Center"/>
+                     <TextBlock Grid.Column="5"
+                                Text="정렬"
+                                Margin="12,0,10,0"
+                                VerticalAlignment="Center"
+                                Foreground="#9FB3C8"/>
+                     <ComboBox Grid.Column="6"
+                               ItemsSource="{Binding SortOptions}"
+                               SelectedItem="{Binding SelectedSortOption}"
+                               VerticalAlignment="Center"/>
+                 </Grid>
 
                 <StackPanel Grid.Row="1"
                             Orientation="Horizontal"

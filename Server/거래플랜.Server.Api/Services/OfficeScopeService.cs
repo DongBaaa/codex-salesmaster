@@ -34,6 +34,7 @@ public sealed class OfficeScopeService
     public bool HasAdministrativeWriteAccess => _currentUserContext.IsAdmin || _currentUserContext.IsGodMode;
     public bool HasGlobalDataScope =>
         IsAdmin && string.Equals(CurrentScopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase);
+    private bool HasAdministrativeRentalScope => _currentUserContext.IsAdmin || _currentUserContext.IsGodMode;
 
     public string CurrentTenantCode => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
         _currentUserContext.TenantCode,
@@ -218,7 +219,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalBillingProfile> ApplyRentalBillingProfileScope(IQueryable<RentalBillingProfile> query)
     {
-        if (HasGlobalDataScope)
+        if (HasGlobalDataScope || HasAdministrativeRentalScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -230,7 +231,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalAsset> ApplyRentalAssetScope(IQueryable<RentalAsset> query)
     {
-        if (HasGlobalDataScope)
+        if (HasGlobalDataScope || HasAdministrativeRentalScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -242,7 +243,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalBillingLog> ApplyRentalBillingLogScope(IQueryable<RentalBillingLog> query)
     {
-        if (HasGlobalDataScope)
+        if (HasGlobalDataScope || HasAdministrativeRentalScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -316,10 +317,10 @@ public sealed class OfficeScopeService
         => CanReadOffice(officeCode, tenantCode, DataArea.Reports);
 
     public bool CanReadOfficeForRentals(string? officeCode, string? tenantCode = null)
-        => CanReadOffice(officeCode, tenantCode, DataArea.Rentals);
+        => HasAdministrativeRentalScope || CanReadOffice(officeCode, tenantCode, DataArea.Rentals);
 
     public bool CanWriteOfficeForRentals(string? officeCode, string? tenantCode = null)
-        => CanWriteOffice(officeCode, tenantCode, DataArea.Rentals);
+        => HasAdministrativeRentalScope || CanWriteOffice(officeCode, tenantCode, DataArea.Rentals);
 
     public bool CanReadOfficeForDeliveries(string? officeCode, string? tenantCode = null)
         => CanReadOffice(officeCode, tenantCode, DataArea.Deliveries);

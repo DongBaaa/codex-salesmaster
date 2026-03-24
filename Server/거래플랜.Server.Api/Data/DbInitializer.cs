@@ -2357,6 +2357,8 @@ public static class DbInitializer
         foreach (var sql in new[]
                  {
                      "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_TenantCode_AssetKey\" ON \"RentalAssets\" (\"TenantCode\", \"AssetKey\");",
+                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"ManagementId\") WHERE TRIM(\"ManagementId\") <> '';",
+                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"ManagementNumber\") WHERE TRIM(\"ManagementNumber\") <> '';",
                      "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_OfficeCode\" ON \"RentalAssets\" (\"OfficeCode\");"
                  })
         {

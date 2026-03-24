@@ -66,12 +66,14 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public ObservableCollection<string> AssetStatusOptions { get; } = new();
     public ObservableCollection<RentalAssetViewRow> Rows { get; } = new();
 
-    public bool CanViewAll => _session.HasGlobalDataScope ||
+    public bool CanViewAll => _session.HasAdministrativePrivileges ||
+                              _session.HasGlobalDataScope ||
                               _session.HasAssignedPermission(AppPermissionNames.RentalViewAll) ||
                               _session.HasAssignedPermission(AppPermissionNames.RentalEditAll);
     public bool CanManageAll => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.RentalEditAll);
     public bool CanSave => SelectedRow is null || CanEditCurrentSelection;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;
+    public bool IsNewAsset => SelectedRow is null;
     public LocalStateService LocalStateService => _local;
     public SessionState SessionState => _session;
 
@@ -94,6 +96,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         AssetStatusOptions.Add("임대진행중");
         AssetStatusOptions.Add("대기");
         AssetStatusOptions.Add("회수");
+        AssetStatusOptions.Add("판매");
         AssetStatusOptions.Add("폐기");
     }
 
@@ -279,6 +282,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         EditContractStartDate = null;
         EditRentalEndDate = null;
         SelectedRow = null;
+        OnPropertyChanged(nameof(IsNewAsset));
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanDeleteSelected));
     }
@@ -355,6 +359,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         if (value is null)
         {
+            OnPropertyChanged(nameof(IsNewAsset));
             OnPropertyChanged(nameof(CanSave));
             OnPropertyChanged(nameof(CanDeleteSelected));
             return;
@@ -397,6 +402,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         EditInstallDate = ToDateTime(source.InstallDate);
         EditContractStartDate = ToDateTime(source.ContractStartDate);
         EditRentalEndDate = ToDateTime(source.RentalEndDate);
+        OnPropertyChanged(nameof(IsNewAsset));
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanDeleteSelected));
     }

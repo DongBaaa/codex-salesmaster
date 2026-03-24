@@ -4,6 +4,7 @@ using System.Text;
 using ClosedXML.Excel;
 using FirebirdSql.Data.FirebirdClient;
 using Microsoft.Data.Sqlite;
+using 거래플랜.Shared.Contracts;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
 namespace 거래플랜.Desktop.App.Services;
@@ -372,6 +373,58 @@ public sealed partial class LegacyDataMigrationService
             skippedItems);
     }
 
+    public async Task<CustomerWorkbookImportResult> ImportCustomerWorkbookAsync(
+        string customerExcelPath,
+        string responsibleOfficeCode,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(customerExcelPath) || !File.Exists(customerExcelPath))
+            throw new FileNotFoundException("거래처 엑셀 파일을 찾을 수 없습니다.", customerExcelPath);
+
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(responsibleOfficeCode, DomainConstants.OfficeUsenet);
+        var customerRows = await Task.Run(() => ReadCustomersFromWorkbook(customerExcelPath), ct);
+        var result = new CustomerWorkbookImportResult
+        {
+            SourcePath = customerExcelPath,
+            ResponsibleOfficeCode = normalizedOfficeCode,
+            TotalCount = customerRows.Count
+        };
+
+        using var suppressSync = _local.SuppressSyncDispatch();
+        var existingCustomers = (await _local.GetCustomersAsync(ct))
+            .Where(customer => string.Equals(
+                OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+                normalizedOfficeCode,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var customerLookup = BuildCustomerLookup(existingCustomers);
+
+        foreach (var row in customerRows)
+        {
+            if (string.IsNullOrWhiteSpace(row.Name))
+            {
+                result.FailureCount++;
+                result.Messages.Add("거래처명 누락 행은 가져오지 않았습니다.");
+                continue;
+            }
+
+            var source = BuildImportedCustomer(row);
+            source.ResponsibleOfficeCode = normalizedOfficeCode;
+            var duplicate = FindMatchingCustomer(customerLookup, source);
+            if (duplicate is not null)
+            {
+                result.DuplicateCount++;
+                continue;
+            }
+
+            await _local.UpsertCustomerAsync(source, ct);
+            RegisterCustomerLookup(customerLookup, source);
+            result.CreatedCount++;
+        }
+
+        return result;
+    }
+
     private static void EnsureParentDirectory(string path){
         var parent = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(parent))
@@ -730,26 +783,27 @@ ORDER BY JAEPUMNAME
         {
             var row = new ImportedCustomerRow
             {
-                Name = ReadString(ws, rowIndex, headerMap, "거래처명"),
-                Category = ReadString(ws, rowIndex, headerMap, "고객분류"),
-                RegisterDate = ReadDate(ws, rowIndex, headerMap, "등록일자"),
-                Staff = ReadString(ws, rowIndex, headerMap, "업체직원"),
-                Phone = ReadString(ws, rowIndex, headerMap, "대표전화"),
-                Mobile = ReadString(ws, rowIndex, headerMap, "휴대폰"),
-                Fax = ReadString(ws, rowIndex, headerMap, "팩스번호"),
-                Note = ReadString(ws, rowIndex, headerMap, "참고사항"),
+                Name = ReadString(ws, rowIndex, headerMap, "거래처명", "상호명/고객", "상호명", "고객"),
+                Category = ReadString(ws, rowIndex, headerMap, "고객분류", "고객구분", "거래구분"),
+                RegisterDate = ReadDate(ws, rowIndex, headerMap, "등록일자", "등록일"),
+                Manager = ReadString(ws, rowIndex, headerMap, "담당자"),
+                Staff = ReadString(ws, rowIndex, headerMap, "업체직원", "업체담당자", "담당직원"),
+                Phone = ReadString(ws, rowIndex, headerMap, "대표전화", "전화번호"),
+                Mobile = ReadString(ws, rowIndex, headerMap, "휴대폰", "휴대전화"),
+                Fax = ReadString(ws, rowIndex, headerMap, "팩스번호", "팩스"),
+                Note = ReadString(ws, rowIndex, headerMap, "참고사항", "메모사항", "메모"),
                 BusinessNumber = ReadString(ws, rowIndex, headerMap, "사업자번호"),
-                Representative = ReadString(ws, rowIndex, headerMap, "대표자명"),
+                Representative = ReadString(ws, rowIndex, headerMap, "대표자명", "대표자"),
                 BusinessType = ReadString(ws, rowIndex, headerMap, "업태"),
                 BusinessItem = ReadString(ws, rowIndex, headerMap, "종목"),
                 BranchOffice = ReadString(ws, rowIndex, headerMap, "종사업장"),
-                HomePage = ReadString(ws, rowIndex, headerMap, "홈페이지"),
-                Email = ReadString(ws, rowIndex, headerMap, "E-메일"),
+                HomePage = ReadString(ws, rowIndex, headerMap, "홈페이지", "홈페이지주소"),
+                Email = ReadString(ws, rowIndex, headerMap, "E-메일", "E-MAIL", "EMAIL", "이메일"),
                 ZipCode = ReadString(ws, rowIndex, headerMap, "우편번호"),
-                Address1 = ReadString(ws, rowIndex, headerMap, "업체주소"),
+                Address1 = ReadString(ws, rowIndex, headerMap, "업체주소", "주소"),
                 Address2 = ReadString(ws, rowIndex, headerMap, "상세주소"),
                 Recipient = ReadString(ws, rowIndex, headerMap, "받는이"),
-                Honorific = ReadString(ws, rowIndex, headerMap, "존칭어"),
+                Honorific = ReadString(ws, rowIndex, headerMap, "존칭어", "존칭"),
                 ManageNumber = ReadString(ws, rowIndex, headerMap, "관리번호"),
                 TotalReceivable = ReadDecimal(ws, rowIndex, headerMap, "총미수금")
             };
@@ -881,7 +935,8 @@ ORDER BY JAEPUMNAME
     {
         target.NameOriginal = row.Name.Trim();
         target.NameMatchKey = target.NameOriginal.ToUpperInvariant();
-        target.Department = row.Category.Trim();
+        target.TradeType = CustomerTradeTypes.Normalize(row.Category.Trim());
+        target.Department = string.Empty;
         target.ContactPerson = row.Staff.Trim();
         target.BusinessNumber = row.BusinessNumber.Trim();
         target.Address = row.Address1.Trim();
@@ -900,6 +955,8 @@ ORDER BY JAEPUMNAME
             target.PriceGrade = "매출단가";
 
         var notes = new List<string>();
+        if (!string.IsNullOrWhiteSpace(row.Manager))
+            notes.Add($"담당자: {row.Manager.Trim()}");
         if (!string.IsNullOrWhiteSpace(row.Note))
             notes.Add(row.Note.Trim());
         if (!string.IsNullOrWhiteSpace(row.BranchOffice))
@@ -1017,6 +1074,7 @@ ORDER BY JAEPUMNAME
         public string Name { get; init; } = string.Empty;
         public string Category { get; init; } = string.Empty;
         public DateOnly? RegisterDate { get; init; }
+        public string Manager { get; init; } = string.Empty;
         public string Staff { get; init; } = string.Empty;
         public string Phone { get; init; } = string.Empty;
         public string Mobile { get; init; } = string.Empty;
@@ -1065,6 +1123,17 @@ public sealed record LegacyExportResult(
     int ItemCount,
     string CustomerExcelPath,
     string ItemExcelPath);
+
+public sealed class CustomerWorkbookImportResult
+{
+    public string SourcePath { get; init; } = string.Empty;
+    public string ResponsibleOfficeCode { get; init; } = DomainConstants.OfficeUsenet;
+    public int TotalCount { get; set; }
+    public int CreatedCount { get; set; }
+    public int DuplicateCount { get; set; }
+    public int FailureCount { get; set; }
+    public List<string> Messages { get; } = new();
+}
 
 public sealed record LegacyImportResult(
     int CreatedCustomers,

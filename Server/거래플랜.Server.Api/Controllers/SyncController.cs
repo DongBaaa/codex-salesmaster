@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.Globalization;
+using System.Text.Json;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
@@ -18,6 +19,8 @@ public sealed class SyncController : ControllerBase
 {
     private const long MaxContractFileSizeBytes = 15L * 1024 * 1024;
     private static readonly JsonSerializerOptions ConflictJsonOptions = new() { WriteIndented = false };
+    private static readonly TimeZoneInfo KoreaTimeZone = ResolveKoreaTimeZone();
+    private static readonly SemaphoreSlim RentalAssetSyncLock = new(1, 1);
 
     private readonly AppDbContext _dbContext;
     private readonly ICurrentUserContext _currentUserContext;
@@ -163,21 +166,34 @@ public sealed class SyncController : ControllerBase
         var validRentalProfiles = await FilterValidRentalBillingProfilesAsync(scopedRentalProfiles, result, cancellationToken);
         await UpsertEntitiesAsync(validRentalProfiles, _dbContext.RentalBillingProfiles,
             (e, d) => e.Apply(d), d => new RentalBillingProfile { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        var scopedRentalAssets = await PrepareScopedRentalAssetsAsync(request.RentalAssets ?? [], result, cancellationToken);
-        var validRentalAssets = await FilterValidRentalAssetsAsync(scopedRentalAssets, result, cancellationToken);
-        await UpsertEntitiesAsync(validRentalAssets, _dbContext.RentalAssets,
-            (e, d) => e.Apply(d), d => new RentalAsset { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        var scopedRentalBillingLogs = await PrepareScopedRentalBillingLogsAsync(request.RentalBillingLogs ?? [], result, cancellationToken);
-        var validRentalBillingLogs = await FilterValidRentalBillingLogsAsync(scopedRentalBillingLogs, result, cancellationToken);
-        await UpsertEntitiesAsync(validRentalBillingLogs, _dbContext.RentalBillingLogs,
-            (e, d) => e.Apply(d), d => new RentalBillingLog { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
-        await UpsertInvoicesAsync(validInvoices, result, cancellationToken);
-        var validPayments = await FilterValidPaymentsAsync(request.Payments ?? [], result, cancellationToken);
-        await UpsertEntitiesAsync(validPayments, _dbContext.Payments,
-            (e, d) => e.Apply(d), d => new Payment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        var requiresRentalAssetLock = (request.RentalAssets?.Count ?? 0) > 0;
+        if (requiresRentalAssetLock)
+            await RentalAssetSyncLock.WaitAsync(cancellationToken);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            var scopedRentalAssets = await PrepareScopedRentalAssetsAsync(request.RentalAssets ?? [], result, cancellationToken);
+            var validRentalAssets = await FilterValidRentalAssetsAsync(scopedRentalAssets, result, cancellationToken);
+            await UpsertEntitiesAsync(validRentalAssets, _dbContext.RentalAssets,
+                (e, d) => e.Apply(d), d => new RentalAsset { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+            var scopedRentalBillingLogs = await PrepareScopedRentalBillingLogsAsync(request.RentalBillingLogs ?? [], result, cancellationToken);
+            var validRentalBillingLogs = await FilterValidRentalBillingLogsAsync(scopedRentalBillingLogs, result, cancellationToken);
+            await UpsertEntitiesAsync(validRentalBillingLogs, _dbContext.RentalBillingLogs,
+                (e, d) => e.Apply(d), d => new RentalBillingLog { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+            var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
+            await UpsertInvoicesAsync(validInvoices, result, cancellationToken);
+            var validPayments = await FilterValidPaymentsAsync(request.Payments ?? [], result, cancellationToken);
+            await UpsertEntitiesAsync(validPayments, _dbContext.Payments,
+                (e, d) => e.Apply(d), d => new Payment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+        finally
+        {
+            if (requiresRentalAssetLock)
+                RentalAssetSyncLock.Release();
+        }
+
         result.CurrentServerRevision = await GetCurrentRevisionAsync(cancellationToken);
         return Ok(result);
     }
@@ -877,9 +893,12 @@ public sealed class SyncController : ControllerBase
         CancellationToken cancellationToken)
     {
         var scoped = new List<RentalAssetDto>();
+        var reservedManagementIds = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+        var reservedManagementNumbers = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var dto in payload)
         {
+            dto.Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id;
             var existing = await _dbContext.RentalAssets.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
             if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.OfficeCode, existing.TenantCode))
@@ -890,10 +909,197 @@ public sealed class SyncController : ControllerBase
 
             dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
             dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
+            dto.ManagementCompanyCode = string.IsNullOrWhiteSpace(dto.ManagementCompanyCode)
+                ? dto.OfficeCode
+                : dto.ManagementCompanyCode.Trim();
+            await EnsureRentalAssetIdentifiersAsync(
+                dto,
+                existing,
+                reservedManagementIds,
+                reservedManagementNumbers,
+                cancellationToken);
+            dto.AssetKey = BuildRentalAssetKey(dto.ManagementCompanyCode, dto.ManagementNumber, dto.ManagementId, dto.MachineNumber, dto.CustomerName, dto.ModelName);
             scoped.Add(dto);
         }
 
         return scoped;
+    }
+
+    private async Task EnsureRentalAssetIdentifiersAsync(
+        RentalAssetDto dto,
+        RentalAsset? existing,
+        IDictionary<string, Guid> reservedManagementIds,
+        IDictionary<string, Guid> reservedManagementNumbers,
+        CancellationToken cancellationToken)
+    {
+        dto.ManagementId = await ResolveManagementIdAsync(dto, existing, reservedManagementIds, cancellationToken);
+        ReserveManagementValue(reservedManagementIds, dto.ManagementId, dto.Id);
+
+        dto.ManagementNumber = await ResolveManagementNumberAsync(dto, existing, reservedManagementNumbers, cancellationToken);
+        ReserveManagementValue(reservedManagementNumbers, dto.ManagementNumber, dto.Id);
+    }
+
+    private async Task<string> ResolveManagementIdAsync(
+        RentalAssetDto dto,
+        RentalAsset? existing,
+        IDictionary<string, Guid> reservedManagementIds,
+        CancellationToken cancellationToken)
+    {
+        var requestedValue = existing?.ManagementId ?? dto.ManagementId?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(requestedValue) &&
+            await IsManagementIdAvailableAsync(requestedValue, dto.Id, reservedManagementIds, cancellationToken))
+        {
+            return requestedValue;
+        }
+
+        var usedIds = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.Id != dto.Id)
+            .Select(asset => asset.ManagementId)
+            .ToListAsync(cancellationToken);
+
+        var nextValue = usedIds
+            .Select(ParseManagementId)
+            .Concat(reservedManagementIds.Keys.Select(ParseManagementId))
+            .DefaultIfEmpty(0)
+            .Max() + 1;
+
+        return nextValue.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private async Task<string> ResolveManagementNumberAsync(
+        RentalAssetDto dto,
+        RentalAsset? existing,
+        IDictionary<string, Guid> reservedManagementNumbers,
+        CancellationToken cancellationToken)
+    {
+        var requestedValue = existing?.ManagementNumber ?? dto.ManagementNumber?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(requestedValue) &&
+            await IsManagementNumberAvailableAsync(requestedValue, dto.Id, reservedManagementNumbers, cancellationToken))
+        {
+            return requestedValue;
+        }
+
+        var registeredLocalDate = ConvertUtcToKoreaDate(dto.CreatedAtUtc == default ? DateTime.UtcNow : dto.CreatedAtUtc);
+        var prefix = registeredLocalDate.ToString("yyMM", CultureInfo.InvariantCulture);
+        var usedNumbers = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.Id != dto.Id)
+            .Select(asset => asset.ManagementNumber)
+            .ToListAsync(cancellationToken);
+
+        var nextSequence = usedNumbers
+            .Select(number => ParseManagementNumberSequence(number, prefix))
+            .Concat(reservedManagementNumbers.Keys.Select(number => ParseManagementNumberSequence(number, prefix)))
+            .DefaultIfEmpty(0)
+            .Max() + 1;
+
+        return $"{prefix}-{nextSequence:000}";
+    }
+
+    private async Task<bool> IsManagementIdAvailableAsync(
+        string managementId,
+        Guid currentId,
+        IDictionary<string, Guid> reservedManagementIds,
+        CancellationToken cancellationToken)
+    {
+        var normalizedValue = (managementId ?? string.Empty).Trim();
+        if (reservedManagementIds.TryGetValue(normalizedValue, out var reservedId) && reservedId != currentId)
+            return false;
+
+        return await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.Id != currentId)
+            .AllAsync(asset => asset.ManagementId != normalizedValue, cancellationToken);
+    }
+
+    private async Task<bool> IsManagementNumberAvailableAsync(
+        string managementNumber,
+        Guid currentId,
+        IDictionary<string, Guid> reservedManagementNumbers,
+        CancellationToken cancellationToken)
+    {
+        var normalizedValue = (managementNumber ?? string.Empty).Trim();
+        if (reservedManagementNumbers.TryGetValue(normalizedValue, out var reservedId) && reservedId != currentId)
+            return false;
+
+        return await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.Id != currentId)
+            .AllAsync(asset => asset.ManagementNumber != normalizedValue, cancellationToken);
+    }
+
+    private static void ReserveManagementValue(IDictionary<string, Guid> reservedValues, string? value, Guid ownerId)
+    {
+        var normalizedValue = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedValue))
+            return;
+
+        reservedValues[normalizedValue] = ownerId;
+    }
+
+    private static string BuildRentalAssetKey(
+        string? managementCompanyCode,
+        string? managementNumber,
+        string? managementId,
+        string? machineNumber,
+        string? customerName,
+        string? modelName)
+    {
+        var primary = !string.IsNullOrWhiteSpace(managementNumber)
+            ? managementNumber
+            : !string.IsNullOrWhiteSpace(managementId)
+                ? managementId
+                : machineNumber;
+
+        return string.Join('|',
+            NormalizeKeyPart(managementCompanyCode),
+            NormalizeKeyPart(primary),
+            NormalizeKeyPart(customerName),
+            NormalizeKeyPart(modelName));
+    }
+
+    private static string NormalizeKeyPart(string? value)
+        => new string((value ?? string.Empty)
+            .Trim()
+            .ToUpperInvariant()
+            .Where(ch => !char.IsWhiteSpace(ch) && ch != '[' && ch != ']')
+            .ToArray());
+
+    private static int ParseManagementId(string? managementId)
+        => int.TryParse((managementId ?? string.Empty).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : 0;
+
+    private static int ParseManagementNumberSequence(string? managementNumber, string prefix)
+    {
+        var normalizedValue = (managementNumber ?? string.Empty).Trim();
+        if (!normalizedValue.StartsWith($"{prefix}-", StringComparison.OrdinalIgnoreCase))
+            return 0;
+
+        var sequenceText = normalizedValue[(prefix.Length + 1)..];
+        return int.TryParse(sequenceText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : 0;
+    }
+
+    private static DateOnly ConvertUtcToKoreaDate(DateTime utcDateTime)
+    {
+        var normalizedUtc = utcDateTime.Kind == DateTimeKind.Utc
+            ? utcDateTime
+            : utcDateTime.Kind == DateTimeKind.Unspecified
+                ? DateTime.SpecifyKind(utcDateTime, DateTimeKind.Utc)
+                : utcDateTime.ToUniversalTime();
+        var koreaDateTime = TimeZoneInfo.ConvertTimeFromUtc(normalizedUtc, KoreaTimeZone);
+        return DateOnly.FromDateTime(koreaDateTime);
+    }
+
+    private static TimeZoneInfo ResolveKoreaTimeZone()
+    {
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("Korea Standard Time");
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("Asia/Seoul");
+        }
     }
 
     private async Task<List<RentalAssetDto>> FilterValidRentalAssetsAsync(
@@ -1496,6 +1702,7 @@ public sealed class SyncController : ControllerBase
         dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Email, dto.Email);
     }
 }
+
 
 
 

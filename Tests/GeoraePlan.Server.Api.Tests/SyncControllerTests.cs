@@ -1,0 +1,141 @@
+using 거래플랜.Server.Api.Controllers;
+using 거래플랜.Server.Api.Data;
+using 거래플랜.Server.Api.Services;
+using 거래플랜.Shared.Contracts;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Xunit;
+
+namespace GeoraePlan.Server.Api.Tests;
+
+public sealed class SyncControllerTests : IDisposable
+{
+    private readonly SqliteConnection _connection;
+    private readonly AppDbContext _dbContext;
+    private readonly SyncController _controller;
+
+    public SyncControllerTests()
+    {
+        _connection = new SqliteConnection("Data Source=:memory:");
+        _connection.Open();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        };
+
+        var revisionClock = new RevisionClock();
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(_connection)
+            .Options;
+
+        _dbContext = new AppDbContext(options, currentUser, revisionClock);
+        _dbContext.Database.EnsureCreated();
+
+        var officeScopeService = new OfficeScopeService(currentUser, _dbContext);
+        _controller = new SyncController(
+            _dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            officeScopeService,
+            new StubCentralFileStorage(),
+            revisionClock);
+    }
+
+    [Fact]
+    public async Task Push_AssignsDistinctRentalIdentifiers_ForMultipleNewAssetsInSingleBatch()
+    {
+        var registeredAtUtc = new DateTime(2026, 3, 24, 0, 0, 0, DateTimeKind.Utc);
+
+        var request = new SyncPushRequest
+        {
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    CurrentLocation = "렌탈",
+                    CustomerName = "테스트 거래처 A",
+                    ModelName = "MODEL-A",
+                    CreatedAtUtc = registeredAtUtc,
+                    UpdatedAtUtc = registeredAtUtc
+                },
+                new RentalAssetDto
+                {
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    CurrentLocation = "렌탈",
+                    CustomerName = "테스트 거래처 B",
+                    ModelName = "MODEL-B",
+                    CreatedAtUtc = registeredAtUtc,
+                    UpdatedAtUtc = registeredAtUtc
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var assets = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .OrderBy(asset => asset.ManagementId)
+            .ToListAsync();
+
+        Assert.Equal(2, assets.Count);
+        Assert.Equal(2, assets.Select(asset => asset.ManagementId).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.Equal(2, assets.Select(asset => asset.ManagementNumber).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.Equal(["1", "2"], assets.Select(asset => asset.ManagementId).OrderBy(value => int.Parse(value)).ToArray());
+        Assert.Equal(["2603-001", "2603-002"], assets.Select(asset => asset.ManagementNumber).OrderBy(value => value).ToArray());
+    }
+
+    public void Dispose()
+    {
+        _dbContext.Dispose();
+        _connection.Dispose();
+    }
+
+    private sealed class TestCurrentUserContext : ICurrentUserContext
+    {
+        public Guid? UserId { get; init; } = Guid.NewGuid();
+        public string Username { get; init; } = string.Empty;
+        public string TenantCode { get; init; } = TenantScopeCatalog.UsenetGroup;
+        public string OfficeCode { get; init; } = OfficeCodeCatalog.Usenet;
+        public string ScopeType { get; init; } = TenantScopeCatalog.ScopeOfficeOnly;
+        public bool IsAdmin { get; init; }
+        public bool IsGodMode { get; init; }
+
+        public bool HasPermission(string permission) => IsAdmin || IsGodMode;
+    }
+
+    private sealed class StubInvoiceNumberService : IInvoiceNumberService
+    {
+        public Task<string> GenerateAsync(Guid customerId, DateOnly invoiceDate, CancellationToken cancellationToken = default)
+            => Task.FromResult($"{invoiceDate:yyyyMM}-0001");
+    }
+
+    private sealed class StubCentralFileStorage : ICentralFileStorage
+    {
+        public string RootPath => Path.GetTempPath();
+
+        public Task<string> SaveBytesAsync(string area, string ownerId, Guid fileId, string fileName, byte[] content, CancellationToken cancellationToken = default)
+            => Task.FromResult(Path.Combine(RootPath, fileName));
+
+        public byte[] ReadBytes(string? storedPath, byte[]? fallback = null)
+            => fallback ?? [];
+
+        public void DeleteIfExists(string? storedPath)
+        {
+        }
+    }
+}
