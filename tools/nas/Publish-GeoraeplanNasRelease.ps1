@@ -292,7 +292,7 @@ function Invoke-NasApplyRelease {
         $sshArgs += @('-i', $Config.KeyPath)
     }
 
-    $remoteCommand = "cd '$($Config.RemoteOpsPath)' && chmod +x ./apply-release.sh ./health-check.sh ./_common.sh && ./apply-release.sh '$ReleaseId'"
+    $remoteCommand = "cd '$($Config.RemoteOpsPath)' && /bin/bash ./apply-release.sh '$ReleaseId'"
     $sshArgs += ('{0}@{1}' -f $Config.User, $Config.Host)
     $sshArgs += $remoteCommand
 

@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DEFAULT_PATH="/usr/local/bin:/usr/local/sbin:/usr/syno/bin:/usr/syno/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+CURRENT_PATH="${PATH-}"
+PATH="$DEFAULT_PATH"
+if [[ -n "$CURRENT_PATH" ]]; then
+  PATH="$PATH:$CURRENT_PATH"
+fi
+export PATH
+
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GEORAEPLAN_ROOT="${GEORAEPLAN_ROOT:-$(cd "$OPS_DIR/.." && pwd)}"
 ENV_FILE="${ENV_FILE:-$OPS_DIR/.env}"
