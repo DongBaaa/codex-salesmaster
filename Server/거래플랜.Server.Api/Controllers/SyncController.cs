@@ -1111,17 +1111,7 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
-            if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
-            {
-                var customer = await _dbContext.Customers.IgnoreQueryFilters()
-                    .FirstOrDefaultAsync(x => x.Id == dto.CustomerId.Value, cancellationToken);
-                if (customer is null || customer.IsDeleted)
-                {
-                    AddClientConflict(dto, nameof(RentalAsset),
-                        $"Referenced customer was not found: {dto.CustomerId}.", result);
-                    continue;
-                }
-            }
+            dto.CustomerId = await ResolveRentalAssetCustomerReferenceAsync(dto, cancellationToken);
 
             if (dto.ItemId.HasValue && dto.ItemId.Value != Guid.Empty &&
                 !await ExistsOrTrackedAsync(_dbContext.Items, dto.ItemId.Value, cancellationToken))
@@ -1147,6 +1137,74 @@ public sealed class SyncController : ControllerBase
         }
 
         return valid;
+    }
+
+    private async Task<Guid?> ResolveRentalAssetCustomerReferenceAsync(
+        RentalAssetDto dto,
+        CancellationToken cancellationToken)
+    {
+        if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
+        {
+            var directCustomer = await _dbContext.Customers.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(customer => customer.Id == dto.CustomerId.Value, cancellationToken);
+            if (directCustomer is not null &&
+                !directCustomer.IsDeleted &&
+                _officeScopeService.CanReadOfficeForCustomers(directCustomer.OfficeCode, directCustomer.TenantCode))
+            {
+                return directCustomer.Id;
+            }
+        }
+
+        var normalizedCustomerName = (dto.CustomerName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedCustomerName))
+            return null;
+
+        var preferredOfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, null);
+        var preferredTenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, preferredOfficeCode);
+        var exactNameMatches = await _dbContext.Customers.IgnoreQueryFilters()
+            .Where(customer => !customer.IsDeleted && customer.NameOriginal == normalizedCustomerName)
+            .OrderByDescending(customer => customer.UpdatedAtUtc)
+            .ToListAsync(cancellationToken);
+        var resolvedExactNameMatch = ResolveReadableCustomerReference(
+            exactNameMatches,
+            preferredOfficeCode,
+            preferredTenantCode);
+        if (resolvedExactNameMatch.HasValue)
+            return resolvedExactNameMatch.Value;
+
+        var normalizedMatchKey = MatchKeyNormalizer.Normalize(normalizedCustomerName);
+        if (string.IsNullOrWhiteSpace(normalizedMatchKey))
+            return null;
+
+        var nameKeyMatches = await _dbContext.Customers.IgnoreQueryFilters()
+            .Where(customer => !customer.IsDeleted && customer.NameMatchKey == normalizedMatchKey)
+            .OrderByDescending(customer => customer.UpdatedAtUtc)
+            .ToListAsync(cancellationToken);
+        return ResolveReadableCustomerReference(nameKeyMatches, preferredOfficeCode, preferredTenantCode);
+    }
+
+    private Guid? ResolveReadableCustomerReference(
+        IReadOnlyCollection<Customer> candidates,
+        string preferredOfficeCode,
+        string preferredTenantCode)
+    {
+        var readableCandidates = candidates
+            .Where(customer => _officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
+            .ToList();
+        if (readableCandidates.Count == 0)
+            return null;
+
+        var preferredCandidates = readableCandidates
+            .Where(customer =>
+                string.Equals(customer.OfficeCode, preferredOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(customer.TenantCode, preferredTenantCode, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (preferredCandidates.Count == 1)
+            return preferredCandidates[0].Id;
+
+        return readableCandidates.Count == 1
+            ? readableCandidates[0].Id
+            : null;
     }
 
     private async Task<List<RentalBillingLogDto>> PrepareScopedRentalBillingLogsAsync(
@@ -1703,7 +1761,6 @@ public sealed class SyncController : ControllerBase
         dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Email, dto.Email);
     }
 }
-
 
 
 

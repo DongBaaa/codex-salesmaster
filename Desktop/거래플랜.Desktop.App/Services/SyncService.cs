@@ -396,12 +396,10 @@ public sealed class SyncService : IDisposable
                 .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
-            Customers = await _db.Customers.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+            Customers = await _local.GetDirtyCustomersForSyncAsync(_session, ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
-            CustomerContracts = await _db.CustomerContracts.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+            CustomerContracts = await _local.GetDirtyCustomerContractsForSyncAsync(_session, ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
             Items = await _local.GetDirtyItemsForSyncAsync(_session, ct)
@@ -429,16 +427,13 @@ public sealed class SyncService : IDisposable
                 .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
-            RentalBillingProfiles = await _db.RentalBillingProfiles.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+            RentalBillingProfiles = await _local.GetDirtyRentalBillingProfilesForSyncAsync(_session, ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
-            RentalAssets = await _db.RentalAssets.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+            RentalAssets = await _local.GetDirtyRentalAssetsForSyncAsync(_session, ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
-            RentalBillingLogs = await _db.RentalBillingLogs.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+            RentalBillingLogs = await _local.GetDirtyRentalBillingLogsForSyncAsync(_session, ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
             Invoices = await _db.Invoices.IgnoreQueryFilters()

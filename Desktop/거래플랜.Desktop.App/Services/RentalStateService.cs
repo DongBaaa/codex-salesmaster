@@ -1918,10 +1918,27 @@ public sealed class RentalStateService
         if (string.IsNullOrWhiteSpace(normalizedName))
             return null;
 
-        return await _db.Customers.AsNoTracking()
+        var directMatch = await _db.Customers.AsNoTracking()
             .Where(customer => customer.NameOriginal == normalizedName)
             .Select(customer => (Guid?)customer.Id)
             .FirstOrDefaultAsync(ct);
+        if (directMatch.HasValue)
+            return directMatch;
+
+        var normalizedNameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName);
+        if (string.IsNullOrWhiteSpace(normalizedNameKey))
+            return null;
+
+        var keyMatches = await _db.Customers.AsNoTracking()
+            .Where(customer => customer.NameMatchKey != string.Empty)
+            .Select(customer => new { customer.Id, customer.NameMatchKey, customer.UpdatedAtUtc })
+            .ToListAsync(ct);
+
+        return keyMatches
+            .Where(customer => string.Equals(customer.NameMatchKey, normalizedNameKey, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(customer => customer.UpdatedAtUtc)
+            .Select(customer => (Guid?)customer.Id)
+            .FirstOrDefault();
     }
 
     private async Task EnrichAssetReferencesAsync(
@@ -1931,16 +1948,31 @@ public sealed class RentalStateService
     {
         asset.ItemCategoryName = await EnsureRentalItemCategoryOptionAsync(asset.ItemCategoryName, repairResult, ct);
 
-        if (asset.CustomerId is null || asset.CustomerId == Guid.Empty)
+        LocalCustomer? customer = null;
+        if (asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
+        {
+            customer = await _db.Customers
+                .AsNoTracking()
+                .FirstOrDefaultAsync(current => current.Id == asset.CustomerId.Value, ct);
+        }
+
+        if (customer is null)
             asset.CustomerId = await ResolveCustomerIdAsync(asset.CustomerName, null, ct);
 
         if (asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
         {
-            var customer = await _db.Customers
+            customer ??= await _db.Customers
                 .AsNoTracking()
                 .FirstOrDefaultAsync(current => current.Id == asset.CustomerId.Value, ct);
-            if (customer is not null && string.IsNullOrWhiteSpace(asset.CustomerName))
-                asset.CustomerName = customer.NameOriginal.Trim();
+            if (customer is not null)
+            {
+                if (string.IsNullOrWhiteSpace(asset.CustomerName))
+                    asset.CustomerName = customer.NameOriginal.Trim();
+            }
+            else
+            {
+                asset.CustomerId = null;
+            }
         }
 
         var item = await EnsureRentalItemAsync(asset, repairResult, ct);

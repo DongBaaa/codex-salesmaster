@@ -615,6 +615,94 @@ public sealed partial class LocalStateService
             .ToListAsync(ct);
     }
 
+    public async Task<List<LocalCustomer>> GetDirtyCustomersForSyncAsync(SessionState session, CancellationToken ct = default)
+    {
+        var query = _db.Customers.IgnoreQueryFilters()
+            .Where(customer => customer.IsDirty)
+            .AsNoTracking();
+
+        if (CanWriteAllScopedData(session))
+            return await query.ToListAsync(ct);
+
+        var dirtyCustomers = await query.ToListAsync(ct);
+        return dirtyCustomers
+            .Where(customer => CanWriteOfficeScope(session, customer.ResponsibleOfficeCode))
+            .ToList();
+    }
+
+    public async Task<List<LocalCustomerContract>> GetDirtyCustomerContractsForSyncAsync(SessionState session, CancellationToken ct = default)
+    {
+        var dirtyContracts = await _db.CustomerContracts.IgnoreQueryFilters()
+            .Where(contract => contract.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+
+        if (CanWriteAllScopedData(session) || dirtyContracts.Count == 0)
+            return dirtyContracts;
+
+        var customerIds = dirtyContracts
+            .Select(contract => contract.CustomerId)
+            .Where(customerId => customerId != Guid.Empty)
+            .Distinct()
+            .ToList();
+        var officeByCustomerId = await _db.Customers.IgnoreQueryFilters()
+            .Where(customer => customerIds.Contains(customer.Id))
+            .AsNoTracking()
+            .Select(customer => new { customer.Id, customer.ResponsibleOfficeCode })
+            .ToDictionaryAsync(customer => customer.Id, customer => customer.ResponsibleOfficeCode, ct);
+
+        return dirtyContracts
+            .Where(contract =>
+                officeByCustomerId.TryGetValue(contract.CustomerId, out var officeCode) &&
+                CanWriteOfficeScope(session, officeCode))
+            .ToList();
+    }
+
+    public async Task<List<LocalRentalBillingProfile>> GetDirtyRentalBillingProfilesForSyncAsync(SessionState session, CancellationToken ct = default)
+    {
+        var query = _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .Where(profile => profile.IsDirty)
+            .AsNoTracking();
+
+        if (CanWriteAllScopedData(session))
+            return await query.ToListAsync(ct);
+
+        var dirtyProfiles = await query.ToListAsync(ct);
+        return dirtyProfiles
+            .Where(profile => CanWriteOfficeScope(session, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode))
+            .ToList();
+    }
+
+    public async Task<List<LocalRentalAsset>> GetDirtyRentalAssetsForSyncAsync(SessionState session, CancellationToken ct = default)
+    {
+        var query = _db.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.IsDirty)
+            .AsNoTracking();
+
+        if (CanWriteAllScopedData(session))
+            return await query.ToListAsync(ct);
+
+        var dirtyAssets = await query.ToListAsync(ct);
+        return dirtyAssets
+            .Where(asset => CanWriteOfficeScope(session, asset.ResponsibleOfficeCode, asset.ManagementCompanyCode))
+            .ToList();
+    }
+
+    public async Task<List<LocalRentalBillingLog>> GetDirtyRentalBillingLogsForSyncAsync(SessionState session, CancellationToken ct = default)
+    {
+        var query = _db.RentalBillingLogs.IgnoreQueryFilters()
+            .Where(log => log.IsDirty)
+            .AsNoTracking();
+
+        if (CanWriteAllScopedData(session))
+            return await query.ToListAsync(ct);
+
+        var dirtyLogs = await query.ToListAsync(ct);
+        return dirtyLogs
+            .Where(log => CanWriteOfficeScope(session, log.ResponsibleOfficeCode))
+            .ToList();
+    }
+
     public Task<LocalItem?> GetItemAsync(Guid itemId, CancellationToken ct = default)
         => _db.Items
             .IgnoreQueryFilters()
@@ -3445,12 +3533,50 @@ public sealed partial class LocalStateService
             return await CountDirtyAsync(ct);
 
         var count = await CountDirtyAsync(ct);
-        var dirtyItemCount = await _db.Items.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
-        if (dirtyItemCount == 0)
-            return count;
 
-        var syncableDirtyItemCount = (await GetDirtyItemsForSyncAsync(session, ct)).Count;
-        return count - dirtyItemCount + syncableDirtyItemCount;
+        var dirtyCustomerCount = await _db.Customers.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyCustomerCount > 0)
+        {
+            var syncableDirtyCustomerCount = (await GetDirtyCustomersForSyncAsync(session, ct)).Count;
+            count = count - dirtyCustomerCount + syncableDirtyCustomerCount;
+        }
+
+        var dirtyCustomerContractCount = await _db.CustomerContracts.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyCustomerContractCount > 0)
+        {
+            var syncableDirtyCustomerContractCount = (await GetDirtyCustomerContractsForSyncAsync(session, ct)).Count;
+            count = count - dirtyCustomerContractCount + syncableDirtyCustomerContractCount;
+        }
+
+        var dirtyItemCount = await _db.Items.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyItemCount > 0)
+        {
+            var syncableDirtyItemCount = (await GetDirtyItemsForSyncAsync(session, ct)).Count;
+            count = count - dirtyItemCount + syncableDirtyItemCount;
+        }
+
+        var dirtyRentalBillingProfileCount = await _db.RentalBillingProfiles.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyRentalBillingProfileCount > 0)
+        {
+            var syncableDirtyRentalBillingProfileCount = (await GetDirtyRentalBillingProfilesForSyncAsync(session, ct)).Count;
+            count = count - dirtyRentalBillingProfileCount + syncableDirtyRentalBillingProfileCount;
+        }
+
+        var dirtyRentalAssetCount = await _db.RentalAssets.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyRentalAssetCount > 0)
+        {
+            var syncableDirtyRentalAssetCount = (await GetDirtyRentalAssetsForSyncAsync(session, ct)).Count;
+            count = count - dirtyRentalAssetCount + syncableDirtyRentalAssetCount;
+        }
+
+        var dirtyRentalBillingLogCount = await _db.RentalBillingLogs.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyRentalBillingLogCount > 0)
+        {
+            var syncableDirtyRentalBillingLogCount = (await GetDirtyRentalBillingLogsForSyncAsync(session, ct)).Count;
+            count = count - dirtyRentalBillingLogCount + syncableDirtyRentalBillingLogCount;
+        }
+
+        return count;
     }
 
     private static InvoiceSaveContext NormalizeSaveContext(InvoiceSaveContext context)
@@ -3554,6 +3680,31 @@ public sealed partial class LocalStateService
         => session is not null && session.IsLoggedIn &&
            (session.HasGlobalDataScope ||
             string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase));
+
+    private static bool CanWriteOfficeScope(SessionState? session, string? officeCode, string? fallbackOfficeCode = null)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return false;
+
+        if (CanWriteAllScopedData(session))
+            return true;
+
+        var writableOfficeCodes = GetWritableOfficeCodes(session);
+        foreach (var candidate in new[] { officeCode, fallbackOfficeCode })
+        {
+            var normalizedOfficeCode = NormalizeOfficeScope(candidate, string.Empty);
+            if (string.IsNullOrWhiteSpace(normalizedOfficeCode))
+                continue;
+
+            if (IsSharedOfficeScope(normalizedOfficeCode))
+                return CanWriteSharedOfficeScope(session);
+
+            if (writableOfficeCodes.Contains(normalizedOfficeCode))
+                return true;
+        }
+
+        return false;
+    }
 
     private static HashSet<string> GetReadableOfficeCodes(SessionState? session)
     {

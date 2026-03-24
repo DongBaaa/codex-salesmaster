@@ -213,6 +213,85 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal("updated", updated.Notes);
     }
 
+    [Fact]
+    public async Task Push_ResolvesRentalAssetCustomerReference_ByReadableCustomerName()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "SYNC-RENTAL-CUSTOMER",
+            NameMatchKey = "SYNCRENTALCUSTOMER",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = Guid.NewGuid(),
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    CustomerId = Guid.NewGuid(),
+                    CustomerName = customer.NameOriginal,
+                    ItemName = "MODEL-C",
+                    CurrentLocation = "창고",
+                    CreatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var asset = await _dbContext.RentalAssets.IgnoreQueryFilters().FirstAsync();
+        Assert.Equal(customer.Id, asset.CustomerId);
+    }
+
+    [Fact]
+    public async Task Push_ClearsRentalAssetCustomerReference_WhenCustomerCannotBeResolved()
+    {
+        var request = new SyncPushRequest
+        {
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = Guid.NewGuid(),
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    CustomerId = Guid.NewGuid(),
+                    CustomerName = "UNKNOWN-RENTAL-CUSTOMER",
+                    ItemName = "MODEL-D",
+                    CurrentLocation = "창고",
+                    CreatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var asset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .OrderByDescending(current => current.CreatedAtUtc)
+            .FirstAsync();
+        Assert.Null(asset.CustomerId);
+        Assert.Equal("UNKNOWN-RENTAL-CUSTOMER", asset.CustomerName);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();
