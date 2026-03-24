@@ -137,6 +137,20 @@ function Get-ProjectVersion {
     return [string]$versionNode
 }
 
+function Clear-DesktopReleaseArtifacts {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot
+    )
+
+    $projectDir = Join-Path $ProjectRoot 'Desktop\거래플랜.Desktop.App'
+    foreach ($relativePath in @('bin\Release', 'obj\Release')) {
+        $targetPath = Join-Path $projectDir $relativePath
+        if (Test-Path -LiteralPath $targetPath) {
+            Remove-Item -LiteralPath $targetPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Publish-DesktopApplication {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
@@ -149,6 +163,7 @@ function Publish-DesktopApplication {
         throw "Desktop project not found: $desktopProject"
     }
 
+    Clear-DesktopReleaseArtifacts -ProjectRoot $ProjectRoot
     Remove-Item -LiteralPath $PublishRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $PublishRoot | Out-Null
 

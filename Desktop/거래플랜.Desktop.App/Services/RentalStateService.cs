@@ -617,12 +617,20 @@ public sealed class RentalStateService
                 existing?.CreatedAtUtc ?? DateTime.UtcNow,
                 ct);
             await EnrichAssetReferencesAsync(asset, ct);
-            asset.AssetKey = BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ItemName);
+            var baseAssetKey = BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ItemName);
+            asset.AssetKey = baseAssetKey;
             asset.AssetStatus = ResolveAssetStatus(asset.AssetStatus, asset.CurrentLocation, asset.DisposalDate);
             asset.IsDeleted = false;
 
             var duplicate = await _db.RentalAssets.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id != asset.Id && current.AssetKey == asset.AssetKey, ct);
+            if (duplicate is not null && existing is not null)
+            {
+                asset.AssetKey = BuildLegacyCollisionAssetKey(baseAssetKey, existing.Id);
+                duplicate = await _db.RentalAssets.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(current => current.Id != asset.Id && current.AssetKey == asset.AssetKey, ct);
+            }
+
             if (duplicate is not null)
                 return LocalMutationResult.Denied("같은 렌탈 자산이 이미 존재합니다.");
 
@@ -685,9 +693,13 @@ public sealed class RentalStateService
 
             result.ScannedAssetCount = assets.Count;
 
+            var beforeSignatureByAssetId = new Dictionary<Guid, string>();
+            var assetBaseKeyById = new Dictionary<Guid, string>();
+
             foreach (var asset in assets)
             {
                 var beforeSignature = BuildAssetRepairSignature(asset);
+                beforeSignatureByAssetId[asset.Id] = beforeSignature;
 
                 asset.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CustomerName);
                 asset.CurrentLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CurrentLocation);
@@ -700,9 +712,15 @@ public sealed class RentalStateService
                 asset.DepositText = (asset.DepositText ?? string.Empty).Trim();
 
                 await EnrichAssetReferencesAsync(asset, ct, result);
-                asset.AssetKey = BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ItemName);
+                assetBaseKeyById[asset.Id] = BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ItemName);
                 asset.AssetStatus = ResolveAssetStatus(asset.AssetStatus, asset.CurrentLocation, asset.DisposalDate);
+            }
 
+            AssignUniqueAssetKeysForRepair(assets, assetBaseKeyById);
+
+            foreach (var asset in assets)
+            {
+                var beforeSignature = beforeSignatureByAssetId[asset.Id];
                 if (!string.Equals(beforeSignature, BuildAssetRepairSignature(asset), StringComparison.Ordinal))
                 {
                     result.UpdatedAssetCount++;
@@ -2365,6 +2383,50 @@ public sealed class RentalStateService
             NormalizeProfileKeyPart(primary),
             NormalizeProfileKeyPart(customerName),
             NormalizeProfileKeyPart(itemName));
+    }
+
+    private static void AssignUniqueAssetKeysForRepair(
+        IReadOnlyList<LocalRentalAsset> assets,
+        IReadOnlyDictionary<Guid, string> assetBaseKeyById)
+    {
+        var assignedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var group in assets
+                     .GroupBy(asset => assetBaseKeyById.TryGetValue(asset.Id, out var key) ? key : string.Empty, StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            var orderedAssets = group
+                .OrderBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(asset => asset.ManagementId, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(asset => asset.CustomerName, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(asset => asset.ItemName, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(asset => asset.Id)
+                .ToList();
+
+            var baseKey = group.Key;
+            for (var index = 0; index < orderedAssets.Count; index++)
+            {
+                var asset = orderedAssets[index];
+                var candidate = index == 0 && !string.IsNullOrWhiteSpace(baseKey)
+                    ? baseKey
+                    : BuildLegacyCollisionAssetKey(baseKey, asset.Id);
+
+                if (assignedKeys.Contains(candidate))
+                    candidate = BuildLegacyCollisionAssetKey(candidate, asset.Id);
+
+                asset.AssetKey = candidate;
+                assignedKeys.Add(candidate);
+            }
+        }
+    }
+
+    private static string BuildLegacyCollisionAssetKey(string? baseKey, Guid assetId)
+    {
+        var normalizedBaseKey = (baseKey ?? string.Empty).Trim();
+        var idSuffix = assetId == Guid.Empty ? Guid.NewGuid().ToString("N") : assetId.ToString("N");
+        return string.IsNullOrWhiteSpace(normalizedBaseKey)
+            ? idSuffix
+            : $"{normalizedBaseKey}|{idSuffix}";
     }
 
     private static string NormalizeProfileKeyPart(string? value)

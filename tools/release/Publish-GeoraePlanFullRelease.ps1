@@ -19,6 +19,36 @@ function Resolve-ProjectRoot {
     return (Resolve-Path (Join-Path (Split-Path -Parent $ScriptPath) '..\..')).Path
 }
 
+function Resolve-DotnetCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot
+    )
+
+    $candidates = @(
+        $env:DOTNET_EXE,
+        'C:\Users\beene\AppData\Local\GeoraePlan.Android\dotnet8\dotnet.exe',
+        'C:\Program Files\dotnet\dotnet.exe'
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            continue
+        }
+
+        try {
+            & $candidate --version *> $null
+            if ($LASTEXITCODE -eq 0) {
+                return (Resolve-Path -LiteralPath $candidate).Path
+            }
+        }
+        catch {
+            continue
+        }
+    }
+
+    throw "Unable to locate a working dotnet executable for full release under $ProjectRoot."
+}
+
 function Get-CsprojPropertyValue {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectFile,
@@ -60,6 +90,9 @@ if ([string]::IsNullOrWhiteSpace($SigningConfigPath)) {
     $SigningConfigPath = Join-Path $ProjectRoot 'Mobile\GeoraePlan.Mobile.App\android-signing.local.json'
 }
 
+$dotnetExe = Resolve-DotnetCommand -ProjectRoot $ProjectRoot
+$env:DOTNET_EXE = $dotnetExe
+
 $desktopProject = Resolve-ProjectFile -RootPath (Join-Path $ProjectRoot 'Desktop') -Pattern '*.Desktop.App.csproj'
 $androidProject = Resolve-ProjectFile -RootPath (Join-Path $ProjectRoot 'Mobile') -Pattern 'GeoraePlan.Mobile.App.csproj'
 $desktopVersion = Get-CsprojPropertyValue -ProjectFile $desktopProject -PropertyName 'Version'
@@ -73,7 +106,7 @@ if ($null -eq $solution) {
     throw 'Solution file not found.'
 }
 $solutionPath = $solution.FullName
-& dotnet build $solutionPath -c Release
+& $dotnetExe build $solutionPath -c Release
 if ($LASTEXITCODE -ne 0) {
     throw 'dotnet build failed.'
 }
