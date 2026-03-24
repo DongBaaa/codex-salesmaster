@@ -438,7 +438,7 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.Customers.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForItems(existing.OfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForCustomers(existing.OfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(Customer), "Current account cannot modify this office scope.", result);
                 continue;
@@ -506,7 +506,7 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.Items.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForCustomers(existing.OfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForItems(existing.OfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(Item), "Current account cannot modify this office scope.", result);
                 continue;

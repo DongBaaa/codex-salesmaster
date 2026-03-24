@@ -194,7 +194,7 @@ public partial class MainWindow : Window
         if (_sync.HasRecentSuccessfulSync(minInterval))
             return null;
 
-        if (await _local.CountDirtyAsync() > 0)
+        if (await _local.CountDirtyAsync(_session) > 0)
             return 0L;
 
         if (!requireServerRevisionChange)
@@ -757,7 +757,7 @@ public partial class MainWindow : Window
         if (_isClosingOrClosed || _session.IsOfflineMode)
             return;
 
-        if (await _local.CountDirtyAsync() == 0)
+        if (await _local.CountDirtyAsync(_session) == 0)
             return;
 
         try

@@ -133,6 +133,8 @@ public sealed class LocalCustomerContract : LocalSyncEntity
 
 public sealed class LocalItem : LocalSyncEntity
 {
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
     public string SpecificationOriginal { get; set; } = string.Empty;

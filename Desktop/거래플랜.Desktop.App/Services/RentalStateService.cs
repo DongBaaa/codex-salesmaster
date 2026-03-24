@@ -2122,9 +2122,12 @@ public sealed class RentalStateService
         }
 
         var now = DateTime.UtcNow;
+        var assetOfficeCode = ResolveAssetItemOfficeCode(asset);
         var created = new LocalItem
         {
             Id = asset.ItemId is Guid existingItemId && existingItemId != Guid.Empty ? existingItemId : Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, assetOfficeCode),
+            OfficeCode = assetOfficeCode,
             NameOriginal = normalizedItemName,
             NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedItemName),
             SpecificationOriginal = string.Empty,
@@ -2186,6 +2189,8 @@ public sealed class RentalStateService
     {
         var itemChanged = false;
         var now = DateTime.UtcNow;
+        var assetOfficeCode = ResolveAssetItemOfficeCode(asset);
+        var assetTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, assetOfficeCode);
         var normalizedCategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(item.CategoryName);
         var normalizedAssetCategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(asset.ItemCategoryName);
 
@@ -2280,6 +2285,18 @@ public sealed class RentalStateService
             itemChanged = true;
         }
 
+        if (!string.Equals(item.OfficeCode, assetOfficeCode, StringComparison.OrdinalIgnoreCase))
+        {
+            item.OfficeCode = assetOfficeCode;
+            itemChanged = true;
+        }
+
+        if (!string.Equals(item.TenantCode, assetTenantCode, StringComparison.OrdinalIgnoreCase))
+        {
+            item.TenantCode = assetTenantCode;
+            itemChanged = true;
+        }
+
         if (string.IsNullOrWhiteSpace(item.SimpleMemo))
         {
             item.SimpleMemo = "렌탈 자산/설치현황 자동 동기화 생성";
@@ -2306,6 +2323,12 @@ public sealed class RentalStateService
             item.UpdatedAtUtc = now;
         }
     }
+
+    private static string ResolveAssetItemOfficeCode(LocalRentalAsset asset)
+        => OfficeCodeCatalog.NormalizeOfficeCodeLoose(
+            asset.ResponsibleOfficeCode,
+            asset.ManagementCompanyCode,
+            DomainConstants.OfficeUsenet);
 
     private static string BuildAutoCreatedRentalItemNote(LocalRentalAsset asset)
     {

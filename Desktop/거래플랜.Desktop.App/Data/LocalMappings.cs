@@ -303,6 +303,8 @@ public static class LocalMappings
     public static LocalItem ToLocal(ItemDto dto) => new()
     {
         Id = dto.Id,
+        TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(dto.TenantCode, dto.OfficeCode),
+        OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, OfficeCodeCatalog.Shared),
         NameOriginal = dto.NameOriginal,
         NameMatchKey = dto.NameMatchKey,
         SpecificationOriginal = dto.SpecificationOriginal,
@@ -338,6 +340,8 @@ public static class LocalMappings
     public static ItemDto ToDto(LocalItem e) => new()
     {
         Id = e.Id,
+        TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(e.TenantCode, e.OfficeCode),
+        OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(e.OfficeCode, OfficeCodeCatalog.Shared),
         NameOriginal = e.NameOriginal,
         NameMatchKey = e.NameMatchKey,
         SpecificationOriginal = e.SpecificationOriginal,

@@ -140,6 +140,8 @@ public sealed class LocalDbContext : DbContext
             .HasIndex(profile => new { profile.OfficeCode, profile.ProfileName });
         model.Entity<LocalCompanyProfile>()
             .HasIndex(profile => new { profile.OfficeCode, profile.IsDefaultForOffice });
+        model.Entity<LocalItem>()
+            .HasIndex(item => new { item.TenantCode, item.OfficeCode });
 
         model.Entity<LocalOffice>()
             .HasIndex(o => o.Code)

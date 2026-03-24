@@ -1,5 +1,6 @@
 using 거래플랜.Server.Api.Controllers;
 using 거래플랜.Server.Api.Data;
+using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Services;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Mvc;
@@ -99,10 +100,148 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(["2603-001", "2603-002"], assets.Select(asset => asset.ManagementNumber).OrderBy(value => value).ToArray());
     }
 
+    [Fact]
+    public async Task Push_AllowsScopedItemUpdate_ForSameOfficeNonAdmin()
+    {
+        var scopedUser = new TestCurrentUserContext
+        {
+            Username = "itworld_user",
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            IsAdmin = false
+        };
+
+        await using var scopedDb = CreateDbContext(scopedUser);
+        var existing = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "SYNC-ASSET",
+            NameMatchKey = "SYNCASSET",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            UpdatedAtUtc = new DateTime(2026, 3, 24, 0, 0, 0, DateTimeKind.Utc)
+        };
+        scopedDb.Items.Add(existing);
+        await scopedDb.SaveChangesAsync();
+
+        var controller = CreateController(scopedDb, scopedUser);
+        var request = new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = existing.Id,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = existing.NameOriginal,
+                    NameMatchKey = existing.NameMatchKey,
+                    CategoryName = "A3컬러복합기",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    Notes = "updated",
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        };
+
+        var response = await controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var updated = await scopedDb.Items.IgnoreQueryFilters().FirstAsync(item => item.Id == existing.Id);
+        Assert.Equal("updated", updated.Notes);
+    }
+
+    [Fact]
+    public async Task Push_AllowsScopedCustomerUpdate_ForSameOfficeNonAdmin()
+    {
+        var scopedUser = new TestCurrentUserContext
+        {
+            Username = "itworld_user",
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            IsAdmin = false
+        };
+
+        await using var scopedDb = CreateDbContext(scopedUser);
+        var existing = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "SYNC-CUSTOMER",
+            NameMatchKey = "SYNCCUSTOMER",
+            TradeType = "매출",
+            UpdatedAtUtc = new DateTime(2026, 3, 24, 0, 0, 0, DateTimeKind.Utc)
+        };
+        scopedDb.Customers.Add(existing);
+        await scopedDb.SaveChangesAsync();
+
+        var controller = CreateController(scopedDb, scopedUser);
+        var request = new SyncPushRequest
+        {
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = existing.Id,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = existing.NameOriginal,
+                    NameMatchKey = existing.NameMatchKey,
+                    TradeType = "매출",
+                    Notes = "updated",
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        };
+
+        var response = await controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var updated = await scopedDb.Customers.IgnoreQueryFilters().FirstAsync(customer => customer.Id == existing.Id);
+        Assert.Equal("updated", updated.Notes);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();
         _connection.Dispose();
+    }
+
+    private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
+    {
+        var revisionClock = new RevisionClock();
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(_connection)
+            .Options;
+
+        var dbContext = new AppDbContext(options, currentUser, revisionClock);
+        dbContext.Database.EnsureCreated();
+        return dbContext;
+    }
+
+    private static SyncController CreateController(AppDbContext dbContext, TestCurrentUserContext currentUser)
+    {
+        var revisionClock = new RevisionClock();
+        var officeScopeService = new OfficeScopeService(currentUser, dbContext);
+        return new SyncController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            officeScopeService,
+            new StubCentralFileStorage(),
+            revisionClock);
     }
 
     private sealed class TestCurrentUserContext : ICurrentUserContext

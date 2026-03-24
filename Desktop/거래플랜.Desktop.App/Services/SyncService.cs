@@ -98,14 +98,14 @@ public sealed class SyncService : IDisposable
         {
             attempts++;
             var synced = await StartSyncAsync(waitForRunningSync: true, ct);
-            var dirtyCount = await _local.CountDirtyAsync(ct);
+            var dirtyCount = await _local.CountDirtyAsync(_session, ct);
             if (dirtyCount == 0)
                 return synced;
 
             await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
         }
 
-        return await _local.CountDirtyAsync(ct) == 0;
+        return await _local.CountDirtyAsync(_session, ct) == 0;
     }
 
     public async Task<bool> RefreshSharedMirrorFromServerAsync(CancellationToken ct = default)
@@ -113,7 +113,7 @@ public sealed class SyncService : IDisposable
         if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
             return false;
 
-        if (await _local.CountDirtyAsync(ct) > 0)
+        if (await _local.CountDirtyAsync(_session, ct) > 0)
             return false;
 
         SetStatus("중앙 서버 기준 캐시를 다시 불러오는 중...");
@@ -311,7 +311,7 @@ public sealed class SyncService : IDisposable
             if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
                 return;
 
-            if (await _local.CountDirtyAsync(ct) == 0 && HasRecentSuccessfulSync(TimeSpan.FromSeconds(30)))
+            if (await _local.CountDirtyAsync(_session, ct) == 0 && HasRecentSuccessfulSync(TimeSpan.FromSeconds(30)))
             {
                 AppLogger.Info("SYNC", "로컬 변경 없는 중복 즉시 동기화 요청을 건너뜁니다.");
                 return;
@@ -404,8 +404,7 @@ public sealed class SyncService : IDisposable
                 .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
-            Items = await _db.Items.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
+            Items = await _local.GetDirtyItemsForSyncAsync(_session, ct)
                 .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
 
             ItemWarehouseStocks = await _db.ItemWarehouseStocks
@@ -518,25 +517,25 @@ public sealed class SyncService : IDisposable
             }
         }
 
-        await MarkCleanAsync<LocalCompanyProfile>(ct);
-        await MarkCleanAsync<LocalUnit>(ct);
-        await MarkCleanAsync<LocalCustomerCategory>(ct);
-        await MarkCleanAsync<LocalPriceGradeOption>(ct);
-        await MarkCleanAsync<LocalTradeTypeOption>(ct);
-        await MarkCleanAsync<LocalItemCategoryOption>(ct);
-        await MarkCleanAsync<LocalCustomerMaster>(ct);
-        await MarkCleanAsync<LocalCustomer>(ct);
-        await MarkCleanAsync<LocalCustomerContract>(ct);
-        await MarkCleanAsync<LocalItem>(ct);
-        await MarkCleanAsync<LocalTransaction>(ct);
-        await MarkCleanAsync<LocalTransactionAttachment>(ct);
-        await MarkCleanInventoryTransfersAsync(ct);
-        await MarkCleanAsync<LocalRentalManagementCompany>(ct);
-        await MarkCleanAsync<LocalRentalBillingProfile>(ct);
-        await MarkCleanAsync<LocalRentalAsset>(ct);
-        await MarkCleanAsync<LocalRentalBillingLog>(ct);
-        await MarkCleanInvoicesAsync(ct);
-        await MarkCleanAsync<LocalPayment>(ct);
+        await MarkCleanAsync<LocalCompanyProfile>(req.CompanyProfiles.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalUnit>(req.Units.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalCustomerCategory>(req.CustomerCategories.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalPriceGradeOption>(req.PriceGradeOptions.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalTradeTypeOption>(req.TradeTypeOptions.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalItemCategoryOption>(req.ItemCategoryOptions.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalCustomerMaster>(req.CustomerMasters.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalCustomer>(req.Customers.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalCustomerContract>(req.CustomerContracts.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalItem>(req.Items.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalTransaction>(req.Transactions.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalTransactionAttachment>(req.TransactionAttachments.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanInventoryTransfersAsync(req.InventoryTransfers.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalRentalManagementCompany>(req.RentalManagementCompanies.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalRentalBillingProfile>(req.RentalBillingProfiles.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalRentalAsset>(req.RentalAssets.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalRentalBillingLog>(req.RentalBillingLogs.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanInvoicesAsync(req.Invoices.Select(entity => entity.Id).ToList(), ct);
+        await MarkCleanAsync<LocalPayment>(req.Payments.Select(entity => entity.Id).ToList(), ct);
 
         await _db.SaveChangesAsync(ct);
     }
@@ -621,10 +620,13 @@ public sealed class SyncService : IDisposable
         await _db.SaveChangesAsync(ct);
     }
 
-    private async Task MarkCleanAsync<T>(CancellationToken ct) where T : class, ILocalSyncEntity
+    private async Task MarkCleanAsync<T>(IReadOnlyCollection<Guid> ids, CancellationToken ct) where T : class, ILocalSyncEntity
     {
+        if (ids.Count == 0)
+            return;
+
         await _db.Set<T>().IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
+            .Where(e => ids.Contains(e.Id) && e.IsDirty)
             .ExecuteUpdateAsync(s => s.SetProperty(e => e.IsDirty, false), ct);
     }
 
@@ -636,17 +638,23 @@ public sealed class SyncService : IDisposable
             .ExecuteUpdateAsync(setters => setters.SetProperty(entity => entity.IsDirty, false), ct);
     }
 
-    private async Task MarkCleanInvoicesAsync(CancellationToken ct)
+    private async Task MarkCleanInvoicesAsync(IReadOnlyCollection<Guid> ids, CancellationToken ct)
     {
+        if (ids.Count == 0)
+            return;
+
         await _db.Invoices.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
+            .Where(e => ids.Contains(e.Id) && e.IsDirty)
             .ExecuteUpdateAsync(s => s.SetProperty(e => e.IsDirty, false), ct);
     }
 
-    private async Task MarkCleanInventoryTransfersAsync(CancellationToken ct)
+    private async Task MarkCleanInventoryTransfersAsync(IReadOnlyCollection<Guid> ids, CancellationToken ct)
     {
+        if (ids.Count == 0)
+            return;
+
         await _db.InventoryTransfers.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
+            .Where(e => ids.Contains(e.Id) && e.IsDirty)
             .ExecuteUpdateAsync(s => s.SetProperty(e => e.IsDirty, false), ct);
     }
 

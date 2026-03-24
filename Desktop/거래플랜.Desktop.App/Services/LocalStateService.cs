@@ -592,7 +592,28 @@ public sealed partial class LocalStateService
         => _db.Items.AsNoTracking().OrderBy(i => i.NameOriginal).ToListAsync(ct);
 
     public Task<List<LocalItem>> GetItemsAsync(SessionState session, CancellationToken ct = default)
-        => _db.Items.AsNoTracking().OrderBy(i => i.NameOriginal).ToListAsync(ct);
+        => ApplyItemScope(_db.Items.AsNoTracking(), session)
+            .OrderBy(i => i.NameOriginal)
+            .ToListAsync(ct);
+
+    public Task<List<LocalItem>> GetDirtyItemsForSyncAsync(SessionState session, CancellationToken ct = default)
+    {
+        var query = _db.Items.IgnoreQueryFilters()
+            .Where(item => item.IsDirty)
+            .AsNoTracking();
+
+        if (CanWriteAllScopedData(session))
+            return query.ToListAsync(ct);
+
+        var writableOfficeCodes = GetWritableOfficeCodes(session);
+        var allowSharedWrite = CanWriteSharedOfficeScope(session);
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
+        return query.Where(item =>
+                item.TenantCode == tenantCode &&
+                ((allowSharedWrite && item.OfficeCode == OfficeCodeCatalog.Shared) ||
+                 writableOfficeCodes.Contains(item.OfficeCode)))
+            .ToListAsync(ct);
+    }
 
     public Task<LocalItem?> GetItemAsync(Guid itemId, CancellationToken ct = default)
         => _db.Items
@@ -635,6 +656,7 @@ public sealed partial class LocalStateService
         item.SpecificationMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.SpecificationOriginal);
         item.CategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(item.CategoryName);
         NormalizeItemOperationalState(item);
+        NormalizeItemScope(item, preferredOfficeCode);
         item.IsDirty = true;
         item.UpdatedAtUtc = DateTime.UtcNow;
 
@@ -3417,6 +3439,20 @@ public sealed partial class LocalStateService
         return count;
     }
 
+    public async Task<int> CountDirtyAsync(SessionState session, CancellationToken ct = default)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return await CountDirtyAsync(ct);
+
+        var count = await CountDirtyAsync(ct);
+        var dirtyItemCount = await _db.Items.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyItemCount == 0)
+            return count;
+
+        var syncableDirtyItemCount = (await GetDirtyItemsForSyncAsync(session, ct)).Count;
+        return count - dirtyItemCount + syncableDirtyItemCount;
+    }
+
     private static InvoiceSaveContext NormalizeSaveContext(InvoiceSaveContext context)
     {
         return new InvoiceSaveContext
@@ -3442,6 +3478,20 @@ public sealed partial class LocalStateService
             customer.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
             readableOfficeCodes.Contains(customer.ResponsibleOfficeCode) ||
             temporaryCustomerIds.Contains(customer.Id));
+    }
+
+    private IQueryable<LocalItem> ApplyItemScope(
+        IQueryable<LocalItem> query,
+        SessionState session)
+    {
+        if (HasFullAccess(session))
+            return query;
+
+        var readableOfficeCodes = GetReadableOfficeCodes(session);
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
+        return query.Where(item =>
+            item.TenantCode == tenantCode &&
+            (item.OfficeCode == OfficeCodeCatalog.Shared || readableOfficeCodes.Contains(item.OfficeCode)));
     }
 
     private IQueryable<LocalInvoice> ApplyInvoiceScope(
@@ -3474,12 +3524,61 @@ public sealed partial class LocalStateService
             temporaryCustomerIds.Contains(transaction.CustomerId));
     }
 
+    public bool CanWriteItemScope(LocalItem item, SessionState? session)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return false;
+
+        if (CanWriteAllScopedData(session))
+            return true;
+
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(item.TenantCode, item.OfficeCode, session.TenantCode, session.OfficeCode);
+        var currentTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
+        if (!string.Equals(tenantCode, currentTenantCode, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var officeCode = NormalizeOfficeScope(item.OfficeCode, OfficeCodeCatalog.Shared);
+        if (officeCode == OfficeCodeCatalog.Shared)
+            return CanWriteSharedOfficeScope(session);
+
+        return GetWritableOfficeCodes(session).Contains(officeCode);
+    }
+
     private static bool HasFullAccess(SessionState? session)
         => session is null || !session.IsLoggedIn || session.HasGlobalDataScope;
+
+    private static bool CanWriteAllScopedData(SessionState? session)
+        => session is not null && session.IsLoggedIn && session.HasGlobalDataScope;
+
+    private static bool CanWriteSharedOfficeScope(SessionState? session)
+        => session is not null && session.IsLoggedIn &&
+           (session.HasGlobalDataScope ||
+            string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase));
 
     private static HashSet<string> GetReadableOfficeCodes(SessionState? session)
     {
         if (session is null || !session.IsLoggedIn || session.HasGlobalDataScope)
+            return OfficeCodeCatalog.All.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            return TenantScopeCatalog.GetOfficeCodesForTenant(session.TenantCode)
+                .Select(code => NormalizeOfficeCode(code, DomainConstants.OfficeUsenet))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet)
+        };
+    }
+
+    private static HashSet<string> GetWritableOfficeCodes(SessionState? session)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (session.HasGlobalDataScope)
             return OfficeCodeCatalog.All.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
@@ -4070,6 +4169,15 @@ ON CONFLICT(ItemId, WarehouseCode) DO UPDATE SET
                 item.IsSale = true;
                 break;
         }
+    }
+
+    private static void NormalizeItemScope(LocalItem item, string? preferredOfficeCode)
+    {
+        var normalizedTrackingType = ItemTrackingTypes.Normalize(item.TrackingType);
+        item.OfficeCode = string.Equals(normalizedTrackingType, ItemTrackingTypes.Asset, StringComparison.OrdinalIgnoreCase)
+            ? NormalizeOfficeCode(item.OfficeCode, NormalizeOfficeCode(preferredOfficeCode, DomainConstants.OfficeUsenet))
+            : NormalizeOfficeScope(item.OfficeCode, OfficeCodeCatalog.Shared);
+        item.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(item.TenantCode, item.OfficeCode);
     }
 
     private async Task<string> EnsureItemCategoryOptionExistsAsync(string? categoryName, CancellationToken ct)

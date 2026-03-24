@@ -221,20 +221,20 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        var dirtyBefore = await _local.CountDirtyAsync();
+        var dirtyBefore = await _local.CountDirtyAsync(_session);
         SyncStatus = "로그인 후 서버 동기화 중...";
 
         var syncOk = await _sync.TrySyncAsync();
         if (syncOk)
         {
-            if (await _local.CountDirtyAsync() == 0)
+            if (await _local.CountDirtyAsync(_session) == 0)
                 await _sync.RefreshSharedMirrorFromServerAsync();
             await ReloadAfterPassiveSyncAsync();
             SyncStatus = $"로그인 후 서버 동기화 완료 {DateTime.Now:HH:mm:ss}";
             return;
         }
 
-        var dirtyAfter = await _local.CountDirtyAsync();
+        var dirtyAfter = await _local.CountDirtyAsync(_session);
         if (dirtyBefore > 0 || dirtyAfter > 0)
         {
             var backupOk = await _backup.BackupNowAsync();
@@ -1307,7 +1307,7 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task ForceSyncAsync()
     {
         await _sync.TrySyncAsync();
-        if (await _local.CountDirtyAsync() == 0)
+        if (await _local.CountDirtyAsync(_session) == 0)
             await _sync.RefreshSharedMirrorFromServerAsync();
         await LoadCustomersAsync();
         await LoadInvoiceListAsync();

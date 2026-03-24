@@ -154,6 +154,8 @@ public static class LocalDbInitializer
 
         var itemCols = new (string col, string def)[]
         {
+            ("TenantCode", $"TEXT NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}'"),
+            ("OfficeCode", $"TEXT NOT NULL DEFAULT '{OfficeCodeCatalog.Shared}'"),
             ("CategoryName", "TEXT NOT NULL DEFAULT ''"),
             ("ItemKind", "TEXT NOT NULL DEFAULT '일반상품'"),
             ("TrackingType", "TEXT NOT NULL DEFAULT '재고'"),
@@ -329,9 +331,11 @@ public static class LocalDbInitializer
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionId\" ON \"TransactionAttachments\" (\"TransactionId\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionStatus\" ON \"TransactionAttachments\" (\"TransactionId\", \"VerificationStatus\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TransferStatus\" ON \"InventoryTransfers\" (\"TransferStatus\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Items_TenantCode_OfficeCode\" ON \"Items\" (\"TenantCode\", \"OfficeCode\");");
         await BackfillTransactionResponsibleOfficeCodeAsync(db);
         await NormalizeCompanyProfilesAsync(db);
         await NormalizeCustomerTradeTypeAsync(db);
+        await BackfillItemScopeFieldsAsync(db);
         await BackfillItemOperationalFieldsAsync(db);
         await BackfillInvoiceLineTrackingTypesAsync(db);
     }
@@ -1284,6 +1288,153 @@ public static class LocalDbInitializer
         await EnsureRenamedTextColumnAsync(db, "RentalAssets", "ProductCategory", "ItemCategoryName", "TEXT NOT NULL DEFAULT ''");
         await EnsureRenamedTextColumnAsync(db, "RentalAssets", "ModelName", "ItemName", "TEXT NOT NULL DEFAULT ''");
         await EnsureRenamedTextColumnAsync(db, "RentalBillingProfiles", "ModelName", "ItemName", "TEXT NOT NULL DEFAULT ''");
+    }
+
+    private static async Task BackfillItemScopeFieldsAsync(LocalDbContext db)
+    {
+        var items = await db.Items.IgnoreQueryFilters().ToListAsync();
+        if (items.Count == 0)
+            return;
+
+        var rentalOfficeMap = (await db.RentalAssets.IgnoreQueryFilters()
+                .Where(asset => !asset.IsDeleted && asset.ItemId.HasValue)
+                .Select(asset => new
+                {
+                    ItemId = asset.ItemId!.Value,
+                    asset.ResponsibleOfficeCode,
+                    asset.ManagementCompanyCode
+                })
+                .ToListAsync())
+            .Select(asset => new
+            {
+                asset.ItemId,
+                OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeLoose(
+                    asset.ResponsibleOfficeCode,
+                    asset.ManagementCompanyCode,
+                    DomainConstants.OfficeUsenet)
+            })
+            .ToList();
+
+        var rentalOfficeLookup = rentalOfficeMap
+            .GroupBy(entry => entry.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .Select(entry => entry.OfficeCode)
+                    .FirstOrDefault(code => !string.IsNullOrWhiteSpace(code))
+                    ?? DomainConstants.OfficeUsenet);
+
+        var warehouseOfficeMap = await db.ItemWarehouseStocks
+            .AsNoTracking()
+            .Select(stock => new
+            {
+                stock.ItemId,
+                OfficeCode = ResolveOfficeCodeFromWarehouseCode(stock.WarehouseCode)
+            })
+            .ToListAsync();
+
+        var warehouseOfficeLookup = warehouseOfficeMap
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.OfficeCode))
+            .GroupBy(entry => entry.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .Select(entry => entry.OfficeCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList());
+
+        var invoiceOfficeMap = (await (
+                from line in db.InvoiceLines.IgnoreQueryFilters().AsNoTracking()
+                join invoice in db.Invoices.IgnoreQueryFilters().AsNoTracking() on line.InvoiceId equals invoice.Id
+                where !line.IsDeleted && !invoice.IsDeleted && line.ItemId.HasValue
+                select new
+                {
+                    ItemId = line.ItemId!.Value,
+                    invoice.ResponsibleOfficeCode
+                })
+            .ToListAsync())
+            .Select(entry => new
+            {
+                entry.ItemId,
+                OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entry.ResponsibleOfficeCode, OfficeCodeCatalog.Shared)
+            })
+            .ToList();
+
+        var invoiceOfficeLookup = invoiceOfficeMap
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.OfficeCode))
+            .GroupBy(entry => entry.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .Select(entry => entry.OfficeCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList());
+
+        var changed = false;
+        foreach (var item in items)
+        {
+            var desiredOfficeCode = ResolveDesiredItemOfficeCode(item, rentalOfficeLookup, warehouseOfficeLookup, invoiceOfficeLookup);
+            var desiredTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                item.TenantCode,
+                desiredOfficeCode,
+                TenantScopeCatalog.UsenetGroup,
+                desiredOfficeCode);
+
+            if (!string.Equals(item.OfficeCode, desiredOfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                item.OfficeCode = desiredOfficeCode;
+                changed = true;
+            }
+
+            if (!string.Equals(item.TenantCode, desiredTenantCode, StringComparison.OrdinalIgnoreCase))
+            {
+                item.TenantCode = desiredTenantCode;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            await db.SaveChangesAsync();
+    }
+
+    private static string ResolveDesiredItemOfficeCode(
+        LocalItem item,
+        IReadOnlyDictionary<Guid, string> rentalOfficeLookup,
+        IReadOnlyDictionary<Guid, List<string>> warehouseOfficeLookup,
+        IReadOnlyDictionary<Guid, List<string>> invoiceOfficeLookup)
+    {
+        if (rentalOfficeLookup.TryGetValue(item.Id, out var rentalOfficeCode) &&
+            !string.IsNullOrWhiteSpace(rentalOfficeCode))
+        {
+            return OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(rentalOfficeCode, DomainConstants.OfficeUsenet);
+        }
+
+        if (warehouseOfficeLookup.TryGetValue(item.Id, out var warehouseOffices) && warehouseOffices.Count > 0)
+        {
+            return warehouseOffices.Count == 1
+                ? OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(warehouseOffices[0], OfficeCodeCatalog.Shared)
+                : OfficeCodeCatalog.Shared;
+        }
+
+        if (invoiceOfficeLookup.TryGetValue(item.Id, out var invoiceOffices) && invoiceOffices.Count > 0)
+        {
+            return invoiceOffices.Count == 1
+                ? OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(invoiceOffices[0], OfficeCodeCatalog.Shared)
+                : OfficeCodeCatalog.Shared;
+        }
+
+        return OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared);
+    }
+
+    private static string ResolveOfficeCodeFromWarehouseCode(string? warehouseCode)
+    {
+        var normalizedWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeLoose(warehouseCode);
+        return normalizedWarehouseCode switch
+        {
+            OfficeCodeCatalog.ItworldMainWarehouse => OfficeCodeCatalog.Itworld,
+            OfficeCodeCatalog.YeonsuMainWarehouse => OfficeCodeCatalog.Yeonsu,
+            _ => OfficeCodeCatalog.Usenet
+        };
     }
 
     private static async Task BackfillItemOperationalFieldsAsync(LocalDbContext db)

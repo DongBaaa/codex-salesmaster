@@ -356,7 +356,7 @@ public partial class App : Application
                 AppLogger.Warn("APP", $"Background save completed but backup failed. isShutdown={isShutdown}");
 
             var localState = sp.GetRequiredService<LocalStateService>();
-            var remainingDirtyCount = await localState.CountDirtyAsync();
+            var remainingDirtyCount = await localState.CountDirtyAsync(sp.GetRequiredService<SessionState>());
 
             if (isShutdown)
             {
