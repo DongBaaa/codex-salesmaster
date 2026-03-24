@@ -125,7 +125,7 @@
                             <DataGridTextColumn Header="D-Day" Binding="{Binding DaysRemaining}" Width="80"/>
                             <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="120"/>
                             <DataGridTextColumn Header="거래처 / 실거래처" Binding="{Binding Summary}" Width="240"/>
-                            <DataGridTextColumn Header="모델" Binding="{Binding ModelName}" Width="180"/>
+                            <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="180"/>
                             <DataGridTextColumn Header="월청구대금" Binding="{Binding MonthlyAmount, StringFormat=N0}" Width="120"/>
                             <DataGridTextColumn Header="담당계정" Binding="{Binding AssignedUsername}" Width="120"/>
                         </DataGrid.Columns>
@@ -143,7 +143,7 @@
                             <DataGridTextColumn Header="관리번호" Binding="{Binding ManagementNumber}" Width="120"/>
                             <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="120"/>
                             <DataGridTextColumn Header="거래처" Binding="{Binding CustomerName}" Width="200"/>
-                            <DataGridTextColumn Header="모델" Binding="{Binding ModelName}" Width="180"/>
+                            <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="180"/>
                             <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="220"/>
                             <DataGridTextColumn Header="만료일" Binding="{Binding RentalEndDate}" Width="110"/>
                             <DataGridTextColumn Header="남은일수" Binding="{Binding DaysRemaining}" Width="90"/>

@@ -190,7 +190,7 @@ public sealed class RentalsViewModel : ObservableObject
         var filteredAssets = state.SyncedRentalAssets
             .Where(asset => MatchesAsset(asset, companyMap, profileMap))
             .OrderBy(asset => asset.CustomerName)
-            .ThenBy(asset => asset.ModelName)
+            .ThenBy(asset => asset.ItemName)
             .ToList();
         var filteredLogs = state.SyncedRentalBillingLogs
             .Where(log => MatchesBillingLog(log, profileMap))
@@ -220,7 +220,7 @@ public sealed class RentalsViewModel : ObservableObject
         return Contains(profile.ProfileKey, q)
                || Contains(profile.CustomerName, q)
                || Contains(profile.RealCustomerName, q)
-               || Contains(profile.ModelName, q)
+               || Contains(profile.ItemName, q)
                || Contains(profile.BillingStatus, q)
                || Contains(profile.PaymentMethod, q)
                || Contains(profile.AssignedUsername, q)
@@ -239,7 +239,7 @@ public sealed class RentalsViewModel : ObservableObject
         var q = SearchText.Trim();
         return Contains(asset.AssetKey, q)
                || Contains(asset.CustomerName, q)
-               || Contains(asset.ModelName, q)
+               || Contains(asset.ItemName, q)
                || Contains(asset.AssetStatus, q)
                || Contains(asset.CurrentLocation, q)
                || Contains(asset.InstallLocation, q)

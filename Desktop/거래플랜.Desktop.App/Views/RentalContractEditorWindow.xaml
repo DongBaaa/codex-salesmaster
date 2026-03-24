@@ -177,8 +177,8 @@
                                 <TextBox Grid.Row="9" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" Text="{Binding CompanyFaxNumber, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock Grid.Row="10" Text="제품관리번호" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="10" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" Text="{Binding ManagementNumber, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="11" Text="모델명" Margin="0,6,0,0"/>
-                                <TextBox Grid.Row="11" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" Text="{Binding ModelName, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Grid.Row="11" Text="품명" Margin="0,6,0,0"/>
+                                <TextBox Grid.Row="11" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" Text="{Binding ItemName, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock Grid.Row="12" Text="기계번호" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="12" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" Text="{Binding MachineNumber, UpdateSourceTrigger=PropertyChanged}"/>
                             </Grid>

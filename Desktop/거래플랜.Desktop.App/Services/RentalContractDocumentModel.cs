@@ -14,7 +14,7 @@ public sealed class RentalContractDocumentModel
     public string CompanyContactNumber { get; set; } = string.Empty;
     public string CompanyFaxNumber { get; set; } = string.Empty;
     public string ManagementNumber { get; set; } = string.Empty;
-    public string ModelName { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
     public string MachineNumber { get; set; } = string.Empty;
     public string DepositText { get; set; } = string.Empty;
     public decimal MonthlyFee { get; set; }

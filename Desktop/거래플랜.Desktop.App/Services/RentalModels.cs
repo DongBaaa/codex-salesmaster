@@ -27,7 +27,7 @@ public sealed class RentalAlertItem
     public string ResponsibleOfficeName { get; set; } = string.Empty;
     public string CustomerName { get; set; } = string.Empty;
     public string RealCustomerName { get; set; } = string.Empty;
-    public string ModelName { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
     public string AssignedUsername { get; set; } = string.Empty;
     public decimal MonthlyAmount { get; set; }
     public DateOnly NextBillingDate { get; set; }
@@ -44,7 +44,7 @@ public sealed class RentalExpiringAssetItem
     public string ManagementNumber { get; set; } = string.Empty;
     public string ResponsibleOfficeName { get; set; } = string.Empty;
     public string CustomerName { get; set; } = string.Empty;
-    public string ModelName { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
     public string InstallLocation { get; set; } = string.Empty;
     public DateOnly? RentalEndDate { get; set; }
     public int DaysRemaining { get; set; }
@@ -74,6 +74,18 @@ public sealed class RentalImportResult
 
     public string Summary
         => $"신규 {CreatedCount:N0}, 수정 {UpdatedCount:N0}, 건너뜀 {SkippedCount:N0}, 오류 {ErrorCount:N0}";
+}
+
+public sealed class RentalCatalogRepairResult
+{
+    public int ScannedAssetCount { get; set; }
+    public int UpdatedAssetCount { get; set; }
+    public int AddedCategoryCount => AddedCategoryNames.Count;
+    public int AddedItemCount => AddedItemNames.Count;
+    public int AmbiguousItemNameCount => AmbiguousItemNames.Count;
+    public List<string> AddedCategoryNames { get; } = new();
+    public List<string> AddedItemNames { get; } = new();
+    public List<string> AmbiguousItemNames { get; } = new();
 }
 
 public sealed class RentalBillingViewRow

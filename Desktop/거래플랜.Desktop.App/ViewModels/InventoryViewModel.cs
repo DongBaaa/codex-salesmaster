@@ -221,17 +221,17 @@ public sealed partial class InventoryViewModel : ObservableObject
         if (!await ValidateBeforeSaveAsync())
             return;
 
-        var normalizedName = EditName.Trim();
-        var normalizedSpec = EditSpec.Trim();
+        var normalizedName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(EditName);
+        var normalizedSpec = RentalCatalogValueNormalizer.NormalizeDisplayText(EditSpec);
 
         var item = new LocalItem
         {
             Id = EditId,
             NameOriginal = normalizedName,
-            NameMatchKey = normalizedName.ToUpperInvariant(),
-            CategoryName = (EditCategoryName ?? string.Empty).Trim(),
+            NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName),
+            CategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(EditCategoryName),
             SpecificationOriginal = normalizedSpec,
-            SpecificationMatchKey = normalizedSpec.ToUpperInvariant(),
+            SpecificationMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedSpec),
             Unit = EditUnit,
             BoxQuantity = EditBoxQty,
             StorageLocation = EditStorageLocation,
@@ -503,13 +503,15 @@ public sealed partial class InventoryViewModel : ObservableObject
             return false;
         }
 
-        var normalizedName = EditName.Trim();
-        var normalizedSpec = EditSpec.Trim();
+        var normalizedName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(EditName);
+        var normalizedSpec = RentalCatalogValueNormalizer.NormalizeDisplayText(EditSpec);
+        var normalizedNameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName);
+        var normalizedSpecKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedSpec);
         var allItems = await _local.GetItemsAsync();
         var duplicated = allItems.Any(item =>
             item.Id != EditId &&
-            string.Equals(item.NameOriginal.Trim(), normalizedName, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals((item.SpecificationOriginal ?? string.Empty).Trim(), normalizedSpec, StringComparison.OrdinalIgnoreCase));
+            string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal), normalizedNameKey, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(item.SpecificationOriginal), normalizedSpecKey, StringComparison.OrdinalIgnoreCase));
 
         if (duplicated)
         {

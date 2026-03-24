@@ -165,7 +165,7 @@ public sealed class RentalStateService
         query = ApplyBillingFilter(query, filter, session);
         var profiles = await query
             .OrderBy(profile => profile.CustomerName)
-            .ThenBy(profile => profile.ModelName)
+            .ThenBy(profile => profile.ItemName)
             .ToListAsync(ct);
 
         var alertWindow = (await GetAlertDayValuesAsync(ct)).DefaultIfEmpty(7).Max();
@@ -269,7 +269,7 @@ public sealed class RentalStateService
 
         return await query
             .OrderBy(asset => asset.ManagementNumber)
-            .ThenBy(asset => asset.ModelName)
+            .ThenBy(asset => asset.ItemName)
             .ToListAsync(ct);
     }
 
@@ -373,9 +373,9 @@ public sealed class RentalStateService
         if (string.IsNullOrWhiteSpace(officeCode))
             return LocalMutationResult.Denied("담당지점을 선택하세요.");
 
-        profile.CustomerName = customerName;
-        profile.RealCustomerName = (profile.RealCustomerName ?? string.Empty).Trim();
-        profile.ModelName = (profile.ModelName ?? string.Empty).Trim();
+        profile.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerName);
+        profile.RealCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.RealCustomerName);
+        profile.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(profile.ItemName);
         profile.BillingDay = Math.Clamp(profile.BillingDay <= 0 ? 25 : profile.BillingDay, 1, 31);
         profile.BillingCycleMonths = Math.Max(1, profile.BillingCycleMonths);
         profile.BillingMethod = NormalizeBillingMethod(profile.BillingMethod);
@@ -390,7 +390,7 @@ public sealed class RentalStateService
         profile.ManagementCompanyCode = officeCode;
         profile.AssignedUsername = NormalizeAssignedUsername(profile.AssignedUsername, session, allowBlankForAdmin: true);
         profile.ProfileKey = string.IsNullOrWhiteSpace(profile.ProfileKey)
-            ? BuildProfileKey(profile.ManagementCompanyCode, profile.BusinessNumber, profile.CustomerName, profile.RealCustomerName, profile.ModelName)
+            ? BuildProfileKey(profile.ManagementCompanyCode, profile.BusinessNumber, profile.CustomerName, profile.RealCustomerName, profile.ItemName)
             : profile.ProfileKey;
         profile.IsActive = true;
         profile.IsDeleted = false;
@@ -602,15 +602,22 @@ public sealed class RentalStateService
             asset.ManagementId = existing is null
                 ? string.Empty
                 : (asset.ManagementId ?? existing.ManagementId ?? string.Empty).Trim();
-            asset.CustomerName = (asset.CustomerName ?? string.Empty).Trim();
-            asset.ModelName = (asset.ModelName ?? string.Empty).Trim();
-            await EnrichAssetReferencesAsync(asset, ct);
+            asset.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CustomerName);
+            asset.CurrentLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CurrentLocation);
+            asset.ItemCategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(asset.ItemCategoryName);
+            asset.Manufacturer = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.Manufacturer);
+            asset.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName);
+            asset.MachineNumber = (asset.MachineNumber ?? string.Empty).Trim();
+            asset.PurchaseVendor = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.PurchaseVendor);
+            asset.InstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation);
+            asset.DepositText = (asset.DepositText ?? string.Empty).Trim();
             await EnsureAssetManagementIdentifiersAsync(
                 asset,
                 existing,
                 existing?.CreatedAtUtc ?? DateTime.UtcNow,
                 ct);
-            asset.AssetKey = BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ModelName);
+            await EnrichAssetReferencesAsync(asset, ct);
+            asset.AssetKey = BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ItemName);
             asset.AssetStatus = ResolveAssetStatus(asset.AssetStatus, asset.CurrentLocation, asset.DisposalDate);
             asset.IsDeleted = false;
 
@@ -662,6 +669,59 @@ public sealed class RentalStateService
         asset.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return LocalMutationResult.Ok(assetId, "렌탈 자산을 삭제했습니다.");
+    }
+
+    public async Task<RentalCatalogRepairResult> RepairRentalCatalogLinksAsync(CancellationToken ct = default)
+    {
+        await AssetSaveLock.WaitAsync(ct);
+        try
+        {
+            var result = new RentalCatalogRepairResult();
+            var assets = await _db.RentalAssets.IgnoreQueryFilters()
+                .Where(asset => !asset.IsDeleted)
+                .OrderBy(asset => asset.CustomerName)
+                .ThenBy(asset => asset.ManagementNumber)
+                .ToListAsync(ct);
+
+            result.ScannedAssetCount = assets.Count;
+
+            foreach (var asset in assets)
+            {
+                var beforeSignature = BuildAssetRepairSignature(asset);
+
+                asset.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CustomerName);
+                asset.CurrentLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CurrentLocation);
+                asset.ItemCategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(asset.ItemCategoryName);
+                asset.Manufacturer = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.Manufacturer);
+                asset.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName);
+                asset.MachineNumber = (asset.MachineNumber ?? string.Empty).Trim();
+                asset.PurchaseVendor = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.PurchaseVendor);
+                asset.InstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation);
+                asset.DepositText = (asset.DepositText ?? string.Empty).Trim();
+
+                await EnrichAssetReferencesAsync(asset, ct, result);
+                asset.AssetKey = BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ItemName);
+                asset.AssetStatus = ResolveAssetStatus(asset.AssetStatus, asset.CurrentLocation, asset.DisposalDate);
+
+                if (!string.Equals(beforeSignature, BuildAssetRepairSignature(asset), StringComparison.Ordinal))
+                {
+                    result.UpdatedAssetCount++;
+                    asset.IsDirty = true;
+                    asset.UpdatedAtUtc = DateTime.UtcNow;
+                }
+            }
+
+            SortAndDistinct(result.AddedCategoryNames);
+            SortAndDistinct(result.AddedItemNames);
+            SortAndDistinct(result.AmbiguousItemNames);
+
+            await _db.SaveChangesAsync(ct);
+            return result;
+        }
+        finally
+        {
+            AssetSaveLock.Release();
+        }
     }
 
     public async Task<LocalMutationResult> MarkBillingCompletedAsync(
@@ -780,8 +840,8 @@ public sealed class RentalStateService
             {
                 var row = sheetInfo.Table.Rows[rowIndex];
                 var customerName = GetCellString(row, headerMap, "거래처명");
-                var modelName = GetCellString(row, headerMap, "모델명");
-                if (string.IsNullOrWhiteSpace(customerName) && string.IsNullOrWhiteSpace(modelName))
+                var itemName = GetCellString(row, headerMap, "품명", "모델명");
+                if (string.IsNullOrWhiteSpace(customerName) && string.IsNullOrWhiteSpace(itemName))
                     continue;
 
                 try
@@ -796,7 +856,7 @@ public sealed class RentalStateService
                         ? BuildBillingDate(sheetInfo.Anchor.Value.Year, sheetInfo.Anchor.Value.Month, billingDay)
                         : (DateOnly?)null;
 
-                    var profileKey = BuildProfileKey(officeCode, businessNumber, customerName, realCustomerName, modelName);
+                    var profileKey = BuildProfileKey(officeCode, businessNumber, customerName, realCustomerName, itemName);
                     var existing = await _db.RentalBillingProfiles.IgnoreQueryFilters()
                         .FirstOrDefaultAsync(current => current.ProfileKey == profileKey, ct);
 
@@ -810,7 +870,7 @@ public sealed class RentalStateService
                     profile.CustomerName = customerName.Trim();
                     profile.BusinessNumber = businessNumber.Trim();
                     profile.RealCustomerName = realCustomerName.Trim();
-                    profile.ModelName = modelName.Trim();
+                    profile.ItemName = itemName.Trim();
                     profile.ManagementCompanyCode = officeCode;
                     profile.ResponsibleOfficeCode = officeCode;
                     profile.BillingMethod = NormalizeBillingMethod(GetCellString(row, headerMap, "청구방식").Trim());
@@ -907,22 +967,22 @@ public sealed class RentalStateService
             var sourceManagementNumber = GetCellString(row, headerMap, "관리번호");
             var officeValue = GetCellString(row, headerMap, "관리업체", "담당지점");
             var currentLocation = GetCellString(row, headerMap, "현재위치").Trim();
-            var productCategory = GetCellString(row, headerMap, "상품분류");
+            var itemCategoryName = GetCellString(row, headerMap, "품목분류", "상품분류");
             var manufacturer = GetCellString(row, headerMap, "제조사");
             var customerName = GetCellString(row, headerMap, "고객명");
-            var modelName = GetCellString(row, headerMap, "모델명");
+            var itemName = GetCellString(row, headerMap, "품명", "모델명");
             var machineNumber = GetCellString(row, headerMap, "기계번호");
             var installLocation = GetCellString(row, headerMap, "설치위치");
-            if (string.IsNullOrWhiteSpace(sourceManagementNumber) && string.IsNullOrWhiteSpace(customerName) && string.IsNullOrWhiteSpace(modelName))
+            if (string.IsNullOrWhiteSpace(sourceManagementNumber) && string.IsNullOrWhiteSpace(customerName) && string.IsNullOrWhiteSpace(itemName))
                 continue;
             if (IsRentalAssetSummaryRow(
                     sourceManagementId,
                     sourceManagementNumber,
                     officeValue,
                     currentLocation,
-                    productCategory,
+                    itemCategoryName,
                     manufacturer,
-                    modelName,
+                    itemName,
                     machineNumber,
                     customerName,
                     installLocation))
@@ -945,7 +1005,7 @@ public sealed class RentalStateService
                     sourceManagementNumber,
                     machineNumber,
                     customerName,
-                    modelName,
+                    itemName,
                     installLocation,
                     ct);
                 var wasExisting = existing is not null;
@@ -966,9 +1026,9 @@ public sealed class RentalStateService
                 asset.ManagementCompanyCode = officeCode;
                 asset.ResponsibleOfficeCode = officeCode;
                 asset.CurrentLocation = currentLocation;
-                asset.ProductCategory = productCategory.Trim();
+                asset.ItemCategoryName = itemCategoryName.Trim();
                 asset.Manufacturer = manufacturer.Trim();
-                asset.ModelName = modelName.Trim();
+                asset.ItemName = itemName.Trim();
                 asset.MachineNumber = machineNumber.Trim();
                 asset.PurchaseVendor = GetCellString(row, headerMap, "매입처").Trim();
                 asset.PurchaseDate = ParseDateValue(GetCellValue(row, headerMap, "매입일"));
@@ -1019,7 +1079,7 @@ public sealed class RentalStateService
                 profile.CustomerName.Contains(keyword) ||
                 profile.RealCustomerName.Contains(keyword) ||
                 profile.BusinessNumber.Contains(keyword) ||
-                profile.ModelName.Contains(keyword) ||
+                profile.ItemName.Contains(keyword) ||
                 profile.Notes.Contains(keyword));
         }
 
@@ -1055,7 +1115,8 @@ public sealed class RentalStateService
             query = query.Where(asset =>
                 asset.ManagementNumber.Contains(keyword) ||
                 asset.CustomerName.Contains(keyword) ||
-                asset.ModelName.Contains(keyword) ||
+                asset.ItemCategoryName.Contains(keyword) ||
+                asset.ItemName.Contains(keyword) ||
                 asset.MachineNumber.Contains(keyword) ||
                 asset.InstallLocation.Contains(keyword));
         }
@@ -1251,7 +1312,7 @@ public sealed class RentalStateService
         string? sourceManagementNumber,
         string? machineNumber,
         string? customerName,
-        string? modelName,
+        string? itemName,
         string? installLocation,
         CancellationToken ct)
     {
@@ -1301,18 +1362,18 @@ public sealed class RentalStateService
             return null;
         }
 
-        var normalizedCustomerName = NormalizeProfileKeyPart(customerName);
-        var normalizedModelName = NormalizeProfileKeyPart(modelName);
-        var normalizedInstallLocation = NormalizeProfileKeyPart(installLocation);
+        var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeLooseKey(customerName);
+        var normalizedItemName = RentalCatalogValueNormalizer.NormalizeLooseKey(itemName);
+        var normalizedInstallLocation = RentalCatalogValueNormalizer.NormalizeLooseKey(installLocation);
         if (string.IsNullOrWhiteSpace(normalizedCustomerName) ||
-            string.IsNullOrWhiteSpace(normalizedModelName) ||
+            string.IsNullOrWhiteSpace(normalizedItemName) ||
             string.IsNullOrWhiteSpace(normalizedInstallLocation))
         return null;
 
         return candidates.FirstOrDefault(asset =>
-            string.Equals(NormalizeProfileKeyPart(asset.CustomerName), normalizedCustomerName, StringComparison.Ordinal) &&
-            string.Equals(NormalizeProfileKeyPart(asset.ModelName), normalizedModelName, StringComparison.Ordinal) &&
-            string.Equals(NormalizeProfileKeyPart(asset.InstallLocation), normalizedInstallLocation, StringComparison.Ordinal));
+            string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(asset.CustomerName), normalizedCustomerName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(asset.ItemName), normalizedItemName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(asset.InstallLocation), normalizedInstallLocation, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool TryResolveImportManagementOfficeCode(string? rawValue, out string officeCode, out string errorMessage)
@@ -1337,9 +1398,9 @@ public sealed class RentalStateService
         string? sourceManagementNumber,
         string? officeValue,
         string? currentLocation,
-        string? productCategory,
+        string? itemCategoryName,
         string? manufacturer,
-        string? modelName,
+        string? itemName,
         string? machineNumber,
         string? customerName,
         string? installLocation)
@@ -1347,7 +1408,7 @@ public sealed class RentalStateService
         if (!string.IsNullOrWhiteSpace(sourceManagementId) ||
             !string.IsNullOrWhiteSpace(sourceManagementNumber) ||
             !string.IsNullOrWhiteSpace(officeValue) ||
-            !string.IsNullOrWhiteSpace(productCategory) ||
+            !string.IsNullOrWhiteSpace(itemCategoryName) ||
             !string.IsNullOrWhiteSpace(manufacturer) ||
             !string.IsNullOrWhiteSpace(machineNumber) ||
             !string.IsNullOrWhiteSpace(customerName) ||
@@ -1357,7 +1418,7 @@ public sealed class RentalStateService
         }
 
         return IsBlankOrNumericSummaryValue(currentLocation) &&
-               IsBlankOrNumericSummaryValue(modelName);
+               IsBlankOrNumericSummaryValue(itemName);
     }
 
     private static bool TryResolveImportAssetStatus(
@@ -1559,7 +1620,7 @@ public sealed class RentalStateService
             ResponsibleOfficeName = ResolveOfficeDisplayName(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode, officeMap),
             CustomerName = profile.CustomerName,
             RealCustomerName = profile.RealCustomerName,
-            ModelName = profile.ModelName,
+            ItemName = profile.ItemName,
             AssignedUsername = profile.AssignedUsername,
             MonthlyAmount = profile.MonthlyAmount,
             NextBillingDate = nextBillingDate.Value,
@@ -1584,7 +1645,7 @@ public sealed class RentalStateService
             ManagementNumber = asset.ManagementNumber,
             ResponsibleOfficeName = ResolveOfficeDisplayName(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, officeMap),
             CustomerName = asset.CustomerName,
-            ModelName = asset.ModelName,
+            ItemName = asset.ItemName,
             InstallLocation = asset.InstallLocation,
             RentalEndDate = asset.RentalEndDate,
             DaysRemaining = asset.RentalEndDate.Value.DayNumber - referenceDate.DayNumber
@@ -1792,8 +1853,13 @@ public sealed class RentalStateService
             .FirstOrDefaultAsync(ct);
     }
 
-    private async Task EnrichAssetReferencesAsync(LocalRentalAsset asset, CancellationToken ct)
+    private async Task EnrichAssetReferencesAsync(
+        LocalRentalAsset asset,
+        CancellationToken ct,
+        RentalCatalogRepairResult? repairResult = null)
     {
+        asset.ItemCategoryName = await EnsureRentalItemCategoryOptionAsync(asset.ItemCategoryName, repairResult, ct);
+
         if (asset.CustomerId is null || asset.CustomerId == Guid.Empty)
             asset.CustomerId = await ResolveCustomerIdAsync(asset.CustomerName, null, ct);
 
@@ -1806,15 +1872,332 @@ public sealed class RentalStateService
                 asset.CustomerName = customer.NameOriginal.Trim();
         }
 
-        var item = await ResolveItemAsync(asset.ItemId, asset.ModelName, asset.ManagementNumber, asset.MachineNumber, ct);
+        var item = await EnsureRentalItemAsync(asset, repairResult, ct);
         if (item is null)
             return;
 
+        ApplyRentalItemMetadata(asset, item);
+
+        if (string.IsNullOrWhiteSpace(asset.PurchaseVendor))
+            asset.PurchaseVendor = await ResolveLatestPurchaseVendorNameAsync(item.Id, ct);
+    }
+
+    private async Task<LocalItem?> ResolveItemAsync(
+        Guid? itemId,
+        string? itemName,
+        string? itemCategoryName,
+        string? managementNumber,
+        string? machineNumber,
+        CancellationToken ct)
+    {
+        var activeItems = await GetActiveItemsAsync(ct);
+
+        if (itemId.HasValue && itemId.Value != Guid.Empty)
+        {
+            var direct = activeItems.FirstOrDefault(item => item.Id == itemId.Value);
+            if (direct is not null)
+                return direct;
+        }
+
+        var normalizedMaterialNumber = (managementNumber ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(normalizedMaterialNumber))
+        {
+            var materialMatch = activeItems
+                .Where(item => item.MaterialNumber == normalizedMaterialNumber)
+                .OrderByDescending(item => item.UpdatedAtUtc)
+                .FirstOrDefault();
+            if (materialMatch is not null)
+                return materialMatch;
+        }
+
+        var normalizedMachineNumber = (machineNumber ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(normalizedMachineNumber))
+        {
+            var serialMatch = activeItems
+                .Where(item => item.SerialNumber == normalizedMachineNumber)
+                .OrderByDescending(item => item.UpdatedAtUtc)
+                .FirstOrDefault();
+            if (serialMatch is not null)
+                return serialMatch;
+        }
+
+        var normalizedItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(itemName);
+        if (string.IsNullOrWhiteSpace(normalizedItemName))
+            return null;
+
+        var matches = await GetNameMatchedItemsAsync(normalizedItemName, ct);
+        if (matches.Count == 1)
+            return matches[0];
+
+        var normalizedCategoryKey = RentalCatalogValueNormalizer.NormalizeLooseKey(itemCategoryName);
+        if (!string.IsNullOrWhiteSpace(normalizedCategoryKey))
+        {
+            var categoryMatches = matches
+                .Where(item =>
+                    string.Equals(
+                        RentalCatalogValueNormalizer.NormalizeLooseKey(item.CategoryName),
+                        normalizedCategoryKey,
+                        StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(item => item.LastPurchaseDate)
+                .ThenByDescending(item => item.UpdatedAtUtc)
+                .ToList();
+
+            if (categoryMatches.Count == 1)
+                return categoryMatches[0];
+        }
+
+        var displayMatches = matches
+            .Where(item =>
+                string.Equals(
+                    RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(item.NameOriginal),
+                    normalizedItemName,
+                    StringComparison.CurrentCultureIgnoreCase))
+            .OrderByDescending(item => item.LastPurchaseDate)
+            .ThenByDescending(item => item.UpdatedAtUtc)
+            .ToList();
+
+        return displayMatches.Count == 1 ? displayMatches[0] : null;
+    }
+
+    private async Task<string> EnsureRentalItemCategoryOptionAsync(
+        string? itemCategoryName,
+        RentalCatalogRepairResult? repairResult,
+        CancellationToken ct)
+    {
+        var normalizedName = SelectionOptionDefaults.NormalizeItemCategoryName(itemCategoryName);
+        if (string.IsNullOrWhiteSpace(normalizedName))
+            return string.Empty;
+
+        var normalizedKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName);
+        var options = _db.ItemCategoryOptions.Local
+            .Concat(await _db.ItemCategoryOptions.IgnoreQueryFilters().ToListAsync(ct))
+            .GroupBy(option => option.Id)
+            .Select(group => group.First())
+            .ToList();
+        var existing = options.FirstOrDefault(option =>
+            !option.IsDeleted &&
+            string.Equals(
+                RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name),
+                normalizedKey,
+                StringComparison.OrdinalIgnoreCase));
+
+        if (existing is not null)
+        {
+            if (!existing.IsActive || existing.IsDeleted)
+            {
+                existing.IsActive = true;
+                existing.IsDeleted = false;
+                existing.IsDirty = true;
+                existing.UpdatedAtUtc = DateTime.UtcNow;
+            }
+
+            return string.IsNullOrWhiteSpace(existing.Name) ? normalizedName : existing.Name;
+        }
+
+        var now = DateTime.UtcNow;
+        var nextSortOrder = options
+            .Where(option => !option.IsDeleted)
+            .Select(option => option.SortOrder)
+            .DefaultIfEmpty(0)
+            .Max() + 10;
+
+        _db.ItemCategoryOptions.Add(new LocalItemCategoryOption
+        {
+            Id = Guid.NewGuid(),
+            Name = normalizedName,
+            SortOrder = nextSortOrder,
+            IsSystemDefault = false,
+            IsActive = true,
+            IsDeleted = false,
+            IsDirty = true,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        });
+
+        TryAddUnique(repairResult?.AddedCategoryNames, normalizedName);
+        return normalizedName;
+    }
+
+    private async Task<LocalItem?> EnsureRentalItemAsync(
+        LocalRentalAsset asset,
+        RentalCatalogRepairResult? repairResult,
+        CancellationToken ct)
+    {
+        var item = await ResolveItemAsync(
+            asset.ItemId,
+            asset.ItemName,
+            asset.ItemCategoryName,
+            asset.ManagementNumber,
+            asset.MachineNumber,
+            ct);
+        if (item is not null)
+            return item;
+
+        var normalizedItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName);
+        if (string.IsNullOrWhiteSpace(normalizedItemName))
+            return null;
+
+        var nameMatches = await GetNameMatchedItemsAsync(normalizedItemName, ct);
+        if (nameMatches.Count > 1)
+        {
+            TryAddUnique(repairResult?.AmbiguousItemNames, normalizedItemName);
+            return null;
+        }
+
+        var now = DateTime.UtcNow;
+        var created = new LocalItem
+        {
+            Id = asset.ItemId is Guid existingItemId && existingItemId != Guid.Empty ? existingItemId : Guid.NewGuid(),
+            NameOriginal = normalizedItemName,
+            NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedItemName),
+            SpecificationOriginal = string.Empty,
+            SpecificationMatchKey = string.Empty,
+            CategoryName = asset.ItemCategoryName,
+            StorageLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CurrentLocation),
+            PurchasePrice = asset.PurchasePrice,
+            SalePrice = asset.SalePrice,
+            RetailPrice = asset.SalePrice,
+            SimpleMemo = "렌탈 자산/설치현황 자동 동기화 생성",
+            IsRental = true,
+            IsSale = true,
+            SerialNumber = (asset.MachineNumber ?? string.Empty).Trim(),
+            MaterialNumber = (asset.ManagementNumber ?? string.Empty).Trim(),
+            InstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation),
+            RentalStartDate = asset.ContractStartDate ?? asset.InstallDate ?? asset.ContractDate,
+            RentalEndDate = asset.RentalEndDate,
+            Notes = BuildAutoCreatedRentalItemNote(asset),
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+            IsDirty = true
+        };
+
+        _db.Items.Add(created);
+        TryAddUnique(repairResult?.AddedItemNames, created.NameOriginal);
+        return created;
+    }
+
+    private async Task<List<LocalItem>> GetNameMatchedItemsAsync(string? itemName, CancellationToken ct)
+    {
+        var normalizedKey = RentalCatalogValueNormalizer.NormalizeLooseKey(itemName);
+        if (string.IsNullOrWhiteSpace(normalizedKey))
+            return [];
+
+        return (await GetActiveItemsAsync(ct))
+            .Where(item =>
+                string.Equals(
+                    RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal),
+                    normalizedKey,
+                    StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private async Task<List<LocalItem>> GetActiveItemsAsync(CancellationToken ct)
+    {
+        return _db.Items.Local
+            .Concat(await _db.Items.IgnoreQueryFilters().Where(item => !item.IsDeleted).ToListAsync(ct))
+            .GroupBy(item => item.Id)
+            .Select(group => group.First())
+            .Where(item => !item.IsDeleted)
+            .OrderByDescending(item => item.LastPurchaseDate)
+            .ThenByDescending(item => item.UpdatedAtUtc)
+            .ToList();
+    }
+
+    private static void ApplyRentalItemMetadata(LocalRentalAsset asset, LocalItem item)
+    {
+        var itemChanged = false;
+        var now = DateTime.UtcNow;
+        var normalizedCategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(item.CategoryName);
+        var normalizedAssetCategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(asset.ItemCategoryName);
+
+        if (string.IsNullOrWhiteSpace(normalizedCategoryName) && !string.IsNullOrWhiteSpace(normalizedAssetCategoryName))
+        {
+            item.CategoryName = normalizedAssetCategoryName;
+            normalizedCategoryName = normalizedAssetCategoryName;
+            itemChanged = true;
+        }
+
+        var normalizedAssetItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName);
+        if (!string.Equals(item.NameOriginal, normalizedAssetItemName, StringComparison.Ordinal) &&
+            string.IsNullOrWhiteSpace(item.NameOriginal))
+        {
+            item.NameOriginal = normalizedAssetItemName;
+            item.NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedAssetItemName);
+            itemChanged = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(item.MaterialNumber) && !string.IsNullOrWhiteSpace(asset.ManagementNumber))
+        {
+            item.MaterialNumber = asset.ManagementNumber.Trim();
+            itemChanged = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(item.SerialNumber) && !string.IsNullOrWhiteSpace(asset.MachineNumber))
+        {
+            item.SerialNumber = asset.MachineNumber.Trim();
+            itemChanged = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(item.InstallLocation) && !string.IsNullOrWhiteSpace(asset.InstallLocation))
+        {
+            item.InstallLocation = asset.InstallLocation.Trim();
+            itemChanged = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(item.StorageLocation) && !string.IsNullOrWhiteSpace(asset.CurrentLocation))
+        {
+            item.StorageLocation = asset.CurrentLocation.Trim();
+            itemChanged = true;
+        }
+
+        if (item.PurchasePrice <= 0m && asset.PurchasePrice > 0m)
+        {
+            item.PurchasePrice = asset.PurchasePrice;
+            itemChanged = true;
+        }
+
+        if (item.SalePrice <= 0m && asset.SalePrice > 0m)
+        {
+            item.SalePrice = asset.SalePrice;
+            if (item.RetailPrice <= 0m)
+                item.RetailPrice = asset.SalePrice;
+            itemChanged = true;
+        }
+
+        var rentalStartDate = asset.ContractStartDate ?? asset.InstallDate ?? asset.ContractDate;
+        if (!item.RentalStartDate.HasValue && rentalStartDate.HasValue)
+        {
+            item.RentalStartDate = rentalStartDate;
+            itemChanged = true;
+        }
+
+        if (!item.RentalEndDate.HasValue && asset.RentalEndDate.HasValue)
+        {
+            item.RentalEndDate = asset.RentalEndDate;
+            itemChanged = true;
+        }
+
+        if (!item.IsRental)
+        {
+            item.IsRental = true;
+            itemChanged = true;
+        }
+
+        if (!item.IsSale)
+        {
+            item.IsSale = true;
+            itemChanged = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(item.SimpleMemo))
+        {
+            item.SimpleMemo = "렌탈 자산/설치현황 자동 동기화 생성";
+            itemChanged = true;
+        }
+
         asset.ItemId = item.Id;
-        if (string.IsNullOrWhiteSpace(asset.ModelName))
-            asset.ModelName = item.NameOriginal.Trim();
-        if (string.IsNullOrWhiteSpace(asset.ProductCategory))
-            asset.ProductCategory = (item.CategoryName ?? string.Empty).Trim();
+        asset.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(item.NameOriginal);
+        asset.ItemCategoryName = normalizedCategoryName;
         if (asset.PurchasePrice <= 0m && item.PurchasePrice > 0m)
             asset.PurchasePrice = item.PurchasePrice;
         if (asset.SalePrice <= 0m && item.SalePrice > 0m)
@@ -1826,52 +2209,73 @@ public sealed class RentalStateService
         if (string.IsNullOrWhiteSpace(asset.MachineNumber) && !string.IsNullOrWhiteSpace(item.SerialNumber))
             asset.MachineNumber = item.SerialNumber.Trim();
 
-        if (string.IsNullOrWhiteSpace(asset.PurchaseVendor))
-            asset.PurchaseVendor = await ResolveLatestPurchaseVendorNameAsync(item.Id, ct);
+        if (itemChanged)
+        {
+            item.IsDirty = true;
+            item.UpdatedAtUtc = now;
+        }
     }
 
-    private async Task<LocalItem?> ResolveItemAsync(
-        Guid? itemId,
-        string? modelName,
-        string? managementNumber,
-        string? machineNumber,
-        CancellationToken ct)
+    private static string BuildAutoCreatedRentalItemNote(LocalRentalAsset asset)
     {
-        if (itemId.HasValue && itemId.Value != Guid.Empty)
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(asset.CustomerName))
+            parts.Add($"거래처:{asset.CustomerName.Trim()}");
+        if (!string.IsNullOrWhiteSpace(asset.ManagementNumber))
+            parts.Add($"관리번호:{asset.ManagementNumber.Trim()}");
+        if (!string.IsNullOrWhiteSpace(asset.MachineNumber))
+            parts.Add($"기계번호:{asset.MachineNumber.Trim()}");
+        return string.Join(" / ", parts);
+    }
+
+    private static string BuildAssetRepairSignature(LocalRentalAsset asset)
+        => string.Join("|",
+            asset.CustomerId?.ToString("N") ?? string.Empty,
+            asset.ItemId?.ToString("N") ?? string.Empty,
+            asset.AssetKey,
+            asset.CustomerName,
+            asset.ItemCategoryName,
+            asset.ItemName,
+            asset.ManagementNumber,
+            asset.ManagementId,
+            asset.MachineNumber,
+            asset.PurchaseVendor,
+            asset.InstallLocation,
+            asset.CurrentLocation,
+            asset.AssetStatus,
+            asset.PurchasePrice.ToString(CultureInfo.InvariantCulture),
+            asset.SalePrice.ToString(CultureInfo.InvariantCulture));
+
+    private static void TryAddUnique(ICollection<string>? values, string? value)
+    {
+        if (values is null || string.IsNullOrWhiteSpace(value))
+            return;
+
+        if (values.Any(existing =>
+                string.Equals(
+                    RentalCatalogValueNormalizer.NormalizeLooseKey(existing),
+                    RentalCatalogValueNormalizer.NormalizeLooseKey(value),
+                    StringComparison.OrdinalIgnoreCase)))
         {
-            var direct = await _db.Items.AsNoTracking().FirstOrDefaultAsync(item => item.Id == itemId.Value, ct);
-            if (direct is not null)
-                return direct;
+            return;
         }
 
-        var normalizedMaterialNumber = (managementNumber ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(normalizedMaterialNumber))
-        {
-            var materialMatch = await _db.Items.AsNoTracking()
-                .OrderByDescending(item => item.UpdatedAtUtc)
-                .FirstOrDefaultAsync(item => item.MaterialNumber == normalizedMaterialNumber, ct);
-            if (materialMatch is not null)
-                return materialMatch;
-        }
+        values.Add(value.Trim());
+    }
 
-        var normalizedMachineNumber = (machineNumber ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(normalizedMachineNumber))
-        {
-            var serialMatch = await _db.Items.AsNoTracking()
-                .OrderByDescending(item => item.UpdatedAtUtc)
-                .FirstOrDefaultAsync(item => item.SerialNumber == normalizedMachineNumber, ct);
-            if (serialMatch is not null)
-                return serialMatch;
-        }
+    private static void SortAndDistinct(List<string> values)
+    {
+        if (values.Count <= 1)
+            return;
 
-        var normalizedModelName = (modelName ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(normalizedModelName))
-            return null;
+        var ordered = values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
 
-        return await _db.Items.AsNoTracking()
-            .OrderByDescending(item => item.LastPurchaseDate)
-            .ThenByDescending(item => item.UpdatedAtUtc)
-            .FirstOrDefaultAsync(item => item.NameOriginal == normalizedModelName, ct);
+        values.Clear();
+        values.AddRange(ordered);
     }
 
     private async Task<string> ResolveLatestPurchaseVendorNameAsync(Guid itemId, CancellationToken ct)
@@ -1903,14 +2307,28 @@ public sealed class RentalStateService
             return null;
 
         var officeCode = NormalizeOfficeCode(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode);
-        return await _db.RentalBillingProfiles.AsNoTracking()
+        var profiles = await _db.RentalBillingProfiles.AsNoTracking()
             .Where(profile =>
                 profile.ResponsibleOfficeCode == officeCode ||
                 profile.ManagementCompanyCode == officeCode)
             .Where(profile => profile.CustomerName == asset.CustomerName)
-            .Where(profile => string.IsNullOrWhiteSpace(asset.ModelName) || profile.ModelName == asset.ModelName)
+            .ToListAsync(ct);
+
+        if (profiles.Count == 0)
+            return null;
+
+        if (string.IsNullOrWhiteSpace(asset.ItemName))
+            return profiles.Select(profile => (Guid?)profile.Id).FirstOrDefault();
+
+        var normalizedItemKey = RentalCatalogValueNormalizer.NormalizeLooseKey(asset.ItemName);
+        return profiles
+            .Where(profile =>
+                string.Equals(
+                    RentalCatalogValueNormalizer.NormalizeLooseKey(profile.ItemName),
+                    normalizedItemKey,
+                    StringComparison.OrdinalIgnoreCase))
             .Select(profile => (Guid?)profile.Id)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefault();
     }
 
     private static string BuildProfileKey(
@@ -1918,14 +2336,14 @@ public sealed class RentalStateService
         string? businessNumber,
         string? customerName,
         string? realCustomerName,
-        string? modelName)
+        string? itemName)
     {
         return string.Join('|',
             NormalizeProfileKeyPart(managementCompanyCode),
             NormalizeProfileKeyPart(businessNumber),
             NormalizeProfileKeyPart(customerName),
             NormalizeProfileKeyPart(realCustomerName),
-            NormalizeProfileKeyPart(modelName));
+            NormalizeProfileKeyPart(itemName));
     }
 
     private static string BuildAssetKey(
@@ -1934,7 +2352,7 @@ public sealed class RentalStateService
         string? managementId,
         string? machineNumber,
         string? customerName,
-        string? modelName)
+        string? itemName)
     {
         var primary = !string.IsNullOrWhiteSpace(managementNumber)
             ? managementNumber
@@ -1946,7 +2364,7 @@ public sealed class RentalStateService
             NormalizeProfileKeyPart(managementCompanyCode),
             NormalizeProfileKeyPart(primary),
             NormalizeProfileKeyPart(customerName),
-            NormalizeProfileKeyPart(modelName));
+            NormalizeProfileKeyPart(itemName));
     }
 
     private static string NormalizeProfileKeyPart(string? value)

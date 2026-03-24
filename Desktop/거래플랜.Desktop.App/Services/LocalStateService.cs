@@ -629,8 +629,15 @@ public sealed partial class LocalStateService
 
     public async Task<LocalItem> UpsertItemAsync(LocalItem item, string? preferredOfficeCode, CancellationToken ct = default)
     {
+        item.NameOriginal = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(item.NameOriginal);
+        item.NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal);
+        item.SpecificationOriginal = RentalCatalogValueNormalizer.NormalizeDisplayText(item.SpecificationOriginal);
+        item.SpecificationMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.SpecificationOriginal);
+        item.CategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(item.CategoryName);
         item.IsDirty = true;
         item.UpdatedAtUtc = DateTime.UtcNow;
+
+        item.CategoryName = await EnsureItemCategoryOptionExistsAsync(item.CategoryName, ct);
 
         var existing = await _db.Items.FindAsync([item.Id], ct);
         if (existing is null)
@@ -1939,7 +1946,11 @@ public sealed partial class LocalStateService
         if (string.IsNullOrWhiteSpace(name))
             return LocalMutationResult.Denied("품목분류 이름을 입력하세요.");
 
-        var options = await _db.ItemCategoryOptions.IgnoreQueryFilters().ToListAsync(ct);
+        var options = _db.ItemCategoryOptions.Local
+            .Concat(await _db.ItemCategoryOptions.IgnoreQueryFilters().ToListAsync(ct))
+            .GroupBy(option => option.Id)
+            .Select(group => group.First())
+            .ToList();
         if (options.Any(current =>
                 current.Id != option.Id &&
                 !current.IsDeleted &&
@@ -1970,6 +1981,7 @@ public sealed partial class LocalStateService
             };
             _db.ItemCategoryOptions.Add(created);
             await _db.SaveChangesAsync(ct);
+            RaiseInventoryStateChanged();
             return LocalMutationResult.Ok(created.Id, "품목분류를 추가했습니다.");
         }
 
@@ -1983,18 +1995,28 @@ public sealed partial class LocalStateService
 
         if (!string.IsNullOrWhiteSpace(oldName) && !string.Equals(oldName, name, StringComparison.CurrentCulture))
         {
-            var items = await _db.Items.IgnoreQueryFilters()
-                .Where(item => item.CategoryName == oldName)
-                .ToListAsync(ct);
-            foreach (var item in items)
+            var oldKey = RentalCatalogValueNormalizer.NormalizeLooseKey(oldName);
+            var items = await _db.Items.IgnoreQueryFilters().ToListAsync(ct);
+            foreach (var item in items.Where(item =>
+                         string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(item.CategoryName), oldKey, StringComparison.OrdinalIgnoreCase)))
             {
                 item.CategoryName = name;
                 item.IsDirty = true;
                 item.UpdatedAtUtc = now;
             }
+
+            var rentalAssets = await _db.RentalAssets.IgnoreQueryFilters().ToListAsync(ct);
+            foreach (var asset in rentalAssets.Where(asset =>
+                         string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(asset.ItemCategoryName), oldKey, StringComparison.OrdinalIgnoreCase)))
+            {
+                asset.ItemCategoryName = name;
+                asset.IsDirty = true;
+                asset.UpdatedAtUtc = now;
+            }
         }
 
         await _db.SaveChangesAsync(ct);
+        RaiseInventoryStateChanged();
         return LocalMutationResult.Ok(existing.Id, "품목분류를 수정했습니다.");
     }
 
@@ -2004,8 +2026,12 @@ public sealed partial class LocalStateService
         if (option is null)
             return LocalMutationResult.Missing("품목분류를 찾을 수 없습니다.");
 
-        var inUse = await _db.Items.IgnoreQueryFilters().AnyAsync(item => item.CategoryName == option.Name, ct);
-        if (inUse)
+        var optionKey = RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name);
+        var itemInUse = (await _db.Items.IgnoreQueryFilters().ToListAsync(ct)).Any(item =>
+            string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(item.CategoryName), optionKey, StringComparison.OrdinalIgnoreCase));
+        var rentalInUse = (await _db.RentalAssets.IgnoreQueryFilters().ToListAsync(ct)).Any(asset =>
+            string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(asset.ItemCategoryName), optionKey, StringComparison.OrdinalIgnoreCase));
+        if (itemInUse || rentalInUse)
             return LocalMutationResult.Denied("사용 중인 품목분류는 삭제할 수 없습니다.");
 
         option.IsDeleted = true;
@@ -2013,6 +2039,7 @@ public sealed partial class LocalStateService
         option.IsActive = false;
         option.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
+        RaiseInventoryStateChanged();
         return LocalMutationResult.Ok(option.Id, "품목분류를 삭제했습니다.");
     }
 
@@ -4005,6 +4032,62 @@ ON CONFLICT(ItemId, WarehouseCode) DO UPDATE SET
             OfficeCodeCatalog.Yeonsu => DomainConstants.WarehouseYeonsuMain,
             _ => DomainConstants.WarehouseUsenetMain
         };
+    }
+
+    private async Task<string> EnsureItemCategoryOptionExistsAsync(string? categoryName, CancellationToken ct)
+    {
+        var normalizedName = SelectionOptionDefaults.NormalizeItemCategoryName(categoryName);
+        if (string.IsNullOrWhiteSpace(normalizedName))
+            return string.Empty;
+
+        var normalizedKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName);
+        var options = _db.ItemCategoryOptions.Local
+            .Concat(await _db.ItemCategoryOptions.IgnoreQueryFilters().ToListAsync(ct))
+            .GroupBy(option => option.Id)
+            .Select(group => group.First())
+            .ToList();
+        var existing = options.FirstOrDefault(option =>
+            !option.IsDeleted &&
+            string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name), normalizedKey, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+        {
+            if (!string.Equals(existing.Name, normalizedName, StringComparison.Ordinal))
+            {
+                normalizedName = existing.Name;
+            }
+
+            if (!existing.IsActive)
+            {
+                existing.IsActive = true;
+                existing.IsDeleted = false;
+                existing.IsDirty = true;
+                existing.UpdatedAtUtc = DateTime.UtcNow;
+            }
+
+            return normalizedName;
+        }
+
+        var now = DateTime.UtcNow;
+        var nextSortOrder = options
+            .Where(option => !option.IsDeleted)
+            .Select(option => option.SortOrder)
+            .DefaultIfEmpty(0)
+            .Max() + 10;
+
+        _db.ItemCategoryOptions.Add(new LocalItemCategoryOption
+        {
+            Id = Guid.NewGuid(),
+            Name = normalizedName,
+            SortOrder = nextSortOrder,
+            IsSystemDefault = false,
+            IsActive = true,
+            IsDeleted = false,
+            IsDirty = true,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        });
+
+        return normalizedName;
     }
 
     private void RaiseInventoryStateChanged()

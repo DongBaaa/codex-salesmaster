@@ -154,6 +154,7 @@ public static class DbInitializer
         await EnsureRentalManagementCompaniesTableAsync(dbContext, cancellationToken);
         await EnsureRentalBillingProfilesTableAsync(dbContext, cancellationToken);
         await EnsureRentalAssetsTableAsync(dbContext, cancellationToken);
+        await EnsureLegacyRentalNamingColumnsAsync(dbContext, cancellationToken);
         await EnsureRentalBillingLogsTableAsync(dbContext, cancellationToken);
         await EnsureCustomerTradeTypeColumnAsync(dbContext, cancellationToken);
         await EnsureUserOfficeCodeColumnAsync(dbContext, cancellationToken);
@@ -474,6 +475,178 @@ public static class DbInitializer
         {
             await dbContext.Database.CloseConnectionAsync();
         }
+    }
+
+    private static async Task EnsureLegacyRentalNamingColumnsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureRenamedTextColumnAsync(
+            dbContext,
+            "RentalAssets",
+            "ProductCategory",
+            "ItemCategoryName",
+            "TEXT NOT NULL DEFAULT ''",
+            "text NOT NULL DEFAULT ''",
+            cancellationToken);
+        await EnsureRenamedTextColumnAsync(
+            dbContext,
+            "RentalAssets",
+            "ModelName",
+            "ItemName",
+            "TEXT NOT NULL DEFAULT ''",
+            "text NOT NULL DEFAULT ''",
+            cancellationToken);
+        await EnsureRenamedTextColumnAsync(
+            dbContext,
+            "RentalBillingProfiles",
+            "ModelName",
+            "ItemName",
+            "TEXT NOT NULL DEFAULT ''",
+            "text NOT NULL DEFAULT ''",
+            cancellationToken);
+    }
+
+    private static async Task EnsureRenamedTextColumnAsync(
+        AppDbContext dbContext,
+        string tableName,
+        string oldColumnName,
+        string newColumnName,
+        string sqliteDefinition,
+        string postgresDefinition,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+        var hasNewColumn = await HasColumnAsync(dbContext, tableName, newColumnName, cancellationToken);
+        var hasOldColumn = await HasColumnAsync(dbContext, tableName, oldColumnName, cancellationToken);
+
+        if (!hasNewColumn && hasOldColumn)
+        {
+            try
+            {
+                if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+                {
+                    await dbContext.Database.ExecuteSqlRawAsync(
+                        $"ALTER TABLE \"{tableName}\" RENAME COLUMN \"{oldColumnName}\" TO \"{newColumnName}\";",
+                        cancellationToken);
+                }
+                else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+                {
+                    await dbContext.Database.ExecuteSqlRawAsync(
+                        $"ALTER TABLE \"{tableName}\" RENAME COLUMN \"{oldColumnName}\" TO \"{newColumnName}\";",
+                        cancellationToken);
+                }
+            }
+            catch
+            {
+                // Fallback to copy migration below.
+            }
+
+            hasNewColumn = await HasColumnAsync(dbContext, tableName, newColumnName, cancellationToken);
+            hasOldColumn = await HasColumnAsync(dbContext, tableName, oldColumnName, cancellationToken);
+        }
+
+        if (!hasNewColumn)
+        {
+            try
+            {
+                if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+                {
+                    await dbContext.Database.ExecuteSqlRawAsync(
+                        $"ALTER TABLE \"{tableName}\" ADD COLUMN \"{newColumnName}\" {sqliteDefinition};",
+                        cancellationToken);
+                }
+                else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+                {
+                    await dbContext.Database.ExecuteSqlRawAsync(
+                        $"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS \"{newColumnName}\" {postgresDefinition};",
+                        cancellationToken);
+                }
+            }
+            catch
+            {
+                // Existing databases may already contain the renamed column.
+            }
+
+            hasNewColumn = await HasColumnAsync(dbContext, tableName, newColumnName, cancellationToken);
+        }
+
+        if (!hasNewColumn || !hasOldColumn)
+            return;
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                $"""
+                 UPDATE "{tableName}"
+                 SET "{newColumnName}" = CASE
+                     WHEN COALESCE(TRIM("{newColumnName}"), '') = '' THEN COALESCE("{oldColumnName}", '')
+                     ELSE "{newColumnName}"
+                 END
+                 WHERE COALESCE(TRIM("{oldColumnName}"), '') <> '';
+                 """,
+                cancellationToken);
+        }
+        catch
+        {
+            // Ignore copy failures on partially migrated databases.
+        }
+    }
+
+    private static async Task<bool> HasColumnAsync(
+        AppDbContext dbContext,
+        string tableName,
+        string columnName,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+        var connection = dbContext.Database.GetDbConnection();
+        await using var _ = await EnsureConnectionAsync(connection, cancellationToken);
+        await using var command = connection.CreateCommand();
+
+        if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+        {
+            command.CommandText = $"PRAGMA table_info(\"{tableName}\")";
+        }
+        else
+        {
+            command.CommandText = """
+                                  SELECT 1
+                                  FROM information_schema.columns
+                                  WHERE table_schema = 'public'
+                                    AND table_name = @tableName
+                                    AND column_name = @columnName
+                                  LIMIT 1;
+                                  """;
+
+            var tableParameter = command.CreateParameter();
+            tableParameter.ParameterName = "@tableName";
+            tableParameter.DbType = DbType.String;
+            tableParameter.Value = tableName;
+            command.Parameters.Add(tableParameter);
+
+            var columnParameter = command.CreateParameter();
+            columnParameter.ParameterName = "@columnName";
+            columnParameter.DbType = DbType.String;
+            columnParameter.Value = columnName;
+            command.Parameters.Add(columnParameter);
+        }
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.Equals(reader["name"]?.ToString(), columnName, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            else
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static async Task EnsureTenantDefinitionsTableAsync(
@@ -2151,7 +2324,7 @@ public static class DbInitializer
                         "CustomerName" TEXT NOT NULL DEFAULT '',
                         "BusinessNumber" TEXT NOT NULL DEFAULT '',
                         "RealCustomerName" TEXT NOT NULL DEFAULT '',
-                        "ModelName" TEXT NOT NULL DEFAULT '',
+                        "ItemName" TEXT NOT NULL DEFAULT '',
                         "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
                         "BillingMethod" TEXT NOT NULL DEFAULT '',
                         "PaymentMethod" TEXT NOT NULL DEFAULT '',
@@ -2198,7 +2371,7 @@ public static class DbInitializer
                         "CustomerName" text NOT NULL DEFAULT '',
                         "BusinessNumber" text NOT NULL DEFAULT '',
                         "RealCustomerName" text NOT NULL DEFAULT '',
-                        "ModelName" text NOT NULL DEFAULT '',
+                        "ItemName" text NOT NULL DEFAULT '',
                         "ManagementCompanyCode" text NOT NULL DEFAULT '',
                         "BillingMethod" text NOT NULL DEFAULT '',
                         "PaymentMethod" text NOT NULL DEFAULT '',
@@ -2271,9 +2444,9 @@ public static class DbInitializer
                         "ManagementNumber" TEXT NOT NULL DEFAULT '',
                         "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
                         "CurrentLocation" TEXT NOT NULL DEFAULT '',
-                        "ProductCategory" TEXT NOT NULL DEFAULT '',
+                        "ItemCategoryName" TEXT NOT NULL DEFAULT '',
                         "Manufacturer" TEXT NOT NULL DEFAULT '',
-                        "ModelName" TEXT NOT NULL DEFAULT '',
+                        "ItemName" TEXT NOT NULL DEFAULT '',
                         "MachineNumber" TEXT NOT NULL DEFAULT '',
                         "PurchaseVendor" TEXT NOT NULL DEFAULT '',
                         "PurchaseDate" TEXT NULL,
@@ -2318,9 +2491,9 @@ public static class DbInitializer
                         "ManagementNumber" text NOT NULL DEFAULT '',
                         "ManagementCompanyCode" text NOT NULL DEFAULT '',
                         "CurrentLocation" text NOT NULL DEFAULT '',
-                        "ProductCategory" text NOT NULL DEFAULT '',
+                        "ItemCategoryName" text NOT NULL DEFAULT '',
                         "Manufacturer" text NOT NULL DEFAULT '',
-                        "ModelName" text NOT NULL DEFAULT '',
+                        "ItemName" text NOT NULL DEFAULT '',
                         "MachineNumber" text NOT NULL DEFAULT '',
                         "PurchaseVendor" text NOT NULL DEFAULT '',
                         "PurchaseDate" date NULL,

@@ -655,7 +655,7 @@ public static class DtoMappings
             CustomerName = entity.CustomerName,
             BusinessNumber = entity.BusinessNumber,
             RealCustomerName = entity.RealCustomerName,
-            ModelName = entity.ModelName,
+            ItemName = entity.ItemName,
             ManagementCompanyCode = entity.ManagementCompanyCode,
             BillingMethod = entity.BillingMethod,
             PaymentMethod = entity.PaymentMethod,
@@ -690,7 +690,7 @@ public static class DtoMappings
         entity.CustomerName = dto.CustomerName?.Trim() ?? string.Empty;
         entity.BusinessNumber = dto.BusinessNumber?.Trim() ?? string.Empty;
         entity.RealCustomerName = dto.RealCustomerName?.Trim() ?? string.Empty;
-        entity.ModelName = dto.ModelName?.Trim() ?? string.Empty;
+        entity.ItemName = dto.ItemName?.Trim() ?? string.Empty;
         entity.ManagementCompanyCode = dto.ManagementCompanyCode?.Trim() ?? string.Empty;
         entity.BillingMethod = dto.BillingMethod?.Trim() ?? string.Empty;
         entity.PaymentMethod = dto.PaymentMethod?.Trim() ?? string.Empty;
@@ -743,9 +743,9 @@ public static class DtoMappings
             ManagementNumber = entity.ManagementNumber,
             ManagementCompanyCode = entity.ManagementCompanyCode,
             CurrentLocation = entity.CurrentLocation,
-            ProductCategory = entity.ProductCategory,
+            ItemCategoryName = entity.ItemCategoryName,
             Manufacturer = entity.Manufacturer,
-            ModelName = entity.ModelName,
+            ItemName = entity.ItemName,
             MachineNumber = entity.MachineNumber,
             PurchaseVendor = entity.PurchaseVendor,
             PurchaseDate = entity.PurchaseDate,
@@ -778,9 +778,9 @@ public static class DtoMappings
         entity.ManagementNumber = dto.ManagementNumber?.Trim() ?? string.Empty;
         entity.ManagementCompanyCode = dto.ManagementCompanyCode?.Trim() ?? string.Empty;
         entity.CurrentLocation = dto.CurrentLocation?.Trim() ?? string.Empty;
-        entity.ProductCategory = dto.ProductCategory?.Trim() ?? string.Empty;
+        entity.ItemCategoryName = dto.ItemCategoryName?.Trim() ?? string.Empty;
         entity.Manufacturer = dto.Manufacturer?.Trim() ?? string.Empty;
-        entity.ModelName = dto.ModelName?.Trim() ?? string.Empty;
+        entity.ItemName = dto.ItemName?.Trim() ?? string.Empty;
         entity.MachineNumber = dto.MachineNumber?.Trim() ?? string.Empty;
         entity.PurchaseVendor = dto.PurchaseVendor?.Trim() ?? string.Empty;
         entity.PurchaseDate = dto.PurchaseDate;

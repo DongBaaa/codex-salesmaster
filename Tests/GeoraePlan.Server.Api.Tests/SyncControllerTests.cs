@@ -63,7 +63,7 @@ public sealed class SyncControllerTests : IDisposable
                     ManagementCompanyCode = OfficeCodeCatalog.Itworld,
                     CurrentLocation = "렌탈",
                     CustomerName = "테스트 거래처 A",
-                    ModelName = "MODEL-A",
+                    ItemName = "MODEL-A",
                     CreatedAtUtc = registeredAtUtc,
                     UpdatedAtUtc = registeredAtUtc
                 },
@@ -74,7 +74,7 @@ public sealed class SyncControllerTests : IDisposable
                     ManagementCompanyCode = OfficeCodeCatalog.Itworld,
                     CurrentLocation = "렌탈",
                     CustomerName = "테스트 거래처 B",
-                    ModelName = "MODEL-B",
+                    ItemName = "MODEL-B",
                     CreatedAtUtc = registeredAtUtc,
                     UpdatedAtUtc = registeredAtUtc
                 }

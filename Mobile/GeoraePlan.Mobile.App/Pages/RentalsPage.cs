@@ -278,7 +278,7 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             if (value is not RentalBillingProfileDto profile)
                 return string.Empty;
 
-            return $"{Normalize(profile.ModelName, "모델 미지정")} · {Normalize(profile.BillingStatus, "상태 미지정")} · 월 {profile.MonthlyAmount:N0}원";
+            return $"{Normalize(profile.ItemName, "품명 미지정")} · {Normalize(profile.BillingStatus, "상태 미지정")} · 월 {profile.MonthlyAmount:N0}원";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
@@ -324,7 +324,7 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
 
             return string.IsNullOrWhiteSpace(asset.CustomerName)
                 ? Normalize(asset.AssetKey, "렌탈자산")
-                : $"{asset.CustomerName} · {Normalize(asset.ModelName, "모델 미지정")}";
+                : $"{asset.CustomerName} · {Normalize(asset.ItemName, "품명 미지정")}";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)

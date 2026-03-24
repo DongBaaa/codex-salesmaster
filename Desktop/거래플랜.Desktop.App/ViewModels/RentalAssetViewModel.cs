@@ -37,9 +37,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private string _editManagementNumber = string.Empty;
     [ObservableProperty] private string _editOfficeCode = string.Empty;
     [ObservableProperty] private string _editCurrentLocation = string.Empty;
-    [ObservableProperty] private string _editProductCategory = string.Empty;
+    [ObservableProperty] private string _editItemCategoryName = string.Empty;
     [ObservableProperty] private string _editManufacturer = string.Empty;
-    [ObservableProperty] private string _editModelName = string.Empty;
+    [ObservableProperty] private string _editItemName = string.Empty;
     [ObservableProperty] private string _editMachineNumber = string.Empty;
     [ObservableProperty] private string _editPurchaseVendor = string.Empty;
     [ObservableProperty] private decimal _editPurchasePrice;
@@ -64,6 +64,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public ObservableCollection<DisplayOption> OfficeOptions { get; } = new();
     public ObservableCollection<string> AssignedUsernameOptions { get; } = new();
     public ObservableCollection<string> AssetStatusOptions { get; } = new();
+    public ObservableCollection<LocalItemCategoryOption> ItemCategoryOptions { get; } = new();
     public ObservableCollection<RentalAssetViewRow> Rows { get; } = new();
 
     public bool CanViewAll => _session.HasAdministrativePrivileges ||
@@ -91,6 +92,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         _documents = documents;
         _printService = printService;
         _session = session;
+        _local.InventoryStateChanged += HandleInventoryStateChanged;
 
         AssetStatusOptions.Add(AllOption);
         AssetStatusOptions.Add("임대진행중");
@@ -103,6 +105,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public async Task LoadAsync()
     {
         await ReloadFiltersAsync();
+        await ReloadItemCategoryOptionsAsync();
         await ReloadAsync();
         NewAsset();
     }
@@ -152,9 +155,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             ManagementNumber = EditManagementNumber,
             ManagementCompanyCode = officeCode,
             CurrentLocation = EditCurrentLocation,
-            ProductCategory = EditProductCategory,
+            ItemCategoryName = EditItemCategoryName,
             Manufacturer = EditManufacturer,
-            ModelName = EditModelName,
+            ItemName = EditItemName,
             MachineNumber = EditMachineNumber,
             PurchaseVendor = EditPurchaseVendor,
             PurchasePrice = EditPurchasePrice,
@@ -258,9 +261,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         EditOfficeCode = OfficeOptions.FirstOrDefault(option => option.Value != AllOption)?.Value
             ?? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
         EditCurrentLocation = string.Empty;
-        EditProductCategory = string.Empty;
+        EditItemCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
         EditManufacturer = string.Empty;
-        EditModelName = string.Empty;
+        EditItemName = string.Empty;
         EditMachineNumber = string.Empty;
         EditPurchaseVendor = string.Empty;
         EditPurchasePrice = 0m;
@@ -377,9 +380,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 : source.ResponsibleOfficeCode,
             _session.OfficeCode);
         EditCurrentLocation = source.CurrentLocation;
-        EditProductCategory = source.ProductCategory;
+        EditItemCategoryName = source.ItemCategoryName;
         EditManufacturer = source.Manufacturer;
-        EditModelName = source.ModelName;
+        EditItemName = source.ItemName;
         EditMachineNumber = source.MachineNumber;
         EditPurchaseVendor = source.PurchaseVendor;
         EditPurchasePrice = source.PurchasePrice;
@@ -416,9 +419,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             return false;
         }
 
-        if (string.IsNullOrWhiteSpace(EditModelName))
+        if (string.IsNullOrWhiteSpace(EditItemName))
         {
-            StatusMessage = "모델명을 입력하세요.";
+            StatusMessage = "품명을 입력하세요.";
             asset = new LocalRentalAsset();
             return false;
         }
@@ -433,9 +436,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             ManagementNumber = EditManagementNumber,
             ManagementCompanyCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(EditOfficeCode, _session.OfficeCode),
             CurrentLocation = EditCurrentLocation,
-            ProductCategory = EditProductCategory,
+            ItemCategoryName = EditItemCategoryName,
             Manufacturer = EditManufacturer,
-            ModelName = EditModelName,
+            ItemName = EditItemName,
             MachineNumber = EditMachineNumber,
             PurchaseVendor = EditPurchaseVendor,
             PurchaseDate = ToDateOnly(EditPurchaseDate),
@@ -580,8 +583,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         ArgumentNullException.ThrowIfNull(item);
         EditItemId = item.Id;
-        EditModelName = item.NameOriginal?.Trim() ?? string.Empty;
-        EditProductCategory = item.CategoryName?.Trim() ?? string.Empty;
+        EditItemName = item.NameOriginal?.Trim() ?? string.Empty;
+        EditItemCategoryName = item.CategoryName?.Trim() ?? string.Empty;
         if (EditPurchasePrice <= 0m && item.PurchasePrice > 0m)
             EditPurchasePrice = item.PurchasePrice;
         if (EditSalePrice <= 0m && item.SalePrice > 0m)
@@ -629,6 +632,40 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             SelectedAssignedUsernameFilter = AllOption;
     }
 
+    private async void HandleInventoryStateChanged(object? sender, EventArgs e)
+    {
+        try
+        {
+            await ReloadItemCategoryOptionsAsync();
+        }
+        catch
+        {
+            // keep current rental screen state when background category refresh fails
+        }
+    }
+
+    private async Task ReloadItemCategoryOptionsAsync()
+    {
+        var currentValue = EditItemCategoryName;
+        ItemCategoryOptions.Clear();
+        foreach (var option in await _local.GetItemCategoryOptionsAsync())
+            ItemCategoryOptions.Add(option);
+
+        if (!string.IsNullOrWhiteSpace(currentValue))
+        {
+            var matched = ItemCategoryOptions.FirstOrDefault(option =>
+                string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name), RentalCatalogValueNormalizer.NormalizeLooseKey(currentValue), StringComparison.OrdinalIgnoreCase));
+            if (matched is not null)
+            {
+                EditItemCategoryName = matched.Name;
+                return;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(SelectedRow?.Source.ItemCategoryName) && string.IsNullOrWhiteSpace(EditItemCategoryName))
+            EditItemCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
+    }
+
     private void SelectRow(Guid entityId)
     {
         SelectedRow = Rows.FirstOrDefault(row => row.Source.Id == entityId);
@@ -668,7 +705,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private static string BuildSafeDocumentSuffix(LocalRentalAsset asset)
     {
         var candidate = string.IsNullOrWhiteSpace(asset.CustomerName)
-            ? Coalesce(asset.ManagementNumber, asset.ManagementId, asset.ModelName)
+            ? Coalesce(asset.ManagementNumber, asset.ManagementId, asset.ItemName)
             : asset.CustomerName;
         return string.Concat((candidate ?? string.Empty).Where(ch => !Path.GetInvalidFileNameChars().Contains(ch)));
     }

@@ -34,7 +34,7 @@ public sealed partial class RentalContractEditorViewModel : ObservableObject
     [ObservableProperty] private string _companyContactNumber = string.Empty;
     [ObservableProperty] private string _companyFaxNumber = string.Empty;
     [ObservableProperty] private string _managementNumber = string.Empty;
-    [ObservableProperty] private string _modelName = string.Empty;
+    [ObservableProperty] private string _itemName = string.Empty;
     [ObservableProperty] private string _machineNumber = string.Empty;
     [ObservableProperty] private string _depositText = string.Empty;
     [ObservableProperty] private decimal _monthlyFee;
@@ -140,7 +140,7 @@ public sealed partial class RentalContractEditorViewModel : ObservableObject
             CompanyContactNumber = CompanyContactNumber?.Trim() ?? string.Empty,
             CompanyFaxNumber = CompanyFaxNumber?.Trim() ?? string.Empty,
             ManagementNumber = ManagementNumber?.Trim() ?? string.Empty,
-            ModelName = ModelName?.Trim() ?? string.Empty,
+            ItemName = ItemName?.Trim() ?? string.Empty,
             MachineNumber = MachineNumber?.Trim() ?? string.Empty,
             DepositText = DepositText?.Trim() ?? string.Empty,
             MonthlyFee = MonthlyFee,
@@ -184,7 +184,7 @@ public sealed partial class RentalContractEditorViewModel : ObservableObject
         CompanyContactNumber = model.CompanyContactNumber;
         CompanyFaxNumber = model.CompanyFaxNumber;
         ManagementNumber = model.ManagementNumber;
-        ModelName = model.ModelName;
+        ItemName = model.ItemName;
         MachineNumber = model.MachineNumber;
         DepositText = model.DepositText;
         MonthlyFee = model.MonthlyFee;

@@ -166,7 +166,7 @@
                         <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="110" IsReadOnly="True"/>
                         <DataGridTextColumn Header="거래처" Binding="{Binding Source.CustomerName}" Width="180" IsReadOnly="True"/>
                         <DataGridTextColumn Header="실거래처" Binding="{Binding Source.RealCustomerName}" Width="170" IsReadOnly="True"/>
-                        <DataGridTextColumn Header="모델" Binding="{Binding Source.ModelName}" Width="160" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="품명" Binding="{Binding Source.ItemName}" Width="160" IsReadOnly="True"/>
                         <DataGridTextColumn Header="청구일" Binding="{Binding Source.BillingDay}" Width="70" IsReadOnly="True"/>
                         <DataGridTextColumn Header="주기(月)" Binding="{Binding Source.BillingCycleMonths}" Width="78" IsReadOnly="True"/>
                         <DataGridTextColumn Header="월청구대금" Binding="{Binding Source.MonthlyAmount, StringFormat=N0}" Width="120" IsReadOnly="True"/>
@@ -213,8 +213,8 @@
 
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="담당지점" VerticalAlignment="Center" Margin="0,0,10,8"/>
                         <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding OfficeOptions}" DisplayMemberPath="DisplayName" SelectedValuePath="Value" SelectedValue="{Binding EditOfficeCode}" Margin="0,0,0,8"/>
-                        <TextBlock Grid.Row="2" Grid.Column="3" Text="모델명" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                        <TextBox Grid.Row="2" Grid.Column="4" Text="{Binding EditModelName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="2" Grid.Column="3" Text="품명" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBox Grid.Row="2" Grid.Column="4" Text="{Binding EditItemName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
 
                         <TextBlock Grid.Row="3" Grid.Column="0" Text="사업자번호" VerticalAlignment="Center" Margin="0,0,10,8"/>
                         <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding EditBusinessNumber, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>

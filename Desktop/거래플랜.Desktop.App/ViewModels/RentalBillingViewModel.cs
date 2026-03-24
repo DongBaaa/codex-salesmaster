@@ -30,7 +30,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private string _editCustomerName = string.Empty;
     [ObservableProperty] private string _editBusinessNumber = string.Empty;
     [ObservableProperty] private string _editRealCustomerName = string.Empty;
-    [ObservableProperty] private string _editModelName = string.Empty;
+    [ObservableProperty] private string _editItemName = string.Empty;
     [ObservableProperty] private string _editOfficeCode = string.Empty;
     [ObservableProperty] private string _editBillingMethod = string.Empty;
     [ObservableProperty] private string _editPaymentMethod = string.Empty;
@@ -174,7 +174,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             CustomerName = EditCustomerName,
             BusinessNumber = EditBusinessNumber,
             RealCustomerName = EditRealCustomerName,
-            ModelName = EditModelName,
+            ItemName = EditItemName,
             ManagementCompanyCode = officeCode,
             BillingMethod = EditBillingMethod,
             PaymentMethod = EditPaymentMethod,
@@ -367,7 +367,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditCustomerName = string.Empty;
         EditBusinessNumber = string.Empty;
         EditRealCustomerName = string.Empty;
-        EditModelName = string.Empty;
+        EditItemName = string.Empty;
         EditOfficeCode = OfficeOptions.FirstOrDefault(option => option.Value != AllOption)?.Value
             ?? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
         EditBillingMethod = string.Empty;
@@ -422,7 +422,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditCustomerName = source.CustomerName;
         EditBusinessNumber = source.BusinessNumber;
         EditRealCustomerName = source.RealCustomerName;
-        EditModelName = source.ModelName;
+        EditItemName = source.ItemName;
         EditOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
             string.IsNullOrWhiteSpace(source.ResponsibleOfficeCode)
                 ? source.ManagementCompanyCode

@@ -918,7 +918,7 @@ public sealed class SyncController : ControllerBase
                 reservedManagementIds,
                 reservedManagementNumbers,
                 cancellationToken);
-            dto.AssetKey = BuildRentalAssetKey(dto.ManagementCompanyCode, dto.ManagementNumber, dto.ManagementId, dto.MachineNumber, dto.CustomerName, dto.ModelName);
+            dto.AssetKey = BuildRentalAssetKey(dto.ManagementCompanyCode, dto.ManagementNumber, dto.ManagementId, dto.MachineNumber, dto.CustomerName, dto.ItemName);
             scoped.Add(dto);
         }
 
@@ -1040,7 +1040,7 @@ public sealed class SyncController : ControllerBase
         string? managementId,
         string? machineNumber,
         string? customerName,
-        string? modelName)
+        string? itemName)
     {
         var primary = !string.IsNullOrWhiteSpace(managementNumber)
             ? managementNumber
@@ -1052,7 +1052,7 @@ public sealed class SyncController : ControllerBase
             NormalizeKeyPart(managementCompanyCode),
             NormalizeKeyPart(primary),
             NormalizeKeyPart(customerName),
-            NormalizeKeyPart(modelName));
+            NormalizeKeyPart(itemName));
     }
 
     private static string NormalizeKeyPart(string? value)

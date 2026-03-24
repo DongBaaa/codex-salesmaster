@@ -1,4 +1,6 @@
-﻿namespace 거래플랜.Desktop.App.Services;
+﻿using 거래플랜.Shared.Contracts;
+
+namespace 거래플랜.Desktop.App.Services;
 
 public static class SelectionOptionDefaults
 {
@@ -73,5 +75,5 @@ public static class SelectionOptionDefaults
         };
 
     public static string NormalizeItemCategoryName(string? name)
-        => (name ?? string.Empty).Trim();
+        => RentalCatalogValueNormalizer.NormalizeCategoryDisplayName(name);
 }

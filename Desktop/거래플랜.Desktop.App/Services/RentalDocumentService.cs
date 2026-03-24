@@ -37,7 +37,7 @@ public sealed class RentalDocumentService
 
         var orderedAssets = assets
             .OrderBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
-            .ThenBy(asset => asset.ModelName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.ItemName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
 
         var chunks = new List<List<LocalRentalAsset>>();
@@ -126,7 +126,7 @@ public sealed class RentalDocumentService
         AddToGrid(root, CreateTwoColumnSummary(
             ("관리번호", Coalesce(asset.ManagementNumber, asset.ManagementId)),
             ("제조사", asset.Manufacturer),
-            ("모델명", asset.ModelName),
+            ("품명", asset.ItemName),
             ("제품번호", asset.MachineNumber),
             ("구입일자", FormatDate(asset.PurchaseDate)),
             ("거래처명", asset.CustomerName),
@@ -198,7 +198,7 @@ public sealed class RentalDocumentService
             CompanyContactNumber = ResolveContractPhoneNumber(companyProfile),
             CompanyFaxNumber = ResolveContractFaxNumber(companyProfile),
             ManagementNumber = Coalesce(asset.ManagementNumber, asset.ManagementId, "미입력"),
-            ModelName = Coalesce(asset.ModelName, "미입력"),
+            ItemName = Coalesce(asset.ItemName, "미입력"),
             MachineNumber = Coalesce(asset.MachineNumber, "미입력"),
             DepositText = string.IsNullOrWhiteSpace(asset.DepositText) ? "면제" : asset.DepositText.Trim(),
             MonthlyFee = asset.MonthlyFee,
@@ -957,8 +957,8 @@ public sealed class RentalDocumentService
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         AddEquipmentHeaderCell(grid, "No.", 0, 0, 2, 1);
-        AddEquipmentHeaderCell(grid, "상품분류", 0, 1, 2, 1);
-        AddEquipmentHeaderCell(grid, "모델명", 0, 2, 2, 1);
+        AddEquipmentHeaderCell(grid, "품목분류", 0, 1, 2, 1);
+        AddEquipmentHeaderCell(grid, "품명", 0, 2, 2, 1);
         AddEquipmentHeaderCell(grid, "기계번호", 0, 3, 2, 1);
         AddEquipmentHeaderCell(grid, "보증금", 0, 4, 2, 1);
         AddEquipmentHeaderCell(grid, "렌탈요금", 0, 5, 2, 1);
@@ -979,8 +979,8 @@ public sealed class RentalDocumentService
             var row = assets[index];
             var rowIndex = index + 2;
             AddEquipmentValueCell(grid, $"{startNumber + index}", rowIndex, 0, TextAlignment.Center);
-            AddEquipmentValueCell(grid, ValueOrDash(row.ProductCategory), rowIndex, 1);
-            AddEquipmentValueCell(grid, ValueOrDash(row.ModelName), rowIndex, 2, autoShrink: true);
+            AddEquipmentValueCell(grid, ValueOrDash(row.ItemCategoryName), rowIndex, 1);
+            AddEquipmentValueCell(grid, ValueOrDash(row.ItemName), rowIndex, 2, autoShrink: true);
             AddEquipmentValueCell(grid, ValueOrDash(row.MachineNumber), rowIndex, 3, autoShrink: true);
             AddEquipmentValueCell(grid, ValueOrDash(row.DepositText), rowIndex, 4, TextAlignment.Center);
             AddEquipmentValueCell(grid, row.MonthlyFee > 0m ? $"{row.MonthlyFee:N0}" : ValueOrDash(null), rowIndex, 5, TextAlignment.Right);
@@ -1220,8 +1220,8 @@ public sealed class RentalDocumentService
 
         AddCell(grid, "제품관리번호", 0, 0, true, TextAlignment.Center);
         AddCell(grid, model.ManagementNumber, 0, 1, false);
-        AddCell(grid, "모델명", 0, 2, true, TextAlignment.Center);
-        AddCell(grid, model.ModelName, 0, 3, false);
+        AddCell(grid, "품명", 0, 2, true, TextAlignment.Center);
+        AddCell(grid, model.ItemName, 0, 3, false);
         AddCell(grid, "기계번호", 1, 0, true, TextAlignment.Center);
         AddCell(grid, model.MachineNumber, 1, 1, false);
         AddCell(grid, "설치위치", 1, 2, true, TextAlignment.Center);

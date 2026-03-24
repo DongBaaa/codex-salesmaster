@@ -60,7 +60,12 @@ public static class LocalDbInitializer
         await SeedCompanyProfilesAsync(db);
         await SeedRentalDefaultsAsync(db);
         await NormalizeRentalOfficeDataAsync(db);
+        await NormalizeItemCategoryOptionDuplicatesAsync(db);
         await db.SaveChangesAsync();
+        await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_ItemCategoryOptions_Name_Active\" ON \"ItemCategoryOptions\" (\"Name\") WHERE COALESCE(TRIM(\"Name\"), '') <> '' AND COALESCE(\"IsDeleted\", 0) = 0;");
+
+        var rentalState = new RentalStateService(db);
+        await rentalState.RepairRentalCatalogLinksAsync();
     }
 
     private static void LogSchemaStepFailure(string stepName, Exception ex)
@@ -128,6 +133,7 @@ public static class LocalDbInitializer
         await TryCreateRentalBillingProfilesTableAsync(db);
         await TryCreateRentalAssetsTableAsync(db);
         await TryCreateRentalBillingLogsTableAsync(db);
+        await EnsureLegacyRentalNamingColumnsAsync(db);
 
         var customerCols = new (string col, string def)[]
         {
@@ -1179,8 +1185,178 @@ public static class LocalDbInitializer
         }
     }
 
+    private static async Task NormalizeItemCategoryOptionDuplicatesAsync(LocalDbContext db)
+    {
+        var options = await db.ItemCategoryOptions.IgnoreQueryFilters()
+            .OrderBy(option => option.SortOrder)
+            .ThenBy(option => option.CreatedAtUtc)
+            .ThenBy(option => option.Name)
+            .ToListAsync();
+        if (options.Count == 0)
+            return;
+
+        var canonicalByKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var now = DateTime.UtcNow;
+        foreach (var group in options
+                     .Where(option => !option.IsDeleted && !string.IsNullOrWhiteSpace(option.Name))
+                     .GroupBy(option => RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name), StringComparer.OrdinalIgnoreCase)
+                     .Where(group => !string.IsNullOrWhiteSpace(group.Key)))
+        {
+            var canonical = group
+                .OrderBy(option => option.SortOrder)
+                .ThenByDescending(option => option.IsSystemDefault)
+                .ThenBy(option => option.CreatedAtUtc)
+                .First();
+            var canonicalName = SelectionOptionDefaults.NormalizeItemCategoryName(canonical.Name);
+            canonicalByKey[group.Key] = canonicalName;
+
+            if (!string.Equals(canonical.Name, canonicalName, StringComparison.Ordinal))
+            {
+                canonical.Name = canonicalName;
+                canonical.IsDirty = true;
+                canonical.UpdatedAtUtc = now;
+            }
+
+            foreach (var duplicate in group.Where(option => option.Id != canonical.Id))
+            {
+                db.ItemCategoryOptions.Remove(duplicate);
+            }
+        }
+
+        foreach (var deletedOption in options.Where(option =>
+                     option.IsDeleted &&
+                     !string.IsNullOrWhiteSpace(option.Name) &&
+                     canonicalByKey.ContainsKey(RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name))))
+        {
+            db.ItemCategoryOptions.Remove(deletedOption);
+        }
+
+        if (canonicalByKey.Count == 0)
+            return;
+
+        var items = await db.Items.IgnoreQueryFilters().ToListAsync();
+        foreach (var item in items)
+        {
+            var key = RentalCatalogValueNormalizer.NormalizeLooseKey(item.CategoryName);
+            if (string.IsNullOrWhiteSpace(key) || !canonicalByKey.TryGetValue(key, out var canonicalName))
+                continue;
+
+            if (string.Equals(item.CategoryName, canonicalName, StringComparison.Ordinal))
+                continue;
+
+            item.CategoryName = canonicalName;
+            item.IsDirty = true;
+            item.UpdatedAtUtc = now;
+        }
+
+        var assets = await db.RentalAssets.IgnoreQueryFilters().ToListAsync();
+        foreach (var asset in assets)
+        {
+            var key = RentalCatalogValueNormalizer.NormalizeLooseKey(asset.ItemCategoryName);
+            if (string.IsNullOrWhiteSpace(key) || !canonicalByKey.TryGetValue(key, out var canonicalName))
+                continue;
+
+            if (string.Equals(asset.ItemCategoryName, canonicalName, StringComparison.Ordinal))
+                continue;
+
+            asset.ItemCategoryName = canonicalName;
+            asset.IsDirty = true;
+            asset.UpdatedAtUtc = now;
+        }
+    }
+
     private static string NormalizeRentalOfficeCode(string? primary, string? secondary)
         => OfficeCodeCatalog.NormalizeOfficeCodeLoose(primary, secondary, DomainConstants.DefaultOfficeUsenet);
+
+    private static async Task EnsureLegacyRentalNamingColumnsAsync(LocalDbContext db)
+    {
+        await EnsureRenamedTextColumnAsync(db, "RentalAssets", "ProductCategory", "ItemCategoryName", "TEXT NOT NULL DEFAULT ''");
+        await EnsureRenamedTextColumnAsync(db, "RentalAssets", "ModelName", "ItemName", "TEXT NOT NULL DEFAULT ''");
+        await EnsureRenamedTextColumnAsync(db, "RentalBillingProfiles", "ModelName", "ItemName", "TEXT NOT NULL DEFAULT ''");
+    }
+
+    private static async Task EnsureRenamedTextColumnAsync(
+        LocalDbContext db,
+        string tableName,
+        string oldColumnName,
+        string newColumnName,
+        string definition)
+    {
+        if (!IsSafeSqlIdentifier(tableName) ||
+            !IsSafeSqlIdentifier(oldColumnName) ||
+            !IsSafeSqlIdentifier(newColumnName))
+        {
+            return;
+        }
+
+        var hasNewColumn = await HasColumnAsync(db, tableName, newColumnName);
+        var hasOldColumn = await HasColumnAsync(db, tableName, oldColumnName);
+
+        if (!hasNewColumn && hasOldColumn)
+        {
+            try
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"{tableName}\" RENAME COLUMN \"{oldColumnName}\" TO \"{newColumnName}\";");
+            }
+            catch
+            {
+                // Fallback to copy migration below.
+            }
+
+            hasNewColumn = await HasColumnAsync(db, tableName, newColumnName);
+            hasOldColumn = await HasColumnAsync(db, tableName, oldColumnName);
+        }
+
+        if (!hasNewColumn)
+        {
+            await TryAddColumnAsync(db, tableName, newColumnName, definition);
+            hasNewColumn = await HasColumnAsync(db, tableName, newColumnName);
+        }
+
+        if (!hasNewColumn || !hasOldColumn)
+            return;
+
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                $"""
+                 UPDATE "{tableName}"
+                 SET "{newColumnName}" = CASE
+                     WHEN COALESCE(TRIM("{newColumnName}"), '') = '' THEN COALESCE("{oldColumnName}", '')
+                     ELSE "{newColumnName}"
+                 END
+                 WHERE COALESCE(TRIM("{oldColumnName}"), '') <> '';
+                 """);
+        }
+        catch
+        {
+            // Ignore copy failures on partially migrated databases.
+        }
+    }
+
+    private static async Task<bool> HasColumnAsync(LocalDbContext db, string tableName, string columnName)
+    {
+        await db.Database.OpenConnectionAsync();
+
+        try
+        {
+            await using var command = db.Database.GetDbConnection().CreateCommand();
+            command.CommandText = $"PRAGMA table_info(\"{tableName}\")";
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                if (string.Equals(reader["name"]?.ToString(), columnName, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
 
     private static async Task TryAddColumnAsync(LocalDbContext db, string table, string column, string definition)
     {
@@ -1897,7 +2073,7 @@ public static class LocalDbInitializer
                                    "CustomerName" TEXT NOT NULL DEFAULT '',
                                    "BusinessNumber" TEXT NOT NULL DEFAULT '',
                                    "RealCustomerName" TEXT NOT NULL DEFAULT '',
-                                   "ModelName" TEXT NOT NULL DEFAULT '',
+                                   "ItemName" TEXT NOT NULL DEFAULT '',
                                    "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
                                    "BillingMethod" TEXT NOT NULL DEFAULT '',
                                    "PaymentMethod" TEXT NOT NULL DEFAULT '',
@@ -1947,9 +2123,9 @@ public static class LocalDbInitializer
                                    "ManagementNumber" TEXT NOT NULL DEFAULT '',
                                    "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
                                    "CurrentLocation" TEXT NOT NULL DEFAULT '',
-                                   "ProductCategory" TEXT NOT NULL DEFAULT '',
+                                   "ItemCategoryName" TEXT NOT NULL DEFAULT '',
                                    "Manufacturer" TEXT NOT NULL DEFAULT '',
-                                   "ModelName" TEXT NOT NULL DEFAULT '',
+                                   "ItemName" TEXT NOT NULL DEFAULT '',
                                    "MachineNumber" TEXT NOT NULL DEFAULT '',
                                    "PurchaseVendor" TEXT NOT NULL DEFAULT '',
                                    "PurchaseDate" TEXT NULL,

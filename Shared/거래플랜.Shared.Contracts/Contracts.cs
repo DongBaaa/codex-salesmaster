@@ -462,7 +462,7 @@ public sealed class RentalBillingProfileDto : SyncEntityDto
     public string CustomerName { get; set; } = string.Empty;
     public string BusinessNumber { get; set; } = string.Empty;
     public string RealCustomerName { get; set; } = string.Empty;
-    public string ModelName { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
     public string ManagementCompanyCode { get; set; } = string.Empty;
     public string BillingMethod { get; set; } = string.Empty;
     public string PaymentMethod { get; set; } = string.Empty;
@@ -502,9 +502,9 @@ public sealed class RentalAssetDto : SyncEntityDto
     public string ManagementNumber { get; set; } = string.Empty;
     public string ManagementCompanyCode { get; set; } = string.Empty;
     public string CurrentLocation { get; set; } = string.Empty;
-    public string ProductCategory { get; set; } = string.Empty;
+    public string ItemCategoryName { get; set; } = string.Empty;
     public string Manufacturer { get; set; } = string.Empty;
-    public string ModelName { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
     public string MachineNumber { get; set; } = string.Empty;
     public string PurchaseVendor { get; set; } = string.Empty;
     public DateOnly? PurchaseDate { get; set; }

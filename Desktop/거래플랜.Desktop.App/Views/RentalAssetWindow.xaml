@@ -158,7 +158,8 @@
                         <DataGridTextColumn Header="관리번호" Binding="{Binding Source.ManagementNumber}" Width="120" IsReadOnly="True"/>
                         <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="110" IsReadOnly="True"/>
                         <DataGridTextColumn Header="거래처" Binding="{Binding Source.CustomerName}" Width="180" IsReadOnly="True"/>
-                        <DataGridTextColumn Header="모델명" Binding="{Binding Source.ModelName}" Width="160" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="품목분류" Binding="{Binding Source.ItemCategoryName}" Width="130" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="품명" Binding="{Binding Source.ItemName}" Width="160" IsReadOnly="True"/>
                         <DataGridTextColumn Header="기계번호" Binding="{Binding Source.MachineNumber}" Width="160" IsReadOnly="True"/>
                         <DataGridTextColumn Header="설치위치" Binding="{Binding Source.InstallLocation}" Width="200" IsReadOnly="True"/>
                         <DataGridTextColumn Header="상태" Binding="{Binding Source.AssetStatus}" Width="100" IsReadOnly="True"/>
@@ -223,18 +224,26 @@
                         <TextBlock Grid.Row="4" Grid.Column="3" Text="설치위치" VerticalAlignment="Center" Margin="0,0,10,8"/>
                         <TextBox Grid.Row="4" Grid.Column="4" Text="{Binding EditInstallLocation, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
 
-                        <TextBlock Grid.Row="5" Grid.Column="0" Text="상품분류" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                        <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding EditProductCategory, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="품목분류" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <ComboBox Grid.Row="5"
+                                  Grid.Column="1"
+                                  ItemsSource="{Binding ItemCategoryOptions}"
+                                  DisplayMemberPath="Name"
+                                  SelectedValuePath="Name"
+                                  SelectedValue="{Binding EditItemCategoryName, UpdateSourceTrigger=PropertyChanged}"
+                                  IsEditable="True"
+                                  IsTextSearchEnabled="True"
+                                  Margin="0,0,0,8"/>
                         <TextBlock Grid.Row="5" Grid.Column="3" Text="제조사" VerticalAlignment="Center" Margin="0,0,10,8"/>
                         <TextBox Grid.Row="5" Grid.Column="4" Text="{Binding EditManufacturer, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
 
-                        <TextBlock Grid.Row="6" Grid.Column="0" Text="모델명" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="품명" VerticalAlignment="Center" Margin="0,0,10,8"/>
                         <Grid Grid.Row="6" Grid.Column="1" Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBox Grid.Column="0" Text="{Binding EditModelName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
+                            <TextBox Grid.Column="0" Text="{Binding EditItemName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
                             <Button Grid.Column="1" Content="조회" MinWidth="72" Padding="10,0" Click="ItemLookupButton_Click"/>
                         </Grid>
                         <TextBlock Grid.Row="6" Grid.Column="3" Text="기계번호" VerticalAlignment="Center" Margin="0,0,10,8"/>
