@@ -1,4 +1,5 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Services;
@@ -9,6 +10,8 @@ namespace 거래플랜.Desktop.App.ViewModels;
 public sealed partial class CustomerManagementViewModel : ObservableObject
 {
     private const string AllCategoriesOption = "전체";
+    private const string AllOfficesOption = "전체";
+    private const string UnassignedOfficeOption = "미지정";
     private const string SortByNameOption = "거래처명순";
     private const string SortByOfficeOption = "담당지점별 정렬";
     private const int ContractAlertWindowDays = 30;
@@ -21,6 +24,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private string _selectedCategoryFilter = AllCategoriesOption;
+    [ObservableProperty] private string _selectedOfficeFilter = AllOfficesOption;
     [ObservableProperty] private string _selectedSortOption = SortByNameOption;
     [ObservableProperty] private EnvironmentCustomerRow? _selectedCustomer;
     [ObservableProperty] private string _statusMessage = "거래처 등록, 수정, 담당지점 변경을 관리합니다.";
@@ -33,6 +37,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
     public ObservableCollection<EnvironmentCustomerRow> Customers { get; } = new();
     public ObservableCollection<CustomerContractAlertItem> ContractAlerts { get; } = new();
     public ObservableCollection<string> OfficeCodes { get; } = new();
+    public ObservableCollection<string> OfficeFilters { get; } = new();
     public ObservableCollection<string> CategoryFilters { get; } = new();
     public ObservableCollection<string> SortOptions { get; } = new();
     public bool CanEditAllResponsibleOffices => _session.HasAdministrativePrivileges;
@@ -67,11 +72,14 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
             _contractSummaryMap = await _local.GetCustomerContractSummaryMapAsync(_session, ContractAlertWindowDays);
             var alertItems = await _local.GetCustomerContractAlertsAsync(_session, ContractAlertWindowDays);
 
+            DetachRowHandlers();
             _allRows.Clear();
             _allRows.AddRange(customers.Select(customer => new EnvironmentCustomerRow(
                 customer,
                 ResolveCategoryName(customer.CategoryId),
                 ResolveContractSummary(customer.Id))));
+            AttachRowHandlers();
+            ReloadOfficeFilters();
             RefreshContractAlertState(alertItems);
             ApplyFilter();
             StatusMessage = BuildStatusMessage();
@@ -124,6 +132,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
                 row.AcceptChanges();
             }
 
+            ReloadOfficeFilters();
             StatusMessage = _session.HasAdministrativePrivileges
                 ? $"담당지점 변경 {changed.Count:N0}건을 저장했습니다."
                 : grantedTemporaryAccess
@@ -176,6 +185,30 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
             OfficeCodes.Add(officeCode);
     }
 
+    private void ReloadOfficeFilters()
+    {
+        var selectedFilter = SelectedOfficeFilter;
+        var filterItems = OfficeCodes
+            .Select(officeCode => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, DomainConstants.OfficeUsenet))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(GetOfficeSortOrder)
+            .ThenBy(officeCode => officeCode, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        OfficeFilters.Clear();
+        OfficeFilters.Add(AllOfficesOption);
+        foreach (var officeCode in filterItems)
+            OfficeFilters.Add(officeCode);
+
+        if (_allRows.Any(row => string.IsNullOrWhiteSpace(GetActiveOfficeCode(row))))
+            OfficeFilters.Add(UnassignedOfficeOption);
+
+        if (!OfficeFilters.Contains(selectedFilter, StringComparer.CurrentCultureIgnoreCase))
+            selectedFilter = AllOfficesOption;
+
+        SelectedOfficeFilter = selectedFilter;
+    }
+
     private async Task ReloadCategoryFiltersAsync()
     {
         var categories = await _local.GetCategoriesAsync();
@@ -197,7 +230,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
         foreach (var item in filterItems)
             CategoryFilters.Add(item);
 
-        if (!CategoryFilters.Contains(SelectedCategoryFilter))
+        if (!CategoryFilters.Contains(SelectedCategoryFilter, StringComparer.CurrentCultureIgnoreCase))
             SelectedCategoryFilter = AllCategoriesOption;
     }
 
@@ -213,7 +246,8 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
                 row.BusinessNumber.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
                 row.CategoryName.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
                 row.Phone.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
-                row.ContractStatusText.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+                row.ContractStatusText.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                GetOfficeDisplayText(GetActiveOfficeCode(row)).Contains(keyword, StringComparison.OrdinalIgnoreCase));
         }
 
         if (!string.Equals(SelectedCategoryFilter, AllCategoriesOption, StringComparison.CurrentCultureIgnoreCase))
@@ -221,6 +255,9 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
             filtered = filtered.Where(row =>
                 string.Equals(row.CategoryName, SelectedCategoryFilter, StringComparison.CurrentCultureIgnoreCase));
         }
+
+        if (!string.Equals(SelectedOfficeFilter, AllOfficesOption, StringComparison.CurrentCultureIgnoreCase))
+            filtered = filtered.Where(MatchesSelectedOfficeFilter);
 
         var list = ApplySorting(filtered).ToList();
 
@@ -241,6 +278,11 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
     }
 
     partial void OnSelectedCategoryFilterChanged(string value)
+    {
+        ApplyFilter();
+    }
+
+    partial void OnSelectedOfficeFilterChanged(string value)
     {
         ApplyFilter();
     }
@@ -295,20 +337,62 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
         if (string.Equals(SelectedSortOption, SortByOfficeOption, StringComparison.CurrentCultureIgnoreCase))
         {
             return rows
-                .OrderBy(row => GetOfficeSortOrder(row.Source.ResponsibleOfficeCode))
-                .ThenBy(row => GetOfficeSortName(row.Source.ResponsibleOfficeCode), StringComparer.CurrentCultureIgnoreCase)
+                .OrderBy(row => GetOfficeSortOrder(GetActiveOfficeCode(row)))
+                .ThenBy(row => GetOfficeDisplayText(GetActiveOfficeCode(row)), StringComparer.CurrentCultureIgnoreCase)
                 .ThenBy(row => row.NameOriginal, StringComparer.CurrentCultureIgnoreCase);
         }
 
         return rows
             .OrderBy(row => row.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
-            .ThenBy(row => GetOfficeSortOrder(row.Source.ResponsibleOfficeCode))
-            .ThenBy(row => GetOfficeSortName(row.Source.ResponsibleOfficeCode), StringComparer.CurrentCultureIgnoreCase);
+            .ThenBy(row => GetOfficeSortOrder(GetActiveOfficeCode(row)))
+            .ThenBy(row => GetOfficeDisplayText(GetActiveOfficeCode(row)), StringComparer.CurrentCultureIgnoreCase);
     }
 
-    private static string GetOfficeSortName(string? officeCode)
+    private void AttachRowHandlers()
+    {
+        foreach (var row in _allRows)
+            row.PropertyChanged += CustomerRow_PropertyChanged;
+    }
+
+    private void DetachRowHandlers()
+    {
+        foreach (var row in _allRows)
+            row.PropertyChanged -= CustomerRow_PropertyChanged;
+    }
+
+    private void CustomerRow_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!string.IsNullOrWhiteSpace(e.PropertyName) &&
+            !string.Equals(e.PropertyName, nameof(EnvironmentCustomerRow.ResponsibleOfficeCode), StringComparison.Ordinal))
+            return;
+
+        ReloadOfficeFilters();
+        ApplyFilter();
+    }
+
+    private bool MatchesSelectedOfficeFilter(EnvironmentCustomerRow row)
+    {
+        if (string.Equals(SelectedOfficeFilter, UnassignedOfficeOption, StringComparison.CurrentCultureIgnoreCase))
+            return string.IsNullOrWhiteSpace(GetActiveOfficeCode(row));
+
+        var selectedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(SelectedOfficeFilter, DomainConstants.OfficeUsenet);
+        return string.Equals(GetActiveOfficeCode(row), selectedOfficeCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetActiveOfficeCode(EnvironmentCustomerRow row)
+    {
+        var currentOfficeCode = row.IsModified ? row.ResponsibleOfficeCode : row.Source.ResponsibleOfficeCode;
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(currentOfficeCode, out var normalizedOfficeCode))
+            return normalizedOfficeCode;
+
+        return string.IsNullOrWhiteSpace(currentOfficeCode)
+            ? string.Empty
+            : currentOfficeCode.Trim();
+    }
+
+    private static string GetOfficeDisplayText(string? officeCode)
         => string.IsNullOrWhiteSpace(officeCode)
-            ? "미지정"
+            ? UnassignedOfficeOption
             : OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, DomainConstants.OfficeUsenet));
 
     private static int GetOfficeSortOrder(string? officeCode)

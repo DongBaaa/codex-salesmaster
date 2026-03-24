@@ -1,4 +1,4 @@
-﻿<Window x:Class="거래플랜.Desktop.App.Views.CustomerManagementWindow"
+<Window x:Class="거래플랜.Desktop.App.Views.CustomerManagementWindow"
         x:Name="Root"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -120,12 +120,14 @@
                 <Grid Grid.Row="0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" SharedSizeGroup="CustomerFilterLabel"/>
-                        <ColumnDefinition Width="320"/>
+                        <ColumnDefinition Width="280"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto" SharedSizeGroup="CustomerFilterLabel"/>
-                        <ColumnDefinition Width="180"/>
+                        <ColumnDefinition Width="150"/>
                         <ColumnDefinition Width="Auto" SharedSizeGroup="CustomerFilterLabel"/>
-                        <ColumnDefinition Width="180"/>
+                        <ColumnDefinition Width="150"/>
+                        <ColumnDefinition Width="Auto" SharedSizeGroup="CustomerFilterLabel"/>
+                        <ColumnDefinition Width="150"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
 
@@ -148,20 +150,29 @@
                                Margin="0,0,10,0"
                                VerticalAlignment="Center"
                                Foreground="#9FB3C8"/>
-                     <ComboBox Grid.Column="4"
-                               ItemsSource="{Binding CategoryFilters}"
-                               SelectedItem="{Binding SelectedCategoryFilter}"
-                               VerticalAlignment="Center"/>
-                     <TextBlock Grid.Column="5"
-                                Text="정렬"
-                                Margin="12,0,10,0"
-                                VerticalAlignment="Center"
-                                Foreground="#9FB3C8"/>
-                     <ComboBox Grid.Column="6"
-                               ItemsSource="{Binding SortOptions}"
-                               SelectedItem="{Binding SelectedSortOption}"
-                               VerticalAlignment="Center"/>
-                 </Grid>
+                    <ComboBox Grid.Column="4"
+                              ItemsSource="{Binding CategoryFilters}"
+                              SelectedItem="{Binding SelectedCategoryFilter}"
+                              VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="5"
+                               Text="담당지점"
+                               Margin="12,0,10,0"
+                               VerticalAlignment="Center"
+                               Foreground="#9FB3C8"/>
+                    <ComboBox Grid.Column="6"
+                              ItemsSource="{Binding OfficeFilters}"
+                              SelectedItem="{Binding SelectedOfficeFilter}"
+                              VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="7"
+                               Text="정렬"
+                               Margin="12,0,10,0"
+                               VerticalAlignment="Center"
+                               Foreground="#9FB3C8"/>
+                    <ComboBox Grid.Column="8"
+                              ItemsSource="{Binding SortOptions}"
+                              SelectedItem="{Binding SelectedSortOption}"
+                              VerticalAlignment="Center"/>
+                </Grid>
 
                 <StackPanel Grid.Row="1"
                             Orientation="Horizontal"

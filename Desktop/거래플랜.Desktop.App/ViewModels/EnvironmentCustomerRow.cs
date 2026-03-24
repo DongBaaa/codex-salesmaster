@@ -1,4 +1,4 @@
-﻿using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.ComponentModel;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
@@ -65,6 +65,10 @@ public sealed partial class EnvironmentCustomerRow : ObservableObject
     }
 
     private static string NormalizeOfficeCode(string? officeCode)
-        => OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, DomainConstants.OfficeUsenet);
-}
+    {
+        if (string.IsNullOrWhiteSpace(officeCode))
+            return string.Empty;
 
+        return OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, DomainConstants.OfficeUsenet);
+    }
+}
