@@ -1,5 +1,7 @@
-﻿using System.Windows;
+﻿using System;
+using System.Windows;
 using System.Windows.Input;
+using System.Windows.Interop;
 using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -14,11 +16,7 @@ public partial class CustomerEditWindow : Window
         _vm = vm;
         DataContext = vm;
 
-        vm.SavedAndClose += () =>
-        {
-            DialogResult = true;
-            Close();
-        };
+        vm.SavedAndClose += HandleSavedAndClose;
         vm.SavedAndNew += () =>
         {
             // 저장 후 폼 초기화 완료 — 창은 유지
@@ -36,4 +34,31 @@ public partial class CustomerEditWindow : Window
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+
+    private void HandleSavedAndClose()
+    {
+        if (TrySetDialogResultTrue())
+            return;
+
+        Close();
+    }
+
+    private bool TrySetDialogResultTrue()
+    {
+        if (!IsLoaded || !IsVisible || PresentationSource.FromVisual(this) is null)
+            return false;
+
+        if (!ComponentDispatcher.IsThreadModal)
+            return false;
+
+        try
+        {
+            DialogResult = true;
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
 }

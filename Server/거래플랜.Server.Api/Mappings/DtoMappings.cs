@@ -338,7 +338,7 @@ public static class DtoMappings
         entity.ExpireDate = dto.ExpireDate;
         entity.IsPrimary = dto.IsPrimary;
         entity.UploadedByUsername = dto.UploadedByUsername?.Trim() ?? string.Empty;
-        entity.UploadedAtUtc = dto.UploadedAtUtc;
+        entity.UploadedAtUtc = NormalizeUtc(dto.UploadedAtUtc);
         entity.FileContent = dto.FileContent ?? [];
         entity.IsDeleted = dto.IsDeleted;
     }
@@ -505,10 +505,10 @@ public static class DtoMappings
         entity.FileHash = dto.FileHash?.Trim() ?? string.Empty;
         entity.Description = dto.Description?.Trim() ?? string.Empty;
         entity.UploadedByUsername = dto.UploadedByUsername?.Trim() ?? string.Empty;
-        entity.UploadedAtUtc = dto.UploadedAtUtc;
+        entity.UploadedAtUtc = NormalizeUtc(dto.UploadedAtUtc);
         entity.VerificationStatus = dto.VerificationStatus?.Trim() ?? "미확인";
         entity.VerifiedByUsername = dto.VerifiedByUsername?.Trim() ?? string.Empty;
-        entity.VerifiedAtUtc = dto.VerifiedAtUtc;
+        entity.VerifiedAtUtc = NormalizeUtc(dto.VerifiedAtUtc);
         entity.VerificationMemo = dto.VerificationMemo?.Trim() ?? string.Empty;
         entity.SortOrder = dto.SortOrder;
         entity.FileContent = dto.FileContent ?? [];
@@ -579,19 +579,19 @@ public static class DtoMappings
         entity.Memo = dto.Memo?.Trim() ?? string.Empty;
         entity.CreatedByUsername = dto.CreatedByUsername?.Trim() ?? string.Empty;
         entity.LastSavedByUsername = dto.LastSavedByUsername?.Trim() ?? string.Empty;
-        entity.LastSavedAtUtc = dto.LastSavedAtUtc;
+        entity.LastSavedAtUtc = NormalizeUtc(dto.LastSavedAtUtc);
         entity.TransferStatus = dto.TransferStatus?.Trim() ?? "수령대기";
         entity.RequestedByUsername = dto.RequestedByUsername?.Trim() ?? string.Empty;
-        entity.RequestedAtUtc = dto.RequestedAtUtc;
+        entity.RequestedAtUtc = NormalizeUtc(dto.RequestedAtUtc);
         entity.ReceivedByUsername = dto.ReceivedByUsername?.Trim() ?? string.Empty;
-        entity.ReceivedAtUtc = dto.ReceivedAtUtc;
+        entity.ReceivedAtUtc = NormalizeUtc(dto.ReceivedAtUtc);
         entity.ReceiveMemo = dto.ReceiveMemo?.Trim() ?? string.Empty;
         entity.ReceiveEvidencePath = dto.ReceiveEvidencePath?.Trim() ?? string.Empty;
         entity.RejectedByUsername = dto.RejectedByUsername?.Trim() ?? string.Empty;
-        entity.RejectedAtUtc = dto.RejectedAtUtc;
+        entity.RejectedAtUtc = NormalizeUtc(dto.RejectedAtUtc);
         entity.RejectReason = dto.RejectReason?.Trim() ?? string.Empty;
         entity.LastStatusChangedByUsername = dto.LastStatusChangedByUsername?.Trim() ?? string.Empty;
-        entity.LastStatusChangedAtUtc = dto.LastStatusChangedAtUtc;
+        entity.LastStatusChangedAtUtc = NormalizeUtc(dto.LastStatusChangedAtUtc);
         entity.IsDeleted = dto.IsDeleted;
         entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
             dto.TenantCode,
@@ -952,10 +952,26 @@ public static class DtoMappings
         entity.FileSize = dto.FileSize;
         entity.FileHash = dto.FileHash?.Trim() ?? string.Empty;
         entity.Description = dto.Description?.Trim() ?? string.Empty;
-        entity.UploadedAtUtc = dto.UploadedAtUtc;
+        entity.UploadedAtUtc = NormalizeUtc(dto.UploadedAtUtc);
         entity.FileContent = dto.FileContent ?? [];
         entity.IsDeleted = dto.IsDeleted;
     }
+
+    private static DateTime NormalizeUtc(DateTime value)
+    {
+        if (value == default)
+            return DateTime.UtcNow;
+
+        return value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
+    }
+
+    private static DateTime? NormalizeUtc(DateTime? value)
+        => value.HasValue ? NormalizeUtc(value.Value) : null;
 
     private static byte[] ReadStoredContent(string? storedPath, byte[]? fallback)
     {

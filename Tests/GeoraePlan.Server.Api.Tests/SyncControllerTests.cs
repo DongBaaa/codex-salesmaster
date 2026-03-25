@@ -405,6 +405,54 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Empty(await _dbContext.CustomerContracts.IgnoreQueryFilters().ToListAsync());
     }
 
+    [Fact]
+    public async Task Push_NormalizesCustomerContractUploadedAtUtc_WhenKindIsUnspecified()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "CONTRACT-CUSTOMER",
+            NameMatchKey = "CONTRACTCUSTOMER",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var uploadedAt = new DateTime(2026, 3, 25, 17, 5, 0, DateTimeKind.Unspecified);
+        var request = new SyncPushRequest
+        {
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = Guid.NewGuid(),
+                    CustomerId = customer.Id,
+                    ContractType = "거래계약서",
+                    FileName = "contract.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = 4,
+                    FileHash = "HASH",
+                    FileContent = [1, 2, 3, 4],
+                    UploadedAtUtc = uploadedAt,
+                    CreatedAtUtc = new DateTime(2026, 3, 25, 17, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 25, 17, 6, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+
+        var contract = await _dbContext.CustomerContracts.IgnoreQueryFilters().FirstAsync();
+        Assert.Equal(uploadedAt, contract.UploadedAtUtc);
+        Assert.Equal(DateTimeKind.Utc, contract.UploadedAtUtc.Kind);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();
