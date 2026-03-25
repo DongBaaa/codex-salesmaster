@@ -1163,10 +1163,12 @@ public sealed class SyncController : ControllerBase
             var materialMatches = await _dbContext.Items.IgnoreQueryFilters()
                 .Where(item =>
                     !item.IsDeleted &&
-                    ItemOperationalPolicy.IsAsset(item.TrackingType) &&
                     item.MaterialNumber == normalizedMaterialNumber)
                 .OrderByDescending(item => item.UpdatedAtUtc)
                 .ToListAsync(cancellationToken);
+            materialMatches = materialMatches
+                .Where(item => ItemOperationalPolicy.IsAsset(item.TrackingType))
+                .ToList();
             var resolvedMaterialMatch = ResolveReadableItemReference(
                 materialMatches,
                 preferredOfficeCode,
@@ -1181,10 +1183,12 @@ public sealed class SyncController : ControllerBase
             var serialMatches = await _dbContext.Items.IgnoreQueryFilters()
                 .Where(item =>
                     !item.IsDeleted &&
-                    ItemOperationalPolicy.IsAsset(item.TrackingType) &&
                     item.SerialNumber == normalizedMachineNumber)
                 .OrderByDescending(item => item.UpdatedAtUtc)
                 .ToListAsync(cancellationToken);
+            serialMatches = serialMatches
+                .Where(item => ItemOperationalPolicy.IsAsset(item.TrackingType))
+                .ToList();
             var resolvedSerialMatch = ResolveReadableItemReference(
                 serialMatches,
                 preferredOfficeCode,
@@ -1200,10 +1204,12 @@ public sealed class SyncController : ControllerBase
         var exactNameMatches = await _dbContext.Items.IgnoreQueryFilters()
             .Where(item =>
                 !item.IsDeleted &&
-                ItemOperationalPolicy.IsAsset(item.TrackingType) &&
                 item.NameOriginal == normalizedItemName)
             .OrderByDescending(item => item.UpdatedAtUtc)
             .ToListAsync(cancellationToken);
+        exactNameMatches = exactNameMatches
+            .Where(item => ItemOperationalPolicy.IsAsset(item.TrackingType))
+            .ToList();
         var resolvedExactNameMatch = ResolveReadableItemReference(
             exactNameMatches,
             preferredOfficeCode,
@@ -1218,10 +1224,12 @@ public sealed class SyncController : ControllerBase
         var nameKeyMatches = await _dbContext.Items.IgnoreQueryFilters()
             .Where(item =>
                 !item.IsDeleted &&
-                ItemOperationalPolicy.IsAsset(item.TrackingType) &&
                 item.NameMatchKey == normalizedNameKey)
             .OrderByDescending(item => item.UpdatedAtUtc)
             .ToListAsync(cancellationToken);
+        nameKeyMatches = nameKeyMatches
+            .Where(item => ItemOperationalPolicy.IsAsset(item.TrackingType))
+            .ToList();
         return ResolveReadableItemReference(nameKeyMatches, preferredOfficeCode, preferredTenantCode);
     }
 
@@ -1883,6 +1891,5 @@ public sealed class SyncController : ControllerBase
         dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Email, dto.Email);
     }
 }
-
 
 
