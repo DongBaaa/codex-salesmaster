@@ -16,6 +16,10 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
     [ObservableProperty] private string _statusMessage = "미리보기를 확인한 뒤 인쇄를 진행하세요.";
     [ObservableProperty] private double _zoom = 100d;
     [ObservableProperty] private bool _wasPrinted;
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(PrintCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CloseCommand))]
+    private bool _isPrinting;
 
     public PrintPreviewViewModel(FixedDocument document, IPrintService printService, string jobName)
     {
@@ -36,19 +40,35 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
         Zoom = Math.Max(20d, Zoom - 10d);
     }
 
-    [RelayCommand]
+    private bool CanPrint() => !IsPrinting;
+
+    private bool CanClose() => !IsPrinting;
+
+    [RelayCommand(CanExecute = nameof(CanPrint))]
     private void Print()
     {
-        if (_printService.TryPrint(Document, _jobName, out var errorMessage))
-        {
-            WasPrinted = true;
-            StatusMessage = "인쇄를 완료했습니다.";
-            RequestClose?.Invoke();
+        if (IsPrinting)
             return;
-        }
 
-        if (!string.IsNullOrWhiteSpace(errorMessage))
+        IsPrinting = true;
+        StatusMessage = "프린터 선택 창을 여는 중...";
+
+        try
         {
+            if (_printService.TryPrint(Document, _jobName, out var errorMessage))
+            {
+                WasPrinted = true;
+                StatusMessage = "인쇄를 완료했습니다.";
+                RequestClose?.Invoke();
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(errorMessage))
+            {
+                StatusMessage = "인쇄를 취소했습니다.";
+                return;
+            }
+
             StatusMessage = errorMessage;
             System.Windows.MessageBox.Show(
                 errorMessage,
@@ -56,9 +76,13 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
                 System.Windows.MessageBoxButton.OK,
                 System.Windows.MessageBoxImage.Error);
         }
+        finally
+        {
+            IsPrinting = false;
+        }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanClose))]
     private void Close()
     {
         RequestClose?.Invoke();

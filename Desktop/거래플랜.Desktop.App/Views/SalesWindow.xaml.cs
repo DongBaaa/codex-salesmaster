@@ -29,14 +29,20 @@ public partial class SalesWindow : Window
 
         if (e.Key == Key.F6)
         {
-            _vm.StartNewInvoiceCommand.Execute(null);
-            e.Handled = true;
+            if (_vm.StartNewInvoiceCommand.CanExecute(null))
+            {
+                _vm.StartNewInvoiceCommand.Execute(null);
+                e.Handled = true;
+            }
         }
 
         if (e.Key == Key.F9)
         {
-            _vm.PrintCommand.Execute(null);
-            e.Handled = true;
+            if (_vm.PrintCommand.CanExecute(null))
+            {
+                _vm.PrintCommand.Execute(null);
+                e.Handled = true;
+            }
         }
     }
 

@@ -1,4 +1,5 @@
 ﻿using System.Windows;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -18,8 +19,7 @@ public partial class RentalContractEditorWindow : Window
 
     private void OnRequestClose()
     {
-        DialogResult = true;
-        Close();
+        DialogWindowCloseHelper.Close(this, true);
     }
 
     private void OnClosed(object? sender, EventArgs e)

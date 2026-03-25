@@ -1,5 +1,6 @@
 ﻿using System.Windows;
 using System.Windows.Input;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -15,8 +16,7 @@ public partial class LoginWindow : Window
         DataContext = vm;
         vm.LoginSucceeded += () =>
         {
-            DialogResult = true;
-            Close();
+            DialogWindowCloseHelper.Close(this, true);
         };
         Loaded += (_, _) =>
         {

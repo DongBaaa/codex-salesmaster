@@ -1,6 +1,7 @@
 ﻿using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Input;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -45,16 +46,14 @@ public partial class InvoiceHistoryWindow : Window
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
-        DialogResult = false;
-        Close();
+        DialogWindowCloseHelper.Close(this, false);
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape)
         {
-            DialogResult = false;
-            Close();
+            DialogWindowCloseHelper.Close(this, false);
             e.Handled = true;
         }
         else if (e.Key == Key.Enter)
@@ -94,7 +93,6 @@ public partial class InvoiceHistoryWindow : Window
             return;
         }
 
-        DialogResult = true;
-        Close();
+        DialogWindowCloseHelper.Close(this, true);
     }
 }

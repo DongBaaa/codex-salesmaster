@@ -70,6 +70,7 @@ public static class PrintPreviewHelper
         toolbar.Children.Add(closeButton);
 
         var printed = false;
+        var isPrinting = false;
         var printButton = new Button
         {
             Content = "프린터 선택 후 인쇄",
@@ -83,11 +84,22 @@ public static class PrintPreviewHelper
         };
         printButton.Click += (_, _) =>
         {
+            if (isPrinting)
+                return;
+
             try
             {
+                isPrinting = true;
+                printButton.IsEnabled = false;
+                closeButton.IsEnabled = false;
+                description.Text = "프린터 선택 창을 여는 중...";
+
                 var dlg = new PrintDialog();
                 if (dlg.ShowDialog() != true)
+                {
+                    description.Text = "인쇄를 취소했습니다.";
                     return;
+                }
 
                 ConfigureDocumentForA4(document);
 
@@ -95,15 +107,26 @@ public static class PrintPreviewHelper
                 paginator.PageSize = new Size(A4Width, A4Height);
                 dlg.PrintDocument(paginator, jobName);
                 printed = true;
+                description.Text = "인쇄를 완료했습니다.";
                 previewWindow.Close();
             }
             catch (Exception ex)
             {
+                description.Text = "인쇄 중 오류가 발생했습니다.";
                 MessageBox.Show(
                     $"인쇄 중 오류가 발생했습니다.\n{ex.Message}",
                     "오류",
                     MessageBoxButton.OK,
                     MessageBoxImage.Error);
+            }
+            finally
+            {
+                if (previewWindow.IsVisible)
+                {
+                    isPrinting = false;
+                    printButton.IsEnabled = true;
+                    closeButton.IsEnabled = true;
+                }
             }
         };
         DockPanel.SetDock(printButton, Dock.Right);

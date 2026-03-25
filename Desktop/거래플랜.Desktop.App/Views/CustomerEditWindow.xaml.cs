@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Windows;
 using System.Windows.Input;
-using System.Windows.Interop;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -37,28 +37,6 @@ public partial class CustomerEditWindow : Window
 
     private void HandleSavedAndClose()
     {
-        if (TrySetDialogResultTrue())
-            return;
-
-        Close();
-    }
-
-    private bool TrySetDialogResultTrue()
-    {
-        if (!IsLoaded || !IsVisible || PresentationSource.FromVisual(this) is null)
-            return false;
-
-        if (!ComponentDispatcher.IsThreadModal)
-            return false;
-
-        try
-        {
-            DialogResult = true;
-            return true;
-        }
-        catch (InvalidOperationException)
-        {
-            return false;
-        }
+        DialogWindowCloseHelper.Close(this, true);
     }
 }

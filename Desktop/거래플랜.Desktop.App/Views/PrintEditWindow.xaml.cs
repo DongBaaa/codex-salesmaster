@@ -1,4 +1,5 @@
 ﻿using System.Windows;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -18,8 +19,7 @@ public partial class PrintEditWindow : Window
 
     private void OnRequestClose()
     {
-        DialogResult = _viewModel.WasSaved;
-        Close();
+        DialogWindowCloseHelper.Close(this, _viewModel.WasSaved);
     }
 
     private void OnClosed(object? sender, EventArgs e)

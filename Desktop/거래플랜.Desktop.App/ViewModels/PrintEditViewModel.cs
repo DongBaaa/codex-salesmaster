@@ -47,6 +47,10 @@ public sealed partial class PrintEditViewModel : ObservableObject
     [ObservableProperty] private System.Windows.Documents.FixedDocument? _previewDocument;
     [ObservableProperty] private string _statusMessage = string.Empty;
     [ObservableProperty] private bool _wasSaved;
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SaveCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CloseCommand))]
+    private bool _isSaving;
     [ObservableProperty] private InvoicePrintLineEditModel? _selectedLine;
 
     public ObservableCollection<InvoicePrintLineEditModel> Lines { get; } = new();
@@ -140,11 +144,20 @@ public sealed partial class PrintEditViewModel : ObservableObject
         }
     }
 
-    [RelayCommand]
+    private bool CanSave() => !IsSaving;
+
+    private bool CanClose() => !IsSaving;
+
+    [RelayCommand(CanExecute = nameof(CanSave))]
     private async Task SaveAsync()
     {
+        if (IsSaving)
+            return;
+
         try
         {
+            IsSaving = true;
+            StatusMessage = "출력물 편집 내용을 저장하는 중...";
             var model = BuildModel();
             await _saveAction(model);
             WasSaved = true;
@@ -160,9 +173,13 @@ public sealed partial class PrintEditViewModel : ObservableObject
                 System.Windows.MessageBoxButton.OK,
                 System.Windows.MessageBoxImage.Error);
         }
+        finally
+        {
+            IsSaving = false;
+        }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanClose))]
     private void Close()
     {
         RequestClose?.Invoke();

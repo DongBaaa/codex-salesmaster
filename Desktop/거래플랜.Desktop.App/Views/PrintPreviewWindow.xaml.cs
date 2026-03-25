@@ -1,4 +1,5 @@
 ﻿using System.Windows;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -18,8 +19,7 @@ public partial class PrintPreviewWindow : Window
 
     private void OnRequestClose()
     {
-        DialogResult = _viewModel.WasPrinted;
-        Close();
+        DialogWindowCloseHelper.Close(this, _viewModel.WasPrinted);
     }
 
     private void OnClosed(object? sender, EventArgs e)

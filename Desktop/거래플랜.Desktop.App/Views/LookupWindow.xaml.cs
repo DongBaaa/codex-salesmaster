@@ -1,6 +1,7 @@
 ﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using 거래플랜.Desktop.App.Infrastructure;
 
 namespace 거래플랜.Desktop.App.Views;
 
@@ -63,8 +64,7 @@ public partial class LookupWindow : Window
         }
         else if (e.Key == Key.Escape)
         {
-            DialogResult = false;
-            Close();
+            DialogWindowCloseHelper.Close(this, false);
         }
     }
 
@@ -82,8 +82,7 @@ public partial class LookupWindow : Window
         }
         else if (e.Key == Key.Escape)
         {
-            DialogResult = false;
-            Close();
+            DialogWindowCloseHelper.Close(this, false);
         }
     }
 
@@ -92,8 +91,7 @@ public partial class LookupWindow : Window
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
-        DialogResult = false;
-        Close();
+        DialogWindowCloseHelper.Close(this, false);
     }
 
     private async void RegisterButton_Click(object sender, RoutedEventArgs e)
@@ -140,7 +138,6 @@ public partial class LookupWindow : Window
             return;
         }
 
-        DialogResult = true;
-        Close();
+        DialogWindowCloseHelper.Close(this, true);
     }
 }
