@@ -1112,14 +1112,7 @@ public sealed class SyncController : ControllerBase
         foreach (var dto in payload)
         {
             dto.CustomerId = await ResolveRentalAssetCustomerReferenceAsync(dto, cancellationToken);
-
-            if (dto.ItemId.HasValue && dto.ItemId.Value != Guid.Empty &&
-                !await ExistsOrTrackedAsync(_dbContext.Items, dto.ItemId.Value, cancellationToken))
-            {
-                AddClientConflict(dto, nameof(RentalAsset),
-                    $"Referenced item was not found: {dto.ItemId}.", result);
-                continue;
-            }
+            dto.ItemId = await ResolveRentalAssetItemReferenceAsync(dto, cancellationToken);
 
             if (dto.BillingProfileId.HasValue && dto.BillingProfileId.Value != Guid.Empty)
             {
@@ -1137,6 +1130,99 @@ public sealed class SyncController : ControllerBase
         }
 
         return valid;
+    }
+
+    private async Task<Guid?> ResolveRentalAssetItemReferenceAsync(
+        RentalAssetDto dto,
+        CancellationToken cancellationToken)
+    {
+        var preferredOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeLoose(
+            dto.OfficeCode,
+            dto.ManagementCompanyCode,
+            OfficeCodeCatalog.Shared);
+        var preferredTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            dto.TenantCode,
+            preferredOfficeCode);
+
+        if (dto.ItemId.HasValue && dto.ItemId.Value != Guid.Empty)
+        {
+            var directItem = await _dbContext.Items.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(item => item.Id == dto.ItemId.Value, cancellationToken);
+            if (directItem is not null &&
+                !directItem.IsDeleted &&
+                ItemOperationalPolicy.IsAsset(directItem.TrackingType) &&
+                _officeScopeService.CanReadOfficeForItems(directItem.OfficeCode, directItem.TenantCode))
+            {
+                return directItem.Id;
+            }
+        }
+
+        var normalizedMaterialNumber = (dto.ManagementNumber ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(normalizedMaterialNumber))
+        {
+            var materialMatches = await _dbContext.Items.IgnoreQueryFilters()
+                .Where(item =>
+                    !item.IsDeleted &&
+                    ItemOperationalPolicy.IsAsset(item.TrackingType) &&
+                    item.MaterialNumber == normalizedMaterialNumber)
+                .OrderByDescending(item => item.UpdatedAtUtc)
+                .ToListAsync(cancellationToken);
+            var resolvedMaterialMatch = ResolveReadableItemReference(
+                materialMatches,
+                preferredOfficeCode,
+                preferredTenantCode);
+            if (resolvedMaterialMatch.HasValue)
+                return resolvedMaterialMatch.Value;
+        }
+
+        var normalizedMachineNumber = (dto.MachineNumber ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(normalizedMachineNumber))
+        {
+            var serialMatches = await _dbContext.Items.IgnoreQueryFilters()
+                .Where(item =>
+                    !item.IsDeleted &&
+                    ItemOperationalPolicy.IsAsset(item.TrackingType) &&
+                    item.SerialNumber == normalizedMachineNumber)
+                .OrderByDescending(item => item.UpdatedAtUtc)
+                .ToListAsync(cancellationToken);
+            var resolvedSerialMatch = ResolveReadableItemReference(
+                serialMatches,
+                preferredOfficeCode,
+                preferredTenantCode);
+            if (resolvedSerialMatch.HasValue)
+                return resolvedSerialMatch.Value;
+        }
+
+        var normalizedItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(dto.ItemName);
+        if (string.IsNullOrWhiteSpace(normalizedItemName))
+            return null;
+
+        var exactNameMatches = await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item =>
+                !item.IsDeleted &&
+                ItemOperationalPolicy.IsAsset(item.TrackingType) &&
+                item.NameOriginal == normalizedItemName)
+            .OrderByDescending(item => item.UpdatedAtUtc)
+            .ToListAsync(cancellationToken);
+        var resolvedExactNameMatch = ResolveReadableItemReference(
+            exactNameMatches,
+            preferredOfficeCode,
+            preferredTenantCode);
+        if (resolvedExactNameMatch.HasValue)
+            return resolvedExactNameMatch.Value;
+
+        var normalizedNameKey = MatchKeyNormalizer.Normalize(normalizedItemName);
+        if (string.IsNullOrWhiteSpace(normalizedNameKey))
+            return null;
+
+        var nameKeyMatches = await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item =>
+                !item.IsDeleted &&
+                ItemOperationalPolicy.IsAsset(item.TrackingType) &&
+                item.NameMatchKey == normalizedNameKey)
+            .OrderByDescending(item => item.UpdatedAtUtc)
+            .ToListAsync(cancellationToken);
+        return ResolveReadableItemReference(nameKeyMatches, preferredOfficeCode, preferredTenantCode);
     }
 
     private async Task<Guid?> ResolveRentalAssetCustomerReferenceAsync(
@@ -1181,6 +1267,42 @@ public sealed class SyncController : ControllerBase
             .OrderByDescending(customer => customer.UpdatedAtUtc)
             .ToListAsync(cancellationToken);
         return ResolveReadableCustomerReference(nameKeyMatches, preferredOfficeCode, preferredTenantCode);
+    }
+
+    private Guid? ResolveReadableItemReference(
+        IReadOnlyCollection<Item> candidates,
+        string preferredOfficeCode,
+        string preferredTenantCode)
+    {
+        var readableCandidates = candidates
+            .Where(item => _officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
+            .ToList();
+        if (readableCandidates.Count == 0)
+            return null;
+
+        var preferredCandidates = readableCandidates
+            .Where(item =>
+                string.Equals(
+                    OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared),
+                    preferredOfficeCode,
+                    StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(
+                    TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                        item.TenantCode,
+                        item.OfficeCode,
+                        preferredTenantCode,
+                        preferredOfficeCode),
+                    preferredTenantCode,
+                    StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(item => item.UpdatedAtUtc)
+            .ToList();
+        if (preferredCandidates.Count == 1)
+            return preferredCandidates[0].Id;
+
+        if (readableCandidates.Count == 1)
+            return readableCandidates[0].Id;
+
+        return null;
     }
 
     private Guid? ResolveReadableCustomerReference(
@@ -1761,7 +1883,6 @@ public sealed class SyncController : ControllerBase
         dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Email, dto.Email);
     }
 }
-
 
 
 

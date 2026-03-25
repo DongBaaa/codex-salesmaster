@@ -292,6 +292,92 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal("UNKNOWN-RENTAL-CUSTOMER", asset.CustomerName);
     }
 
+    [Fact]
+    public async Task Push_ResolvesRentalAssetItemReference_ByReadableItemMetadata()
+    {
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "SYNC-RENTAL-ITEM",
+            NameMatchKey = "SYNCRENTALITEM",
+            MaterialNumber = "2603-123",
+            SerialNumber = "SN-123",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset
+        };
+        _dbContext.Items.Add(item);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = Guid.NewGuid(),
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    ItemId = Guid.NewGuid(),
+                    ItemName = item.NameOriginal,
+                    ManagementNumber = item.MaterialNumber,
+                    MachineNumber = item.SerialNumber,
+                    CurrentLocation = "창고",
+                    CreatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var asset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .OrderByDescending(current => current.CreatedAtUtc)
+            .FirstAsync();
+        Assert.Equal(item.Id, asset.ItemId);
+    }
+
+    [Fact]
+    public async Task Push_ClearsRentalAssetItemReference_WhenItemCannotBeResolved()
+    {
+        var request = new SyncPushRequest
+        {
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = Guid.NewGuid(),
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    ItemId = Guid.NewGuid(),
+                    ItemName = "UNKNOWN-RENTAL-ITEM",
+                    ManagementNumber = "2603-999",
+                    MachineNumber = "SN-999",
+                    CurrentLocation = "창고",
+                    CreatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var asset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .OrderByDescending(current => current.CreatedAtUtc)
+            .FirstAsync();
+        Assert.Null(asset.ItemId);
+        Assert.Equal("UNKNOWN-RENTAL-ITEM", asset.ItemName);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();

@@ -703,11 +703,13 @@ public sealed class RentalStateService
 
             var beforeSignatureByAssetId = new Dictionary<Guid, string>();
             var assetBaseKeyById = new Dictionary<Guid, string>();
+            var displacedItemIds = new HashSet<Guid>();
 
             foreach (var asset in assets)
             {
                 var beforeSignature = BuildAssetRepairSignature(asset);
                 beforeSignatureByAssetId[asset.Id] = beforeSignature;
+                var previousItemId = asset.ItemId;
 
                 asset.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CustomerName);
                 asset.CurrentLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CurrentLocation);
@@ -720,6 +722,13 @@ public sealed class RentalStateService
                 asset.DepositText = (asset.DepositText ?? string.Empty).Trim();
 
                 await EnrichAssetReferencesAsync(asset, ct, result);
+                if (previousItemId.HasValue &&
+                    previousItemId.Value != Guid.Empty &&
+                    previousItemId != asset.ItemId)
+                {
+                    displacedItemIds.Add(previousItemId.Value);
+                }
+
                 assetBaseKeyById[asset.Id] = BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ItemName);
                 asset.AssetStatus = ResolveAssetStatus(asset.AssetStatus, asset.CurrentLocation, asset.DisposalDate);
             }
@@ -736,6 +745,8 @@ public sealed class RentalStateService
                     asset.UpdatedAtUtc = DateTime.UtcNow;
                 }
             }
+
+            await RetireOrphanedAutoCreatedRentalItemsAsync(displacedItemIds, ct);
 
             SortAndDistinct(result.AddedCategoryNames);
             SortAndDistinct(result.AddedItemNames);
@@ -1991,13 +2002,20 @@ public sealed class RentalStateService
         string? itemCategoryName,
         string? managementNumber,
         string? machineNumber,
+        string preferredOfficeCode,
+        string preferredTenantCode,
         CancellationToken ct)
     {
         var activeItems = await GetActiveItemsAsync(ct);
+        var scopedAssetItems = activeItems
+            .Where(item =>
+                ItemOperationalPolicy.IsAsset(item.TrackingType) &&
+                MatchesRentalItemScope(item, preferredOfficeCode, preferredTenantCode))
+            .ToList();
 
         if (itemId.HasValue && itemId.Value != Guid.Empty)
         {
-            var direct = activeItems.FirstOrDefault(item => item.Id == itemId.Value);
+            var direct = scopedAssetItems.FirstOrDefault(item => item.Id == itemId.Value);
             if (direct is not null)
                 return direct;
         }
@@ -2005,7 +2023,7 @@ public sealed class RentalStateService
         var normalizedMaterialNumber = (managementNumber ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(normalizedMaterialNumber))
         {
-            var materialMatch = activeItems
+            var materialMatch = scopedAssetItems
                 .Where(item => item.MaterialNumber == normalizedMaterialNumber)
                 .OrderByDescending(item => item.UpdatedAtUtc)
                 .FirstOrDefault();
@@ -2016,7 +2034,7 @@ public sealed class RentalStateService
         var normalizedMachineNumber = (machineNumber ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(normalizedMachineNumber))
         {
-            var serialMatch = activeItems
+            var serialMatch = scopedAssetItems
                 .Where(item => item.SerialNumber == normalizedMachineNumber)
                 .OrderByDescending(item => item.UpdatedAtUtc)
                 .FirstOrDefault();
@@ -2030,7 +2048,9 @@ public sealed class RentalStateService
 
         var matches = await GetNameMatchedItemsAsync(normalizedItemName, ct);
         var assetMatches = matches
-            .Where(item => ItemOperationalPolicy.IsAsset(item.TrackingType))
+            .Where(item =>
+                ItemOperationalPolicy.IsAsset(item.TrackingType) &&
+                MatchesRentalItemScope(item, preferredOfficeCode, preferredTenantCode))
             .ToList();
 
         if (assetMatches.Count == 1)
@@ -2130,12 +2150,16 @@ public sealed class RentalStateService
         RentalCatalogRepairResult? repairResult,
         CancellationToken ct)
     {
+        var assetOfficeCode = ResolveAssetItemOfficeCode(asset);
+        var assetTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, assetOfficeCode);
         var item = await ResolveItemAsync(
             asset.ItemId,
             asset.ItemName,
             asset.ItemCategoryName,
             asset.ManagementNumber,
             asset.MachineNumber,
+            assetOfficeCode,
+            assetTenantCode,
             ct);
         if (item is not null)
             return item;
@@ -2154,11 +2178,10 @@ public sealed class RentalStateService
         }
 
         var now = DateTime.UtcNow;
-        var assetOfficeCode = ResolveAssetItemOfficeCode(asset);
         var created = new LocalItem
         {
-            Id = asset.ItemId is Guid existingItemId && existingItemId != Guid.Empty ? existingItemId : Guid.NewGuid(),
-            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, assetOfficeCode),
+            Id = Guid.NewGuid(),
+            TenantCode = assetTenantCode,
             OfficeCode = assetOfficeCode,
             NameOriginal = normalizedItemName,
             NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedItemName),
@@ -2188,6 +2211,75 @@ public sealed class RentalStateService
         _db.Items.Add(created);
         TryAddUnique(repairResult?.AddedItemNames, created.NameOriginal);
         return created;
+    }
+
+    private static bool MatchesRentalItemScope(LocalItem item, string preferredOfficeCode, string preferredTenantCode)
+    {
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared);
+        var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            item.TenantCode,
+            item.OfficeCode,
+            preferredTenantCode,
+            preferredOfficeCode);
+
+        return string.Equals(normalizedOfficeCode, preferredOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(normalizedTenantCode, preferredTenantCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task RetireOrphanedAutoCreatedRentalItemsAsync(
+        IReadOnlyCollection<Guid> itemIds,
+        CancellationToken ct)
+    {
+        if (itemIds.Count == 0)
+            return;
+
+        var candidateIds = itemIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (candidateIds.Count == 0)
+            return;
+
+        var referencedItemIds = new HashSet<Guid>(
+            await _db.RentalAssets.IgnoreQueryFilters()
+                .Where(asset => !asset.IsDeleted && asset.ItemId.HasValue && candidateIds.Contains(asset.ItemId.Value))
+                .Select(asset => asset.ItemId!.Value)
+                .Distinct()
+                .ToListAsync(ct));
+        foreach (var invoiceItemId in await _db.InvoiceLines.IgnoreQueryFilters()
+                     .Where(line => !line.IsDeleted && line.ItemId.HasValue && candidateIds.Contains(line.ItemId.Value))
+                     .Select(line => line.ItemId!.Value)
+                     .Distinct()
+                     .ToListAsync(ct))
+        {
+            referencedItemIds.Add(invoiceItemId);
+        }
+
+        foreach (var stockItemId in await _db.ItemWarehouseStocks
+                     .Where(stock => candidateIds.Contains(stock.ItemId))
+                     .Select(stock => stock.ItemId)
+                     .Distinct()
+                     .ToListAsync(ct))
+        {
+            referencedItemIds.Add(stockItemId);
+        }
+
+        foreach (var item in await _db.Items.IgnoreQueryFilters()
+                     .Where(current => candidateIds.Contains(current.Id) && !current.IsDeleted)
+                     .ToListAsync(ct))
+        {
+            if (referencedItemIds.Contains(item.Id))
+                continue;
+            if (!ItemOperationalPolicy.IsAsset(item.TrackingType))
+                continue;
+            if (!string.Equals(item.SimpleMemo, "렌탈 자산/설치현황 자동 동기화 생성", StringComparison.Ordinal))
+                continue;
+
+            item.IsDeleted = true;
+            item.IsDirty = false;
+            item.CurrentStock = 0m;
+            item.UpdatedAtUtc = DateTime.UtcNow;
+        }
     }
 
     private async Task<List<LocalItem>> GetNameMatchedItemsAsync(string? itemName, CancellationToken ct)
