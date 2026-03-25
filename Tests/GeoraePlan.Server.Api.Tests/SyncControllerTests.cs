@@ -378,6 +378,33 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal("UNKNOWN-RENTAL-ITEM", asset.ItemName);
     }
 
+    [Fact]
+    public async Task Push_IgnoresDeletedCustomerContract_WhenServerContractIsAlreadyMissing()
+    {
+        var missingContractId = Guid.NewGuid();
+
+        var request = new SyncPushRequest
+        {
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = missingContractId,
+                    CustomerId = Guid.NewGuid(),
+                    IsDeleted = true,
+                    UpdatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Empty(await _dbContext.CustomerContracts.IgnoreQueryFilters().ToListAsync());
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();

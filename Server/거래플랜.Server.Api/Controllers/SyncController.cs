@@ -1477,8 +1477,9 @@ public sealed class SyncController : ControllerBase
             }
             else if (existing is null)
             {
-                AddClientConflict(dto, nameof(CustomerContract),
-                    $"Referenced contract was not found: {dto.Id}.", result);
+                // 삭제 동기화는 멱등적으로 처리한다.
+                // 이미 서버에 없는 계약서를 다시 삭제하려는 경우 충돌로 막지 않고
+                // 클라이언트의 stale dirty row를 정리할 수 있게 그냥 통과시킨다.
                 continue;
             }
 
@@ -1891,5 +1892,4 @@ public sealed class SyncController : ControllerBase
         dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Email, dto.Email);
     }
 }
-
 
