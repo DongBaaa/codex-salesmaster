@@ -453,6 +453,178 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(DateTimeKind.Utc, contract.UploadedAtUtc.Kind);
     }
 
+    [Fact]
+    public async Task Push_AllowsTransactionReferencingInvoiceCreatedInSameBatch()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "BATCH-TX-CUSTOMER",
+            NameMatchKey = "BATCHTXCUSTOMER",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customer.Id,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    VoucherType = VoucherType.Purchase,
+                    InvoiceDate = new DateOnly(2026, 3, 26),
+                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ],
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = Guid.NewGuid(),
+                    CustomerId = customer.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 3, 26),
+                    TransactionKind = "전표지급",
+                    LinkedInvoiceId = invoiceId,
+                    LinkedInvoiceNumber = "L202603-0099",
+                    CashPayment = 1000m,
+                    PaymentTotal = 1000m,
+                    SettlementAmount = 1000m,
+                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+
+        var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters().FirstAsync();
+        Assert.Equal(invoiceId, storedTransaction.LinkedInvoiceId);
+    }
+
+    [Fact]
+    public async Task Push_ClearsTransactionInvoiceReference_WhenLinkedInvoiceIsMissing()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "MISSING-INVOICE-CUSTOMER",
+            NameMatchKey = "MISSINGINVOICECUSTOMER",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = Guid.NewGuid(),
+                    CustomerId = customer.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 3, 26),
+                    TransactionKind = "전표지급",
+                    LinkedInvoiceId = Guid.NewGuid(),
+                    LinkedInvoiceNumber = "L202603-0100",
+                    BankPayment = 2000m,
+                    PaymentTotal = 2000m,
+                    SettlementAmount = 2000m,
+                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+
+        var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters().FirstAsync();
+        Assert.Null(storedTransaction.LinkedInvoiceId);
+        Assert.Equal("일반지급", storedTransaction.TransactionKind);
+        Assert.Equal("L202603-0100", storedTransaction.LinkedInvoiceNumber);
+        Assert.Equal(0m, storedTransaction.SettlementAmount);
+    }
+
+    [Fact]
+    public async Task Push_ResolvesTransactionCustomerReference_FromLinkedInvoiceCustomer()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "DERIVED-TX-CUSTOMER",
+            NameMatchKey = "DERIVEDTXCUSTOMER",
+            TradeType = "매출"
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            VoucherType = VoucherType.Purchase,
+            InvoiceDate = new DateOnly(2026, 3, 26)
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.Invoices.Add(invoice);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = Guid.NewGuid(),
+                    CustomerId = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 3, 26),
+                    TransactionKind = "전표지급",
+                    LinkedInvoiceId = invoice.Id,
+                    LinkedInvoiceNumber = "L202603-0101",
+                    CashPayment = 3000m,
+                    PaymentTotal = 3000m,
+                    SettlementAmount = 3000m,
+                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+
+        var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters().FirstAsync();
+        Assert.Equal(customer.Id, storedTransaction.CustomerId);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();

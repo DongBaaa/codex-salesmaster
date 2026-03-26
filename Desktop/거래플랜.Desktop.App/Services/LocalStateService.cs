@@ -760,6 +760,187 @@ public sealed partial class LocalStateService
             .ToList();
     }
 
+    public async Task<List<LocalTransaction>> GetDirtyTransactionsForSyncAsync(SessionState session, CancellationToken ct = default)
+    {
+        var query = _db.Transactions.IgnoreQueryFilters()
+            .Where(transaction => transaction.IsDirty)
+            .AsNoTracking();
+
+        if (CanWriteAllScopedData(session))
+            return await query.ToListAsync(ct);
+
+        var dirtyTransactions = await query.ToListAsync(ct);
+        return dirtyTransactions
+            .Where(transaction => CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode))
+            .ToList();
+    }
+
+    public async Task<List<LocalTransactionAttachment>> GetDirtyTransactionAttachmentsForSyncAsync(SessionState session, CancellationToken ct = default)
+    {
+        var dirtyAttachments = await _db.TransactionAttachments.IgnoreQueryFilters()
+            .Where(attachment => attachment.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+
+        if (CanWriteAllScopedData(session) || dirtyAttachments.Count == 0)
+            return dirtyAttachments;
+
+        var transactionIds = dirtyAttachments
+            .Select(attachment => attachment.TransactionId)
+            .Where(transactionId => transactionId != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        var transactions = await _db.Transactions.IgnoreQueryFilters()
+            .Where(transaction => transactionIds.Contains(transaction.Id))
+            .AsNoTracking()
+            .ToDictionaryAsync(transaction => transaction.Id, ct);
+
+        return dirtyAttachments
+            .Where(attachment =>
+                transactions.TryGetValue(attachment.TransactionId, out var transaction) &&
+                CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode))
+            .ToList();
+    }
+
+    public async Task<TransactionSyncRepairResult> RepairDirtyTransactionsForSyncAsync(
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var result = new TransactionSyncRepairResult();
+        var dirtyTransactions = await _db.Transactions.IgnoreQueryFilters()
+            .Where(transaction => transaction.IsDirty)
+            .ToListAsync(ct);
+
+        if (dirtyTransactions.Count == 0)
+            return result;
+
+        if (!CanWriteAllScopedData(session))
+        {
+            dirtyTransactions = dirtyTransactions
+                .Where(transaction => CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode))
+                .ToList();
+        }
+
+        if (dirtyTransactions.Count == 0)
+            return result;
+
+        var now = DateTime.UtcNow;
+        var changed = false;
+
+        foreach (var transaction in dirtyTransactions)
+        {
+            result.ScannedCount++;
+
+            LocalInvoice? linkedInvoice = null;
+            if (transaction.LinkedInvoiceId.HasValue && transaction.LinkedInvoiceId.Value != Guid.Empty)
+            {
+                linkedInvoice = await _db.Invoices
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(current => current.Id == transaction.LinkedInvoiceId.Value, ct);
+
+                if (linkedInvoice is null || linkedInvoice.IsDeleted)
+                {
+                    if (string.IsNullOrWhiteSpace(transaction.LinkedInvoiceNumber) && linkedInvoice is not null)
+                    {
+                        transaction.LinkedInvoiceNumber = string.IsNullOrWhiteSpace(linkedInvoice.InvoiceNumber)
+                            ? linkedInvoice.LocalTempNumber
+                            : linkedInvoice.InvoiceNumber;
+                    }
+
+                    transaction.LinkedInvoiceId = null;
+                    if (string.Equals(transaction.TransactionKind, PaymentFlowConstants.TransactionKindInvoiceReceipt, StringComparison.OrdinalIgnoreCase))
+                    {
+                        transaction.TransactionKind = PaymentFlowConstants.TransactionKindReceipt;
+                        transaction.SettlementAmount = 0m;
+                    }
+                    else if (string.Equals(transaction.TransactionKind, PaymentFlowConstants.TransactionKindInvoicePayment, StringComparison.OrdinalIgnoreCase))
+                    {
+                        transaction.TransactionKind = PaymentFlowConstants.TransactionKindPayment;
+                        transaction.SettlementAmount = 0m;
+                    }
+
+                    transaction.UpdatedAtUtc = now;
+                    transaction.IsDirty = true;
+                    changed = true;
+                    result.ClearedMissingInvoiceLinkCount++;
+                    linkedInvoice = null;
+                }
+            }
+
+            LocalRentalBillingProfile? linkedProfile = null;
+            if (transaction.LinkedRentalBillingProfileId.HasValue && transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
+            {
+                linkedProfile = await _db.RentalBillingProfiles
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(current => current.Id == transaction.LinkedRentalBillingProfileId.Value, ct);
+
+                if (linkedProfile is null || linkedProfile.IsDeleted)
+                {
+                    transaction.LinkedRentalBillingProfileId = null;
+                    if (string.Equals(transaction.TransactionKind, PaymentFlowConstants.TransactionKindRentalReceipt, StringComparison.OrdinalIgnoreCase))
+                    {
+                        transaction.TransactionKind = PaymentFlowConstants.TransactionKindReceipt;
+                        transaction.SettlementAmount = 0m;
+                    }
+
+                    transaction.UpdatedAtUtc = now;
+                    transaction.IsDirty = true;
+                    changed = true;
+                    result.ClearedMissingRentalLinkCount++;
+                    linkedProfile = null;
+                }
+            }
+
+            var customer = await _db.Customers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(current => current.Id == transaction.CustomerId, ct);
+
+            if (customer is null || customer.IsDeleted)
+            {
+                LocalCustomer? resolvedCustomer = null;
+                if (linkedInvoice is not null && linkedInvoice.CustomerId != Guid.Empty)
+                {
+                    resolvedCustomer = await _db.Customers
+                        .IgnoreQueryFilters()
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(current => current.Id == linkedInvoice.CustomerId, ct);
+                }
+
+                if ((resolvedCustomer is null || resolvedCustomer.IsDeleted) &&
+                    linkedProfile is not null &&
+                    linkedProfile.CustomerId.HasValue &&
+                    linkedProfile.CustomerId.Value != Guid.Empty)
+                {
+                    resolvedCustomer = await _db.Customers
+                        .IgnoreQueryFilters()
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(current => current.Id == linkedProfile.CustomerId.Value, ct);
+                }
+
+                if (resolvedCustomer is not null && !resolvedCustomer.IsDeleted)
+                {
+                    transaction.CustomerId = resolvedCustomer.Id;
+                    transaction.ResponsibleOfficeCode = NormalizeOfficeScope(
+                        transaction.ResponsibleOfficeCode,
+                        resolvedCustomer.ResponsibleOfficeCode);
+                    transaction.UpdatedAtUtc = now;
+                    transaction.IsDirty = true;
+                    changed = true;
+                    result.ResolvedMissingCustomerCount++;
+                }
+            }
+        }
+
+        if (changed)
+            await _db.SaveChangesAsync(ct);
+
+        return result;
+    }
+
     public Task<LocalItem?> GetItemAsync(Guid itemId, CancellationToken ct = default)
         => _db.Items
             .IgnoreQueryFilters()
@@ -1539,6 +1720,8 @@ public sealed partial class LocalStateService
             invoice.LastSavedAtUtc = now;
         }
 
+        await DetachTransactionsFromInvoicesAsync(invoicesToDelete.Select(invoice => invoice.Id).ToList(), now, ct);
+
         _db.AuditLogs.Add(new LocalAuditLog
         {
             EntityName = nameof(LocalInvoice),
@@ -1597,6 +1780,8 @@ public sealed partial class LocalStateService
             invoice.UpdatedAtUtc = now;
             invoice.LastSavedAtUtc = now;
         }
+
+        await DetachTransactionsFromInvoicesAsync(invoicesToDelete.Select(invoice => invoice.Id).ToList(), now, ct);
 
         _db.AuditLogs.Add(new LocalAuditLog
         {
@@ -2886,6 +3071,34 @@ public sealed partial class LocalStateService
         await _db.SaveChangesAsync(ct);
     }
 
+    private async Task DetachTransactionsFromInvoicesAsync(
+        IReadOnlyCollection<Guid> invoiceIds,
+        DateTime updatedAtUtc,
+        CancellationToken ct)
+    {
+        if (invoiceIds is null || invoiceIds.Count == 0)
+            return;
+
+        var transactions = await _db.Transactions
+            .IgnoreQueryFilters()
+            .Where(transaction => transaction.LinkedInvoiceId.HasValue && invoiceIds.Contains(transaction.LinkedInvoiceId.Value))
+            .ToListAsync(ct);
+
+        foreach (var transaction in transactions)
+        {
+            transaction.LinkedInvoiceId = null;
+            transaction.SettlementAmount = 0m;
+
+            if (string.Equals(transaction.TransactionKind, PaymentFlowConstants.TransactionKindInvoiceReceipt, StringComparison.OrdinalIgnoreCase))
+                transaction.TransactionKind = PaymentFlowConstants.TransactionKindReceipt;
+            else if (string.Equals(transaction.TransactionKind, PaymentFlowConstants.TransactionKindInvoicePayment, StringComparison.OrdinalIgnoreCase))
+                transaction.TransactionKind = PaymentFlowConstants.TransactionKindPayment;
+
+            transaction.IsDirty = true;
+            transaction.UpdatedAtUtc = updatedAtUtc;
+        }
+    }
+
     private async Task RecalculateRentalSettlementAsync(Guid billingProfileId, CancellationToken ct)
     {
         var profile = await _db.RentalBillingProfiles
@@ -3633,6 +3846,20 @@ public sealed partial class LocalStateService
             count = count - dirtyRentalBillingLogCount + syncableDirtyRentalBillingLogCount;
         }
 
+        var dirtyTransactionCount = await _db.Transactions.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyTransactionCount > 0)
+        {
+            var syncableDirtyTransactionCount = (await GetDirtyTransactionsForSyncAsync(session, ct)).Count;
+            count = count - dirtyTransactionCount + syncableDirtyTransactionCount;
+        }
+
+        var dirtyTransactionAttachmentCount = await _db.TransactionAttachments.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyTransactionAttachmentCount > 0)
+        {
+            var syncableDirtyTransactionAttachmentCount = (await GetDirtyTransactionAttachmentsForSyncAsync(session, ct)).Count;
+            count = count - dirtyTransactionAttachmentCount + syncableDirtyTransactionAttachmentCount;
+        }
+
         return count;
     }
 
@@ -3873,6 +4100,14 @@ public sealed partial class LocalStateService
     private static string NormalizeOfficeScope(string? officeCode, string? fallback)
     {
         return OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, fallback);
+    }
+
+    public sealed class TransactionSyncRepairResult
+    {
+        public int ScannedCount { get; set; }
+        public int ClearedMissingInvoiceLinkCount { get; set; }
+        public int ClearedMissingRentalLinkCount { get; set; }
+        public int ResolvedMissingCustomerCount { get; set; }
     }
 
     private static bool IsSharedOfficeScope(string? officeCode)

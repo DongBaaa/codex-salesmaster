@@ -148,6 +148,10 @@ public sealed class SyncController : ControllerBase
         await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
             (e, d) => e.Apply(d), d => new Item { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
         await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], cancellationToken);
+        var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
+        await UpsertInvoicesAsync(validInvoices, result, cancellationToken);
+        if (validInvoices.Count > 0)
+            await _dbContext.SaveChangesAsync(cancellationToken);
         var scopedTransactions = await PrepareScopedTransactionsAsync(request.Transactions ?? [], result, cancellationToken);
         var validTransactions = await FilterValidTransactionsAsync(scopedTransactions, result, cancellationToken);
         await UpsertEntitiesAsync(validTransactions, _dbContext.Transactions,
@@ -180,8 +184,6 @@ public sealed class SyncController : ControllerBase
             var validRentalBillingLogs = await FilterValidRentalBillingLogsAsync(scopedRentalBillingLogs, result, cancellationToken);
             await UpsertEntitiesAsync(validRentalBillingLogs, _dbContext.RentalBillingLogs,
                 (e, d) => e.Apply(d), d => new RentalBillingLog { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-            var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
-            await UpsertInvoicesAsync(validInvoices, result, cancellationToken);
             var validPayments = await FilterValidPaymentsAsync(request.Payments ?? [], result, cancellationToken);
             await UpsertEntitiesAsync(validPayments, _dbContext.Payments,
                 (e, d) => e.Apply(d), d => new Payment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
@@ -554,34 +556,33 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
-            var customer = await _dbContext.Customers.IgnoreQueryFilters()
-                .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
-            if (dto.CustomerId == Guid.Empty || customer is null || customer.IsDeleted)
-            {
-                AddClientConflict(dto, nameof(TransactionRecord),
-                    $"Referenced customer was not found: {dto.CustomerId}.", result);
-                continue;
-            }
+            var existing = await _dbContext.Transactions.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
 
-            if (!_officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
-            {
-                AddClientConflict(dto, nameof(TransactionRecord),
-                    $"Referenced customer is outside the readable office scope: {dto.CustomerId}.", result);
-                continue;
-            }
-
+            Invoice? invoice = null;
             if (dto.LinkedInvoiceId.HasValue && dto.LinkedInvoiceId.Value != Guid.Empty)
             {
-                var invoice = await _dbContext.Invoices.IgnoreQueryFilters()
+                invoice = await _dbContext.Invoices.IgnoreQueryFilters()
+                    .Include(current => current.Customer)
                     .FirstOrDefaultAsync(x => x.Id == dto.LinkedInvoiceId.Value, cancellationToken);
                 if (invoice is null || invoice.IsDeleted)
                 {
-                    AddClientConflict(dto, nameof(TransactionRecord),
-                        $"Referenced invoice was not found: {dto.LinkedInvoiceId}.", result);
-                    continue;
-                }
+                    if (dto.IsDeleted && existing is null)
+                        continue;
 
-                if (!_officeScopeService.CanReadOfficeForInvoices(invoice.OfficeCode, invoice.TenantCode))
+                    if (string.Equals(dto.TransactionKind, "선수금차감", StringComparison.OrdinalIgnoreCase))
+                    {
+                        AddClientConflict(dto, nameof(TransactionRecord),
+                            $"Referenced invoice was not found: {dto.LinkedInvoiceId}.", result);
+                        continue;
+                    }
+
+                    dto.LinkedInvoiceId = null;
+                    dto.SettlementAmount = 0m;
+                    dto.TransactionKind = NormalizeTransactionKindWithoutInvoice(dto.TransactionKind, dto.PaymentTotal, dto.ReceiptTotal);
+                    invoice = null;
+                }
+                else if (!_officeScopeService.CanReadOfficeForInvoices(invoice.OfficeCode, invoice.TenantCode))
                 {
                     AddClientConflict(dto, nameof(TransactionRecord),
                         $"Referenced invoice is outside the readable office scope: {dto.LinkedInvoiceId}.", result);
@@ -589,23 +590,63 @@ public sealed class SyncController : ControllerBase
                 }
             }
 
+            RentalBillingProfile? profile = null;
             if (dto.LinkedRentalBillingProfileId.HasValue && dto.LinkedRentalBillingProfileId.Value != Guid.Empty)
             {
-                var profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+                profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
                     .FirstOrDefaultAsync(x => x.Id == dto.LinkedRentalBillingProfileId.Value, cancellationToken);
                 if (profile is null || profile.IsDeleted)
                 {
-                    AddClientConflict(dto, nameof(TransactionRecord),
-                        $"Referenced rental billing profile was not found: {dto.LinkedRentalBillingProfileId}.", result);
-                    continue;
-                }
+                    if (dto.IsDeleted && existing is null)
+                        continue;
 
-                if (!_officeScopeService.CanReadOfficeForRentals(profile.OfficeCode, profile.TenantCode))
+                    dto.LinkedRentalBillingProfileId = null;
+                    dto.SettlementAmount = 0m;
+                    if (string.Equals(dto.TransactionKind, "렌탈수금", StringComparison.OrdinalIgnoreCase))
+                        dto.TransactionKind = "일반수금";
+                    profile = null;
+                }
+                else if (!_officeScopeService.CanReadOfficeForRentals(profile.OfficeCode, profile.TenantCode))
                 {
                     AddClientConflict(dto, nameof(TransactionRecord),
                         $"Referenced rental billing profile is outside the readable office scope: {dto.LinkedRentalBillingProfileId}.", result);
                     continue;
                 }
+            }
+
+            var customer = await _dbContext.Customers.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
+            if (dto.CustomerId == Guid.Empty || customer is null || customer.IsDeleted)
+            {
+                if (invoice?.Customer is not null && !invoice.Customer.IsDeleted)
+                {
+                    customer = invoice.Customer;
+                    dto.CustomerId = customer.Id;
+                }
+                else if (profile?.CustomerId.HasValue == true && profile.CustomerId.Value != Guid.Empty)
+                {
+                    customer = await _dbContext.Customers.IgnoreQueryFilters()
+                        .FirstOrDefaultAsync(x => x.Id == profile.CustomerId.Value, cancellationToken);
+                    if (customer is not null && !customer.IsDeleted)
+                        dto.CustomerId = customer.Id;
+                }
+
+                if (customer is null || customer.IsDeleted)
+                {
+                    if (dto.IsDeleted && existing is null)
+                        continue;
+
+                    AddClientConflict(dto, nameof(TransactionRecord),
+                        $"Referenced customer was not found: {dto.CustomerId}.", result);
+                    continue;
+                }
+            }
+
+            if (!_officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
+            {
+                AddClientConflict(dto, nameof(TransactionRecord),
+                    $"Referenced customer is outside the readable office scope: {dto.CustomerId}.", result);
+                continue;
             }
 
             dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
@@ -618,6 +659,19 @@ public sealed class SyncController : ControllerBase
         }
 
         return valid;
+    }
+
+    private static string NormalizeTransactionKindWithoutInvoice(string? kind, decimal paymentTotal, decimal receiptTotal)
+    {
+        if (string.Equals(kind, "전표지급", StringComparison.OrdinalIgnoreCase))
+            return "일반지급";
+
+        if (string.Equals(kind, "전표수금", StringComparison.OrdinalIgnoreCase))
+            return "일반수금";
+
+        return paymentTotal > 0m && receiptTotal <= 0m
+            ? "일반지급"
+            : "일반수금";
     }
 
     private async Task<List<TransactionAttachmentDto>> FilterValidTransactionAttachmentsAsync(
@@ -1892,4 +1946,3 @@ public sealed class SyncController : ControllerBase
         dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Email, dto.Email);
     }
 }
-

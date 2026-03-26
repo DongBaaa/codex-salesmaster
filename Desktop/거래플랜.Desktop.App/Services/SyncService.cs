@@ -373,6 +373,19 @@ public sealed class SyncService : IDisposable
 
     private async Task PushDirtyAsync(CancellationToken ct)
     {
+        var transactionRepair = await _local.RepairDirtyTransactionsForSyncAsync(_session, ct);
+        if (transactionRepair.ClearedMissingInvoiceLinkCount > 0 ||
+            transactionRepair.ClearedMissingRentalLinkCount > 0 ||
+            transactionRepair.ResolvedMissingCustomerCount > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 거래내역 참조 보정: scanned={transactionRepair.ScannedCount}, " +
+                $"clearedInvoiceLinks={transactionRepair.ClearedMissingInvoiceLinkCount}, " +
+                $"clearedRentalLinks={transactionRepair.ClearedMissingRentalLinkCount}, " +
+                $"resolvedCustomers={transactionRepair.ResolvedMissingCustomerCount}");
+        }
+
         var companyProfilesTask = _db.CompanyProfiles.IgnoreQueryFilters()
             .Where(e => e.IsDirty)
             .AsNoTracking()
@@ -407,14 +420,8 @@ public sealed class SyncService : IDisposable
         var itemWarehouseStocksTask = _db.ItemWarehouseStocks
             .AsNoTracking()
             .ToListAsync(ct);
-        var transactionsTask = _db.Transactions.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
-        var transactionAttachmentsTask = _db.TransactionAttachments.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
+        var transactionsTask = _local.GetDirtyTransactionsForSyncAsync(_session, ct);
+        var transactionAttachmentsTask = _local.GetDirtyTransactionAttachmentsForSyncAsync(_session, ct);
         var inventoryTransfersTask = _db.InventoryTransfers.IgnoreQueryFilters()
             .Include(transfer => transfer.Lines)
             .Where(e => e.IsDirty)
