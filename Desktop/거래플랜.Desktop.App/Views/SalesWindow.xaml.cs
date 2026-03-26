@@ -1,6 +1,7 @@
 ﻿using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
@@ -11,6 +12,7 @@ public partial class SalesWindow : Window
 {
     private readonly SalesViewModel _vm;
     private bool _allowCloseWithoutSave;
+    private bool _closeInProgress;
 
     public SalesWindow(SalesViewModel vm)
     {
@@ -160,44 +162,71 @@ public partial class SalesWindow : Window
         _vm.ImportPreviousInvoices(selectedInvoices, replaceExistingLines: true);
     }
 
-    private void Window_Closing(object? sender, CancelEventArgs e)
+    private async void Window_Closing(object? sender, CancelEventArgs e)
     {
-        if (_allowCloseWithoutSave) return;
-        if (!_vm.HasMeaningfulDraftContentForClose) return;
-        if (!_vm.HasPendingChanges) return;
+        if (_allowCloseWithoutSave)
+            return;
 
-        var saved = false;
-        try
+        if (_closeInProgress)
         {
-            saved = _vm.TryAutoSaveOnCloseAsync().GetAwaiter().GetResult();
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Warn("AUTOSAVE", $"Sales window close auto-save threw an exception. {ex.Message}");
-            saved = false;
-        }
-
-        if (saved) return;
-
-        var failureMessage = string.IsNullOrWhiteSpace(_vm.LastAutoSaveFailureMessage)
-            ? "자동저장에 실패했습니다."
-            : _vm.LastAutoSaveFailureMessage;
-
-        AppLogger.Warn("AUTOSAVE", $"Sales window close auto-save did not complete successfully. {failureMessage}");
-
-        var discard = MessageBox.Show(
-            $"{failureMessage}\n\n저장되지 않은 변경사항이 있습니다. 저장 없이 닫을까요?",
-            "확인",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
-
-        if (discard == MessageBoxResult.Yes)
-        {
-            _allowCloseWithoutSave = true;
+            e.Cancel = true;
             return;
         }
 
+        if (!_vm.HasMeaningfulDraftContentForClose || !_vm.HasPendingChanges)
+            return;
+
         e.Cancel = true;
+        _closeInProgress = true;
+        var previousCursor = Mouse.OverrideCursor;
+        try
+        {
+            IsEnabled = false;
+            Mouse.OverrideCursor = Cursors.Wait;
+
+            var saved = false;
+            try
+            {
+                saved = await _vm.TryAutoSaveOnCloseAsync();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warn("AUTOSAVE", $"Sales window close auto-save threw an exception. {ex.Message}");
+                saved = false;
+            }
+
+            if (saved)
+            {
+                _allowCloseWithoutSave = true;
+                Close();
+                return;
+            }
+
+            var failureMessage = string.IsNullOrWhiteSpace(_vm.LastAutoSaveFailureMessage)
+                ? "자동저장에 실패했습니다."
+                : _vm.LastAutoSaveFailureMessage;
+
+            AppLogger.Warn("AUTOSAVE", $"Sales window close auto-save did not complete successfully. {failureMessage}");
+
+            var discard = MessageBox.Show(
+                $"{failureMessage}\n\n저장되지 않은 변경사항이 있습니다. 저장 없이 닫을까요?",
+                "확인",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (discard == MessageBoxResult.Yes)
+            {
+                _allowCloseWithoutSave = true;
+                Close();
+            }
+        }
+        finally
+        {
+            Mouse.OverrideCursor = previousCursor;
+            if (!_allowCloseWithoutSave)
+                IsEnabled = true;
+            _closeInProgress = false;
+        }
     }
 
     private void CustomerSelectButton_Click(object sender, RoutedEventArgs e)

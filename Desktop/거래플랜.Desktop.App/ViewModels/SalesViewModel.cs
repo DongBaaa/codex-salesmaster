@@ -7,6 +7,7 @@ using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Printing;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.Views;
@@ -28,6 +29,8 @@ public sealed partial class SalesViewModel : ObservableObject
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
     private string _baselineStateSignature = string.Empty;
     private bool _lastSaveWasConcurrencyConflict;
+    private int _paymentSummaryLoadVersion;
+    private int _invoiceVersionLoadVersion;
     public string LastAutoSaveFailureMessage { get; private set; } = string.Empty;
 
     public event Action? InvoiceSaved;
@@ -270,14 +273,34 @@ public sealed partial class SalesViewModel : ObservableObject
         SelectedWarehouseCode = ResolveDefaultWarehouseCode(officeCode);
     }
 
-    private async Task LoadInvoiceVersionsAsync(LocalInvoice invoice)
+    private async Task LoadInvoiceVersionsAsync(LocalInvoice invoice, int version)
     {
-        InvoiceVersions.Clear();
         var versionGroupId = invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
         var versions = await _local.GetInvoiceVersionsAsync(versionGroupId, _session);
-        foreach (var version in versions.OrderByDescending(v => v.VersionNumber))
-            InvoiceVersions.Add(version);
+        if (!IsCurrentInvoiceVersionLoad(version))
+            return;
+
+        InvoiceVersions.Clear();
+        foreach (var entry in versions.OrderByDescending(v => v.VersionNumber))
+            InvoiceVersions.Add(entry);
     }
+
+    private void RequestLoadInvoiceVersions(LocalInvoice invoice)
+    {
+        var version = Interlocked.Increment(ref _invoiceVersionLoadVersion);
+        UiTaskHelper.Forget(
+            LoadInvoiceVersionsAsync(invoice, version),
+            "SALES",
+            "전표 버전 조회",
+            ex =>
+            {
+                if (IsCurrentInvoiceVersionLoad(version))
+                    StatusMessage = $"전표 버전을 불러오지 못했습니다. {ex.Message}";
+            });
+    }
+
+    private bool IsCurrentInvoiceVersionLoad(int version)
+        => version == Volatile.Read(ref _invoiceVersionLoadVersion);
 
     public void NewInvoice()
     {
@@ -335,7 +358,7 @@ public sealed partial class SalesViewModel : ObservableObject
         SelectedResponsibleOfficeCode = string.IsNullOrWhiteSpace(customer.ResponsibleOfficeCode)
             ? SelectedResponsibleOfficeCode
             : OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(customer.ResponsibleOfficeCode, SelectedResponsibleOfficeCode);
-        _ = RefreshPaymentSummaryAsync();
+        RequestRefreshPaymentSummary();
     }
 
     partial void OnVoucherTypeChanged(VoucherType value)
@@ -343,7 +366,7 @@ public sealed partial class SalesViewModel : ObservableObject
         OnPropertyChanged(nameof(ShowPaymentAction));
         OnPropertyChanged(nameof(PaymentActionButtonText));
         OnPropertyChanged(nameof(PaymentSummaryTitleText));
-        _ = RefreshPaymentSummaryAsync();
+        RequestRefreshPaymentSummary();
     }
 
     public LocalStateService LocalStateService => _local;
@@ -379,28 +402,58 @@ public sealed partial class SalesViewModel : ObservableObject
         RefreshItemSearch();
     }
 
-    public async Task RefreshPaymentSummaryAsync()
+    public Task RefreshPaymentSummaryAsync()
+        => RefreshPaymentSummaryAsync(Interlocked.Increment(ref _paymentSummaryLoadVersion));
+
+    private void RequestRefreshPaymentSummary()
+    {
+        var version = Interlocked.Increment(ref _paymentSummaryLoadVersion);
+        UiTaskHelper.Forget(
+            RefreshPaymentSummaryAsync(version),
+            "SALES",
+            "전표 수금/지급 요약 갱신",
+            ex =>
+            {
+                if (IsCurrentPaymentSummaryLoad(version))
+                    StatusMessage = $"수금/지급 요약을 갱신하지 못했습니다. {ex.Message}";
+            });
+    }
+
+    private async Task RefreshPaymentSummaryAsync(int version)
     {
         if (SelectedCustomer is null)
         {
+            if (!IsCurrentPaymentSummaryLoad(version))
+                return;
+
             ResetPaymentSummary();
             return;
         }
 
-        var advanceBalance = await GetAdvanceBalanceAsync(SelectedCustomer.Id);
+        var selectedCustomer = SelectedCustomer;
+        var advanceBalance = await GetAdvanceBalanceAsync(selectedCustomer.Id);
+        if (!IsCurrentPaymentSummaryLoad(version))
+            return;
+
         CustomerAdvanceBalance = advanceBalance;
         PaymentSummaryAdvanceText = $"선수금 잔액 {advanceBalance:N0}";
 
         var invoice = await _local.GetInvoiceAsync(InvoiceId, _session);
+        if (!IsCurrentPaymentSummaryLoad(version))
+            return;
+
         if (invoice is null)
         {
-            PaymentSummaryContextText = $"{SelectedCustomer.NameOriginal} · 저장된 전표 없음";
+            PaymentSummaryContextText = $"{selectedCustomer.NameOriginal} · 저장된 전표 없음";
             PaymentSummaryDetailText = "전표를 저장하면 수금/지급 요약이 표시됩니다.";
             OnPropertyChanged(nameof(PaymentSummaryTitleText));
             return;
         }
 
         var summary = GetInvoiceSettlementSummary(invoice);
+        if (!IsCurrentPaymentSummaryLoad(version))
+            return;
+
         var displayNumber = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
             ? invoice.LocalTempNumber
             : invoice.InvoiceNumber;
@@ -433,6 +486,9 @@ public sealed partial class SalesViewModel : ObservableObject
             RemainingAmount = remainingAmount
         };
     }
+
+    private bool IsCurrentPaymentSummaryLoad(int version)
+        => version == Volatile.Read(ref _paymentSummaryLoadVersion);
 
     private void ResetPaymentSummary()
     {
@@ -986,7 +1042,7 @@ public sealed partial class SalesViewModel : ObservableObject
             LastSavedBy = savedInvoice.LastSavedByUsername;
             LastSavedAtDisplay = savedInvoice.LastSavedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
             VersionDisplay = $"v{savedInvoice.VersionNumber}";
-            await LoadInvoiceVersionsAsync(savedInvoice);
+            await LoadInvoiceVersionsAsync(savedInvoice, Interlocked.Increment(ref _invoiceVersionLoadVersion));
         }
 
         if (VoucherType == VoucherType.Procurement && SelectedCustomer is not null)
@@ -1018,7 +1074,7 @@ public sealed partial class SalesViewModel : ObservableObject
     }
 
     // ?? 湲곗〈 ?꾪몴 遺덈윭?ㅺ린 (?섏젙?? ???????????????????????????????????????
-    public void LoadInvoice(LocalInvoice inv)
+    public async Task LoadInvoiceAsync(LocalInvoice inv)
     {
         InvoiceId = inv.Id;
         WorkDate = inv.InvoiceDate;
@@ -1042,7 +1098,7 @@ public sealed partial class SalesViewModel : ObservableObject
         {
             try
             {
-                var payload = _local.GetInvoicePrintPayloadAsync(inv.Id).GetAwaiter().GetResult();
+                var payload = await _local.GetInvoicePrintPayloadAsync(inv.Id);
                 if (!string.IsNullOrWhiteSpace(payload))
                 {
                     var saved = JsonSerializer.Deserialize<InvoicePrintModel>(payload, PrintModelJsonOptions);
@@ -1057,7 +1113,7 @@ public sealed partial class SalesViewModel : ObservableObject
         }
 
         var customer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId)
-            ?? _local.GetCustomerAsync(inv.CustomerId).GetAwaiter().GetResult();
+            ?? await _local.GetCustomerAsync(inv.CustomerId);
         if (customer is not null) SetCustomer(customer, ignoreTradeType: true);
 
         Lines.Clear();
@@ -1078,7 +1134,7 @@ public sealed partial class SalesViewModel : ObservableObject
             });
         }
         RecalcTotals();
-        _ = LoadInvoiceVersionsAsync(inv);
+        await LoadInvoiceVersionsAsync(inv, Interlocked.Increment(ref _invoiceVersionLoadVersion));
         StatusMessage = VoucherType switch
         {
             VoucherType.Purchase => "구매 전표 수정 중입니다.",
@@ -1086,7 +1142,7 @@ public sealed partial class SalesViewModel : ObservableObject
             _ => "판매 전표 수정 중입니다."
         };
         CaptureBaselineState();
-        _ = RefreshPaymentSummaryAsync();
+        await RefreshPaymentSummaryAsync();
     }
 
     // ?? ?좉퇋 ?꾪몴 ?????????????????????????????????????????????????????????

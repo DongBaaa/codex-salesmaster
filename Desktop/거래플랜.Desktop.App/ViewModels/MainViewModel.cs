@@ -8,6 +8,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Printing;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.Views;
@@ -25,6 +26,11 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly IPrintService _invoicePrintService = new WpfInvoicePrintService();
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
     private readonly LegacyDataMigrationService _legacyMigrationService;
+    private CancellationTokenSource? _customerAutoSaveCts;
+    private int _customerAutoSaveVersion;
+    private int _customerFinancialPreviewVersion;
+    private int _invoicePreviewVersion;
+    private int _invoiceFilterApplyVersion;
     private const string LegacySourceDbPathSettingKey = "LegacyMigration.SourceDbPath";
     private const string LegacyCustomerExcelPathSettingKey = "LegacyMigration.CustomerExcelPath";
     private const string LegacyItemExcelPathSettingKey = "LegacyMigration.ItemExcelPath";
@@ -68,18 +74,45 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _editCustAddress = string.Empty;
     [ObservableProperty] private string _editCustNotes = string.Empty;
 
-    partial void OnEditCustBizNumberChanged(string value) => _ = AutoSaveCustomerAsync();
-    partial void OnEditCustPhoneChanged(string value) => _ = AutoSaveCustomerAsync();
-    partial void OnEditCustDeptChanged(string value) => _ = AutoSaveCustomerAsync();
-    partial void OnEditCustContactPersonChanged(string value) => _ = AutoSaveCustomerAsync();
-    partial void OnEditCustAddressChanged(string value) => _ = AutoSaveCustomerAsync();
-    partial void OnEditCustNotesChanged(string value) => _ = AutoSaveCustomerAsync();
+    partial void OnEditCustBizNumberChanged(string value) => TriggerCustomerAutoSave();
+    partial void OnEditCustPhoneChanged(string value) => TriggerCustomerAutoSave();
+    partial void OnEditCustDeptChanged(string value) => TriggerCustomerAutoSave();
+    partial void OnEditCustContactPersonChanged(string value) => TriggerCustomerAutoSave();
+    partial void OnEditCustAddressChanged(string value) => TriggerCustomerAutoSave();
+    partial void OnEditCustNotesChanged(string value) => TriggerCustomerAutoSave();
 
-    private async Task AutoSaveCustomerAsync()
+    private void TriggerCustomerAutoSave()
     {
-        if (_suppressCustomerSave) return;
+        _customerAutoSaveCts?.Cancel();
+        _customerAutoSaveCts?.Dispose();
+        _customerAutoSaveCts = new CancellationTokenSource();
+        var version = Interlocked.Increment(ref _customerAutoSaveVersion);
+        var token = _customerAutoSaveCts.Token;
+        UiTaskHelper.Forget(
+            AutoSaveCustomerAsync(token, version),
+            "MAIN",
+            "거래처 인라인 자동저장",
+            ex => AppLogger.Warn("AUTOSAVE", $"Customer inline auto-save failed: {ex.Message}"));
+    }
+
+    private async Task AutoSaveCustomerAsync(CancellationToken cancellationToken, int version)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(350), cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        if (_suppressCustomerSave || version != Volatile.Read(ref _customerAutoSaveVersion))
+            return;
+
         var customer = SelectedCustomerFilter;
-        if (customer is null) return;
+        if (customer is null)
+            return;
+
         customer.BusinessNumber = EditCustBizNumber;
         customer.Phone = EditCustPhone;
         customer.Department = EditCustDept;
@@ -277,7 +310,7 @@ public sealed partial class MainViewModel : ObservableObject
         }
         finally { _suppressCustomerSave = false; }
 
-        _ = RefreshCustomerFinancialPreviewAsync(value);
+        RequestRefreshCustomerFinancialPreview(value);
         HandleInvoiceFilterChanged();
     }
 
@@ -388,10 +421,27 @@ public sealed partial class MainViewModel : ObservableObject
 
     // ?? Invoice Preview (on selection) ?????????????????????????????????????
     partial void OnSelectedInvoiceRowChanged(InvoiceListRow? value)
-        => _ = LoadPreviewAsync(value);
+        => RequestLoadPreview(value);
 
-    private async Task LoadPreviewAsync(InvoiceListRow? row)
+    private void RequestLoadPreview(InvoiceListRow? row)
     {
+        var version = Interlocked.Increment(ref _invoicePreviewVersion);
+        UiTaskHelper.Forget(
+            LoadPreviewAsync(row, version),
+            "MAIN",
+            "전표 미리보기 로드",
+            ex =>
+            {
+                if (IsCurrentInvoicePreview(version))
+                    AppLogger.Warn("MAIN", $"전표 미리보기 로드 실패: {ex.Message}");
+            });
+    }
+
+    private async Task LoadPreviewAsync(InvoiceListRow? row, int version)
+    {
+        if (!IsCurrentInvoicePreview(version))
+            return;
+
         PreviewLines.Clear();
         PreviewTotalAmount = 0;
         PreviewSupplyAmount = 0;
@@ -405,6 +455,9 @@ public sealed partial class MainViewModel : ObservableObject
         }
 
         var inv = await _local.GetInvoiceAsync(row.Id, _session);
+        if (!IsCurrentInvoicePreview(version))
+            return;
+
         if (inv is null)
         {
             if (SelectedCustomerFilter is null)
@@ -419,11 +472,14 @@ public sealed partial class MainViewModel : ObservableObject
         PreviewSupplyAmount = inv.SupplyAmount;
         PreviewVatAmount = inv.VatAmount;
 
-        // 醫뚯륫 嫄곕옒泥섍? ?좏깮?섏? ?딆? 寃쎌슦?먮쭔 ?곗륫 ?⑤꼸 怨좉컼 ?뺣낫 ?낅뜲?댄듃
+        // 좌측 거래처가 선택되지 않은 경우에만 우측 하단 고객 정보 업데이트
         if (SelectedCustomerFilter is null)
         {
             var customer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId)
                 ?? await _local.GetCustomerAsync(inv.CustomerId);
+            if (!IsCurrentInvoicePreview(version))
+                return;
+
             if (customer is not null)
             {
                 PreviewCustomerName = customer.NameOriginal;
@@ -447,6 +503,9 @@ public sealed partial class MainViewModel : ObservableObject
             }
         }
     }
+
+    private bool IsCurrentInvoicePreview(int version)
+        => version == Volatile.Read(ref _invoicePreviewVersion);
 
     // ?? Invoice List ??????????????????????????????????????????????????????
     [RelayCommand]
@@ -562,14 +621,34 @@ public sealed partial class MainViewModel : ObservableObject
         if (_suppressFilterAutoSave)
             return;
 
-        _ = ApplyInvoiceFiltersAsync();
+        RequestApplyInvoiceFilters();
     }
 
-    private async Task ApplyInvoiceFiltersAsync()
+    private void RequestApplyInvoiceFilters()
+    {
+        var version = Interlocked.Increment(ref _invoiceFilterApplyVersion);
+        UiTaskHelper.Forget(
+            ApplyInvoiceFiltersAsync(version),
+            "MAIN",
+            "전표 필터 적용",
+            ex =>
+            {
+                if (IsCurrentInvoiceFilterApply(version))
+                    AppLogger.Warn("MAIN", $"전표 필터 적용 실패: {ex.Message}");
+            });
+    }
+
+    private async Task ApplyInvoiceFiltersAsync(int version)
     {
         await PersistInvoiceFiltersAsync();
+        if (!IsCurrentInvoiceFilterApply(version))
+            return;
+
         await LoadInvoiceListAsync();
     }
+
+    private bool IsCurrentInvoiceFilterApply(int version)
+        => version == Volatile.Read(ref _invoiceFilterApplyVersion);
 
     private async Task PersistInvoiceFiltersAsync()
     {

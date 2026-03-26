@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -23,6 +24,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     private readonly DesktopAppUpdateService _updateService;
 
     private Guid _companyProfileId = Guid.NewGuid();
+    private int _assignedCompanyProfileLoadVersion;
 
     [ObservableProperty] private string _statusMessage = "환경설정을 불러왔습니다.";
     [ObservableProperty] private bool _isBusy;
@@ -688,7 +690,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         EditingUserOfficeCode = value.OfficeCode;
         EditingUserScopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(value.ScopeType);
         EditingUserIsActive = value.IsActive;
-        _ = LoadAssignedCompanyProfileForSelectedUserAsync(value.Username, value.OfficeCode);
+        RequestLoadAssignedCompanyProfileForSelectedUser(value.Username, value.OfficeCode);
         EditingPassword = string.Empty;
         EditingPasswordConfirm = string.Empty;
     }
@@ -862,11 +864,31 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         }
     }
 
-    private async Task LoadAssignedCompanyProfileForSelectedUserAsync(string username, string? officeCode)
+    private void RequestLoadAssignedCompanyProfileForSelectedUser(string username, string? officeCode)
+    {
+        var version = Interlocked.Increment(ref _assignedCompanyProfileLoadVersion);
+        UiTaskHelper.Forget(
+            LoadAssignedCompanyProfileForSelectedUserAsync(username, officeCode, version),
+            "SETTINGS",
+            "사용자 회사설정 조회",
+            ex =>
+            {
+                if (IsCurrentAssignedCompanyProfileLoad(version))
+                    StatusMessage = $"사용자 회사설정을 불러오지 못했습니다: {ex.Message}";
+            });
+    }
+
+    private async Task LoadAssignedCompanyProfileForSelectedUserAsync(string username, string? officeCode, int version)
     {
         var assignedId = await _local.GetAssignedCompanyProfileIdAsync(username);
+        if (!IsCurrentAssignedCompanyProfileLoad(version))
+            return;
+
         EditingUserCompanyProfileId = assignedId?.ToString("D") ?? ResolveDefaultCompanyProfileId(officeCode);
     }
+
+    private bool IsCurrentAssignedCompanyProfileLoad(int version)
+        => version == Volatile.Read(ref _assignedCompanyProfileLoadVersion);
 
     private async Task PersistCurrentUserCompanyProfileSelectionAsync(string? companyProfileId)
     {

@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -19,6 +20,11 @@ public sealed partial class PaymentViewModel : ObservableObject
     private List<LocalCustomer> _allCustomers = new();
     private LocalInvoice? _linkedInvoice;
     private LocalRentalBillingProfile? _linkedRentalProfile;
+    private bool _suppressTransactionKindChange;
+    private int _historyLoadVersion;
+    private int _attachmentLoadVersion;
+    private int _contextRefreshVersion;
+    private int _settlementSuggestionVersion;
 
     [ObservableProperty] private LocalCustomer? _selectedCustomer;
     [ObservableProperty] private string _customerName = "거래처 선택";
@@ -50,6 +56,13 @@ public sealed partial class PaymentViewModel : ObservableObject
     [ObservableProperty] private string _memo = string.Empty;
     [ObservableProperty] private string _statusMessage = string.Empty;
     [ObservableProperty] private string _selectedTransactionKind = PaymentFlowConstants.TransactionKindReceipt;
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SaveCommand))]
+    [NotifyCanExecuteChangedFor(nameof(AddAttachmentCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteAttachmentCommand))]
+    [NotifyCanExecuteChangedFor(nameof(VerifyAttachmentCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RejectAttachmentCommand))]
+    private bool _isSaving;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanAddAttachment))]
@@ -98,7 +111,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     {
         _local = local;
         _session = session;
-        RefreshTransactionKinds();
+        RebuildTransactionKinds();
     }
 
     public LocalStateService LocalStateService => _local;
@@ -114,7 +127,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             ResetCustomerDisplay();
 
         NewEntry();
-        await RefreshContextAsync();
+        await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
     }
 
     public async Task ReloadCustomersAsync()
@@ -133,8 +146,8 @@ public sealed partial class PaymentViewModel : ObservableObject
         CustomerCategory = string.IsNullOrWhiteSpace(customer.PriceGrade) ? "-" : customer.PriceGrade;
         CustomerDepartment = string.IsNullOrWhiteSpace(customer.Department) ? "-" : customer.Department;
         CustomerContactPerson = string.IsNullOrWhiteSpace(customer.ContactPerson) ? "-" : customer.ContactPerson;
-        _ = LoadHistoryAsync(customer.Id);
-        _ = RefreshContextAsync();
+        RequestLoadHistory(customer.Id);
+        RequestRefreshContext();
     }
 
     public async Task ConfigureForInvoiceAsync(LocalInvoice invoice)
@@ -148,13 +161,12 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (customer is not null)
             SetCustomer(customer);
 
-        SelectedTransactionKind = invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement
+        var transactionKind = invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement
             ? PaymentFlowConstants.TransactionKindInvoicePayment
             : PaymentFlowConstants.TransactionKindInvoiceReceipt;
-
-        RefreshTransactionKinds();
-        await RefreshContextAsync();
-        ApplySuggestedAmounts(forceResetAmounts: true);
+        RebuildTransactionKinds(transactionKind);
+        await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
+        await ApplySuggestedAmountsCoreAsync(forceResetAmounts: true, Interlocked.Increment(ref _settlementSuggestionVersion));
         Memo = invoice.Memo;
     }
 
@@ -171,10 +183,9 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (customer is not null)
             SetCustomer(customer);
 
-        SelectedTransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt;
-        RefreshTransactionKinds();
-        await RefreshContextAsync();
-        ApplySuggestedAmounts(forceResetAmounts: true);
+        RebuildTransactionKinds(PaymentFlowConstants.TransactionKindRentalReceipt);
+        await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
+        await ApplySuggestedAmountsCoreAsync(forceResetAmounts: true, Interlocked.Increment(ref _settlementSuggestionVersion));
         Memo = profile.FollowUpNote ?? string.Empty;
     }
 
@@ -189,9 +200,8 @@ public sealed partial class PaymentViewModel : ObservableObject
         SettlementAmount = 0m;
         Note = string.Empty;
         Memo = string.Empty;
-        SelectedTransactionKind = ResolveDefaultTransactionKind();
-        RefreshTransactionKinds();
-        ApplySuggestedAmounts(forceResetAmounts: false);
+        RebuildTransactionKinds(ResolveDefaultTransactionKind());
+        RequestApplySuggestedAmounts(forceResetAmounts: false);
         ResetAttachmentEditor();
     }
 
@@ -207,22 +217,33 @@ public sealed partial class PaymentViewModel : ObservableObject
 
     partial void OnSelectedHistoryChanged(LocalTransaction? value)
     {
-        _ = LoadAttachmentsAsync(value?.Id ?? Guid.Empty);
+        RequestLoadAttachments(value?.Id ?? Guid.Empty);
         OnPropertyChanged(nameof(CanAddAttachment));
+        AddAttachmentCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnSelectedTransactionKindChanged(string value)
     {
-        RefreshTransactionKinds();
-        ApplySuggestedAmounts(forceResetAmounts: false);
+        if (_suppressTransactionKindChange)
+            return;
+
+        RequestApplySuggestedAmounts(forceResetAmounts: false);
         OnPropertyChanged(nameof(PaymentActionLabel));
         OnPropertyChanged(nameof(IsSettlementAmountEnabled));
-        _ = RefreshContextAsync();
+        RequestRefreshContext();
     }
 
     partial void OnSelectedCustomerChanged(LocalCustomer? value)
     {
-        _ = RefreshContextAsync();
+        SaveCommand.NotifyCanExecuteChanged();
+        RequestRefreshContext();
+    }
+
+    partial void OnSelectedAttachmentChanged(LocalTransactionAttachment? value)
+    {
+        DeleteAttachmentCommand.NotifyCanExecuteChanged();
+        VerifyAttachmentCommand.NotifyCanExecuteChanged();
+        RejectAttachmentCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnIsCustomerSelectionLockedChanged(bool value)
@@ -258,10 +279,12 @@ public sealed partial class PaymentViewModel : ObservableObject
             : kind == PaymentFlowConstants.TransactionKindInvoicePayment;
     }
 
-    private async Task LoadHistoryAsync(Guid customerId)
+    private async Task LoadHistoryAsync(Guid customerId, int version)
     {
         var currentSelectedId = SelectedHistory?.Id;
         var list = await _local.GetTransactionsAsync(customerId, _session);
+        if (!IsCurrentHistoryLoad(version))
+            return;
 
         History.Clear();
         foreach (var transaction in list
@@ -276,18 +299,27 @@ public sealed partial class PaymentViewModel : ObservableObject
             : null;
 
         if (SelectedHistory is null)
-            await LoadAttachmentsAsync(Guid.Empty);
+            RequestLoadAttachments(Guid.Empty);
     }
 
-    private async Task LoadAttachmentsAsync(Guid transactionId)
+    private async Task LoadAttachmentsAsync(Guid transactionId, int version)
     {
-        Attachments.Clear();
-        SelectedAttachment = null;
-
         if (transactionId == Guid.Empty)
+        {
+            if (!IsCurrentAttachmentLoad(version))
+                return;
+
+            Attachments.Clear();
+            SelectedAttachment = null;
             return;
+        }
 
         var items = await _local.GetTransactionAttachmentsAsync(transactionId, _session);
+        if (!IsCurrentAttachmentLoad(version))
+            return;
+
+        Attachments.Clear();
+        SelectedAttachment = null;
         foreach (var attachment in items)
             Attachments.Add(attachment);
     }
@@ -307,6 +339,7 @@ public sealed partial class PaymentViewModel : ObservableObject
         Attachments.Clear();
         SelectedHistory = null;
         SelectedAttachment = null;
+        InvalidateAsyncUiRequests();
     }
 
     private void ResetAttachmentEditor()
@@ -316,46 +349,54 @@ public sealed partial class PaymentViewModel : ObservableObject
         SelectedAttachment = null;
     }
 
-    private void RefreshTransactionKinds()
+    private void RebuildTransactionKinds(string? preferredKind = null)
     {
-        var previous = SelectedTransactionKind;
-        TransactionKinds.Clear();
+        var normalizedPreferred = PaymentFlowConstants.NormalizeTransactionKind(
+            preferredKind ?? SelectedTransactionKind,
+            preferPayment: _linkedInvoice?.VoucherType is VoucherType.Purchase or VoucherType.Procurement);
 
-        if (_linkedRentalProfile is not null)
+        _suppressTransactionKindChange = true;
+        try
         {
-            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindRentalReceipt, "렌탈수금"));
-        }
-        else if (_linkedInvoice is not null)
-        {
-            if (_linkedInvoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement)
+            TransactionKinds.Clear();
+
+            if (_linkedRentalProfile is not null)
             {
-                TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindInvoicePayment, "전표지급"));
+                TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindRentalReceipt, "렌탈수금"));
+            }
+            else if (_linkedInvoice is not null)
+            {
+                if (_linkedInvoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement)
+                {
+                    TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindInvoicePayment, "전표지급"));
+                }
+                else
+                {
+                    TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindInvoiceReceipt, "전표수금"));
+                    TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceApply, "선수금차감"));
+                }
             }
             else
             {
-                TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindInvoiceReceipt, "전표수금"));
-                TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceApply, "선수금차감"));
+                TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindReceipt, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindReceipt)));
+                TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindPayment, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindPayment)));
+                TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceDeposit, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindAdvanceDeposit)));
+                TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceRefund, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindAdvanceRefund)));
             }
-        }
-        else
-        {
-            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindReceipt, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindReceipt)));
-            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindPayment, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindPayment)));
-            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceDeposit, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindAdvanceDeposit)));
-            TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceRefund, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindAdvanceRefund)));
-        }
 
-        if (TransactionKinds.Count == 0)
-            return;
+            if (TransactionKinds.Count == 0)
+                return;
 
-        if (TransactionKinds.Any(option => option.Value == previous))
-        {
-            if (!string.Equals(SelectedTransactionKind, previous, StringComparison.Ordinal))
-                SelectedTransactionKind = previous;
+            var nextValue = TransactionKinds.Any(option => option.Value == normalizedPreferred)
+                ? normalizedPreferred
+                : TransactionKinds[0].Value;
+
+            if (!string.Equals(SelectedTransactionKind, nextValue, StringComparison.Ordinal))
+                SelectedTransactionKind = nextValue;
         }
-        else
+        finally
         {
-            SelectedTransactionKind = TransactionKinds[0].Value;
+            _suppressTransactionKindChange = false;
         }
     }
 
@@ -391,7 +432,17 @@ public sealed partial class PaymentViewModel : ObservableObject
         };
     }
 
-    private void ApplySuggestedAmounts(bool forceResetAmounts)
+    private void RequestApplySuggestedAmounts(bool forceResetAmounts)
+    {
+        var version = Interlocked.Increment(ref _settlementSuggestionVersion);
+        UiTaskHelper.Forget(
+            ApplySuggestedAmountsCoreAsync(forceResetAmounts, version),
+            "PAYMENT",
+            "수금/지급 기본 정산금액 계산",
+            ex => StatusMessage = $"정산금액 계산 중 오류가 발생했습니다. {ex.Message}");
+    }
+
+    private async Task ApplySuggestedAmountsCoreAsync(bool forceResetAmounts, int version)
     {
         var kind = PaymentFlowConstants.NormalizeTransactionKind(SelectedTransactionKind);
         if (kind == PaymentFlowConstants.TransactionKindAdvanceApply)
@@ -403,35 +454,36 @@ public sealed partial class PaymentViewModel : ObservableObject
             }
 
             if (_linkedInvoice is not null && SelectedCustomer is not null)
-            {
-                _ = ApplyInvoiceDefaultSettlementAsync(forceResetAmounts: forceResetAmounts, advanceOnly: true);
-            }
+                await ApplyInvoiceDefaultSettlementAsync(forceResetAmounts: forceResetAmounts, advanceOnly: true, version);
 
             return;
         }
 
         if (_linkedInvoice is not null && SelectedCustomer is not null)
         {
-            _ = ApplyInvoiceDefaultSettlementAsync(forceResetAmounts, advanceOnly: false);
+            await ApplyInvoiceDefaultSettlementAsync(forceResetAmounts, advanceOnly: false, version);
             return;
         }
 
         if (_linkedRentalProfile is not null && SelectedCustomer is not null)
         {
-            _ = ApplyRentalDefaultSettlementAsync(forceResetAmounts);
+            await ApplyRentalDefaultSettlementAsync(forceResetAmounts, version);
             return;
         }
 
-        if (forceResetAmounts)
+        if (forceResetAmounts && IsCurrentSettlementSuggestion(version))
             SettlementAmount = 0m;
     }
 
-    private async Task ApplyInvoiceDefaultSettlementAsync(bool forceResetAmounts, bool advanceOnly)
+    private async Task ApplyInvoiceDefaultSettlementAsync(bool forceResetAmounts, bool advanceOnly, int version)
     {
         if (_linkedInvoice is null)
             return;
 
         var summary = await GetInvoiceSettlementSummaryAsync(_linkedInvoice.Id);
+        if (!IsCurrentSettlementSuggestion(version))
+            return;
+
         var suggested = summary.RemainingAmount;
         if (advanceOnly)
             suggested = Math.Min(suggested, AdvanceBalance);
@@ -452,12 +504,15 @@ public sealed partial class PaymentViewModel : ObservableObject
             BankReceipt = SettlementAmount;
     }
 
-    private async Task ApplyRentalDefaultSettlementAsync(bool forceResetAmounts)
+    private async Task ApplyRentalDefaultSettlementAsync(bool forceResetAmounts, int version)
     {
         if (_linkedRentalProfile is null)
             return;
 
         var summary = await GetRentalSettlementSummaryAsync(_linkedRentalProfile.Id);
+        if (!IsCurrentSettlementSuggestion(version))
+            return;
+
         SettlementAmount = Math.Max(0m, summary.OutstandingAmount > 0m ? summary.OutstandingAmount : summary.BilledAmount);
         if (!forceResetAmounts)
             return;
@@ -467,11 +522,28 @@ public sealed partial class PaymentViewModel : ObservableObject
         BankReceipt = SettlementAmount;
     }
 
-    private async Task RefreshContextAsync()
+    private void RequestRefreshContext()
+    {
+        var version = Interlocked.Increment(ref _contextRefreshVersion);
+        UiTaskHelper.Forget(
+            RefreshContextCoreAsync(version),
+            "PAYMENT",
+            "수금/지급 맥락 갱신",
+            ex =>
+            {
+                if (IsCurrentContextRefresh(version))
+                    StatusMessage = $"거래 맥락을 불러오지 못했습니다. {ex.Message}";
+            });
+    }
+
+    private async Task RefreshContextCoreAsync(int version)
     {
         var kind = PaymentFlowConstants.NormalizeTransactionKind(SelectedTransactionKind);
         if (SelectedCustomer is null)
         {
+            if (!IsCurrentContextRefresh(version))
+                return;
+
             AdvanceBalance = 0m;
             TransactionContextSummary = "거래처를 선택하면 거래 맥락이 표시됩니다.";
             TransactionSummary = "수금/지급 요약이 없습니다.";
@@ -479,13 +551,21 @@ public sealed partial class PaymentViewModel : ObservableObject
             return;
         }
 
-        AdvanceBalance = await GetAdvanceBalanceAsync(SelectedCustomer.Id);
+        var advanceBalance = await GetAdvanceBalanceAsync(SelectedCustomer.Id);
+        if (!IsCurrentContextRefresh(version))
+            return;
+
+        AdvanceBalance = advanceBalance;
 
         if (_linkedInvoice is not null)
         {
             var invoice = await _local.GetInvoiceAsync(_linkedInvoice.Id, _session) ?? _linkedInvoice;
+            if (!IsCurrentContextRefresh(version))
+                return;
             _linkedInvoice = invoice;
             var summary = await GetInvoiceSettlementSummaryAsync(invoice.Id);
+            if (!IsCurrentContextRefresh(version))
+                return;
             var displayNumber = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
                 ? invoice.LocalTempNumber
                 : invoice.InvoiceNumber;
@@ -502,6 +582,8 @@ public sealed partial class PaymentViewModel : ObservableObject
         else if (_linkedRentalProfile is not null)
         {
             var summary = await _local.GetRentalSettlementSummaryAsync(_linkedRentalProfile.Id, _session);
+            if (!IsCurrentContextRefresh(version))
+                return;
             var customerName = string.IsNullOrWhiteSpace(_linkedRentalProfile.CustomerName)
                 ? SelectedCustomer.NameOriginal
                 : _linkedRentalProfile.CustomerName;
@@ -521,6 +603,47 @@ public sealed partial class PaymentViewModel : ObservableObject
 
         OnPropertyChanged(nameof(PaymentActionLabel));
     }
+
+    private void RequestLoadHistory(Guid customerId)
+    {
+        var version = Interlocked.Increment(ref _historyLoadVersion);
+        UiTaskHelper.Forget(
+            LoadHistoryAsync(customerId, version),
+            "PAYMENT",
+            "수금/지급 이력 조회",
+            ex =>
+            {
+                if (IsCurrentHistoryLoad(version))
+                    StatusMessage = $"최근 처리내역을 불러오지 못했습니다. {ex.Message}";
+            });
+    }
+
+    private void RequestLoadAttachments(Guid transactionId)
+    {
+        var version = Interlocked.Increment(ref _attachmentLoadVersion);
+        UiTaskHelper.Forget(
+            LoadAttachmentsAsync(transactionId, version),
+            "PAYMENT",
+            "수금/지급 증빙 조회",
+            ex =>
+            {
+                if (IsCurrentAttachmentLoad(version))
+                    StatusMessage = $"증빙 목록을 불러오지 못했습니다. {ex.Message}";
+            });
+    }
+
+    private void InvalidateAsyncUiRequests()
+    {
+        Interlocked.Increment(ref _historyLoadVersion);
+        Interlocked.Increment(ref _attachmentLoadVersion);
+        Interlocked.Increment(ref _contextRefreshVersion);
+        Interlocked.Increment(ref _settlementSuggestionVersion);
+    }
+
+    private bool IsCurrentHistoryLoad(int version) => version == Volatile.Read(ref _historyLoadVersion);
+    private bool IsCurrentAttachmentLoad(int version) => version == Volatile.Read(ref _attachmentLoadVersion);
+    private bool IsCurrentContextRefresh(int version) => version == Volatile.Read(ref _contextRefreshVersion);
+    private bool IsCurrentSettlementSuggestion(int version) => version == Volatile.Read(ref _settlementSuggestionVersion);
 
     private async Task<decimal> GetAdvanceBalanceAsync(Guid customerId)
     {
@@ -594,212 +717,228 @@ public sealed partial class PaymentViewModel : ObservableObject
         }
     }
 
-    [RelayCommand]
+    private bool CanSave() => !IsSaving;
+
+    [RelayCommand(CanExecute = nameof(CanSave))]
     private async Task SaveAsync()
     {
+        if (IsSaving)
+            return;
+
         if (SelectedCustomer is null)
         {
             StatusMessage = "거래처를 선택하세요.";
             return;
         }
 
-        var kind = PaymentFlowConstants.NormalizeTransactionKind(SelectedTransactionKind);
-        var transaction = new LocalTransaction
+        try
         {
-            Id = Guid.NewGuid(),
-            CustomerId = SelectedCustomer.Id,
-            TransactionKind = kind,
-            LinkedInvoiceId = _linkedInvoice?.Id,
-            LinkedRentalBillingProfileId = _linkedRentalProfile?.Id,
-            LinkedInvoiceNumber = _linkedInvoice is null
-                ? string.Empty
-                : string.IsNullOrWhiteSpace(_linkedInvoice.InvoiceNumber)
-                    ? _linkedInvoice.LocalTempNumber
-                    : _linkedInvoice.InvoiceNumber,
-            Note = (Note ?? string.Empty).Trim(),
-            Memo = (Memo ?? string.Empty).Trim()
-        };
+            IsSaving = true;
 
-        switch (kind)
-        {
-            case var current when current == PaymentFlowConstants.TransactionKindAdvanceDeposit:
-                if (ReceiptTotal <= 0m || PaymentTotal > 0m)
-                {
-                    StatusMessage = "선수금입금은 수금 금액만 입력해야 합니다.";
-                    return;
-                }
+            var kind = PaymentFlowConstants.NormalizeTransactionKind(SelectedTransactionKind);
+            var transaction = new LocalTransaction
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = SelectedCustomer.Id,
+                TransactionKind = kind,
+                LinkedInvoiceId = _linkedInvoice?.Id,
+                LinkedRentalBillingProfileId = _linkedRentalProfile?.Id,
+                LinkedInvoiceNumber = _linkedInvoice is null
+                    ? string.Empty
+                    : string.IsNullOrWhiteSpace(_linkedInvoice.InvoiceNumber)
+                        ? _linkedInvoice.LocalTempNumber
+                        : _linkedInvoice.InvoiceNumber,
+                Note = (Note ?? string.Empty).Trim(),
+                Memo = (Memo ?? string.Empty).Trim()
+            };
 
-                transaction.TransactionDate = ReceiptDate;
-                transaction.CashReceipt = CashReceipt;
-                transaction.CardReceipt = CardReceipt;
-                transaction.BankReceipt = BankReceipt;
-                transaction.DiscountApplied = DiscountApplied;
-                transaction.ReceiptTotal = ReceiptTotal;
-                break;
+            switch (kind)
+            {
+                case var current when current == PaymentFlowConstants.TransactionKindAdvanceDeposit:
+                    if (ReceiptTotal <= 0m || PaymentTotal > 0m)
+                    {
+                        StatusMessage = "선수금입금은 수금 금액만 입력해야 합니다.";
+                        return;
+                    }
 
-            case var current when current == PaymentFlowConstants.TransactionKindAdvanceRefund:
-                if (PaymentTotal <= 0m || ReceiptTotal > 0m)
-                {
-                    StatusMessage = $"{PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindAdvanceRefund)}은 지급 금액만 입력해야 합니다.";
-                    return;
-                }
+                    transaction.TransactionDate = ReceiptDate;
+                    transaction.CashReceipt = CashReceipt;
+                    transaction.CardReceipt = CardReceipt;
+                    transaction.BankReceipt = BankReceipt;
+                    transaction.DiscountApplied = DiscountApplied;
+                    transaction.ReceiptTotal = ReceiptTotal;
+                    break;
 
-                transaction.TransactionDate = PaymentDate;
-                transaction.CashPayment = CashPayment;
-                transaction.CardPayment = CardPayment;
-                transaction.BankPayment = BankPayment;
-                transaction.DiscountReceived = DiscountReceived;
-                transaction.PaymentTotal = PaymentTotal;
-                break;
+                case var current when current == PaymentFlowConstants.TransactionKindAdvanceRefund:
+                    if (PaymentTotal <= 0m || ReceiptTotal > 0m)
+                    {
+                        StatusMessage = $"{PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindAdvanceRefund)}은 지급 금액만 입력해야 합니다.";
+                        return;
+                    }
 
-            case var current when current == PaymentFlowConstants.TransactionKindAdvanceApply:
-                if (_linkedInvoice is null)
-                {
-                    StatusMessage = "선수금차감은 연결 전표에서만 처리할 수 있습니다.";
-                    return;
-                }
+                    transaction.TransactionDate = PaymentDate;
+                    transaction.CashPayment = CashPayment;
+                    transaction.CardPayment = CardPayment;
+                    transaction.BankPayment = BankPayment;
+                    transaction.DiscountReceived = DiscountReceived;
+                    transaction.PaymentTotal = PaymentTotal;
+                    break;
 
-                if (SettlementAmount <= 0m)
-                {
-                    StatusMessage = "선수금차감 금액을 입력하세요.";
-                    return;
-                }
+                case var current when current == PaymentFlowConstants.TransactionKindAdvanceApply:
+                    if (_linkedInvoice is null)
+                    {
+                        StatusMessage = "선수금차감은 연결 전표에서만 처리할 수 있습니다.";
+                        return;
+                    }
 
-                transaction.TransactionDate = ReceiptDate;
-                transaction.SettlementAmount = SettlementAmount;
-                break;
+                    if (SettlementAmount <= 0m)
+                    {
+                        StatusMessage = "선수금차감 금액을 입력하세요.";
+                        return;
+                    }
 
-            case var current when current == PaymentFlowConstants.TransactionKindInvoiceReceipt:
-                if (_linkedInvoice is null)
-                {
-                    StatusMessage = "전표수금은 연결 전표가 필요합니다.";
-                    return;
-                }
+                    transaction.TransactionDate = ReceiptDate;
+                    transaction.SettlementAmount = SettlementAmount;
+                    break;
 
-                if (ReceiptTotal <= 0m && SettlementAmount > 0m)
-                {
-                    BankReceipt = SettlementAmount;
-                    RecalcReceipt();
-                }
+                case var current when current == PaymentFlowConstants.TransactionKindInvoiceReceipt:
+                    if (_linkedInvoice is null)
+                    {
+                        StatusMessage = "전표수금은 연결 전표가 필요합니다.";
+                        return;
+                    }
 
-                if (ReceiptTotal <= 0m || PaymentTotal > 0m)
-                {
-                    StatusMessage = "전표수금 금액을 입력하세요.";
-                    return;
-                }
+                    if (ReceiptTotal <= 0m && SettlementAmount > 0m)
+                    {
+                        BankReceipt = SettlementAmount;
+                        RecalcReceipt();
+                    }
 
-                transaction.TransactionDate = ReceiptDate;
-                transaction.CashReceipt = CashReceipt;
-                transaction.CardReceipt = CardReceipt;
-                transaction.BankReceipt = BankReceipt;
-                transaction.DiscountApplied = DiscountApplied;
-                transaction.ReceiptTotal = ReceiptTotal;
-                transaction.SettlementAmount = SettlementAmount > 0m ? Math.Min(SettlementAmount, ReceiptTotal) : ReceiptTotal;
-                break;
+                    if (ReceiptTotal <= 0m || PaymentTotal > 0m)
+                    {
+                        StatusMessage = "전표수금 금액을 입력하세요.";
+                        return;
+                    }
 
-            case var current when current == PaymentFlowConstants.TransactionKindInvoicePayment:
-                if (_linkedInvoice is null)
-                {
-                    StatusMessage = "전표지급은 연결 전표가 필요합니다.";
-                    return;
-                }
+                    transaction.TransactionDate = ReceiptDate;
+                    transaction.CashReceipt = CashReceipt;
+                    transaction.CardReceipt = CardReceipt;
+                    transaction.BankReceipt = BankReceipt;
+                    transaction.DiscountApplied = DiscountApplied;
+                    transaction.ReceiptTotal = ReceiptTotal;
+                    transaction.SettlementAmount = SettlementAmount > 0m ? Math.Min(SettlementAmount, ReceiptTotal) : ReceiptTotal;
+                    break;
 
-                if (PaymentTotal <= 0m && SettlementAmount > 0m)
-                {
-                    BankPayment = SettlementAmount;
-                    RecalcPayment();
-                }
+                case var current when current == PaymentFlowConstants.TransactionKindInvoicePayment:
+                    if (_linkedInvoice is null)
+                    {
+                        StatusMessage = "전표지급은 연결 전표가 필요합니다.";
+                        return;
+                    }
 
-                if (PaymentTotal <= 0m || ReceiptTotal > 0m)
-                {
-                    StatusMessage = "전표지급 금액을 입력하세요.";
-                    return;
-                }
+                    if (PaymentTotal <= 0m && SettlementAmount > 0m)
+                    {
+                        BankPayment = SettlementAmount;
+                        RecalcPayment();
+                    }
 
-                transaction.TransactionDate = PaymentDate;
-                transaction.CashPayment = CashPayment;
-                transaction.CardPayment = CardPayment;
-                transaction.BankPayment = BankPayment;
-                transaction.DiscountReceived = DiscountReceived;
-                transaction.PaymentTotal = PaymentTotal;
-                transaction.SettlementAmount = SettlementAmount > 0m ? Math.Min(SettlementAmount, PaymentTotal) : PaymentTotal;
-                break;
+                    if (PaymentTotal <= 0m || ReceiptTotal > 0m)
+                    {
+                        StatusMessage = "전표지급 금액을 입력하세요.";
+                        return;
+                    }
 
-            case var current when current == PaymentFlowConstants.TransactionKindRentalReceipt:
-                if (_linkedRentalProfile is null)
-                {
-                    StatusMessage = "렌탈수금은 연결 청구건이 필요합니다.";
-                    return;
-                }
+                    transaction.TransactionDate = PaymentDate;
+                    transaction.CashPayment = CashPayment;
+                    transaction.CardPayment = CardPayment;
+                    transaction.BankPayment = BankPayment;
+                    transaction.DiscountReceived = DiscountReceived;
+                    transaction.PaymentTotal = PaymentTotal;
+                    transaction.SettlementAmount = SettlementAmount > 0m ? Math.Min(SettlementAmount, PaymentTotal) : PaymentTotal;
+                    break;
 
-                if (ReceiptTotal <= 0m && SettlementAmount > 0m)
-                {
-                    BankReceipt = SettlementAmount;
-                    RecalcReceipt();
-                }
+                case var current when current == PaymentFlowConstants.TransactionKindRentalReceipt:
+                    if (_linkedRentalProfile is null)
+                    {
+                        StatusMessage = "렌탈수금은 연결 청구건이 필요합니다.";
+                        return;
+                    }
 
-                if (ReceiptTotal <= 0m || PaymentTotal > 0m)
-                {
-                    StatusMessage = "렌탈 수금 금액을 입력하세요.";
-                    return;
-                }
+                    if (ReceiptTotal <= 0m && SettlementAmount > 0m)
+                    {
+                        BankReceipt = SettlementAmount;
+                        RecalcReceipt();
+                    }
 
-                transaction.TransactionDate = ReceiptDate;
-                transaction.CashReceipt = CashReceipt;
-                transaction.CardReceipt = CardReceipt;
-                transaction.BankReceipt = BankReceipt;
-                transaction.DiscountApplied = DiscountApplied;
-                transaction.ReceiptTotal = ReceiptTotal;
-                transaction.SettlementAmount = SettlementAmount > 0m ? Math.Min(SettlementAmount, ReceiptTotal) : ReceiptTotal;
-                break;
+                    if (ReceiptTotal <= 0m || PaymentTotal > 0m)
+                    {
+                        StatusMessage = "렌탈 수금 금액을 입력하세요.";
+                        return;
+                    }
 
-            case var current when current == PaymentFlowConstants.TransactionKindPayment:
-                if (PaymentTotal <= 0m || ReceiptTotal > 0m)
-                {
-                    StatusMessage = "일반지급 금액을 입력하세요.";
-                    return;
-                }
+                    transaction.TransactionDate = ReceiptDate;
+                    transaction.CashReceipt = CashReceipt;
+                    transaction.CardReceipt = CardReceipt;
+                    transaction.BankReceipt = BankReceipt;
+                    transaction.DiscountApplied = DiscountApplied;
+                    transaction.ReceiptTotal = ReceiptTotal;
+                    transaction.SettlementAmount = SettlementAmount > 0m ? Math.Min(SettlementAmount, ReceiptTotal) : ReceiptTotal;
+                    break;
 
-                transaction.TransactionDate = PaymentDate;
-                transaction.CashPayment = CashPayment;
-                transaction.CardPayment = CardPayment;
-                transaction.BankPayment = BankPayment;
-                transaction.DiscountReceived = DiscountReceived;
-                transaction.PaymentTotal = PaymentTotal;
-                break;
+                case var current when current == PaymentFlowConstants.TransactionKindPayment:
+                    if (PaymentTotal <= 0m || ReceiptTotal > 0m)
+                    {
+                        StatusMessage = "일반지급 금액을 입력하세요.";
+                        return;
+                    }
 
-            default:
-                if (ReceiptTotal <= 0m || PaymentTotal > 0m)
-                {
-                    StatusMessage = "일반수금 금액을 입력하세요.";
-                    return;
-                }
+                    transaction.TransactionDate = PaymentDate;
+                    transaction.CashPayment = CashPayment;
+                    transaction.CardPayment = CardPayment;
+                    transaction.BankPayment = BankPayment;
+                    transaction.DiscountReceived = DiscountReceived;
+                    transaction.PaymentTotal = PaymentTotal;
+                    break;
 
-                transaction.TransactionDate = ReceiptDate;
-                transaction.CashReceipt = CashReceipt;
-                transaction.CardReceipt = CardReceipt;
-                transaction.BankReceipt = BankReceipt;
-                transaction.DiscountApplied = DiscountApplied;
-                transaction.ReceiptTotal = ReceiptTotal;
-                break;
+                default:
+                    if (ReceiptTotal <= 0m || PaymentTotal > 0m)
+                    {
+                        StatusMessage = "일반수금 금액을 입력하세요.";
+                        return;
+                    }
+
+                    transaction.TransactionDate = ReceiptDate;
+                    transaction.CashReceipt = CashReceipt;
+                    transaction.CardReceipt = CardReceipt;
+                    transaction.BankReceipt = BankReceipt;
+                    transaction.DiscountApplied = DiscountApplied;
+                    transaction.ReceiptTotal = ReceiptTotal;
+                    break;
+            }
+
+            var result = await _local.SaveTransactionAsync(transaction, _session);
+            if (!result.Success)
+            {
+                StatusMessage = result.Message;
+                return;
+            }
+
+            await LoadHistoryAsync(SelectedCustomer.Id, Interlocked.Increment(ref _historyLoadVersion));
+            SelectedHistory = History.FirstOrDefault(current => current.Id == result.EntityId);
+            NewEntry();
+            var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+            StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
+            await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
         }
-
-        var result = await _local.SaveTransactionAsync(transaction, _session);
-        if (!result.Success)
+        finally
         {
-            StatusMessage = result.Message;
-            return;
+            IsSaving = false;
         }
-
-        await LoadHistoryAsync(SelectedCustomer.Id);
-        SelectedHistory = History.FirstOrDefault(current => current.Id == result.EntityId);
-        NewEntry();
-        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
-        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
-        await RefreshContextAsync();
     }
 
-    [RelayCommand]
+    private bool CanAddAttachmentAction() => !IsSaving && SelectedHistory is not null;
+
+    [RelayCommand(CanExecute = nameof(CanAddAttachmentAction))]
     private async Task AddAttachmentAsync()
     {
         if (SelectedHistory is null)
@@ -829,7 +968,7 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (!result.Success)
             return;
 
-        await LoadAttachmentsAsync(SelectedHistory.Id);
+        await LoadAttachmentsAsync(SelectedHistory.Id, Interlocked.Increment(ref _attachmentLoadVersion));
         SelectedAttachment = Attachments.FirstOrDefault(current => current.Id == result.EntityId);
         AttachmentDescription = string.Empty;
     }
@@ -851,7 +990,9 @@ public sealed partial class PaymentViewModel : ObservableObject
         StatusMessage = "증빙 파일을 열었습니다.";
     }
 
-    [RelayCommand]
+    private bool CanDeleteAttachmentAction() => !IsSaving && CanDeleteAttachment;
+
+    [RelayCommand(CanExecute = nameof(CanDeleteAttachmentAction))]
     private async Task DeleteAttachmentAsync()
     {
         if (SelectedAttachment is null)
@@ -875,10 +1016,12 @@ public sealed partial class PaymentViewModel : ObservableObject
             return;
 
         if (SelectedHistory is not null)
-            await LoadAttachmentsAsync(SelectedHistory.Id);
+            await LoadAttachmentsAsync(SelectedHistory.Id, Interlocked.Increment(ref _attachmentLoadVersion));
     }
 
-    [RelayCommand]
+    private bool CanVerifyAttachmentAction() => !IsSaving && CanVerifyAttachment;
+
+    [RelayCommand(CanExecute = nameof(CanVerifyAttachmentAction))]
     private async Task VerifyAttachmentAsync()
     {
         if (SelectedAttachment is null)
@@ -901,12 +1044,14 @@ public sealed partial class PaymentViewModel : ObservableObject
 
         if (SelectedHistory is not null)
         {
-            await LoadAttachmentsAsync(SelectedHistory.Id);
+            await LoadAttachmentsAsync(SelectedHistory.Id, Interlocked.Increment(ref _attachmentLoadVersion));
             SelectedAttachment = Attachments.FirstOrDefault(current => current.Id == selectedAttachmentId);
         }
     }
 
-    [RelayCommand]
+    private bool CanRejectAttachmentAction() => !IsSaving && CanRejectAttachment;
+
+    [RelayCommand(CanExecute = nameof(CanRejectAttachmentAction))]
     private async Task RejectAttachmentAsync()
     {
         if (SelectedAttachment is null)
@@ -929,7 +1074,7 @@ public sealed partial class PaymentViewModel : ObservableObject
 
         if (SelectedHistory is not null)
         {
-            await LoadAttachmentsAsync(SelectedHistory.Id);
+            await LoadAttachmentsAsync(SelectedHistory.Id, Interlocked.Increment(ref _attachmentLoadVersion));
             SelectedAttachment = Attachments.FirstOrDefault(current => current.Id == selectedAttachmentId);
         }
     }

@@ -598,7 +598,7 @@ public partial class MainWindow : Window
 
         var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session, entryType);
         await vm.LoadAsync();
-        vm.LoadInvoice(invoice);
+        await vm.LoadInvoiceAsync(invoice);
 
         var win = new SalesWindow(vm) { Owner = this };
         win.Closed += async (_, _) => await _vm.LoadInvoiceListCommand.ExecuteAsync(null);

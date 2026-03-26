@@ -3,6 +3,7 @@ using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -17,6 +18,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     private List<LocalItem> _allItems = new();
     private bool _suppressTransferSelectionChanged;
     private bool _isInventoryRefreshInProgress;
+    private int _openTransferVersion;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSavedTransfer))]
@@ -213,15 +215,24 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         return $"{item.SpecificationOriginal} | {item.Unit} | 현재고 {quantity:N0}";
     }
 
-    public async Task OpenTransferAsync(Guid transferId)
+    public Task OpenTransferAsync(Guid transferId)
+        => OpenTransferAsync(transferId, Interlocked.Increment(ref _openTransferVersion));
+
+    private async Task OpenTransferAsync(Guid transferId, int version)
     {
         if (transferId == Guid.Empty)
         {
+            if (version != Volatile.Read(ref _openTransferVersion))
+                return;
+
             StartNewTransfer();
             return;
         }
 
         var transfer = await _local.GetInventoryTransferAsync(transferId);
+        if (version != Volatile.Read(ref _openTransferVersion))
+            return;
+
         if (transfer is null)
         {
             StatusMessage = "선택한 재고이동 문서를 찾을 수 없습니다.";
@@ -530,7 +541,16 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         if (_suppressTransferSelectionChanged || value is null)
             return;
 
-        _ = OpenTransferAsync(value.Id);
+        var version = Interlocked.Increment(ref _openTransferVersion);
+        UiTaskHelper.Forget(
+            OpenTransferAsync(value.Id, version),
+            "TRANSFER",
+            "재고이동 상세 열기",
+            ex =>
+            {
+                if (version == Volatile.Read(ref _openTransferVersion))
+                    StatusMessage = $"재고이동 상세를 열지 못했습니다. {ex.Message}";
+            });
     }
 
     partial void OnSelectedLineChanged(InventoryTransferLineEditModel? value)

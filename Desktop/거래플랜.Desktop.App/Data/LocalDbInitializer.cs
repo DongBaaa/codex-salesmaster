@@ -36,6 +36,7 @@ public static class LocalDbInitializer
         }
 
         SeedSelectionOptions(db);
+        await NormalizeItemCategoryOptionDuplicatesAsync(db);
 
         if (!db.Units.Any())
         {
@@ -60,7 +61,6 @@ public static class LocalDbInitializer
         await SeedCompanyProfilesAsync(db);
         await SeedRentalDefaultsAsync(db);
         await NormalizeRentalOfficeDataAsync(db);
-        await NormalizeItemCategoryOptionDuplicatesAsync(db);
         await db.SaveChangesAsync();
         await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_ItemCategoryOptions_Name_Active\" ON \"ItemCategoryOptions\" (\"Name\") WHERE COALESCE(TRIM(\"Name\"), '') <> '' AND COALESCE(\"IsDeleted\", 0) = 0;");
 

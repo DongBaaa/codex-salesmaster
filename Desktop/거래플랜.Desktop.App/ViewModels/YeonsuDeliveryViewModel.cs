@@ -2,6 +2,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -12,6 +13,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
     private readonly LocalStateService _local;
     private readonly SessionState _session;
     private readonly List<LocalCustomer> _allOfficeCustomers = new();
+    private int _reloadForOfficeVersion;
 
     public const string WarehouseOptionAll = "전체";
     public const string WarehouseOptionUsenet = "USENET 창고";
@@ -55,7 +57,16 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(value) || OfficeOptions.Count == 0)
             return;
 
-        _ = ReloadForOfficeAsync();
+        var version = Interlocked.Increment(ref _reloadForOfficeVersion);
+        UiTaskHelper.Forget(
+            ReloadForOfficeAsync(version),
+            "DELIVERY",
+            "연수구 납품 화면 지점 재조회",
+            ex =>
+            {
+                if (version == Volatile.Read(ref _reloadForOfficeVersion))
+                    StatusMessage = $"지점 변경 후 납품 화면을 다시 불러오지 못했습니다. {ex.Message}";
+            });
     }
 
     partial void OnCustomerSearchTextChanged(string value)
@@ -256,12 +267,15 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
         return $"{lines[0].ItemNameOriginal} 외 {lines.Count - 1}건";
     }
 
-    private async Task ReloadForOfficeAsync()
+    private async Task ReloadForOfficeAsync(int version)
     {
         if (IsBusy)
             return;
 
         await LoadCustomersAsync();
+        if (version != Volatile.Read(ref _reloadForOfficeVersion))
+            return;
+
         await LoadDeliveriesAsync();
     }
 

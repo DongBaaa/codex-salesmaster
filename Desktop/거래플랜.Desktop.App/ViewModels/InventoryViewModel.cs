@@ -3,6 +3,7 @@ using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -17,6 +18,7 @@ public sealed partial class InventoryViewModel : ObservableObject
     private readonly Dictionary<string, string> _warehouseDisplayNames = new(StringComparer.OrdinalIgnoreCase);
     private List<LocalItem> _allItems = new();
     private bool _isInventoryRefreshInProgress;
+    private int _selectedItemMovementLoadVersion;
 
     public ObservableCollection<InventoryItemRow> FilteredItems { get; } = new();
     public ObservableCollection<InventoryMovementRow> SelectedItemMovements { get; } = new();
@@ -193,7 +195,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         }
 
         LoadFormFromItem(value);
-        _ = LoadSelectedItemMovementsAsync(value.Id);
+        RequestLoadSelectedItemMovements(value.Id);
     }
 
     partial void OnSelectedOfficeCodeChanged(string value)
@@ -549,13 +551,33 @@ public sealed partial class InventoryViewModel : ObservableObject
         OnPropertyChanged(nameof(ShortageStock));
     }
 
-    private async Task LoadSelectedItemMovementsAsync(Guid itemId)
+    private void RequestLoadSelectedItemMovements(Guid itemId)
     {
+        var version = Interlocked.Increment(ref _selectedItemMovementLoadVersion);
+        UiTaskHelper.Forget(
+            LoadSelectedItemMovementsAsync(itemId, version),
+            "INVENTORY",
+            "선택 품목 이동내역 조회",
+            ex =>
+            {
+                if (IsCurrentSelectedItemMovementLoad(version))
+                    StatusMessage = $"재고 이동내역을 불러오지 못했습니다. {ex.Message}";
+            });
+    }
+
+    private async Task LoadSelectedItemMovementsAsync(Guid itemId, int version)
+    {
+        if (!IsCurrentSelectedItemMovementLoad(version))
+            return;
+
         SelectedItemMovements.Clear();
         if (itemId == Guid.Empty)
             return;
 
         var movements = await _local.GetInventoryMovementsAsync(itemId);
+        if (!IsCurrentSelectedItemMovementLoad(version))
+            return;
+
         IEnumerable<LocalInventoryMovement> filtered = movements;
 
         if (!IsAdmin)
@@ -581,6 +603,9 @@ public sealed partial class InventoryViewModel : ObservableObject
             });
         }
     }
+
+    private bool IsCurrentSelectedItemMovementLoad(int version)
+        => version == Volatile.Read(ref _selectedItemMovementLoadVersion);
 
     private async Task<bool> ValidateBeforeSaveAsync()
     {

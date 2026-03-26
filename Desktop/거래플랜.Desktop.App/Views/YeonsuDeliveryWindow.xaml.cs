@@ -61,7 +61,7 @@ public partial class YeonsuDeliveryWindow : Window
 
         var salesViewModel = new SalesViewModel(_local, _print, _invoicePrintService, _session);
         await salesViewModel.LoadAsync();
-        salesViewModel.LoadInvoice(invoice);
+        await salesViewModel.LoadInvoiceAsync(invoice);
 
         var salesWindow = new SalesWindow(salesViewModel)
         {

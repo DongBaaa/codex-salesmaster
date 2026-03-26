@@ -145,56 +145,63 @@ public sealed class SyncService : IDisposable
 
             var syncTask = RunSyncCoreAsync(ct);
             _currentSyncTask = syncTask;
-            _ = syncTask.ContinueWith(
-                completedTask =>
-                {
-                    CancellationTokenSource? rerunCts = null;
-                    var rerunImmediately = false;
-                    lock (_immediateSyncGate)
-                    {
-                        if (ReferenceEquals(_currentSyncTask, completedTask))
-                            _currentSyncTask = null;
-
-                        if (_resyncRequested && _session.IsLoggedIn && !_session.IsOfflineMode)
-                        {
-                            _resyncRequested = false;
-                            _immediateSyncCts?.Cancel();
-                            _immediateSyncCts?.Dispose();
-                            _immediateSyncCts = null;
-
-                            if (_flushRequested)
-                            {
-                                _flushRequested = false;
-                                rerunImmediately = true;
-                            }
-                            else
-                            {
-                                _immediateSyncCts = new CancellationTokenSource();
-                                rerunCts = _immediateSyncCts;
-                            }
-                        }
-                    }
-
-                    if (rerunCts is not null)
-                    {
-                        _ = RunDeferredImmediateSyncAsync(rerunCts.Token);
-                    }
-                    else if (rerunImmediately)
-                    {
-                        _ = StartSyncAsync(waitForRunningSync: true, CancellationToken.None);
-                    }
-                    else
-                    {
-                        var succeeded = completedTask.Status == TaskStatus.RanToCompletion && completedTask.Result;
-                        _dispatcher.CompleteSync(succeeded);
-                    }
-                },
-                CancellationToken.None,
-                TaskContinuationOptions.None,
-                TaskScheduler.Default);
-
+            _ = FinalizeSyncAsync(syncTask);
             return syncTask;
         }
+    }
+
+    private async Task FinalizeSyncAsync(Task<bool> syncTask)
+    {
+        var succeeded = false;
+        try
+        {
+            succeeded = await syncTask;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("SYNC", "동기화 후처리 대기 실패", ex);
+        }
+
+        CancellationTokenSource? rerunCts = null;
+        var rerunImmediately = false;
+        lock (_immediateSyncGate)
+        {
+            if (ReferenceEquals(_currentSyncTask, syncTask))
+                _currentSyncTask = null;
+
+            if (_resyncRequested && _session.IsLoggedIn && !_session.IsOfflineMode)
+            {
+                _resyncRequested = false;
+                _immediateSyncCts?.Cancel();
+                _immediateSyncCts?.Dispose();
+                _immediateSyncCts = null;
+
+                if (_flushRequested)
+                {
+                    _flushRequested = false;
+                    rerunImmediately = true;
+                }
+                else
+                {
+                    _immediateSyncCts = new CancellationTokenSource();
+                    rerunCts = _immediateSyncCts;
+                }
+            }
+        }
+
+        if (rerunCts is not null)
+        {
+            _ = RunDeferredImmediateSyncAsync(rerunCts.Token);
+            return;
+        }
+
+        if (rerunImmediately)
+        {
+            _ = StartSyncAsync(waitForRunningSync: true, CancellationToken.None);
+            return;
+        }
+
+        _dispatcher.CompleteSync(succeeded);
     }
 
     private async Task<bool> RunSyncCoreAsync(CancellationToken ct)
@@ -366,85 +373,138 @@ public sealed class SyncService : IDisposable
 
     private async Task PushDirtyAsync(CancellationToken ct)
     {
+        var companyProfilesTask = _db.CompanyProfiles.IgnoreQueryFilters()
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var unitsTask = _db.Units.IgnoreQueryFilters()
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var customerCategoriesTask = _db.CustomerCategories.IgnoreQueryFilters()
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var priceGradeOptionsTask = _db.PriceGradeOptions.IgnoreQueryFilters()
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var tradeTypeOptionsTask = _db.TradeTypeOptions.IgnoreQueryFilters()
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var itemCategoryOptionsTask = _db.ItemCategoryOptions.IgnoreQueryFilters()
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var customerMastersTask = _db.CustomerMasters.IgnoreQueryFilters()
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var customersTask = _local.GetDirtyCustomersForSyncAsync(_session, ct);
+        var customerContractsTask = _local.GetDirtyCustomerContractsForSyncAsync(_session, ct);
+        var itemsTask = _local.GetDirtyItemsForSyncAsync(_session, ct);
+        var itemWarehouseStocksTask = _db.ItemWarehouseStocks
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var transactionsTask = _db.Transactions.IgnoreQueryFilters()
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var transactionAttachmentsTask = _db.TransactionAttachments.IgnoreQueryFilters()
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var inventoryTransfersTask = _db.InventoryTransfers.IgnoreQueryFilters()
+            .Include(transfer => transfer.Lines)
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var rentalManagementCompaniesTask = _db.RentalManagementCompanies.IgnoreQueryFilters()
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var rentalBillingProfilesTask = _local.GetDirtyRentalBillingProfilesForSyncAsync(_session, ct);
+        var rentalAssetsTask = _local.GetDirtyRentalAssetsForSyncAsync(_session, ct);
+        var rentalBillingLogsTask = _local.GetDirtyRentalBillingLogsForSyncAsync(_session, ct);
+        var invoicesTask = _db.Invoices.IgnoreQueryFilters()
+            .Include(i => i.Lines)
+            .Include(i => i.Payments)
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var paymentsTask = _db.Payments.IgnoreQueryFilters()
+            .Where(e => e.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+
+        await Task.WhenAll(
+            companyProfilesTask,
+            unitsTask,
+            customerCategoriesTask,
+            priceGradeOptionsTask,
+            tradeTypeOptionsTask,
+            itemCategoryOptionsTask,
+            customerMastersTask,
+            customersTask,
+            customerContractsTask,
+            itemsTask,
+            itemWarehouseStocksTask,
+            transactionsTask,
+            transactionAttachmentsTask,
+            inventoryTransfersTask,
+            rentalManagementCompaniesTask,
+            rentalBillingProfilesTask,
+            rentalAssetsTask,
+            rentalBillingLogsTask,
+            invoicesTask,
+            paymentsTask);
+
+        var companyProfiles = (await companyProfilesTask).Select(LocalMappings.ToDto).ToList();
+        var units = (await unitsTask).Select(LocalMappings.ToDto).ToList();
+        var customerCategories = (await customerCategoriesTask).Select(LocalMappings.ToDto).ToList();
+        var priceGradeOptions = (await priceGradeOptionsTask).Select(LocalMappings.ToDto).ToList();
+        var tradeTypeOptions = (await tradeTypeOptionsTask).Select(LocalMappings.ToDto).ToList();
+        var itemCategoryOptions = (await itemCategoryOptionsTask).Select(LocalMappings.ToDto).ToList();
+        var customerMasters = (await customerMastersTask).Select(LocalMappings.ToDto).ToList();
+        var customers = (await customersTask).Select(LocalMappings.ToDto).ToList();
+        var customerContracts = (await customerContractsTask).Select(LocalMappings.ToDto).ToList();
+        var items = (await itemsTask).Select(LocalMappings.ToDto).ToList();
+        var itemWarehouseStocks = (await itemWarehouseStocksTask).Select(LocalMappings.ToDto).ToList();
+        var transactions = (await transactionsTask).Select(LocalMappings.ToDto).ToList();
+        var transactionAttachments = (await transactionAttachmentsTask)
+            .Select(entity => LocalMappings.ToDto(entity, ReadTransactionAttachmentContent(entity)))
+            .ToList();
+        var inventoryTransfers = (await inventoryTransfersTask).Select(LocalMappings.ToDto).ToList();
+        var rentalManagementCompanies = (await rentalManagementCompaniesTask).Select(LocalMappings.ToDto).ToList();
+        var rentalBillingProfiles = (await rentalBillingProfilesTask).Select(LocalMappings.ToDto).ToList();
+        var rentalAssets = (await rentalAssetsTask).Select(LocalMappings.ToDto).ToList();
+        var rentalBillingLogs = (await rentalBillingLogsTask).Select(LocalMappings.ToDto).ToList();
+        var invoices = (await invoicesTask).Select(LocalMappings.ToDto).ToList();
+        var payments = (await paymentsTask).Select(LocalMappings.ToDto).ToList();
+
         var req = new SyncPushRequest
         {
-            CompanyProfiles = await _db.CompanyProfiles.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            Units = await _db.Units.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            CustomerCategories = await _db.CustomerCategories.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            PriceGradeOptions = await _db.PriceGradeOptions.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            TradeTypeOptions = await _db.TradeTypeOptions.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            ItemCategoryOptions = await _db.ItemCategoryOptions.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            CustomerMasters = await _db.CustomerMasters.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            Customers = await _local.GetDirtyCustomersForSyncAsync(_session, ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            CustomerContracts = await _local.GetDirtyCustomerContractsForSyncAsync(_session, ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            Items = await _local.GetDirtyItemsForSyncAsync(_session, ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            ItemWarehouseStocks = await _db.ItemWarehouseStocks
-                .AsNoTracking()
-                .ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            Transactions = await _db.Transactions.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            TransactionAttachments = await _db.TransactionAttachments.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(e => LocalMappings.ToDto(e, ReadTransactionAttachmentContent(e))).ToList(), ct),
-
-            InventoryTransfers = await _db.InventoryTransfers.IgnoreQueryFilters()
-                .Include(transfer => transfer.Lines)
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            RentalManagementCompanies = await _db.RentalManagementCompanies.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            RentalBillingProfiles = await _local.GetDirtyRentalBillingProfilesForSyncAsync(_session, ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            RentalAssets = await _local.GetDirtyRentalAssetsForSyncAsync(_session, ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            RentalBillingLogs = await _local.GetDirtyRentalBillingLogsForSyncAsync(_session, ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            Invoices = await _db.Invoices.IgnoreQueryFilters()
-                .Include(i => i.Lines)
-                .Include(i => i.Payments)
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct),
-
-            Payments = await _db.Payments.IgnoreQueryFilters()
-                .Where(e => e.IsDirty).AsNoTracking().ToListAsync(ct)
-                .ContinueWith(t => t.Result.Select(LocalMappings.ToDto).ToList(), ct)
+            CompanyProfiles = companyProfiles,
+            Units = units,
+            CustomerCategories = customerCategories,
+            PriceGradeOptions = priceGradeOptions,
+            TradeTypeOptions = tradeTypeOptions,
+            ItemCategoryOptions = itemCategoryOptions,
+            CustomerMasters = customerMasters,
+            Customers = customers,
+            CustomerContracts = customerContracts,
+            Items = items,
+            ItemWarehouseStocks = itemWarehouseStocks,
+            Transactions = transactions,
+            TransactionAttachments = transactionAttachments,
+            InventoryTransfers = inventoryTransfers,
+            RentalManagementCompanies = rentalManagementCompanies,
+            RentalBillingProfiles = rentalBillingProfiles,
+            RentalAssets = rentalAssets,
+            RentalBillingLogs = rentalBillingLogs,
+            Invoices = invoices,
+            Payments = payments
         };
 
         var hasDirty = req.CompanyProfiles.Count +
