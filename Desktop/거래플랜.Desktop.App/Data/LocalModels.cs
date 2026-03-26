@@ -86,11 +86,14 @@ public sealed class LocalCustomerMaster : LocalSyncEntity
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
     public Guid? CategoryId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
 }
 
 public sealed class LocalCustomer : LocalSyncEntity
 {
     public Guid? CustomerMasterId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
     public Guid? CategoryId { get; set; }
@@ -176,6 +179,7 @@ public sealed class LocalInvoice : LocalSyncEntity
     public decimal TotalAmount { get; set; }
     public decimal SupplyAmount { get; set; }
     public decimal VatAmount { get; set; }
+    public bool TaxInvoiceIssued { get; set; }
     public string Memo { get; set; } = string.Empty;
     public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUsenet;
     public string SourceWarehouseCode { get; set; } = DomainConstants.WarehouseUsenetMain;

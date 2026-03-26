@@ -45,8 +45,9 @@ public sealed partial class SalesViewModel : ObservableObject
     [ObservableProperty] private string _customerTradeType = string.Empty;
     [ObservableProperty] private string _customerPriceGrade = string.Empty;
     [ObservableProperty] private string _customerNote = string.Empty;
-    [ObservableProperty] private decimal _customerBalance;   // 珥?誘몄닔湲?
+    [ObservableProperty] private decimal _customerBalance;   // 총미수금/미지불
     [ObservableProperty] private decimal _customerAdvanceBalance;
+    [ObservableProperty] private bool _taxInvoiceIssued;
     [ObservableProperty] private string _selectedResponsibleOfficeCode = DomainConstants.OfficeUsenet;
     [ObservableProperty] private string _selectedWarehouseCode = DomainConstants.WarehouseUsenetMain;
     // ?? ?꾪몴 ?ㅻ뜑 ?????????????????????????????????????????????????????????
@@ -75,6 +76,8 @@ public sealed partial class SalesViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(ShowPaymentAction))]
     [NotifyPropertyChangedFor(nameof(PaymentActionButtonText))]
     [NotifyPropertyChangedFor(nameof(PaymentSummaryTitleText))]
+    [NotifyPropertyChangedFor(nameof(CustomerBalanceLabelText))]
+    [NotifyPropertyChangedFor(nameof(ShowTaxInvoiceIssuedOption))]
     private VoucherType _voucherType = VoucherType.Sales;
     public Array VoucherTypes => Enum.GetValues<VoucherType>();
 
@@ -143,8 +146,10 @@ public sealed partial class SalesViewModel : ObservableObject
     public bool CanEditPrintOutput => IsSalesDocument;
     public bool CanPrintTaxInvoice => IsSalesDocument;
     public bool ShowPaymentAction => IsSalesDocument || IsPurchaseDocument;
+    public bool ShowTaxInvoiceIssuedOption => IsSalesDocument || IsPurchaseDocument;
     public string PaymentActionButtonText => IsPurchaseDocument ? "지급 입력" : "수금 입력";
     public string PaymentSummaryTitleText => IsPurchaseDocument ? "지급 요약" : "수금 요약";
+    public string CustomerBalanceLabelText => IsPurchaseDocument ? "총미지불" : "총미수금";
     public string WindowTitleText => VoucherType switch
     {
         VoucherType.Purchase => "구매(매입)",
@@ -314,6 +319,7 @@ public sealed partial class SalesViewModel : ObservableObject
         CustomerNote = string.Empty;
         CustomerBalance = 0;
         CustomerAdvanceBalance = 0;
+        TaxInvoiceIssued = false;
         InvoiceMemo = string.Empty;
         WorkDate = DateOnly.FromDateTime(DateTime.Today);
         VoucherType = _newInvoiceVoucherType;
@@ -435,7 +441,14 @@ public sealed partial class SalesViewModel : ObservableObject
         if (!IsCurrentPaymentSummaryLoad(version))
             return;
 
+        var financialSummary = await _local.GetCustomerFinancialSummaryAsync(selectedCustomer.Id, _session);
+        if (!IsCurrentPaymentSummaryLoad(version))
+            return;
+
         CustomerAdvanceBalance = advanceBalance;
+        CustomerBalance = IsPurchaseDocument
+            ? financialSummary.PayableAmount
+            : financialSummary.ReceivableAmount;
         PaymentSummaryAdvanceText = $"선수금 잔액 {advanceBalance:N0}";
 
         var invoice = await _local.GetInvoiceAsync(InvoiceId, _session);
@@ -991,6 +1004,7 @@ public sealed partial class SalesViewModel : ObservableObject
             InvoiceDate = WorkDate,
             VoucherType = VoucherType,
             Memo = InvoiceMemo,
+            TaxInvoiceIssued = TaxInvoiceIssued,
             ResponsibleOfficeCode = SelectedResponsibleOfficeCode,
             SourceWarehouseCode = SelectedWarehouseCode,
             ConcurrencyStamp = CurrentConcurrencyStamp,
@@ -1080,6 +1094,7 @@ public sealed partial class SalesViewModel : ObservableObject
         WorkDate = inv.InvoiceDate;
         VoucherType = inv.VoucherType;
         InvoiceMemo = inv.Memo;
+        TaxInvoiceIssued = inv.TaxInvoiceIssued;
         SelectedResponsibleOfficeCode = string.IsNullOrWhiteSpace(inv.ResponsibleOfficeCode)
             ? SelectedResponsibleOfficeCode
             : OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(inv.ResponsibleOfficeCode, SelectedResponsibleOfficeCode);

@@ -77,6 +77,7 @@ public sealed partial class LocalStateService
         await _db.StockLayers.ExecuteDeleteAsync(ct);
         await _db.SerialLedgers.ExecuteDeleteAsync(ct);
         await _db.InventoryTransferLines.ExecuteDeleteAsync(ct);
+        await _db.InventoryTransfers.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
         await _db.TransactionAttachments.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
         await _db.Transactions.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
         await _db.CustomerContracts.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
@@ -105,6 +106,7 @@ public sealed partial class LocalStateService
         }
 
         await _db.SaveChangesAsync(ct);
+        _db.ChangeTracker.Clear();
     }
 
     public async Task ResetBusinessDataCacheAsync(SessionState session, CancellationToken ct = default)

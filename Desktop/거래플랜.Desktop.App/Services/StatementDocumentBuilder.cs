@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -352,6 +353,10 @@ public static class StatementDocumentBuilder
 
         var paidAmount = invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount);
         var balanceAmount = invoice.TotalAmount - paidAmount;
+        var isPurchaseDocument = invoice.VoucherType == VoucherType.Purchase;
+        var previousOutstandingLabel = isPurchaseDocument ? "전미지불" : "전미수";
+        var settlementLabel = isPurchaseDocument ? "지불액" : "입금액";
+        var outstandingLabel = isPurchaseDocument ? "미지불잔액" : "미수잔액";
 
         var row1 = new TableRow();
         row1.Cells.Add(CreateTotalsLabelCell("전표메모", accent));
@@ -365,11 +370,11 @@ public static class StatementDocumentBuilder
         rows.Rows.Add(row1);
 
         var row2 = new TableRow();
-        row2.Cells.Add(CreateTotalsLabelCell("전미수", accent));
+        row2.Cells.Add(CreateTotalsLabelCell(previousOutstandingLabel, accent));
         row2.Cells.Add(CreateTotalsValueCell(string.Empty, accent, TextAlignment.Right));
-        row2.Cells.Add(CreateTotalsLabelCell("입금액", accent));
+        row2.Cells.Add(CreateTotalsLabelCell(settlementLabel, accent));
         row2.Cells.Add(CreateTotalsValueCell(printWithPrice ? $"{paidAmount:N0}" : string.Empty, accent, TextAlignment.Right));
-        row2.Cells.Add(CreateTotalsLabelCell("미수잔액", accent));
+        row2.Cells.Add(CreateTotalsLabelCell(outstandingLabel, accent));
         row2.Cells.Add(CreateTotalsValueCell(printWithPrice ? $"{balanceAmount:N0}" : string.Empty, accent, TextAlignment.Right));
         row2.Cells.Add(CreateTotalsLabelCell("인수자", accent));
         row2.Cells.Add(CreateTotalsValueCell("(인)", accent, TextAlignment.Right));

@@ -45,6 +45,7 @@ public sealed partial class MainViewModel : ObservableObject
     // Dashboard card metrics
     [ObservableProperty] private decimal _dashboardMonthlySales;
     [ObservableProperty] private decimal _dashboardReceivable;
+    [ObservableProperty] private decimal _dashboardPayable;
     [ObservableProperty] private int _dashboardCustomerCount;
     [ObservableProperty] private int _dashboardSafetyStockAlerts;
     [ObservableProperty] private int _dashboardMonthlyInvoiceCount;
@@ -252,26 +253,42 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        var dirtyBefore = await _local.CountDirtyAsync(_session);
-        SyncStatus = "로그인 후 서버 동기화 중...";
-
-        var syncOk = await _sync.TrySyncAsync();
-        if (syncOk)
+        try
         {
-            if (await _local.CountDirtyAsync(_session) == 0)
-                await _sync.RefreshSharedMirrorFromServerAsync();
-            await ReloadAfterPassiveSyncAsync();
-            SyncStatus = $"로그인 후 서버 동기화 완료 {DateTime.Now:HH:mm:ss}";
-            return;
+            var dirtyBefore = await _local.CountDirtyAsync(_session);
+            SyncStatus = "로그인 후 서버 동기화 중...";
+
+            var syncOk = await _sync.TrySyncAsync();
+            if (syncOk)
+            {
+                var refreshOk = true;
+                if (await _local.CountDirtyAsync(_session) == 0)
+                    refreshOk = await _sync.RefreshSharedMirrorFromServerAsync();
+
+                await ReloadAfterPassiveSyncAsync();
+                SyncStatus = refreshOk
+                    ? $"로그인 후 서버 동기화 완료 {DateTime.Now:HH:mm:ss}"
+                    : "로그인 후 서버 캐시 재구성은 일부 실패했지만 앱은 계속 사용할 수 있습니다.";
+                return;
+            }
+
+            var dirtyAfter = await _local.CountDirtyAsync(_session);
+            if (dirtyBefore > 0 || dirtyAfter > 0)
+            {
+                var backupOk = await _backup.BackupNowAsync();
+                AppLogger.Warn(
+                    "APP",
+                    $"Post-login auto sync failed with {dirtyAfter} dirty rows. Auto-backup {(backupOk ? "succeeded" : "failed")}.");
+            }
+
+            SyncStatus = dirtyAfter > 0
+                ? $"동기화 오류가 남아 있어 제한 모드로 실행합니다. ({dirtyAfter:N0}건 보류)"
+                : "동기화 오류가 발생했지만 앱은 계속 사용할 수 있습니다.";
         }
-
-        var dirtyAfter = await _local.CountDirtyAsync(_session);
-        if (dirtyBefore > 0 || dirtyAfter > 0)
+        catch (Exception ex)
         {
-            var backupOk = await _backup.BackupNowAsync();
-            AppLogger.Warn(
-                "APP",
-                $"Post-login auto sync failed with {dirtyAfter} dirty rows. Auto-backup {(backupOk ? "succeeded" : "failed")}.");
+            AppLogger.Error("APP", "로그인 후 자동 동기화 실패", ex);
+            SyncStatus = "로그인 후 자동 동기화에 실패했지만 앱은 계속 사용할 수 있습니다.";
         }
     }
 
@@ -598,8 +615,12 @@ public sealed partial class MainViewModel : ObservableObject
             ? (monthlySales > 0 ? 100m : 0m)
             : Math.Round(((monthlySales - previousMonthlySales) / previousMonthlySales) * 100m, 1, MidpointRounding.AwayFromZero);
 
-        DashboardReceivable = sourceInvoices.Sum(i =>
-            i.TotalAmount - i.Payments.Where(p => !p.IsDeleted).Sum(p => p.Amount));
+        DashboardReceivable = sourceInvoices
+            .Where(invoice => invoice.VoucherType == VoucherType.Sales)
+            .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount)));
+        DashboardPayable = sourceInvoices
+            .Where(invoice => invoice.VoucherType == VoucherType.Purchase)
+            .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount)));
 
         var items = await _local.GetItemsAsync();
         DashboardSafetyStockAlerts = items.Count(i =>

@@ -867,7 +867,7 @@ public static class DtoMappings
             InvoiceNumber = entity.InvoiceNumber,
             LocalTempNumber = entity.LocalTempNumber, VoucherType = entity.VoucherType,
             InvoiceDate = entity.InvoiceDate, TotalAmount = entity.TotalAmount,
-            SupplyAmount = entity.SupplyAmount, VatAmount = entity.VatAmount, Memo = entity.Memo,
+            SupplyAmount = entity.SupplyAmount, VatAmount = entity.VatAmount, TaxInvoiceIssued = entity.TaxInvoiceIssued, Memo = entity.Memo,
             Lines = entity.Lines.Where(x => !x.IsDeleted).OrderBy(x => x.Id).Select(x => x.ToDto()).ToList(),
             Payments = entity.Payments.Where(x => !x.IsDeleted).OrderByDescending(x => x.PaymentDate).Select(x => x.ToDto()).ToList()
         };
@@ -888,7 +888,7 @@ public static class DtoMappings
     {
         entity.CustomerId = dto.CustomerId; entity.InvoiceNumber = dto.InvoiceNumber;
         entity.LocalTempNumber = dto.LocalTempNumber; entity.VoucherType = dto.VoucherType;
-        entity.InvoiceDate = dto.InvoiceDate; entity.Memo = dto.Memo; entity.IsDeleted = dto.IsDeleted;
+        entity.InvoiceDate = dto.InvoiceDate; entity.TaxInvoiceIssued = dto.TaxInvoiceIssued; entity.Memo = dto.Memo; entity.IsDeleted = dto.IsDeleted;
         entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
             dto.TenantCode,
             dto.OfficeCode,

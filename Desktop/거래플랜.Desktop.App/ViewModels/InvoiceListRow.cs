@@ -17,18 +17,15 @@ public sealed class InvoiceListRow
     public decimal TotalAmount { get; init; }
     public decimal SupplyAmount { get; init; }
     public decimal VatAmount { get; init; }
-    public decimal PaidAmount { get; init; }
-    public decimal BalanceAmount => TotalAmount - PaidAmount;
+    public decimal ReceiptAmount { get; init; }
+    public decimal PaymentAmount { get; init; }
+    public decimal BalanceAmount => TotalAmount - (VoucherType == VoucherType.Purchase ? PaymentAmount : ReceiptAmount);
+    public bool TaxInvoiceIssued { get; init; }
     public bool IsDirty { get; init; }
 
     public string DisplayNumber => string.IsNullOrEmpty(InvoiceNumber) ? LocalTempNumber : InvoiceNumber;
     public string InvoiceDateDisplay => InvoiceDate.ToString("yyyy/MM/dd");
-    public string TaxInvoiceDisplay => VoucherType switch
-    {
-        VoucherType.Sales => "세금계산서",
-        VoucherType.Purchase => "계산서",
-        _ => "-"
-    };
+    public string TaxInvoiceDisplay => TaxInvoiceIssued ? "발행완료" : string.Empty;
 
     public string VoucherTypeDisplay => VoucherType switch
     {
@@ -40,18 +37,24 @@ public sealed class InvoiceListRow
         _                       => VoucherType.ToString()
     };
 
-    public static InvoiceListRow From(LocalInvoice inv, string customerName) => new()
+    public static InvoiceListRow From(LocalInvoice inv, string customerName)
     {
-        Id = inv.Id,
-        InvoiceNumber = inv.InvoiceNumber,
-        LocalTempNumber = inv.LocalTempNumber,
-        InvoiceDate = inv.InvoiceDate,
-        CustomerName = customerName,
-        VoucherType = inv.VoucherType,
-        TotalAmount = inv.TotalAmount,
-        SupplyAmount = inv.SupplyAmount,
-        VatAmount = inv.VatAmount,
-        PaidAmount = inv.Payments.Where(p => !p.IsDeleted).Sum(p => p.Amount),
-        IsDirty = inv.IsDirty
-    };
+        var settledAmount = inv.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount);
+        return new InvoiceListRow
+        {
+            Id = inv.Id,
+            InvoiceNumber = inv.InvoiceNumber,
+            LocalTempNumber = inv.LocalTempNumber,
+            InvoiceDate = inv.InvoiceDate,
+            CustomerName = customerName,
+            VoucherType = inv.VoucherType,
+            TotalAmount = inv.TotalAmount,
+            SupplyAmount = inv.SupplyAmount,
+            VatAmount = inv.VatAmount,
+            ReceiptAmount = inv.VoucherType == VoucherType.Sales ? settledAmount : 0m,
+            PaymentAmount = inv.VoucherType == VoucherType.Purchase ? settledAmount : 0m,
+            TaxInvoiceIssued = inv.TaxInvoiceIssued,
+            IsDirty = inv.IsDirty
+        };
+    }
 }

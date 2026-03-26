@@ -222,6 +222,9 @@ public sealed partial class LocalStateService
     public async Task<LocalCustomer> UpsertCustomerAsync(LocalCustomer customer, CancellationToken ct = default)
     {
         customer.ResponsibleOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        customer.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            customer.TenantCode,
+            customer.ResponsibleOfficeCode);
         customer.IsDirty = true;
         customer.UpdatedAtUtc = DateTime.UtcNow;
 
@@ -243,18 +246,22 @@ public sealed partial class LocalStateService
         if (customer is null)
             throw new ArgumentNullException(nameof(customer));
 
-        if (!CanModifySharedBusinessData(session))
-            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 거래처를 저장할 수 있습니다.");
-
         var normalizedOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, normalizedOfficeCode);
         var existing = await _db.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == customer.Id, ct);
 
-        if (existing is not null && !CanAccessCustomer(existing, session))
+        var existingOfficeCode = existing is null
+            ? normalizedOfficeCode
+            : NormalizeOfficeScope(existing.ResponsibleOfficeCode, normalizedOfficeCode);
+
+        if ((existing is not null && !CanWriteCustomerScope(session, existing.ResponsibleOfficeCode, existing.TenantCode)) ||
+            !CanWriteCustomerScope(session, normalizedOfficeCode, normalizedTenantCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 거래처를 저장할 수 없습니다.");
 
         customer.ResponsibleOfficeCode = normalizedOfficeCode;
+        customer.TenantCode = normalizedTenantCode;
         customer.IsDirty = true;
         customer.UpdatedAtUtc = DateTime.UtcNow;
 
@@ -268,22 +275,9 @@ public sealed partial class LocalStateService
         }
 
         await _db.SaveChangesAsync(ct);
+        _officeAccess.RevokeTemporaryCustomerAccess(session, customer.Id);
 
-        var grantedTemporaryAccess = !session.HasAdministrativePrivileges &&
-                                     !IsSharedOfficeScope(normalizedOfficeCode) &&
-                                     !string.Equals(normalizedOfficeCode, NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet), StringComparison.OrdinalIgnoreCase);
-
-        if (grantedTemporaryAccess)
-            _officeAccess.GrantTemporaryCustomerAccess(session, customer.Id);
-        else
-            _officeAccess.RevokeTemporaryCustomerAccess(session, customer.Id);
-
-        return OfficeMutationResult.Ok(
-            customer.Id,
-            grantedTemporaryAccess
-                ? $"거래처를 저장했습니다. {normalizedOfficeCode} 거래처는 임시 권한으로 계속 작업할 수 있습니다."
-                : "거래처를 저장했습니다.",
-            grantedTemporaryAccess);
+        return OfficeMutationResult.Ok(customer.Id, "거래처를 저장했습니다.");
     }
 
     public async Task DeleteCustomerAsync(Guid id, CancellationToken ct = default)
@@ -304,16 +298,13 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
-        if (!CanModifySharedBusinessData(session))
-            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 거래처를 삭제할 수 있습니다.");
-
         var customer = await _db.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == id, ct);
         if (customer is null)
             return OfficeMutationResult.Missing("거래처를 찾을 수 없습니다.");
 
-        if (!CanAccessCustomer(customer, session))
+        if (!CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 거래처를 삭제할 수 없습니다.");
 
         customer.IsDeleted = true;
@@ -683,8 +674,180 @@ public sealed partial class LocalStateService
 
         var dirtyCustomers = await query.ToListAsync(ct);
         return dirtyCustomers
-            .Where(customer => CanWriteOfficeScope(session, customer.ResponsibleOfficeCode))
+            .Where(customer => CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode))
             .ToList();
+    }
+
+    public async Task<List<LocalCustomerMaster>> GetDirtyCustomerMastersForSyncAsync(SessionState session, CancellationToken ct = default)
+    {
+        var query = _db.CustomerMasters.IgnoreQueryFilters()
+            .Where(customerMaster => customerMaster.IsDirty)
+            .AsNoTracking();
+
+        if (CanWriteAllScopedData(session))
+            return await query.ToListAsync(ct);
+
+        var dirtyCustomerMasters = await query.ToListAsync(ct);
+        return dirtyCustomerMasters
+            .Where(customerMaster => CanWriteCustomerScope(session, customerMaster.OfficeCode, customerMaster.TenantCode))
+            .ToList();
+    }
+
+    public async Task<CustomerMasterSyncRepairResult> RepairDirtyCustomerMastersForSyncAsync(
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var result = new CustomerMasterSyncRepairResult();
+        var dirtyCustomerMasters = await _db.CustomerMasters.IgnoreQueryFilters()
+            .Where(customerMaster => customerMaster.IsDirty)
+            .ToListAsync(ct);
+
+        if (dirtyCustomerMasters.Count == 0)
+            return result;
+
+        var validCategoryIds = (await _db.CustomerCategories.IgnoreQueryFilters()
+                .Where(category => !category.IsDeleted)
+                .Select(category => category.Id)
+                .ToListAsync(ct))
+            .ToHashSet();
+
+        var now = DateTime.UtcNow;
+        var changed = false;
+
+        foreach (var customerMaster in dirtyCustomerMasters)
+        {
+            result.ScannedCount++;
+
+            var normalizedOfficeCode = NormalizeOfficeScope(customerMaster.OfficeCode, OfficeCodeCatalog.Shared);
+            var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customerMaster.TenantCode, normalizedOfficeCode);
+            if (!string.Equals(customerMaster.OfficeCode, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(customerMaster.TenantCode, normalizedTenantCode, StringComparison.OrdinalIgnoreCase))
+            {
+                customerMaster.OfficeCode = normalizedOfficeCode;
+                customerMaster.TenantCode = normalizedTenantCode;
+                customerMaster.UpdatedAtUtc = now;
+                changed = true;
+                result.NormalizedScopeCount++;
+            }
+
+            if (customerMaster.CategoryId.HasValue &&
+                customerMaster.CategoryId.Value != Guid.Empty &&
+                !validCategoryIds.Contains(customerMaster.CategoryId.Value))
+            {
+                customerMaster.CategoryId = null;
+                customerMaster.UpdatedAtUtc = now;
+                changed = true;
+                result.ClearedMissingCategoryCount++;
+            }
+
+            if (CanWriteAllScopedData(session) || CanWriteCustomerScope(session, customerMaster.OfficeCode, customerMaster.TenantCode))
+                continue;
+
+            customerMaster.IsDirty = false;
+            customerMaster.UpdatedAtUtc = now;
+            changed = true;
+            result.MarkedCleanOutOfScopeCount++;
+        }
+
+        if (changed)
+            await _db.SaveChangesAsync(ct);
+
+        return result;
+    }
+
+    public async Task<CustomerSyncRepairResult> RepairDirtyCustomersForSyncAsync(
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var result = new CustomerSyncRepairResult();
+        var dirtyCustomers = await _db.Customers.IgnoreQueryFilters()
+            .Where(customer => customer.IsDirty)
+            .ToListAsync(ct);
+
+        if (dirtyCustomers.Count == 0)
+            return result;
+
+        var categoryIds = dirtyCustomers
+            .Where(customer => customer.CategoryId.HasValue && customer.CategoryId.Value != Guid.Empty)
+            .Select(customer => customer.CategoryId!.Value)
+            .Distinct()
+            .ToList();
+        var validCategoryIds = categoryIds.Count == 0
+            ? new HashSet<Guid>()
+            : (await _db.CustomerCategories.IgnoreQueryFilters()
+                .Where(category => categoryIds.Contains(category.Id) && !category.IsDeleted)
+                .Select(category => category.Id)
+                .ToListAsync(ct))
+            .ToHashSet();
+
+        var customerMasterIds = dirtyCustomers
+            .Where(customer => customer.CustomerMasterId.HasValue && customer.CustomerMasterId.Value != Guid.Empty)
+            .Select(customer => customer.CustomerMasterId!.Value)
+            .Distinct()
+            .ToList();
+        var customerMasters = customerMasterIds.Count == 0
+            ? new Dictionary<Guid, LocalCustomerMaster>()
+            : await _db.CustomerMasters.IgnoreQueryFilters()
+                .Where(customerMaster => customerMasterIds.Contains(customerMaster.Id))
+                .ToDictionaryAsync(customerMaster => customerMaster.Id, ct);
+
+        var now = DateTime.UtcNow;
+        var changed = false;
+
+        foreach (var customer in dirtyCustomers)
+        {
+            result.ScannedCount++;
+
+            var normalizedOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+            var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, normalizedOfficeCode);
+            if (!string.Equals(customer.ResponsibleOfficeCode, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(customer.TenantCode, normalizedTenantCode, StringComparison.OrdinalIgnoreCase))
+            {
+                customer.ResponsibleOfficeCode = normalizedOfficeCode;
+                customer.TenantCode = normalizedTenantCode;
+                customer.UpdatedAtUtc = now;
+                changed = true;
+                result.NormalizedScopeCount++;
+            }
+
+            if (customer.CategoryId.HasValue &&
+                customer.CategoryId.Value != Guid.Empty &&
+                !validCategoryIds.Contains(customer.CategoryId.Value))
+            {
+                customer.CategoryId = null;
+                customer.UpdatedAtUtc = now;
+                changed = true;
+                result.ClearedMissingCategoryCount++;
+            }
+
+            if (customer.CustomerMasterId.HasValue &&
+                customer.CustomerMasterId.Value != Guid.Empty)
+            {
+                if (!customerMasters.TryGetValue(customer.CustomerMasterId.Value, out var customerMaster) ||
+                    customerMaster.IsDeleted ||
+                    !CanReadCustomerScope(session, customerMaster.OfficeCode, customerMaster.TenantCode))
+                {
+                    customer.CustomerMasterId = null;
+                    customer.UpdatedAtUtc = now;
+                    changed = true;
+                    result.ClearedMissingCustomerMasterCount++;
+                }
+            }
+
+            if (CanWriteAllScopedData(session) || CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode))
+                continue;
+
+            customer.IsDirty = false;
+            customer.UpdatedAtUtc = now;
+            _officeAccess.RevokeTemporaryCustomerAccess(session, customer.Id);
+            changed = true;
+            result.MarkedCleanOutOfScopeCount++;
+        }
+
+        if (changed)
+            await _db.SaveChangesAsync(ct);
+
+        return result;
     }
 
     public async Task<List<LocalCustomerContract>> GetDirtyCustomerContractsForSyncAsync(SessionState session, CancellationToken ct = default)
@@ -702,16 +865,16 @@ public sealed partial class LocalStateService
             .Where(customerId => customerId != Guid.Empty)
             .Distinct()
             .ToList();
-        var officeByCustomerId = await _db.Customers.IgnoreQueryFilters()
+        var scopeByCustomerId = await _db.Customers.IgnoreQueryFilters()
             .Where(customer => customerIds.Contains(customer.Id))
             .AsNoTracking()
-            .Select(customer => new { customer.Id, customer.ResponsibleOfficeCode })
-            .ToDictionaryAsync(customer => customer.Id, customer => customer.ResponsibleOfficeCode, ct);
+            .Select(customer => new { customer.Id, customer.ResponsibleOfficeCode, customer.TenantCode })
+            .ToDictionaryAsync(customer => customer.Id, customer => (customer.ResponsibleOfficeCode, customer.TenantCode), ct);
 
         return dirtyContracts
             .Where(contract =>
-                officeByCustomerId.TryGetValue(contract.CustomerId, out var officeCode) &&
-                CanWriteOfficeScope(session, officeCode))
+                scopeByCustomerId.TryGetValue(contract.CustomerId, out var scope) &&
+                CanWriteCustomerScope(session, scope.ResponsibleOfficeCode, scope.TenantCode))
             .ToList();
     }
 
@@ -1642,7 +1805,8 @@ public sealed partial class LocalStateService
             return InvoiceSaveResult.Missing("거래처 정보를 찾을 수 없습니다.");
 
         var customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
-        if (!CanAccessCustomer(customer.Id, customerOfficeCode, session, context.Role))
+        var customerTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customerOfficeCode);
+        if (!CanAccessCustomer(customer.Id, customerOfficeCode, customerTenantCode, session, context.Role))
             return InvoiceSaveResult.Denied("권한이 없어 해당 거래처 전표를 저장할 수 없습니다.");
 
         var latest = await ResolveLatestVersionAsync(invoice, ct);
@@ -1709,6 +1873,7 @@ public sealed partial class LocalStateService
             TotalAmount = totalAmount,
             SupplyAmount = supplyAmount,
             VatAmount = vatAmount,
+            TaxInvoiceIssued = invoice.TaxInvoiceIssued,
             Memo = invoice.Memo ?? string.Empty,
             ResponsibleOfficeCode = responsibleOfficeCode,
             SourceWarehouseCode = sourceWarehouseCode,
@@ -2512,13 +2677,31 @@ public sealed partial class LocalStateService
 
     public async Task SetSettingAsync(string key, string value, CancellationToken ct = default)
     {
-        var setting = await _db.Settings.FindAsync([key], ct);
-        if (setting is null)
-            _db.Settings.Add(new LocalSetting { Key = key, Value = value });
-        else
-            setting.Value = value;
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                var setting = await _db.Settings.FindAsync([key], ct);
+                if (setting is null)
+                {
+                    _db.Settings.Add(new LocalSetting { Key = key, Value = value });
+                }
+                else
+                {
+                    if (string.Equals(setting.Value, value, StringComparison.Ordinal))
+                        return;
 
-        await _db.SaveChangesAsync(ct);
+                    setting.Value = value;
+                }
+
+                await _db.SaveChangesAsync(ct);
+                return;
+            }
+            catch (DbUpdateConcurrencyException) when (attempt == 0)
+            {
+                _db.ChangeTracker.Clear();
+            }
+        }
     }
 
     public async Task<string?> GetInvoicePrintPayloadAsync(Guid invoiceId, CancellationToken ct = default)
@@ -2753,7 +2936,8 @@ public sealed partial class LocalStateService
             return 0m;
 
         var customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
-        if (!CanAccessCustomer(customer.Id, customerOfficeCode, session, session.User?.Role))
+        var customerTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customerOfficeCode);
+        if (!CanAccessCustomer(customer.Id, customerOfficeCode, customerTenantCode, session, session.User?.Role))
             return 0m;
 
         return await GetAdvanceBalanceCoreAsync(customerId, ct);
@@ -2772,18 +2956,29 @@ public sealed partial class LocalStateService
             return new CustomerFinancialSummary();
 
         var customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
-        if (!CanAccessCustomer(customer.Id, customerOfficeCode, session, session.User?.Role))
+        var customerTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customerOfficeCode);
+        if (!CanAccessCustomer(customer.Id, customerOfficeCode, customerTenantCode, session, session.User?.Role))
             return new CustomerFinancialSummary();
 
         var invoices = await _db.Invoices
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
-            .Where(invoice => !invoice.IsDeleted && invoice.CustomerId == customerId && invoice.VoucherType == VoucherType.Sales)
+            .Where(invoice => !invoice.IsDeleted &&
+                              invoice.CustomerId == customerId &&
+                              (invoice.VoucherType == VoucherType.Sales || invoice.VoucherType == VoucherType.Purchase))
             .ToListAsync(ct);
 
-        var receivableAmount = invoices
+        var scopedInvoices = invoices
             .Where(invoice => CanAccessInvoice(invoice, session))
+            .ToList();
+
+        var receivableAmount = scopedInvoices
+            .Where(invoice => invoice.VoucherType == VoucherType.Sales)
+            .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount)));
+
+        var payableAmount = scopedInvoices
+            .Where(invoice => invoice.VoucherType == VoucherType.Purchase)
             .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount)));
 
         var transactions = await _db.Transactions
@@ -2801,6 +2996,7 @@ public sealed partial class LocalStateService
         {
             AdvanceBalance = transactions.Sum(transaction => transaction.AdvanceDelta),
             ReceivableAmount = receivableAmount,
+            PayableAmount = payableAmount,
             PrepaymentAmount = prepaymentAmount
         };
     }
@@ -3896,6 +4092,7 @@ public sealed partial class LocalStateService
     {
         var count = 0;
         count += await _db.CompanyProfiles.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        count += await _db.CustomerMasters.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         count += await _db.Customers.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         count += await _db.CustomerContracts.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         count += await _db.Items.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
@@ -3918,6 +4115,13 @@ public sealed partial class LocalStateService
             return await CountDirtyAsync(ct);
 
         var count = await CountDirtyAsync(ct);
+
+        var dirtyCustomerMasterCount = await _db.CustomerMasters.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyCustomerMasterCount > 0)
+        {
+            var syncableDirtyCustomerMasterCount = (await GetDirtyCustomerMastersForSyncAsync(session, ct)).Count;
+            count = count - dirtyCustomerMasterCount + syncableDirtyCustomerMasterCount;
+        }
 
         var dirtyCustomerCount = await _db.Customers.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         if (dirtyCustomerCount > 0)
@@ -4005,11 +4209,54 @@ public sealed partial class LocalStateService
             return query;
 
         var readableOfficeCodes = GetReadableOfficeCodes(session);
+        var currentTenantCode = ResolveCurrentTenantCode(session);
         var temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
         return query.Where(customer =>
-            customer.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
+            customer.TenantCode == currentTenantCode &&
+            (customer.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
             readableOfficeCodes.Contains(customer.ResponsibleOfficeCode) ||
-            temporaryCustomerIds.Contains(customer.Id));
+            temporaryCustomerIds.Contains(customer.Id)));
+    }
+
+    private static string ResolveCurrentTenantCode(SessionState? session)
+        => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session?.TenantCode, session?.OfficeCode);
+
+    private static string ResolveCustomerTenantCodeForOffice(string? officeCode, string? tenantCode = null, SessionState? session = null)
+        => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            tenantCode,
+            officeCode,
+            session?.TenantCode,
+            session?.OfficeCode);
+
+    private static bool CanReadCustomerScope(SessionState? session, string? officeCode, string? tenantCode = null)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return false;
+
+        if (HasFullAccess(session))
+            return true;
+
+        var resolvedTenantCode = ResolveCustomerTenantCodeForOffice(officeCode, tenantCode, session);
+        if (!string.Equals(resolvedTenantCode, ResolveCurrentTenantCode(session), StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var normalizedOfficeCode = NormalizeOfficeScope(officeCode, DomainConstants.OfficeUsenet);
+        return IsSharedOfficeScope(normalizedOfficeCode) || GetReadableOfficeCodes(session).Contains(normalizedOfficeCode);
+    }
+
+    private static bool CanWriteCustomerScope(SessionState? session, string? officeCode, string? tenantCode = null)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return false;
+
+        if (CanWriteAllScopedData(session))
+            return true;
+
+        var resolvedTenantCode = ResolveCustomerTenantCodeForOffice(officeCode, tenantCode, session);
+        if (!string.Equals(resolvedTenantCode, ResolveCurrentTenantCode(session), StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return CanWriteOfficeScope(session, officeCode);
     }
 
     private IQueryable<LocalItem> ApplyItemScope(
@@ -4162,23 +4409,21 @@ public sealed partial class LocalStateService
         => CanAccessCustomer(
             customer.Id,
             customer.ResponsibleOfficeCode,
+            customer.TenantCode,
             session,
             session?.User?.Role);
 
     private bool CanAccessCustomer(
         Guid customerId,
         string? customerOfficeCode,
+        string? customerTenantCode,
         SessionState? session,
         string? role)
     {
         if (HasFullAccess(session) || DomainConstants.IsAdminRole(role))
             return true;
 
-        var normalizedOfficeCode = NormalizeOfficeScope(customerOfficeCode, DomainConstants.OfficeUsenet);
-        if (IsSharedOfficeScope(normalizedOfficeCode))
-            return true;
-
-        if (HasOfficeReadAccess(session, normalizedOfficeCode))
+        if (CanReadCustomerScope(session, customerOfficeCode, customerTenantCode))
             return true;
 
         return session is not null && _officeAccess.HasTemporaryCustomerAccess(session, customerId);
@@ -4236,6 +4481,23 @@ public sealed partial class LocalStateService
     {
         public int ScannedCount { get; set; }
         public int MarkedDeletedMissingInvoiceCount { get; set; }
+    }
+
+    public sealed class CustomerSyncRepairResult
+    {
+        public int ScannedCount { get; set; }
+        public int NormalizedScopeCount { get; set; }
+        public int ClearedMissingCategoryCount { get; set; }
+        public int ClearedMissingCustomerMasterCount { get; set; }
+        public int MarkedCleanOutOfScopeCount { get; set; }
+    }
+
+    public sealed class CustomerMasterSyncRepairResult
+    {
+        public int ScannedCount { get; set; }
+        public int NormalizedScopeCount { get; set; }
+        public int ClearedMissingCategoryCount { get; set; }
+        public int MarkedCleanOutOfScopeCount { get; set; }
     }
 
     private static bool IsSharedOfficeScope(string? officeCode)

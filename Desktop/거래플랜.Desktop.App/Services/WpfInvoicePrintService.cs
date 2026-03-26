@@ -412,9 +412,9 @@ public sealed class WpfInvoicePrintService : IPrintService
         AddTotalsPair(grid, 0, 4, "부가세", isFinalPage ? FormatMoney(model.VatAmount) : string.Empty, PurchaseBorder, true, true, labelBackground: PurchaseHeaderFill);
         AddTotalsPair(grid, 0, 6, "합계", isFinalPage ? FormatMoney(model.TotalAmount) : string.Empty, PurchaseBorder, true, true, labelBackground: PurchaseHeaderFill);
 
-        AddTotalsPair(grid, 1, 0, "전미수", isFinalPage ? "0" : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
+        AddTotalsPair(grid, 1, 0, "전미지불", isFinalPage ? "0" : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
         AddTotalsPair(grid, 1, 2, "지불액", isFinalPage ? FormatMoney(model.PaidAmount) : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
-        AddTotalsPair(grid, 1, 4, "미수잔액", isFinalPage ? FormatSignedMoney(model.BalanceAmount) : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
+        AddTotalsPair(grid, 1, 4, "미지불잔액", isFinalPage ? FormatSignedMoney(model.BalanceAmount) : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
         AddTotalsPair(grid, 1, 6, string.Empty, isFinalPage ? string.Empty : "다음 페이지 계속", PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
 
         return new Border

@@ -216,9 +216,9 @@
                                 <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Text="{Binding VatAmount, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock Grid.Row="2" Grid.Column="0" Text="합계" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0" Text="{Binding TotalAmount, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="3" Grid.Column="0" Text="입금액" Margin="0,6,0,0"/>
+                                <TextBlock Grid.Row="3" Grid.Column="0" Text="{Binding SettlementAmountLabelText}" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0" Text="{Binding PaidAmount, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="4" Grid.Column="0" Text="미수금" Margin="0,6,0,0"/>
+                                <TextBlock Grid.Row="4" Grid.Column="0" Text="{Binding OutstandingAmountLabelText}" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0" Text="{Binding BalanceAmount, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock Grid.Row="5" Grid.Column="0" Text="관리자" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="5" Grid.Column="1" Margin="0,6,0,0" Text="{Binding ManagerName, UpdateSourceTrigger=PropertyChanged}"/>

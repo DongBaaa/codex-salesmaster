@@ -310,6 +310,7 @@ public sealed class InvoiceDto : SyncEntityDto
     public decimal TotalAmount { get; set; }
     public decimal SupplyAmount { get; set; }
     public decimal VatAmount { get; set; }
+    public bool TaxInvoiceIssued { get; set; }
     public string Memo { get; set; } = string.Empty;
     public List<InvoiceLineDto> Lines { get; set; } = new();
     public List<PaymentDto> Payments { get; set; } = new();

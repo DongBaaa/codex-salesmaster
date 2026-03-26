@@ -135,8 +135,17 @@ public static class LocalDbInitializer
         await TryCreateRentalBillingLogsTableAsync(db);
         await EnsureLegacyRentalNamingColumnsAsync(db);
 
+        var customerMasterCols = new (string col, string def)[]
+        {
+            ("TenantCode", $"TEXT NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}'"),
+            ("OfficeCode", $"TEXT NOT NULL DEFAULT '{OfficeCodeCatalog.Shared}'"),
+        };
+        foreach (var (col, def) in customerMasterCols)
+            await TryAddColumnAsync(db, "CustomerMasters", col, def);
+
         var customerCols = new (string col, string def)[]
         {
+            ("TenantCode", $"TEXT NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}'"),
             ("DetailAddress", "TEXT NOT NULL DEFAULT ''"),
             ("MobilePhone", "TEXT NOT NULL DEFAULT ''"),
             ("FaxNumber", "TEXT NOT NULL DEFAULT ''"),
@@ -249,6 +258,7 @@ public static class LocalDbInitializer
             ("LastSavedAtUtc", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'"),
             ("ConcurrencyStamp", "TEXT NOT NULL DEFAULT ''"),
             ("CostStatus", "TEXT NOT NULL DEFAULT '미확인'"),
+            ("TaxInvoiceIssued", "INTEGER NOT NULL DEFAULT 0"),
         };
         foreach (var (col, def) in invoiceCols)
             await TryAddColumnAsync(db, "Invoices", col, def);
@@ -335,6 +345,8 @@ public static class LocalDbInitializer
         await BackfillTransactionResponsibleOfficeCodeAsync(db);
         await NormalizeCompanyProfilesAsync(db);
         await NormalizeCustomerTradeTypeAsync(db);
+        await BackfillCustomerScopeFieldsAsync(db);
+        await BackfillCustomerMasterScopeFieldsAsync(db);
         await BackfillItemScopeFieldsAsync(db);
         await BackfillItemOperationalFieldsAsync(db);
         await BackfillInvoiceLineTrackingTypesAsync(db);
@@ -1758,6 +1770,111 @@ public static class LocalDbInitializer
         {
             // ignore
         }
+    }
+
+    private static async Task BackfillCustomerScopeFieldsAsync(LocalDbContext db)
+    {
+        var customers = await db.Customers.IgnoreQueryFilters().ToListAsync();
+        if (customers.Count == 0)
+            return;
+
+        var changed = false;
+        foreach (var customer in customers)
+        {
+            var desiredOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                customer.ResponsibleOfficeCode,
+                DomainConstants.OfficeUsenet);
+            var desiredTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                customer.TenantCode,
+                desiredOfficeCode,
+                TenantScopeCatalog.UsenetGroup,
+                desiredOfficeCode);
+
+            if (!string.Equals(customer.ResponsibleOfficeCode, desiredOfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                customer.ResponsibleOfficeCode = desiredOfficeCode;
+                changed = true;
+            }
+
+            if (!string.Equals(customer.TenantCode, desiredTenantCode, StringComparison.OrdinalIgnoreCase))
+            {
+                customer.TenantCode = desiredTenantCode;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            await db.SaveChangesAsync();
+    }
+
+    private static async Task BackfillCustomerMasterScopeFieldsAsync(LocalDbContext db)
+    {
+        var customerMasters = await db.CustomerMasters.IgnoreQueryFilters().ToListAsync();
+        if (customerMasters.Count == 0)
+            return;
+
+        var customersByMasterId = await db.Customers.IgnoreQueryFilters()
+            .Where(customer => customer.CustomerMasterId.HasValue)
+            .Select(customer => new
+            {
+                CustomerMasterId = customer.CustomerMasterId!.Value,
+                customer.ResponsibleOfficeCode,
+                customer.TenantCode
+            })
+            .ToListAsync();
+
+        var referenceLookup = customersByMasterId
+            .GroupBy(entry => entry.CustomerMasterId)
+            .ToDictionary(group => group.Key, group => group.ToList());
+
+        var changed = false;
+        foreach (var customerMaster in customerMasters)
+        {
+            var desiredOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                customerMaster.OfficeCode,
+                OfficeCodeCatalog.Shared);
+            var desiredTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                customerMaster.TenantCode,
+                desiredOfficeCode,
+                TenantScopeCatalog.UsenetGroup,
+                desiredOfficeCode);
+
+            if (referenceLookup.TryGetValue(customerMaster.Id, out var references) && references.Count > 0)
+            {
+                var officeCodes = references
+                    .Select(entry => OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entry.ResponsibleOfficeCode, OfficeCodeCatalog.Shared))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                desiredOfficeCode = officeCodes.Count == 1
+                    ? officeCodes[0]
+                    : OfficeCodeCatalog.Shared;
+
+                var tenantCodes = references
+                    .Select(entry => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entry.TenantCode, entry.ResponsibleOfficeCode))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                desiredTenantCode = tenantCodes.Count == 1
+                    ? tenantCodes[0]
+                    : TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, desiredOfficeCode);
+            }
+
+            if (!string.Equals(customerMaster.OfficeCode, desiredOfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                customerMaster.OfficeCode = desiredOfficeCode;
+                changed = true;
+            }
+
+            if (!string.Equals(customerMaster.TenantCode, desiredTenantCode, StringComparison.OrdinalIgnoreCase))
+            {
+                customerMaster.TenantCode = desiredTenantCode;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            await db.SaveChangesAsync();
     }
 
     private static async Task BackfillTransactionResponsibleOfficeCodeAsync(LocalDbContext db)

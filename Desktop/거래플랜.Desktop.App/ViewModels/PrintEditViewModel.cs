@@ -54,6 +54,9 @@ public sealed partial class PrintEditViewModel : ObservableObject
     [ObservableProperty] private InvoicePrintLineEditModel? _selectedLine;
 
     public ObservableCollection<InvoicePrintLineEditModel> Lines { get; } = new();
+    public bool IsPurchaseDocument => string.Equals(VoucherType, 거래플랜.Shared.Contracts.VoucherType.Purchase.ToString(), StringComparison.OrdinalIgnoreCase);
+    public string SettlementAmountLabelText => IsPurchaseDocument ? "지불액" : "입금액";
+    public string OutstandingAmountLabelText => IsPurchaseDocument ? "미지불" : "미수금";
 
     public PrintEditViewModel(
         InvoicePrintModel model,
@@ -102,6 +105,13 @@ public sealed partial class PrintEditViewModel : ObservableObject
             Lines.Add(new InvoicePrintLineEditModel { No = 1 });
 
         RefreshPreview();
+    }
+
+    partial void OnVoucherTypeChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsPurchaseDocument));
+        OnPropertyChanged(nameof(SettlementAmountLabelText));
+        OnPropertyChanged(nameof(OutstandingAmountLabelText));
     }
 
     [RelayCommand]

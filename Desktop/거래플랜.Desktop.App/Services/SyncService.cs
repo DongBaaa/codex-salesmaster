@@ -121,19 +121,20 @@ public sealed class SyncService : IDisposable
 
         SetStatus("중앙 서버 기준 캐시를 다시 불러오는 중...");
 
-        var pull = await _api.PullAsync(0, ct);
-        if (pull is null)
-            return false;
-
-        using (_local.SuppressSyncDispatch())
+        try
         {
-            await _local.ResetSharedMirrorCacheAsync(ct);
-            await ApplyPullAsync(pull, 0L, ct);
+            return await TryRefreshSharedMirrorCoreAsync(ct);
         }
-        await _local.SetSettingAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
-        _lastSyncCompletedUtc = DateTime.UtcNow;
-        SetStatus($"중앙 서버 기준 캐시 재구성 완료 {DateTime.Now:HH:mm:ss}");
-        return true;
+        catch (Exception ex)
+        {
+            AppLogger.Error("SYNC", "중앙 서버 기준 캐시 재구성 실패", ex);
+            await TrySetSettingSafeAsync(
+                "Sync.LastError",
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {ex.InnerException?.Message ?? ex.Message}",
+                CancellationToken.None);
+            SetStatus("중앙 서버 캐시 재구성에 실패했지만 앱은 계속 사용할 수 있습니다. 동기화를 다시 시도하세요.");
+            return false;
+        }
     }
 
     private Task<bool> StartSyncAsync(bool waitForRunningSync, CancellationToken ct)
@@ -218,7 +219,8 @@ public sealed class SyncService : IDisposable
             await ExecuteWithRetryAsync(PushDirtyAsync, "업로드", ct);
             await ExecuteWithRetryAsync(PullNewAsync, "다운로드", ct);
 
-            await _local.SetSettingAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
+            await TrySetSettingSafeAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
+            await TrySetSettingSafeAsync("Sync.LastError", string.Empty, CancellationToken.None);
             _lastSyncCompletedUtc = DateTime.UtcNow;
             SetStatus($"동기화 완료 {DateTime.Now:HH:mm:ss}");
             AppLogger.Info("SYNC", "동기화 완료");
@@ -235,7 +237,7 @@ public sealed class SyncService : IDisposable
             if (detail.Length > 220)
                 detail = detail[..220] + "...";
 
-            await _local.SetSettingAsync(
+            await TrySetSettingSafeAsync(
                 "Sync.LastError",
                 $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {detail}",
                 CancellationToken.None);
@@ -376,6 +378,34 @@ public sealed class SyncService : IDisposable
 
     private async Task PushDirtyAsync(CancellationToken ct)
     {
+        var customerMasterRepair = await _local.RepairDirtyCustomerMastersForSyncAsync(_session, ct);
+        if (customerMasterRepair.MarkedCleanOutOfScopeCount > 0 ||
+            customerMasterRepair.ClearedMissingCategoryCount > 0 ||
+            customerMasterRepair.NormalizedScopeCount > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 거래처 기준정보 보정: scanned={customerMasterRepair.ScannedCount}, " +
+                $"normalizedScope={customerMasterRepair.NormalizedScopeCount}, " +
+                $"clearedMissingCategory={customerMasterRepair.ClearedMissingCategoryCount}, " +
+                $"clearedOutOfScopeDirty={customerMasterRepair.MarkedCleanOutOfScopeCount}");
+        }
+
+        var customerRepair = await _local.RepairDirtyCustomersForSyncAsync(_session, ct);
+        if (customerRepair.MarkedCleanOutOfScopeCount > 0 ||
+            customerRepair.ClearedMissingCategoryCount > 0 ||
+            customerRepair.ClearedMissingCustomerMasterCount > 0 ||
+            customerRepair.NormalizedScopeCount > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 거래처 보정: scanned={customerRepair.ScannedCount}, " +
+                $"normalizedScope={customerRepair.NormalizedScopeCount}, " +
+                $"clearedMissingCategory={customerRepair.ClearedMissingCategoryCount}, " +
+                $"clearedMissingCustomerMaster={customerRepair.ClearedMissingCustomerMasterCount}, " +
+                $"clearedOutOfScopeDirty={customerRepair.MarkedCleanOutOfScopeCount}");
+        }
+
         var scopedDirtyRentalAssetIds = (await _local.GetDirtyRentalAssetsForSyncAsync(_session, ct))
             .Where(asset => !asset.IsDeleted)
             .Select(asset => asset.Id)
@@ -444,10 +474,7 @@ public sealed class SyncService : IDisposable
             .Where(e => e.IsDirty)
             .AsNoTracking()
             .ToListAsync(ct);
-        var customerMastersTask = _db.CustomerMasters.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
+        var customerMastersTask = _local.GetDirtyCustomerMastersForSyncAsync(_session, ct);
         var customersTask = _local.GetDirtyCustomersForSyncAsync(_session, ct);
         var customerContractsTask = _local.GetDirtyCustomerContractsForSyncAsync(_session, ct);
         var itemsTask = _local.GetDirtyItemsForSyncAsync(_session, ct);
@@ -790,7 +817,7 @@ public sealed class SyncService : IDisposable
         await UpsertPulledAsync(pull.Payments, _db.Payments, LocalMappings.ToLocal, ct);
 
         if (pull.LatestRevision > sinceRev)
-            await _local.SetSettingAsync("LastSyncRevision", pull.LatestRevision.ToString(), ct);
+            await TrySetSettingSafeAsync("LastSyncRevision", pull.LatestRevision.ToString(), ct);
     }
 
     private async Task UpsertPulledAsync<TLocal, TDto>(
@@ -924,6 +951,61 @@ public sealed class SyncService : IDisposable
     {
         foreach (var dto in dtos)
         {
+            await UpsertPulledInventoryTransferAsync(dto, ct);
+        }
+    }
+
+    private async Task<bool> TryRefreshSharedMirrorCoreAsync(CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var pull = await _api.PullAsync(0, ct);
+            if (pull is null)
+                return false;
+
+            try
+            {
+                using (_local.SuppressSyncDispatch())
+                {
+                    await _local.ResetSharedMirrorCacheAsync(ct);
+                    await ApplyPullAsync(pull, 0L, ct);
+                }
+
+                await TrySetSettingSafeAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
+                await TrySetSettingSafeAsync("Sync.LastError", string.Empty, CancellationToken.None);
+                _lastSyncCompletedUtc = DateTime.UtcNow;
+                SetStatus($"중앙 서버 기준 캐시 재구성 완료 {DateTime.Now:HH:mm:ss}");
+                return true;
+            }
+            catch (DbUpdateConcurrencyException ex) when (attempt == 0)
+            {
+                AppLogger.Warn("SYNC", $"공유 캐시 재구성 중 동시성 충돌 재시도: {ex.Message}");
+                _db.ChangeTracker.Clear();
+            }
+        }
+
+        return false;
+    }
+
+    private async Task TrySetSettingSafeAsync(string key, string value, CancellationToken ct)
+    {
+        try
+        {
+            await _local.SetSettingAsync(key, value, ct);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("SYNC", $"설정값 저장 실패 무시 ({key}): {ex.Message}");
+        }
+    }
+
+    private async Task UpsertPulledInventoryTransferAsync(
+        InventoryTransferDto dto,
+        CancellationToken ct,
+        bool allowRetry = true)
+    {
+        try
+        {
             var local = LocalMappings.ToLocal(dto);
             local.IsDirty = false;
 
@@ -931,11 +1013,19 @@ public sealed class SyncService : IDisposable
                 .Include(transfer => transfer.Lines)
                 .FirstOrDefaultAsync(transfer => transfer.Id == local.Id, ct);
 
+            if (existing is not null)
+            {
+                var incomingIsNewer = local.Revision > existing.Revision ||
+                                      (local.Revision == existing.Revision && local.UpdatedAtUtc >= existing.UpdatedAtUtc);
+                if (existing.IsDirty || !incomingIsNewer)
+                    return;
+            }
+
             if (existing is null)
             {
                 _db.InventoryTransfers.Add(local);
             }
-            else if (!existing.IsDirty)
+            else
             {
                 _db.Entry(existing).CurrentValues.SetValues(local);
 
@@ -943,17 +1033,29 @@ public sealed class SyncService : IDisposable
                 {
                     var existingLine = existing.Lines.FirstOrDefault(current => current.Id == line.Id);
                     if (existingLine is null)
+                    {
                         existing.Lines.Add(line);
+                    }
                     else
+                    {
                         _db.Entry(existingLine).CurrentValues.SetValues(line);
+                    }
                 }
 
-                foreach (var existingLine in existing.Lines.Where(line => !local.Lines.Any(current => current.Id == line.Id)))
+                var incomingLineIds = local.Lines.Select(line => line.Id).ToHashSet();
+                foreach (var existingLine in existing.Lines.Where(line => !incomingLineIds.Contains(line.Id)))
+                {
                     existingLine.IsDeleted = true;
+                }
             }
-        }
 
-        await _db.SaveChangesAsync(ct);
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException) when (allowRetry)
+        {
+            _db.ChangeTracker.Clear();
+            await UpsertPulledInventoryTransferAsync(dto, ct, allowRetry: false);
+        }
     }
 
     private static byte[] ReadTransactionAttachmentContent(LocalTransactionAttachment attachment)

@@ -224,6 +224,7 @@ public sealed class Invoice : TrackedEntity
     public decimal TotalAmount { get; set; }
     public decimal SupplyAmount { get; set; }
     public decimal VatAmount { get; set; }
+    public bool TaxInvoiceIssued { get; set; }
     public string Memo { get; set; } = string.Empty;
     public ICollection<InvoiceLine> Lines { get; set; } = new List<InvoiceLine>();
     public ICollection<Payment> Payments { get; set; } = new List<Payment>();

@@ -171,6 +171,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding CustomerSectionTitleText}" FontWeight="Bold"/>
@@ -231,7 +232,7 @@
                               SelectedValue="{Binding SelectedWarehouseCode}"
                               Margin="0,0,14,0"
                               MinHeight="28"/>
-                    <TextBlock Grid.Row="3" Grid.Column="2" Text="총미수금"/>
+                    <TextBlock Grid.Row="3" Grid.Column="2" Text="{Binding CustomerBalanceLabelText}"/>
                     <TextBox Grid.Row="3"
                              Grid.Column="3"
                              Text="{Binding CustomerBalance, StringFormat={}{0:N0}}"
@@ -245,6 +246,15 @@
                              Text="{Binding CustomerAdvanceBalance, StringFormat={}{0:N0}}"
                              IsReadOnly="True"
                              FontWeight="Bold"/>
+
+                    <CheckBox Grid.Row="4"
+                              Grid.Column="4"
+                              Grid.ColumnSpan="2"
+                              Content="세금계산서 발행 완료"
+                              IsChecked="{Binding TaxInvoiceIssued}"
+                              Visibility="{Binding ShowTaxInvoiceIssuedOption, Converter={StaticResource BoolToVisibilityConverter}}"
+                              Margin="0,8,0,0"
+                              VerticalAlignment="Center"/>
                 </Grid>
             </Border>
 

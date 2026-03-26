@@ -9,6 +9,7 @@ public sealed partial class MainViewModel
 {
     [ObservableProperty] private decimal _previewCustomerAdvanceBalance;
     [ObservableProperty] private decimal _previewCustomerReceivableBalance;
+    [ObservableProperty] private decimal _previewCustomerPayableBalance;
     [ObservableProperty] private decimal _previewCustomerPrepaymentBalance;
 
     private void RequestRefreshCustomerFinancialPreview(LocalCustomer? customer)
@@ -37,6 +38,7 @@ public sealed partial class MainViewModel
 
             PreviewCustomerAdvanceBalance = 0m;
             PreviewCustomerReceivableBalance = 0m;
+            PreviewCustomerPayableBalance = 0m;
             PreviewCustomerPrepaymentBalance = 0m;
             return;
         }
@@ -47,6 +49,7 @@ public sealed partial class MainViewModel
 
         PreviewCustomerAdvanceBalance = summary.AdvanceBalance;
         PreviewCustomerReceivableBalance = summary.ReceivableAmount;
+        PreviewCustomerPayableBalance = summary.PayableAmount;
         PreviewCustomerPrepaymentBalance = summary.PrepaymentAmount;
     }
 

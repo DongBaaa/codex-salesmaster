@@ -418,9 +418,7 @@ public sealed class SyncController : ControllerBase
             if (dto.CategoryId.HasValue &&
                 !await ExistsOrTrackedAsync(_dbContext.CustomerCategories, dto.CategoryId.Value, cancellationToken))
             {
-                AddClientConflict(dto, nameof(CustomerMaster),
-                    $"Referenced category was not found: {dto.CategoryId}.", result);
-                continue;
+                dto.CategoryId = null;
             }
 
             valid.Add(dto);
@@ -467,9 +465,7 @@ public sealed class SyncController : ControllerBase
             if (dto.CategoryId.HasValue &&
                 !await ExistsOrTrackedAsync(_dbContext.CustomerCategories, dto.CategoryId.Value, cancellationToken))
             {
-                AddClientConflict(dto, nameof(Customer),
-                    $"Referenced category was not found: {dto.CategoryId}.", result);
-                continue;
+                dto.CategoryId = null;
             }
 
             if (dto.CustomerMasterId.HasValue)
@@ -478,16 +474,14 @@ public sealed class SyncController : ControllerBase
                     .FirstOrDefaultAsync(x => x.Id == dto.CustomerMasterId.Value, cancellationToken);
                 if (customerMaster is null || customerMaster.IsDeleted)
                 {
-                    AddClientConflict(dto, nameof(Customer),
-                        $"Referenced customer master was not found: {dto.CustomerMasterId}.", result);
+                    dto.CustomerMasterId = null;
+                    valid.Add(dto);
                     continue;
                 }
 
                 if (!_officeScopeService.CanReadOfficeForCustomers(customerMaster.OfficeCode, customerMaster.TenantCode))
                 {
-                    AddClientConflict(dto, nameof(Customer),
-                        $"Referenced customer master is outside the current office scope: {dto.CustomerMasterId}.", result);
-                    continue;
+                    dto.CustomerMasterId = null;
                 }
             }
 

@@ -62,6 +62,8 @@ public static class DbInitializer
         var fileStorage = scope.ServiceProvider.GetRequiredService<ICentralFileStorage>();
 
         await EnsureBusinessDatabaseSchemaAsync(dbContext, cancellationToken);
+        await BackfillCustomerScopeFieldsAsync(dbContext, cancellationToken);
+        await BackfillCustomerMasterScopeFieldsAsync(dbContext, cancellationToken);
 
         var dedicatedBusinessConnections = connectionResolver.GetDedicatedBusinessConnections();
         foreach (var connectionInfo in dedicatedBusinessConnections)
@@ -69,6 +71,8 @@ public static class DbInitializer
             await EnsureDedicatedBusinessDatabaseExistsAsync(connectionInfo, logger, cancellationToken);
             await using var tenantDbContext = CreateDbContext(connectionInfo, revisionClock);
             await EnsureBusinessDatabaseSchemaAsync(tenantDbContext, cancellationToken);
+            await BackfillCustomerScopeFieldsAsync(tenantDbContext, cancellationToken);
+            await BackfillCustomerMasterScopeFieldsAsync(tenantDbContext, cancellationToken);
         }
 
         var maxRevision = await GetMaxRevisionAsync(dbContext, cancellationToken);
@@ -179,9 +183,115 @@ public static class DbInitializer
         await EnsureItemTenantCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceTenantCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureInvoiceTaxInvoiceIssuedColumnAsync(dbContext, cancellationToken);
         await EnsureCustomerContractStoragePathColumnAsync(dbContext, cancellationToken);
         await EnsurePaymentAttachmentStoragePathColumnAsync(dbContext, cancellationToken);
         await EnsureTransactionAttachmentStoragePathColumnAsync(dbContext, cancellationToken);
+    }
+
+    private static async Task BackfillCustomerScopeFieldsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var customers = await dbContext.Customers.IgnoreQueryFilters().ToListAsync(cancellationToken);
+        if (customers.Count == 0)
+            return;
+
+        var changed = false;
+        foreach (var customer in customers)
+        {
+            var desiredOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                customer.OfficeCode,
+                OfficeCodeCatalog.Shared);
+            var desiredTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                customer.TenantCode,
+                desiredOfficeCode,
+                TenantScopeCatalog.UsenetGroup,
+                desiredOfficeCode);
+
+            if (!string.Equals(customer.OfficeCode, desiredOfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                customer.OfficeCode = desiredOfficeCode;
+                changed = true;
+            }
+
+            if (!string.Equals(customer.TenantCode, desiredTenantCode, StringComparison.OrdinalIgnoreCase))
+            {
+                customer.TenantCode = desiredTenantCode;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private static async Task BackfillCustomerMasterScopeFieldsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var customerMasters = await dbContext.CustomerMasters.IgnoreQueryFilters().ToListAsync(cancellationToken);
+        if (customerMasters.Count == 0)
+            return;
+
+        var references = await dbContext.Customers.IgnoreQueryFilters()
+            .Where(customer => customer.CustomerMasterId.HasValue)
+            .Select(customer => new
+            {
+                CustomerMasterId = customer.CustomerMasterId!.Value,
+                customer.OfficeCode,
+                customer.TenantCode
+            })
+            .ToListAsync(cancellationToken);
+
+        var referenceLookup = references
+            .GroupBy(entry => entry.CustomerMasterId)
+            .ToDictionary(group => group.Key, group => group.ToList());
+
+        var changed = false;
+        foreach (var customerMaster in customerMasters)
+        {
+            var desiredOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                customerMaster.OfficeCode,
+                OfficeCodeCatalog.Shared);
+            var desiredTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                customerMaster.TenantCode,
+                desiredOfficeCode,
+                TenantScopeCatalog.UsenetGroup,
+                desiredOfficeCode);
+
+            if (referenceLookup.TryGetValue(customerMaster.Id, out var scopedCustomers) && scopedCustomers.Count > 0)
+            {
+                var officeCodes = scopedCustomers
+                    .Select(entry => OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entry.OfficeCode, OfficeCodeCatalog.Shared))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                desiredOfficeCode = officeCodes.Count == 1 ? officeCodes[0] : OfficeCodeCatalog.Shared;
+
+                var tenantCodes = scopedCustomers
+                    .Select(entry => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entry.TenantCode, entry.OfficeCode))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                desiredTenantCode = tenantCodes.Count == 1
+                    ? tenantCodes[0]
+                    : TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, desiredOfficeCode);
+            }
+
+            if (!string.Equals(customerMaster.OfficeCode, desiredOfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                customerMaster.OfficeCode = desiredOfficeCode;
+                changed = true;
+            }
+
+            if (!string.Equals(customerMaster.TenantCode, desiredTenantCode, StringComparison.OrdinalIgnoreCase))
+            {
+                customerMaster.TenantCode = desiredTenantCode;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            await dbContext.SaveChangesAsync(cancellationToken);
     }
 
     private static async Task EnsureReferenceDataAsync(
@@ -1717,6 +1827,36 @@ public static class DbInitializer
             await dbContext.Database.ExecuteSqlRawAsync(
                 "CREATE INDEX IF NOT EXISTS \"IX_Items_CategoryName\" ON \"Items\" (\"CategoryName\");",
                 cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task EnsureInvoiceTaxInvoiceIssuedColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    ALTER TABLE "Invoices" ADD COLUMN "TaxInvoiceIssued" INTEGER NOT NULL DEFAULT 0;
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    ALTER TABLE "Invoices" ADD COLUMN IF NOT EXISTS "TaxInvoiceIssued" boolean NOT NULL DEFAULT false;
+                    """,
+                    cancellationToken);
+            }
         }
         catch
         {
