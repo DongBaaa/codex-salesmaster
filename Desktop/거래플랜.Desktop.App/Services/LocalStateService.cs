@@ -994,6 +994,197 @@ public sealed partial class LocalStateService
             .ToList();
     }
 
+    public async Task<List<LocalInvoice>> GetDirtyInvoicesForSyncAsync(SessionState session, CancellationToken ct = default)
+    {
+        var query = _db.Invoices.IgnoreQueryFilters()
+            .Include(invoice => invoice.Lines)
+            .Include(invoice => invoice.Payments)
+            .Where(invoice => invoice.IsDirty)
+            .AsNoTracking();
+
+        if (CanWriteAllScopedData(session))
+            return await query.ToListAsync(ct);
+
+        var dirtyInvoices = await query.ToListAsync(ct);
+        return dirtyInvoices
+            .Where(invoice => CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
+            .ToList();
+    }
+
+    public async Task<List<LocalInventoryTransfer>> GetDirtyInventoryTransfersForSyncAsync(SessionState session, CancellationToken ct = default)
+    {
+        var query = _db.InventoryTransfers.IgnoreQueryFilters()
+            .Include(transfer => transfer.Lines)
+            .Where(transfer => transfer.IsDirty)
+            .AsNoTracking();
+
+        if (CanWriteAllScopedData(session))
+            return await query.ToListAsync(ct);
+
+        var dirtyTransfers = await query.ToListAsync(ct);
+        return dirtyTransfers
+            .Where(transfer =>
+                CanWriteOfficeScope(session, ResolveOfficeCodeFromWarehouseCode(transfer.FromWarehouseCode)) ||
+                CanWriteOfficeScope(session, ResolveOfficeCodeFromWarehouseCode(transfer.ToWarehouseCode)))
+            .ToList();
+    }
+
+    public async Task<InvoiceSyncRepairResult> RepairDirtyInvoicesForSyncAsync(
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var result = new InvoiceSyncRepairResult();
+        var dirtyInvoices = await _db.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.IsDirty)
+            .ToListAsync(ct);
+
+        if (dirtyInvoices.Count == 0)
+            return result;
+
+        var customerIds = dirtyInvoices
+            .Where(invoice => invoice.CustomerId != Guid.Empty)
+            .Select(invoice => invoice.CustomerId)
+            .Distinct()
+            .ToList();
+        var customers = customerIds.Count == 0
+            ? new Dictionary<Guid, LocalCustomer>()
+            : await _db.Customers.IgnoreQueryFilters()
+                .Where(customer => customerIds.Contains(customer.Id))
+                .ToDictionaryAsync(customer => customer.Id, ct);
+
+        var versionGroupIds = dirtyInvoices
+            .Select(invoice => invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        var versionGroupInvoices = versionGroupIds.Count == 0
+            ? new List<LocalInvoice>()
+            : await _db.Invoices.IgnoreQueryFilters()
+                .Where(invoice => !invoice.IsDeleted &&
+                                  versionGroupIds.Contains(invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId))
+                .AsNoTracking()
+                .ToListAsync(ct);
+
+        var invoicesByVersionGroup = versionGroupInvoices
+            .GroupBy(invoice => invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId)
+            .ToDictionary(group => group.Key, group => group.ToList());
+
+        var now = DateTime.UtcNow;
+        var changed = false;
+
+        foreach (var invoice in dirtyInvoices)
+        {
+            result.ScannedCount++;
+
+            if (!CanWriteAllScopedData(session) && !CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
+            {
+                invoice.IsDirty = false;
+                invoice.UpdatedAtUtc = now;
+                changed = true;
+                result.MarkedCleanOutOfScopeCount++;
+                continue;
+            }
+
+            if (invoice.CustomerId != Guid.Empty &&
+                customers.TryGetValue(invoice.CustomerId, out var existingCustomer) &&
+                !existingCustomer.IsDeleted)
+            {
+                continue;
+            }
+
+            var versionGroupId = invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
+            if (!invoicesByVersionGroup.TryGetValue(versionGroupId, out var relatedInvoices))
+                continue;
+
+            var resolvedCustomer = relatedInvoices
+                .Where(candidate => candidate.Id != invoice.Id && candidate.CustomerId != Guid.Empty)
+                .Select(candidate => customers.TryGetValue(candidate.CustomerId, out var candidateCustomer)
+                    ? candidateCustomer
+                    : null)
+                .FirstOrDefault(candidateCustomer => candidateCustomer is not null && !candidateCustomer.IsDeleted);
+
+            if (resolvedCustomer is null)
+                continue;
+
+            invoice.CustomerId = resolvedCustomer.Id;
+            invoice.ResponsibleOfficeCode = NormalizeOfficeScope(invoice.ResponsibleOfficeCode, resolvedCustomer.ResponsibleOfficeCode);
+            invoice.IsDirty = true;
+            invoice.UpdatedAtUtc = now;
+            changed = true;
+            result.ResolvedMissingCustomerCount++;
+        }
+
+        if (changed)
+            await _db.SaveChangesAsync(ct);
+
+        return result;
+    }
+
+    public async Task<TransactionAttachmentSyncRepairResult> RepairDirtyTransactionAttachmentsForSyncAsync(
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var result = new TransactionAttachmentSyncRepairResult();
+        var dirtyAttachments = await _db.TransactionAttachments.IgnoreQueryFilters()
+            .Where(attachment => attachment.IsDirty)
+            .ToListAsync(ct);
+
+        if (dirtyAttachments.Count == 0)
+            return result;
+
+        var transactionIds = dirtyAttachments
+            .Select(attachment => attachment.TransactionId)
+            .Where(transactionId => transactionId != Guid.Empty)
+            .Distinct()
+            .ToList();
+        var transactions = transactionIds.Count == 0
+            ? new Dictionary<Guid, LocalTransaction>()
+            : await _db.Transactions.IgnoreQueryFilters()
+                .Where(transaction => transactionIds.Contains(transaction.Id))
+                .ToDictionaryAsync(transaction => transaction.Id, ct);
+
+        var now = DateTime.UtcNow;
+        var changed = false;
+
+        foreach (var attachment in dirtyAttachments)
+        {
+            result.ScannedCount++;
+
+            if (transactions.TryGetValue(attachment.TransactionId, out var transaction) && !transaction.IsDeleted)
+            {
+                if (!CanWriteAllScopedData(session) && !CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode))
+                {
+                    attachment.IsDirty = false;
+                    attachment.UpdatedAtUtc = now;
+                    changed = true;
+                    result.MarkedCleanOutOfScopeCount++;
+                }
+
+                continue;
+            }
+
+            if (attachment.IsDeleted)
+            {
+                attachment.IsDirty = false;
+                attachment.UpdatedAtUtc = now;
+                changed = true;
+                result.MarkedCleanStaleDeletedCount++;
+                continue;
+            }
+
+            attachment.IsDeleted = true;
+            attachment.IsDirty = true;
+            attachment.UpdatedAtUtc = now;
+            changed = true;
+            result.MarkedDeletedMissingTransactionCount++;
+        }
+
+        if (changed)
+            await _db.SaveChangesAsync(ct);
+
+        return result;
+    }
+
     public async Task<TransactionSyncRepairResult> RepairDirtyTransactionsForSyncAsync(
         SessionState session,
         CancellationToken ct = default)
@@ -4179,11 +4370,25 @@ public sealed partial class LocalStateService
             count = count - dirtyTransactionAttachmentCount + syncableDirtyTransactionAttachmentCount;
         }
 
+        var dirtyInvoiceCount = await _db.Invoices.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyInvoiceCount > 0)
+        {
+            var syncableDirtyInvoiceCount = (await GetDirtyInvoicesForSyncAsync(session, ct)).Count;
+            count = count - dirtyInvoiceCount + syncableDirtyInvoiceCount;
+        }
+
         var dirtyPaymentCount = await _db.Payments.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
         if (dirtyPaymentCount > 0)
         {
             var syncableDirtyPaymentCount = (await GetDirtyPaymentsForSyncAsync(session, ct)).Count;
             count = count - dirtyPaymentCount + syncableDirtyPaymentCount;
+        }
+
+        var dirtyInventoryTransferCount = await _db.InventoryTransfers.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyInventoryTransferCount > 0)
+        {
+            var syncableDirtyInventoryTransferCount = (await GetDirtyInventoryTransfersForSyncAsync(session, ct)).Count;
+            count = count - dirtyInventoryTransferCount + syncableDirtyInventoryTransferCount;
         }
 
         return count;
@@ -4481,6 +4686,21 @@ public sealed partial class LocalStateService
     {
         public int ScannedCount { get; set; }
         public int MarkedDeletedMissingInvoiceCount { get; set; }
+    }
+
+    public sealed class InvoiceSyncRepairResult
+    {
+        public int ScannedCount { get; set; }
+        public int ResolvedMissingCustomerCount { get; set; }
+        public int MarkedCleanOutOfScopeCount { get; set; }
+    }
+
+    public sealed class TransactionAttachmentSyncRepairResult
+    {
+        public int ScannedCount { get; set; }
+        public int MarkedDeletedMissingTransactionCount { get; set; }
+        public int MarkedCleanStaleDeletedCount { get; set; }
+        public int MarkedCleanOutOfScopeCount { get; set; }
     }
 
     public sealed class CustomerSyncRepairResult

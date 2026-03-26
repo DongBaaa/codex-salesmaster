@@ -407,6 +407,7 @@ public static class LocalMappings
     {
         Id = e.Id,
         CustomerId = e.CustomerId,
+        CustomerName = string.Empty,
         OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(e.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
         InvoiceNumber = e.InvoiceNumber,
         LocalTempNumber = e.LocalTempNumber,

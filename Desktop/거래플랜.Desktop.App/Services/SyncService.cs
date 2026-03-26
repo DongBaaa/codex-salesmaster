@@ -441,6 +441,30 @@ public sealed class SyncService : IDisposable
                 $"resolvedCustomers={transactionRepair.ResolvedMissingCustomerCount}");
         }
 
+        var invoiceRepair = await _local.RepairDirtyInvoicesForSyncAsync(_session, ct);
+        if (invoiceRepair.ResolvedMissingCustomerCount > 0 ||
+            invoiceRepair.MarkedCleanOutOfScopeCount > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 전표 참조 보정: scanned={invoiceRepair.ScannedCount}, " +
+                $"resolvedCustomers={invoiceRepair.ResolvedMissingCustomerCount}, " +
+                $"clearedOutOfScopeDirty={invoiceRepair.MarkedCleanOutOfScopeCount}");
+        }
+
+        var transactionAttachmentRepair = await _local.RepairDirtyTransactionAttachmentsForSyncAsync(_session, ct);
+        if (transactionAttachmentRepair.MarkedDeletedMissingTransactionCount > 0 ||
+            transactionAttachmentRepair.MarkedCleanStaleDeletedCount > 0 ||
+            transactionAttachmentRepair.MarkedCleanOutOfScopeCount > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 증빙 참조 보정: scanned={transactionAttachmentRepair.ScannedCount}, " +
+                $"markedDeletedMissingTransaction={transactionAttachmentRepair.MarkedDeletedMissingTransactionCount}, " +
+                $"cleanedStaleDeleted={transactionAttachmentRepair.MarkedCleanStaleDeletedCount}, " +
+                $"clearedOutOfScopeDirty={transactionAttachmentRepair.MarkedCleanOutOfScopeCount}");
+        }
+
         var paymentRepair = await _local.RepairDirtyPaymentsForSyncAsync(_session, ct);
         if (paymentRepair.MarkedDeletedMissingInvoiceCount > 0)
         {
@@ -483,11 +507,7 @@ public sealed class SyncService : IDisposable
             .ToListAsync(ct);
         var transactionsTask = _local.GetDirtyTransactionsForSyncAsync(_session, ct);
         var transactionAttachmentsTask = _local.GetDirtyTransactionAttachmentsForSyncAsync(_session, ct);
-        var inventoryTransfersTask = _db.InventoryTransfers.IgnoreQueryFilters()
-            .Include(transfer => transfer.Lines)
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
+        var inventoryTransfersTask = _local.GetDirtyInventoryTransfersForSyncAsync(_session, ct);
         var rentalManagementCompaniesTask = _db.RentalManagementCompanies.IgnoreQueryFilters()
             .Where(e => e.IsDirty)
             .AsNoTracking()
@@ -495,12 +515,7 @@ public sealed class SyncService : IDisposable
         var rentalBillingProfilesTask = _local.GetDirtyRentalBillingProfilesForSyncAsync(_session, ct);
         var rentalAssetsTask = _local.GetDirtyRentalAssetsForSyncAsync(_session, ct);
         var rentalBillingLogsTask = _local.GetDirtyRentalBillingLogsForSyncAsync(_session, ct);
-        var invoicesTask = _db.Invoices.IgnoreQueryFilters()
-            .Include(i => i.Lines)
-            .Include(i => i.Payments)
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
+        var invoicesTask = _local.GetDirtyInvoicesForSyncAsync(_session, ct);
         var paymentsTask = _local.GetDirtyPaymentsForSyncAsync(_session, ct);
 
         await Task.WhenAll(
@@ -546,6 +561,30 @@ public sealed class SyncService : IDisposable
         var rentalAssets = (await rentalAssetsTask).Select(LocalMappings.ToDto).ToList();
         var rentalBillingLogs = (await rentalBillingLogsTask).Select(LocalMappings.ToDto).ToList();
         var invoices = (await invoicesTask).Select(LocalMappings.ToDto).ToList();
+        if (invoices.Count > 0)
+        {
+            var invoiceCustomerIds = invoices
+                .Where(invoice => invoice.CustomerId != Guid.Empty)
+                .Select(invoice => invoice.CustomerId)
+                .Distinct()
+                .ToList();
+            if (invoiceCustomerIds.Count > 0)
+            {
+                var invoiceCustomers = await _db.Customers.IgnoreQueryFilters()
+                    .Where(customer => invoiceCustomerIds.Contains(customer.Id))
+                    .Select(customer => new { customer.Id, customer.NameOriginal })
+                    .ToDictionaryAsync(customer => customer.Id, customer => customer.NameOriginal, ct);
+
+                foreach (var invoice in invoices)
+                {
+                    if (invoice.CustomerId != Guid.Empty &&
+                        invoiceCustomers.TryGetValue(invoice.CustomerId, out var customerName))
+                    {
+                        invoice.CustomerName = customerName ?? string.Empty;
+                    }
+                }
+            }
+        }
         var payments = (await paymentsTask).Select(LocalMappings.ToDto).ToList();
 
         var req = new SyncPushRequest
@@ -787,9 +826,20 @@ public sealed class SyncService : IDisposable
         if (pull is null)
             return;
 
-        using (_local.SuppressSyncDispatch())
+        try
         {
-            await ApplyPullAsync(pull, sinceRev, ct);
+            using (_local.SuppressSyncDispatch())
+            {
+                await ApplyPullAsync(pull, sinceRev, ct);
+            }
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            AppLogger.Warn("SYNC", $"증분 pull 반영 중 동시성 충돌이 발생해 전체 캐시 재구성을 시도합니다: {ex.Message}");
+            _db.ChangeTracker.Clear();
+
+            if (!await TryRefreshSharedMirrorCoreAsync(ct))
+                throw;
         }
     }
 
@@ -1010,7 +1060,7 @@ public sealed class SyncService : IDisposable
             local.IsDirty = false;
 
             var existing = await _db.InventoryTransfers.IgnoreQueryFilters()
-                .Include(transfer => transfer.Lines)
+                .AsNoTracking()
                 .FirstOrDefaultAsync(transfer => transfer.Id == local.Id, ct);
 
             if (existing is not null)
@@ -1021,35 +1071,19 @@ public sealed class SyncService : IDisposable
                     return;
             }
 
-            if (existing is null)
-            {
-                _db.InventoryTransfers.Add(local);
-            }
-            else
-            {
-                _db.Entry(existing).CurrentValues.SetValues(local);
+            _db.ChangeTracker.Clear();
 
-                foreach (var line in local.Lines)
-                {
-                    var existingLine = existing.Lines.FirstOrDefault(current => current.Id == line.Id);
-                    if (existingLine is null)
-                    {
-                        existing.Lines.Add(line);
-                    }
-                    else
-                    {
-                        _db.Entry(existingLine).CurrentValues.SetValues(line);
-                    }
-                }
+            await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+            await _db.InventoryTransferLines
+                .Where(line => line.TransferId == local.Id)
+                .ExecuteDeleteAsync(ct);
+            await _db.InventoryTransfers.IgnoreQueryFilters()
+                .Where(transfer => transfer.Id == local.Id)
+                .ExecuteDeleteAsync(ct);
 
-                var incomingLineIds = local.Lines.Select(line => line.Id).ToHashSet();
-                foreach (var existingLine in existing.Lines.Where(line => !incomingLineIds.Contains(line.Id)))
-                {
-                    existingLine.IsDeleted = true;
-                }
-            }
-
+            _db.InventoryTransfers.Add(local);
             await _db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
         }
         catch (DbUpdateConcurrencyException) when (allowRetry)
         {

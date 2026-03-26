@@ -781,6 +781,226 @@ public sealed class SyncControllerTests : IDisposable
         Assert.True(storedPayment.IsDeleted);
     }
 
+    [Fact]
+    public async Task Push_ResolvesInvoiceCustomerReference_FromExistingInvoiceCustomer_WhenIncomingCustomerIsMissing()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "EXISTING-INVOICE-CUSTOMER",
+            NameMatchKey = "EXISTINGINVOICECUSTOMER",
+            TradeType = "매출"
+        };
+        var invoiceId = Guid.NewGuid();
+        _dbContext.Customers.Add(customer);
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "S-20260326-001",
+            LocalTempNumber = "TMP-S-001",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 3, 26),
+            TotalAmount = 1000m,
+            SupplyAmount = 909m,
+            VatAmount = 91m,
+            CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = Guid.NewGuid(),
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 3, 27),
+                    Memo = "customer repaired from existing invoice",
+                    CreatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+
+        var storedInvoice = await _dbContext.Invoices.IgnoreQueryFilters().FirstAsync(x => x.Id == invoiceId);
+        Assert.Equal(customer.Id, storedInvoice.CustomerId);
+        Assert.Equal("customer repaired from existing invoice", storedInvoice.Memo);
+    }
+
+    [Fact]
+    public async Task Push_ResolvesInvoiceCustomerReference_FromCustomerName_WhenCustomerIdIsMissing()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "NAME-RECOVERY-CUSTOMER",
+            NameMatchKey = "NAMERECOVERYCUSTOMER",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = Guid.NewGuid(),
+                    CustomerName = customer.NameOriginal,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    VoucherType = VoucherType.Purchase,
+                    InvoiceDate = new DateOnly(2026, 3, 26),
+                    TotalAmount = 2200m,
+                    SupplyAmount = 2000m,
+                    VatAmount = 200m,
+                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+
+        var storedInvoice = await _dbContext.Invoices.IgnoreQueryFilters().FirstAsync(x => x.Id == invoiceId);
+        Assert.Equal(customer.Id, storedInvoice.CustomerId);
+    }
+
+    [Fact]
+    public async Task Push_SkipsDeletedTransactionAttachment_WhenTransactionIsAlreadyMissing()
+    {
+        var request = new SyncPushRequest
+        {
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = Guid.NewGuid(),
+                    TransactionId = Guid.NewGuid(),
+                    IsDeleted = true,
+                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Empty(await _dbContext.TransactionAttachments.IgnoreQueryFilters().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Push_PreservesExistingTransactionAttachmentLink_WhenIncomingTransactionReferenceIsMissing()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "ATTACHMENT-CUSTOMER",
+            NameMatchKey = "ATTACHMENTCUSTOMER",
+            TradeType = "매출"
+        };
+        var transaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 3, 25),
+            TransactionKind = "일반수금",
+            CashReceipt = 1000m,
+            ReceiptTotal = 1000m,
+            SettlementAmount = 1000m,
+            CreatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var attachmentId = Guid.NewGuid();
+        _dbContext.Customers.Add(customer);
+        _dbContext.Transactions.Add(transaction);
+        _dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = attachmentId,
+            TransactionId = transaction.Id,
+            AttachmentType = "기타",
+            FileName = "receipt.pdf",
+            MimeType = "application/pdf",
+            FileSize = 10,
+            FileHash = "hash",
+            Description = "existing attachment",
+            UploadedByUsername = "admin",
+            UploadedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc),
+            CreatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachmentId,
+                    TransactionId = Guid.NewGuid(),
+                    FileName = "receipt.pdf",
+                    MimeType = "application/pdf",
+                    AttachmentType = "기타",
+                    FileContent = [],
+                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        await using var verificationDb = CreateDbContext(new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        });
+        var storedAttachment = await verificationDb.TransactionAttachments
+            .IgnoreQueryFilters()
+            .FirstAsync(x => x.Id == attachmentId);
+        Assert.Equal(transaction.Id, storedAttachment.TransactionId);
+        Assert.False(storedAttachment.IsDeleted);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();
