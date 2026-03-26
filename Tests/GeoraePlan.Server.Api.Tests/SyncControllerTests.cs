@@ -625,6 +625,135 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(customer.Id, storedTransaction.CustomerId);
     }
 
+    [Fact]
+    public async Task Push_AllowsPaymentReferencingInvoiceCreatedInSameBatch()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "BATCH-PAYMENT-CUSTOMER",
+            NameMatchKey = "BATCHPAYMENTCUSTOMER",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customer.Id,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    VoucherType = VoucherType.Purchase,
+                    InvoiceDate = new DateOnly(2026, 3, 26),
+                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ],
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 3, 26),
+                    Amount = 5000m,
+                    Note = "same-batch payment",
+                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+
+        var storedPayment = await _dbContext.Payments.IgnoreQueryFilters().FirstAsync();
+        Assert.Equal(invoiceId, storedPayment.InvoiceId);
+        Assert.False(storedPayment.IsDeleted);
+    }
+
+    [Fact]
+    public async Task Push_SkipsDeletedPayment_WhenInvoiceIsAlreadyMissing()
+    {
+        var request = new SyncPushRequest
+        {
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = Guid.NewGuid(),
+                    PaymentDate = new DateOnly(2026, 3, 26),
+                    Amount = 8000m,
+                    Note = "stale delete",
+                    IsDeleted = true,
+                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Empty(await _dbContext.Payments.IgnoreQueryFilters().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Push_DeletesExistingPayment_WhenInvoiceReferenceIsMissing()
+    {
+        var paymentId = Guid.NewGuid();
+        _dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = Guid.NewGuid(),
+            PaymentDate = new DateOnly(2026, 3, 25),
+            Amount = 8000m,
+            Note = "old payment"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = Guid.NewGuid(),
+                    PaymentDate = new DateOnly(2026, 3, 26),
+                    Amount = 8000m,
+                    Note = "missing invoice payment",
+                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+
+        var storedPayment = await _dbContext.Payments.IgnoreQueryFilters().FirstAsync();
+        Assert.True(storedPayment.IsDeleted);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();

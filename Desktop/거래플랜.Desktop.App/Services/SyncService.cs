@@ -386,6 +386,15 @@ public sealed class SyncService : IDisposable
                 $"resolvedCustomers={transactionRepair.ResolvedMissingCustomerCount}");
         }
 
+        var paymentRepair = await _local.RepairDirtyPaymentsForSyncAsync(_session, ct);
+        if (paymentRepair.MarkedDeletedMissingInvoiceCount > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 결제 참조 보정: scanned={paymentRepair.ScannedCount}, " +
+                $"deletedMissingInvoicePayments={paymentRepair.MarkedDeletedMissingInvoiceCount}");
+        }
+
         var companyProfilesTask = _db.CompanyProfiles.IgnoreQueryFilters()
             .Where(e => e.IsDirty)
             .AsNoTracking()
@@ -440,10 +449,7 @@ public sealed class SyncService : IDisposable
             .Where(e => e.IsDirty)
             .AsNoTracking()
             .ToListAsync(ct);
-        var paymentsTask = _db.Payments.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
+        var paymentsTask = _local.GetDirtyPaymentsForSyncAsync(_session, ct);
 
         await Task.WhenAll(
             companyProfilesTask,

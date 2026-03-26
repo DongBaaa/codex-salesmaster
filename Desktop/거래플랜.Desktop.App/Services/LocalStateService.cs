@@ -803,6 +803,34 @@ public sealed partial class LocalStateService
             .ToList();
     }
 
+    public async Task<List<LocalPayment>> GetDirtyPaymentsForSyncAsync(SessionState session, CancellationToken ct = default)
+    {
+        var dirtyPayments = await _db.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.IsDirty)
+            .AsNoTracking()
+            .ToListAsync(ct);
+
+        if (CanWriteAllScopedData(session) || dirtyPayments.Count == 0)
+            return dirtyPayments;
+
+        var invoiceIds = dirtyPayments
+            .Select(payment => payment.InvoiceId)
+            .Where(invoiceId => invoiceId != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        var invoices = await _db.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoiceIds.Contains(invoice.Id))
+            .AsNoTracking()
+            .ToDictionaryAsync(invoice => invoice.Id, ct);
+
+        return dirtyPayments
+            .Where(payment =>
+                !invoices.TryGetValue(payment.InvoiceId, out var invoice) ||
+                CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
+            .ToList();
+    }
+
     public async Task<TransactionSyncRepairResult> RepairDirtyTransactionsForSyncAsync(
         SessionState session,
         CancellationToken ct = default)
@@ -932,6 +960,69 @@ public sealed partial class LocalStateService
                     changed = true;
                     result.ResolvedMissingCustomerCount++;
                 }
+            }
+        }
+
+        if (changed)
+            await _db.SaveChangesAsync(ct);
+
+        return result;
+    }
+
+    public async Task<PaymentSyncRepairResult> RepairDirtyPaymentsForSyncAsync(
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var result = new PaymentSyncRepairResult();
+        var dirtyPayments = await _db.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.IsDirty)
+            .ToListAsync(ct);
+
+        if (dirtyPayments.Count == 0)
+            return result;
+
+        var invoiceIds = dirtyPayments
+            .Select(payment => payment.InvoiceId)
+            .Where(invoiceId => invoiceId != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        var invoices = invoiceIds.Count == 0
+            ? new Dictionary<Guid, LocalInvoice>()
+            : await _db.Invoices.IgnoreQueryFilters()
+                .Where(invoice => invoiceIds.Contains(invoice.Id))
+                .ToDictionaryAsync(invoice => invoice.Id, ct);
+
+        if (!CanWriteAllScopedData(session))
+        {
+            dirtyPayments = dirtyPayments
+                .Where(payment =>
+                    !invoices.TryGetValue(payment.InvoiceId, out var invoice) ||
+                    CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
+                .ToList();
+        }
+
+        if (dirtyPayments.Count == 0)
+            return result;
+
+        var now = DateTime.UtcNow;
+        var changed = false;
+
+        foreach (var payment in dirtyPayments)
+        {
+            result.ScannedCount++;
+
+            if (payment.InvoiceId == Guid.Empty ||
+                !invoices.TryGetValue(payment.InvoiceId, out var invoice) ||
+                invoice.IsDeleted)
+            {
+                if (!payment.IsDeleted)
+                    result.MarkedDeletedMissingInvoiceCount++;
+
+                payment.IsDeleted = true;
+                payment.IsDirty = true;
+                payment.UpdatedAtUtc = now;
+                changed = true;
             }
         }
 
@@ -1720,7 +1811,9 @@ public sealed partial class LocalStateService
             invoice.LastSavedAtUtc = now;
         }
 
-        await DetachTransactionsFromInvoicesAsync(invoicesToDelete.Select(invoice => invoice.Id).ToList(), now, ct);
+        var deletedInvoiceIds = invoicesToDelete.Select(invoice => invoice.Id).ToList();
+        await DetachTransactionsFromInvoicesAsync(deletedInvoiceIds, now, ct);
+        await MarkPaymentsDeletedForInvoicesAsync(deletedInvoiceIds, now, ct);
 
         _db.AuditLogs.Add(new LocalAuditLog
         {
@@ -1781,7 +1874,9 @@ public sealed partial class LocalStateService
             invoice.LastSavedAtUtc = now;
         }
 
-        await DetachTransactionsFromInvoicesAsync(invoicesToDelete.Select(invoice => invoice.Id).ToList(), now, ct);
+        var deletedInvoiceIds = invoicesToDelete.Select(invoice => invoice.Id).ToList();
+        await DetachTransactionsFromInvoicesAsync(deletedInvoiceIds, now, ct);
+        await MarkPaymentsDeletedForInvoicesAsync(deletedInvoiceIds, now, ct);
 
         _db.AuditLogs.Add(new LocalAuditLog
         {
@@ -3099,6 +3194,27 @@ public sealed partial class LocalStateService
         }
     }
 
+    private async Task MarkPaymentsDeletedForInvoicesAsync(
+        IReadOnlyCollection<Guid> invoiceIds,
+        DateTime updatedAtUtc,
+        CancellationToken ct)
+    {
+        if (invoiceIds is null || invoiceIds.Count == 0)
+            return;
+
+        var payments = await _db.Payments
+            .IgnoreQueryFilters()
+            .Where(payment => invoiceIds.Contains(payment.InvoiceId))
+            .ToListAsync(ct);
+
+        foreach (var payment in payments)
+        {
+            payment.IsDeleted = true;
+            payment.IsDirty = true;
+            payment.UpdatedAtUtc = updatedAtUtc;
+        }
+    }
+
     private async Task RecalculateRentalSettlementAsync(Guid billingProfileId, CancellationToken ct)
     {
         var profile = await _db.RentalBillingProfiles
@@ -3860,6 +3976,13 @@ public sealed partial class LocalStateService
             count = count - dirtyTransactionAttachmentCount + syncableDirtyTransactionAttachmentCount;
         }
 
+        var dirtyPaymentCount = await _db.Payments.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct);
+        if (dirtyPaymentCount > 0)
+        {
+            var syncableDirtyPaymentCount = (await GetDirtyPaymentsForSyncAsync(session, ct)).Count;
+            count = count - dirtyPaymentCount + syncableDirtyPaymentCount;
+        }
+
         return count;
     }
 
@@ -4108,6 +4231,12 @@ public sealed partial class LocalStateService
         public int ClearedMissingInvoiceLinkCount { get; set; }
         public int ClearedMissingRentalLinkCount { get; set; }
         public int ResolvedMissingCustomerCount { get; set; }
+    }
+
+    public sealed class PaymentSyncRepairResult
+    {
+        public int ScannedCount { get; set; }
+        public int MarkedDeletedMissingInvoiceCount { get; set; }
     }
 
     private static bool IsSharedOfficeScope(string? officeCode)

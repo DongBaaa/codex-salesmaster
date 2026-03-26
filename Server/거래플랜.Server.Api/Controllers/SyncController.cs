@@ -1454,10 +1454,22 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
+            var existing = await _dbContext.Invoices.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+
             var customer = await _dbContext.Customers.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
             if (dto.CustomerId == Guid.Empty || customer is null || customer.IsDeleted)
             {
+                if (dto.IsDeleted && existing is null)
+                    continue;
+
+                if (dto.IsDeleted && existing is not null)
+                {
+                    valid.Add(dto);
+                    continue;
+                }
+
                 AddClientConflict(dto, nameof(Invoice),
                     $"Referenced customer was not found: {dto.CustomerId}.", result);
                 continue;
@@ -1470,8 +1482,6 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            var existing = await _dbContext.Invoices.IgnoreQueryFilters()
-                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
             if (existing is not null && !_officeScopeService.CanWriteOfficeForInvoices(existing.OfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(Invoice),
@@ -1580,13 +1590,23 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
+            var existing = await _dbContext.Payments.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
             var invoice = await _dbContext.Invoices.IgnoreQueryFilters()
                 .Include(x => x.Customer)
                 .FirstOrDefaultAsync(x => x.Id == dto.InvoiceId, cancellationToken);
             if (dto.InvoiceId == Guid.Empty || invoice is null || invoice.IsDeleted)
             {
-                AddClientConflict(dto, nameof(Payment),
-                    $"Referenced invoice was not found: {dto.InvoiceId}.", result);
+                if (dto.IsDeleted && existing is null)
+                    continue;
+
+                if (existing is not null)
+                {
+                    dto.IsDeleted = true;
+                    valid.Add(dto);
+                    continue;
+                }
+
                 continue;
             }
 
