@@ -42,6 +42,8 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     [ObservableProperty] private string _lastErrorText = "없음";
     [ObservableProperty] private string _lastRevisionText = "0";
     [ObservableProperty] private string _repairSummaryText = "자동 복구 전";
+    [ObservableProperty] private string _selectedRecoveryActionTitle = "선택 오류 복구";
+    [ObservableProperty] private string _selectedRecoveryActionDetail = "선택한 오류 유형에 맞는 복구 경로를 제안합니다.";
 
     public SyncDiagnosticsViewModel(
         SyncDiagnosticsService diagnostics,
@@ -56,6 +58,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         _rental = rental;
         _session = session;
         _diagnostics.DiagnosticsChanged += HandleDiagnosticsChanged;
+        UpdateSelectedRecoveryDescription();
     }
 
     public async Task LoadAsync()
@@ -69,6 +72,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     partial void OnSelectedStatusChanged(string value) => RequestReload();
     partial void OnSelectedSeverityChanged(string value) => RequestReload();
     partial void OnOnlyRecoverableChanged(bool value) => RequestReload();
+    partial void OnSelectedEventChanged(SyncDiagnosticListItem? value) => UpdateSelectedRecoveryDescription();
 
     private void HandleDiagnosticsChanged()
         => RequestReload();
@@ -128,11 +132,23 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
             SelectedEvent = selectedId.HasValue
                 ? Events.FirstOrDefault(item => item.Id == selectedId.Value) ?? Events.FirstOrDefault()
                 : Events.FirstOrDefault();
+            UpdateSelectedRecoveryDescription();
         }
         finally
         {
             IsBusy = false;
         }
+    }
+
+    private void UpdateSelectedRecoveryDescription()
+    {
+        var plan = BuildRecoveryPlan(SelectedEvent is null ? [] : [SelectedEvent]);
+        SelectedRecoveryActionTitle = SelectedEvent is null
+            ? "선택 오류 복구"
+            : $"선택 오류 복구 - {plan.Title}";
+        SelectedRecoveryActionDetail = SelectedEvent is null
+            ? "오류를 선택하면 해당 유형에 맞는 복구 방식이 표시됩니다."
+            : plan.Description;
     }
 
     [RelayCommand]
@@ -183,51 +199,261 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     }
 
     [RelayCommand]
+    private async Task RunSelectedRepairAsync()
+    {
+        if (IsBusy || SelectedEvent is null)
+            return;
+
+        await ExecuteRepairPlanAsync([SelectedEvent], selectedOnly: true);
+    }
+
+    [RelayCommand]
     private async Task RunAutoRepairAsync()
     {
         if (IsBusy)
             return;
 
+        var openEvents = await _diagnostics.GetEventsAsync(new SyncDiagnosticFilter(
+            SearchText: string.Empty,
+            Category: "전체",
+            Status: "Open",
+            Severity: "전체",
+            OnlyRecoverable: false));
+
+        await ExecuteRepairPlanAsync(openEvents, selectedOnly: false);
+    }
+
+    private async Task ExecuteRepairPlanAsync(IReadOnlyCollection<SyncDiagnosticListItem> events, bool selectedOnly)
+    {
+        if (events.Count == 0)
+        {
+            SummaryStatusText = selectedOnly ? "선택된 오류가 없습니다." : "복구할 미해결 오류가 없습니다.";
+            return;
+        }
+
+        var plan = BuildRecoveryPlan(events);
         IsBusy = true;
         try
         {
-            SummaryStatusText = "문제 데이터 자동 복구를 수행하는 중...";
+            SummaryStatusText = selectedOnly
+                ? $"{plan.Title} 복구를 수행하는 중..."
+                : "미해결 동기화 오류를 유형별로 자동 복구하는 중...";
 
-            var customerMasterRepair = await _local.RepairDirtyCustomerMastersForSyncAsync(_session);
-            var customerRepair = await _local.RepairDirtyCustomersForSyncAsync(_session);
-            var transactionRepair = await _local.RepairDirtyTransactionsForSyncAsync(_session);
-            var invoiceRepair = await _local.RepairDirtyInvoicesForSyncAsync(_session);
-            var attachmentRepair = await _local.RepairDirtyTransactionAttachmentsForSyncAsync(_session);
-            var paymentRepair = await _local.RepairDirtyPaymentsForSyncAsync(_session);
-            var rentalAssetIds = (await _local.GetDirtyRentalAssetsForSyncAsync(_session))
-                .Where(item => !item.IsDeleted)
-                .Select(item => item.Id)
-                .Distinct()
-                .ToList();
-            var rentalRepair = rentalAssetIds.Count > 0
-                ? await _rental.RepairRentalCatalogLinksAsync(rentalAssetIds)
-                : new RentalCatalogRepairResult();
+            var summaryParts = new List<string>();
 
-            RepairSummaryText =
-                $"거래처기준 {customerMasterRepair.ScannedCount:N0}건 / 거래처 {customerRepair.ScannedCount:N0}건 / " +
-                $"거래내역 {transactionRepair.ScannedCount:N0}건 / 전표 {invoiceRepair.ScannedCount:N0}건 / " +
-                $"증빙 {attachmentRepair.ScannedCount:N0}건 / 결제 {paymentRepair.ScannedCount:N0}건 / " +
-                $"렌탈자산 {rentalRepair.ScannedAssetCount:N0}건 점검";
+            if (plan.RepairCustomerMasters)
+            {
+                var result = await _local.RepairDirtyCustomerMastersForSyncAsync(_session);
+                summaryParts.Add($"거래처기준 {result.ScannedCount:N0}건");
+            }
+
+            if (plan.RepairCustomers)
+            {
+                var result = await _local.RepairDirtyCustomersForSyncAsync(_session);
+                summaryParts.Add($"거래처 {result.ScannedCount:N0}건");
+            }
+
+            if (plan.RepairTransactions)
+            {
+                var result = await _local.RepairDirtyTransactionsForSyncAsync(_session);
+                summaryParts.Add($"거래내역 {result.ScannedCount:N0}건");
+            }
+
+            if (plan.RepairInvoices)
+            {
+                var result = await _local.RepairDirtyInvoicesForSyncAsync(_session);
+                summaryParts.Add($"전표 {result.ScannedCount:N0}건");
+            }
+
+            if (plan.RepairAttachments)
+            {
+                var result = await _local.RepairDirtyTransactionAttachmentsForSyncAsync(_session);
+                summaryParts.Add($"증빙 {result.ScannedCount:N0}건");
+            }
+
+            if (plan.RepairPayments)
+            {
+                var result = await _local.RepairDirtyPaymentsForSyncAsync(_session);
+                summaryParts.Add($"결제 {result.ScannedCount:N0}건");
+            }
+
+            if (plan.RepairRentalAssets)
+            {
+                var rentalAssetIds = (await _local.GetDirtyRentalAssetsForSyncAsync(_session))
+                    .Where(item => !item.IsDeleted)
+                    .Select(item => item.Id)
+                    .Distinct()
+                    .ToList();
+                var result = rentalAssetIds.Count > 0
+                    ? await _rental.RepairRentalCatalogLinksAsync(rentalAssetIds)
+                    : new RentalCatalogRepairResult();
+                summaryParts.Add($"렌탈자산 {result.ScannedAssetCount:N0}건");
+            }
+
+            if (plan.RefreshSharedCache)
+            {
+                var refreshOk = await _sync.RefreshSharedMirrorFromServerAsync();
+                summaryParts.Add(refreshOk ? "공유 캐시 재구성 완료" : "공유 캐시 재구성 실패");
+            }
+
+            if (plan.RetrySync)
+            {
+                var syncOk = await _sync.TrySyncAsync();
+                summaryParts.Add(syncOk ? "동기화 재시도 완료" : "동기화 재시도 실패");
+            }
+
+            if (plan.ExportDiagnosticReport)
+            {
+                var path = await _diagnostics.ExportReportAsync(events.Select(item => item.Id).ToArray());
+                summaryParts.Add($"리포트 저장 {path}");
+            }
+
+            RepairSummaryText = summaryParts.Count == 0
+                ? "수행할 자동 복구 작업이 없었습니다."
+                : string.Join(" / ", summaryParts);
 
             await _diagnostics.RecordIssueAsync(
-                phase: "manual-repair",
+                phase: selectedOnly ? "selected-repair" : "manual-repair",
                 rawMessage: $"자동 복구 실행 완료. {RepairSummaryText}",
                 severity: "Warning",
                 recoveryAttempted: true,
                 recoverySucceeded: true);
 
             await ReloadAsync();
-            SummaryStatusText = "자동 복구를 완료했습니다. 이후 동기화를 다시 시도해 주세요.";
+            SummaryStatusText = selectedOnly
+                ? $"{plan.Title} 복구를 완료했습니다. 필요 시 동기화를 다시 시도해 주세요."
+                : "미해결 오류 유형별 자동 복구를 완료했습니다. 필요 시 동기화를 다시 시도해 주세요.";
         }
         finally
         {
             IsBusy = false;
         }
+    }
+
+    private static SyncRecoveryPlan BuildRecoveryPlan(IReadOnlyCollection<SyncDiagnosticListItem> events)
+    {
+        var plan = new SyncRecoveryPlan();
+        if (events.Count == 0)
+            return plan with { Title = "복구 대상 없음", Description = "복구할 진단 이벤트가 없습니다." };
+
+        foreach (var item in events)
+        {
+            var entity = NormalizeToken(item.EntityName);
+            var reference = NormalizeToken(item.ReferenceEntityName);
+            switch (item.Category)
+            {
+                case "권한/범위 오류":
+                    plan.RepairCustomerMasters |= entity is "customermaster" or "customercategory" or "customermastersync";
+                    plan.RepairCustomers |= entity is "customer" or "invoice" or "transaction" or "payment";
+                    plan.RepairInvoices |= entity == "invoice";
+                    plan.RepairTransactions |= entity == "transaction";
+                    plan.RepairAttachments |= entity == "transactionattachment";
+                    plan.RepairPayments |= entity == "payment";
+                    plan.RetrySync = true;
+                    break;
+
+                case "참조 누락 오류":
+                    switch (reference)
+                    {
+                        case "customer":
+                            plan.RepairCustomers = true;
+                            if (entity == "invoice")
+                                plan.RepairInvoices = true;
+                            if (entity == "transaction")
+                                plan.RepairTransactions = true;
+                            break;
+                        case "invoice":
+                            plan.RepairTransactions = true;
+                            plan.RepairPayments = true;
+                            break;
+                        case "transaction":
+                            plan.RepairAttachments = true;
+                            break;
+                        case "item":
+                            plan.RepairRentalAssets = true;
+                            break;
+                        default:
+                            plan.RepairCustomers |= entity == "customer";
+                            plan.RepairInvoices |= entity == "invoice";
+                            plan.RepairTransactions |= entity == "transaction";
+                            plan.RepairAttachments |= entity == "transactionattachment";
+                            plan.RepairPayments |= entity == "payment";
+                            plan.RepairRentalAssets |= entity == "rentalasset";
+                            break;
+                    }
+                    plan.RetrySync = true;
+                    break;
+
+                case "동시성 충돌":
+                case "시작 복구 오류":
+                    plan.RefreshSharedCache = true;
+                    plan.RetrySync = true;
+                    break;
+
+                case "통신 오류":
+                    plan.RetrySync = true;
+                    break;
+
+                case "서버 처리 오류":
+                    plan.ExportDiagnosticReport = true;
+                    break;
+
+                default:
+                    plan.RepairCustomerMasters |= entity == "customermaster";
+                    plan.RepairCustomers |= entity == "customer";
+                    plan.RepairInvoices |= entity == "invoice";
+                    plan.RepairTransactions |= entity == "transaction";
+                    plan.RepairAttachments |= entity == "transactionattachment";
+                    plan.RepairPayments |= entity == "payment";
+                    plan.RepairRentalAssets |= entity == "rentalasset";
+                    plan.RetrySync = true;
+                    break;
+            }
+
+            if (entity == "inventorytransfer")
+                plan.RefreshSharedCache = true;
+        }
+
+        var stepLabels = new List<string>();
+        if (plan.RepairCustomerMasters) stepLabels.Add("거래처 기준 정리");
+        if (plan.RepairCustomers) stepLabels.Add("거래처 범위 복구");
+        if (plan.RepairInvoices) stepLabels.Add("전표 참조 복구");
+        if (plan.RepairTransactions) stepLabels.Add("거래내역 참조 복구");
+        if (plan.RepairAttachments) stepLabels.Add("증빙 참조 복구");
+        if (plan.RepairPayments) stepLabels.Add("결제 참조 복구");
+        if (plan.RepairRentalAssets) stepLabels.Add("렌탈 자산 품목 링크 복구");
+        if (plan.RefreshSharedCache) stepLabels.Add("공유 캐시 재구성");
+        if (plan.RetrySync) stepLabels.Add("동기화 재시도");
+        if (plan.ExportDiagnosticReport) stepLabels.Add("진단 리포트 저장");
+
+        return plan with
+        {
+            Title = stepLabels.Count == 0 ? "기본 복구" : stepLabels[0],
+            Description = stepLabels.Count == 0
+                ? "현재 선택한 오류는 자동 복구 대상이 명확하지 않아 기본 재시도만 권장됩니다."
+                : $"권장 복구 순서: {string.Join(" → ", stepLabels)}"
+        };
+    }
+
+    private static string NormalizeToken(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Trim().Replace(" ", string.Empty).ToLowerInvariant();
+
+    private sealed record SyncRecoveryPlan
+    {
+        public string Title { get; init; } = "기본 복구";
+        public string Description { get; init; } = "현재 선택한 오류에 대한 기본 복구를 수행합니다.";
+        public bool RepairCustomerMasters { get; set; }
+        public bool RepairCustomers { get; set; }
+        public bool RepairInvoices { get; set; }
+        public bool RepairTransactions { get; set; }
+        public bool RepairAttachments { get; set; }
+        public bool RepairPayments { get; set; }
+        public bool RepairRentalAssets { get; set; }
+        public bool RefreshSharedCache { get; set; }
+        public bool RetrySync { get; set; }
+        public bool ExportDiagnosticReport { get; set; }
     }
 
     [RelayCommand]

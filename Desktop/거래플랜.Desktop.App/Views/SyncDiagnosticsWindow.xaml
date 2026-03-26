@@ -91,7 +91,8 @@
                     <Button Content="새로고침(F5)" Background="#37474F" Command="{Binding RefreshCommand}" Margin="0,0,6,0"/>
                     <Button Content="동기화 재시도" Background="#1565C0" Command="{Binding RetrySyncCommand}" Margin="0,0,6,0"/>
                     <Button Content="공유 캐시 재구성" Background="#0277BD" Command="{Binding RebuildSharedCacheCommand}" Margin="0,0,6,0"/>
-                    <Button Content="자동 복구" Background="#00897B" Command="{Binding RunAutoRepairCommand}" Margin="0,0,6,0"/>
+                    <Button Content="선택 오류 복구" Background="#00897B" Command="{Binding RunSelectedRepairCommand}" Margin="0,0,6,0"/>
+                    <Button Content="전체 자동 복구" Background="#2E7D32" Command="{Binding RunAutoRepairCommand}" Margin="0,0,6,0"/>
                     <Button Content="닫기(F12)" Background="#6C5B7B" Click="CloseButton_Click"/>
                 </StackPanel>
             </Grid>
@@ -271,6 +272,10 @@
                                     <TextBlock Grid.Row="5" Grid.Column="0" Text="마지막 sync 오류" Foreground="#9FB3C8" Margin="0,6,0,0"/>
                                     <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding SelectedEvent.Snapshot.LastKnownSyncError}" Margin="0,6,0,0" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="54" Height="Auto" IsReadOnly="True"/>
                                 </Grid>
+
+                                <TextBlock Text="권장 복구" Foreground="#9FB3C8" FontSize="11"/>
+                                <TextBlock Text="{Binding SelectedRecoveryActionTitle}" Margin="0,4,0,0" FontWeight="Bold" Foreground="#B3E5FC"/>
+                                <TextBlock Text="{Binding SelectedRecoveryActionDetail}" Margin="0,4,0,10" TextWrapping="Wrap" Foreground="#90CAF9"/>
 
                                 <TextBlock Text="복구 메모" Foreground="#9FB3C8" FontSize="11"/>
                                 <TextBlock Text="{Binding RepairSummaryText}" Margin="0,4,0,10" TextWrapping="Wrap"/>
