@@ -976,8 +976,6 @@ public sealed partial class SalesViewModel : ObservableObject
             return false;
         }
 
-        if (waitForServerWrite)
-            await _local.WaitForServerWriteAsync();
         _lastSaveWasConcurrencyConflict = false;
         LastAutoSaveFailureMessage = string.Empty;
         var savedInvoice = await _local.GetInvoiceAsync(saveResult.SavedInvoiceId, _session);
@@ -1002,9 +1000,17 @@ public sealed partial class SalesViewModel : ObservableObject
             }
         }
 
-        StatusMessage = waitForServerWrite
-            ? $"{statusPrefix}되었습니다. {saveResult.Message}".Trim()
-            : $"{statusPrefix}되었습니다. 서버 동기화는 백그라운드에서 이어집니다.";
+        if (waitForServerWrite)
+        {
+            var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+            StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(
+                $"{statusPrefix}되었습니다. {saveResult.Message}".Trim(),
+                serverWriteResult);
+        }
+        else
+        {
+            StatusMessage = $"{statusPrefix}되었습니다. 서버 동기화는 백그라운드에서 이어집니다.";
+        }
         CaptureBaselineState();
         await RefreshPaymentSummaryAsync();
         InvoiceSaved?.Invoke();

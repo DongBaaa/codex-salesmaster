@@ -114,7 +114,6 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
                 if (_session.HasAdministrativePrivileges)
                 {
                     await _local.UpsertCustomerAsync(row.Source);
-                    await _local.WaitForServerWriteAsync();
                 }
                 else
                 {
@@ -125,7 +124,6 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
                         return;
                     }
 
-                    await _local.WaitForServerWriteAsync();
                     grantedTemporaryAccess |= result.GrantedTemporaryAccess;
                 }
 
@@ -133,12 +131,14 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
             }
 
             ReloadOfficeFilters();
-            StatusMessage = _session.HasAdministrativePrivileges
+            var baseStatusMessage = _session.HasAdministrativePrivileges
                 ? $"담당지점 변경 {changed.Count:N0}건을 저장했습니다."
                 : grantedTemporaryAccess
                     ? "거래처를 저장했습니다. USENET 거래처는 당일만 계속 작업할 수 있습니다."
                     : $"담당지점 변경 {changed.Count:N0}건을 저장했습니다.";
 
+            var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+            StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(baseStatusMessage, serverWriteResult);
             ApplyFilter();
         }
         finally

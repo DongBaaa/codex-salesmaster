@@ -12,11 +12,15 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using System.Text.RegularExpressions;
 
 namespace 거래플랜.Server.Api.Data;
 
 public static class DbInitializer
 {
+    private static readonly Regex SqlIdentifierPattern = new(
+        "^[A-Za-z0-9_]+$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly (Guid Id, string Name, string PriceSource, int SortOrder)[] DefaultPriceGradeOptions =
     [
         (Guid.Parse("1b5ea4f8-ff61-4fc6-ac79-175e2125cba0"), "매출단가", "Sales", 0),
@@ -517,7 +521,17 @@ public static class DbInitializer
         string postgresDefinition,
         CancellationToken cancellationToken)
     {
+        if (!IsSafeSqlIdentifier(tableName) ||
+            !IsSafeSqlIdentifier(oldColumnName) ||
+            !IsSafeSqlIdentifier(newColumnName))
+        {
+            return;
+        }
+
         var providerName = dbContext.Database.ProviderName ?? string.Empty;
+        var quotedTableName = QuoteSqlIdentifier(tableName);
+        var quotedOldColumnName = QuoteSqlIdentifier(oldColumnName);
+        var quotedNewColumnName = QuoteSqlIdentifier(newColumnName);
         var hasNewColumn = await HasColumnAsync(dbContext, tableName, newColumnName, cancellationToken);
         var hasOldColumn = await HasColumnAsync(dbContext, tableName, oldColumnName, cancellationToken);
 
@@ -527,15 +541,13 @@ public static class DbInitializer
             {
                 if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
                 {
-                    await dbContext.Database.ExecuteSqlRawAsync(
-                        $"ALTER TABLE \"{tableName}\" RENAME COLUMN \"{oldColumnName}\" TO \"{newColumnName}\";",
-                        cancellationToken);
+                    var renameSql = "ALTER TABLE " + quotedTableName + " RENAME COLUMN " + quotedOldColumnName + " TO " + quotedNewColumnName + ";";
+                    await dbContext.Database.ExecuteSqlRawAsync(renameSql, cancellationToken);
                 }
                 else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
                 {
-                    await dbContext.Database.ExecuteSqlRawAsync(
-                        $"ALTER TABLE \"{tableName}\" RENAME COLUMN \"{oldColumnName}\" TO \"{newColumnName}\";",
-                        cancellationToken);
+                    var renameSql = "ALTER TABLE " + quotedTableName + " RENAME COLUMN " + quotedOldColumnName + " TO " + quotedNewColumnName + ";";
+                    await dbContext.Database.ExecuteSqlRawAsync(renameSql, cancellationToken);
                 }
             }
             catch
@@ -553,15 +565,13 @@ public static class DbInitializer
             {
                 if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
                 {
-                    await dbContext.Database.ExecuteSqlRawAsync(
-                        $"ALTER TABLE \"{tableName}\" ADD COLUMN \"{newColumnName}\" {sqliteDefinition};",
-                        cancellationToken);
+                    var addSql = "ALTER TABLE " + quotedTableName + " ADD COLUMN " + quotedNewColumnName + " " + sqliteDefinition + ";";
+                    await dbContext.Database.ExecuteSqlRawAsync(addSql, cancellationToken);
                 }
                 else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
                 {
-                    await dbContext.Database.ExecuteSqlRawAsync(
-                        $"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS \"{newColumnName}\" {postgresDefinition};",
-                        cancellationToken);
+                    var addSql = "ALTER TABLE " + quotedTableName + " ADD COLUMN IF NOT EXISTS " + quotedNewColumnName + " " + postgresDefinition + ";";
+                    await dbContext.Database.ExecuteSqlRawAsync(addSql, cancellationToken);
                 }
             }
             catch
@@ -577,16 +587,14 @@ public static class DbInitializer
 
         try
         {
-            await dbContext.Database.ExecuteSqlRawAsync(
-                $"""
-                 UPDATE "{tableName}"
-                 SET "{newColumnName}" = CASE
-                     WHEN COALESCE(TRIM("{newColumnName}"), '') = '' THEN COALESCE("{oldColumnName}", '')
-                     ELSE "{newColumnName}"
-                 END
-                 WHERE COALESCE(TRIM("{oldColumnName}"), '') <> '';
-                 """,
-                cancellationToken);
+            var copySql =
+                "UPDATE " + quotedTableName + Environment.NewLine +
+                "SET " + quotedNewColumnName + " = CASE" + Environment.NewLine +
+                "    WHEN COALESCE(TRIM(" + quotedNewColumnName + "), '') = '' THEN COALESCE(" + quotedOldColumnName + ", '')" + Environment.NewLine +
+                "    ELSE " + quotedNewColumnName + Environment.NewLine +
+                "END" + Environment.NewLine +
+                "WHERE COALESCE(TRIM(" + quotedOldColumnName + "), '') <> '';";
+            await dbContext.Database.ExecuteSqlRawAsync(copySql, cancellationToken);
         }
         catch
         {
@@ -3044,12 +3052,17 @@ public static class DbInitializer
         string columnName,
         CancellationToken cancellationToken)
     {
+        if (!IsSafeSqlIdentifier(tableName) || !IsSafeSqlIdentifier(columnName))
+            return;
+
+        var quotedTableName = QuoteSqlIdentifier(tableName);
+        var quotedColumnName = QuoteSqlIdentifier(columnName);
         if (dbContext.Database.IsSqlite())
         {
             var connection = dbContext.Database.GetDbConnection();
             await using var _ = await EnsureConnectionAsync(connection, cancellationToken);
             await using var command = connection.CreateCommand();
-            command.CommandText = $"PRAGMA table_info(\"{tableName}\")";
+            command.CommandText = "PRAGMA table_info(" + quotedTableName + ")";
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
@@ -3057,16 +3070,20 @@ public static class DbInitializer
                     return;
             }
 
-            await dbContext.Database.ExecuteSqlRawAsync(
-                $"ALTER TABLE \"{tableName}\" ADD COLUMN \"{columnName}\" TEXT NULL;",
-                cancellationToken);
+            var addSql = "ALTER TABLE " + quotedTableName + " ADD COLUMN " + quotedColumnName + " TEXT NULL;";
+            await dbContext.Database.ExecuteSqlRawAsync(addSql, cancellationToken);
             return;
         }
 
-        await dbContext.Database.ExecuteSqlRawAsync(
-            $"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS \"{columnName}\" text NULL;",
-            cancellationToken);
+        var postgresSql = "ALTER TABLE " + quotedTableName + " ADD COLUMN IF NOT EXISTS " + quotedColumnName + " text NULL;";
+        await dbContext.Database.ExecuteSqlRawAsync(postgresSql, cancellationToken);
     }
+
+    private static bool IsSafeSqlIdentifier(string value)
+        => !string.IsNullOrWhiteSpace(value) && SqlIdentifierPattern.IsMatch(value);
+
+    private static string QuoteSqlIdentifier(string value)
+        => "\"" + value + "\"";
 
     private static async Task<IAsyncDisposable> EnsureConnectionAsync(
         DbConnection connection,

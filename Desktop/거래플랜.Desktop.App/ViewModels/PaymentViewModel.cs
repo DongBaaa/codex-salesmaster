@@ -791,11 +791,11 @@ public sealed partial class PaymentViewModel : ObservableObject
             return;
         }
 
-        await _local.WaitForServerWriteAsync();
         await LoadHistoryAsync(SelectedCustomer.Id);
         SelectedHistory = History.FirstOrDefault(current => current.Id == result.EntityId);
         NewEntry();
-        StatusMessage = result.Message;
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
         await RefreshContextAsync();
     }
 

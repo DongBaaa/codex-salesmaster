@@ -324,11 +324,13 @@ public sealed partial class InventoryViewModel : ObservableObject
         };
 
         await _local.UpsertItemAsync(item, SelectedOfficeCode);
-        await _local.WaitForServerWriteAsync();
         await LoadAsync();
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
 
         SelectedItem = FilteredItems.FirstOrDefault(row => row.Id == EditId);
-        StatusMessage = "품목 정보를 저장했습니다. 재고 수량은 지점별 계산값으로 유지됩니다.";
+        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(
+            "품목 정보를 저장했습니다. 재고 수량은 지점별 계산값으로 유지됩니다.",
+            serverWriteResult);
         IsNew = false;
     }
 
@@ -345,10 +347,10 @@ public sealed partial class InventoryViewModel : ObservableObject
             return;
 
         await _local.DeleteItemAsync(SelectedItem.Id);
-        await _local.WaitForServerWriteAsync();
         await LoadAsync();
         NewItem();
-        StatusMessage = "품목을 삭제했습니다.";
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage("품목을 삭제했습니다.", serverWriteResult);
     }
 
     private async Task LoadInventoryStateAsync()

@@ -237,13 +237,16 @@ public sealed partial class EnvironmentSettingsViewModel
             IsSystemDefault = CategoryOptionIsSystemDefault
         });
 
-        StatusMessage = result.Message;
         if (!result.Success)
+        {
+            StatusMessage = result.Message;
             return;
+        }
 
-        await _local.WaitForServerWriteAsync();
         await ReloadCustomerCategoriesAsync();
         SelectedCategoryOption = CustomerCategories.FirstOrDefault(option => option.Id == result.EntityId);
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(2));
+        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
     }
 
     [RelayCommand]
@@ -256,13 +259,16 @@ public sealed partial class EnvironmentSettingsViewModel
         }
 
         var result = await _local.DeleteCustomerCategoryAsync(SelectedCategoryOption.Id);
-        StatusMessage = result.Message;
         if (!result.Success)
+        {
+            StatusMessage = result.Message;
             return;
+        }
 
-        await _local.WaitForServerWriteAsync();
         await ReloadCustomerCategoriesAsync();
         NewCategoryOption();
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(2));
+        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
     }
 
     [RelayCommand]
@@ -289,13 +295,16 @@ public sealed partial class EnvironmentSettingsViewModel
             },
             SelectedPriceGradeOption?.Name);
 
-        StatusMessage = result.Message;
         if (!result.Success)
+        {
+            StatusMessage = result.Message;
             return;
+        }
 
-        await _local.WaitForServerWriteAsync();
         await ReloadPriceGradeOptionsAsync();
         SelectedPriceGradeOption = PriceGradeOptions.FirstOrDefault(option => option.Id == result.EntityId);
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(2));
+        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
     }
 
     [RelayCommand]
@@ -308,13 +317,16 @@ public sealed partial class EnvironmentSettingsViewModel
         }
 
         var result = await _local.DeletePriceGradeOptionAsync(SelectedPriceGradeOption.Id);
-        StatusMessage = result.Message;
         if (!result.Success)
+        {
+            StatusMessage = result.Message;
             return;
+        }
 
-        await _local.WaitForServerWriteAsync();
         await ReloadPriceGradeOptionsAsync();
         NewPriceGradeOption();
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(2));
+        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
     }
 
     [RelayCommand]
@@ -343,13 +355,16 @@ public sealed partial class EnvironmentSettingsViewModel
             },
             SelectedTradeTypeOption?.Name);
 
-        StatusMessage = result.Message;
         if (!result.Success)
+        {
+            StatusMessage = result.Message;
             return;
+        }
 
-        await _local.WaitForServerWriteAsync();
         await ReloadTradeTypeOptionsAsync();
         SelectedTradeTypeOption = TradeTypeOptions.FirstOrDefault(option => option.Id == result.EntityId);
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(2));
+        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
     }
 
     [RelayCommand]
@@ -362,13 +377,16 @@ public sealed partial class EnvironmentSettingsViewModel
         }
 
         var result = await _local.DeleteTradeTypeOptionAsync(SelectedTradeTypeOption.Id);
-        StatusMessage = result.Message;
         if (!result.Success)
+        {
+            StatusMessage = result.Message;
             return;
+        }
 
-        await _local.WaitForServerWriteAsync();
         await ReloadTradeTypeOptionsAsync();
         NewTradeTypeOption();
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(2));
+        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
     }
 
     [RelayCommand]
@@ -393,13 +411,16 @@ public sealed partial class EnvironmentSettingsViewModel
             },
             SelectedItemCategoryOption?.Name);
 
-        StatusMessage = result.Message;
         if (!result.Success)
+        {
+            StatusMessage = result.Message;
             return;
+        }
 
-        await _local.WaitForServerWriteAsync();
         await ReloadItemCategoryOptionsAsync();
         SelectedItemCategoryOption = ItemCategoryOptions.FirstOrDefault(option => option.Id == result.EntityId);
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(2));
+        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
     }
 
     [RelayCommand]
@@ -412,13 +433,16 @@ public sealed partial class EnvironmentSettingsViewModel
         }
 
         var result = await _local.DeleteItemCategoryOptionAsync(SelectedItemCategoryOption.Id);
-        StatusMessage = result.Message;
         if (!result.Success)
+        {
+            StatusMessage = result.Message;
             return;
+        }
 
-        await _local.WaitForServerWriteAsync();
         await ReloadItemCategoryOptionsAsync();
         NewItemCategoryOption();
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(2));
+        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
     }
 
     private async Task ReloadCustomerCategoriesAsync()

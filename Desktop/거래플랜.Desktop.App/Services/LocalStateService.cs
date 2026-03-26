@@ -32,6 +32,14 @@ public sealed partial class LocalStateService
         WriteIndented = false
     };
 
+    public enum ServerWriteAwaitResult
+    {
+        Skipped,
+        Synced,
+        Pending,
+        Failed
+    }
+
     public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, SyncRequestDispatcher syncRequestDispatcher, SessionState session)
     {
         _db = db;
@@ -87,6 +95,55 @@ public sealed partial class LocalStateService
 
         _syncRequestDispatcher.RequestFlushSync();
         return _syncRequestDispatcher.WaitForSyncCompletionAsync(ct);
+    }
+
+    public async Task<ServerWriteAwaitResult> WaitForServerWriteWithTimeoutAsync(
+        TimeSpan? timeout = null,
+        CancellationToken ct = default)
+    {
+        if (!_session.IsLoggedIn || _session.IsOfflineMode)
+            return ServerWriteAwaitResult.Skipped;
+
+        _syncRequestDispatcher.RequestFlushSync();
+
+        var waitTask = _syncRequestDispatcher.WaitForSyncCompletionAsync(ct);
+        var effectiveTimeout = timeout ?? TimeSpan.FromSeconds(3);
+        if (effectiveTimeout <= TimeSpan.Zero)
+            return await waitTask.ConfigureAwait(false)
+                ? ServerWriteAwaitResult.Synced
+                : ServerWriteAwaitResult.Failed;
+
+        var timeoutTask = Task.Delay(effectiveTimeout);
+        var completedTask = await Task.WhenAny(waitTask, timeoutTask).ConfigureAwait(false);
+        if (!ReferenceEquals(completedTask, waitTask))
+        {
+            AppLogger.Warn("SYNC", $"서버 쓰기 확인이 {effectiveTimeout.TotalSeconds:N1}초 안에 끝나지 않아 백그라운드로 넘깁니다.");
+            return ServerWriteAwaitResult.Pending;
+        }
+
+        var succeeded = await waitTask.ConfigureAwait(false);
+        if (!succeeded)
+            AppLogger.Warn("SYNC", "서버 쓰기 확인이 실패로 끝나 자동 재시도 상태로 남았습니다.");
+
+        return succeeded ? ServerWriteAwaitResult.Synced : ServerWriteAwaitResult.Failed;
+    }
+
+    public static string ComposeServerWriteStatusMessage(string? baseMessage, ServerWriteAwaitResult result)
+    {
+        var prefix = string.IsNullOrWhiteSpace(baseMessage)
+            ? "로컬 저장을 완료했습니다."
+            : baseMessage.Trim();
+        var suffix = result switch
+        {
+            ServerWriteAwaitResult.Synced => "중앙 서버까지 반영되었습니다.",
+            ServerWriteAwaitResult.Pending => "서버 동기화는 백그라운드에서 계속됩니다.",
+            ServerWriteAwaitResult.Failed => "중앙 서버 동기화는 자동 재시도합니다.",
+            _ => string.Empty
+        };
+
+        return string.IsNullOrWhiteSpace(suffix)
+            ? prefix
+            : $"{prefix} {suffix}".Trim();
     }
 
     public IDisposable SuppressSyncDispatch()

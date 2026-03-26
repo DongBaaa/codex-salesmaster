@@ -90,8 +90,6 @@ public sealed partial class MainViewModel : ObservableObject
         var result = await _local.UpsertCustomerAsync(customer, _session);
         if (!result.Success)
             AppLogger.Warn("AUTOSAVE", $"Customer inline auto-save failed for '{customer.NameOriginal}'. {result.Message}");
-        else
-            await _local.WaitForServerWriteAsync();
     }
 
     // ?? ?꾪몴 紐⑸줉 ?? Bottom panel (?좏깮???꾪몴 ?쇱씤 誘몃━蹂닿린) ???????????????
@@ -776,10 +774,13 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        await _local.WaitForServerWriteAsync();
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
         _editConcurrencyStamp = saveResult.SavedConcurrencyStamp;
         await LoadInvoiceListAsync();
-        System.Windows.MessageBox.Show("저장되었습니다.", "알림", System.Windows.MessageBoxButton.OK);
+        System.Windows.MessageBox.Show(
+            LocalStateService.ComposeServerWriteStatusMessage("저장되었습니다.", serverWriteResult),
+            "알림",
+            System.Windows.MessageBoxButton.OK);
     }
 
     [RelayCommand]
@@ -804,8 +805,13 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        await _local.WaitForServerWriteAsync();
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
         await LoadInvoiceListAsync();
+        System.Windows.MessageBox.Show(
+            LocalStateService.ComposeServerWriteStatusMessage("전표를 삭제했습니다.", serverWriteResult),
+            "알림",
+            System.Windows.MessageBoxButton.OK,
+            System.Windows.MessageBoxImage.Information);
     }
 
     // ?? Lines ??????????????????????????????????????????????????????????????
@@ -900,13 +906,16 @@ public sealed partial class MainViewModel : ObservableObject
                 return;
             }
 
-            await _local.WaitForServerWriteAsync();
         }
 
         var inv = await _local.GetInvoiceAsync(PaymentInvoice.Id, _session);
         if (inv is not null) RecalcPaymentTotals(inv);
         await LoadInvoiceListAsync();
-        System.Windows.MessageBox.Show("수금이 저장되었습니다.", "알림", System.Windows.MessageBoxButton.OK);
+        var paymentServerWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+        System.Windows.MessageBox.Show(
+            LocalStateService.ComposeServerWriteStatusMessage("수금이 저장되었습니다.", paymentServerWriteResult),
+            "알림",
+            System.Windows.MessageBoxButton.OK);
     }
 
     private void RecalcPaymentTotals(LocalInvoice inv)

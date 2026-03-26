@@ -1584,6 +1584,10 @@ public static class LocalDbInitializer
             return;
         }
 
+        var quotedTableName = QuoteSqlIdentifier(tableName);
+        var quotedOldColumnName = QuoteSqlIdentifier(oldColumnName);
+        var quotedNewColumnName = QuoteSqlIdentifier(newColumnName);
+
         var hasNewColumn = await HasColumnAsync(db, tableName, newColumnName);
         var hasOldColumn = await HasColumnAsync(db, tableName, oldColumnName);
 
@@ -1591,8 +1595,8 @@ public static class LocalDbInitializer
         {
             try
             {
-                await db.Database.ExecuteSqlRawAsync(
-                    $"ALTER TABLE \"{tableName}\" RENAME COLUMN \"{oldColumnName}\" TO \"{newColumnName}\";");
+                var renameSql = "ALTER TABLE " + quotedTableName + " RENAME COLUMN " + quotedOldColumnName + " TO " + quotedNewColumnName + ";";
+                await db.Database.ExecuteSqlRawAsync(renameSql);
             }
             catch
             {
@@ -1614,15 +1618,14 @@ public static class LocalDbInitializer
 
         try
         {
-            await db.Database.ExecuteSqlRawAsync(
-                $"""
-                 UPDATE "{tableName}"
-                 SET "{newColumnName}" = CASE
-                     WHEN COALESCE(TRIM("{newColumnName}"), '') = '' THEN COALESCE("{oldColumnName}", '')
-                     ELSE "{newColumnName}"
-                 END
-                 WHERE COALESCE(TRIM("{oldColumnName}"), '') <> '';
-                 """);
+            var copySql =
+                "UPDATE " + quotedTableName + Environment.NewLine +
+                "SET " + quotedNewColumnName + " = CASE" + Environment.NewLine +
+                "    WHEN COALESCE(TRIM(" + quotedNewColumnName + "), '') = '' THEN COALESCE(" + quotedOldColumnName + ", '')" + Environment.NewLine +
+                "    ELSE " + quotedNewColumnName + Environment.NewLine +
+                "END" + Environment.NewLine +
+                "WHERE COALESCE(TRIM(" + quotedOldColumnName + "), '') <> '';";
+            await db.Database.ExecuteSqlRawAsync(copySql);
         }
         catch
         {
@@ -1673,6 +1676,9 @@ public static class LocalDbInitializer
 
     private static bool IsSafeSqlIdentifier(string value)
         => !string.IsNullOrWhiteSpace(value) && SqlIdentifierPattern.IsMatch(value);
+
+    private static string QuoteSqlIdentifier(string value)
+        => "\"" + value + "\"";
 
     private static async Task TryCreateIndexAsync(LocalDbContext db, string sql)
     {

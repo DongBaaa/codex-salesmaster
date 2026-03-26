@@ -368,8 +368,8 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         if (_session.HasAdministrativePrivileges)
         {
             await _local.UpsertCustomerAsync(customer);
-            await _local.WaitForServerWriteAsync();
-            StatusMessage = "거래처를 저장했습니다.";
+            var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+            StatusMessage = LocalStateService.ComposeServerWriteStatusMessage("거래처를 저장했습니다.", serverWriteResult);
             IsNew = false;
             return true;
         }
@@ -378,7 +378,8 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         StatusMessage = result.Message;
         if (result.Success)
         {
-            await _local.WaitForServerWriteAsync();
+            var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+            StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
             IsNew = false;
         }
         return result.Success;
