@@ -94,7 +94,7 @@ public partial class LookupWindow : Window
         DialogWindowCloseHelper.Close(this, false);
     }
 
-    private async void RegisterButton_Click(object sender, RoutedEventArgs e)
+    private void RegisterButton_Click(object sender, RoutedEventArgs e)
     {
         if (_registerAndReloadAsync is null)
         {
@@ -102,10 +102,20 @@ public partial class LookupWindow : Window
         }
 
         RegisterButton.IsEnabled = false;
+        UiTaskHelper.Run(
+            this,
+            RegisterAndReloadAsync,
+            "UI",
+            "룩업 등록 및 목록 새로고침",
+            "등록 창을 여는 중 오류가 발생했습니다.",
+            _ => RegisterButton.IsEnabled = true);
+    }
 
+    private async Task RegisterAndReloadAsync()
+    {
         try
         {
-            var refreshedRows = await _registerAndReloadAsync();
+            var refreshedRows = await _registerAndReloadAsync!();
             _allRows = refreshedRows.ToList();
             ApplyFilter(SearchBox.Text);
 
@@ -115,14 +125,6 @@ public partial class LookupWindow : Window
             }
 
             SearchBox.Focus();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(
-                $"등록 창을 여는 중 오류가 발생했습니다.\n{ex.Message}",
-                "오류",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
         }
         finally
         {

@@ -713,17 +713,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
     }
 
-    private async void HandleInventoryStateChanged(object? sender, EventArgs e)
-    {
-        try
-        {
-            await ReloadItemCategoryOptionsAsync();
-        }
-        catch
-        {
-            // keep current rental screen state when background category refresh fails
-        }
-    }
+    private void HandleInventoryStateChanged(object? sender, EventArgs e)
+        => UiTaskHelper.Forget(ReloadItemCategoryOptionsAsync(), "UI", "렌탈 자산 품목분류 목록 새로고침");
 
     private async Task ReloadItemCategoryOptionsAsync()
     {

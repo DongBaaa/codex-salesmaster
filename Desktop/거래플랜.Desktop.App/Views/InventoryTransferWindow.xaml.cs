@@ -2,6 +2,7 @@
 using System.Windows;
 using System.Windows.Input;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -42,22 +43,28 @@ public partial class InventoryTransferWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
 
-    private async void DeleteTransferButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_vm.CanDeleteTransfer)
-            return;
+    private void DeleteTransferButton_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(
+            this,
+            async () =>
+            {
+                if (!_vm.CanDeleteTransfer)
+                    return;
 
-        var confirm = MessageBox.Show(
-            $"재고이동 문서 '{_vm.TransferNumberDisplay}'를 삭제하시겠습니까?",
-            "재고이동 삭제",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
+                var confirm = MessageBox.Show(
+                    $"재고이동 문서 '{_vm.TransferNumberDisplay}'를 삭제하시겠습니까?",
+                    "재고이동 삭제",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
 
-        if (confirm != MessageBoxResult.Yes)
-            return;
+                if (confirm != MessageBoxResult.Yes)
+                    return;
 
-        await _vm.DeleteCurrentTransferAsync();
-    }
+                await _vm.DeleteCurrentTransferAsync();
+            },
+            "UI",
+            "재고이동 문서 삭제",
+            "재고이동 문서를 삭제하는 중 오류가 발생했습니다.");
 
     private void InputItemNameTextBox_KeyDown(object sender, KeyEventArgs e)
     {

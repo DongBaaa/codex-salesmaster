@@ -1,5 +1,6 @@
 ﻿using System.Windows;
 using System.Windows.Input;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
 
@@ -34,15 +35,11 @@ public partial class YeonsuDeliveryWindow : Window
         Close();
     }
 
-    private async void DeliveryRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        await OpenSelectedInvoiceAsync();
-    }
+    private void DeliveryRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        => UiTaskHelper.Run(this, OpenSelectedInvoiceAsync, "UI", "연수구 납품 전표 열기", "전표를 여는 중 오류가 발생했습니다.");
 
-    private async void OpenInvoiceButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenSelectedInvoiceAsync();
-    }
+    private void OpenInvoiceButton_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(this, OpenSelectedInvoiceAsync, "UI", "연수구 납품 전표 열기", "전표를 여는 중 오류가 발생했습니다.");
 
     private async Task OpenSelectedInvoiceAsync()
     {

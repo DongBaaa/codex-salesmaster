@@ -135,7 +135,15 @@ public sealed partial class InventoryViewModel : ObservableObject
             EditCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
     }
 
-    private async void HandleInventoryStateChanged(object? sender, EventArgs e)
+    private void HandleInventoryStateChanged(object? sender, EventArgs e)
+    {
+        if (_isInventoryRefreshInProgress)
+            return;
+
+        UiTaskHelper.Forget(HandleInventoryStateChangedAsync(), "UI", "재고관리 화면 재고 상태 새로고침");
+    }
+
+    private async Task HandleInventoryStateChangedAsync()
     {
         if (_isInventoryRefreshInProgress)
             return;
@@ -144,10 +152,6 @@ public sealed partial class InventoryViewModel : ObservableObject
         try
         {
             await RefreshInventoryScreenAsync(reloadCategories: false);
-        }
-        catch
-        {
-            // keep current screen state on background refresh failure
         }
         finally
         {

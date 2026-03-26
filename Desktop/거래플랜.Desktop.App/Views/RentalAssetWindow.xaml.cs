@@ -1,6 +1,7 @@
 ﻿using System.Windows;
 using System.Windows.Input;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
 using 거래플랜.Shared.Contracts;
 
@@ -31,7 +32,10 @@ public partial class RentalAssetWindow : Window
         e.Handled = true;
     }
 
-    private async void CustomerLookupButton_Click(object sender, RoutedEventArgs e)
+    private void CustomerLookupButton_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(this, OpenCustomerLookupAsync, "UI", "렌탈 자산 거래처 조회", "거래처 조회 중 오류가 발생했습니다.");
+
+    private async Task OpenCustomerLookupAsync()
     {
         var dialog = new LookupWindow(
             "거래처 조회",
@@ -51,7 +55,10 @@ public partial class RentalAssetWindow : Window
             _viewModel.ApplySelectedCustomer(customer);
     }
 
-    private async void ItemLookupButton_Click(object sender, RoutedEventArgs e)
+    private void ItemLookupButton_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(this, OpenItemLookupAsync, "UI", "렌탈 자산 품목 조회", "자산 품목 조회 중 오류가 발생했습니다.");
+
+    private async Task OpenItemLookupAsync()
     {
         var dialog = new LookupWindow(
             "자산 품목 조회",
@@ -74,7 +81,10 @@ public partial class RentalAssetWindow : Window
             await _viewModel.ApplySelectedItemAsync(item);
     }
 
-    private async void PurchaseVendorLookupButton_Click(object sender, RoutedEventArgs e)
+    private void PurchaseVendorLookupButton_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(this, OpenPurchaseVendorLookupAsync, "UI", "렌탈 자산 매입처 조회", "매입처 조회 중 오류가 발생했습니다.");
+
+    private async Task OpenPurchaseVendorLookupAsync()
     {
         var dialog = new LookupWindow(
             "매입처 조회",

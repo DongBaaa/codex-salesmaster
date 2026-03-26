@@ -687,14 +687,34 @@ public sealed class RentalStateService
         return LocalMutationResult.Ok(assetId, "렌탈 자산을 삭제했습니다.");
     }
 
-    public async Task<RentalCatalogRepairResult> RepairRentalCatalogLinksAsync(CancellationToken ct = default)
+    public Task<RentalCatalogRepairResult> RepairRentalCatalogLinksAsync(CancellationToken ct = default)
+        => RepairRentalCatalogLinksAsync(assetIds: null, ct);
+
+    public async Task<RentalCatalogRepairResult> RepairRentalCatalogLinksAsync(
+        IReadOnlyCollection<Guid>? assetIds,
+        CancellationToken ct = default)
     {
         await AssetSaveLock.WaitAsync(ct);
         try
         {
             var result = new RentalCatalogRepairResult();
-            var assets = await _db.RentalAssets.IgnoreQueryFilters()
-                .Where(asset => !asset.IsDeleted)
+            var assetQuery = _db.RentalAssets.IgnoreQueryFilters()
+                .Where(asset => !asset.IsDeleted);
+
+            if (assetIds is { Count: > 0 })
+            {
+                var candidateIds = assetIds
+                    .Where(id => id != Guid.Empty)
+                    .Distinct()
+                    .ToList();
+
+                if (candidateIds.Count == 0)
+                    return result;
+
+                assetQuery = assetQuery.Where(asset => candidateIds.Contains(asset.Id));
+            }
+
+            var assets = await assetQuery
                 .OrderBy(asset => asset.CustomerName)
                 .ThenBy(asset => asset.ManagementNumber)
                 .ToListAsync(ct);
@@ -2171,7 +2191,14 @@ public sealed class RentalStateService
         var nameMatches = (await GetNameMatchedItemsAsync(normalizedItemName, ct))
             .Where(item => ItemOperationalPolicy.IsAsset(item.TrackingType))
             .ToList();
-        if (nameMatches.Count > 1)
+        var scopedNameMatches = nameMatches
+            .Where(item => MatchesRentalItemScope(item, assetOfficeCode, assetTenantCode))
+            .ToList();
+
+        if (scopedNameMatches.Count == 1)
+            return scopedNameMatches[0];
+
+        if (scopedNameMatches.Count > 1)
         {
             TryAddUnique(repairResult?.AmbiguousItemNames, normalizedItemName);
             return null;

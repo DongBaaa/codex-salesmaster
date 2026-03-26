@@ -1591,6 +1591,8 @@ public sealed class SyncController : ControllerBase
         foreach (var dto in payload)
         {
             var existing = await _dbContext.Payments.IgnoreQueryFilters()
+                .Include(x => x.Invoice)
+                .ThenInclude(invoice => invoice!.Customer)
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
             var invoice = await _dbContext.Invoices.IgnoreQueryFilters()
                 .Include(x => x.Customer)
@@ -1602,7 +1604,16 @@ public sealed class SyncController : ControllerBase
 
                 if (existing is not null)
                 {
+                    if (existing.Invoice is not null &&
+                        !_officeScopeService.CanWriteOfficeForPayments(existing.Invoice.OfficeCode, existing.Invoice.TenantCode))
+                    {
+                        AddClientConflict(dto, nameof(Payment),
+                            $"Referenced invoice is outside the writable office scope: {existing.InvoiceId}.", result);
+                        continue;
+                    }
+
                     dto.IsDeleted = true;
+                    dto.InvoiceId = existing.InvoiceId;
                     valid.Add(dto);
                     continue;
                 }

@@ -717,13 +717,40 @@ public sealed class SyncControllerTests : IDisposable
     public async Task Push_DeletesExistingPayment_WhenInvoiceReferenceIsMissing()
     {
         var paymentId = Guid.NewGuid();
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "ORPHAN-PAYMENT-CUSTOMER",
+            NameMatchKey = "ORPHANPAYMENTCUSTOMER",
+            TradeType = "매출"
+        };
+        var existingInvoiceId = Guid.NewGuid();
+        _dbContext.Customers.Add(customer);
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = existingInvoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "T-20260326-001",
+            LocalTempNumber = "TMP-20260326-001",
+            InvoiceDate = new DateOnly(2026, 3, 25),
+            VoucherType = VoucherType.Sales,
+            TotalAmount = 8000m,
+            SupplyAmount = 7273m,
+            VatAmount = 727m
+        });
         _dbContext.Payments.Add(new Payment
         {
             Id = paymentId,
-            InvoiceId = Guid.NewGuid(),
+            InvoiceId = existingInvoiceId,
             PaymentDate = new DateOnly(2026, 3, 25),
             Amount = 8000m,
-            Note = "old payment"
+            Note = "old payment",
+            CreatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc)
         });
         await _dbContext.SaveChangesAsync();
 
@@ -738,8 +765,8 @@ public sealed class SyncControllerTests : IDisposable
                     PaymentDate = new DateOnly(2026, 3, 26),
                     Amount = 8000m,
                     Note = "missing invoice payment",
-                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
-                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(1),
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1)
                 }
             ]
         };

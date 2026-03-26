@@ -150,7 +150,15 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         }
     }
 
-    private async void HandleInventoryStateChanged(object? sender, EventArgs e)
+    private void HandleInventoryStateChanged(object? sender, EventArgs e)
+    {
+        if (_isInventoryRefreshInProgress || IsBusy)
+            return;
+
+        UiTaskHelper.Forget(HandleInventoryStateChangedAsync(), "UI", "재고이동 화면 재고 상태 새로고침");
+    }
+
+    private async Task HandleInventoryStateChangedAsync()
     {
         if (_isInventoryRefreshInProgress || IsBusy)
             return;
@@ -170,10 +178,6 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
                 else
                     ApplyInputItem(refreshedItem);
             }
-        }
-        catch
-        {
-            // keep current editor state if background refresh fails
         }
         finally
         {

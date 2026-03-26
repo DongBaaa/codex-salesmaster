@@ -2,6 +2,7 @@
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Controls;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
 
@@ -25,21 +26,22 @@ public partial class CustomerManagementWindow : Window
         DataContext = vm;
     }
 
-    private async void CreateCustomerButton_Click(object sender, RoutedEventArgs e)
+    private void CreateCustomerButton_Click(object sender, RoutedEventArgs e)
     {
-        var customerVm = new CustomerEditViewModel(_local, _session);
-        await customerVm.LoadAsync();
-        var win = new CustomerEditWindow(customerVm) { Owner = this };
-        if (win.ShowDialog() == true)
-            await _vm.ReloadCommand.ExecuteAsync(null);
+        UiTaskHelper.Run(this, async () =>
+        {
+            var customerVm = new CustomerEditViewModel(_local, _session);
+            await customerVm.LoadAsync();
+            var win = new CustomerEditWindow(customerVm) { Owner = this };
+            if (win.ShowDialog() == true)
+                await _vm.ReloadCommand.ExecuteAsync(null);
+        }, "UI", "거래처 등록 창 열기", "거래처 등록 창을 여는 중 오류가 발생했습니다.");
     }
 
-    private async void EditCustomerButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenSelectedCustomerEditorAsync();
-    }
+    private void EditCustomerButton_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(this, OpenSelectedCustomerEditorAsync, "UI", "거래처 수정 창 열기", "거래처 수정 창을 여는 중 오류가 발생했습니다.");
 
-    private async void CustomerRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    private void CustomerRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         if (e.OriginalSource is not DependencyObject source)
             return;
@@ -50,7 +52,7 @@ public partial class CustomerManagementWindow : Window
         if (FindAncestor<DataGridRow>(source) is null)
             return;
 
-        await OpenSelectedCustomerEditorAsync();
+        UiTaskHelper.Run(this, OpenSelectedCustomerEditorAsync, "UI", "거래처 상세 더블클릭 열기", "거래처 상세를 여는 중 오류가 발생했습니다.");
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)

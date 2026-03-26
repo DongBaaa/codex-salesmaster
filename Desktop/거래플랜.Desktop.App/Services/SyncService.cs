@@ -18,6 +18,7 @@ public sealed class SyncService : IDisposable
 
     private readonly LocalDbContext _db;
     private readonly LocalStateService _local;
+    private readonly RentalStateService _rental;
     private readonly ErpApiClient _api;
     private readonly SessionState _session;
     private readonly SyncRequestDispatcher _dispatcher;
@@ -54,12 +55,14 @@ public sealed class SyncService : IDisposable
     public SyncService(
         LocalDbContext db,
         LocalStateService local,
+        RentalStateService rental,
         ErpApiClient api,
         SessionState session,
         SyncRequestDispatcher dispatcher)
     {
         _db = db;
         _local = local;
+        _rental = rental;
         _api = api;
         _session = session;
         _dispatcher = dispatcher;
@@ -373,6 +376,28 @@ public sealed class SyncService : IDisposable
 
     private async Task PushDirtyAsync(CancellationToken ct)
     {
+        var scopedDirtyRentalAssetIds = (await _local.GetDirtyRentalAssetsForSyncAsync(_session, ct))
+            .Where(asset => !asset.IsDeleted)
+            .Select(asset => asset.Id)
+            .Distinct()
+            .ToList();
+
+        if (scopedDirtyRentalAssetIds.Count > 0)
+        {
+            var rentalRepair = await _rental.RepairRentalCatalogLinksAsync(scopedDirtyRentalAssetIds, ct);
+            if (rentalRepair.UpdatedAssetCount > 0 ||
+                rentalRepair.AddedItemNames.Count > 0 ||
+                rentalRepair.AmbiguousItemNames.Count > 0)
+            {
+                AppLogger.Warn(
+                    "SYNC",
+                    $"동기화 전 렌탈 자산 품목 보정: scanned={rentalRepair.ScannedAssetCount}, " +
+                    $"updatedAssets={rentalRepair.UpdatedAssetCount}, " +
+                    $"addedItems={rentalRepair.AddedItemNames.Count}, " +
+                    $"ambiguousItems={rentalRepair.AmbiguousItemNames.Count}");
+            }
+        }
+
         var transactionRepair = await _local.RepairDirtyTransactionsForSyncAsync(_session, ct);
         if (transactionRepair.ClearedMissingInvoiceLinkCount > 0 ||
             transactionRepair.ClearedMissingRentalLinkCount > 0 ||

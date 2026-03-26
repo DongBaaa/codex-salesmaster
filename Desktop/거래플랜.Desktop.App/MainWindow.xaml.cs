@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
 using 거래플랜.Desktop.App.Views;
@@ -77,6 +78,15 @@ public partial class MainWindow : Window
         if (_isInitialized && !_session.IsOfflineMode)
             _centralRevisionPollTimer?.Start();
     }
+
+    private void RunUiAsync(Func<Task> operation, string operationName, string? userMessage = null)
+        => UiTaskHelper.Run(
+            this,
+            operation,
+            "UI",
+            operationName,
+            userMessage ?? $"{operationName} 중 오류가 발생했습니다.");
+
     public async Task InitAsync()
     {
         if (_isClosingOrClosed)
@@ -109,7 +119,13 @@ public partial class MainWindow : Window
         _isInitialized = true;
     }
 
-    private async void MainWindow_Activated(object? sender, EventArgs e)
+    private void MainWindow_Activated(object? sender, EventArgs e)
+        => RunUiAsync(
+            () => MainWindow_ActivatedAsync(),
+            "메인 창 활성화 처리",
+            "창 활성화 처리 중 오류가 발생했습니다.");
+
+    private async Task MainWindow_ActivatedAsync()
     {
         if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode)
             return;
@@ -117,7 +133,13 @@ public partial class MainWindow : Window
         await RunPassiveSyncRefreshAsync("창 활성화", TimeSpan.FromMinutes(1), requireServerRevisionChange: true);
     }
 
-    private async void MainWindow_Deactivated(object? sender, EventArgs e)
+    private void MainWindow_Deactivated(object? sender, EventArgs e)
+        => RunUiAsync(
+            () => MainWindow_DeactivatedAsync(),
+            "메인 창 비활성화 처리",
+            "창 비활성화 처리 중 오류가 발생했습니다.");
+
+    private async Task MainWindow_DeactivatedAsync()
     {
         if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode || _deactivateFlushInProgress)
             return;
@@ -214,7 +236,13 @@ public partial class MainWindow : Window
 
     // F9: 거래명세서 인쇄, F6: 신규 판매작성
     // Ctrl+Shift+C: 거래처등록, Ctrl+Shift+I: 재고관리, Ctrl+Shift+P: 수금지불
-    private async void Window_KeyDown(object sender, KeyEventArgs e)
+    private void Window_KeyDown(object sender, KeyEventArgs e)
+        => RunUiAsync(
+            () => Window_KeyDownAsync(e),
+            "메인 단축키 처리",
+            "단축키 처리 중 오류가 발생했습니다.");
+
+    private async Task Window_KeyDownAsync(KeyEventArgs e)
     {
         if (e.Key == Key.F9)
         {
@@ -256,26 +284,18 @@ public partial class MainWindow : Window
     }
 
     // 판매작성 (리스트 툴바 버튼)
-    private async void SalesToolbarButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenSalesWindowAsync(preselectSelectedCustomer: true);
-    }
+    private void SalesToolbarButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(() => OpenSalesWindowAsync(preselectSelectedCustomer: true), "판매 전표 창 열기");
 
-    private async void PurchaseToolbarButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenPurchaseWindowAsync(preselectSelectedCustomer: true);
-    }
+    private void PurchaseToolbarButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(() => OpenPurchaseWindowAsync(preselectSelectedCustomer: true), "매입 전표 창 열기");
 
-    private async void ProcurementToolbarButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenProcurementWindowAsync(preselectSelectedCustomer: true);
-    }
+    private void ProcurementToolbarButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(() => OpenProcurementWindowAsync(preselectSelectedCustomer: true), "발주 전표 창 열기");
 
     // 전표 목록 더블클릭 수정
-    private async void InvoiceRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        await OpenSelectedInvoiceEditorAsync();
-    }
+    private void InvoiceRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        => RunUiAsync(OpenSelectedInvoiceEditorAsync, "전표 상세 열기");
 
     private async Task OpenSelectedInvoiceEditorAsync()
     {
@@ -292,7 +312,10 @@ public partial class MainWindow : Window
     }
 
     // 거래처 우클릭 -> 거래처 수정
-    private async void CustomerEditContextMenu_Click(object sender, RoutedEventArgs e)
+    private void CustomerEditContextMenu_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(CustomerEditContextMenu_ClickAsync, "거래처 수정 창 열기");
+
+    private async Task CustomerEditContextMenu_ClickAsync()
     {
         var customer = _vm.SelectedCustomerFilter;
         if (customer is null) return;
@@ -300,13 +323,14 @@ public partial class MainWindow : Window
     }
 
     // 거래처 우클릭 -> 거래처 삭제
-    private async void CustomerDeleteContextMenu_Click(object sender, RoutedEventArgs e)
-    {
-        await DeleteSelectedCustomerAsync();
-    }
+    private void CustomerDeleteContextMenu_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(DeleteSelectedCustomerAsync, "거래처 삭제");
 
     // 거래처 더블클릭 -> 거래처 수정창 열기
-    private async void CustomerListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    private void CustomerListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        => RunUiAsync(CustomerListBox_MouseDoubleClickAsync, "거래처 상세 열기");
+
+    private async Task CustomerListBox_MouseDoubleClickAsync()
     {
         var customer = _vm.SelectedCustomerFilter;
         if (customer is null)
@@ -366,29 +390,27 @@ public partial class MainWindow : Window
     }
 
     // 재고관리 버튼
-    private async void InventoryButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenInventoryWindowAsync();
-    }
+    private void InventoryButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenInventoryWindowAsync, "재고관리 창 열기");
 
     // 거래처등록 버튼
-    private async void CustomerEditButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenCustomerEditorAsync();
-    }
+    private void CustomerEditButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(() => OpenCustomerEditorAsync(), "거래처 등록 창 열기");
 
     // 거래처삭제 버튼
-    private async void CustomerDeleteButton_Click(object sender, RoutedEventArgs e)
-    {
-        await DeleteSelectedCustomerAsync();
-    }
+    private void CustomerDeleteButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(DeleteSelectedCustomerAsync, "거래처 삭제");
 
-    private async void CustomerManagementButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenCustomerManagementWindowAsync();
-    }
+    private void CustomerManagementButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenCustomerManagementWindowAsync, "거래처관리 창 열기");
 
-    private async void DeleteSelectedInvoicesContextMenu_Click(object sender, RoutedEventArgs e)
+    private void DeleteSelectedInvoicesContextMenu_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(
+            () => DeleteSelectedInvoicesContextMenu_ClickAsync(sender),
+            "선택 전표 삭제",
+            "전표를 삭제하는 중 오류가 발생했습니다.");
+
+    private async Task DeleteSelectedInvoicesContextMenu_ClickAsync(object sender)
     {
         var rows = GetSelectedInvoiceRows(sender).ToList();
         if (rows.Count == 0)
@@ -446,19 +468,18 @@ public partial class MainWindow : Window
     }
 
     // 판매작성 버튼(헤더)
-    private async void SalesButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenSalesWindowAsync(preselectSelectedCustomer: false);
-    }
+    private void SalesButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(() => OpenSalesWindowAsync(preselectSelectedCustomer: false), "판매 전표 창 열기");
 
     // 수금지불 버튼(헤더)
-    private async void PaymentButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenPaymentPopupAsync();
-    }
+    private void PaymentButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenPaymentPopupAsync, "수금/지급 창 열기");
 
     // 자료기간별 집계 버튼(헤더)
-    private async void PeriodLedgerButton_Click(object sender, RoutedEventArgs e)
+    private void PeriodLedgerButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenPeriodLedgerWindowAsync, "자료기간별 집계 창 열기");
+
+    private async Task OpenPeriodLedgerWindowAsync()
     {
         var vm = new PeriodLedgerViewModel(
             _local,
@@ -471,22 +492,19 @@ public partial class MainWindow : Window
         win.ShowDialog();
     }
 
-    private async void YeonsuDeliveryButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenYeonsuDeliveryWindowAsync();
-    }
+    private void YeonsuDeliveryButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenYeonsuDeliveryWindowAsync, "연수구 납품 창 열기");
 
-    private async void EnvironmentSettingsButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenEnvironmentSettingsWindowAsync();
-    }
+    private void EnvironmentSettingsButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(() => OpenEnvironmentSettingsWindowAsync(), "환경설정 창 열기");
 
-    private async void RecycleBinButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenEnvironmentSettingsWindowAsync(openRecycleBinTab: true);
-    }
+    private void RecycleBinButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(() => OpenEnvironmentSettingsWindowAsync(openRecycleBinTab: true), "휴지통 창 열기");
 
-    private async void LogoutButton_Click(object sender, RoutedEventArgs e)
+    private void LogoutButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(LogoutAsync, "로그아웃", "로그아웃 처리 중 오류가 발생했습니다.");
+
+    private async Task LogoutAsync()
     {
         var answer = MessageBox.Show(
             "현재 로그인 상태를 해제하고 로그인 화면으로 이동하시겠습니까?",
@@ -521,31 +539,21 @@ public partial class MainWindow : Window
         button.ContextMenu.IsOpen = true;
     }
 
-    private async void RentalDashboardMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenRentalDashboardWindowAsync();
-    }
+    private void RentalDashboardMenuItem_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenRentalDashboardWindowAsync, "렌탈 대시보드 창 열기");
 
-    private async void RentalBillingMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenRentalBillingWindowAsync();
-    }
+    private void RentalBillingMenuItem_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenRentalBillingWindowAsync, "렌탈 청구관리 창 열기");
 
-    private async void RentalAssetMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenRentalAssetWindowAsync();
-    }
+    private void RentalAssetMenuItem_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenRentalAssetWindowAsync, "렌탈 자산 창 열기");
 
-    private async void RentalSettingsMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenRentalSettingsWindowAsync();
-    }
+    private void RentalSettingsMenuItem_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenRentalSettingsWindowAsync, "렌탈 설정 창 열기");
 
     // 전표 목록 탭의 수금 입력 버튼
-    private async void PaymentEntryButton_Click(object sender, RoutedEventArgs e)
-    {
-        await OpenPaymentPopupAsync();
-    }
+    private void PaymentEntryButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenPaymentPopupAsync, "전표 목록 수금/지급 창 열기");
 
     private async Task OpenSalesWindowAsync(bool preselectSelectedCustomer)
     {

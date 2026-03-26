@@ -1,9 +1,58 @@
+using System.Windows;
 using 거래플랜.Desktop.App.Services;
 
 namespace 거래플랜.Desktop.App.Infrastructure;
 
 internal static class UiTaskHelper
 {
+    public static void Run(
+        Window? owner,
+        Func<Task> operation,
+        string category,
+        string operationName,
+        string? userMessage = null,
+        Action<Exception>? onError = null)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentException.ThrowIfNullOrWhiteSpace(category);
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationName);
+
+        try
+        {
+            var task = operation();
+            Forget(task, category, operationName, ex =>
+            {
+                if (!string.IsNullOrWhiteSpace(userMessage))
+                {
+                    MessageBox.Show(
+                        owner ?? Application.Current?.MainWindow,
+                        $"{userMessage}{Environment.NewLine}{ex.Message}",
+                        "오류",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                }
+
+                onError?.Invoke(ex);
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error(category, $"{operationName} 실패", ex);
+
+            if (!string.IsNullOrWhiteSpace(userMessage))
+            {
+                MessageBox.Show(
+                    owner ?? Application.Current?.MainWindow,
+                    $"{userMessage}{Environment.NewLine}{ex.Message}",
+                    "오류",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
+
+            onError?.Invoke(ex);
+        }
+    }
+
     public static void Forget(Task task, string category, string operation, Action<Exception>? onError = null)
     {
         ArgumentNullException.ThrowIfNull(task);
