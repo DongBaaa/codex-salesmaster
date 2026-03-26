@@ -240,7 +240,7 @@
                              FontWeight="Bold"
                              Foreground="#C62828"
                              Margin="0,0,14,0"/>
-                    <TextBlock Grid.Row="3" Grid.Column="4" Text="선수금"/>
+                    <TextBlock Grid.Row="3" Grid.Column="4" Text="{Binding CustomerReserveLabelText}"/>
                     <TextBox Grid.Row="3"
                              Grid.Column="5"
                              Text="{Binding CustomerAdvanceBalance, StringFormat={}{0:N0}}"

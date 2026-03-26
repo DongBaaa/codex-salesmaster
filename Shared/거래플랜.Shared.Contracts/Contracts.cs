@@ -371,6 +371,7 @@ public sealed class TransactionDto : SyncEntityDto
     public Guid? LinkedRentalBillingProfileId { get; set; }
     public decimal SettlementAmount { get; set; }
     public decimal AdvanceDelta { get; set; }
+    public decimal PrepaidDelta { get; set; }
     public decimal CashReceipt { get; set; }
     public decimal CardReceipt { get; set; }
     public decimal BankReceipt { get; set; }

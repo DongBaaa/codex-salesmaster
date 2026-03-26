@@ -77,6 +77,7 @@ public sealed partial class SalesViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(PaymentActionButtonText))]
     [NotifyPropertyChangedFor(nameof(PaymentSummaryTitleText))]
     [NotifyPropertyChangedFor(nameof(CustomerBalanceLabelText))]
+    [NotifyPropertyChangedFor(nameof(CustomerReserveLabelText))]
     [NotifyPropertyChangedFor(nameof(ShowTaxInvoiceIssuedOption))]
     private VoucherType _voucherType = VoucherType.Sales;
     public Array VoucherTypes => Enum.GetValues<VoucherType>();
@@ -150,6 +151,7 @@ public sealed partial class SalesViewModel : ObservableObject
     public string PaymentActionButtonText => IsPurchaseDocument ? "지급 입력" : "수금 입력";
     public string PaymentSummaryTitleText => IsPurchaseDocument ? "지급 요약" : "수금 요약";
     public string CustomerBalanceLabelText => IsPurchaseDocument ? "총미지불" : "총미수금";
+    public string CustomerReserveLabelText => IsPurchaseDocument ? "선지급금" : "선수금";
     public string WindowTitleText => VoucherType switch
     {
         VoucherType.Purchase => "구매(매입)",
@@ -437,19 +439,16 @@ public sealed partial class SalesViewModel : ObservableObject
         }
 
         var selectedCustomer = SelectedCustomer;
-        var advanceBalance = await GetAdvanceBalanceAsync(selectedCustomer.Id);
-        if (!IsCurrentPaymentSummaryLoad(version))
-            return;
-
         var financialSummary = await _local.GetCustomerFinancialSummaryAsync(selectedCustomer.Id, _session);
         if (!IsCurrentPaymentSummaryLoad(version))
             return;
 
-        CustomerAdvanceBalance = advanceBalance;
+        var reserveBalance = IsPurchaseDocument ? financialSummary.PrepaidAmount : financialSummary.AdvanceBalance;
+        CustomerAdvanceBalance = reserveBalance;
         CustomerBalance = IsPurchaseDocument
             ? financialSummary.PayableAmount
             : financialSummary.ReceivableAmount;
-        PaymentSummaryAdvanceText = $"선수금 잔액 {advanceBalance:N0}";
+        PaymentSummaryAdvanceText = $"{CustomerReserveLabelText} 잔액 {reserveBalance:N0}";
 
         var invoice = await _local.GetInvoiceAsync(InvoiceId, _session);
         if (!IsCurrentPaymentSummaryLoad(version))
@@ -475,18 +474,6 @@ public sealed partial class SalesViewModel : ObservableObject
         OnPropertyChanged(nameof(PaymentSummaryTitleText));
     }
 
-    private async Task<decimal> GetAdvanceBalanceAsync(Guid customerId)
-    {
-        try
-        {
-            return await _local.GetAdvanceBalanceAsync(customerId, _session);
-        }
-        catch (NotSupportedException)
-        {
-            var transactions = await _local.GetTransactionsAsync(customerId, _session);
-            return transactions.Where(transaction => !transaction.IsDeleted).Sum(transaction => transaction.AdvanceDelta);
-        }
-    }
 
     private static InvoiceSettlementSummary GetInvoiceSettlementSummary(LocalInvoice invoice)
     {
@@ -508,7 +495,7 @@ public sealed partial class SalesViewModel : ObservableObject
         CustomerAdvanceBalance = 0m;
         PaymentSummaryContextText = "전표를 저장하면 수금/지급 요약이 표시됩니다.";
         PaymentSummaryDetailText = "연결 전표가 없으면 지급/수금 요약은 표시되지 않습니다.";
-        PaymentSummaryAdvanceText = "선수금 잔액 0";
+        PaymentSummaryAdvanceText = $"{CustomerReserveLabelText} 잔액 0";
         OnPropertyChanged(nameof(PaymentSummaryTitleText));
     }
 

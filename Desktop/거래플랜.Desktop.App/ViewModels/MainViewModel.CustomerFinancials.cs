@@ -50,7 +50,7 @@ public sealed partial class MainViewModel
         PreviewCustomerAdvanceBalance = summary.AdvanceBalance;
         PreviewCustomerReceivableBalance = summary.ReceivableAmount;
         PreviewCustomerPayableBalance = summary.PayableAmount;
-        PreviewCustomerPrepaymentBalance = summary.PrepaymentAmount;
+        PreviewCustomerPrepaymentBalance = summary.PrepaidAmount;
     }
 
     private bool IsCurrentCustomerFinancialPreview(int version)

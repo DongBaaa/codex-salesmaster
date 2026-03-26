@@ -118,6 +118,7 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<ItemWarehouseStock>().Property(x => x.Quantity).HasPrecision(18, 2);
         modelBuilder.Entity<TransactionRecord>().Property(x => x.SettlementAmount).HasPrecision(18, 2);
         modelBuilder.Entity<TransactionRecord>().Property(x => x.AdvanceDelta).HasPrecision(18, 2);
+        modelBuilder.Entity<TransactionRecord>().Property(x => x.PrepaidDelta).HasPrecision(18, 2);
         modelBuilder.Entity<TransactionRecord>().Property(x => x.CashReceipt).HasPrecision(18, 2);
         modelBuilder.Entity<TransactionRecord>().Property(x => x.CardReceipt).HasPrecision(18, 2);
         modelBuilder.Entity<TransactionRecord>().Property(x => x.BankReceipt).HasPrecision(18, 2);

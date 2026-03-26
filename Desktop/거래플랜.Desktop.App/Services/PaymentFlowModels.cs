@@ -23,4 +23,5 @@ public sealed class CustomerFinancialSummary
     public decimal ReceivableAmount { get; init; }
     public decimal PayableAmount { get; init; }
     public decimal PrepaymentAmount { get; init; }
+    public decimal PrepaidAmount { get; init; }
 }

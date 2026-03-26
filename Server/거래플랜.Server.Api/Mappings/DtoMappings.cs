@@ -423,6 +423,7 @@ public static class DtoMappings
             LinkedRentalBillingProfileId = entity.LinkedRentalBillingProfileId,
             SettlementAmount = entity.SettlementAmount,
             AdvanceDelta = entity.AdvanceDelta,
+            PrepaidDelta = entity.PrepaidDelta,
             CashReceipt = entity.CashReceipt,
             CardReceipt = entity.CardReceipt,
             BankReceipt = entity.BankReceipt,
@@ -447,6 +448,7 @@ public static class DtoMappings
         entity.LinkedRentalBillingProfileId = dto.LinkedRentalBillingProfileId;
         entity.SettlementAmount = dto.SettlementAmount;
         entity.AdvanceDelta = dto.AdvanceDelta;
+        entity.PrepaidDelta = dto.PrepaidDelta;
         entity.CashReceipt = dto.CashReceipt;
         entity.CardReceipt = dto.CardReceipt;
         entity.BankReceipt = dto.BankReceipt;

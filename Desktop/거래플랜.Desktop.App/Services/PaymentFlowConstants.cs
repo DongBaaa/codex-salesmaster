@@ -40,8 +40,32 @@ public static class PaymentFlowConstants
            string.Equals(kind, TransactionKindInvoicePayment, StringComparison.OrdinalIgnoreCase) ||
            string.Equals(kind, TransactionKindAdvanceApply, StringComparison.OrdinalIgnoreCase);
 
+    public static bool IsGeneralSettlementKind(string? kind)
+        => string.Equals(kind, TransactionKindReceipt, StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(kind, TransactionKindPayment, StringComparison.OrdinalIgnoreCase);
+
     public static bool IsRentalSettlementKind(string? kind)
         => string.Equals(kind, TransactionKindRentalReceipt, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsReceiptKind(string? kind)
+        => NormalizeTransactionKind(kind) switch
+        {
+            TransactionKindReceipt => true,
+            TransactionKindInvoiceReceipt => true,
+            TransactionKindAdvanceDeposit => true,
+            TransactionKindAdvanceApply => true,
+            TransactionKindRentalReceipt => true,
+            _ => false
+        };
+
+    public static bool IsPaymentKind(string? kind)
+        => NormalizeTransactionKind(kind) switch
+        {
+            TransactionKindPayment => true,
+            TransactionKindInvoicePayment => true,
+            TransactionKindAdvanceRefund => true,
+            _ => false
+        };
 
     public static string NormalizeTransactionKind(string? kind, bool preferPayment = false)
     {

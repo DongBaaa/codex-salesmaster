@@ -3182,13 +3182,15 @@ public sealed partial class LocalStateService
             .Where(transaction => transaction.AdvanceDelta > 0m &&
                                   (transaction.LinkedInvoiceId.HasValue || transaction.LinkedRentalBillingProfileId.HasValue))
             .Sum(transaction => transaction.AdvanceDelta);
+        var prepaidAmount = transactions.Sum(transaction => transaction.PrepaidDelta);
 
         return new CustomerFinancialSummary
         {
             AdvanceBalance = transactions.Sum(transaction => transaction.AdvanceDelta),
             ReceivableAmount = receivableAmount,
             PayableAmount = payableAmount,
-            PrepaymentAmount = prepaymentAmount
+            PrepaymentAmount = prepaymentAmount,
+            PrepaidAmount = prepaidAmount
         };
     }
 
@@ -3308,12 +3310,7 @@ public sealed partial class LocalStateService
                 : linkedInvoice.InvoiceNumber;
 
             var preferInvoicePayment = linkedInvoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement;
-            if (!PaymentFlowConstants.IsInvoiceSettlementKind(transaction.TransactionKind))
-            {
-                transaction.TransactionKind = preferInvoicePayment
-                    ? PaymentFlowConstants.TransactionKindInvoicePayment
-                    : PaymentFlowConstants.TransactionKindInvoiceReceipt;
-            }
+            transaction.TransactionKind = NormalizeLinkedInvoiceTransactionKind(transaction.TransactionKind, preferInvoicePayment);
         }
         else
         {
@@ -3357,6 +3354,11 @@ public sealed partial class LocalStateService
         var absoluteAmount = receiptTotal > 0m ? receiptTotal : paymentTotal;
         transaction.SettlementAmount = Math.Max(0m, transaction.SettlementAmount);
         transaction.AdvanceDelta = 0m;
+        transaction.PrepaidDelta = 0m;
+
+        var linkedInvoiceRemainingAmount = linkedInvoice is null
+            ? 0m
+            : await GetInvoiceRemainingAmountForTransactionAsync(linkedInvoice.Id, transaction.Id, linkedInvoice.TotalAmount, ct);
 
         switch (transaction.TransactionKind)
         {
@@ -3384,21 +3386,52 @@ public sealed partial class LocalStateService
                     : absoluteAmount;
                 if (transaction.SettlementAmount <= 0m)
                     return OfficeMutationResult.Denied("선수금 차감 금액을 입력하세요.");
+                transaction.SettlementAmount = Math.Min(transaction.SettlementAmount, linkedInvoiceRemainingAmount);
                 transaction.AdvanceDelta = -transaction.SettlementAmount;
                 break;
 
             case var kind when kind == PaymentFlowConstants.TransactionKindInvoiceReceipt
-                                || kind == PaymentFlowConstants.TransactionKindInvoicePayment:
-                if (linkedInvoice is null)
-                    return OfficeMutationResult.Denied("전표 수금/지급은 연결 전표가 있어야 합니다.");
-                transaction.SettlementAmount = transaction.SettlementAmount > 0m
-                    ? Math.Min(transaction.SettlementAmount, absoluteAmount <= 0m ? transaction.SettlementAmount : absoluteAmount)
-                    : absoluteAmount;
-                if (transaction.SettlementAmount <= 0m)
-                    return OfficeMutationResult.Denied("전표 결제 금액을 입력하세요.");
+                                || kind == PaymentFlowConstants.TransactionKindReceipt:
+                if (linkedInvoice is not null)
+                {
+                    transaction.SettlementAmount = transaction.SettlementAmount > 0m
+                        ? Math.Min(transaction.SettlementAmount, receiptTotal <= 0m ? transaction.SettlementAmount : receiptTotal)
+                        : receiptTotal;
+                    if (transaction.SettlementAmount <= 0m)
+                        return OfficeMutationResult.Denied("전표 수금 금액을 입력하세요.");
 
-                if (kind == PaymentFlowConstants.TransactionKindInvoiceReceipt && receiptTotal > transaction.SettlementAmount)
-                    transaction.AdvanceDelta = receiptTotal - transaction.SettlementAmount;
+                    transaction.SettlementAmount = Math.Min(transaction.SettlementAmount, linkedInvoiceRemainingAmount);
+                    if (receiptTotal > transaction.SettlementAmount)
+                        transaction.AdvanceDelta = receiptTotal - transaction.SettlementAmount;
+                    break;
+                }
+
+                transaction.LinkedInvoiceId = null;
+                transaction.LinkedInvoiceNumber = string.Empty;
+                transaction.LinkedRentalBillingProfileId = null;
+                transaction.SettlementAmount = 0m;
+                break;
+
+            case var kind when kind == PaymentFlowConstants.TransactionKindInvoicePayment
+                                || kind == PaymentFlowConstants.TransactionKindPayment:
+                if (linkedInvoice is not null)
+                {
+                    transaction.SettlementAmount = transaction.SettlementAmount > 0m
+                        ? Math.Min(transaction.SettlementAmount, paymentTotal <= 0m ? transaction.SettlementAmount : paymentTotal)
+                        : paymentTotal;
+                    if (transaction.SettlementAmount <= 0m)
+                        return OfficeMutationResult.Denied("전표 지급 금액을 입력하세요.");
+
+                    transaction.SettlementAmount = Math.Min(transaction.SettlementAmount, linkedInvoiceRemainingAmount);
+                    if (paymentTotal > transaction.SettlementAmount)
+                        transaction.PrepaidDelta = paymentTotal - transaction.SettlementAmount;
+                    break;
+                }
+
+                transaction.LinkedInvoiceId = null;
+                transaction.LinkedInvoiceNumber = string.Empty;
+                transaction.LinkedRentalBillingProfileId = null;
+                transaction.SettlementAmount = 0m;
                 break;
 
             case var kind when kind == PaymentFlowConstants.TransactionKindRentalReceipt:
@@ -3445,6 +3478,44 @@ public sealed partial class LocalStateService
         }
 
         return OfficeMutationResult.Ok(transaction.Id, "수금/지급을 저장했습니다.");
+    }
+
+    private static string NormalizeLinkedInvoiceTransactionKind(string? transactionKind, bool preferPayment)
+    {
+        var normalized = PaymentFlowConstants.NormalizeTransactionKind(transactionKind, preferPayment);
+        if (preferPayment)
+        {
+            return normalized switch
+            {
+                PaymentFlowConstants.TransactionKindReceipt => PaymentFlowConstants.TransactionKindPayment,
+                PaymentFlowConstants.TransactionKindInvoiceReceipt => PaymentFlowConstants.TransactionKindInvoicePayment,
+                PaymentFlowConstants.TransactionKindAdvanceApply => PaymentFlowConstants.TransactionKindPayment,
+                _ => normalized
+            };
+        }
+
+        return normalized switch
+        {
+            PaymentFlowConstants.TransactionKindPayment => PaymentFlowConstants.TransactionKindReceipt,
+            PaymentFlowConstants.TransactionKindInvoicePayment => PaymentFlowConstants.TransactionKindInvoiceReceipt,
+            _ => normalized
+        };
+    }
+
+    private async Task<decimal> GetInvoiceRemainingAmountForTransactionAsync(
+        Guid invoiceId,
+        Guid transactionId,
+        decimal invoiceTotal,
+        CancellationToken ct)
+    {
+        var settledAmount = await _db.Payments
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(payment => !payment.IsDeleted && payment.InvoiceId == invoiceId && payment.Id != transactionId)
+            .Select(payment => payment.Amount)
+            .ToListAsync(ct);
+
+        return Math.Max(0m, invoiceTotal - settledAmount.Sum());
     }
 
     private async Task<decimal> GetAdvanceBalanceCoreAsync(Guid customerId, CancellationToken ct)

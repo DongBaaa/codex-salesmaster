@@ -157,6 +157,7 @@ public static class DbInitializer
         await EnsurePaymentAttachmentsTableAsync(dbContext, cancellationToken);
         await EnsureItemWarehouseStocksTableAsync(dbContext, cancellationToken);
         await EnsureTransactionsTableAsync(dbContext, cancellationToken);
+        await EnsureTransactionPrepaidDeltaColumnAsync(dbContext, cancellationToken);
         await EnsureTransactionAttachmentsTableAsync(dbContext, cancellationToken);
         await EnsureInventoryTransfersTableAsync(dbContext, cancellationToken);
         await EnsureRentalManagementCompaniesTableAsync(dbContext, cancellationToken);
@@ -1833,6 +1834,36 @@ public static class DbInitializer
         }
     }
 
+    private static async Task EnsureTransactionPrepaidDeltaColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    ALTER TABLE "Transactions" ADD COLUMN "PrepaidDelta" REAL NOT NULL DEFAULT 0;
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    ALTER TABLE "Transactions" ADD COLUMN IF NOT EXISTS "PrepaidDelta" numeric(18,2) NOT NULL DEFAULT 0;
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+    }
+
     private static async Task EnsureInvoiceTaxInvoiceIssuedColumnAsync(
         AppDbContext dbContext,
         CancellationToken cancellationToken)
@@ -2143,6 +2174,7 @@ public static class DbInitializer
                         "LinkedRentalBillingProfileId" TEXT NULL,
                         "SettlementAmount" REAL NOT NULL DEFAULT 0,
                         "AdvanceDelta" REAL NOT NULL DEFAULT 0,
+                        "PrepaidDelta" REAL NOT NULL DEFAULT 0,
                         "CashReceipt" REAL NOT NULL DEFAULT 0,
                         "CardReceipt" REAL NOT NULL DEFAULT 0,
                         "BankReceipt" REAL NOT NULL DEFAULT 0,
@@ -2179,6 +2211,7 @@ public static class DbInitializer
                         "LinkedRentalBillingProfileId" uuid NULL,
                         "SettlementAmount" numeric(18,2) NOT NULL DEFAULT 0,
                         "AdvanceDelta" numeric(18,2) NOT NULL DEFAULT 0,
+                        "PrepaidDelta" numeric(18,2) NOT NULL DEFAULT 0,
                         "CashReceipt" numeric(18,2) NOT NULL DEFAULT 0,
                         "CardReceipt" numeric(18,2) NOT NULL DEFAULT 0,
                         "BankReceipt" numeric(18,2) NOT NULL DEFAULT 0,

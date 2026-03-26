@@ -522,7 +522,7 @@
                                                 <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PreviewCustomerReceivableBalance, StringFormat={}{0:N0}원}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
                                                 <TextBlock Grid.Row="2" Grid.Column="0" Text="미지불" Foreground="#9FB3C8" Margin="0,6,12,0"/>
                                                 <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding PreviewCustomerPayableBalance, StringFormat={}{0:N0}원}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
-                                                <TextBlock Grid.Row="3" Grid.Column="0" Text="선결제" Foreground="#9FB3C8" Margin="0,6,12,0"/>
+                                                <TextBlock Grid.Row="3" Grid.Column="0" Text="선지급금" Foreground="#9FB3C8" Margin="0,6,12,0"/>
                                                 <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding PreviewCustomerPrepaymentBalance, StringFormat={}{0:N0}원}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
                                             </Grid>
                                         </Border>

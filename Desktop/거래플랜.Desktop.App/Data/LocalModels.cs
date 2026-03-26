@@ -468,6 +468,7 @@ public sealed class LocalTransaction : LocalSyncEntity
     public Guid? LinkedRentalBillingProfileId { get; set; }
     public decimal SettlementAmount { get; set; }
     public decimal AdvanceDelta { get; set; }
+    public decimal PrepaidDelta { get; set; }
 
     // 수금처리내역
     public decimal CashReceipt { get; set; }

@@ -9,6 +9,7 @@ public static class LocalDbInitializer
 {
     private const string FallbackUtcText = "1970-01-01T00:00:00Z";
     private const string YeonsuOfficeIdSettingKey = "SystemOffice.YeonsuOfficeId";
+    private const string LegacyLinkedGeneralSettlementCleanupKey = "Migration.CleanupLegacyLinkedGeneralSettlements.v1";
     private static readonly Regex SqlIdentifierPattern = new(
         "^[A-Za-z0-9_]+$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -49,12 +50,10 @@ public static class LocalDbInitializer
             );
         }
 
-        if (!db.Settings.Any())
-        {
-            db.Settings.Add(new LocalSetting { Key = "LastSyncRevision", Value = "0" });
-            db.Settings.Add(new LocalSetting { Key = "Theme", Value = "Dark" });
-        }
+        await UpsertSettingAsync(db, "LastSyncRevision", "0");
+        await UpsertSettingAsync(db, "Theme", "Dark");
 
+        await CleanupLegacyLinkedGeneralSettlementsAsync(db);
         await CustomerCategoryMaintenance.NormalizeAsync(db);
         await NormalizeSelectionOptionSystemDefaultsAsync(db);
         await SeedOfficeAndWarehouseAsync(db);
@@ -195,6 +194,7 @@ public static class LocalDbInitializer
             ("LinkedRentalBillingProfileId", "TEXT NULL"),
             ("SettlementAmount", "REAL NOT NULL DEFAULT 0"),
             ("AdvanceDelta", "REAL NOT NULL DEFAULT 0"),
+            ("PrepaidDelta", "REAL NOT NULL DEFAULT 0"),
             ("CashReceipt", "REAL NOT NULL DEFAULT 0"),
             ("CardReceipt", "REAL NOT NULL DEFAULT 0"),
             ("BankReceipt", "REAL NOT NULL DEFAULT 0"),
@@ -747,18 +747,7 @@ public static class LocalDbInitializer
             db.Offices.Remove(office);
         }
 
-        if (yeonsuSetting is null)
-        {
-            db.Settings.Add(new LocalSetting
-            {
-                Key = YeonsuOfficeIdSettingKey,
-                Value = canonicalMap[OfficeCodeCatalog.Yeonsu].Id.ToString("D")
-            });
-        }
-        else
-        {
-            yeonsuSetting.Value = canonicalMap[OfficeCodeCatalog.Yeonsu].Id.ToString("D");
-        }
+        await UpsertSettingAsync(db, YeonsuOfficeIdSettingKey, canonicalMap[OfficeCodeCatalog.Yeonsu].Id.ToString("D"));
     }
 
     private static LocalOffice? ResolveHeadOffice(IReadOnlyCollection<LocalOffice> offices)
@@ -790,7 +779,8 @@ public static class LocalDbInitializer
 
     private static async Task UpsertSettingAsync(LocalDbContext db, string key, string value)
     {
-        var setting = await db.Settings.FirstOrDefaultAsync(current => current.Key == key);
+        var setting = db.Settings.Local.FirstOrDefault(current => string.Equals(current.Key, key, StringComparison.OrdinalIgnoreCase))
+            ?? await db.Settings.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Key == key);
         if (setting is null)
         {
             db.Settings.Add(new LocalSetting
@@ -1042,6 +1032,62 @@ public static class LocalDbInitializer
     private static string ResolveCanonicalOfficeCode(string? primary, string? secondary, bool isHeadOffice = false)
         => OfficeCodeCatalog.NormalizeOfficeCodeLoose(primary, secondary, isHeadOffice ? OfficeCodeCatalog.Usenet : OfficeCodeCatalog.Yeonsu);
 
+    private static async Task CleanupLegacyLinkedGeneralSettlementsAsync(LocalDbContext db)
+    {
+        var marker = await db.Settings.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Key == LegacyLinkedGeneralSettlementCleanupKey);
+        if (marker is not null && string.Equals(marker.Value, "1", StringComparison.Ordinal))
+            return;
+
+        var now = DateTime.UtcNow;
+        var legacyTransactions = await db.Transactions.IgnoreQueryFilters()
+            .Where(current =>
+                !current.IsDeleted &&
+                current.LinkedInvoiceId.HasValue &&
+                (current.TransactionKind == PaymentFlowConstants.TransactionKindReceipt ||
+                 current.TransactionKind == PaymentFlowConstants.TransactionKindPayment))
+            .ToListAsync();
+
+        if (legacyTransactions.Count > 0)
+        {
+            var legacyTransactionIds = legacyTransactions.Select(current => current.Id).ToHashSet();
+            var linkedPayments = await db.Payments.IgnoreQueryFilters()
+                .Where(current => legacyTransactionIds.Contains(current.Id))
+                .ToListAsync();
+            var linkedAttachments = await db.TransactionAttachments.IgnoreQueryFilters()
+                .Where(current => legacyTransactionIds.Contains(current.TransactionId))
+                .ToListAsync();
+
+            foreach (var transaction in legacyTransactions)
+            {
+                transaction.LinkedInvoiceId = null;
+                transaction.LinkedInvoiceNumber = string.Empty;
+                transaction.SettlementAmount = 0m;
+                transaction.AdvanceDelta = 0m;
+                transaction.PrepaidDelta = 0m;
+                transaction.IsDeleted = true;
+                transaction.IsDirty = true;
+                transaction.UpdatedAtUtc = now;
+            }
+
+            foreach (var payment in linkedPayments)
+            {
+                payment.IsDeleted = true;
+                payment.IsDirty = true;
+                payment.UpdatedAtUtc = now;
+            }
+
+            foreach (var attachment in linkedAttachments)
+            {
+                attachment.IsDeleted = true;
+                attachment.IsDirty = true;
+                attachment.UpdatedAtUtc = now;
+            }
+        }
+
+        await UpsertSettingAsync(db, LegacyLinkedGeneralSettlementCleanupKey, "1");
+    }
+
     private static string ResolveCanonicalWarehouseCode(string? warehouseCode, string? officeCode, string? warehouseName)
         => OfficeCodeCatalog.NormalizeWarehouseCodeLoose(warehouseCode, officeCode, ResolveCanonicalOfficeCode(officeCode, warehouseName));
 
@@ -1095,12 +1141,9 @@ public static class LocalDbInitializer
 
         await NormalizeRentalManagementCompaniesAsync(db);
 
-        if (!db.Settings.Any(setting => setting.Key == "Rental.AlertDaysBefore"))
-            db.Settings.Add(new LocalSetting { Key = "Rental.AlertDaysBefore", Value = "7,3,1,0" });
-        if (!db.Settings.Any(setting => setting.Key == "Rental.ImportBillingWorkbookPath"))
-            db.Settings.Add(new LocalSetting { Key = "Rental.ImportBillingWorkbookPath", Value = string.Empty });
-        if (!db.Settings.Any(setting => setting.Key == "Rental.ImportAssetWorkbookPath"))
-            db.Settings.Add(new LocalSetting { Key = "Rental.ImportAssetWorkbookPath", Value = string.Empty });
+        await UpsertSettingAsync(db, "Rental.AlertDaysBefore", "7,3,1,0");
+        await UpsertSettingAsync(db, "Rental.ImportBillingWorkbookPath", string.Empty);
+        await UpsertSettingAsync(db, "Rental.ImportAssetWorkbookPath", string.Empty);
     }
 
     private static async Task NormalizeRentalManagementCompaniesAsync(LocalDbContext db)
@@ -2015,6 +2058,13 @@ public static class LocalDbInitializer
                                               "CustomerId" TEXT NOT NULL,
                                               "ResponsibleOfficeCode" TEXT NOT NULL DEFAULT 'USENET',
                                               "TransactionDate" TEXT NOT NULL,
+                                              "TransactionKind" TEXT NOT NULL DEFAULT '일반수금',
+                                              "LinkedInvoiceId" TEXT NULL,
+                                              "LinkedInvoiceNumber" TEXT NOT NULL DEFAULT '',
+                                              "LinkedRentalBillingProfileId" TEXT NULL,
+                                              "SettlementAmount" REAL NOT NULL DEFAULT 0,
+                                              "AdvanceDelta" REAL NOT NULL DEFAULT 0,
+                                              "PrepaidDelta" REAL NOT NULL DEFAULT 0,
                                               "CashReceipt" REAL NOT NULL DEFAULT 0,
                                               "CardReceipt" REAL NOT NULL DEFAULT 0,
                                               "BankReceipt" REAL NOT NULL DEFAULT 0,

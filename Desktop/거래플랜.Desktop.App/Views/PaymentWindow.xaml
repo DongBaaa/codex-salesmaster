@@ -246,7 +246,7 @@
                                   SelectedValuePath="Value"
                                   SelectedValue="{Binding SelectedTransactionKind}"
                                   Margin="0,0,12,8"/>
-                        <Label Grid.Row="2" Grid.Column="2" Content="선수금잔액"/>
+                        <Label Grid.Row="2" Grid.Column="2" Content="{Binding ReserveBalanceLabelText}"/>
                         <TextBox Grid.Row="2"
                                  Grid.Column="3"
                                  Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
