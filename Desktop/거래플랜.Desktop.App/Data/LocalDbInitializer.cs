@@ -113,6 +113,7 @@ public static class LocalDbInitializer
     private static async Task MigrateColumnsAsync(LocalDbContext db)
     {
         await TryCreateAttachmentSelectionsTableAsync(db);
+        await TryCreateSyncDiagnosticEventsTableAsync(db);
         await TryCreateCustomerContractsTableAsync(db);
         await TryCreateTransactionsTableAsync(db);
         await TryCreateTransactionAttachmentsTableAsync(db);
@@ -1941,6 +1942,66 @@ public static class LocalDbInitializer
         }
         catch
         {
+        }
+    }
+
+    private static async Task TryCreateSyncDiagnosticEventsTableAsync(LocalDbContext db)
+    {
+        try
+        {
+            const string createTableSql = """
+                                          CREATE TABLE IF NOT EXISTS "SyncDiagnosticEvents" (
+                                              "Id" TEXT NOT NULL CONSTRAINT "PK_SyncDiagnosticEvents" PRIMARY KEY,
+                                              "OccurredAtUtc" TEXT NOT NULL,
+                                              "LastOccurredAtUtc" TEXT NOT NULL,
+                                              "OccurrenceCount" INTEGER NOT NULL DEFAULT 1,
+                                              "Severity" TEXT NOT NULL DEFAULT 'Error',
+                                              "Category" TEXT NOT NULL DEFAULT '',
+                                              "Subcategory" TEXT NOT NULL DEFAULT '',
+                                              "EntityName" TEXT NOT NULL DEFAULT '',
+                                              "EntityId" TEXT NOT NULL DEFAULT '',
+                                              "ReferenceEntityName" TEXT NOT NULL DEFAULT '',
+                                              "ReferenceEntityId" TEXT NOT NULL DEFAULT '',
+                                              "UserName" TEXT NOT NULL DEFAULT '',
+                                              "OfficeCode" TEXT NOT NULL DEFAULT '',
+                                              "TenantCode" TEXT NOT NULL DEFAULT '',
+                                              "MachineName" TEXT NOT NULL DEFAULT '',
+                                              "AppVersion" TEXT NOT NULL DEFAULT '',
+                                              "SyncPhase" TEXT NOT NULL DEFAULT '',
+                                              "RawMessage" TEXT NOT NULL DEFAULT '',
+                                              "NormalizedMessage" TEXT NOT NULL DEFAULT '',
+                                              "StackTrace" TEXT NOT NULL DEFAULT '',
+                                              "IsRecoverable" INTEGER NOT NULL DEFAULT 0,
+                                              "RecoveryAction" TEXT NOT NULL DEFAULT '',
+                                              "RecoveryAttempted" INTEGER NOT NULL DEFAULT 0,
+                                              "RecoverySucceeded" INTEGER NOT NULL DEFAULT 0,
+                                              "ResolvedAtUtc" TEXT NULL,
+                                              "Status" TEXT NOT NULL DEFAULT 'Open',
+                                              "LastKnownSyncRevision" INTEGER NOT NULL DEFAULT 0,
+                                              "LastKnownSyncError" TEXT NOT NULL DEFAULT '',
+                                              "DirtyCustomerMasterCount" INTEGER NOT NULL DEFAULT 0,
+                                              "DirtyCustomerCount" INTEGER NOT NULL DEFAULT 0,
+                                              "DirtyInvoiceCount" INTEGER NOT NULL DEFAULT 0,
+                                              "DirtyTransactionCount" INTEGER NOT NULL DEFAULT 0,
+                                              "DirtyAttachmentCount" INTEGER NOT NULL DEFAULT 0,
+                                              "DirtyPaymentCount" INTEGER NOT NULL DEFAULT 0,
+                                              "DirtyRentalAssetCount" INTEGER NOT NULL DEFAULT 0,
+                                              "DirtyInventoryTransferCount" INTEGER NOT NULL DEFAULT 0,
+                                              "MissingCustomerReferenceCount" INTEGER NOT NULL DEFAULT 0,
+                                              "MissingInvoiceReferenceCount" INTEGER NOT NULL DEFAULT 0,
+                                              "MissingTransactionReferenceCount" INTEGER NOT NULL DEFAULT 0,
+                                              "MissingRentalItemReferenceCount" INTEGER NOT NULL DEFAULT 0
+                                          );
+                                          """;
+            await db.Database.ExecuteSqlRawAsync(createTableSql);
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_SyncDiagnosticEvents_LastOccurredAtUtc\" ON \"SyncDiagnosticEvents\" (\"LastOccurredAtUtc\");");
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_SyncDiagnosticEvents_Status_LastOccurredAtUtc\" ON \"SyncDiagnosticEvents\" (\"Status\", \"LastOccurredAtUtc\");");
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_SyncDiagnosticEvents_Category_Subcategory\" ON \"SyncDiagnosticEvents\" (\"Category\", \"Subcategory\");");
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_SyncDiagnosticEvents_SyncPhase_Status\" ON \"SyncDiagnosticEvents\" (\"SyncPhase\", \"Status\");");
+        }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateSyncDiagnosticEventsTableAsync), ex);
         }
     }
 

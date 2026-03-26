@@ -59,6 +59,7 @@ public partial class App : Application
             services.AddSingleton<SessionState>();
             services.AddSingleton<OfficeAccessService>();
             services.AddSingleton<SyncRequestDispatcher>();
+            services.AddScoped<SyncDiagnosticsService>();
             services.AddScoped<LocalStateService>();
             services.AddScoped<RentalStateService>();
             services.AddScoped<RentalDocumentService>();
@@ -220,12 +221,37 @@ public partial class App : Application
         catch (Exception ex)
         {
             AppLogger.Error("APP", "Startup failure", ex);
+            await TryRecordStartupDiagnosticAsync(ex);
             MessageBox.Show(
                 $"시작 오류:\n{ex.Message}\n\n{ex.InnerException?.Message}",
                 "거래플랜 오류",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
             Shutdown(1);
+        }
+    }
+
+    private async Task TryRecordStartupDiagnosticAsync(Exception ex)
+    {
+        if (_services is null)
+            return;
+
+        try
+        {
+            await using var scope = _services.CreateAsyncScope();
+            var diagnostics = scope.ServiceProvider.GetService<SyncDiagnosticsService>();
+            if (diagnostics is null)
+                return;
+
+            await diagnostics.RecordIssueAsync(
+                phase: "startup-fatal",
+                rawMessage: ex.InnerException?.Message ?? ex.Message,
+                exception: ex,
+                severity: "Error");
+        }
+        catch
+        {
+            // startup 진단 저장 실패가 앱 종료를 막지 않도록 무시
         }
     }
 

@@ -255,6 +255,50 @@ public sealed class LocalAttachmentSelection
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
+public sealed class LocalSyncDiagnosticEvent
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public DateTime OccurredAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime LastOccurredAtUtc { get; set; } = DateTime.UtcNow;
+    public int OccurrenceCount { get; set; } = 1;
+    public string Severity { get; set; } = "Error";
+    public string Category { get; set; } = string.Empty;
+    public string Subcategory { get; set; } = string.Empty;
+    public string EntityName { get; set; } = string.Empty;
+    public string EntityId { get; set; } = string.Empty;
+    public string ReferenceEntityName { get; set; } = string.Empty;
+    public string ReferenceEntityId { get; set; } = string.Empty;
+    public string UserName { get; set; } = string.Empty;
+    public string OfficeCode { get; set; } = string.Empty;
+    public string TenantCode { get; set; } = string.Empty;
+    public string MachineName { get; set; } = string.Empty;
+    public string AppVersion { get; set; } = string.Empty;
+    public string SyncPhase { get; set; } = string.Empty;
+    public string RawMessage { get; set; } = string.Empty;
+    public string NormalizedMessage { get; set; } = string.Empty;
+    public string StackTrace { get; set; } = string.Empty;
+    public bool IsRecoverable { get; set; }
+    public string RecoveryAction { get; set; } = string.Empty;
+    public bool RecoveryAttempted { get; set; }
+    public bool RecoverySucceeded { get; set; }
+    public DateTime? ResolvedAtUtc { get; set; }
+    public string Status { get; set; } = "Open";
+    public long LastKnownSyncRevision { get; set; }
+    public string LastKnownSyncError { get; set; } = string.Empty;
+    public int DirtyCustomerMasterCount { get; set; }
+    public int DirtyCustomerCount { get; set; }
+    public int DirtyInvoiceCount { get; set; }
+    public int DirtyTransactionCount { get; set; }
+    public int DirtyAttachmentCount { get; set; }
+    public int DirtyPaymentCount { get; set; }
+    public int DirtyRentalAssetCount { get; set; }
+    public int DirtyInventoryTransferCount { get; set; }
+    public int MissingCustomerReferenceCount { get; set; }
+    public int MissingInvoiceReferenceCount { get; set; }
+    public int MissingTransactionReferenceCount { get; set; }
+    public int MissingRentalItemReferenceCount { get; set; }
+}
+
 public sealed class LocalOffice : LocalSyncEntity
 {
     public string Code { get; set; } = string.Empty;

@@ -16,6 +16,7 @@ public static class AppPaths
     public static string BackupDir { get; } = Path.Combine(_base, "backup");
     public static string TempDir { get; } = Path.Combine(_base, "temp");
     public static string LogDir { get; } = Path.Combine(_base, "logs");
+    public static string DiagnosticsDir { get; } = Path.Combine(_base, "diagnostics");
     public static string AttachmentsDir { get; } = Path.Combine(_base, "attachments");
     public static string CustomerContractPreviewDir { get; } = Path.Combine(TempDir, "customer-contracts");
     public static string TransactionAttachmentsDir { get; } = Path.Combine(AttachmentsDir, "transactions");
@@ -28,6 +29,7 @@ public static class AppPaths
         Directory.CreateDirectory(BackupDir);
         Directory.CreateDirectory(TempDir);
         Directory.CreateDirectory(LogDir);
+        Directory.CreateDirectory(DiagnosticsDir);
         Directory.CreateDirectory(AttachmentsDir);
         Directory.CreateDirectory(CustomerContractPreviewDir);
         Directory.CreateDirectory(TransactionAttachmentsDir);

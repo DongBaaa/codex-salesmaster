@@ -175,6 +175,7 @@
                     <!-- 사용자/동기화 그룹 -->
                     <TextBlock Text="{Binding CurrentUserDisplay}" Foreground="#9FB3C8" VerticalAlignment="Center" Margin="0,0,10,0"/>
                     <Button Content="동기화" Background="#37474F" Command="{Binding ForceSyncCommand}" Margin="0,0,6,0"/>
+                    <Button Content="동기화 진단" Background="#5D4037" Command="{Binding OpenSyncDiagnosticsCommand}" Margin="0,0,6,0"/>
                     <Button Content="백업" Background="#455A64" Command="{Binding BackupNowCommand}"/>
                     <Button Content="로그아웃" Background="#6C5B7B" Margin="6,0,0,0" Click="LogoutButton_Click"/>
                 </StackPanel>

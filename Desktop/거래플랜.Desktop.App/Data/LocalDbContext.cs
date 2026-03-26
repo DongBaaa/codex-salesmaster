@@ -21,6 +21,7 @@ public sealed class LocalDbContext : DbContext
     public DbSet<LocalSetting> Settings => Set<LocalSetting>();
     public DbSet<LocalRecentSelection> RecentSelections => Set<LocalRecentSelection>();
     public DbSet<LocalAttachmentSelection> AttachmentSelections => Set<LocalAttachmentSelection>();
+    public DbSet<LocalSyncDiagnosticEvent> SyncDiagnosticEvents => Set<LocalSyncDiagnosticEvent>();
     public DbSet<LocalTransaction> Transactions => Set<LocalTransaction>();
     public DbSet<LocalTransactionAttachment> TransactionAttachments => Set<LocalTransactionAttachment>();
     public DbSet<LocalOffice> Offices => Set<LocalOffice>();
@@ -74,6 +75,7 @@ public sealed class LocalDbContext : DbContext
 
         // Settings: key is PK
         model.Entity<LocalSetting>().HasKey(s => s.Key);
+        model.Entity<LocalSyncDiagnosticEvent>().HasKey(e => e.Id);
 
         // Indexes for sync pull efficiency
         model.Entity<LocalCompanyProfile>().HasIndex(e => e.Revision);
@@ -125,6 +127,14 @@ public sealed class LocalDbContext : DbContext
             .HasKey(s => new { s.CustomerKey, s.DocCode });
         model.Entity<LocalAttachmentSelection>()
             .HasIndex(s => s.CustomerKey);
+        model.Entity<LocalSyncDiagnosticEvent>()
+            .HasIndex(e => e.LastOccurredAtUtc);
+        model.Entity<LocalSyncDiagnosticEvent>()
+            .HasIndex(e => new { e.Status, e.LastOccurredAtUtc });
+        model.Entity<LocalSyncDiagnosticEvent>()
+            .HasIndex(e => new { e.Category, e.Subcategory });
+        model.Entity<LocalSyncDiagnosticEvent>()
+            .HasIndex(e => new { e.SyncPhase, e.Status });
         model.Entity<LocalCustomerContract>()
             .HasIndex(contract => contract.CustomerId);
         model.Entity<LocalCustomerContract>()

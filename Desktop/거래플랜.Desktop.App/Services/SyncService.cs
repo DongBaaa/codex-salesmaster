@@ -22,6 +22,7 @@ public sealed class SyncService : IDisposable
     private readonly ErpApiClient _api;
     private readonly SessionState _session;
     private readonly SyncRequestDispatcher _dispatcher;
+    private readonly SyncDiagnosticsService _diagnostics;
     private readonly object _immediateSyncGate = new();
     private Timer? _timer;
     private CancellationTokenSource? _immediateSyncCts;
@@ -58,7 +59,8 @@ public sealed class SyncService : IDisposable
         RentalStateService rental,
         ErpApiClient api,
         SessionState session,
-        SyncRequestDispatcher dispatcher)
+        SyncRequestDispatcher dispatcher,
+        SyncDiagnosticsService diagnostics)
     {
         _db = db;
         _local = local;
@@ -66,6 +68,7 @@ public sealed class SyncService : IDisposable
         _api = api;
         _session = session;
         _dispatcher = dispatcher;
+        _diagnostics = diagnostics;
         _dispatcher.SyncRequested += HandleSyncRequested;
     }
 
@@ -128,6 +131,11 @@ public sealed class SyncService : IDisposable
         catch (Exception ex)
         {
             AppLogger.Error("SYNC", "중앙 서버 기준 캐시 재구성 실패", ex);
+            await TryRecordDiagnosticAsync(
+                phase: "shared-refresh",
+                rawMessage: ex.InnerException?.Message ?? ex.Message,
+                exception: ex,
+                severity: "Warning");
             await TrySetSettingSafeAsync(
                 "Sync.LastError",
                 $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {ex.InnerException?.Message ?? ex.Message}",
@@ -221,6 +229,7 @@ public sealed class SyncService : IDisposable
 
             await TrySetSettingSafeAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
             await TrySetSettingSafeAsync("Sync.LastError", string.Empty, CancellationToken.None);
+            await _diagnostics.ResolveOpenIssuesAsync(ct: CancellationToken.None);
             _lastSyncCompletedUtc = DateTime.UtcNow;
             SetStatus($"동기화 완료 {DateTime.Now:HH:mm:ss}");
             AppLogger.Info("SYNC", "동기화 완료");
@@ -241,6 +250,12 @@ public sealed class SyncService : IDisposable
                 "Sync.LastError",
                 $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {detail}",
                 CancellationToken.None);
+
+            await TryRecordDiagnosticAsync(
+                phase: "sync",
+                rawMessage: detail,
+                exception: ex,
+                severity: "Error");
 
             SetStatus($"동기화 오류: {detail}");
             AppLogger.Error("SYNC", "동기화 실패", ex);
@@ -338,6 +353,11 @@ public sealed class SyncService : IDisposable
         catch (Exception ex)
         {
             AppLogger.Error("SYNC", "즉시 동기화 실패", ex);
+            await TryRecordDiagnosticAsync(
+                phase: "debounced-sync",
+                rawMessage: ex.InnerException?.Message ?? ex.Message,
+                exception: ex,
+                severity: "Warning");
         }
     }
 
@@ -661,6 +681,7 @@ public sealed class SyncService : IDisposable
                     : $"동기화 충돌 {unresolvedConflicts.Count}건: {first.EntityName} {first.EntityId} - {first.Reason}";
 
                 AppLogger.Warn("SYNC", detail);
+                await TryRecordDiagnosticAsync("push", detail, severity: "Error");
                 throw new InvalidOperationException(detail);
             }
         }
@@ -836,6 +857,13 @@ public sealed class SyncService : IDisposable
         catch (DbUpdateConcurrencyException ex)
         {
             AppLogger.Warn("SYNC", $"증분 pull 반영 중 동시성 충돌이 발생해 전체 캐시 재구성을 시도합니다: {ex.Message}");
+            await TryRecordDiagnosticAsync(
+                phase: "pull",
+                rawMessage: $"증분 pull 반영 중 동시성 충돌: {ex.Message}",
+                exception: ex,
+                severity: "Warning",
+                recoveryAttempted: true,
+                recoverySucceeded: false);
             _db.ChangeTracker.Clear();
 
             if (!await TryRefreshSharedMirrorCoreAsync(ct))
@@ -1023,6 +1051,7 @@ public sealed class SyncService : IDisposable
 
                 await TrySetSettingSafeAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
                 await TrySetSettingSafeAsync("Sync.LastError", string.Empty, CancellationToken.None);
+                await _diagnostics.ResolveOpenIssuesAsync(ct: CancellationToken.None);
                 _lastSyncCompletedUtc = DateTime.UtcNow;
                 SetStatus($"중앙 서버 기준 캐시 재구성 완료 {DateTime.Now:HH:mm:ss}");
                 return true;
@@ -1030,6 +1059,13 @@ public sealed class SyncService : IDisposable
             catch (DbUpdateConcurrencyException ex) when (attempt == 0)
             {
                 AppLogger.Warn("SYNC", $"공유 캐시 재구성 중 동시성 충돌 재시도: {ex.Message}");
+                await TryRecordDiagnosticAsync(
+                    phase: "shared-refresh",
+                    rawMessage: $"공유 캐시 재구성 중 동시성 충돌: {ex.Message}",
+                    exception: ex,
+                    severity: "Warning",
+                    recoveryAttempted: true,
+                    recoverySucceeded: false);
                 _db.ChangeTracker.Clear();
             }
         }
@@ -1218,6 +1254,31 @@ public sealed class SyncService : IDisposable
             _currentSyncTask = null;
             _resyncRequested = false;
             _flushRequested = false;
+        }
+    }
+
+    private async Task TryRecordDiagnosticAsync(
+        string phase,
+        string rawMessage,
+        Exception? exception = null,
+        string? severity = null,
+        bool recoveryAttempted = false,
+        bool recoverySucceeded = false)
+    {
+        try
+        {
+            await _diagnostics.RecordIssueAsync(
+                phase,
+                rawMessage,
+                exception,
+                severity,
+                recoveryAttempted,
+                recoverySucceeded,
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("SYNC", $"동기화 진단 이벤트 저장 실패 무시: {ex.Message}");
         }
     }
 }

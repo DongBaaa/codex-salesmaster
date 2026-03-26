@@ -22,6 +22,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly SyncService _sync;
     private readonly BackupService _backup;
     private readonly RentalStateService _rental;
+    private readonly SyncDiagnosticsService _diagnostics;
     private readonly SessionState _session;
     private readonly IPrintService _invoicePrintService = new WpfInvoicePrintService();
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
@@ -209,12 +210,14 @@ public sealed partial class MainViewModel : ObservableObject
         SyncService sync,
         BackupService backup,
         RentalStateService rental,
+        SyncDiagnosticsService diagnostics,
         SessionState session)
     {
         _local = local;
         _sync = sync;
         _backup = backup;
         _rental = rental;
+        _diagnostics = diagnostics;
         _session = session;
         _legacyMigrationService = new LegacyDataMigrationService(local);
 
@@ -279,6 +282,21 @@ public sealed partial class MainViewModel : ObservableObject
                 AppLogger.Warn(
                     "APP",
                     $"Post-login auto sync failed with {dirtyAfter} dirty rows. Auto-backup {(backupOk ? "succeeded" : "failed")}.");
+                await _diagnostics.RecordIssueAsync(
+                    phase: "post-login-sync",
+                    rawMessage: $"로그인 후 자동 동기화 실패. dirty={dirtyAfter}, backup={(backupOk ? "ok" : "failed")}.",
+                    severity: "Warning",
+                    recoveryAttempted: true,
+                    recoverySucceeded: false);
+            }
+            else
+            {
+                await _diagnostics.RecordIssueAsync(
+                    phase: "post-login-sync",
+                    rawMessage: "로그인 후 자동 동기화 실패. dirty row는 없지만 서버 캐시 재구성 또는 네트워크 상태를 확인해야 합니다.",
+                    severity: "Warning",
+                    recoveryAttempted: false,
+                    recoverySucceeded: false);
             }
 
             SyncStatus = dirtyAfter > 0
@@ -288,6 +306,11 @@ public sealed partial class MainViewModel : ObservableObject
         catch (Exception ex)
         {
             AppLogger.Error("APP", "로그인 후 자동 동기화 실패", ex);
+            await _diagnostics.RecordIssueAsync(
+                phase: "post-login-sync",
+                rawMessage: ex.InnerException?.Message ?? ex.Message,
+                exception: ex,
+                severity: "Warning");
             SyncStatus = "로그인 후 자동 동기화에 실패했지만 앱은 계속 사용할 수 있습니다.";
         }
     }
