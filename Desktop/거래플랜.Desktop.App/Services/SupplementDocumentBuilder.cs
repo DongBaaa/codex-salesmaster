@@ -7,7 +7,6 @@ using System.Windows.Documents;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Xml;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Printing;
 
@@ -270,7 +269,7 @@ public static class SupplementDocumentBuilder
         return BuildCenteredSinglePageDocument(grid);
     }
 
-    public static FixedDocument MergeDocuments(IEnumerable<FixedDocument> documents)
+    public static IDocumentPaginatorSource MergeDocuments(IEnumerable<FixedDocument> documents)
     {
         var list = documents?.Where(d => d is not null).ToList() ?? [];
         if (list.Count == 0)
@@ -278,25 +277,7 @@ public static class SupplementDocumentBuilder
         if (list.Count == 1)
             return list[0];
 
-        var merged = new FixedDocument();
-        merged.DocumentPaginator.PageSize = new Size(A4Width, A4Height);
-
-        foreach (var source in list)
-        {
-            foreach (var sourcePageContent in source.Pages)
-            {
-                var sourcePage = sourcePageContent.GetPageRoot(true);
-                if (sourcePage is null)
-                    continue;
-
-                var clonedPage = CloneFixedPage(sourcePage);
-                var targetPageContent = new PageContent();
-                ((IAddChild)targetPageContent).AddChild(clonedPage);
-                merged.Pages.Add(targetPageContent);
-            }
-        }
-
-        return merged;
+        return new CombinedDocumentPaginatorSource(list);
     }
 
     public static FixedDocument BuildAttachmentPlaceholderDocument(string title)
@@ -774,57 +755,4 @@ public static class SupplementDocumentBuilder
         return (bankName, accountNo, depositor);
     }
 
-    private static FixedPage CloneFixedPage(FixedPage source)
-    {
-        try
-        {
-            var xaml = XamlWriter.Save(source);
-            using var stringReader = new StringReader(xaml);
-            using var xmlReader = XmlReader.Create(stringReader);
-            return (FixedPage)XamlReader.Load(xmlReader);
-        }
-        catch
-        {
-            return CloneFixedPageAsBitmap(source);
-        }
-    }
-
-    private static FixedPage CloneFixedPageAsBitmap(FixedPage source)
-    {
-        source.Measure(new Size(A4Width, A4Height));
-        source.Arrange(new Rect(0, 0, A4Width, A4Height));
-        source.UpdateLayout();
-
-        var raster = new RenderTargetBitmap(
-            (int)Math.Ceiling(A4Width),
-            (int)Math.Ceiling(A4Height),
-            96,
-            96,
-            PixelFormats.Pbgra32);
-        raster.Render(source);
-        raster.Freeze();
-
-        var page = new FixedPage
-        {
-            Width = A4Width,
-            Height = A4Height,
-            Background = Brushes.White,
-            UseLayoutRounding = true,
-            SnapsToDevicePixels = true
-        };
-
-        page.Children.Add(new Image
-        {
-            Source = raster,
-            Width = A4Width,
-            Height = A4Height,
-            Stretch = Stretch.Fill,
-            SnapsToDevicePixels = true
-        });
-
-        page.Measure(new Size(A4Width, A4Height));
-        page.Arrange(new Rect(0, 0, A4Width, A4Height));
-        page.UpdateLayout();
-        return page;
-    }
 }

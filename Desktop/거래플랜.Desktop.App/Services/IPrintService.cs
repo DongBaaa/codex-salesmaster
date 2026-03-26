@@ -16,7 +16,7 @@ public interface IPrintService
     FixedDocument BuildFixedDocument(InvoicePrintModel model);
 
     bool TryPrint(
-        FixedDocument document,
+        IDocumentPaginatorSource document,
         string jobName,
         out string? errorMessage);
 }

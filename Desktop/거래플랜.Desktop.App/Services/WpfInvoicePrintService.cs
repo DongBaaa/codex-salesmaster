@@ -106,7 +106,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             : BuildSalesDocument(model, lines);
     }
 
-    public bool TryPrint(FixedDocument document, string jobName, out string? errorMessage)
+    public bool TryPrint(IDocumentPaginatorSource document, string jobName, out string? errorMessage)
     {
         ArgumentNullException.ThrowIfNull(document);
         errorMessage = null;
@@ -130,7 +130,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             if (dialog.ShowDialog() != true)
                 return false;
 
-            var paginator = ((IDocumentPaginatorSource)document).DocumentPaginator;
+            var paginator = document.DocumentPaginator;
             paginator.PageSize = new Size(A4Width, A4Height);
             dialog.PrintDocument(paginator, string.IsNullOrWhiteSpace(jobName) ? "전표 인쇄" : jobName);
             return true;

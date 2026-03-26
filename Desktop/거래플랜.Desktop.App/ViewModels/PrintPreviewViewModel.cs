@@ -12,7 +12,7 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
 
     public event Action? RequestClose;
 
-    [ObservableProperty] private FixedDocument _document;
+    [ObservableProperty] private IDocumentPaginatorSource _document;
     [ObservableProperty] private string _statusMessage = "미리보기를 확인한 뒤 인쇄를 진행하세요.";
     [ObservableProperty] private double _zoom = 100d;
     [ObservableProperty] private bool _wasPrinted;
@@ -21,7 +21,7 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
     [NotifyCanExecuteChangedFor(nameof(CloseCommand))]
     private bool _isPrinting;
 
-    public PrintPreviewViewModel(FixedDocument document, IPrintService printService, string jobName)
+    public PrintPreviewViewModel(IDocumentPaginatorSource document, IPrintService printService, string jobName)
     {
         Document = document ?? throw new ArgumentNullException(nameof(document));
         _printService = printService ?? throw new ArgumentNullException(nameof(printService));

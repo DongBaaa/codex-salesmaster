@@ -1235,7 +1235,7 @@ public sealed partial class SalesViewModel : ObservableObject
                 return;
             }
 
-            var previewDocument = documents.Count == 1
+            System.Windows.Documents.IDocumentPaginatorSource previewDocument = documents.Count == 1
                 ? documents[0]
                 : SupplementDocumentBuilder.MergeDocuments(documents);
             var previewViewModel = new PrintPreviewViewModel(
