@@ -2,6 +2,7 @@
 using System.Windows;
 using System.Windows.Input;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -21,12 +22,12 @@ public partial class PaymentWindow : Window
     {
         if (e.Key == Key.F12)
         {
-            Close();
+            DialogWindowCloseHelper.Close(this);
             e.Handled = true;
         }
     }
 
-    private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+    private void CloseButton_Click(object sender, RoutedEventArgs e) => DialogWindowCloseHelper.Close(this);
 
     private void CustomerSelectButton_Click(object sender, RoutedEventArgs e)
     {

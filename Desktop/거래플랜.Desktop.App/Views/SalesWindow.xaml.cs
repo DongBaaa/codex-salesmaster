@@ -26,7 +26,7 @@ public partial class SalesWindow : Window
     {
         if (e.Key == Key.F12)
         {
-            Close();
+            DialogWindowCloseHelper.Close(this);
             e.Handled = true;
         }
 
@@ -49,7 +49,7 @@ public partial class SalesWindow : Window
         }
     }
 
-    private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+    private void CloseButton_Click(object sender, RoutedEventArgs e) => DialogWindowCloseHelper.Close(this);
 
     private void PaymentButton_Click(object sender, RoutedEventArgs e)
         => UiTaskHelper.Run(this, OpenPaymentWindowAsync, "UI", "전표 수금/지급 창 열기", "수금/지급 창을 여는 중 오류가 발생했습니다.");
@@ -207,7 +207,7 @@ public partial class SalesWindow : Window
                 if (saved)
                 {
                     _allowCloseWithoutSave = true;
-                    Close();
+                    DialogWindowCloseHelper.Close(this);
                     return;
                 }
 
@@ -226,7 +226,7 @@ public partial class SalesWindow : Window
                 if (discard == MessageBoxResult.Yes)
                 {
                     _allowCloseWithoutSave = true;
-                    Close();
+                    DialogWindowCloseHelper.Close(this);
                 }
             }
             finally

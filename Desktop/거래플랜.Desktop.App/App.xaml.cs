@@ -1,4 +1,5 @@
-﻿using System.Threading;
+﻿using System.ComponentModel;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -8,6 +9,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using 거래플랜.Desktop.App.Configuration;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
 using 거래플랜.Desktop.App.Views;
@@ -128,79 +130,7 @@ public partial class App : Application
 
             StartAutoSaveTimer(sp, mainVm);
 
-            mainWin.Closing += async (_, args) =>
-            {
-                if (_restartToLoginRequested)
-                {
-                    _autoSaveTimer?.Stop();
-                    mainWin.BeginShutdownProtection();
-                    _shutdownInProgress = true;
-                    return;
-                }
-
-                if (_shutdownInProgress)
-                    return;
-
-                args.Cancel = true;
-                _shutdownInProgress = true;
-                _autoSaveTimer?.Stop();
-                mainWin.BeginShutdownProtection();
-
-                mainVm.SyncStatus = "종료 전 서버와 동기화하고 데이터를 저장합니다.";
-                var savingPopup = ShowShutdownSavingPopup(mainWin);
-                mainWin.IsEnabled = false;
-                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
-
-                var shouldClose = true;
-                try
-                {
-                    var result = await RunSaveCycleAsync(sp, mainVm, isShutdown: true);
-                    if (!result.SyncSucceeded && result.RemainingDirtyCount > 0)
-                    {
-                        shouldClose = false;
-                        _shutdownInProgress = false;
-                        mainWin.IsEnabled = true;
-                        mainWin.EndShutdownProtection();
-                        StartAutoSaveTimer(sp, mainVm);
-                        mainVm.SyncStatus = "종료 전 서버 동기화가 완료되지 않았습니다. 동기화 후 다시 종료해 주세요.";
-                        MessageBox.Show(
-                            $"서버에 아직 반영되지 않은 변경 데이터가 {result.RemainingDirtyCount}건 남아 있습니다.{Environment.NewLine}" +
-                            "네트워크를 확인한 뒤 자동/수동 동기화를 완료하고 다시 종료해 주세요.",
-                            "거래플랜 동기화 필요",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Warning);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    AppLogger.Error("APP", "Shutdown sync/backup failure", ex);
-                    shouldClose = false;
-                    _shutdownInProgress = false;
-                    mainWin.IsEnabled = true;
-                    mainWin.EndShutdownProtection();
-                    StartAutoSaveTimer(sp, mainVm);
-                    mainVm.SyncStatus = "종료 전 서버 동기화 처리 중 오류가 발생했습니다.";
-                    MessageBox.Show(
-                        $"종료 전 동기화 처리 중 오류가 발생했습니다.{Environment.NewLine}{ex.Message}",
-                        "거래플랜 오류",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Error);
-                }
-                finally
-                {
-                    try
-                    {
-                        savingPopup.Close();
-                    }
-                    catch
-                    {
-                        // ignored
-                    }
-
-                    if (shouldClose)
-                        mainWin.Close();
-                }
-            };
+            mainWin.Closing += (_, args) => HandleMainWindowClosing(mainWin, sp, mainVm, args);
 
             mainWin.Closed += (_, _) =>
             {
@@ -215,8 +145,16 @@ public partial class App : Application
 
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             mainWin.Show();
-            await mainWin.InitAsync();
-            await mainVm.RunPostLoginSyncAsync();
+
+            var initSucceeded = await TryInitializeMainWindowAsync(mainWin, mainVm);
+            if (initSucceeded)
+            {
+                UiTaskHelper.Forget(
+                    mainVm.RunPostLoginSyncAsync(),
+                    "APP",
+                    "로그인 후 자동 동기화",
+                    ex => AppLogger.Error("APP", "Post-login sync scheduling failure", ex));
+            }
         }
         catch (Exception ex)
         {
@@ -334,19 +272,120 @@ public partial class App : Application
             Interval = TimeSpan.FromMinutes(15)
         };
 
-        _autoSaveTimer.Tick += async (_, _) =>
+        _autoSaveTimer.Tick += (_, _) => UiTaskHelper.Forget(
+            RunPeriodicSaveCycleAsync(sp, mainVm),
+            "APP",
+            "주기 저장",
+            ex => AppLogger.Error("APP", "Periodic save cycle failure", ex));
+
+        _autoSaveTimer.Start();
+    }
+
+    private async Task RunPeriodicSaveCycleAsync(IServiceProvider sp, MainViewModel mainVm)
+        => await RunSaveCycleAsync(sp, mainVm, isShutdown: false);
+
+    private void HandleMainWindowClosing(MainWindow mainWin, IServiceProvider sp, MainViewModel mainVm, CancelEventArgs args)
+    {
+        if (_restartToLoginRequested)
+        {
+            _autoSaveTimer?.Stop();
+            mainWin.BeginShutdownProtection();
+            _shutdownInProgress = true;
+            return;
+        }
+
+        if (_shutdownInProgress)
+            return;
+
+        args.Cancel = true;
+        _shutdownInProgress = true;
+        _autoSaveTimer?.Stop();
+        mainWin.BeginShutdownProtection();
+
+        UiTaskHelper.Forget(
+            HandleMainWindowClosingAsync(mainWin, sp, mainVm),
+            "APP",
+            "앱 종료 처리",
+            ex => AppLogger.Error("APP", "Shutdown sync/backup failure", ex));
+    }
+
+    private async Task HandleMainWindowClosingAsync(MainWindow mainWin, IServiceProvider sp, MainViewModel mainVm)
+    {
+        mainVm.SyncStatus = "종료 전 서버와 동기화하고 데이터를 저장합니다.";
+        var savingPopup = ShowShutdownSavingPopup(mainWin);
+        mainWin.IsEnabled = false;
+        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+
+        var shouldClose = true;
+        try
+        {
+            var result = await RunSaveCycleAsync(sp, mainVm, isShutdown: true);
+            if (!result.SyncSucceeded && result.RemainingDirtyCount > 0)
+            {
+                shouldClose = false;
+                _shutdownInProgress = false;
+                mainWin.IsEnabled = true;
+                mainWin.EndShutdownProtection();
+                StartAutoSaveTimer(sp, mainVm);
+                mainVm.SyncStatus = "종료 전 서버 동기화가 완료되지 않았습니다. 동기화 후 다시 종료해 주세요.";
+                MessageBox.Show(
+                    $"서버에 아직 반영되지 않은 변경 데이터가 {result.RemainingDirtyCount}건 남아 있습니다.{Environment.NewLine}" +
+                    "네트워크를 확인한 뒤 자동/수동 동기화를 완료하고 다시 종료해 주세요.",
+                    "거래플랜 동기화 필요",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            shouldClose = false;
+            _shutdownInProgress = false;
+            mainWin.IsEnabled = true;
+            mainWin.EndShutdownProtection();
+            StartAutoSaveTimer(sp, mainVm);
+            mainVm.SyncStatus = "종료 전 서버 동기화 처리 중 오류가 발생했습니다.";
+            MessageBox.Show(
+                $"종료 전 동기화 처리 중 오류가 발생했습니다.{Environment.NewLine}{ex.Message}",
+                "거래플랜 오류",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            throw;
+        }
+        finally
         {
             try
             {
-                await RunSaveCycleAsync(sp, mainVm, isShutdown: false);
+                savingPopup.Close();
             }
-            catch (Exception ex)
+            catch
             {
-                AppLogger.Error("APP", "Periodic save cycle failure", ex);
+                // ignored
             }
-        };
 
-        _autoSaveTimer.Start();
+            if (shouldClose)
+                mainWin.Close();
+        }
+    }
+
+    private async Task<bool> TryInitializeMainWindowAsync(MainWindow mainWin, MainViewModel mainVm)
+    {
+        try
+        {
+            await mainWin.InitAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("APP", "Main window initialization failed", ex);
+            await TryRecordStartupDiagnosticAsync(ex);
+            mainVm.SyncStatus = "초기 로딩 일부에 실패했지만 앱은 계속 사용할 수 있습니다. 필요한 경우 동기화 진단을 확인하세요.";
+            MessageBox.Show(
+                $"초기 로딩 중 일부 오류가 발생했습니다.{Environment.NewLine}{ex.Message}{Environment.NewLine}{Environment.NewLine}앱은 제한 모드로 계속 실행됩니다.",
+                "거래플랜 경고",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
     }
 
     private async Task<SaveCycleResult> RunSaveCycleAsync(IServiceProvider sp, MainViewModel mainVm, bool isShutdown)

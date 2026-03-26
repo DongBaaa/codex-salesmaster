@@ -32,7 +32,7 @@ public partial class YeonsuDeliveryWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
-        Close();
+        DialogWindowCloseHelper.Close(this);
     }
 
     private void DeliveryRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -72,7 +72,7 @@ public partial class YeonsuDeliveryWindow : Window
         if (e.Key != Key.F12)
             return;
 
-        Close();
+        DialogWindowCloseHelper.Close(this);
         e.Handled = true;
     }
 }

@@ -57,14 +57,14 @@ public partial class CustomerManagementWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
-        Close();
+        DialogWindowCloseHelper.Close(this);
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.F12)
         {
-            Close();
+            DialogWindowCloseHelper.Close(this);
             e.Handled = true;
         }
     }

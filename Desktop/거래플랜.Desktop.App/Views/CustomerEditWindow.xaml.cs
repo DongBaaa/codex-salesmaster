@@ -25,7 +25,7 @@ public partial class CustomerEditWindow : Window
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.F12) { Close(); e.Handled = true; }
+        if (e.Key == Key.F12) { DialogWindowCloseHelper.Close(this); e.Handled = true; }
         if (e.Key == Key.F6 && _vm.SaveAndNewCommand.CanExecute(null))
         {
             _vm.SaveAndNewCommand.Execute(null);
@@ -33,7 +33,7 @@ public partial class CustomerEditWindow : Window
         }
     }
 
-    private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+    private void CloseButton_Click(object sender, RoutedEventArgs e) => DialogWindowCloseHelper.Close(this);
 
     private void HandleSavedAndClose()
     {

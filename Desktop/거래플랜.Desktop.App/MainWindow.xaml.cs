@@ -60,7 +60,7 @@ public partial class MainWindow : Window
         {
             Interval = TimeSpan.FromSeconds(60)
         };
-        _centralRevisionPollTimer.Tick += async (_, _) => await PollCentralRevisionAsync();
+        _centralRevisionPollTimer.Tick += CentralRevisionPollTimer_Tick;
     }
 
     public void BeginShutdownProtection()
@@ -590,7 +590,7 @@ public partial class MainWindow : Window
         }
 
         var win = new SalesWindow(vm) { Owner = this };
-        win.Closed += async (_, _) => await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+        win.Closed += SalesWindow_Closed;
         win.Show();
     }
 
@@ -609,7 +609,7 @@ public partial class MainWindow : Window
         await vm.LoadInvoiceAsync(invoice);
 
         var win = new SalesWindow(vm) { Owner = this };
-        win.Closed += async (_, _) => await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+        win.Closed += SalesWindow_Closed;
         win.Show();
     }
 
@@ -759,6 +759,19 @@ public partial class MainWindow : Window
         win.ShowDialog();
         await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
+
+    private void CentralRevisionPollTimer_Tick(object? sender, EventArgs e)
+        => UiTaskHelper.Forget(
+            PollCentralRevisionAsync(),
+            "UI",
+            "중앙 revision polling",
+            ex => AppLogger.Warn("SYNC", $"중앙 revision polling 실패: {ex.Message}"));
+
+    private void SalesWindow_Closed(object? sender, EventArgs e)
+        => RunUiAsync(
+            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null),
+            "전표 창 종료 후 목록 재조회",
+            "전표 목록을 다시 불러오는 중 오류가 발생했습니다.");
 
     private async Task FlushPendingChangesBeforeNavigationAsync(string reason)
     {

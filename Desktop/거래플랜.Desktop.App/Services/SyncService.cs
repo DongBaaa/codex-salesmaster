@@ -80,7 +80,7 @@ public sealed class SyncService : IDisposable
         _timer?.Dispose();
         var normalizedInterval = interval <= TimeSpan.Zero ? TimeSpan.FromMinutes(5) : interval;
         var due = runImmediately ? TimeSpan.Zero : normalizedInterval;
-        _timer = new Timer(_ => _ = TrySyncAsync(), null,
+        _timer = new Timer(_ => ObserveBackgroundTask(TrySyncAsync(), "타이머 자동 동기화"), null,
             due, normalizedInterval);
     }
 
@@ -157,7 +157,7 @@ public sealed class SyncService : IDisposable
 
             var syncTask = RunSyncCoreAsync(ct);
             _currentSyncTask = syncTask;
-            _ = FinalizeSyncAsync(syncTask);
+            ObserveBackgroundTask(FinalizeSyncAsync(syncTask), "동기화 후처리");
             return syncTask;
         }
     }
@@ -203,13 +203,13 @@ public sealed class SyncService : IDisposable
 
         if (rerunCts is not null)
         {
-            _ = RunDeferredImmediateSyncAsync(rerunCts.Token);
+            ObserveBackgroundTask(RunDeferredImmediateSyncAsync(rerunCts.Token), "예약된 즉시 동기화");
             return;
         }
 
         if (rerunImmediately)
         {
-            _ = StartSyncAsync(waitForRunningSync: true, CancellationToken.None);
+            ObserveBackgroundTask(StartSyncAsync(waitForRunningSync: true, CancellationToken.None), "즉시 재동기화");
             return;
         }
 
@@ -321,9 +321,9 @@ public sealed class SyncService : IDisposable
         }
 
         if (runImmediately)
-            _ = StartSyncAsync(waitForRunningSync: true, CancellationToken.None);
+            ObserveBackgroundTask(StartSyncAsync(waitForRunningSync: true, CancellationToken.None), "수동 즉시 동기화");
         else if (cts is not null)
-            _ = RunDeferredImmediateSyncAsync(cts.Token);
+            ObserveBackgroundTask(RunDeferredImmediateSyncAsync(cts.Token), "지연 즉시 동기화");
     }
 
     private async Task RunDeferredImmediateSyncAsync(CancellationToken ct)
@@ -359,6 +359,30 @@ public sealed class SyncService : IDisposable
                 exception: ex,
                 severity: "Warning");
         }
+    }
+
+    private void ObserveBackgroundTask(Task task, string operationName)
+    {
+        UiTaskHelper.Forget(task, "SYNC", operationName, ex =>
+        {
+            AppLogger.Error("SYNC", $"{operationName} 실패", ex);
+            UiTaskHelper.Forget(
+                ObserveBackgroundTaskFailureAsync(operationName, ex),
+                "SYNC",
+                $"{operationName} 진단 기록");
+        });
+    }
+
+    private async Task ObserveBackgroundTaskFailureAsync(string operationName, Exception ex)
+    {
+        if (IsDisposedContextException(ex))
+            return;
+
+        await TryRecordDiagnosticAsync(
+            phase: "sync-background",
+            rawMessage: $"{operationName}: {ex.InnerException?.Message ?? ex.Message}",
+            exception: ex,
+            severity: "Warning");
     }
 
     private async Task ExecuteWithRetryAsync(

@@ -30,7 +30,7 @@ public partial class InventoryWindow : Window
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.F12) { Close(); e.Handled = true; }
+        if (e.Key == Key.F12) { DialogWindowCloseHelper.Close(this); e.Handled = true; }
     }
 
     private void InventoryTransferButton_Click(object sender, RoutedEventArgs e)
@@ -58,5 +58,5 @@ public partial class InventoryWindow : Window
             "재고이동 창 열기",
             "재고이동 창을 여는 중 오류가 발생했습니다.");
 
-    private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+    private void CloseButton_Click(object sender, RoutedEventArgs e) => DialogWindowCloseHelper.Close(this);
 }

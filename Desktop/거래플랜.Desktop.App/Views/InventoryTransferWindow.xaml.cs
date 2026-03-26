@@ -22,7 +22,7 @@ public partial class InventoryTransferWindow : Window
     {
         if (e.Key == Key.F12)
         {
-            Close();
+            DialogWindowCloseHelper.Close(this);
             e.Handled = true;
             return;
         }
@@ -41,7 +41,7 @@ public partial class InventoryTransferWindow : Window
         }
     }
 
-    private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+    private void CloseButton_Click(object sender, RoutedEventArgs e) => DialogWindowCloseHelper.Close(this);
 
     private void DeleteTransferButton_Click(object sender, RoutedEventArgs e)
         => UiTaskHelper.Run(

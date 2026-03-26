@@ -15,7 +15,7 @@ public partial class RentalBillingWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
-        Close();
+        DialogWindowCloseHelper.Close(this);
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
@@ -23,7 +23,7 @@ public partial class RentalBillingWindow : Window
         if (e.Key != Key.F12)
             return;
 
-        Close();
+        DialogWindowCloseHelper.Close(this);
         e.Handled = true;
     }
 

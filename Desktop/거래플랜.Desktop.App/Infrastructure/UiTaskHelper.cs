@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Windows;
 using 거래플랜.Desktop.App.Services;
 
@@ -5,6 +6,8 @@ namespace 거래플랜.Desktop.App.Infrastructure;
 
 internal static class UiTaskHelper
 {
+    private static readonly ConcurrentDictionary<string, byte> ActiveOperations = new(StringComparer.Ordinal);
+
     public static void Run(
         Window? owner,
         Func<Task> operation,
@@ -16,6 +19,10 @@ internal static class UiTaskHelper
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentException.ThrowIfNullOrWhiteSpace(category);
         ArgumentException.ThrowIfNullOrWhiteSpace(operationName);
+
+        var operationKey = BuildOperationKey(owner, category, operationName);
+        if (!ActiveOperations.TryAdd(operationKey, 0))
+            return;
 
         try
         {
@@ -33,10 +40,11 @@ internal static class UiTaskHelper
                 }
 
                 onError?.Invoke(ex);
-            });
+            }, () => ActiveOperations.TryRemove(operationKey, out _));
         }
         catch (Exception ex)
         {
+            ActiveOperations.TryRemove(operationKey, out _);
             AppLogger.Error(category, $"{operationName} 실패", ex);
 
             if (!string.IsNullOrWhiteSpace(userMessage))
@@ -53,7 +61,7 @@ internal static class UiTaskHelper
         }
     }
 
-    public static void Forget(Task task, string category, string operation, Action<Exception>? onError = null)
+    public static void Forget(Task task, string category, string operation, Action<Exception>? onError = null, Action? onCompleted = null)
     {
         ArgumentNullException.ThrowIfNull(task);
         ArgumentException.ThrowIfNullOrWhiteSpace(category);
@@ -61,27 +69,34 @@ internal static class UiTaskHelper
 
         if (task.IsCompleted)
         {
-            ObserveCompletedTask(task, category, operation, onError);
+            ObserveCompletedTask(task, category, operation, onError, onCompleted);
             return;
         }
 
-        _ = ObserveAsync(task, category, operation, onError);
+        _ = ObserveAsync(task, category, operation, onError, onCompleted);
     }
 
-    private static void ObserveCompletedTask(Task task, string category, string operation, Action<Exception>? onError)
+    private static void ObserveCompletedTask(Task task, string category, string operation, Action<Exception>? onError, Action? onCompleted)
     {
-        if (task.IsCanceled)
-            return;
+        try
+        {
+            if (task.IsCanceled)
+                return;
 
-        if (task.Exception is null)
-            return;
+            if (task.Exception is null)
+                return;
 
-        var exception = task.Exception.InnerException ?? task.Exception;
-        AppLogger.Error(category, $"{operation} 실패", exception);
-        onError?.Invoke(exception);
+            var exception = task.Exception.InnerException ?? task.Exception;
+            AppLogger.Error(category, $"{operation} 실패", exception);
+            onError?.Invoke(exception);
+        }
+        finally
+        {
+            onCompleted?.Invoke();
+        }
     }
 
-    private static async Task ObserveAsync(Task task, string category, string operation, Action<Exception>? onError)
+    private static async Task ObserveAsync(Task task, string category, string operation, Action<Exception>? onError, Action? onCompleted)
     {
         try
         {
@@ -96,5 +111,12 @@ internal static class UiTaskHelper
             AppLogger.Error(category, $"{operation} 실패", ex);
             onError?.Invoke(ex);
         }
+        finally
+        {
+            onCompleted?.Invoke();
+        }
     }
+
+    private static string BuildOperationKey(Window? owner, string category, string operationName)
+        => $"{owner?.GetHashCode().ToString() ?? "app"}:{category}:{operationName}";
 }
