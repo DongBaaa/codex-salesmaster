@@ -1925,9 +1925,6 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
-        if (!CanModifySharedBusinessData(session))
-            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 전표 결제를 저장할 수 있습니다.");
-
         var invoice = await _db.Invoices
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -1935,13 +1932,19 @@ public sealed partial class LocalStateService
         if (invoice is null)
             return OfficeMutationResult.Missing("전표를 찾을 수 없습니다.");
 
-        if (!CanAccessInvoice(invoice, session))
+        if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
+            return OfficeMutationResult.Denied("권한이 없어 해당 전표 수금/지급을 저장할 수 없습니다.");
+
+        var existing = await _db.Payments
+            .IgnoreQueryFilters()
+            .Include(current => current.Invoice)
+            .FirstOrDefaultAsync(current => current.Id == payment.Id, ct);
+        if (existing?.Invoice is not null && !CanWriteOfficeScope(session, existing.Invoice.ResponsibleOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 전표 수금/지급을 저장할 수 없습니다.");
 
         payment.IsDirty = true;
         payment.UpdatedAtUtc = DateTime.UtcNow;
 
-        var existing = await _db.Payments.FindAsync([payment.Id], ct);
         if (existing is null)
             _db.Payments.Add(payment);
         else
@@ -2878,9 +2881,6 @@ public sealed partial class LocalStateService
         if (transaction is null)
             throw new ArgumentNullException(nameof(transaction));
 
-        if (!CanModifySharedBusinessData(session))
-            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 수금/지급을 저장할 수 있습니다.");
-
         var customer = await _db.Customers
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -2889,13 +2889,13 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("거래처를 찾을 수 없습니다.");
 
         var customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
-        if (!CanAccessCustomer(customer.Id, customerOfficeCode, session, session.User?.Role))
+        if (!CanWriteOfficeScope(session, customerOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
 
         var existing = await _db.Transactions
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == transaction.Id, ct);
-        if (existing is not null && !CanAccessTransaction(existing, session))
+        if (existing is not null && !CanWriteOfficeScope(session, existing.ResponsibleOfficeCode, customerOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
 
         var previousLinkedInvoiceId = existing?.LinkedInvoiceId;
@@ -2913,7 +2913,7 @@ public sealed partial class LocalStateService
                 .FirstOrDefaultAsync(current => current.Id == transaction.LinkedInvoiceId.Value, ct);
             if (linkedInvoice is null)
                 return OfficeMutationResult.Missing("연결할 전표를 찾을 수 없습니다.");
-            if (!CanAccessInvoice(linkedInvoice, session))
+            if (!CanWriteOfficeScope(session, linkedInvoice.ResponsibleOfficeCode, customerOfficeCode))
                 return OfficeMutationResult.Denied("권한이 없어 해당 전표 결제를 처리할 수 없습니다.");
 
             transaction.LinkedInvoiceNumber = string.IsNullOrWhiteSpace(linkedInvoice.InvoiceNumber)
@@ -2942,7 +2942,7 @@ public sealed partial class LocalStateService
                 .FirstOrDefaultAsync(current => current.Id == transaction.LinkedRentalBillingProfileId.Value, ct);
             if (linkedRentalProfile is null)
                 return OfficeMutationResult.Missing("연결할 렌탈 청구 대상을 찾을 수 없습니다.");
-            if (!CanAccessRentalProfile(linkedRentalProfile, session))
+            if (!CanWriteOfficeScope(session, linkedRentalProfile.ResponsibleOfficeCode, linkedRentalProfile.ManagementCompanyCode))
                 return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 청구 결제를 처리할 수 없습니다.");
 
             if (!PaymentFlowConstants.IsRentalSettlementKind(transaction.TransactionKind))
@@ -2962,6 +2962,8 @@ public sealed partial class LocalStateService
             : transaction.ResponsibleOfficeCode;
 
         transaction.ResponsibleOfficeCode = NormalizeOfficeScope(derivedResponsibleOfficeCode, customerOfficeCode);
+        if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, customerOfficeCode))
+            return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
 
         var receiptTotal = Math.Max(0m, transaction.ReceiptTotal);
         var paymentTotal = Math.Max(0m, transaction.PaymentTotal);
@@ -3310,9 +3312,6 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
-        if (!CanModifySharedBusinessData(session))
-            return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 증빙 파일을 등록할 수 있습니다.");
-
         if (transactionId == Guid.Empty)
             return OfficeMutationResult.Denied("증빙을 연결할 수금/지급 내역을 먼저 선택하세요.");
 
@@ -3325,7 +3324,7 @@ public sealed partial class LocalStateService
         if (transaction is null)
             return OfficeMutationResult.Missing("수금/지급 내역을 찾을 수 없습니다.");
 
-        if (!CanAccessTransaction(transaction, session))
+        if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 거래의 증빙을 저장할 수 없습니다.");
 
         var now = DateTime.UtcNow;
