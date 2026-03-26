@@ -281,7 +281,7 @@ $updaterProject = Join-Path $ProjectRoot 'Updater\거래플랜.Updater\거래플
 if (Test-Path -LiteralPath $updaterProject) {
     $updaterPublishRoot = Join-Path $env:TEMP 'georaeplan-updater-publish'
     Remove-Item -LiteralPath $updaterPublishRoot -Recurse -Force -ErrorAction SilentlyContinue
-    & $dotnetExe publish $updaterProject -c Release -o $updaterPublishRoot | Out-Null
+    & $dotnetExe publish $updaterProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $updaterPublishRoot | Out-Null
     if ($LASTEXITCODE -eq 0) {
         Invoke-RobocopyMirror -Source $updaterPublishRoot -Destination (Join-Path $appRoot 'Updater')
     }
@@ -326,7 +326,8 @@ $installScriptTemplate = @"
 param(
     [string]`$InstallRoot = (Join-Path `$env:LOCALAPPDATA 'Programs\__APP_DISPLAY_NAME__'),
     [switch]`$NoLaunch,
-    [switch]`$NoShortcuts
+    [switch]`$NoShortcuts,
+    [string]`$LogPath = ''
 )
 
 `$ExpectedVersion = '__EXPECTED_VERSION__'
@@ -423,6 +424,22 @@ function Show-InstallError {
     [System.Windows.MessageBox]::Show(`$Message, '__APP_DISPLAY_NAME__ 설치', 'OK', 'Error') | Out-Null
 }
 
+function Write-InstallLog {
+    param([Parameter(Mandatory = `$true)][string]`$Message)
+
+    `$line = ('{0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'), `$Message)
+    Write-Host `$line
+
+    if (-not [string]::IsNullOrWhiteSpace(`$LogPath)) {
+        try {
+            Add-Content -LiteralPath `$LogPath -Value `$line -Encoding UTF8
+        }
+        catch {
+            # ignore logging failures
+        }
+    }
+}
+
 function Test-ProtectedInstallRoot {
     param([Parameter(Mandatory = `$true)][string]`$Path)
 
@@ -470,9 +487,14 @@ function Ensure-ElevatedIfNeeded {
         `$argumentParts += '-NoShortcuts'
     }
 
+    if (-not [string]::IsNullOrWhiteSpace(`$LogPath)) {
+        `$argumentParts += ('-LogPath "{0}"' -f `$LogPath)
+    }
+
     `$arguments = `$argumentParts -join ' '
 
     try {
+        Write-InstallLog '관리자 권한으로 설치를 다시 시작합니다.'
         `$elevated = Start-Process -FilePath 'powershell.exe' -ArgumentList `$arguments -Verb RunAs -Wait -PassThru
     }
     catch {
@@ -498,6 +520,7 @@ function Ensure-SufficientInstallSpace {
 `$ErrorActionPreference = 'Stop'
 
 try {
+    Write-InstallLog ("설치 시작. InstallRoot={0}" -f `$InstallRoot)
     Ensure-ElevatedIfNeeded
 
     `$packageRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
@@ -511,8 +534,11 @@ try {
         throw "App source not found: `$sourceRoot"
     }
 
+    Write-InstallLog '설치 공간을 확인합니다.'
     Ensure-SufficientInstallSpace -SourceRoot `$sourceRoot
+    Write-InstallLog '파일 복사를 시작합니다.'
     Invoke-RobocopyMirror -Source `$sourceRoot -Destination `$InstallRoot
+    Write-InstallLog '파일 복사가 완료되었습니다.'
 
     if (-not (Test-Path -LiteralPath `$exePath)) {
         throw "설치된 실행 파일을 찾지 못했습니다: `$exePath"
@@ -553,12 +579,15 @@ try {
 
     Write-Host "Install complete: `$InstallRoot"
     Write-Host "Executable: `$exePath"
+    Write-InstallLog ("설치 완료. Executable={0}" -f `$exePath)
 
     if (-not `$NoLaunch) {
+        Write-InstallLog '설치 후 앱을 다시 실행합니다.'
         Start-Process -FilePath `$exePath -WorkingDirectory `$InstallRoot
     }
 }
 catch {
+    Write-InstallLog ("설치 실패: {0}" -f `$_.Exception)
     Show-InstallError (`$_.Exception.Message)
     exit 1
 }

@@ -1,8 +1,10 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
 using System.Security.Cryptography;
+using System.Text;
 using System.Windows;
 
 namespace 거래플랜.Updater;
@@ -12,40 +14,80 @@ internal static class Program
     private const long MinimumUpdaterWorkBytes = 512L * 1024 * 1024;
     private const long InstallBufferBytes = 256L * 1024 * 1024;
 
+    private static string? _sessionLogPath;
+
     [STAThread]
-    public static async Task<int> Main(string[] args)
+    public static int Main(string[] args)
+    {
+        var app = new Application
+        {
+            ShutdownMode = ShutdownMode.OnMainWindowClose
+        };
+
+        var window = new UpdateProgressWindow();
+        app.MainWindow = window;
+
+        app.Startup += async (_, _) => await RunUpdateAsync(app, window, args);
+
+        return app.Run(window);
+    }
+
+    private static async Task RunUpdateAsync(Application app, UpdateProgressWindow window, string[] args)
     {
         try
         {
             var options = UpdateArguments.Parse(args);
-            await ExecuteAsync(options);
-            return 0;
+            await ExecuteAsync(options, window);
+            app.Shutdown(0);
         }
         catch (Exception ex)
         {
+            TryLog($"FATAL {ex}");
+            var message = string.IsNullOrWhiteSpace(_sessionLogPath)
+                ? ex.Message
+                : $"{ex.Message}{Environment.NewLine}{Environment.NewLine}로그 파일: {_sessionLogPath}";
+
+            window.ShowFailure("업데이트를 완료하지 못했습니다.", message);
             MessageBox.Show(
-                $"업데이트를 완료하지 못했습니다.{Environment.NewLine}{Environment.NewLine}{ex.Message}",
+                $"업데이트를 완료하지 못했습니다.{Environment.NewLine}{Environment.NewLine}{message}",
                 "거래플랜 업데이터",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
-            return 1;
+            app.Shutdown(1);
         }
     }
 
-    private static async Task ExecuteAsync(UpdateArguments options)
+    private static async Task ExecuteAsync(UpdateArguments options, UpdateProgressWindow window)
     {
         var workRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan", "updates", DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         Directory.CreateDirectory(workRoot);
+        _sessionLogPath = Path.Combine(workRoot, "update.log");
+        TryLog($"START version={options.Version} package={options.PackageUrl}");
+
+        SetStage(window, "업데이트 준비 중", "임시 작업 폴더와 설치 공간을 확인하고 있습니다.");
         EnsureWorkDriveFreeSpace(workRoot, options.FileSize);
 
         var packagePath = Path.Combine(workRoot, string.IsNullOrWhiteSpace(options.FileName)
             ? $"desktop-{options.Version}.zip"
             : options.FileName);
-        await DownloadAsync(options.PackageUrl, packagePath);
+
+        SetStage(window, "업데이트 다운로드 중", "새 버전 파일을 가져오고 있습니다.");
+        await DownloadAsync(options.PackageUrl, packagePath, progress =>
+        {
+            var detail = progress.TotalBytes.HasValue
+                ? $"다운로드 {FormatBytes(progress.DownloadedBytes)} / {FormatBytes(progress.TotalBytes.Value)}"
+                : $"다운로드 {FormatBytes(progress.DownloadedBytes)}";
+            SetStage(window, "업데이트 다운로드 중", detail);
+        });
+
+        SetStage(window, "무결성 확인 중", "다운로드한 파일의 SHA256을 검증하고 있습니다.");
         await VerifySha256Async(packagePath, options.Sha256);
+
+        SetStage(window, "프로그램 종료 대기 중", "현재 실행 중인 거래플랜을 종료하고 있습니다.");
         await WaitForProcessExitAsync(options.ProcessId);
 
         var extractRoot = Path.Combine(workRoot, "package");
+        SetStage(window, "설치 파일 준비 중", "업데이트 패키지를 압축 해제하고 있습니다.");
         ZipFile.ExtractToDirectory(packagePath, extractRoot, overwriteFiles: true);
         EnsureInstallDriveFreeSpace(extractRoot, options.InstallRoot);
 
@@ -53,21 +95,64 @@ internal static class Program
         if (!File.Exists(installScriptPath))
             throw new FileNotFoundException("설치 스크립트를 찾지 못했습니다.", installScriptPath);
 
-        var installStartInfo = new System.Diagnostics.ProcessStartInfo
+        SetStage(window, "업데이트 적용 중", "새 버전 파일을 설치 위치에 복사하고 있습니다.");
+        await RunInstallScriptAsync(options, extractRoot, installScriptPath, _sessionLogPath);
+
+        if (!string.IsNullOrWhiteSpace(options.LaunchExe) && File.Exists(options.LaunchExe))
         {
-            FileName = "powershell.exe",
-            Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{installScriptPath}\" -InstallRoot \"{options.InstallRoot}\" -NoLaunch",
-            UseShellExecute = true,
-            WorkingDirectory = extractRoot
+            SetStage(window, "업데이트 완료", "최신 버전으로 다시 실행하고 있습니다.");
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = options.LaunchExe,
+                WorkingDirectory = Path.GetDirectoryName(options.LaunchExe) ?? options.InstallRoot,
+                UseShellExecute = true
+            });
+        }
+
+        TryLog("SUCCESS");
+    }
+
+    private static async Task RunInstallScriptAsync(UpdateArguments options, string extractRoot, string installScriptPath, string? logPath)
+    {
+        var requiresElevation = RequiresElevation(options.InstallRoot);
+        var arguments = string.Join(" ", new[]
+        {
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy", "Bypass",
+            requiresElevation ? string.Empty : "-WindowStyle Hidden",
+            "-File",
+            QuoteArgument(installScriptPath),
+            "-InstallRoot",
+            QuoteArgument(options.InstallRoot),
+            "-NoLaunch",
+            "-LogPath",
+            QuoteArgument(logPath ?? string.Empty)
+        }.Where(static part => !string.IsNullOrWhiteSpace(part)));
+
+        var installStartInfo = new ProcessStartInfo
+        {
+            FileName = ResolvePowerShellPath(),
+            Arguments = arguments,
+            WorkingDirectory = extractRoot,
+            UseShellExecute = requiresElevation
         };
 
-        if (RequiresElevation(options.InstallRoot))
+        if (requiresElevation)
+        {
             installStartInfo.Verb = "runas";
+        }
+        else
+        {
+            installStartInfo.CreateNoWindow = true;
+            installStartInfo.RedirectStandardOutput = true;
+            installStartInfo.RedirectStandardError = true;
+        }
 
-        System.Diagnostics.Process? installProcess;
+        Process? installProcess;
         try
         {
-            installProcess = System.Diagnostics.Process.Start(installStartInfo);
+            installProcess = Process.Start(installStartInfo);
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
@@ -77,31 +162,68 @@ internal static class Program
         if (installProcess is null)
             throw new InvalidOperationException("업데이트 설치 프로세스를 시작하지 못했습니다.");
 
-        await installProcess.WaitForExitAsync();
+        if (!requiresElevation)
+        {
+            var stdoutTask = RelayStreamToLogAsync(installProcess.StandardOutput, "INSTALL-OUT");
+            var stderrTask = RelayStreamToLogAsync(installProcess.StandardError, "INSTALL-ERR");
+            await installProcess.WaitForExitAsync();
+            await Task.WhenAll(stdoutTask, stderrTask);
+        }
+        else
+        {
+            await installProcess.WaitForExitAsync();
+        }
+
         if (installProcess.ExitCode != 0)
             throw new InvalidOperationException($"업데이트 설치가 실패했습니다. exitCode={installProcess.ExitCode}");
+    }
 
-        if (!string.IsNullOrWhiteSpace(options.LaunchExe) && File.Exists(options.LaunchExe))
+    private static async Task RelayStreamToLogAsync(StreamReader reader, string prefix)
+    {
+        while (true)
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = options.LaunchExe,
-                WorkingDirectory = Path.GetDirectoryName(options.LaunchExe) ?? options.InstallRoot,
-                UseShellExecute = true
-            });
+            var line = await reader.ReadLineAsync();
+            if (line is null)
+                break;
+
+            TryLog($"{prefix} {line}");
         }
     }
 
-    private static async Task DownloadAsync(string packageUrl, string targetPath)
+    private static async Task DownloadAsync(string packageUrl, string targetPath, Action<DownloadProgress>? reportProgress = null)
     {
         using var http = new HttpClient();
         using var response = await http.GetAsync(packageUrl, HttpCompletionOption.ResponseHeadersRead);
         response.EnsureSuccessStatusCode();
 
+        var totalBytes = response.Content.Headers.ContentLength;
         await using var source = await response.Content.ReadAsStreamAsync();
         await using var destination = File.Create(targetPath);
-        await source.CopyToAsync(destination);
+
+        var buffer = new byte[81920];
+        long downloadedBytes = 0;
+        var lastReportUtc = DateTime.UtcNow;
+
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer);
+            if (read <= 0)
+                break;
+
+            await destination.WriteAsync(buffer.AsMemory(0, read));
+            downloadedBytes += read;
+
+            var nowUtc = DateTime.UtcNow;
+            if (reportProgress is not null && (nowUtc - lastReportUtc).TotalMilliseconds >= 250)
+            {
+                reportProgress(new DownloadProgress(downloadedBytes, totalBytes));
+                lastReportUtc = nowUtc;
+            }
+        }
+
         await destination.FlushAsync();
+        reportProgress?.Invoke(new DownloadProgress(downloadedBytes, totalBytes));
+        TryLog($"DOWNLOAD completed bytes={downloadedBytes}");
     }
 
     private static async Task VerifySha256Async(string filePath, string sha256)
@@ -115,6 +237,8 @@ internal static class Program
         var actual = Convert.ToHexString(hash);
         if (!string.Equals(actual, sha256.Trim(), StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("다운로드한 업데이트 패키지의 SHA256 검증에 실패했습니다.");
+
+        TryLog($"SHA256 verified {actual}");
     }
 
     private static async Task WaitForProcessExitAsync(int processId)
@@ -124,16 +248,21 @@ internal static class Program
 
         try
         {
-            using var process = System.Diagnostics.Process.GetProcessById(processId);
+            using var process = Process.GetProcessById(processId);
             if (process.HasExited)
                 return;
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
             await process.WaitForExitAsync(timeout.Token);
+            TryLog($"PROCESS exited pid={processId}");
         }
         catch (ArgumentException)
         {
-            // already exited
+            TryLog($"PROCESS already exited pid={processId}");
+        }
+        catch (OperationCanceledException ex)
+        {
+            throw new InvalidOperationException("기존 거래플랜 종료를 10분 이상 기다렸지만 완료되지 않았습니다.", ex);
         }
     }
 
@@ -201,6 +330,38 @@ internal static class Program
         return protectedRoots.Any(root => fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase));
     }
 
+    private static string ResolvePowerShellPath()
+    {
+        var systemDirectory = Environment.GetFolderPath(Environment.SpecialFolder.System);
+        var candidate = Path.Combine(systemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+        return File.Exists(candidate) ? candidate : "powershell.exe";
+    }
+
+    private static void SetStage(UpdateProgressWindow window, string title, string detail)
+    {
+        TryLog($"STAGE {title} :: {detail}");
+        window.Dispatcher.Invoke(() => window.SetStatus(title, detail));
+    }
+
+    private static void TryLog(string message)
+    {
+        if (string.IsNullOrWhiteSpace(_sessionLogPath))
+            return;
+
+        try
+        {
+            var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {message}{Environment.NewLine}";
+            File.AppendAllText(_sessionLogPath, line, Encoding.UTF8);
+        }
+        catch
+        {
+            // ignore logging failures
+        }
+    }
+
+    private static string QuoteArgument(string value)
+        => "\"" + (value ?? string.Empty).Replace("\"", "\\\"") + "\"";
+
     private static string FormatBytes(long bytes)
     {
         string[] units = ["B", "KB", "MB", "GB", "TB"];
@@ -214,6 +375,8 @@ internal static class Program
 
         return $"{value:0.##} {units[unitIndex]}";
     }
+
+    private readonly record struct DownloadProgress(long DownloadedBytes, long? TotalBytes);
 }
 
 internal sealed class UpdateArguments
