@@ -2848,6 +2848,7 @@ public static class DbInitializer
         PermissionNames.DataBackupRestore,
         PermissionNames.RentalViewAll,
         PermissionNames.RentalEditAll,
+        PermissionNames.DeliveryViewAll,
         PermissionNames.RentalSettingsEdit,
         PermissionNames.RentalImport
     ];

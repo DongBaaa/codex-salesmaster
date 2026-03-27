@@ -182,6 +182,40 @@ public sealed partial class LocalStateService
         return query.OrderBy(c => c.NameOriginal).ToListAsync(ct);
     }
 
+    public Task<List<LocalCustomer>> GetCustomersForRentalScopeAsync(SessionState session, CancellationToken ct = default)
+    {
+        var query = _db.Customers.AsNoTracking();
+        if (!CanViewAllRentalScope(session))
+            query = ApplyCustomerScope(query, session);
+
+        return query.OrderBy(c => c.NameOriginal).ToListAsync(ct);
+    }
+
+    public Task<List<LocalCustomer>> GetCustomersForDeliveryScopeAsync(
+        SessionState session,
+        string? responsibleOfficeCode = null,
+        CancellationToken ct = default)
+    {
+        var query = _db.Customers.AsNoTracking();
+        if (!CanViewAllDeliveryScope(session))
+        {
+            query = ApplyCustomerScope(query, session);
+        }
+
+        var officeFilterText = (responsibleOfficeCode ?? string.Empty).Trim();
+        var normalizedOfficeCode = string.IsNullOrWhiteSpace(officeFilterText)
+            ? string.Empty
+            : NormalizeOfficeCode(officeFilterText, DomainConstants.OfficeYeonsu);
+        if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
+        {
+            query = query.Where(customer =>
+                customer.ResponsibleOfficeCode == normalizedOfficeCode ||
+                customer.ResponsibleOfficeCode == OfficeCodeCatalog.Shared);
+        }
+
+        return query.OrderBy(c => c.NameOriginal).ToListAsync(ct);
+    }
+
     public async Task<Dictionary<Guid, string>> GetCustomerNameMapAsync(
         IEnumerable<Guid> customerIds,
         CancellationToken ct = default)
@@ -215,6 +249,17 @@ public sealed partial class LocalStateService
     {
         var customer = await GetCustomerAsync(customerId, ct);
         return customer is not null && CanAccessCustomer(customer, session)
+            ? customer
+            : null;
+    }
+
+    public async Task<LocalCustomer?> GetCustomerForRentalScopeAsync(Guid customerId, SessionState session, CancellationToken ct = default)
+    {
+        var customer = await GetCustomerAsync(customerId, ct);
+        if (customer is null)
+            return null;
+
+        return CanViewAllRentalScope(session) || CanAccessCustomer(customer, session)
             ? customer
             : null;
     }
@@ -884,12 +929,12 @@ public sealed partial class LocalStateService
             .Where(profile => profile.IsDirty)
             .AsNoTracking();
 
-        if (CanWriteAllScopedData(session))
+        if (CanWriteAllScopedData(session) || CanManageAllRentalScope(session))
             return await query.ToListAsync(ct);
 
         var dirtyProfiles = await query.ToListAsync(ct);
         return dirtyProfiles
-            .Where(profile => CanWriteOfficeScope(session, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode))
+            .Where(profile => CanWriteRentalScope(session, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode))
             .ToList();
     }
 
@@ -899,12 +944,12 @@ public sealed partial class LocalStateService
             .Where(asset => asset.IsDirty)
             .AsNoTracking();
 
-        if (CanWriteAllScopedData(session))
+        if (CanWriteAllScopedData(session) || CanManageAllRentalScope(session))
             return await query.ToListAsync(ct);
 
         var dirtyAssets = await query.ToListAsync(ct);
         return dirtyAssets
-            .Where(asset => CanWriteOfficeScope(session, asset.ResponsibleOfficeCode, asset.ManagementCompanyCode))
+            .Where(asset => CanWriteRentalScope(session, asset.ResponsibleOfficeCode, asset.ManagementCompanyCode))
             .ToList();
     }
 
@@ -914,12 +959,12 @@ public sealed partial class LocalStateService
             .Where(log => log.IsDirty)
             .AsNoTracking();
 
-        if (CanWriteAllScopedData(session))
+        if (CanWriteAllScopedData(session) || CanManageAllRentalScope(session))
             return await query.ToListAsync(ct);
 
         var dirtyLogs = await query.ToListAsync(ct);
         return dirtyLogs
-            .Where(log => CanWriteOfficeScope(session, log.ResponsibleOfficeCode))
+            .Where(log => CanWriteRentalScope(session, log.ResponsibleOfficeCode))
             .ToList();
     }
 
@@ -1856,7 +1901,10 @@ public sealed partial class LocalStateService
         string? responsibleOfficeCode = null,
         CancellationToken ct = default)
     {
-        var normalizedOfficeCode = NormalizeOfficeCode(responsibleOfficeCode, DomainConstants.OfficeYeonsu);
+        var officeFilterText = (responsibleOfficeCode ?? string.Empty).Trim();
+        var normalizedOfficeCode = string.IsNullOrWhiteSpace(officeFilterText)
+            ? string.Empty
+            : NormalizeOfficeCode(officeFilterText, DomainConstants.OfficeYeonsu);
         var query = _db.Invoices
             .Include(invoice => invoice.Lines.Where(line => !line.IsDeleted))
             .Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
@@ -1864,8 +1912,10 @@ public sealed partial class LocalStateService
             .Where(invoice => !invoice.IsDeleted &&
                               invoice.IsLatestVersion &&
                               invoice.IsConfirmed &&
-                              invoice.VoucherType == VoucherType.Sales &&
-                              invoice.ResponsibleOfficeCode == normalizedOfficeCode);
+                              invoice.VoucherType == VoucherType.Sales);
+
+        if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
+            query = query.Where(invoice => invoice.ResponsibleOfficeCode == normalizedOfficeCode);
 
         if (from.HasValue)
             query = query.Where(invoice => invoice.InvoiceDate >= from.Value);
@@ -1896,8 +1946,8 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
-        var officeCode = session.HasGlobalDataScope
-            ? NormalizeOfficeCode(responsibleOfficeCode, DomainConstants.OfficeYeonsu)
+        var officeCode = session.HasGlobalDataScope || CanViewAllDeliveryScope(session)
+            ? NormalizeOfficeScope(responsibleOfficeCode, string.Empty)
             : NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeYeonsu);
 
         return GetYeonsuDeliveryInvoicesAsync(from, to, customerId, warehouseCode, officeCode, ct);
@@ -4700,6 +4750,22 @@ public sealed partial class LocalStateService
     private static bool CanWriteAllScopedData(SessionState? session)
         => session is not null && session.IsLoggedIn && session.HasGlobalDataScope;
 
+    private static bool CanViewAllRentalScope(SessionState? session)
+        => session is not null && session.IsLoggedIn &&
+           (session.HasAdministrativePrivileges ||
+            session.HasAssignedPermission(AppPermissionNames.RentalViewAll) ||
+            session.HasAssignedPermission(AppPermissionNames.RentalEditAll));
+
+    private static bool CanManageAllRentalScope(SessionState? session)
+        => session is not null && session.IsLoggedIn &&
+           (session.HasAdministrativePrivileges ||
+            session.HasPermission(AppPermissionNames.RentalEditAll));
+
+    private static bool CanViewAllDeliveryScope(SessionState? session)
+        => session is not null && session.IsLoggedIn &&
+           (session.HasAdministrativePrivileges ||
+            session.HasAssignedPermission(AppPermissionNames.DeliveryViewAll));
+
     private static bool CanWriteSharedOfficeScope(SessionState? session)
         => session is not null && session.IsLoggedIn &&
            (session.HasGlobalDataScope ||
@@ -4728,6 +4794,14 @@ public sealed partial class LocalStateService
         }
 
         return false;
+    }
+
+    private static bool CanWriteRentalScope(SessionState? session, string? officeCode, string? fallbackOfficeCode = null)
+    {
+        if (CanManageAllRentalScope(session))
+            return true;
+
+        return CanWriteOfficeScope(session, officeCode, fallbackOfficeCode);
     }
 
     private static HashSet<string> GetReadableOfficeCodes(SessionState? session)

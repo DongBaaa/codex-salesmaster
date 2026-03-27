@@ -127,6 +127,9 @@ builder.Services.AddAuthorization(options =>
     AddPermissionPolicy(options, PermissionNames.AmountViewPurchase);
     AddPermissionPolicy(options, PermissionNames.SettingsEdit);
     AddPermissionPolicy(options, PermissionNames.DataBackupRestore);
+    AddPermissionPolicy(options, PermissionNames.RentalViewAll);
+    AddPermissionPolicy(options, PermissionNames.RentalEditAll);
+    AddPermissionPolicy(options, PermissionNames.DeliveryViewAll);
 });
 
 builder.Services.AddControllers().AddJsonOptions(options =>

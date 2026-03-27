@@ -763,6 +763,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             AppPermissionNames.DataBackupRestore,
             AppPermissionNames.RentalViewAll,
             AppPermissionNames.RentalEditAll,
+            AppPermissionNames.DeliveryViewAll,
             AppPermissionNames.RentalSettingsEdit,
             AppPermissionNames.RentalImport
         };
@@ -912,4 +913,3 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         => Guid.TryParse(value, out var profileId) ? profileId : null;
 
 }
-

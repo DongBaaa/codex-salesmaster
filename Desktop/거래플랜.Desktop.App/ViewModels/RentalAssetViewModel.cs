@@ -500,7 +500,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         if (asset.CustomerId is Guid customerId && customerId != Guid.Empty)
         {
-            var byId = await _local.GetCustomerAsync(customerId, _session);
+            var byId = await _local.GetCustomerForRentalScopeAsync(customerId, _session);
             if (byId is not null)
                 return byId;
         }
@@ -508,7 +508,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(asset.CustomerName))
             return null;
 
-        return (await _local.GetCustomersAsync(_session))
+        return (await _local.GetCustomersForRentalScopeAsync(_session))
             .FirstOrDefault(current =>
                 string.Equals((current.NameOriginal ?? string.Empty).Trim(), asset.CustomerName.Trim(), StringComparison.CurrentCultureIgnoreCase));
     }
@@ -541,7 +541,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     public async Task<IReadOnlyList<LookupRow>> BuildCustomerLookupRowsAsync()
     {
-        var customers = await _local.GetCustomersAsync(_session);
+        var customers = await _local.GetCustomersForRentalScopeAsync(_session);
         return customers
             .OrderBy(customer => customer.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
             .Select(customer => new LookupRow
@@ -583,7 +583,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     public async Task<IReadOnlyList<LookupRow>> BuildPurchaseVendorLookupRowsAsync()
     {
-        var customers = await _local.GetCustomersAsync(_session);
+        var customers = await _local.GetCustomersForRentalScopeAsync(_session);
         return customers
             .OrderBy(customer => customer.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
             .Select(customer => new LookupRow

@@ -293,6 +293,138 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_AllowsCrossTenantRentalAssetUpdate_ForUserWithRentalEditAll()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "itworld_user",
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            Permissions = [거래플랜.Server.Api.Security.PermissionNames.RentalEditAll]
+        };
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        var existing = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "USENET|2603-001|CUSTOMER|MODEL",
+            ManagementId = "1",
+            ManagementNumber = "2603-001",
+            CustomerName = "유즈넷 거래처",
+            ItemName = "MODEL-X",
+            CurrentLocation = "유즈넷",
+            CreatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc)
+        };
+        scopedDb.RentalAssets.Add(existing);
+        await scopedDb.SaveChangesAsync();
+
+        var controller = CreateController(scopedDb, currentUser);
+        var request = new SyncPushRequest
+        {
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = existing.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = existing.AssetKey,
+                    ManagementId = existing.ManagementId,
+                    ManagementNumber = existing.ManagementNumber,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    CurrentLocation = "아이티월드에서 수정",
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        };
+
+        var response = await controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var updated = await scopedDb.RentalAssets.IgnoreQueryFilters().FirstAsync(asset => asset.Id == existing.Id);
+        Assert.Equal("아이티월드에서 수정", updated.CurrentLocation);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, updated.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, updated.OfficeCode);
+    }
+
+    [Fact]
+    public async Task Pull_IncludesCrossTenantDeliveryData_ForUserWithDeliveryViewAll()
+    {
+        var usenetCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "유즈넷 납품처",
+            NameMatchKey = "유즈넷납품처",
+            TradeType = "매출"
+        };
+        var itworldCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "아이티월드 납품처",
+            NameMatchKey = "아이티월드납품처",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.AddRange(usenetCustomer, itworldCustomer);
+
+        _dbContext.Invoices.AddRange(
+            new Invoice
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerId = usenetCustomer.Id,
+                VoucherType = VoucherType.Sales,
+                InvoiceNumber = "US-DEL-1",
+                InvoiceDate = new DateOnly(2026, 3, 27)
+            },
+            new Invoice
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                CustomerId = itworldCustomer.Id,
+                VoucherType = VoucherType.Sales,
+                InvoiceNumber = "IT-DEL-1",
+                InvoiceDate = new DateOnly(2026, 3, 27)
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "itworld_user",
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            Permissions = [거래플랜.Server.Api.Security.PermissionNames.DeliveryViewAll]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.Contains(result.Customers, customer => customer.Id == usenetCustomer.Id);
+        Assert.Contains(result.Customers, customer => customer.Id == itworldCustomer.Id);
+        Assert.Contains(result.Invoices, invoice => invoice.InvoiceNumber == "US-DEL-1");
+        Assert.Contains(result.Invoices, invoice => invoice.InvoiceNumber == "IT-DEL-1");
+    }
+
+    [Fact]
     public async Task Push_ResolvesRentalAssetItemReference_ByReadableItemMetadata()
     {
         var item = new Item
@@ -1114,8 +1246,10 @@ public sealed class SyncControllerTests : IDisposable
         public string ScopeType { get; init; } = TenantScopeCatalog.ScopeOfficeOnly;
         public bool IsAdmin { get; init; }
         public bool IsGodMode { get; init; }
+        public IReadOnlyCollection<string> Permissions { get; init; } = [];
 
-        public bool HasPermission(string permission) => IsAdmin || IsGodMode;
+        public bool HasPermission(string permission)
+            => IsAdmin || IsGodMode || Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
     }
 
     private sealed class StubInvoiceNumberService : IInvoiceNumberService

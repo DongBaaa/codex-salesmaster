@@ -76,11 +76,11 @@ public sealed class SyncController : ControllerBase
                 .Where(x => x.Revision > sinceRev).OrderBy(x => x.SortOrder).ThenBy(x => x.Name).Select(x => x.ToDto()).ToListAsync(cancellationToken),
             CustomerMasters = await _officeScopeService.ApplyCustomerMasterScope(_dbContext.CustomerMasters.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            Customers = await _officeScopeService.ApplyCustomerScope(_dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
+            Customers = await _officeScopeService.ApplySyncCustomerScope(_dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
             CustomerContracts = await _officeScopeService.ApplyCustomerContractScope(_dbContext.CustomerContracts.IgnoreQueryFilters().AsNoTracking().Include(x => x.Customer))
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto(true)).ToListAsync(cancellationToken),
-            Items = await _officeScopeService.ApplyItemScope(_dbContext.Items.IgnoreQueryFilters().AsNoTracking())
+            Items = await _officeScopeService.ApplySyncItemScope(_dbContext.Items.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
             ItemWarehouseStocks = await _officeScopeService.ApplyItemWarehouseStockScope(_dbContext.ItemWarehouseStocks.AsNoTracking())
                 .OrderBy(x => x.ItemId).ThenBy(x => x.WarehouseCode)
@@ -105,7 +105,7 @@ public sealed class SyncController : ControllerBase
             RentalBillingLogs = await _officeScopeService.ApplyRentalBillingLogScope(_dbContext.RentalBillingLogs.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).OrderBy(x => x.ScheduledDate).ThenBy(x => x.BillingYearMonth)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            Invoices = await _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().Include(x => x.Customer).Include(x => x.Lines).Include(x => x.Payments).AsNoTracking())
+            Invoices = await _officeScopeService.ApplySyncInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().Include(x => x.Customer).Include(x => x.Lines).Include(x => x.Payments).AsNoTracking())
                 .Where(x => x.Revision > sinceRev).OrderBy(x => x.CreatedAtUtc)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             Payments = await _officeScopeService.ApplyPaymentScope(_dbContext.Payments.IgnoreQueryFilters().Include(x => x.Invoice).ThenInclude(invoice => invoice!.Customer).AsNoTracking())
@@ -874,7 +874,7 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, _officeScopeService.CurrentOfficeCode, existing?.TenantCode);
+            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, _officeScopeService.CurrentOfficeCode, existing?.TenantCode);
             scoped.Add(dto);
         }
 
@@ -898,8 +898,8 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
+            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveScopeForRentalCreate(dto.OfficeCode, existing?.OfficeCode);
             scoped.Add(dto);
         }
 
@@ -926,7 +926,7 @@ public sealed class SyncController : ControllerBase
                     continue;
                 }
 
-                if (!_officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
+                if (!CanReadCustomerForRentalReference(customer))
                 {
                     AddClientConflict(dto, nameof(RentalBillingProfile),
                         $"Referenced customer is outside the readable office scope: {dto.CustomerId}.", result);
@@ -973,8 +973,8 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
+            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveScopeForRentalCreate(dto.OfficeCode, existing?.OfficeCode);
             dto.ManagementCompanyCode = string.IsNullOrWhiteSpace(dto.ManagementCompanyCode)
                 ? dto.OfficeCode
                 : dto.ManagementCompanyCode.Trim();
@@ -1217,7 +1217,7 @@ public sealed class SyncController : ControllerBase
             if (directItem is not null &&
                 !directItem.IsDeleted &&
                 ItemOperationalPolicy.IsAsset(directItem.TrackingType) &&
-                _officeScopeService.CanReadOfficeForItems(directItem.OfficeCode, directItem.TenantCode))
+                CanReadItemForRentalReference(directItem))
             {
                 return directItem.Id;
             }
@@ -1309,7 +1309,7 @@ public sealed class SyncController : ControllerBase
                 .FirstOrDefaultAsync(customer => customer.Id == dto.CustomerId.Value, cancellationToken);
             if (directCustomer is not null &&
                 !directCustomer.IsDeleted &&
-                _officeScopeService.CanReadOfficeForCustomers(directCustomer.OfficeCode, directCustomer.TenantCode))
+                CanReadCustomerForRentalReference(directCustomer))
             {
                 return directCustomer.Id;
             }
@@ -1319,8 +1319,8 @@ public sealed class SyncController : ControllerBase
         if (string.IsNullOrWhiteSpace(normalizedCustomerName))
             return null;
 
-        var preferredOfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, null);
-        var preferredTenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, preferredOfficeCode);
+        var preferredOfficeCode = _officeScopeService.ResolveScopeForRentalCreate(dto.OfficeCode, null);
+        var preferredTenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, preferredOfficeCode);
         var exactNameMatches = await _dbContext.Customers.IgnoreQueryFilters()
             .Where(customer => !customer.IsDeleted && customer.NameOriginal == normalizedCustomerName)
             .OrderByDescending(customer => customer.UpdatedAtUtc)
@@ -1349,7 +1349,7 @@ public sealed class SyncController : ControllerBase
         string preferredTenantCode)
     {
         var readableCandidates = candidates
-            .Where(item => _officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
+            .Where(CanReadItemForRentalReference)
             .ToList();
         if (readableCandidates.Count == 0)
             return null;
@@ -1385,7 +1385,7 @@ public sealed class SyncController : ControllerBase
         string preferredTenantCode)
     {
         var readableCandidates = candidates
-            .Where(customer => _officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
+            .Where(CanReadCustomerForRentalReference)
             .ToList();
         if (readableCandidates.Count == 0)
             return null;
@@ -1402,6 +1402,14 @@ public sealed class SyncController : ControllerBase
             ? readableCandidates[0].Id
             : null;
     }
+
+    private bool CanReadItemForRentalReference(Item item)
+        => _officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode) ||
+           _officeScopeService.CanReadOfficeForRentals(item.OfficeCode, item.TenantCode);
+
+    private bool CanReadCustomerForRentalReference(Customer customer)
+        => _officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode) ||
+           _officeScopeService.CanReadOfficeForRentals(customer.OfficeCode, customer.TenantCode);
 
     private async Task<List<RentalBillingLogDto>> PrepareScopedRentalBillingLogsAsync(
         IEnumerable<RentalBillingLogDto> payload,
@@ -1420,8 +1428,8 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
+            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveScopeForRentalCreate(dto.OfficeCode, existing?.OfficeCode);
             scoped.Add(dto);
         }
 

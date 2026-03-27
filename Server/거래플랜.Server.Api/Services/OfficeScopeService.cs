@@ -35,6 +35,16 @@ public sealed class OfficeScopeService
     public bool HasGlobalDataScope =>
         IsAdmin && string.Equals(CurrentScopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase);
     private bool HasAdministrativeRentalScope => _currentUserContext.IsAdmin || _currentUserContext.IsGodMode;
+    private bool HasRentalWideReadScope =>
+        HasAdministrativeRentalScope ||
+        _currentUserContext.HasPermission(Security.PermissionNames.RentalViewAll) ||
+        _currentUserContext.HasPermission(Security.PermissionNames.RentalEditAll);
+    private bool HasRentalWideWriteScope =>
+        HasAdministrativeRentalScope ||
+        _currentUserContext.HasPermission(Security.PermissionNames.RentalEditAll);
+    private bool HasDeliveryWideReadScope =>
+        HasAdministrativeWriteAccess ||
+        _currentUserContext.HasPermission(Security.PermissionNames.DeliveryViewAll);
 
     public string CurrentTenantCode => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
         _currentUserContext.TenantCode,
@@ -97,6 +107,36 @@ public sealed class OfficeScopeService
         return CurrentOfficeCode;
     }
 
+    public string ResolveTenantForRentalCreate(
+        string? requestedTenantCode,
+        string? requestedOfficeCode,
+        string? fallbackTenantCode = null,
+        string? fallbackOfficeCode = null)
+    {
+        if (HasGlobalDataScope || HasRentalWideWriteScope)
+        {
+            return TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                requestedTenantCode,
+                requestedOfficeCode,
+                fallbackTenantCode,
+                fallbackOfficeCode);
+        }
+
+        return CurrentTenantCode;
+    }
+
+    public string ResolveScopeForRentalCreate(string? requestedOfficeCode, string? fallbackOfficeCode = null)
+    {
+        if (HasGlobalDataScope || HasRentalWideWriteScope)
+        {
+            return OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                requestedOfficeCode,
+                fallbackOfficeCode ?? CurrentOfficeCode);
+        }
+
+        return ResolveScopeForCreate(requestedOfficeCode, fallbackOfficeCode);
+    }
+
     public IQueryable<CustomerMaster> ApplyCustomerMasterScope(IQueryable<CustomerMaster> query)
     {
         if (HasGlobalDataScope)
@@ -119,6 +159,14 @@ public sealed class OfficeScopeService
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
             (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+    }
+
+    public IQueryable<Customer> ApplySyncCustomerScope(IQueryable<Customer> query)
+    {
+        if (HasGlobalDataScope || HasRentalWideReadScope || HasDeliveryWideReadScope)
+            return query;
+
+        return ApplyCustomerScope(query);
     }
 
     public IQueryable<CustomerContract> ApplyCustomerContractScope(IQueryable<CustomerContract> query)
@@ -146,6 +194,14 @@ public sealed class OfficeScopeService
             (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
     }
 
+    public IQueryable<Item> ApplySyncItemScope(IQueryable<Item> query)
+    {
+        if (HasGlobalDataScope || HasRentalWideReadScope)
+            return query;
+
+        return ApplyItemScope(query);
+    }
+
     public IQueryable<Invoice> ApplyInvoiceScope(IQueryable<Invoice> query)
     {
         if (HasGlobalDataScope)
@@ -156,6 +212,14 @@ public sealed class OfficeScopeService
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
             (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+    }
+
+    public IQueryable<Invoice> ApplySyncInvoiceScope(IQueryable<Invoice> query)
+    {
+        if (HasGlobalDataScope || HasDeliveryWideReadScope)
+            return query;
+
+        return ApplyInvoiceScope(query);
     }
 
     public IQueryable<Payment> ApplyPaymentScope(IQueryable<Payment> query)
@@ -198,7 +262,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<InventoryTransfer> ApplyInventoryTransferScope(IQueryable<InventoryTransfer> query)
     {
-        if (HasGlobalDataScope)
+        if (HasGlobalDataScope || HasDeliveryWideReadScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -210,7 +274,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalManagementCompany> ApplyRentalManagementCompanyScope(IQueryable<RentalManagementCompany> query)
     {
-        if (HasGlobalDataScope)
+        if (HasGlobalDataScope || HasRentalWideReadScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -219,7 +283,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalBillingProfile> ApplyRentalBillingProfileScope(IQueryable<RentalBillingProfile> query)
     {
-        if (HasGlobalDataScope || HasAdministrativeRentalScope)
+        if (HasGlobalDataScope || HasRentalWideReadScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -231,7 +295,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalAsset> ApplyRentalAssetScope(IQueryable<RentalAsset> query)
     {
-        if (HasGlobalDataScope || HasAdministrativeRentalScope)
+        if (HasGlobalDataScope || HasRentalWideReadScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -243,7 +307,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalBillingLog> ApplyRentalBillingLogScope(IQueryable<RentalBillingLog> query)
     {
-        if (HasGlobalDataScope || HasAdministrativeRentalScope)
+        if (HasGlobalDataScope || HasRentalWideReadScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -317,13 +381,13 @@ public sealed class OfficeScopeService
         => CanReadOffice(officeCode, tenantCode, DataArea.Reports);
 
     public bool CanReadOfficeForRentals(string? officeCode, string? tenantCode = null)
-        => HasAdministrativeRentalScope || CanReadOffice(officeCode, tenantCode, DataArea.Rentals);
+        => HasRentalWideReadScope || CanReadOffice(officeCode, tenantCode, DataArea.Rentals);
 
     public bool CanWriteOfficeForRentals(string? officeCode, string? tenantCode = null)
-        => HasAdministrativeRentalScope || CanWriteOffice(officeCode, tenantCode, DataArea.Rentals);
+        => HasRentalWideWriteScope || CanWriteOffice(officeCode, tenantCode, DataArea.Rentals);
 
     public bool CanReadOfficeForDeliveries(string? officeCode, string? tenantCode = null)
-        => CanReadOffice(officeCode, tenantCode, DataArea.Deliveries);
+        => HasDeliveryWideReadScope || CanReadOffice(officeCode, tenantCode, DataArea.Deliveries);
 
     public bool CanWriteOfficeForDeliveries(string? officeCode, string? tenantCode = null)
         => CanWriteOffice(officeCode, tenantCode, DataArea.Deliveries);

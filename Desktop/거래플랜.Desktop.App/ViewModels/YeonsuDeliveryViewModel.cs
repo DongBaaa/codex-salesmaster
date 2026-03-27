@@ -10,6 +10,7 @@ namespace 거래플랜.Desktop.App.ViewModels;
 
 public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 {
+    public const string OfficeOptionAll = "";
     private readonly LocalStateService _local;
     private readonly SessionState _session;
     private readonly List<LocalCustomer> _allOfficeCustomers = new();
@@ -54,7 +55,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     partial void OnSelectedOfficeCodeChanged(string value)
     {
-        if (string.IsNullOrWhiteSpace(value) || OfficeOptions.Count == 0)
+        if (OfficeOptions.Count == 0)
             return;
 
         var version = Interlocked.Increment(ref _reloadForOfficeVersion);
@@ -150,7 +151,9 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
         CustomerSearchText = string.Empty;
         SelectedCustomer = null;
         SelectedWarehouseOption = WarehouseOptionAll;
-        if (!string.IsNullOrWhiteSpace(_session.OfficeCode) && !_session.HasGlobalDataScope)
+        if (_session.HasGlobalDataScope || CanViewAllDeliveries())
+            SelectedOfficeCode = OfficeOptionAll;
+        else if (!string.IsNullOrWhiteSpace(_session.OfficeCode))
             SelectedOfficeCode = _session.OfficeCode;
         await LoadDeliveriesAsync();
     }
@@ -160,9 +163,19 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
         var offices = await _local.GetOfficesAsync();
         var readableOfficeCodes = GetReadableOfficeCodes();
         OfficeOptions.Clear();
+        if (_session.HasGlobalDataScope || CanViewAllDeliveries())
+        {
+            OfficeOptions.Add(new DisplayOption
+            {
+                Value = OfficeOptionAll,
+                DisplayName = "전체"
+            });
+        }
+
         foreach (var office in offices.OrderBy(current => current.Name, StringComparer.CurrentCultureIgnoreCase))
         {
             if (!_session.HasGlobalDataScope &&
+                !CanViewAllDeliveries() &&
                 !readableOfficeCodes.Contains(office.Code))
             {
                 continue;
@@ -189,6 +202,11 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
             SelectedOfficeCode = OfficeOptions.FirstOrDefault(option => string.Equals(option.Value, SelectedOfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
                 ?? OfficeOptions.First().Value;
         }
+        else if (CanViewAllDeliveries())
+        {
+            SelectedOfficeCode = OfficeOptions.FirstOrDefault(option => string.Equals(option.Value, SelectedOfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
+                ?? OfficeOptionAll;
+        }
         else if (string.Equals(_session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
         {
             SelectedOfficeCode = OfficeOptions.FirstOrDefault(option => string.Equals(option.Value, _session.OfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
@@ -202,7 +220,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     private HashSet<string> GetReadableOfficeCodes()
     {
-        if (_session.HasGlobalDataScope)
+        if (_session.HasGlobalDataScope || CanViewAllDeliveries())
             return OfficeCodeCatalog.All.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (string.Equals(_session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
@@ -219,13 +237,9 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     private async Task LoadCustomersAsync()
     {
-        var customers = await _local.GetCustomersAsync(_session);
+        var customers = await _local.GetCustomersForDeliveryScopeAsync(_session, SelectedOfficeCode);
         _allOfficeCustomers.Clear();
         _allOfficeCustomers.AddRange(customers
-            .Where(customer => string.Equals(
-                customer.ResponsibleOfficeCode?.Trim(),
-                SelectedOfficeCode,
-                StringComparison.OrdinalIgnoreCase))
             .OrderBy(customer => customer.NameOriginal, StringComparer.CurrentCultureIgnoreCase));
 
         ApplyCustomerFilter();
@@ -281,7 +295,10 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     private string ResolveOfficeDisplayName(string? officeCode)
         => OfficeOptions.FirstOrDefault(option => string.Equals(option.Value, officeCode, StringComparison.OrdinalIgnoreCase))?.DisplayName
-           ?? (string.IsNullOrWhiteSpace(officeCode) ? "담당지점" : officeCode);
+           ?? (string.IsNullOrWhiteSpace(officeCode) ? "전체 담당지점" : officeCode);
+
+    private bool CanViewAllDeliveries()
+        => _session.HasAdministrativePrivileges || _session.HasAssignedPermission(AppPermissionNames.DeliveryViewAll);
 
     private static string ResolveWarehouseCodeFilter(string option)
     {
@@ -305,6 +322,5 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
         return string.IsNullOrWhiteSpace(code) ? "-" : code;
     }
 }
-
 
 

@@ -10,6 +10,7 @@ public static class AppPermissionNames
 
     public const string RentalViewAll = "Rental.ViewAll";
     public const string RentalEditAll = "Rental.EditAll";
+    public const string DeliveryViewAll = "Delivery.ViewAll";
     public const string RentalSettingsEdit = "Rental.SettingsEdit";
     public const string RentalImport = "Rental.Import";
 }
