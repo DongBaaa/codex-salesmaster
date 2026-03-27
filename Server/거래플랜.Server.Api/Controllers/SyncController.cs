@@ -221,8 +221,7 @@ public sealed class SyncController : ControllerBase
 
             if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
             {
-                var conflict = BuildConflict(dto, entity, typeof(TEntity).Name, "Server version is newer.");
-                _dbContext.ConflictLogs.Add(conflict);
+                AddServerConflict(dto, entity, typeof(TEntity).Name, "Server version is newer.", result);
                 continue;
             }
 
@@ -322,8 +321,7 @@ public sealed class SyncController : ControllerBase
 
             if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
             {
-                var conflict = BuildConflict(dto, entity, entityName, "Server version is newer.");
-                _dbContext.ConflictLogs.Add(conflict);
+                AddServerConflict(dto, entity, entityName, "Server version is newer.", result);
                 continue;
             }
 
@@ -364,8 +362,7 @@ public sealed class SyncController : ControllerBase
 
             if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
             {
-                var conflict = BuildConflict(dto, entity, nameof(Invoice), "Server version is newer.");
-                _dbContext.ConflictLogs.Add(conflict);
+                AddServerConflict(dto, entity, nameof(Invoice), "Server version is newer.", result);
                 continue;
             }
 
@@ -847,8 +844,7 @@ public sealed class SyncController : ControllerBase
 
             if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
             {
-                var conflict = BuildConflict(dto, entity, nameof(InventoryTransfer), "Server version is newer.");
-                _dbContext.ConflictLogs.Add(conflict);
+                AddServerConflict(dto, entity, nameof(InventoryTransfer), "Server version is newer.", result);
                 continue;
             }
 
@@ -1861,6 +1857,14 @@ public sealed class SyncController : ControllerBase
             CreatedAtUtc = DateTime.UtcNow
         };
 
+        _dbContext.ConflictLogs.Add(conflict);
+        result.ConflictCount++;
+        result.Conflicts.Add(conflict.ToDto());
+    }
+
+    private void AddServerConflict<TDto, TEntity>(TDto client, TEntity server, string entityName, string reason, SyncPushResult result)
+    {
+        var conflict = BuildConflict(client, server, entityName, reason);
         _dbContext.ConflictLogs.Add(conflict);
         result.ConflictCount++;
         result.Conflicts.Add(conflict.ToDto());

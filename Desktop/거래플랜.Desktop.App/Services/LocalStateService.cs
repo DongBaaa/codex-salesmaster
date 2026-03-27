@@ -3337,13 +3337,13 @@ public sealed partial class LocalStateService
             transaction.LinkedRentalBillingProfileId = null;
         }
 
-        var derivedResponsibleOfficeCode = string.IsNullOrWhiteSpace(transaction.ResponsibleOfficeCode)
-            ? linkedInvoice?.ResponsibleOfficeCode
-                ?? linkedRentalProfile?.ResponsibleOfficeCode
-                ?? linkedRentalProfile?.ManagementCompanyCode
-                ?? existing?.ResponsibleOfficeCode
-                ?? customerOfficeCode
-            : transaction.ResponsibleOfficeCode;
+        var derivedResponsibleOfficeCode =
+            linkedInvoice?.ResponsibleOfficeCode
+            ?? linkedRentalProfile?.ResponsibleOfficeCode
+            ?? linkedRentalProfile?.ManagementCompanyCode
+            ?? customerOfficeCode
+            ?? existing?.ResponsibleOfficeCode
+            ?? transaction.ResponsibleOfficeCode;
 
         transaction.ResponsibleOfficeCode = NormalizeOfficeScope(derivedResponsibleOfficeCode, customerOfficeCode);
         if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, customerOfficeCode))

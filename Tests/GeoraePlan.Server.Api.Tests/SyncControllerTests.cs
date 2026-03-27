@@ -812,6 +812,11 @@ public sealed class SyncControllerTests : IDisposable
             UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
         });
         await _dbContext.SaveChangesAsync();
+        var existingInvoice = await _dbContext.Invoices.IgnoreQueryFilters().FirstAsync(x => x.Id == invoiceId);
+        var incomingCreatedAt = (existingInvoice.CreatedAtUtc == default
+            ? existingInvoice.UpdatedAtUtc
+            : existingInvoice.CreatedAtUtc).AddMinutes(1);
+        var incomingUpdatedAt = existingInvoice.UpdatedAtUtc.AddMinutes(1);
 
         var request = new SyncPushRequest
         {
@@ -826,8 +831,8 @@ public sealed class SyncControllerTests : IDisposable
                     VoucherType = VoucherType.Sales,
                     InvoiceDate = new DateOnly(2026, 3, 27),
                     Memo = "customer repaired from existing invoice",
-                    CreatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc),
-                    UpdatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc)
+                    CreatedAtUtc = incomingCreatedAt,
+                    UpdatedAtUtc = incomingUpdatedAt
                 }
             ]
         };
@@ -841,6 +846,69 @@ public sealed class SyncControllerTests : IDisposable
         var storedInvoice = await _dbContext.Invoices.IgnoreQueryFilters().FirstAsync(x => x.Id == invoiceId);
         Assert.Equal(customer.Id, storedInvoice.CustomerId);
         Assert.Equal("customer repaired from existing invoice", storedInvoice.Memo);
+    }
+
+    [Fact]
+    public async Task Push_ReturnsConflict_WhenInvoiceServerVersionIsNewer()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "STALE-INVOICE-CUSTOMER",
+            NameMatchKey = "STALEINVOICECUSTOMER",
+            TradeType = "매출"
+        };
+        var invoiceId = Guid.NewGuid();
+        _dbContext.Customers.Add(customer);
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "S-20260327-001",
+            LocalTempNumber = "TMP-S-STALE-001",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 3, 27),
+            Memo = "server invoice",
+            TotalAmount = 1200m,
+            SupplyAmount = 1091m,
+            VatAmount = 109m,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var staleRequest = new SyncPushRequest
+        {
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customer.Id,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 3, 27),
+                    Memo = "stale client invoice",
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(staleRequest, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Single(result.Conflicts);
+
+        var storedInvoice = await _dbContext.Invoices.IgnoreQueryFilters().FirstAsync(x => x.Id == invoiceId);
+        Assert.Equal("server invoice", storedInvoice.Memo);
     }
 
     [Fact]
@@ -918,7 +986,7 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Push_PreservesExistingTransactionAttachmentLink_WhenIncomingTransactionReferenceIsMissing()
+    public async Task Push_DeletesExistingTransactionAttachment_WhenIncomingTransactionReferenceIsMissing()
     {
         var customer = new Customer
         {
@@ -962,6 +1030,11 @@ public sealed class SyncControllerTests : IDisposable
             UpdatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc)
         });
         await _dbContext.SaveChangesAsync();
+        var existingAttachment = await _dbContext.TransactionAttachments.IgnoreQueryFilters().FirstAsync(x => x.Id == attachmentId);
+        var attachmentCreatedAt = (existingAttachment.CreatedAtUtc == default
+            ? existingAttachment.UpdatedAtUtc
+            : existingAttachment.CreatedAtUtc).AddMinutes(1);
+        var attachmentUpdatedAt = existingAttachment.UpdatedAtUtc.AddMinutes(1);
 
         var request = new SyncPushRequest
         {
@@ -975,8 +1048,8 @@ public sealed class SyncControllerTests : IDisposable
                     MimeType = "application/pdf",
                     AttachmentType = "기타",
                     FileContent = [],
-                    CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
-                    UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+                    CreatedAtUtc = attachmentCreatedAt,
+                    UpdatedAtUtc = attachmentUpdatedAt
                 }
             ]
         };
@@ -998,7 +1071,7 @@ public sealed class SyncControllerTests : IDisposable
             .IgnoreQueryFilters()
             .FirstAsync(x => x.Id == attachmentId);
         Assert.Equal(transaction.Id, storedAttachment.TransactionId);
-        Assert.False(storedAttachment.IsDeleted);
+        Assert.True(storedAttachment.IsDeleted);
     }
 
     public void Dispose()
