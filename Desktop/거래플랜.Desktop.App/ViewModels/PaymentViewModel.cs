@@ -256,6 +256,9 @@ public sealed partial class PaymentViewModel : ObservableObject
         OnPropertyChanged(nameof(CanEditHistory));
         OnPropertyChanged(nameof(CanDeleteHistory));
         AddAttachmentCommand.NotifyCanExecuteChanged();
+        EditHistoryCommand.NotifyCanExecuteChanged();
+        DeleteHistoryCommand.NotifyCanExecuteChanged();
+        CancelHistoryEditCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnSelectedTransactionKindChanged(string value)
@@ -276,6 +279,16 @@ public sealed partial class PaymentViewModel : ObservableObject
         RequestRefreshContext();
     }
 
+    partial void OnIsSavingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanEditHistory));
+        OnPropertyChanged(nameof(CanDeleteHistory));
+        OnPropertyChanged(nameof(CanCancelHistoryEdit));
+        EditHistoryCommand.NotifyCanExecuteChanged();
+        DeleteHistoryCommand.NotifyCanExecuteChanged();
+        CancelHistoryEditCommand.NotifyCanExecuteChanged();
+    }
+
     partial void OnSelectedAttachmentChanged(LocalTransactionAttachment? value)
     {
         DeleteAttachmentCommand.NotifyCanExecuteChanged();
@@ -291,6 +304,10 @@ public sealed partial class PaymentViewModel : ObservableObject
     partial void OnIsEditingHistoryChanged(bool value)
     {
         OnPropertyChanged(nameof(SaveButtonLabel));
+        OnPropertyChanged(nameof(CanCancelHistoryEdit));
+        EditHistoryCommand.NotifyCanExecuteChanged();
+        DeleteHistoryCommand.NotifyCanExecuteChanged();
+        CancelHistoryEditCommand.NotifyCanExecuteChanged();
     }
 
     private void RecalcReceipt()
@@ -1296,3 +1313,4 @@ public sealed partial class PaymentViewModel : ObservableObject
         StatusMessage = "최근 처리내역 수정 모드입니다.";
     }
 }
+
