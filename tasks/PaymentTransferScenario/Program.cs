@@ -342,6 +342,7 @@ internal static class Program
 
         Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", georaePlanRoot, EnvironmentVariableTarget.Process);
         Environment.SetEnvironmentVariable("GEORAEPLAN_DISABLE_LEGACY_MERGE", "1", EnvironmentVariableTarget.Process);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_DISABLE_SERVER_SYNC", "1", EnvironmentVariableTarget.Process);
         Environment.SetEnvironmentVariable("LOCALAPPDATA", localAppData, EnvironmentVariableTarget.Process);
 
         if (Directory.Exists(runtimeRoot))

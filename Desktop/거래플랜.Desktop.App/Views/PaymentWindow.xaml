@@ -552,10 +552,33 @@
                                        Foreground="#90CAF9"
                                        FontWeight="Bold"
                                        FontSize="16"/>
-                            <TextBlock Grid.Column="1"
-                                       Text="{Binding SelectedCustomer.NameOriginal, TargetNullValue=거래처를 선택하면 표시됩니다.}"
-                                       Foreground="#8EA6C4"
-                                       FontSize="12"/>
+                            <StackPanel Grid.Column="1"
+                                        Orientation="Horizontal"
+                                        VerticalAlignment="Center">
+                                <TextBlock Text="{Binding SelectedCustomer.NameOriginal, TargetNullValue=거래처를 선택하면 표시됩니다.}"
+                                           Foreground="#8EA6C4"
+                                           FontSize="12"
+                                           VerticalAlignment="Center"/>
+                                <Button Content="수정"
+                                        Style="{StaticResource BaseButtonStyle}"
+                                        MinWidth="68"
+                                        Margin="12,0,0,0"
+                                        IsEnabled="{Binding CanEditHistory}"
+                                        Command="{Binding EditHistoryCommand}"/>
+                                <Button Content="삭제"
+                                        Style="{StaticResource BaseButtonStyle}"
+                                        MinWidth="68"
+                                        Margin="8,0,0,0"
+                                        IsEnabled="{Binding CanDeleteHistory}"
+                                        Command="{Binding DeleteHistoryCommand}"/>
+                                <Button Content="수정 취소"
+                                        Style="{StaticResource BaseButtonStyle}"
+                                        MinWidth="88"
+                                        Margin="8,0,0,0"
+                                        Visibility="{Binding IsEditingHistory, Converter={StaticResource BoolToVisibility}}"
+                                        IsEnabled="{Binding CanCancelHistoryEdit}"
+                                        Command="{Binding CancelHistoryEditCommand}"/>
+                            </StackPanel>
                         </Grid>
 
                         <DataGrid Grid.Row="1"
@@ -704,7 +727,7 @@
                            Foreground="#A5D6A7"
                            TextWrapping="Wrap"/>
                 <Button Grid.Column="1"
-                        Content="저장"
+                        Content="{Binding SaveButtonLabel}"
                         Style="{StaticResource PrimaryButtonStyle}"
                         Command="{Binding SaveCommand}"/>
             </Grid>

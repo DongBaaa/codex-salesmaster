@@ -13,6 +13,7 @@ namespace 거래플랜.Desktop.App.Services;
 public sealed class SyncService : IDisposable
 {
     private const int MaxRetryCount = 3;
+    private const string DisableServerSyncEnvironmentKey = "GEORAEPLAN_DISABLE_SERVER_SYNC";
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DebouncedSyncDelay = TimeSpan.FromSeconds(15);
 
@@ -74,7 +75,7 @@ public sealed class SyncService : IDisposable
 
     public void Start(TimeSpan interval, bool runImmediately = false)
     {
-        if (_disposed)
+        if (_disposed || IsServerSyncDisabled())
             return;
 
         _timer?.Dispose();
@@ -90,12 +91,18 @@ public sealed class SyncService : IDisposable
     }
 
     public Task<bool> TrySyncAsync(CancellationToken ct = default)
-        => _disposed ? Task.FromResult(false) : StartSyncAsync(waitForRunningSync: false, ct);
+        => _disposed
+            ? Task.FromResult(false)
+            : IsServerSyncDisabled()
+                ? Task.FromResult(true)
+                : StartSyncAsync(waitForRunningSync: false, ct);
 
     public async Task<bool> FlushPendingChangesAsync(CancellationToken ct = default)
     {
         if (_disposed || !_session.IsLoggedIn)
             return false;
+        if (IsServerSyncDisabled())
+            return true;
 
         CancelPendingImmediateSync();
 
@@ -118,6 +125,8 @@ public sealed class SyncService : IDisposable
     {
         if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
             return false;
+        if (IsServerSyncDisabled())
+            return true;
 
         if (await _local.CountDirtyAsync(_session, ct) > 0)
             return false;
@@ -149,6 +158,8 @@ public sealed class SyncService : IDisposable
     {
         if (_disposed || !_session.IsLoggedIn)
             return Task.FromResult(false);
+        if (IsServerSyncDisabled())
+            return Task.FromResult(true);
 
         lock (_immediateSyncGate)
         {
@@ -1259,6 +1270,17 @@ public sealed class SyncService : IDisposable
             }
         }
         await _db.SaveChangesAsync(ct);
+    }
+
+    private static bool IsServerSyncDisabled()
+    {
+        var raw = Environment.GetEnvironmentVariable(DisableServerSyncEnvironmentKey);
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        return string.Equals(raw, "1", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(raw, "yes", StringComparison.OrdinalIgnoreCase);
     }
 
     public void Dispose()

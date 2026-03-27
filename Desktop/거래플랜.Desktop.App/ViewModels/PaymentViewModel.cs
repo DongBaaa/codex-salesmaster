@@ -18,8 +18,11 @@ public sealed partial class PaymentViewModel : ObservableObject
     private readonly LocalStateService _local;
     private readonly SessionState _session;
     private List<LocalCustomer> _allCustomers = new();
+    private LocalInvoice? _contextInvoice;
+    private LocalRentalBillingProfile? _contextRentalProfile;
     private LocalInvoice? _linkedInvoice;
     private LocalRentalBillingProfile? _linkedRentalProfile;
+    private Guid? _editingTransactionId;
     private bool _suppressTransactionKindChange;
     private int _historyLoadVersion;
     private int _attachmentLoadVersion;
@@ -58,6 +61,9 @@ public sealed partial class PaymentViewModel : ObservableObject
     [ObservableProperty] private string _selectedTransactionKind = PaymentFlowConstants.TransactionKindReceipt;
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SaveCommand))]
+    [NotifyCanExecuteChangedFor(nameof(EditHistoryCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteHistoryCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CancelHistoryEditCommand))]
     [NotifyCanExecuteChangedFor(nameof(AddAttachmentCommand))]
     [NotifyCanExecuteChangedFor(nameof(DeleteAttachmentCommand))]
     [NotifyCanExecuteChangedFor(nameof(VerifyAttachmentCommand))]
@@ -65,7 +71,15 @@ public sealed partial class PaymentViewModel : ObservableObject
     private bool _isSaving;
 
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(EditHistoryCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteHistoryCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CancelHistoryEditCommand))]
+    private bool _isEditingHistory;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanAddAttachment))]
+    [NotifyPropertyChangedFor(nameof(CanEditHistory))]
+    [NotifyPropertyChangedFor(nameof(CanDeleteHistory))]
     private LocalTransaction? _selectedHistory;
 
     [ObservableProperty]
@@ -101,6 +115,9 @@ public sealed partial class PaymentViewModel : ObservableObject
         (_linkedInvoice is not null && PaymentFlowConstants.IsGeneralSettlementKind(SelectedTransactionKind));
 
     public bool CanAddAttachment => SelectedHistory is not null;
+    public bool CanEditHistory => SelectedHistory is not null && !IsSaving;
+    public bool CanDeleteHistory => SelectedHistory is not null && !IsSaving;
+    public bool CanCancelHistoryEdit => IsEditingHistory && !IsSaving;
     public bool CanPreviewAttachment => SelectedAttachment is not null && File.Exists(SelectedAttachment.StoredPath);
     public bool CanDeleteAttachment =>
         SelectedAttachment is not null &&
@@ -108,6 +125,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     public bool CanVerifyAttachment => _session.HasAdministrativePrivileges && SelectedAttachment is not null;
     public bool CanRejectAttachment => _session.HasAdministrativePrivileges && SelectedAttachment is not null;
     public bool IsAdmin => _session.HasAdministrativePrivileges;
+    public string SaveButtonLabel => IsEditingHistory ? "수정 저장" : "저장";
 
     public PaymentViewModel(LocalStateService local, SessionState session)
     {
@@ -123,6 +141,11 @@ public sealed partial class PaymentViewModel : ObservableObject
     public async Task LoadAsync(LocalCustomer? preselect = null)
     {
         _allCustomers = await _local.GetCustomersAsync(_session);
+        _contextInvoice = null;
+        _contextRentalProfile = null;
+        _linkedInvoice = null;
+        _linkedRentalProfile = null;
+        IsCustomerSelectionLocked = false;
         if (preselect is not null)
             SetCustomer(preselect);
         else
@@ -154,6 +177,8 @@ public sealed partial class PaymentViewModel : ObservableObject
 
     public async Task ConfigureForInvoiceAsync(LocalInvoice invoice)
     {
+        _contextInvoice = invoice;
+        _contextRentalProfile = null;
         _linkedInvoice = invoice;
         _linkedRentalProfile = null;
         IsCustomerSelectionLocked = true;
@@ -174,6 +199,8 @@ public sealed partial class PaymentViewModel : ObservableObject
 
     public async Task ConfigureForRentalBillingAsync(LocalRentalBillingProfile profile, LocalCustomer? customer = null)
     {
+        _contextInvoice = null;
+        _contextRentalProfile = profile;
         _linkedInvoice = null;
         _linkedRentalProfile = profile;
         IsCustomerSelectionLocked = true;
@@ -196,6 +223,11 @@ public sealed partial class PaymentViewModel : ObservableObject
 
     public void NewEntry()
     {
+        _editingTransactionId = null;
+        IsEditingHistory = false;
+        _linkedInvoice = _contextInvoice;
+        _linkedRentalProfile = _contextRentalProfile;
+        IsCustomerSelectionLocked = _linkedInvoice is not null || _linkedRentalProfile is not null;
         ReceiptDate = PaymentDate = DateOnly.FromDateTime(DateTime.Today);
         CashReceipt = CardReceipt = BankReceipt = DiscountApplied = ReceiptTotal = 0m;
         CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
@@ -221,6 +253,8 @@ public sealed partial class PaymentViewModel : ObservableObject
     {
         RequestLoadAttachments(value?.Id ?? Guid.Empty);
         OnPropertyChanged(nameof(CanAddAttachment));
+        OnPropertyChanged(nameof(CanEditHistory));
+        OnPropertyChanged(nameof(CanDeleteHistory));
         AddAttachmentCommand.NotifyCanExecuteChanged();
     }
 
@@ -252,6 +286,11 @@ public sealed partial class PaymentViewModel : ObservableObject
     partial void OnIsCustomerSelectionLockedChanged(bool value)
     {
         OnPropertyChanged(nameof(CanSelectCustomer));
+    }
+
+    partial void OnIsEditingHistoryChanged(bool value)
+    {
+        OnPropertyChanged(nameof(SaveButtonLabel));
     }
 
     private void RecalcReceipt()
@@ -750,7 +789,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             var kind = PaymentFlowConstants.NormalizeTransactionKind(SelectedTransactionKind);
             var transaction = new LocalTransaction
             {
-                Id = Guid.NewGuid(),
+                Id = _editingTransactionId ?? Guid.NewGuid(),
                 CustomerId = SelectedCustomer.Id,
                 TransactionKind = kind,
                 LinkedInvoiceId = _linkedInvoice?.Id,
@@ -966,6 +1005,74 @@ public sealed partial class PaymentViewModel : ObservableObject
         }
     }
 
+    [RelayCommand(CanExecute = nameof(CanEditHistory))]
+    private async Task EditHistoryAsync()
+    {
+        if (SelectedHistory is null)
+        {
+            StatusMessage = "수정할 최근 처리내역을 선택하세요.";
+            return;
+        }
+
+        await LoadHistoryIntoEditorAsync(SelectedHistory);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanDeleteHistory))]
+    private async Task DeleteHistoryAsync()
+    {
+        if (SelectedHistory is null)
+        {
+            StatusMessage = "삭제할 최근 처리내역을 선택하세요.";
+            return;
+        }
+
+        var target = SelectedHistory;
+        var confirm = System.Windows.MessageBox.Show(
+            $"선택한 처리내역 '{target.TransactionDate:yyyy-MM-dd} / {target.TransactionKindDisplay}'을(를) 삭제하시겠습니까?",
+            "처리내역 삭제",
+            System.Windows.MessageBoxButton.YesNo,
+            System.Windows.MessageBoxImage.Warning);
+
+        if (confirm != System.Windows.MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            IsSaving = true;
+
+            var result = await _local.DeleteTransactionAsync(target.Id, _session);
+            if (!result.Success)
+            {
+                StatusMessage = result.Message;
+                return;
+            }
+
+            if (SelectedCustomer is not null)
+            {
+                await LoadHistoryAsync(SelectedCustomer.Id, Interlocked.Increment(ref _historyLoadVersion));
+                SelectedHistory = null;
+            }
+
+            if (_editingTransactionId == target.Id)
+                NewEntry();
+
+            var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+            StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
+            await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
+        }
+        finally
+        {
+            IsSaving = false;
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanCancelHistoryEdit))]
+    private void CancelHistoryEdit()
+    {
+        NewEntry();
+        StatusMessage = "최근 처리내역 수정이 취소되었습니다.";
+    }
+
     private bool CanAddAttachmentAction() => !IsSaving && SelectedHistory is not null;
 
     [RelayCommand(CanExecute = nameof(CanAddAttachmentAction))]
@@ -1107,5 +1214,85 @@ public sealed partial class PaymentViewModel : ObservableObject
             await LoadAttachmentsAsync(SelectedHistory.Id, Interlocked.Increment(ref _attachmentLoadVersion));
             SelectedAttachment = Attachments.FirstOrDefault(current => current.Id == selectedAttachmentId);
         }
+    }
+
+    private async Task LoadHistoryIntoEditorAsync(LocalTransaction history)
+    {
+        if (history is null)
+            return;
+
+        var customer = _allCustomers.FirstOrDefault(current => current.Id == history.CustomerId)
+            ?? await _local.GetCustomerAsync(history.CustomerId, _session);
+        if (customer is null)
+        {
+            StatusMessage = "연결된 거래처를 찾을 수 없어 처리내역을 수정할 수 없습니다.";
+            return;
+        }
+
+        LocalInvoice? editInvoice = null;
+        if (history.LinkedInvoiceId.HasValue && history.LinkedInvoiceId.Value != Guid.Empty)
+        {
+            editInvoice = await _local.GetInvoiceAsync(history.LinkedInvoiceId.Value, _session);
+            if (editInvoice is null)
+            {
+                StatusMessage = "연결 전표를 찾을 수 없어 이 처리내역은 수정할 수 없습니다.";
+                return;
+            }
+        }
+
+        LocalRentalBillingProfile? editRentalProfile = null;
+        if (history.LinkedRentalBillingProfileId.HasValue && history.LinkedRentalBillingProfileId.Value != Guid.Empty)
+        {
+            editRentalProfile = await _local.GetRentalBillingProfileAsync(history.LinkedRentalBillingProfileId.Value, _session);
+            if (editRentalProfile is null)
+            {
+                StatusMessage = "연결 렌탈 청구건을 찾을 수 없어 이 처리내역은 수정할 수 없습니다.";
+                return;
+            }
+        }
+
+        if (SelectedCustomer?.Id != customer.Id)
+            SetCustomer(customer);
+
+        _editingTransactionId = history.Id;
+        _linkedInvoice = editInvoice;
+        _linkedRentalProfile = editRentalProfile;
+        IsCustomerSelectionLocked = editInvoice is not null || editRentalProfile is not null || _contextInvoice is not null || _contextRentalProfile is not null;
+
+        var normalizedKind = PaymentFlowConstants.NormalizeTransactionKind(
+            history.TransactionKind,
+            preferPayment: history.PaymentTotal > 0m && history.ReceiptTotal <= 0m);
+
+        _suppressTransactionKindChange = true;
+        try
+        {
+            RebuildTransactionKinds(normalizedKind);
+            SelectedTransactionKind = normalizedKind;
+            ReceiptDate = history.TransactionDate;
+            PaymentDate = history.TransactionDate;
+            CashReceipt = history.CashReceipt;
+            CardReceipt = history.CardReceipt;
+            BankReceipt = history.BankReceipt;
+            DiscountApplied = history.DiscountApplied;
+            CashPayment = history.CashPayment;
+            CardPayment = history.CardPayment;
+            BankPayment = history.BankPayment;
+            DiscountReceived = history.DiscountReceived;
+            SettlementAmount = history.SettlementAmount;
+            Note = history.Note;
+            Memo = history.Memo;
+        }
+        finally
+        {
+            _suppressTransactionKindChange = false;
+        }
+
+        IsEditingHistory = true;
+        ResetAttachmentEditor();
+        OnPropertyChanged(nameof(PaymentActionLabel));
+        OnPropertyChanged(nameof(ReserveBalanceLabelText));
+        OnPropertyChanged(nameof(IsSettlementAmountEnabled));
+        await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
+        StatusMessage = "최근 처리내역 수정 모드입니다.";
     }
 }

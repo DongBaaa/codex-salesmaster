@@ -3247,6 +3247,20 @@ public sealed partial class LocalStateService
         };
     }
 
+    public async Task<LocalRentalBillingProfile?> GetRentalBillingProfileAsync(
+        Guid billingProfileId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var profile = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+        return profile is null || !CanAccessRentalProfile(profile, session)
+            ? null
+            : profile;
+    }
+
     public async Task<LocalTransaction> SaveTransactionAsync(LocalTransaction transaction, CancellationToken ct = default)
     {
         transaction.IsDirty = true;
@@ -3478,6 +3492,87 @@ public sealed partial class LocalStateService
         }
 
         return OfficeMutationResult.Ok(transaction.Id, "수금/지급을 저장했습니다.");
+    }
+
+    public async Task<OfficeMutationResult> DeleteTransactionAsync(
+        Guid transactionId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var transaction = await _db.Transactions
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == transactionId, ct);
+        if (transaction is null)
+            return OfficeMutationResult.Missing("수금/지급 내역을 찾을 수 없습니다.");
+
+        var customer = await _db.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == transaction.CustomerId, ct);
+        var customerOfficeCode = NormalizeOfficeScope(
+            customer?.ResponsibleOfficeCode,
+            NormalizeOfficeScope(transaction.ResponsibleOfficeCode, DomainConstants.OfficeUsenet));
+        if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, customerOfficeCode))
+            return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 내역을 삭제할 수 없습니다.");
+
+        var attachments = await _db.TransactionAttachments
+            .IgnoreQueryFilters()
+            .Where(current => current.TransactionId == transactionId)
+            .ToListAsync(ct);
+
+        if (!session.HasAdministrativePrivileges &&
+            attachments.Any(current => !current.IsDeleted && string.Equals(current.VerificationStatus, "확인완료", StringComparison.OrdinalIgnoreCase)))
+        {
+            return OfficeMutationResult.Denied("확인완료된 증빙이 있는 수금/지급 내역은 관리자만 삭제할 수 있습니다.");
+        }
+
+        var previousLinkedRentalId = transaction.LinkedRentalBillingProfileId;
+        var now = DateTime.UtcNow;
+
+        transaction.IsDeleted = true;
+        transaction.IsDirty = true;
+        transaction.UpdatedAtUtc = now;
+
+        foreach (var attachment in attachments)
+        {
+            attachment.IsDeleted = true;
+            attachment.IsDirty = true;
+            attachment.UpdatedAtUtc = now;
+        }
+
+        _db.AuditLogs.Add(new LocalAuditLog
+        {
+            EntityName = nameof(LocalTransaction),
+            EntityId = transaction.Id.ToString("D"),
+            Action = "Delete",
+            Username = session.User?.Username ?? "local-user",
+            Role = session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = session.OfficeCode,
+            BeforeJson = JsonSerializer.Serialize(new
+            {
+                transaction.CustomerId,
+                transaction.TransactionDate,
+                transaction.TransactionKind,
+                transaction.LinkedInvoiceId,
+                transaction.LinkedRentalBillingProfileId,
+                transaction.ReceiptTotal,
+                transaction.PaymentTotal,
+                transaction.SettlementAmount,
+                transaction.Note,
+                transaction.Memo
+            }, AuditJsonOptions),
+            AfterJson = string.Empty,
+            CreatedAtUtc = now
+        });
+
+        await _db.SaveChangesAsync(ct);
+
+        await RemoveLinkedInvoicePaymentAsync(transactionId, ct);
+
+        if (previousLinkedRentalId.HasValue && previousLinkedRentalId.Value != Guid.Empty)
+            await RecalculateRentalSettlementAsync(previousLinkedRentalId.Value, ct);
+
+        return OfficeMutationResult.Ok(transactionId, "수금/지급 내역을 삭제했습니다.");
     }
 
     private static string NormalizeLinkedInvoiceTransactionKind(string? transactionKind, bool preferPayment)

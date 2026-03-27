@@ -11,6 +11,7 @@ public enum SyncRequestMode
 /// </summary>
 public sealed class SyncRequestDispatcher
 {
+    private const string DisableServerSyncEnvironmentKey = "GEORAEPLAN_DISABLE_SERVER_SYNC";
     private readonly object _gate = new();
     private TaskCompletionSource<bool>? _pendingSync;
     private SyncRequestMode _pendingMode = SyncRequestMode.Debounced;
@@ -19,6 +20,12 @@ public sealed class SyncRequestDispatcher
 
     public void RequestDebouncedSync()
     {
+        if (IsServerSyncDisabled())
+        {
+            CompleteSync(false);
+            return;
+        }
+
         lock (_gate)
         {
             _pendingSync ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -31,6 +38,12 @@ public sealed class SyncRequestDispatcher
 
     public void RequestFlushSync()
     {
+        if (IsServerSyncDisabled())
+        {
+            CompleteSync(false);
+            return;
+        }
+
         lock (_gate)
         {
             _pendingSync ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -67,5 +80,16 @@ public sealed class SyncRequestDispatcher
         }
 
         pending?.TrySetResult(succeeded);
+    }
+
+    private static bool IsServerSyncDisabled()
+    {
+        var raw = Environment.GetEnvironmentVariable(DisableServerSyncEnvironmentKey);
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        return string.Equals(raw, "1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(raw, "yes", StringComparison.OrdinalIgnoreCase);
     }
 }

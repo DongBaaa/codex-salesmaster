@@ -184,55 +184,14 @@
 
         <Border DockPanel.Dock="Top" Background="#122038" Padding="12,10" BorderBrush="#2E4060" BorderThickness="0,0,0,1">
             <UniformGrid Columns="9">
-                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
-                    <StackPanel>
-                        <TextBlock Text="이번달 매출" Foreground="#9FB3C8" FontSize="11"/>
-                        <TextBlock Text="{Binding DashboardMonthlySales, StringFormat={}{0:N0} 원}" Foreground="#4FC3F7" FontWeight="Bold" FontSize="17"/>
-                        <TextBlock Text="{Binding DashboardSalesTrendPercent, StringFormat=전월 대비 {0:+0.0;-0.0;0.0}%}" Foreground="#90CAF9" FontSize="10" Margin="0,2,0,0"/>
-                    </StackPanel>
-                </Border>
-                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
-                    <StackPanel>
-                        <TextBlock Text="미수금" Foreground="#9FB3C8" FontSize="11"/>
-                        <TextBlock Text="{Binding DashboardReceivable, StringFormat={}{0:N0} 원}" Foreground="#EF9A9A" FontWeight="Bold" FontSize="17"/>
-                    </StackPanel>
-                </Border>
-                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
-                    <StackPanel>
-                        <TextBlock Text="미지불" Foreground="#9FB3C8" FontSize="11"/>
-                        <TextBlock Text="{Binding DashboardPayable, StringFormat={}{0:N0} 원}" Foreground="#FFCC80" FontWeight="Bold" FontSize="17"/>
-                    </StackPanel>
-                </Border>
-                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
-                    <StackPanel>
-                        <TextBlock Text="거래처 수" Foreground="#9FB3C8" FontSize="11"/>
-                        <TextBlock Text="{Binding DashboardCustomerCount, StringFormat={}{0:N0} 곳}" Foreground="White" FontWeight="Bold" FontSize="17"/>
-                    </StackPanel>
-                </Border>
-                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
-                    <StackPanel>
-                        <TextBlock Text="안전재고 경고" Foreground="#9FB3C8" FontSize="11"/>
-                        <TextBlock Text="{Binding DashboardSafetyStockAlerts, StringFormat={}{0:N0} 건}" Foreground="#EF9A9A" FontWeight="Bold" FontSize="17"/>
-                    </StackPanel>
-                </Border>
-                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
-                    <StackPanel>
-                        <TextBlock Text="월 전표수" Foreground="#9FB3C8" FontSize="11"/>
-                        <TextBlock Text="{Binding DashboardMonthlyInvoiceCount, StringFormat={}{0:N0} 건}" Foreground="#A5D6A7" FontWeight="Bold" FontSize="17"/>
-                    </StackPanel>
-                </Border>
-                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
-                    <StackPanel>
-                        <TextBlock Text="월 평균 전표" Foreground="#9FB3C8" FontSize="11"/>
-                        <TextBlock Text="{Binding DashboardMonthlyAverageSales, StringFormat={}{0:N0} 원}" Foreground="#90CAF9" FontWeight="Bold" FontSize="17"/>
-                    </StackPanel>
-                </Border>
-                <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
-                    <StackPanel>
-                        <TextBlock Text="렌탈 오늘" Foreground="#9FB3C8" FontSize="11"/>
-                        <TextBlock Text="{Binding DashboardRentalDueTodayCount, StringFormat={}{0:N0} 건}" Foreground="#4FC3F7" FontWeight="Bold" FontSize="17"/>
-                    </StackPanel>
-                </Border>
+                <Border Background="Transparent" Margin="0,0,8,0" CornerRadius="6" Padding="10"/>
+                <Border Background="Transparent" Margin="0,0,8,0" CornerRadius="6" Padding="10"/>
+                <Border Background="Transparent" Margin="0,0,8,0" CornerRadius="6" Padding="10"/>
+                <Border Background="Transparent" Margin="0,0,8,0" CornerRadius="6" Padding="10"/>
+                <Border Background="Transparent" Margin="0,0,8,0" CornerRadius="6" Padding="10"/>
+                <Border Background="Transparent" Margin="0,0,8,0" CornerRadius="6" Padding="10"/>
+                <Border Background="Transparent" Margin="0,0,8,0" CornerRadius="6" Padding="10"/>
+                <Border Background="Transparent" Margin="0,0,8,0" CornerRadius="6" Padding="10"/>
                 <Border Background="#1A2B4A" CornerRadius="6" Padding="10">
                     <StackPanel>
                         <TextBlock Text="렌탈 예정 / 지연" Foreground="#9FB3C8" FontSize="11"/>
