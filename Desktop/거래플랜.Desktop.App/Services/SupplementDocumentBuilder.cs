@@ -269,7 +269,7 @@ public static class SupplementDocumentBuilder
         return BuildCenteredSinglePageDocument(grid);
     }
 
-    public static IDocumentPaginatorSource MergeDocuments(IEnumerable<FixedDocument> documents)
+    public static FixedDocument MergeDocuments(IEnumerable<FixedDocument> documents)
     {
         var list = documents?.Where(d => d is not null).ToList() ?? [];
         if (list.Count == 0)
@@ -277,7 +277,21 @@ public static class SupplementDocumentBuilder
         if (list.Count == 1)
             return list[0];
 
-        return new CombinedDocumentPaginatorSource(list);
+        var merged = new FixedDocument();
+        merged.DocumentPaginator.PageSize = ResolveMergedPageSize(list);
+
+        foreach (var document in list)
+        {
+            for (var pageIndex = 0; pageIndex < document.Pages.Count; pageIndex++)
+            {
+                var clonedPage = CloneFixedPage(GetFixedPage(document, pageIndex));
+                var pageContent = new PageContent();
+                ((IAddChild)pageContent).AddChild(clonedPage);
+                merged.Pages.Add(pageContent);
+            }
+        }
+
+        return merged;
     }
 
     public static FixedDocument BuildAttachmentPlaceholderDocument(string title)
@@ -414,6 +428,46 @@ public static class SupplementDocumentBuilder
         page.UpdateLayout();
 
         return page;
+    }
+
+    private static FixedPage GetFixedPage(FixedDocument document, int pageIndex)
+    {
+        var page = document.DocumentPaginator.GetPage(pageIndex);
+        if (page.Visual is FixedPage fixedPage)
+            return fixedPage;
+
+        throw new InvalidOperationException("병합할 문서 페이지를 불러오지 못했습니다.");
+    }
+
+    private static FixedPage CloneFixedPage(FixedPage sourcePage)
+    {
+        ArgumentNullException.ThrowIfNull(sourcePage);
+
+        using var stream = new MemoryStream();
+        XamlWriter.Save(sourcePage, stream);
+        stream.Position = 0;
+
+        if (XamlReader.Load(stream) is not FixedPage clonedPage)
+            throw new InvalidOperationException("인쇄 문서 페이지 복제에 실패했습니다.");
+
+        clonedPage.Width = sourcePage.Width;
+        clonedPage.Height = sourcePage.Height;
+        clonedPage.Measure(new Size(sourcePage.Width, sourcePage.Height));
+        clonedPage.Arrange(new Rect(0, 0, sourcePage.Width, sourcePage.Height));
+        clonedPage.UpdateLayout();
+        return clonedPage;
+    }
+
+    private static Size ResolveMergedPageSize(IReadOnlyList<FixedDocument> documents)
+    {
+        foreach (var document in documents)
+        {
+            var pageSize = document.DocumentPaginator.PageSize;
+            if (pageSize.Width > 0 && pageSize.Height > 0)
+                return pageSize;
+        }
+
+        return new Size(A4Width, A4Height);
     }
 
     private static void AddFooterRow(Grid grid, int row, LocalCompanyProfile company)

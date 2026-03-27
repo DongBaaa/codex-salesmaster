@@ -187,6 +187,7 @@ public partial class SalesWindow : Window
 
             e.Cancel = true;
             _closeInProgress = true;
+            var requestDeferredClose = false;
             var previousCursor = Mouse.OverrideCursor;
             try
             {
@@ -207,26 +208,27 @@ public partial class SalesWindow : Window
                 if (saved)
                 {
                     _allowCloseWithoutSave = true;
-                    DialogWindowCloseHelper.Close(this);
-                    return;
+                    requestDeferredClose = true;
                 }
-
-                var failureMessage = string.IsNullOrWhiteSpace(_vm.LastAutoSaveFailureMessage)
-                    ? "자동저장에 실패했습니다."
-                    : _vm.LastAutoSaveFailureMessage;
-
-                AppLogger.Warn("AUTOSAVE", $"Sales window close auto-save did not complete successfully. {failureMessage}");
-
-                var discard = MessageBox.Show(
-                    $"{failureMessage}\n\n저장되지 않은 변경사항이 있습니다. 저장 없이 닫을까요?",
-                    "확인",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Warning);
-
-                if (discard == MessageBoxResult.Yes)
+                else
                 {
-                    _allowCloseWithoutSave = true;
-                    DialogWindowCloseHelper.Close(this);
+                    var failureMessage = string.IsNullOrWhiteSpace(_vm.LastAutoSaveFailureMessage)
+                        ? "자동저장에 실패했습니다."
+                        : _vm.LastAutoSaveFailureMessage;
+
+                    AppLogger.Warn("AUTOSAVE", $"Sales window close auto-save did not complete successfully. {failureMessage}");
+
+                    var discard = MessageBox.Show(
+                        $"{failureMessage}\n\n저장되지 않은 변경사항이 있습니다. 저장 없이 닫을까요?",
+                        "확인",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Warning);
+
+                    if (discard == MessageBoxResult.Yes)
+                    {
+                        _allowCloseWithoutSave = true;
+                        requestDeferredClose = true;
+                    }
                 }
             }
             finally
@@ -236,6 +238,9 @@ public partial class SalesWindow : Window
                     IsEnabled = true;
                 _closeInProgress = false;
             }
+
+            if (requestDeferredClose)
+                _ = Dispatcher.BeginInvoke(new Action(() => DialogWindowCloseHelper.Close(this)));
         }
         catch (Exception ex)
         {
