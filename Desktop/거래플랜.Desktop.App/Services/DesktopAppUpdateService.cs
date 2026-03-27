@@ -10,6 +10,7 @@ public sealed class DesktopAppUpdateService
 {
     private const long MinimumUpdaterWorkBytes = 512L * 1024 * 1024;
     private const long InstallBufferBytes = 256L * 1024 * 1024;
+    private static readonly TimeSpan UpdateArtifactRetention = TimeSpan.FromDays(3);
 
     private readonly ErpApiClient _api;
 
@@ -109,6 +110,7 @@ public sealed class DesktopAppUpdateService
 
         var installRoot = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         EnsureSufficientDiskSpace(package.FileSize, installRoot);
+        TryCleanupStaleUpdateArtifacts();
 
         var arguments = string.Join(" ", new[]
         {
@@ -282,5 +284,35 @@ public sealed class DesktopAppUpdateService
         }
 
         return $"{value:0.##} {units[unitIndex]}";
+    }
+
+    public static void TryCleanupStaleUpdateArtifacts()
+    {
+        var georaePlanTempRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan");
+        TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "updates"));
+        TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "updater-run"));
+    }
+
+    private static void TryCleanupChildDirectories(string rootPath)
+    {
+        if (!Directory.Exists(rootPath))
+            return;
+
+        var cutoffUtc = DateTime.UtcNow - UpdateArtifactRetention;
+        foreach (var directory in Directory.EnumerateDirectories(rootPath))
+        {
+            try
+            {
+                var lastWriteUtc = Directory.GetLastWriteTimeUtc(directory);
+                if (lastWriteUtc > cutoffUtc)
+                    continue;
+
+                Directory.Delete(directory, recursive: true);
+            }
+            catch
+            {
+                // 업데이트 캐시 정리 실패가 실제 업데이트 동작을 막지 않도록 무시
+            }
+        }
     }
 }

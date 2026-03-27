@@ -41,6 +41,8 @@ public partial class App : Application
 
         try
         {
+            DesktopAppUpdateService.TryCleanupStaleUpdateArtifacts();
+
             var config = new ConfigurationBuilder()
                 .SetBasePath(AppContext.BaseDirectory)
                 .AddJsonFile("appsettings.json", optional: false)

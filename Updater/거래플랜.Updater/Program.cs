@@ -13,6 +13,7 @@ internal static class Program
 {
     private const long MinimumUpdaterWorkBytes = 512L * 1024 * 1024;
     private const long InstallBufferBytes = 256L * 1024 * 1024;
+    private static readonly TimeSpan UpdateArtifactRetention = TimeSpan.FromDays(3);
 
     private static string? _sessionLogPath;
 
@@ -59,6 +60,8 @@ internal static class Program
 
     private static async Task ExecuteAsync(UpdateArguments options, UpdateProgressWindow window)
     {
+        TryCleanupStaleUpdateArtifacts();
+
         var workRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan", "updates", DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         Directory.CreateDirectory(workRoot);
         _sessionLogPath = Path.Combine(workRoot, "update.log");
@@ -109,6 +112,7 @@ internal static class Program
             });
         }
 
+        SchedulePostExitCleanup(workRoot, GetCurrentUpdaterStagingRoot());
         TryLog("SUCCESS");
     }
 
@@ -356,6 +360,90 @@ internal static class Program
         catch
         {
             // ignore logging failures
+        }
+    }
+
+    private static void TryCleanupStaleUpdateArtifacts()
+    {
+        var georaePlanTempRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan");
+        TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "updates"));
+        TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "updater-run"));
+    }
+
+    private static void TryCleanupChildDirectories(string rootPath)
+    {
+        if (!Directory.Exists(rootPath))
+            return;
+
+        var cutoffUtc = DateTime.UtcNow - UpdateArtifactRetention;
+        foreach (var directory in Directory.EnumerateDirectories(rootPath))
+        {
+            try
+            {
+                var lastWriteUtc = Directory.GetLastWriteTimeUtc(directory);
+                if (lastWriteUtc > cutoffUtc)
+                    continue;
+
+                Directory.Delete(directory, recursive: true);
+            }
+            catch
+            {
+                // 다음 실행에서 다시 정리 시도
+            }
+        }
+    }
+
+    private static string? GetCurrentUpdaterStagingRoot()
+    {
+        var processPath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(processPath))
+            return null;
+
+        var currentDirectory = Path.GetDirectoryName(processPath);
+        if (string.IsNullOrWhiteSpace(currentDirectory))
+            return null;
+
+        var parentDirectory = Directory.GetParent(currentDirectory);
+        if (parentDirectory is null || !string.Equals(parentDirectory.Name, "updater-run", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var expectedRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan").TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var actualRoot = parentDirectory.Parent?.FullName?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (!string.Equals(actualRoot, expectedRoot, StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        return currentDirectory;
+    }
+
+    private static void SchedulePostExitCleanup(params string?[] directoryPaths)
+    {
+        var targets = directoryPaths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => Path.GetFullPath(path!))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (targets.Length == 0)
+            return;
+
+        try
+        {
+            var arguments = "/c ping 127.0.0.1 -n 6 > nul";
+            foreach (var target in targets)
+                arguments += $" & rmdir /s /q {QuoteArgument(target)}";
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = arguments,
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                WindowStyle = ProcessWindowStyle.Hidden
+            });
+        }
+        catch (Exception ex)
+        {
+            TryLog($"CLEANUP-SCHEDULE failed {ex.Message}");
         }
     }
 
