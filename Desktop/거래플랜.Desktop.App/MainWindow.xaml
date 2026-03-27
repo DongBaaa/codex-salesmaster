@@ -485,6 +485,13 @@
                                                 <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding PreviewCustomerPrepaymentBalance, StringFormat={}{0:N0}원}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
                                             </Grid>
                                         </Border>
+                                        <Button Content="계약서 보기"
+                                                Margin="0,10,0,0"
+                                                HorizontalAlignment="Stretch"
+                                                Background="#355C7D"
+                                                Command="{Binding OpenPreviewCustomerContractCommand}"
+                                                IsEnabled="{Binding HasPreviewCustomerContract}"
+                                                ToolTip="{Binding PreviewCustomerContractButtonToolTip}"/>
                                     </StackPanel>
                                 </ScrollViewer>
                             </DockPanel>

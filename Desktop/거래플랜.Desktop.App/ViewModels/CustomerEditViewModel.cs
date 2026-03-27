@@ -259,22 +259,15 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             return;
         }
 
-        if (contract.FileContent is null || contract.FileContent.Length == 0)
+        try
         {
-            StatusMessage = "계약서 PDF 내용이 없습니다. 동기화 상태를 확인해주세요.";
-            return;
+            CustomerContractPreviewService.Open(contract);
+            StatusMessage = "계약서 PDF를 열었습니다.";
         }
-
-        var previewPath = BuildContractPreviewPath(contract);
-        Directory.CreateDirectory(Path.GetDirectoryName(previewPath)!);
-        File.WriteAllBytes(previewPath, contract.FileContent);
-
-        Process.Start(new ProcessStartInfo(previewPath)
+        catch (Exception ex)
         {
-            UseShellExecute = true
-        });
-
-        StatusMessage = "계약서 PDF를 열었습니다.";
+            StatusMessage = $"계약서를 열지 못했습니다. {ex.Message}";
+        }
     }
 
     [RelayCommand]
@@ -406,23 +399,6 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         ContractExpireDate = null;
         ContractDescription = string.Empty;
         NewContractIsPrimary = makePrimary;
-    }
-
-    private static string BuildContractPreviewPath(LocalCustomerContract contract)
-    {
-        var previewDir = Path.Combine(AppPaths.CustomerContractPreviewDir, contract.CustomerId.ToString("N"));
-        var extension = string.IsNullOrWhiteSpace(Path.GetExtension(contract.FileName))
-            ? ".pdf"
-            : Path.GetExtension(contract.FileName);
-        var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(contract.FileName);
-        if (string.IsNullOrWhiteSpace(fileNameWithoutExtension))
-            fileNameWithoutExtension = "customer-contract";
-
-        var safeBaseName = new string(fileNameWithoutExtension.Where(ch => !Path.GetInvalidFileNameChars().Contains(ch)).ToArray());
-        if (string.IsNullOrWhiteSpace(safeBaseName))
-            safeBaseName = "customer-contract";
-
-        return Path.Combine(previewDir, $"{safeBaseName}_{contract.Id:N}{extension}");
     }
 
     private static string NormalizeOfficeCode(string? officeCode)

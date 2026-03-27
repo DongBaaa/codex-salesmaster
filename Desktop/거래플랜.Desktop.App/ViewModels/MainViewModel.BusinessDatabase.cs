@@ -59,6 +59,7 @@ public sealed partial class MainViewModel
         PreviewCustomerNotes = string.Empty;
         PreviewCustomerDepartment = string.Empty;
         PreviewCustomerContactPerson = string.Empty;
+        PreviewCustomerContract = null;
         PreviewCustomerAdvanceBalance = 0m;
         PreviewCustomerReceivableBalance = 0m;
         PreviewCustomerPayableBalance = 0m;

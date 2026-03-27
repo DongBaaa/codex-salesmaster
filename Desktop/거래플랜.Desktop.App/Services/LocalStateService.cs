@@ -383,6 +383,14 @@ public sealed partial class LocalStateService
             .ToListAsync(ct);
     }
 
+    public async Task<LocalCustomerContract?> GetPreferredCustomerContractAsync(
+        Guid customerId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        return (await GetCustomerContractsAsync(customerId, session, ct)).FirstOrDefault();
+    }
+
     public async Task<Dictionary<Guid, CustomerContractSummaryItem>> GetCustomerContractSummaryMapAsync(
         SessionState session,
         int alertWindowDays = 30,

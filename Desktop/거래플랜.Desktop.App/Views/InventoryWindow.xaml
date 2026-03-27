@@ -225,7 +225,7 @@
 
         <Grid>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="400" MinWidth="340"/>
+                <ColumnDefinition Width="450" MinWidth="380"/>
                 <ColumnDefinition Width="5"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
@@ -236,11 +236,11 @@
                       IsReadOnly="True"
                       BorderThickness="0">
                 <DataGrid.Columns>
-                    <DataGridTextColumn Header="품목명" Binding="{Binding NameOriginal}" Width="*"/>
-                    <DataGridTextColumn Header="운영유형" Binding="{Binding ItemKind}" Width="92"/>
-                    <DataGridTextColumn Header="재고방식" Binding="{Binding TrackingType}" Width="72"/>
-                    <DataGridTextColumn Header="규격" Binding="{Binding SpecificationOriginal}" Width="118"/>
-                    <DataGridTextColumn Header="선택 재고" Binding="{Binding DisplayedQuantity, StringFormat=N0}" Width="74"/>
+                    <DataGridTextColumn Header="품목명" Binding="{Binding NameOriginal}" Width="2.25*" MinWidth="210"/>
+                    <DataGridTextColumn Header="규격" Binding="{Binding SpecificationOriginal}" Width="1.2*" MinWidth="116"/>
+                    <DataGridTextColumn Header="운영유형" Binding="{Binding ItemKind}" Width="78"/>
+                    <DataGridTextColumn Header="재고방식" Binding="{Binding TrackingType}" Width="68"/>
+                    <DataGridTextColumn Header="선택 재고" Binding="{Binding DisplayedQuantity, StringFormat=N0}" Width="64"/>
                 </DataGrid.Columns>
             </DataGrid>
 

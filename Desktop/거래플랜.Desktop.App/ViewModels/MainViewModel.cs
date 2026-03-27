@@ -351,6 +351,7 @@ public sealed partial class MainViewModel : ObservableObject
         finally { _suppressCustomerSave = false; }
 
         RequestRefreshCustomerFinancialPreview(value);
+        RequestRefreshPreviewCustomerContract(value);
         HandleInvoiceFilterChanged();
     }
 
@@ -490,7 +491,10 @@ public sealed partial class MainViewModel : ObservableObject
         if (row is null)
         {
             if (SelectedCustomerFilter is null)
+            {
                 await RefreshCustomerFinancialPreviewAsync(null);
+                RequestRefreshPreviewCustomerContract(null);
+            }
             return;
         }
 
@@ -536,10 +540,12 @@ public sealed partial class MainViewModel : ObservableObject
                 finally { _suppressCustomerSave = false; }
 
                 await RefreshCustomerFinancialPreviewAsync(customer);
+                RequestRefreshPreviewCustomerContract(customer);
             }
             else
             {
                 await RefreshCustomerFinancialPreviewAsync(null);
+                RequestRefreshPreviewCustomerContract(null);
             }
         }
     }
