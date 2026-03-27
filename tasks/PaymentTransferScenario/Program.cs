@@ -336,15 +336,22 @@ internal static class Program
 
     private static void PrepareIsolatedLocalAppData()
     {
-        var localAppData = Path.Combine(AppContext.BaseDirectory, "LocalAppData");
+        var runtimeRoot = Path.Combine(AppContext.BaseDirectory, "runtime", "isolated-payment-transfer-scenario");
+        var localAppData = Path.Combine(runtimeRoot, "LocalAppData");
+        var georaePlanRoot = Path.Combine(runtimeRoot, "거래플랜");
+
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", georaePlanRoot, EnvironmentVariableTarget.Process);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_DISABLE_LEGACY_MERGE", "1", EnvironmentVariableTarget.Process);
         Environment.SetEnvironmentVariable("LOCALAPPDATA", localAppData, EnvironmentVariableTarget.Process);
 
-        var georaePlanRoot = Path.Combine(localAppData, "거래플랜");
+        if (Directory.Exists(runtimeRoot))
+            Directory.Delete(runtimeRoot, recursive: true);
+
         if (Directory.Exists(georaePlanRoot))
             Directory.Delete(georaePlanRoot, recursive: true);
 
         Directory.CreateDirectory(localAppData);
-        Directory.CreateDirectory(Path.GetDirectoryName(AppPaths.LocalDbFile)!);
+        Directory.CreateDirectory(georaePlanRoot);
     }
 
     private static SessionState BuildAdminSession(string username, string officeCode)

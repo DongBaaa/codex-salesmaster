@@ -4,13 +4,14 @@ namespace 거래플랜.Desktop.App.Infrastructure;
 
 public static class AppPaths
 {
+    private const string AppRootOverrideEnvironmentKey = "GEORAEPLAN_APP_ROOT";
+    private const string DisableLegacyMergeEnvironmentKey = "GEORAEPLAN_DISABLE_LEGACY_MERGE";
+
     private static readonly string _legacyBase = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "SalesMaster");
 
-    private static readonly string _base = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "거래플랜");
+    private static readonly string _base = ResolveBaseDirectory();
 
     public static string DataDir { get; } = Path.Combine(_base, "data");
     public static string BackupDir { get; } = Path.Combine(_base, "backup");
@@ -24,7 +25,9 @@ public static class AppPaths
 
     static AppPaths()
     {
-        MergeLegacyDataIfNeeded();
+        if (!IsLegacyMergeDisabled())
+            MergeLegacyDataIfNeeded();
+
         Directory.CreateDirectory(DataDir);
         Directory.CreateDirectory(BackupDir);
         Directory.CreateDirectory(TempDir);
@@ -33,6 +36,28 @@ public static class AppPaths
         Directory.CreateDirectory(AttachmentsDir);
         Directory.CreateDirectory(CustomerContractPreviewDir);
         Directory.CreateDirectory(TransactionAttachmentsDir);
+    }
+
+    private static string ResolveBaseDirectory()
+    {
+        var overridePath = Environment.GetEnvironmentVariable(AppRootOverrideEnvironmentKey);
+        if (!string.IsNullOrWhiteSpace(overridePath))
+            return Path.GetFullPath(overridePath);
+
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "거래플랜");
+    }
+
+    private static bool IsLegacyMergeDisabled()
+    {
+        var raw = Environment.GetEnvironmentVariable(DisableLegacyMergeEnvironmentKey);
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        return string.Equals(raw, "1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(raw, "yes", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void MergeLegacyDataIfNeeded()

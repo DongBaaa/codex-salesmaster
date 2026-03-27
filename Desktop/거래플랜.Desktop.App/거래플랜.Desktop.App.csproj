@@ -27,8 +27,8 @@
     <AssemblyTitle>거래플랜</AssemblyTitle>
     <Product>거래플랜</Product>
     <ApplicationIcon>..\..\AppIcons\tradeplan-windows.ico</ApplicationIcon>
-    <Version>1.1.46</Version>
-    <FileVersion>1.1.46.0</FileVersion>
+    <Version>1.1.47</Version>
+    <FileVersion>1.1.47.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -42,3 +42,4 @@
     <None Include="Views\Backup\**\*.xaml" />
   </ItemGroup>
 </Project>
+
