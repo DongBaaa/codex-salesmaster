@@ -228,86 +228,6 @@ function Invoke-RobocopyMirror {
     }
 }
 
-function New-DesktopShortcutVbsContent {
-    param(
-        [Parameter(Mandatory = $true)][string]$AppDisplayName,
-        [Parameter(Mandatory = $true)][string]$LaunchExeName,
-        [Parameter(Mandatory = $true)][string]$ShortcutIconFileName
-    )
-
-    return @"
-Option Explicit
-
-Dim shell
-Dim fso
-Dim installDir
-Dim resultMessage
-
-Set shell = CreateObject("WScript.Shell")
-Set fso = CreateObject("Scripting.FileSystemObject")
-
-installDir = fso.GetParentFolderName(WScript.ScriptFullName)
-Dim createdPaths
-createdPaths = ""
-AppendCreatedPath createdPaths, CreateShortcutOnDesktop("Desktop")
-AppendCreatedPath createdPaths, CreateShortcutOnDesktop("AllUsersDesktop")
-
-If Len(createdPaths) > 0 Then
-    resultMessage = "바탕화면 바로가기를 생성했습니다." & vbCrLf & createdPaths & vbCrLf & vbCrLf & _
-        "위 경로 중 하나가 현재 바탕화면에 표시됩니다."
-    MsgBox resultMessage, vbInformation, "$AppDisplayName 설치"
-Else
-    resultMessage = "바탕화면 바로가기를 생성하지 못했습니다." & vbCrLf & _
-        "사용자 바탕화면과 공용 바탕화면을 모두 확인해 주세요."
-    MsgBox resultMessage, vbExclamation, "$AppDisplayName 설치"
-End If
-
-Sub AppendCreatedPath(ByRef buffer, ByVal newPath)
-    If Len(newPath) = 0 Then
-        Exit Sub
-    End If
-
-    If Len(buffer) > 0 Then
-        buffer = buffer & vbCrLf
-    End If
-
-    buffer = buffer & newPath
-End Sub
-
-Function CreateShortcutOnDesktop(folderKey)
-    Dim desktopPath
-    Dim shortcutPath
-    Dim shortcut
-
-    CreateShortcutOnDesktop = ""
-    On Error Resume Next
-    desktopPath = shell.SpecialFolders(folderKey)
-    If Err.Number <> 0 Or Len(desktopPath) = 0 Then
-        Err.Clear
-        Exit Function
-    End If
-
-    shortcutPath = fso.BuildPath(desktopPath, "$AppDisplayName.lnk")
-    If fso.FileExists(shortcutPath) Then
-        fso.DeleteFile shortcutPath, True
-    End If
-    Set shortcut = shell.CreateShortcut(shortcutPath)
-    shortcut.TargetPath = fso.BuildPath(installDir, "$LaunchExeName")
-    shortcut.WorkingDirectory = installDir
-    shortcut.IconLocation = fso.BuildPath(installDir, "$ShortcutIconFileName")
-    shortcut.Description = "$AppDisplayName"
-    shortcut.Save
-
-    If Err.Number = 0 And fso.FileExists(shortcutPath) Then
-        CreateShortcutOnDesktop = shortcutPath
-    Else
-        Err.Clear
-    End If
-    On Error GoTo 0
-End Function
-"@
-}
-
 function Publish-DesktopApplication {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
@@ -348,10 +268,6 @@ function Prepare-InstallerSourceFolder {
     $shortcutIconFileName = Split-Path -Leaf $ShortcutIconPath
     Copy-Item -LiteralPath $ShortcutIconPath -Destination (Join-Path $installerSourceRoot $shortcutIconFileName) -Force
 
-    $desktopShortcutScriptName = 'CreateDesktopShortcut.vbs'
-    (New-DesktopShortcutVbsContent -AppDisplayName $AppDisplayName -LaunchExeName $LaunchExeName -ShortcutIconFileName $shortcutIconFileName) |
-        Set-Content -LiteralPath (Join-Path $installerSourceRoot $desktopShortcutScriptName) -Encoding Unicode
-
     $publishRoot = Publish-DesktopApplication -ProjectRoot $ProjectRoot -PublishRoot (Join-Path $StagingRoot 'desktop-publish') -DotnetExe $DotnetExe
 
     $publishedExeCandidates = @(
@@ -378,7 +294,6 @@ function Prepare-InstallerSourceFolder {
     return [pscustomobject]@{
         SourceRoot = $installerSourceRoot
         ShortcutIconFileName = $shortcutIconFileName
-        DesktopShortcutScriptName = $desktopShortcutScriptName
     }
 }
 
@@ -475,8 +390,7 @@ function New-ProductWxsContent {
         [Parameter(Mandatory = $true)][string]$AppDisplayName,
         [Parameter(Mandatory = $true)][string]$Manufacturer,
         [Parameter(Mandatory = $true)][string]$LaunchExeName,
-        [Parameter(Mandatory = $true)][string]$UpgradeCode,
-        [Parameter(Mandatory = $true)][string]$DesktopShortcutScriptName
+        [Parameter(Mandatory = $true)][string]$UpgradeCode
     )
 
     $productName = Convert-ToXmlAttribute $AppDisplayName
@@ -484,7 +398,6 @@ function New-ProductWxsContent {
     $launchExe = Convert-ToXmlAttribute $LaunchExeName
     $upgradeCodeValue = Convert-ToXmlAttribute $UpgradeCode
     $downgradeMessage = Convert-ToXmlAttribute '이미 최신 버전의 거래플랜이 설치되어 있습니다.'
-    $desktopShortcutText = Convert-ToXmlAttribute '바탕화면 바로가기 만들기'
     $uninstallShortcutName = Convert-ToXmlAttribute '거래플랜 제거'
     $registryManufacturer = Convert-ToXmlAttribute $Manufacturer
     $registryProduct = Convert-ToXmlAttribute $AppDisplayName
@@ -508,8 +421,6 @@ function New-ProductWxsContent {
 
     <Icon Id="AppPackageIcon" SourceFile="`$(var.AppIconPath)" />
     <Property Id="ARPPRODUCTICON" Value="AppPackageIcon" />
-    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="$desktopShortcutText" />
-    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="0" />
 
     <SetProperty Id="ARPINSTALLLOCATION"
                  Value="[INSTALLFOLDER]"
@@ -526,33 +437,11 @@ function New-ProductWxsContent {
 
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
 
-    <CustomAction Id="CreateDesktopShortcutAction"
-                  BinaryRef="Wix4UtilCA_`$(sys.BUILDARCHSHORT)"
-                  DllEntry="WixShellExec"
-                  Execute="immediate"
-                  Return="ignore"
-                  Impersonate="yes" />
-
     <Feature Id="MainFeature" Title="$productName" Level="1">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="ApplicationStartMenuComponent" />
-      <ComponentRef Id="DesktopShortcutCleanupComponent" />
+      <ComponentRef Id="ApplicationDesktopShortcutComponent" />
     </Feature>
-
-    <UI>
-      <Publish Dialog="ExitDialog"
-               Control="Finish"
-               Event="SetProperty"
-               Value="WixShellExecTarget=[#DesktopShortcutScriptFile]"
-               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND (NOT Installed OR WIX_UPGRADE_DETECTED)"
-               Order="1" />
-      <Publish Dialog="ExitDialog"
-               Control="Finish"
-               Event="DoAction"
-               Value="CreateDesktopShortcutAction"
-               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND (NOT Installed OR WIX_UPGRADE_DETECTED)"
-               Order="2" />
-    </UI>
   </Package>
 
   <Fragment>
@@ -580,10 +469,17 @@ function New-ProductWxsContent {
   </Fragment>
 
   <Fragment>
-      <Component Id="DesktopShortcutCleanupComponent" Directory="INSTALLFOLDER" Guid="*">
-      <RemoveFile Id="RemoveDesktopShortcut" Directory="DesktopFolder" Name="$productName.lnk" On="uninstall" />
-      <RegistryValue Root="HKLM" Key="Software\$registryManufacturer\$registryProduct" Name="DesktopShortcutCleanup" Type="integer" Value="1" KeyPath="yes" />
-      </Component>
+    <Component Id="ApplicationDesktopShortcutComponent" Directory="DesktopFolder" Guid="*">
+      <Shortcut Id="ApplicationDesktopShortcut"
+                Directory="DesktopFolder"
+                Name="$productName"
+                Target="[INSTALLFOLDER]$launchExe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppPackageIcon"
+                IconIndex="0"
+                Advertise="no" />
+      <RegistryValue Root="HKLM" Key="Software\$registryManufacturer\$registryProduct" Name="DesktopShortcutInstalled" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
   </Fragment>
 </Wix>
 "@
@@ -832,7 +728,7 @@ $appIconForPackage = Join-Path $sourceForPackaging $preparedSource.ShortcutIconF
 
 $productWxsPath = Join-Path $stagingRoot 'Product.wxs'
 $generatedWxsPath = Join-Path $stagingRoot 'GeneratedFiles.wxs'
-$productWxs = New-ProductWxsContent -AppDisplayName $AppDisplayName -Manufacturer $Manufacturer -LaunchExeName $LaunchExeName -UpgradeCode '{0E5C8E78-44C0-4585-A2E9-5E74071A3A11}' -DesktopShortcutScriptName $preparedSource.DesktopShortcutScriptName
+$productWxs = New-ProductWxsContent -AppDisplayName $AppDisplayName -Manufacturer $Manufacturer -LaunchExeName $LaunchExeName -UpgradeCode '{0E5C8E78-44C0-4585-A2E9-5E74071A3A11}'
 $generatedWxs = New-GeneratedWxsContent -SourceRoot $sourceForPackaging
 $productWxs | Set-Content -LiteralPath $productWxsPath -Encoding UTF8
 $generatedWxs | Set-Content -LiteralPath $generatedWxsPath -Encoding UTF8
