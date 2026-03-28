@@ -166,6 +166,9 @@ public static class DbInitializer
         await EnsureLegacyRentalNamingColumnsAsync(dbContext, cancellationToken);
         await EnsureRentalBillingLogsTableAsync(dbContext, cancellationToken);
         await EnsureCustomerTradeTypeColumnAsync(dbContext, cancellationToken);
+        await EnsureCustomerRepresentativeColumnAsync(dbContext, cancellationToken);
+        await EnsureCustomerBusinessTypeColumnAsync(dbContext, cancellationToken);
+        await EnsureCustomerBusinessItemColumnAsync(dbContext, cancellationToken);
         await EnsureUserOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureUserTenantScopeColumnsAsync(dbContext, cancellationToken);
         await EnsureTenantDefinitionsTableAsync(dbContext, cancellationToken);
@@ -1259,6 +1262,87 @@ public static class DbInitializer
         catch
         {
             // Ignore if legacy schema does not yet expose the column for some reason.
+        }
+    }
+
+    private static async Task EnsureCustomerRepresentativeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"Customers\" ADD COLUMN \"Representative\" TEXT NOT NULL DEFAULT '';",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"Customers\" ADD COLUMN IF NOT EXISTS \"Representative\" text NOT NULL DEFAULT '';",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+            // Column may already exist.
+        }
+    }
+
+    private static async Task EnsureCustomerBusinessTypeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"Customers\" ADD COLUMN \"BusinessType\" TEXT NOT NULL DEFAULT '';",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"Customers\" ADD COLUMN IF NOT EXISTS \"BusinessType\" text NOT NULL DEFAULT '';",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+            // Column may already exist.
+        }
+    }
+
+    private static async Task EnsureCustomerBusinessItemColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"Customers\" ADD COLUMN \"BusinessItem\" TEXT NOT NULL DEFAULT '';",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"Customers\" ADD COLUMN IF NOT EXISTS \"BusinessItem\" text NOT NULL DEFAULT '';",
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+            // Column may already exist.
         }
     }
 

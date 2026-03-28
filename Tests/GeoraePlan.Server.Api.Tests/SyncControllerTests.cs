@@ -412,6 +412,150 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_ReusesExistingRentalBillingProfile_WhenIncomingIdDiffersButProfileKeyMatches()
+    {
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            Code = OfficeCodeCatalog.Itworld,
+            Name = "아이티월드"
+        });
+
+        var existing = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ProfileKey = "ITWORLD|1234567890|기존거래처||MODEL-Z",
+            CustomerName = "기존거래처",
+            BusinessNumber = "123-45-67890",
+            ItemName = "MODEL-Z",
+            ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+            BillingDay = 25,
+            MonthlyAmount = 55000m,
+            CreatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    BusinessNumber = existing.BusinessNumber,
+                    ItemName = existing.ItemName,
+                    ManagementCompanyCode = existing.ManagementCompanyCode,
+                    BillingDay = 28,
+                    MonthlyAmount = 77000m,
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(5)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        var profiles = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync();
+        Assert.Single(profiles);
+        Assert.Equal(existing.Id, profiles[0].Id);
+        Assert.Equal(28, profiles[0].BillingDay);
+        Assert.Equal(77000m, profiles[0].MonthlyAmount);
+    }
+
+    [Fact]
+    public async Task Push_ReusesExistingRentalAssetBillingProfile_WhenIncomingBillingProfileIdIsStale()
+    {
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "유즈넷"
+        });
+
+        var existingProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "USENET|9988776655|한길노무법인||IMC2010",
+            CustomerName = "한길노무법인",
+            BusinessNumber = "998-87-76655",
+            ItemName = "IMC2010",
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            BillingDay = 25,
+            MonthlyAmount = 44000m,
+            CreatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var existingAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "USENET|2603-233|233|한길노무법인|IMC2010",
+            ManagementId = "233",
+            ManagementNumber = "2603-233",
+            CustomerName = "한길노무법인",
+            ItemName = "IMC2010",
+            BillingProfileId = existingProfile.Id,
+            CurrentLocation = "렌탈",
+            CreatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc)
+        };
+
+        _dbContext.RentalBillingProfiles.Add(existingProfile);
+        _dbContext.RentalAssets.Add(existingAsset);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementId = existingAsset.ManagementId,
+                    ManagementNumber = existingAsset.ManagementNumber,
+                    CustomerName = existingAsset.CustomerName,
+                    ItemName = existingAsset.ItemName,
+                    BillingProfileId = Guid.NewGuid(),
+                    CurrentLocation = "창고",
+                    CreatedAtUtc = existingAsset.CreatedAtUtc,
+                    UpdatedAtUtc = existingAsset.UpdatedAtUtc.AddMinutes(3)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var storedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync();
+        Assert.Equal(existingAsset.Id, storedAsset.Id);
+        Assert.Equal(existingProfile.Id, storedAsset.BillingProfileId);
+        Assert.Equal("창고", storedAsset.CurrentLocation);
+    }
+
+    [Fact]
     public async Task Pull_IncludesCrossTenantDeliveryData_ForUserWithDeliveryViewAll()
     {
         var usenetCustomer = new Customer

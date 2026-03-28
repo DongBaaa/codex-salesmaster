@@ -406,7 +406,10 @@ public sealed class RentalStateService
         var now = DateTime.UtcNow;
         if (existing is null)
         {
-            profile.Id = profile.Id == Guid.Empty ? Guid.NewGuid() : profile.Id;
+            var deterministicProfileId = SyncIdentityGenerator.CreateRentalBillingProfileId(profile.ProfileKey);
+            profile.Id = profile.Id == Guid.Empty
+                ? (deterministicProfileId == Guid.Empty ? Guid.NewGuid() : deterministicProfileId)
+                : profile.Id;
             profile.CreatedAtUtc = now;
             profile.UpdatedAtUtc = now;
             profile.IsDirty = true;
@@ -919,7 +922,7 @@ public sealed class RentalStateService
 
                     var profile = existing ?? new LocalRentalBillingProfile
                     {
-                        Id = Guid.NewGuid(),
+                        Id = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey),
                         ProfileKey = profileKey,
                         CreatedAtUtc = DateTime.UtcNow
                     };

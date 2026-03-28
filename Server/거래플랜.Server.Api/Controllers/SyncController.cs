@@ -168,8 +168,7 @@ public sealed class SyncController : ControllerBase
             (e, d) => e.Apply(d), d => new RentalManagementCompany { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
         var scopedRentalProfiles = await PrepareScopedRentalBillingProfilesAsync(request.RentalBillingProfiles ?? [], result, cancellationToken);
         var validRentalProfiles = await FilterValidRentalBillingProfilesAsync(scopedRentalProfiles, result, cancellationToken);
-        await UpsertEntitiesAsync(validRentalProfiles, _dbContext.RentalBillingProfiles,
-            (e, d) => e.Apply(d), d => new RentalBillingProfile { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        await UpsertRentalBillingProfilesAsync(validRentalProfiles, result, cancellationToken);
         var requiresRentalAssetLock = (request.RentalAssets?.Count ?? 0) > 0;
         if (requiresRentalAssetLock)
             await RentalAssetSyncLock.WaitAsync(cancellationToken);
@@ -892,6 +891,19 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            if (existing is null)
+            {
+                existing = await FindExistingRentalBillingProfileByNaturalKeyAsync(dto, cancellationToken);
+                if (existing is not null)
+                    dto.Id = existing.Id;
+                else if (dto.Id == Guid.Empty)
+                {
+                    var deterministicProfileId = SyncIdentityGenerator.CreateRentalBillingProfileId(dto.ProfileKey);
+                    if (deterministicProfileId != Guid.Empty)
+                        dto.Id = deterministicProfileId;
+                }
+            }
+
             if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.OfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(RentalBillingProfile), "Current account cannot modify this office scope.", result);
@@ -904,6 +916,59 @@ public sealed class SyncController : ControllerBase
         }
 
         return scoped;
+    }
+
+    private async Task<RentalBillingProfile?> FindExistingRentalBillingProfileByNaturalKeyAsync(
+        RentalBillingProfileDto dto,
+        CancellationToken cancellationToken)
+    {
+        var profileKey = (dto.ProfileKey ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(profileKey))
+            return null;
+
+        return await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(profile => profile.ProfileKey == profileKey, cancellationToken);
+    }
+
+    private async Task UpsertRentalBillingProfilesAsync(
+        IEnumerable<RentalBillingProfileDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        foreach (var dto in payload)
+        {
+            var entity = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            if (entity is null)
+            {
+                entity = await FindExistingRentalBillingProfileByNaturalKeyAsync(dto, cancellationToken);
+            }
+
+            if (entity is null)
+            {
+                var deterministicProfileId = SyncIdentityGenerator.CreateRentalBillingProfileId(dto.ProfileKey);
+                var newEntity = new RentalBillingProfile
+                {
+                    Id = dto.Id == Guid.Empty
+                        ? (deterministicProfileId == Guid.Empty ? Guid.NewGuid() : deterministicProfileId)
+                        : dto.Id
+                };
+                newEntity.Apply(dto);
+                _dbContext.RentalBillingProfiles.Add(newEntity);
+                result.AcceptedCount++;
+                continue;
+            }
+
+            if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
+            {
+                AddServerConflict(dto, entity, nameof(RentalBillingProfile), "Server version is newer.", result);
+                continue;
+            }
+
+            dto.Id = entity.Id;
+            entity.Apply(dto);
+            result.AcceptedCount++;
+        }
     }
 
     private async Task<List<RentalBillingProfileDto>> FilterValidRentalBillingProfilesAsync(
@@ -1223,20 +1288,46 @@ public sealed class SyncController : ControllerBase
 
             if (dto.BillingProfileId.HasValue && dto.BillingProfileId.Value != Guid.Empty)
             {
-                var billingProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
-                    .FirstOrDefaultAsync(x => x.Id == dto.BillingProfileId.Value, cancellationToken);
+                var billingProfile = await ResolveRentalAssetBillingProfileReferenceAsync(dto, cancellationToken);
                 if (billingProfile is null || billingProfile.IsDeleted)
                 {
                     AddClientConflict(dto, nameof(RentalAsset),
                         $"Referenced rental billing profile was not found: {dto.BillingProfileId}.", result);
                     continue;
                 }
+
+                dto.BillingProfileId = billingProfile.Id;
             }
 
             valid.Add(dto);
         }
 
         return valid;
+    }
+
+    private async Task<RentalBillingProfile?> ResolveRentalAssetBillingProfileReferenceAsync(
+        RentalAssetDto dto,
+        CancellationToken cancellationToken)
+    {
+        if (!dto.BillingProfileId.HasValue || dto.BillingProfileId.Value == Guid.Empty)
+            return null;
+
+        var direct = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(x => x.Id == dto.BillingProfileId.Value, cancellationToken);
+        if (direct is not null && !direct.IsDeleted)
+            return direct;
+
+        var existingAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(asset => asset.Id == dto.Id, cancellationToken);
+        if (existingAsset?.BillingProfileId is Guid existingBillingProfileId)
+        {
+            var fromExistingAsset = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.Id == existingBillingProfileId, cancellationToken);
+            if (fromExistingAsset is not null && !fromExistingAsset.IsDeleted)
+                return fromExistingAsset;
+        }
+
+        return null;
     }
 
     private async Task<Guid?> ResolveRentalAssetItemReferenceAsync(

@@ -242,7 +242,10 @@ public sealed class CustomerDto : SyncEntityDto
     public string TradeType { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
     public string ContactPerson { get; set; } = string.Empty;
+    public string Representative { get; set; } = string.Empty;
     public string BusinessNumber { get; set; } = string.Empty;
+    public string BusinessType { get; set; } = string.Empty;
+    public string BusinessItem { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
     public string Phone { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;

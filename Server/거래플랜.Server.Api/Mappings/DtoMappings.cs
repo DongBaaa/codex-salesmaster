@@ -278,7 +278,11 @@ public static class DtoMappings
             NameMatchKey = entity.NameMatchKey, CategoryId = entity.CategoryId,
             TradeType = entity.TradeType,
             Department = entity.Department, ContactPerson = entity.ContactPerson,
-            BusinessNumber = entity.BusinessNumber, Address = entity.Address,
+            Representative = entity.Representative,
+            BusinessNumber = entity.BusinessNumber,
+            BusinessType = entity.BusinessType,
+            BusinessItem = entity.BusinessItem,
+            Address = entity.Address,
             Phone = entity.Phone, Email = entity.Email, Notes = entity.Notes
         };
 
@@ -288,7 +292,11 @@ public static class DtoMappings
         entity.NameMatchKey = string.IsNullOrWhiteSpace(dto.NameMatchKey) ? MatchKeyNormalizer.Normalize(dto.NameOriginal) : dto.NameMatchKey;
         entity.CategoryId = dto.CategoryId; entity.TradeType = dto.TradeType;
         entity.Department = dto.Department;
-        entity.ContactPerson = dto.ContactPerson; entity.BusinessNumber = dto.BusinessNumber;
+        entity.ContactPerson = dto.ContactPerson;
+        entity.Representative = dto.Representative;
+        entity.BusinessNumber = dto.BusinessNumber;
+        entity.BusinessType = dto.BusinessType;
+        entity.BusinessItem = dto.BusinessItem;
         entity.Address = dto.Address; entity.Phone = dto.Phone; entity.Email = dto.Email;
         entity.Notes = dto.Notes; entity.IsDeleted = dto.IsDeleted;
         entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(

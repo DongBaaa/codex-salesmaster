@@ -923,7 +923,7 @@ public sealed class SyncService : IDisposable
         await UpsertPulledTransactionAttachmentsAsync(pull.TransactionAttachments, ct);
         await UpsertPulledInventoryTransfersAsync(pull.InventoryTransfers, ct);
         await UpsertPulledAsync(pull.RentalManagementCompanies, _db.RentalManagementCompanies, LocalMappings.ToLocal, ct);
-        await UpsertPulledAsync(pull.RentalBillingProfiles, _db.RentalBillingProfiles, LocalMappings.ToLocal, ct);
+        await UpsertPulledRentalBillingProfilesAsync(pull.RentalBillingProfiles, ct);
         await UpsertPulledRentalAssetsAsync(pull.RentalAssets, ct);
         await UpsertPulledAsync(pull.RentalBillingLogs, _db.RentalBillingLogs, LocalMappings.ToLocal, ct);
         await UpsertPulledInvoicesAsync(pull.Invoices, ct);
@@ -986,6 +986,100 @@ public sealed class SyncService : IDisposable
         }
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task UpsertPulledRentalBillingProfilesAsync(
+        IReadOnlyList<RentalBillingProfileDto> dtos,
+        CancellationToken ct)
+    {
+        var skippedIncomingIds = await RemoveStalePulledRentalBillingProfileConflictsAsync(dtos, ct);
+
+        foreach (var dto in dtos)
+        {
+            if (skippedIncomingIds.Contains(dto.Id))
+                continue;
+
+            var local = LocalMappings.ToLocal(dto);
+            local.IsDirty = false;
+
+            var existing = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(profile => profile.Id == local.Id, ct);
+            if (existing is null)
+            {
+                _db.RentalBillingProfiles.Add(local);
+            }
+            else if (!existing.IsDirty)
+            {
+                _db.Entry(existing).CurrentValues.SetValues(local);
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task<HashSet<Guid>> RemoveStalePulledRentalBillingProfileConflictsAsync(
+        IReadOnlyList<RentalBillingProfileDto> dtos,
+        CancellationToken ct)
+    {
+        if (dtos.Count == 0)
+            return [];
+
+        var incomingByProfileKey = BuildIncomingRentalBillingProfileLookup(dtos, dto => dto.ProfileKey);
+        if (incomingByProfileKey.Count == 0)
+            return [];
+
+        var profileKeys = incomingByProfileKey.Keys.ToList();
+        var candidates = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .Where(profile => profileKeys.Contains(profile.ProfileKey))
+            .ToListAsync(ct);
+
+        if (candidates.Count == 0)
+            return [];
+
+        var staleConflictIds = new HashSet<Guid>();
+        var skippedIncomingIds = new HashSet<Guid>();
+        var dirtyConflictDetails = new List<string>();
+
+        foreach (var candidate in candidates)
+        {
+            var matchingIncomingIds = GetMatchingIncomingRentalBillingProfileIds(candidate, incomingByProfileKey);
+            if (matchingIncomingIds.Count == 0 || matchingIncomingIds.Contains(candidate.Id))
+                continue;
+
+            if (candidate.IsDirty)
+            {
+                foreach (var incomingId in matchingIncomingIds)
+                    skippedIncomingIds.Add(incomingId);
+
+                dirtyConflictDetails.Add($"{candidate.ProfileKey} -> {candidate.Id}");
+                continue;
+            }
+
+            staleConflictIds.Add(candidate.Id);
+        }
+
+        if (staleConflictIds.Count > 0)
+        {
+            _db.ChangeTracker.Clear();
+            await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                .Where(profile => staleConflictIds.Contains(profile.Id))
+                .ExecuteDeleteAsync(ct);
+            _db.ChangeTracker.Clear();
+
+            AppLogger.Warn(
+                "SYNC",
+                $"렌탈 청구 프로필 pull 충돌 복구: 프로필 키가 같은 로컬 프로필 {staleConflictIds.Count}건을 서버 기준으로 정리했습니다.");
+        }
+
+        if (dirtyConflictDetails.Count > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"렌탈 청구 프로필 pull 충돌 보류: 로컬 수정 중인 프로필 {dirtyConflictDetails.Count}건은 덮어쓰지 않았습니다. " +
+                $"details={string.Join(", ", dirtyConflictDetails.Take(10))}");
+        }
+
+        return skippedIncomingIds;
     }
 
     private async Task<HashSet<Guid>> RemoveStalePulledRentalAssetConflictsAsync(
@@ -1077,6 +1171,30 @@ public sealed class SyncService : IDisposable
         return skippedIncomingIds;
     }
 
+    private static Dictionary<string, HashSet<Guid>> BuildIncomingRentalBillingProfileLookup(
+        IReadOnlyList<RentalBillingProfileDto> dtos,
+        Func<RentalBillingProfileDto, string?> keySelector)
+    {
+        var lookup = new Dictionary<string, HashSet<Guid>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var dto in dtos)
+        {
+            var normalizedKey = NormalizeRentalBillingProfileNaturalKey(keySelector(dto));
+            if (string.IsNullOrWhiteSpace(normalizedKey))
+                continue;
+
+            if (!lookup.TryGetValue(normalizedKey, out var ids))
+            {
+                ids = [];
+                lookup[normalizedKey] = ids;
+            }
+
+            ids.Add(dto.Id);
+        }
+
+        return lookup;
+    }
+
     private static Dictionary<string, HashSet<Guid>> BuildIncomingRentalAssetLookup(
         IReadOnlyList<RentalAssetDto> dtos,
         Func<RentalAssetDto, string?> keySelector)
@@ -1116,6 +1234,15 @@ public sealed class SyncService : IDisposable
         return matchingIds;
     }
 
+    private static HashSet<Guid> GetMatchingIncomingRentalBillingProfileIds(
+        LocalRentalBillingProfile candidate,
+        IReadOnlyDictionary<string, HashSet<Guid>> incomingByProfileKey)
+    {
+        var matchingIds = new HashSet<Guid>();
+        AddIncomingRentalBillingProfileIds(matchingIds, incomingByProfileKey, candidate.ProfileKey);
+        return matchingIds;
+    }
+
     private static void AddIncomingRentalAssetIds(
         HashSet<Guid> target,
         IReadOnlyDictionary<string, HashSet<Guid>> lookup,
@@ -1131,6 +1258,25 @@ public sealed class SyncService : IDisposable
         foreach (var id in ids)
             target.Add(id);
     }
+
+    private static void AddIncomingRentalBillingProfileIds(
+        HashSet<Guid> target,
+        IReadOnlyDictionary<string, HashSet<Guid>> lookup,
+        string? value)
+    {
+        var normalizedKey = NormalizeRentalBillingProfileNaturalKey(value);
+        if (string.IsNullOrWhiteSpace(normalizedKey))
+            return;
+
+        if (!lookup.TryGetValue(normalizedKey, out var ids))
+            return;
+
+        foreach (var id in ids)
+            target.Add(id);
+    }
+
+    private static string NormalizeRentalBillingProfileNaturalKey(string? value)
+        => (value ?? string.Empty).Trim().ToUpperInvariant();
 
     private async Task UpsertPulledSelectionOptionsAsync<TLocal, TDto>(
         IReadOnlyList<TDto> dtos,
