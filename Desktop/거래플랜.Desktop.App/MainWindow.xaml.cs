@@ -147,7 +147,7 @@ public partial class MainWindow : Window
         _deactivateFlushInProgress = true;
         try
         {
-            await FlushPendingChangesBeforeNavigationAsync("창 비활성화");
+            await FlushPendingChangesBeforeNavigationAsync("창 비활성화", blockUntilServerFlush: false);
         }
         catch (Exception ex)
         {
@@ -517,7 +517,7 @@ public partial class MainWindow : Window
 
         try
         {
-            await FlushPendingChangesBeforeNavigationAsync("로그아웃");
+            await FlushPendingChangesBeforeNavigationAsync("로그아웃", blockUntilServerFlush: true);
         }
         catch (Exception ex)
         {
@@ -773,16 +773,31 @@ public partial class MainWindow : Window
             "전표 창 종료 후 목록 재조회",
             "전표 목록을 다시 불러오는 중 오류가 발생했습니다.");
 
-    private async Task FlushPendingChangesBeforeNavigationAsync(string reason)
+    private async Task FlushPendingChangesBeforeNavigationAsync(string reason, bool blockUntilServerFlush = false)
     {
         if (_isClosingOrClosed || _session.IsOfflineMode)
             return;
 
-        if (await _local.CountDirtyAsync(_session) == 0)
+        if (!blockUntilServerFlush && _sync.HasActiveOrQueuedSync)
+            return;
+
+        var dirtyCount = await _local.CountDirtyAsync(_session);
+        if (dirtyCount == 0)
             return;
 
         try
         {
+            if (!blockUntilServerFlush)
+            {
+                _vm.SyncStatus = $"{reason} 전 변경사항을 백그라운드로 동기화합니다...";
+                UiTaskHelper.Forget(
+                    _sync.TrySyncAsync(),
+                    "SYNC",
+                    $"{reason} 백그라운드 동기화",
+                    ex => AppLogger.Warn("SYNC", $"{reason} background sync failed: {ex.Message}"));
+                return;
+            }
+
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             _vm.SyncStatus = $"{reason} 전 중앙 서버에 변경사항 저장 중...";
             await _sync.FlushPendingChangesAsync(cts.Token);

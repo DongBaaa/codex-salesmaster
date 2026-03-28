@@ -770,6 +770,7 @@ public sealed class RentalStateService
         try
         {
             var result = new RentalCatalogRepairResult();
+            var activeItems = await GetActiveItemsAsync(ct);
             var assetQuery = _db.RentalAssets.IgnoreQueryFilters()
                 .Where(asset => !asset.IsDeleted);
 
@@ -813,7 +814,7 @@ public sealed class RentalStateService
                 asset.InstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation);
                 asset.DepositText = (asset.DepositText ?? string.Empty).Trim();
 
-                await EnrichAssetReferencesAsync(asset, ct, result);
+                await EnrichAssetReferencesAsync(asset, ct, result, activeItems);
                 if (previousItemId.HasValue &&
                     previousItemId.Value != Guid.Empty &&
                     previousItemId != asset.ItemId)
@@ -2076,7 +2077,8 @@ public sealed class RentalStateService
     private async Task EnrichAssetReferencesAsync(
         LocalRentalAsset asset,
         CancellationToken ct,
-        RentalCatalogRepairResult? repairResult = null)
+        RentalCatalogRepairResult? repairResult = null,
+        List<LocalItem>? activeItems = null)
     {
         asset.ItemCategoryName = await EnsureRentalItemCategoryOptionAsync(asset.ItemCategoryName, repairResult, ct);
 
@@ -2107,7 +2109,7 @@ public sealed class RentalStateService
             }
         }
 
-        var item = await EnsureRentalItemAsync(asset, repairResult, ct);
+        var item = await EnsureRentalItemAsync(asset, repairResult, ct, activeItems);
         if (item is null)
             return;
 
@@ -2125,10 +2127,11 @@ public sealed class RentalStateService
         string? machineNumber,
         string preferredOfficeCode,
         string preferredTenantCode,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyList<LocalItem>? activeItems = null)
     {
-        var activeItems = await GetActiveItemsAsync(ct);
-        var scopedAssetItems = activeItems
+        var availableItems = activeItems ?? await GetActiveItemsAsync(ct);
+        var scopedAssetItems = availableItems
             .Where(item =>
                 ItemOperationalPolicy.IsAsset(item.TrackingType) &&
                 MatchesRentalItemScope(item, preferredOfficeCode, preferredTenantCode))
@@ -2167,7 +2170,7 @@ public sealed class RentalStateService
         if (string.IsNullOrWhiteSpace(normalizedItemName))
             return null;
 
-        var matches = await GetNameMatchedItemsAsync(normalizedItemName, ct);
+        var matches = await GetNameMatchedItemsAsync(normalizedItemName, ct, availableItems);
         var assetMatches = matches
             .Where(item =>
                 ItemOperationalPolicy.IsAsset(item.TrackingType) &&
@@ -2269,7 +2272,8 @@ public sealed class RentalStateService
     private async Task<LocalItem?> EnsureRentalItemAsync(
         LocalRentalAsset asset,
         RentalCatalogRepairResult? repairResult,
-        CancellationToken ct)
+        CancellationToken ct,
+        List<LocalItem>? activeItems = null)
     {
         var assetOfficeCode = ResolveAssetItemOfficeCode(asset);
         var assetTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, assetOfficeCode);
@@ -2281,7 +2285,8 @@ public sealed class RentalStateService
             asset.MachineNumber,
             assetOfficeCode,
             assetTenantCode,
-            ct);
+            ct,
+            activeItems);
         if (item is not null)
             return item;
 
@@ -2289,7 +2294,7 @@ public sealed class RentalStateService
         if (string.IsNullOrWhiteSpace(normalizedItemName))
             return null;
 
-        var nameMatches = (await GetNameMatchedItemsAsync(normalizedItemName, ct))
+        var nameMatches = (await GetNameMatchedItemsAsync(normalizedItemName, ct, activeItems))
             .Where(item => ItemOperationalPolicy.IsAsset(item.TrackingType))
             .ToList();
         var scopedNameMatches = nameMatches
@@ -2337,6 +2342,7 @@ public sealed class RentalStateService
         };
 
         _db.Items.Add(created);
+        activeItems?.Add(created);
         TryAddUnique(repairResult?.AddedItemNames, created.NameOriginal);
         return created;
     }
@@ -2410,13 +2416,14 @@ public sealed class RentalStateService
         }
     }
 
-    private async Task<List<LocalItem>> GetNameMatchedItemsAsync(string? itemName, CancellationToken ct)
+    private async Task<List<LocalItem>> GetNameMatchedItemsAsync(string? itemName, CancellationToken ct, IReadOnlyList<LocalItem>? activeItems = null)
     {
         var normalizedKey = RentalCatalogValueNormalizer.NormalizeLooseKey(itemName);
         if (string.IsNullOrWhiteSpace(normalizedKey))
             return [];
 
-        return (await GetActiveItemsAsync(ct))
+        var availableItems = activeItems ?? await GetActiveItemsAsync(ct);
+        return availableItems
             .Where(item =>
                 string.Equals(
                     RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal),

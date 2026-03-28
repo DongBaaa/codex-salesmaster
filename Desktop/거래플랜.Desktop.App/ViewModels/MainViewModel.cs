@@ -230,7 +230,7 @@ public sealed partial class MainViewModel : ObservableObject
     {
         var dispatcher = Application.Current?.Dispatcher;
         if (dispatcher is not null && !dispatcher.CheckAccess())
-            dispatcher.Invoke(() => SyncStatus = status);
+            _ = dispatcher.BeginInvoke(() => SyncStatus = status);
         else
             SyncStatus = status;
 
