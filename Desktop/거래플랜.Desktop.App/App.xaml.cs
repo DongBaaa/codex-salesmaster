@@ -407,8 +407,15 @@ public partial class App : Application
                 popup = ShowActivityPopup(
                     mainWin,
                     "거래플랜 동기화",
-                    "로그인 후 데이터를 불러오고 있습니다.\n잠시만 기다려 주세요...");
-            }, DispatcherPriority.Background);
+                    "로그인 후 데이터를 불러오고 있습니다.\n첫 동기화는 데이터 양에 따라 잠시 걸릴 수 있습니다.");
+            }, DispatcherPriority.Send);
+
+            await Dispatcher.InvokeAsync(() =>
+            {
+                popup?.UpdateLayout();
+            }, DispatcherPriority.Render);
+
+            await Task.Delay(150);
 
             await mainVm.RunPostLoginSyncAsync();
         }
@@ -490,30 +497,64 @@ public partial class App : Application
 
     private static Window ShowActivityPopup(Window owner, string title, string message)
     {
+        var heading = new TextBlock
+        {
+            Text = "동기화 중",
+            FontFamily = new FontFamily("맑은 고딕"),
+            FontSize = 20,
+            FontWeight = FontWeights.Bold,
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#0F2C5C")),
+            TextAlignment = TextAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 10)
+        };
+
         var text = new TextBlock
         {
             Text = message,
             FontFamily = new FontFamily("맑은 고딕"),
-            FontSize = 15,
-            Foreground = Brushes.Black,
+            FontSize = 14,
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#2C3E50")),
             TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 14)
         };
 
         var progress = new ProgressBar
         {
-            Height = 14,
+            Height = 16,
             IsIndeterminate = true,
             Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#1565C0")),
             Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#D9E6F5"))
         };
 
-        var root = new StackPanel
+        var hint = new TextBlock
         {
-            Orientation = Orientation.Vertical,
-            Margin = new Thickness(20),
-            Width = 340,
-            Children = { text, progress }
+            Text = "앱이 멈춘 것이 아니며, 완료 후 자동으로 닫힙니다.",
+            FontFamily = new FontFamily("맑은 고딕"),
+            FontSize = 12,
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#5C6F82")),
+            TextAlignment = TextAlignment.Center,
+            Margin = new Thickness(0, 12, 0, 0)
+        };
+
+        var content = new StackPanel
+        {
+            Orientation = Orientation.Vertical
+        };
+        content.Children.Add(heading);
+        content.Children.Add(text);
+        content.Children.Add(progress);
+        content.Children.Add(hint);
+
+        var root = new Border
+        {
+            Background = Brushes.White,
+            BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C8D6E5")),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(24, 22, 24, 20),
+            Width = 420,
+            Child = content
         };
 
         var popup = new Window
@@ -524,9 +565,10 @@ public partial class App : Application
             ShowInTaskbar = false,
             ResizeMode = ResizeMode.NoResize,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            WindowStyle = WindowStyle.ToolWindow,
+            WindowStyle = WindowStyle.None,
+            AllowsTransparency = true,
             SizeToContent = SizeToContent.WidthAndHeight,
-            Background = Brushes.White,
+            Background = Brushes.Transparent,
             Topmost = true
         };
 

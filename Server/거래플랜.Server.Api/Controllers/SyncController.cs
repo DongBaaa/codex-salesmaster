@@ -873,7 +873,7 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, _officeScopeService.CurrentOfficeCode, existing?.TenantCode);
+            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, dto.Code, existing?.TenantCode, existing?.Code);
             scoped.Add(dto);
         }
 

@@ -611,9 +611,42 @@ public sealed class SyncService : IDisposable
             .Select(entity => LocalMappings.ToDto(entity, ReadTransactionAttachmentContent(entity)))
             .ToList();
         var inventoryTransfers = (await inventoryTransfersTask).Select(LocalMappings.ToDto).ToList();
-        var rentalManagementCompanies = (await rentalManagementCompaniesTask).Select(LocalMappings.ToDto).ToList();
-        var rentalBillingProfiles = (await rentalBillingProfilesTask).Select(LocalMappings.ToDto).ToList();
-        var rentalAssets = (await rentalAssetsTask).Select(LocalMappings.ToDto).ToList();
+        var dirtyRentalManagementCompanies = await rentalManagementCompaniesTask;
+        var dirtyRentalBillingProfiles = await rentalBillingProfilesTask;
+        var dirtyRentalAssets = await rentalAssetsTask;
+        var referencedRentalBillingProfiles = await LoadReferencedRentalBillingProfilesForPushAsync(
+            dirtyRentalAssets,
+            dirtyRentalBillingProfiles,
+            ct);
+        var referencedRentalManagementCompanies = await LoadReferencedRentalManagementCompaniesForPushAsync(
+            dirtyRentalAssets,
+            dirtyRentalBillingProfiles.Concat(referencedRentalBillingProfiles).ToList(),
+            dirtyRentalManagementCompanies,
+            ct);
+        if (referencedRentalManagementCompanies.Count > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 렌탈 관리업체 보강: 렌탈 자산/청구 프로필이 참조하는 관리업체 {referencedRentalManagementCompanies.Count}건을 함께 업로드합니다.");
+        }
+        if (referencedRentalBillingProfiles.Count > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 렌탈 청구 프로필 보강: 자산이 참조하는 청구 프로필 {referencedRentalBillingProfiles.Count}건을 함께 업로드합니다.");
+        }
+
+        var rentalManagementCompanies = dirtyRentalManagementCompanies
+            .Concat(referencedRentalManagementCompanies)
+            .GroupBy(company => company.Id)
+            .Select(group => LocalMappings.ToDto(group.First()))
+            .ToList();
+        var rentalBillingProfiles = dirtyRentalBillingProfiles
+            .Concat(referencedRentalBillingProfiles)
+            .GroupBy(profile => profile.Id)
+            .Select(group => LocalMappings.ToDto(group.First()))
+            .ToList();
+        var rentalAssets = dirtyRentalAssets.Select(LocalMappings.ToDto).ToList();
         var rentalBillingLogs = (await rentalBillingLogsTask).Select(LocalMappings.ToDto).ToList();
         var invoices = (await invoicesTask).Select(LocalMappings.ToDto).ToList();
         if (invoices.Count > 0)
@@ -753,6 +786,92 @@ public sealed class SyncService : IDisposable
         await MarkCleanAsync<LocalPayment>(req.Payments.Select(entity => entity.Id).ToList(), ct);
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task<List<LocalRentalBillingProfile>> LoadReferencedRentalBillingProfilesForPushAsync(
+        IReadOnlyCollection<LocalRentalAsset> dirtyRentalAssets,
+        IReadOnlyCollection<LocalRentalBillingProfile> dirtyRentalBillingProfiles,
+        CancellationToken ct)
+    {
+        if (dirtyRentalAssets.Count == 0)
+            return [];
+
+        var existingProfileIds = dirtyRentalBillingProfiles
+            .Select(profile => profile.Id)
+            .ToHashSet();
+
+        var referencedProfileIds = dirtyRentalAssets
+            .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
+            .Select(asset => asset.BillingProfileId!.Value)
+            .Distinct()
+            .Where(profileId => !existingProfileIds.Contains(profileId))
+            .ToList();
+
+        if (referencedProfileIds.Count == 0)
+            return [];
+
+        var referencedProfiles = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(profile => referencedProfileIds.Contains(profile.Id) && !profile.IsDeleted)
+            .ToListAsync(ct);
+
+        var missingProfileIds = referencedProfileIds
+            .Except(referencedProfiles.Select(profile => profile.Id))
+            .ToList();
+
+        if (missingProfileIds.Count > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 렌탈 청구 프로필 누락 감지: 로컬 자산이 참조하지만 로컬 청구 프로필이 없는 항목 {missingProfileIds.Count}건을 확인했습니다. " +
+                $"details={string.Join(", ", missingProfileIds.Take(10))}");
+        }
+
+        return referencedProfiles;
+    }
+
+    private async Task<List<LocalRentalManagementCompany>> LoadReferencedRentalManagementCompaniesForPushAsync(
+        IReadOnlyCollection<LocalRentalAsset> dirtyRentalAssets,
+        IReadOnlyCollection<LocalRentalBillingProfile> referencedRentalBillingProfiles,
+        IReadOnlyCollection<LocalRentalManagementCompany> dirtyRentalManagementCompanies,
+        CancellationToken ct)
+    {
+        var existingCodes = dirtyRentalManagementCompanies
+            .Select(company => (company.Code ?? string.Empty).Trim())
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var referencedCodes = dirtyRentalAssets
+            .Where(asset => !asset.IsDeleted)
+            .Select(asset => (asset.ManagementCompanyCode ?? string.Empty).Trim())
+            .Concat(referencedRentalBillingProfiles.Select(profile => (profile.ManagementCompanyCode ?? string.Empty).Trim()))
+            .Where(code => !string.IsNullOrWhiteSpace(code) && !existingCodes.Contains(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (referencedCodes.Count == 0)
+            return [];
+
+        var referencedCompanies = await _db.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(company => referencedCodes.Contains(company.Code) && !company.IsDeleted)
+            .ToListAsync(ct);
+
+        var missingCodes = referencedCodes
+            .Except(referencedCompanies.Select(company => company.Code), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (missingCodes.Count > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 렌탈 관리업체 누락 감지: 로컬 자산/청구 프로필이 참조하지만 로컬 관리업체가 없는 코드 {missingCodes.Count}건을 확인했습니다. " +
+                $"details={string.Join(", ", missingCodes.Take(10))}");
+        }
+
+        return referencedCompanies;
     }
 
     private async Task ResolveServerNewerConflictsAsync(IReadOnlyCollection<ConflictLogDto> conflicts, CancellationToken ct)
