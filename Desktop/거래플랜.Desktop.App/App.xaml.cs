@@ -152,7 +152,7 @@ public partial class App : Application
             if (initSucceeded)
             {
                 UiTaskHelper.Forget(
-                    mainVm.RunPostLoginSyncAsync(),
+                    RunPostLoginSyncWithPopupAsync(mainWin, mainVm, sp.GetRequiredService<SessionState>()),
                     "APP",
                     "로그인 후 자동 동기화",
                     ex => AppLogger.Error("APP", "Post-login sync scheduling failure", ex));
@@ -390,6 +390,47 @@ public partial class App : Application
         }
     }
 
+    private async Task RunPostLoginSyncWithPopupAsync(MainWindow mainWin, MainViewModel mainVm, SessionState session)
+    {
+        if (session.IsOfflineMode)
+        {
+            await mainVm.RunPostLoginSyncAsync();
+            return;
+        }
+
+        Window? popup = null;
+        try
+        {
+            await Dispatcher.InvokeAsync(() =>
+            {
+                mainWin.IsEnabled = false;
+                popup = ShowActivityPopup(
+                    mainWin,
+                    "거래플랜 동기화",
+                    "로그인 후 데이터를 불러오고 있습니다.\n잠시만 기다려 주세요...");
+            }, DispatcherPriority.Background);
+
+            await mainVm.RunPostLoginSyncAsync();
+        }
+        finally
+        {
+            await Dispatcher.InvokeAsync(() =>
+            {
+                try
+                {
+                    popup?.Close();
+                }
+                catch
+                {
+                    // ignored
+                }
+
+                mainWin.IsEnabled = true;
+                mainWin.Activate();
+            }, DispatcherPriority.Background);
+        }
+    }
+
     private async Task<SaveCycleResult> RunSaveCycleAsync(IServiceProvider sp, MainViewModel mainVm, bool isShutdown)
     {
         if (isShutdown)
@@ -445,10 +486,13 @@ public partial class App : Application
     }
 
     private static Window ShowShutdownSavingPopup(Window owner)
+        => ShowActivityPopup(owner, "거래플랜", "종료 전 저장 중입니다.\n데이터를 서버와 동기화하고 있습니다...");
+
+    private static Window ShowActivityPopup(Window owner, string title, string message)
     {
         var text = new TextBlock
         {
-            Text = "종료 전 저장 중입니다.\n데이터를 서버와 동기화하고 있습니다...",
+            Text = message,
             FontFamily = new FontFamily("맑은 고딕"),
             FontSize = 15,
             Foreground = Brushes.Black,
@@ -474,7 +518,7 @@ public partial class App : Application
 
         var popup = new Window
         {
-            Title = "거래플랜",
+            Title = title,
             Content = root,
             Owner = owner,
             ShowInTaskbar = false,
