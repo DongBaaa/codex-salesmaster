@@ -49,13 +49,34 @@ function Get-Utf8String {
 function Invoke-RobocopyMirror {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
-        [Parameter(Mandatory = $true)][string]$Destination
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [int]$RetryCount = 5,
+        [int]$RetryDelaySeconds = 2
     )
 
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-    & robocopy $Source $Destination /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
-    if ($LASTEXITCODE -ge 8) {
-        throw "robocopy failed ($LASTEXITCODE): $Source -> $Destination"
+
+    for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
+        $output = & robocopy $Source $Destination /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP 2>&1
+        $exitCode = $LASTEXITCODE
+
+        if ($exitCode -lt 8) {
+            return
+        }
+
+        Write-Host ("robocopy attempt {0}/{1} failed ({2}): {3} -> {4}" -f $attempt, $RetryCount, $exitCode, $Source, $Destination)
+        foreach ($line in @($output)) {
+            if ($null -ne $line -and -not [string]::IsNullOrWhiteSpace($line.ToString())) {
+                Write-Host ("  {0}" -f $line.ToString().TrimEnd())
+            }
+        }
+
+        if ($attempt -lt $RetryCount) {
+            Start-Sleep -Seconds $RetryDelaySeconds
+        }
+        else {
+            throw "robocopy failed ($exitCode): $Source -> $Destination"
+        }
     }
 }
 
@@ -335,13 +356,35 @@ param(
 function Invoke-RobocopyMirror {
     param(
         [Parameter(Mandatory = `$true)][string]`$Source,
-        [Parameter(Mandatory = `$true)][string]`$Destination
+        [Parameter(Mandatory = `$true)][string]`$Destination,
+        [int]`$RetryCount = 5,
+        [int]`$RetryDelaySeconds = 2
     )
 
     New-Item -ItemType Directory -Force -Path `$Destination | Out-Null
-    & robocopy `$Source `$Destination /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
-    if (`$LASTEXITCODE -ge 8) {
-        throw "robocopy failed (`$LASTEXITCODE): `$Source -> `$Destination"
+
+    for (`$attempt = 1; `$attempt -le `$RetryCount; `$attempt++) {
+        `$output = & robocopy `$Source `$Destination /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP 2>&1
+        `$exitCode = `$LASTEXITCODE
+
+        if (`$exitCode -lt 8) {
+            return
+        }
+
+        Write-InstallLog ("robocopy {0}/{1} 실패 ({2}): {3} -> {4}" -f `$attempt, `$RetryCount, `$exitCode, `$Source, `$Destination)
+        foreach (`$line in @(`$output)) {
+            if (`$null -ne `$line -and -not [string]::IsNullOrWhiteSpace(`$line.ToString())) {
+                Write-InstallLog ("robocopy> {0}" -f `$line.ToString().TrimEnd())
+            }
+        }
+
+        if (`$attempt -lt `$RetryCount) {
+            Write-InstallLog ("파일 잠금 해제를 기다린 뒤 {0}초 후 재시도합니다." -f `$RetryDelaySeconds)
+            Start-Sleep -Seconds `$RetryDelaySeconds
+        }
+        else {
+            throw "robocopy failed (`$exitCode): `$Source -> `$Destination"
+        }
     }
 }
 
