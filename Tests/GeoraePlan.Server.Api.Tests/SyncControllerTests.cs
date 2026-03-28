@@ -358,6 +358,60 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_ReusesExistingRentalAsset_WhenIncomingIdDiffersButManagementNumberMatches()
+    {
+        var existing = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+            AssetKey = "ITWORLD|2603-321|321|SYNC-ASSET|MODEL-Z",
+            ManagementId = "321",
+            ManagementNumber = "2603-321",
+            CustomerName = "기존 거래처",
+            ItemName = "MODEL-Z",
+            CurrentLocation = "창고",
+            CreatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.RentalAssets.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    ManagementId = existing.ManagementId,
+                    ManagementNumber = existing.ManagementNumber,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    CurrentLocation = "렌탈",
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(5)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var assets = await _dbContext.RentalAssets.IgnoreQueryFilters().ToListAsync();
+        Assert.Single(assets);
+        Assert.Equal(existing.Id, assets[0].Id);
+        Assert.Equal("렌탈", assets[0].CurrentLocation);
+        Assert.Equal(existing.ManagementNumber, assets[0].ManagementNumber);
+    }
+
+    [Fact]
     public async Task Pull_IncludesCrossTenantDeliveryData_ForUserWithDeliveryViewAll()
     {
         var usenetCustomer = new Customer

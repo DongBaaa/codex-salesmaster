@@ -924,7 +924,7 @@ public sealed class SyncService : IDisposable
         await UpsertPulledInventoryTransfersAsync(pull.InventoryTransfers, ct);
         await UpsertPulledAsync(pull.RentalManagementCompanies, _db.RentalManagementCompanies, LocalMappings.ToLocal, ct);
         await UpsertPulledAsync(pull.RentalBillingProfiles, _db.RentalBillingProfiles, LocalMappings.ToLocal, ct);
-        await UpsertPulledAsync(pull.RentalAssets, _db.RentalAssets, LocalMappings.ToLocal, ct);
+        await UpsertPulledRentalAssetsAsync(pull.RentalAssets, ct);
         await UpsertPulledAsync(pull.RentalBillingLogs, _db.RentalBillingLogs, LocalMappings.ToLocal, ct);
         await UpsertPulledInvoicesAsync(pull.Invoices, ct);
         await UpsertPulledAsync(pull.Payments, _db.Payments, LocalMappings.ToLocal, ct);
@@ -957,6 +957,179 @@ public sealed class SyncService : IDisposable
             }
         }
         await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task UpsertPulledRentalAssetsAsync(
+        IReadOnlyList<RentalAssetDto> dtos,
+        CancellationToken ct)
+    {
+        var skippedIncomingIds = await RemoveStalePulledRentalAssetConflictsAsync(dtos, ct);
+
+        foreach (var dto in dtos)
+        {
+            if (skippedIncomingIds.Contains(dto.Id))
+                continue;
+
+            var local = LocalMappings.ToLocal(dto);
+            local.IsDirty = false;
+
+            var existing = await _db.RentalAssets.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(asset => asset.Id == local.Id, ct);
+            if (existing is null)
+            {
+                _db.RentalAssets.Add(local);
+            }
+            else if (!existing.IsDirty)
+            {
+                _db.Entry(existing).CurrentValues.SetValues(local);
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task<HashSet<Guid>> RemoveStalePulledRentalAssetConflictsAsync(
+        IReadOnlyList<RentalAssetDto> dtos,
+        CancellationToken ct)
+    {
+        if (dtos.Count == 0)
+            return [];
+
+        var incomingByManagementNumber = BuildIncomingRentalAssetLookup(
+            dtos,
+            dto => dto.ManagementNumber);
+        var incomingByManagementId = BuildIncomingRentalAssetLookup(
+            dtos,
+            dto => dto.ManagementId);
+        var incomingByAssetKey = BuildIncomingRentalAssetLookup(
+            dtos,
+            dto => dto.AssetKey);
+
+        if (incomingByManagementNumber.Count == 0 &&
+            incomingByManagementId.Count == 0 &&
+            incomingByAssetKey.Count == 0)
+        {
+            return [];
+        }
+
+        var managementNumbers = incomingByManagementNumber.Keys.ToList();
+        var managementIds = incomingByManagementId.Keys.ToList();
+        var assetKeys = incomingByAssetKey.Keys.ToList();
+
+        var candidateQuery = _db.RentalAssets.IgnoreQueryFilters().Where(asset =>
+            (managementNumbers.Count > 0 && managementNumbers.Contains(asset.ManagementNumber)) ||
+            (managementIds.Count > 0 && managementIds.Contains(asset.ManagementId)) ||
+            (assetKeys.Count > 0 && assetKeys.Contains(asset.AssetKey)));
+
+        var candidates = await candidateQuery.ToListAsync(ct);
+        if (candidates.Count == 0)
+            return [];
+
+        var staleConflictIds = new HashSet<Guid>();
+        var skippedIncomingIds = new HashSet<Guid>();
+        var dirtyConflictDetails = new List<string>();
+
+        foreach (var candidate in candidates)
+        {
+            var matchingIncomingIds = GetMatchingIncomingRentalAssetIds(
+                candidate,
+                incomingByManagementNumber,
+                incomingByManagementId,
+                incomingByAssetKey);
+
+            if (matchingIncomingIds.Count == 0 || matchingIncomingIds.Contains(candidate.Id))
+                continue;
+
+            if (candidate.IsDirty)
+            {
+                foreach (var incomingId in matchingIncomingIds)
+                    skippedIncomingIds.Add(incomingId);
+
+                dirtyConflictDetails.Add(
+                    $"{candidate.ManagementNumber}/{candidate.ManagementId} -> {candidate.Id}");
+                continue;
+            }
+
+            staleConflictIds.Add(candidate.Id);
+        }
+
+        if (staleConflictIds.Count > 0)
+        {
+            _db.ChangeTracker.Clear();
+            await _db.RentalAssets.IgnoreQueryFilters()
+                .Where(asset => staleConflictIds.Contains(asset.Id))
+                .ExecuteDeleteAsync(ct);
+            _db.ChangeTracker.Clear();
+
+            AppLogger.Warn(
+                "SYNC",
+                $"렌탈 자산 pull 충돌 복구: 관리번호/관리ID가 같은 로컬 자산 {staleConflictIds.Count}건을 서버 기준으로 정리했습니다.");
+        }
+
+        if (dirtyConflictDetails.Count > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"렌탈 자산 pull 충돌 보류: 로컬 수정 중인 자산 {dirtyConflictDetails.Count}건은 덮어쓰지 않았습니다. " +
+                $"details={string.Join(", ", dirtyConflictDetails.Take(10))}");
+        }
+
+        return skippedIncomingIds;
+    }
+
+    private static Dictionary<string, HashSet<Guid>> BuildIncomingRentalAssetLookup(
+        IReadOnlyList<RentalAssetDto> dtos,
+        Func<RentalAssetDto, string?> keySelector)
+    {
+        var lookup = new Dictionary<string, HashSet<Guid>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var dto in dtos)
+        {
+            var normalizedKey = NormalizeRentalAssetNaturalKey(keySelector(dto));
+            if (string.IsNullOrWhiteSpace(normalizedKey))
+                continue;
+
+            if (!lookup.TryGetValue(normalizedKey, out var ids))
+            {
+                ids = [];
+                lookup[normalizedKey] = ids;
+            }
+
+            ids.Add(dto.Id);
+        }
+
+        return lookup;
+    }
+
+    private static HashSet<Guid> GetMatchingIncomingRentalAssetIds(
+        LocalRentalAsset candidate,
+        IReadOnlyDictionary<string, HashSet<Guid>> incomingByManagementNumber,
+        IReadOnlyDictionary<string, HashSet<Guid>> incomingByManagementId,
+        IReadOnlyDictionary<string, HashSet<Guid>> incomingByAssetKey)
+    {
+        var matchingIds = new HashSet<Guid>();
+
+        AddIncomingRentalAssetIds(matchingIds, incomingByManagementNumber, candidate.ManagementNumber);
+        AddIncomingRentalAssetIds(matchingIds, incomingByManagementId, candidate.ManagementId);
+        AddIncomingRentalAssetIds(matchingIds, incomingByAssetKey, candidate.AssetKey);
+
+        return matchingIds;
+    }
+
+    private static void AddIncomingRentalAssetIds(
+        HashSet<Guid> target,
+        IReadOnlyDictionary<string, HashSet<Guid>> lookup,
+        string? value)
+    {
+        var normalizedKey = NormalizeRentalAssetNaturalKey(value);
+        if (string.IsNullOrWhiteSpace(normalizedKey))
+            return;
+
+        if (!lookup.TryGetValue(normalizedKey, out var ids))
+            return;
+
+        foreach (var id in ids)
+            target.Add(id);
     }
 
     private async Task UpsertPulledSelectionOptionsAsync<TLocal, TDto>(
@@ -1225,6 +1398,9 @@ public sealed class SyncService : IDisposable
     }
 
     private static string NormalizeOptionName(string? value)
+        => (value ?? string.Empty).Trim();
+
+    private static string NormalizeRentalAssetNaturalKey(string? value)
         => (value ?? string.Empty).Trim();
 
     private async Task UpsertPulledInvoicesAsync(IReadOnlyList<InvoiceDto> dtos, CancellationToken ct)

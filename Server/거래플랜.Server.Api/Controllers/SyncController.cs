@@ -967,6 +967,13 @@ public sealed class SyncController : ControllerBase
             dto.Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id;
             var existing = await _dbContext.RentalAssets.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            if (existing is null)
+            {
+                existing = await FindExistingRentalAssetByNaturalKeyAsync(dto, cancellationToken);
+                if (existing is not null)
+                    dto.Id = existing.Id;
+            }
+
             if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.OfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(RentalAsset), "Current account cannot modify this office scope.", result);
@@ -989,6 +996,40 @@ public sealed class SyncController : ControllerBase
         }
 
         return scoped;
+    }
+
+    private async Task<RentalAsset?> FindExistingRentalAssetByNaturalKeyAsync(
+        RentalAssetDto dto,
+        CancellationToken cancellationToken)
+    {
+        var managementNumber = dto.ManagementNumber?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(managementNumber))
+        {
+            var byManagementNumber = await _dbContext.RentalAssets.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(asset => asset.ManagementNumber == managementNumber, cancellationToken);
+            if (byManagementNumber is not null)
+                return byManagementNumber;
+        }
+
+        var managementId = dto.ManagementId?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(managementId))
+        {
+            var byManagementId = await _dbContext.RentalAssets.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(asset => asset.ManagementId == managementId, cancellationToken);
+            if (byManagementId is not null)
+                return byManagementId;
+        }
+
+        var assetKey = dto.AssetKey?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(assetKey))
+        {
+            var byAssetKey = await _dbContext.RentalAssets.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(asset => asset.AssetKey == assetKey, cancellationToken);
+            if (byAssetKey is not null)
+                return byAssetKey;
+        }
+
+        return null;
     }
 
     private async Task EnsureRentalAssetIdentifiersAsync(
