@@ -135,11 +135,15 @@ public sealed class SyncController : ControllerBase
         var validCustomerMasters = await FilterValidCustomerMastersAsync(scopedCustomerMasters, result, cancellationToken);
         await UpsertEntitiesAsync(validCustomerMasters, _dbContext.CustomerMasters,
             (e, d) => e.Apply(d), d => new CustomerMaster { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        if (validCustomerMasters.Count > 0)
+            await _dbContext.SaveChangesAsync(cancellationToken);
         var scopedCustomers = await PrepareScopedCustomersAsync(request.Customers ?? [], result, cancellationToken);
         var validCustomers = await FilterValidCustomersAsync(scopedCustomers, result, cancellationToken);
         await UpsertEntitiesAsync(validCustomers, _dbContext.Customers,
             (e, d) => e.Apply(d), d => new Customer { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
         await CascadeDeletedCustomerContractsAsync(validCustomers, cancellationToken);
+        if (validCustomers.Count > 0)
+            await _dbContext.SaveChangesAsync(cancellationToken);
         var validCustomerContracts = await FilterValidCustomerContractsAsync(request.CustomerContracts ?? [], result, cancellationToken);
         await UpsertEntitiesAsync(validCustomerContracts, _dbContext.CustomerContracts,
             (e, d) => e.Apply(d), d => new CustomerContract { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
@@ -147,6 +151,8 @@ public sealed class SyncController : ControllerBase
         var scopedItems = await PrepareScopedItemsAsync(request.Items ?? [], result, cancellationToken);
         await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
             (e, d) => e.Apply(d), d => new Item { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        if (scopedItems.Count > 0)
+            await _dbContext.SaveChangesAsync(cancellationToken);
         await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], cancellationToken);
         var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
         await UpsertInvoicesAsync(validInvoices, result, cancellationToken);
@@ -156,6 +162,8 @@ public sealed class SyncController : ControllerBase
         var validTransactions = await FilterValidTransactionsAsync(scopedTransactions, result, cancellationToken);
         await UpsertEntitiesAsync(validTransactions, _dbContext.Transactions,
             (e, d) => e.Apply(d), d => new TransactionRecord { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        if (validTransactions.Count > 0)
+            await _dbContext.SaveChangesAsync(cancellationToken);
         var validTransactionAttachments = await FilterValidTransactionAttachmentsAsync(request.TransactionAttachments ?? [], result, cancellationToken);
         await UpsertEntitiesAsync(validTransactionAttachments, _dbContext.TransactionAttachments,
             (e, d) => e.Apply(d), d => new TransactionAttachment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
@@ -166,9 +174,13 @@ public sealed class SyncController : ControllerBase
         var scopedRentalCompanies = await PrepareScopedRentalManagementCompaniesAsync(request.RentalManagementCompanies ?? [], result, cancellationToken);
         await UpsertEntitiesAsync(scopedRentalCompanies, _dbContext.RentalManagementCompanies,
             (e, d) => e.Apply(d), d => new RentalManagementCompany { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        if (scopedRentalCompanies.Count > 0)
+            await _dbContext.SaveChangesAsync(cancellationToken);
         var scopedRentalProfiles = await PrepareScopedRentalBillingProfilesAsync(request.RentalBillingProfiles ?? [], result, cancellationToken);
         var validRentalProfiles = await FilterValidRentalBillingProfilesAsync(scopedRentalProfiles, result, cancellationToken);
         await UpsertRentalBillingProfilesAsync(validRentalProfiles, result, cancellationToken);
+        if (validRentalProfiles.Count > 0)
+            await _dbContext.SaveChangesAsync(cancellationToken);
         var requiresRentalAssetLock = (request.RentalAssets?.Count ?? 0) > 0;
         if (requiresRentalAssetLock)
             await RentalAssetSyncLock.WaitAsync(cancellationToken);
@@ -980,24 +992,7 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
-            if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
-            {
-                var customer = await _dbContext.Customers.IgnoreQueryFilters()
-                    .FirstOrDefaultAsync(x => x.Id == dto.CustomerId.Value, cancellationToken);
-                if (customer is null || customer.IsDeleted)
-                {
-                    AddClientConflict(dto, nameof(RentalBillingProfile),
-                        $"Referenced customer was not found: {dto.CustomerId}.", result);
-                    continue;
-                }
-
-                if (!CanReadCustomerForRentalReference(customer))
-                {
-                    AddClientConflict(dto, nameof(RentalBillingProfile),
-                        $"Referenced customer is outside the readable office scope: {dto.CustomerId}.", result);
-                    continue;
-                }
-            }
+            dto.CustomerId = await ResolveRentalBillingProfileCustomerReferenceAsync(dto, cancellationToken);
 
             if (!string.IsNullOrWhiteSpace(dto.ManagementCompanyCode))
             {
@@ -1016,6 +1011,74 @@ public sealed class SyncController : ControllerBase
         }
 
         return valid;
+    }
+
+    private async Task<Guid?> ResolveRentalBillingProfileCustomerReferenceAsync(
+        RentalBillingProfileDto dto,
+        CancellationToken cancellationToken)
+    {
+        if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
+        {
+            var directCustomer = await _dbContext.Customers.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(customer => customer.Id == dto.CustomerId.Value, cancellationToken);
+            if (directCustomer is not null &&
+                !directCustomer.IsDeleted &&
+                CanReadCustomerForRentalReference(directCustomer))
+            {
+                return directCustomer.Id;
+            }
+        }
+
+        var preferredOfficeCode = _officeScopeService.ResolveScopeForRentalCreate(dto.OfficeCode, null);
+        var preferredTenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, preferredOfficeCode);
+        var normalizedBusinessNumber = (dto.BusinessNumber ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(normalizedBusinessNumber))
+        {
+            var businessMatches = await _dbContext.Customers.IgnoreQueryFilters()
+                .Where(customer =>
+                    !customer.IsDeleted &&
+                    customer.BusinessNumber == normalizedBusinessNumber)
+                .OrderByDescending(customer => customer.UpdatedAtUtc)
+                .ToListAsync(cancellationToken);
+            var resolvedBusinessMatch = ResolveReadableCustomerReference(
+                businessMatches,
+                preferredOfficeCode,
+                preferredTenantCode);
+            if (resolvedBusinessMatch.HasValue)
+                return resolvedBusinessMatch.Value;
+        }
+
+        var normalizedCustomerName = (dto.CustomerName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedCustomerName))
+            return null;
+
+        var exactNameMatches = await _dbContext.Customers.IgnoreQueryFilters()
+            .Where(customer =>
+                !customer.IsDeleted &&
+                customer.NameOriginal == normalizedCustomerName)
+            .OrderByDescending(customer => customer.UpdatedAtUtc)
+            .ToListAsync(cancellationToken);
+        var resolvedExactNameMatch = ResolveReadableCustomerReference(
+            exactNameMatches,
+            preferredOfficeCode,
+            preferredTenantCode);
+        if (resolvedExactNameMatch.HasValue)
+            return resolvedExactNameMatch.Value;
+
+        var normalizedMatchKey = MatchKeyNormalizer.Normalize(normalizedCustomerName);
+        if (string.IsNullOrWhiteSpace(normalizedMatchKey))
+            return null;
+
+        var nameKeyMatches = await _dbContext.Customers.IgnoreQueryFilters()
+            .Where(customer =>
+                !customer.IsDeleted &&
+                customer.NameMatchKey == normalizedMatchKey)
+            .OrderByDescending(customer => customer.UpdatedAtUtc)
+            .ToListAsync(cancellationToken);
+        return ResolveReadableCustomerReference(
+            nameKeyMatches,
+            preferredOfficeCode,
+            preferredTenantCode);
     }
 
     private async Task<List<RentalAssetDto>> PrepareScopedRentalAssetsAsync(

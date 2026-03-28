@@ -476,6 +476,259 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_AcceptsRentalBillingProfile_WhenReferencedManagementCompanyIsInSameBatch()
+    {
+        var companyId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var createdAtUtc = new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc);
+
+        var request = new SyncPushRequest
+        {
+            RentalManagementCompanies =
+            [
+                new RentalManagementCompanyDto
+                {
+                    Id = companyId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    Code = OfficeCodeCatalog.Itworld,
+                    Name = "아이티월드",
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ],
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ProfileKey = "ITWORLD|1112233334|동시등록거래처||IMC2010",
+                    CustomerName = "동시등록거래처",
+                    BusinessNumber = "111-22-33334",
+                    ItemName = "IMC2010",
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    BillingDay = 25,
+                    MonthlyAmount = 55000m,
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        var storedCompany = await _dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+            .SingleAsync(company => company.Code == OfficeCodeCatalog.Itworld);
+        var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync();
+
+        Assert.Equal(TenantScopeCatalog.Itworld, storedCompany.TenantCode);
+        Assert.Equal(profileId, storedProfile.Id);
+        Assert.Equal(OfficeCodeCatalog.Itworld, storedProfile.ManagementCompanyCode);
+    }
+
+    [Fact]
+    public async Task Push_AcceptsRentalBillingProfile_WhenReferencedCustomerIsInSameBatch()
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var createdAtUtc = new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc);
+
+        var request = new SyncPushRequest
+        {
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = customerId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = "동시등록렌탈거래처",
+                    NameMatchKey = "동시등록렌탈거래처",
+                    TradeType = "매출",
+                    BusinessNumber = "555-66-77777",
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ],
+            RentalManagementCompanies =
+            [
+                new RentalManagementCompanyDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    Code = OfficeCodeCatalog.Itworld,
+                    Name = "아이티월드",
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ],
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ProfileKey = "ITWORLD|5556677777|동시등록렌탈거래처||BP-1",
+                    CustomerId = customerId,
+                    CustomerName = "동시등록렌탈거래처",
+                    BusinessNumber = "555-66-77777",
+                    ItemName = "BP-1",
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    BillingDay = 15,
+                    MonthlyAmount = 66000m,
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync();
+        Assert.Equal(customerId, storedProfile.CustomerId);
+    }
+
+    [Fact]
+    public async Task Push_ReusesReadableRentalBillingProfileCustomer_WhenIncomingCustomerIdIsStale()
+    {
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "한길노무법인",
+            NameMatchKey = "한길노무법인",
+            TradeType = "매출",
+            BusinessNumber = "998-87-76655"
+        });
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "유즈넷"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "USENET|9988776655|한길노무법인||IMC2010",
+                    CustomerId = Guid.NewGuid(),
+                    CustomerName = "한길노무법인",
+                    BusinessNumber = "998-87-76655",
+                    ItemName = "IMC2010",
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    BillingDay = 25,
+                    MonthlyAmount = 44000m,
+                    CreatedAtUtc = new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync();
+        Assert.NotNull(storedProfile.CustomerId);
+        Assert.Equal("한길노무법인", storedProfile.CustomerName);
+        Assert.Equal("998-87-76655", storedProfile.BusinessNumber);
+    }
+
+    [Fact]
+    public async Task Push_AcceptsRentalAsset_WhenReferencedBillingProfileIsInSameBatch()
+    {
+        var companyId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var createdAtUtc = new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc);
+
+        var request = new SyncPushRequest
+        {
+            RentalManagementCompanies =
+            [
+                new RentalManagementCompanyDto
+                {
+                    Id = companyId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    Code = OfficeCodeCatalog.Usenet,
+                    Name = "유즈넷",
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ],
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "USENET|1234509876|동시등록렌탈거래처||MXC3000",
+                    CustomerName = "동시등록렌탈거래처",
+                    BusinessNumber = "123-45-09876",
+                    ItemName = "MXC3000",
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    BillingDay = 10,
+                    MonthlyAmount = 88000m,
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementId = "501",
+                    ManagementNumber = "2603-501",
+                    AssetKey = "USENET|2603-501|501|동시등록렌탈거래처|MXC3000",
+                    CustomerName = "동시등록렌탈거래처",
+                    ItemName = "MXC3000",
+                    BillingProfileId = profileId,
+                    CurrentLocation = "렌탈",
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        var storedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync();
+        Assert.Equal(assetId, storedAsset.Id);
+        Assert.Equal(profileId, storedAsset.BillingProfileId);
+        Assert.Equal("2603-501", storedAsset.ManagementNumber);
+    }
+
+    [Fact]
     public async Task Push_ReusesExistingRentalAssetBillingProfile_WhenIncomingBillingProfileIdIsStale()
     {
         _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
