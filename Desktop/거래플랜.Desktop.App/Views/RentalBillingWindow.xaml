@@ -170,7 +170,7 @@
                         <DataGridTextColumn Header="청구일" Binding="{Binding Source.BillingDay}" Width="70" IsReadOnly="True"/>
                         <DataGridTextColumn Header="주기(月)" Binding="{Binding Source.BillingCycleMonths}" Width="78" IsReadOnly="True"/>
                         <DataGridTextColumn Header="월청구대금" Binding="{Binding Source.MonthlyAmount, StringFormat=N0}" Width="120" IsReadOnly="True"/>
-                        <DataGridTextColumn Header="담당계정" Binding="{Binding Source.AssignedUsername}" Width="110" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="담당계정" Binding="{Binding AssignedUsernameDisplay}" Width="110" IsReadOnly="True"/>
                         <DataGridTextColumn Header="자산수" Binding="{Binding AssetCount}" Width="70" IsReadOnly="True"/>
                     </DataGrid.Columns>
                 </DataGrid>

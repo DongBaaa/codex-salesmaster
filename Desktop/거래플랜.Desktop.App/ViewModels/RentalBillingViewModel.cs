@@ -3,6 +3,7 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -15,6 +16,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private readonly RentalStateService _rental;
     private readonly LocalStateService _local;
     private readonly SessionState _session;
+    private bool _suppressFilterReload;
+    private bool _pendingFilterReload;
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private DisplayOption? _selectedOfficeFilter;
@@ -79,7 +82,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public LocalStateService LocalStateService => _local;
     public SessionState SessionState => _session;
 
-    private bool CanEditCurrentSelection => SelectedRow is null || CanEditScope(SelectedRow.Source.AssignedUsername, SelectedRow.Source.ResponsibleOfficeCode);
+    private bool CanEditCurrentSelection => SelectedRow is null || CanEditScope(
+        SelectedRow.Source.AssignedUsername,
+        string.IsNullOrWhiteSpace(SelectedRow.Source.ResponsibleOfficeCode)
+            ? SelectedRow.Source.ManagementCompanyCode
+            : SelectedRow.Source.ResponsibleOfficeCode);
 
     public RentalBillingViewModel(RentalStateService rental, LocalStateService local, SessionState session)
     {
@@ -119,9 +126,16 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     partial void OnEditSettledAmountChanged(decimal value) => SyncOutstandingAmount();
     partial void OnEditFollowUpNoteChanged(string value) => CompletionNote = value;
     partial void OnCompletionNoteChanged(string value) => EditFollowUpNote = value;
+    partial void OnSearchTextChanged(string value) => RequestFilterReload();
+    partial void OnSelectedOfficeFilterChanged(DisplayOption? value) => RequestFilterReload();
+    partial void OnSelectedAssignedUsernameFilterChanged(string value) => RequestFilterReload();
+    partial void OnSelectedStatusFilterChanged(string value) => RequestFilterReload();
+    partial void OnDueOnlyChanged(bool value) => RequestFilterReload();
+    partial void OnReferenceDateChanged(DateOnly value) => RequestFilterReload();
 
     public async Task LoadAsync()
     {
+        await _rental.RepairRoleBasedAssignedUsernamesAsync();
         await ReloadFiltersAsync();
         await ReloadAsync();
         NewProfile();
@@ -130,35 +144,50 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [RelayCommand]
     private async Task ReloadAsync()
     {
-        var selectedId = SelectedRow?.Source.Id;
-        IsBusy = true;
-        try
+        if (IsBusy)
         {
-            var rows = await _rental.GetBillingRowsAsync(new RentalBillingFilter
+            _pendingFilterReload = true;
+            return;
+        }
+
+        do
+        {
+            _pendingFilterReload = false;
+            var selectedId = SelectedRow?.Source.Id;
+            IsBusy = true;
+            try
             {
-                SearchText = SearchText,
-                OfficeCode = SelectedOfficeFilter?.Value == AllOption ? string.Empty : SelectedOfficeFilter?.Value ?? string.Empty,
-                AssignedUsername = SelectedAssignedUsernameFilter == AllOption ? string.Empty : SelectedAssignedUsernameFilter,
-                Status = SelectedStatusFilter == AllOption ? string.Empty : SelectedStatusFilter,
-                DueOnly = DueOnly,
-                ReferenceDate = ReferenceDate
-            }, _session);
+                var rows = await _rental.GetBillingRowsAsync(new RentalBillingFilter
+                {
+                    SearchText = SearchText,
+                    OfficeCode = SelectedOfficeFilter?.Value == AllOption ? string.Empty : SelectedOfficeFilter?.Value ?? string.Empty,
+                    AssignedUsername = SelectedAssignedUsernameFilter == AllOption ? string.Empty : SelectedAssignedUsernameFilter,
+                    Status = SelectedStatusFilter == AllOption ? string.Empty : SelectedStatusFilter,
+                    DueOnly = DueOnly,
+                    ReferenceDate = ReferenceDate
+                }, _session);
 
-            Rows.Clear();
-            foreach (var row in rows)
-                Rows.Add(row);
+                Rows.Clear();
+                foreach (var row in rows)
+                    Rows.Add(row);
 
-            StatusMessage = rows.Count == 0
-                ? "조건에 맞는 렌탈 청구 대상이 없습니다."
-                : $"렌탈 청구 {rows.Count:N0}건을 조회했습니다.";
+                StatusMessage = rows.Count == 0
+                    ? "조건에 맞는 렌탈 청구 대상이 없습니다."
+                    : $"렌탈 청구 {rows.Count:N0}건을 조회했습니다.";
 
-            if (selectedId.HasValue)
-                SelectRow(selectedId.Value);
+                if (selectedId.HasValue)
+                {
+                    SelectedRow = Rows.FirstOrDefault(row => row.Source.Id == selectedId.Value);
+                    if (SelectedRow is null)
+                        NewProfile();
+                }
+            }
+            finally
+            {
+                IsBusy = false;
+            }
         }
-        finally
-        {
-            IsBusy = false;
-        }
+        while (_pendingFilterReload);
     }
 
     [RelayCommand]
@@ -444,9 +473,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditFollowUpNote = source.FollowUpNote;
         EditSubmissionDocuments = source.SubmissionDocuments;
         EditNotes = source.Notes;
-        EditAssignedUsername = string.IsNullOrWhiteSpace(source.AssignedUsername)
-            ? (_session.User?.Username ?? string.Empty)
-            : source.AssignedUsername;
+        EditAssignedUsername = _rental.GetAssignedUsernameDisplay(
+            source.AssignedUsername,
+            source.ResponsibleOfficeCode,
+            source.ManagementCompanyCode);
+        if (string.IsNullOrWhiteSpace(EditAssignedUsername))
+            EditAssignedUsername = _session.User?.Username ?? string.Empty;
         EditBillingAnchorDate = ToDateTime(source.BillingAnchorDate);
         EditContractDate = ToDateTime(source.ContractDate);
         EditContractStartDate = ToDateTime(source.ContractStartDate);
@@ -465,27 +497,42 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private async Task ReloadFiltersAsync()
     {
-        OfficeOptions.Clear();
-        OfficeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
-        foreach (var office in await _local.GetOfficesAsync())
+        _suppressFilterReload = true;
+        try
         {
-            OfficeOptions.Add(new DisplayOption
+            var currentFilterValue = SelectedOfficeFilter?.Value ?? AllOption;
+
+            OfficeOptions.Clear();
+            OfficeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
+            foreach (var office in await _local.GetOfficesAsync())
             {
-                Value = office.Code,
-                DisplayName = office.Name
-            });
+                OfficeOptions.Add(new DisplayOption
+                {
+                    Value = office.Code,
+                    DisplayName = office.Name
+                });
+            }
+
+            SelectedOfficeFilter = OfficeOptions.FirstOrDefault(option =>
+                                       string.Equals(option.Value, currentFilterValue, StringComparison.OrdinalIgnoreCase))
+                                   ?? OfficeOptions.FirstOrDefault(option => option.Value == AllOption)
+                                   ?? OfficeOptions.FirstOrDefault();
+
+            if (!OfficeOptions.Any(option => option.Value == EditOfficeCode) && OfficeOptions.Count > 1)
+                EditOfficeCode = OfficeOptions[1].Value;
+
+            AssignedUsernameOptions.Clear();
+            AssignedUsernameOptions.Add(AllOption);
+            foreach (var username in await _rental.GetAssignedUsernamesAsync())
+                AssignedUsernameOptions.Add(username);
+
+            if (!AssignedUsernameOptions.Contains(SelectedAssignedUsernameFilter))
+                SelectedAssignedUsernameFilter = AllOption;
         }
-
-        SelectedOfficeFilter ??= OfficeOptions.FirstOrDefault();
-        if (!OfficeOptions.Any(option => option.Value == EditOfficeCode) && OfficeOptions.Count > 1)
-            EditOfficeCode = OfficeOptions[1].Value;
-
-        AssignedUsernameOptions.Clear();
-        AssignedUsernameOptions.Add(AllOption);
-        foreach (var username in await _rental.GetAssignedUsernamesAsync())
-            AssignedUsernameOptions.Add(username);
-        if (!AssignedUsernameOptions.Contains(SelectedAssignedUsernameFilter))
-            SelectedAssignedUsernameFilter = AllOption;
+        finally
+        {
+            _suppressFilterReload = false;
+        }
     }
 
     private void SelectRow(Guid entityId)
@@ -499,7 +546,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return true;
 
         var username = (_session.User?.Username ?? string.Empty).Trim();
-        var normalizedAssigned = (assignedUsername ?? string.Empty).Trim();
+        var normalizedAssigned = _rental.GetAssignedUsernameDisplay(assignedUsername, officeCode);
         if (!string.IsNullOrWhiteSpace(normalizedAssigned) &&
             string.Equals(normalizedAssigned, username, StringComparison.OrdinalIgnoreCase))
         {
@@ -516,6 +563,18 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private void SyncOutstandingAmount()
     {
         EditOutstandingAmount = Math.Max(0m, EditMonthlyAmount - EditSettledAmount);
+    }
+
+    private void RequestFilterReload()
+    {
+        if (_suppressFilterReload)
+            return;
+
+        UiTaskHelper.Forget(
+            ReloadAsync(),
+            "RENTAL",
+            "렌탈 청구 필터 재조회",
+            ex => StatusMessage = $"렌탈 청구 목록을 다시 불러오지 못했습니다. {ex.Message}");
     }
 
     private static DateOnly? ToDateOnly(DateTime? value)

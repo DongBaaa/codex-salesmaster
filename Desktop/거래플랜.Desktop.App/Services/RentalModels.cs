@@ -92,6 +92,7 @@ public sealed class RentalBillingViewRow
 {
     public LocalRentalBillingProfile Source { get; init; } = new();
     public string ResponsibleOfficeName { get; init; } = string.Empty;
+    public string AssignedUsernameDisplay { get; init; } = string.Empty;
     public DateOnly? NextBillingDate { get; init; }
     public int? DaysRemaining { get; init; }
     public string DisplayStatus { get; init; } = string.Empty;

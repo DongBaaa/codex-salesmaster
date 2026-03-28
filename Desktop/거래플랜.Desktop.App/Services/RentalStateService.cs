@@ -32,6 +32,12 @@ public sealed class RentalStateService
         ["연수구"] = DomainConstants.OfficeYeonsu,
         ["YEONSU"] = DomainConstants.OfficeYeonsu
     };
+    private static readonly IReadOnlyDictionary<string, string> DefaultAssignedUsernameByOffice = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        [DomainConstants.OfficeUsenet] = "usenet",
+        [DomainConstants.OfficeItworld] = "itworld",
+        [DomainConstants.OfficeYeonsu] = "yeonsu"
+    };
 
     private readonly LocalDbContext _db;
 
@@ -49,16 +55,78 @@ public sealed class RentalStateService
 
     public async Task<IReadOnlyList<string>> GetAssignedUsernamesAsync(CancellationToken ct = default)
     {
-        var names = await _db.RentalBillingProfiles.IgnoreQueryFilters()
-            .Select(profile => profile.AssignedUsername)
-            .Concat(_db.RentalAssets.IgnoreQueryFilters().Select(asset => asset.AssignedUsername))
-            .Where(username => !string.IsNullOrWhiteSpace(username))
-            .Distinct()
-            .OrderBy(username => username)
+        var assignments = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .Select(profile => new
+            {
+                profile.AssignedUsername,
+                profile.ResponsibleOfficeCode,
+                profile.ManagementCompanyCode
+            })
+            .Concat(_db.RentalAssets.IgnoreQueryFilters().Select(asset => new
+            {
+                asset.AssignedUsername,
+                asset.ResponsibleOfficeCode,
+                asset.ManagementCompanyCode
+            }))
             .ToListAsync(ct);
 
-        return names;
+        return assignments
+            .Select(entry => ResolveAssignedUsernameForDisplay(entry.AssignedUsername, entry.ResponsibleOfficeCode, entry.ManagementCompanyCode))
+            .Where(username => !string.IsNullOrWhiteSpace(username))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(username => username, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
+
+    public async Task<int> RepairRoleBasedAssignedUsernamesAsync(CancellationToken ct = default)
+    {
+        var changed = 0;
+        var now = DateTime.UtcNow;
+
+        foreach (var profile in await _db.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync(ct))
+        {
+            var normalized = ResolveAssignedUsernameForDisplay(profile.AssignedUsername, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode);
+            if (string.Equals(profile.AssignedUsername ?? string.Empty, normalized, StringComparison.Ordinal))
+                continue;
+
+            profile.AssignedUsername = normalized;
+            profile.UpdatedAtUtc = now;
+            profile.IsDirty = true;
+            changed++;
+        }
+
+        foreach (var asset in await _db.RentalAssets.IgnoreQueryFilters().ToListAsync(ct))
+        {
+            var normalized = ResolveAssignedUsernameForDisplay(asset.AssignedUsername, asset.ResponsibleOfficeCode, asset.ManagementCompanyCode);
+            if (string.Equals(asset.AssignedUsername ?? string.Empty, normalized, StringComparison.Ordinal))
+                continue;
+
+            asset.AssignedUsername = normalized;
+            asset.UpdatedAtUtc = now;
+            asset.IsDirty = true;
+            changed++;
+        }
+
+        foreach (var log in await _db.RentalBillingLogs.IgnoreQueryFilters().ToListAsync(ct))
+        {
+            var normalized = ResolveAssignedUsernameForDisplay(log.AssignedUsername, log.ResponsibleOfficeCode, null);
+            if (string.Equals(log.AssignedUsername ?? string.Empty, normalized, StringComparison.Ordinal))
+                continue;
+
+            log.AssignedUsername = normalized;
+            log.UpdatedAtUtc = now;
+            log.IsDirty = true;
+            changed++;
+        }
+
+        if (changed > 0)
+            await _db.SaveChangesAsync(ct);
+
+        return changed;
+    }
+
+    public string GetAssignedUsernameDisplay(string? assignedUsername, string? responsibleOfficeCode, string? managementCompanyCode = null)
+        => ResolveAssignedUsernameForDisplay(assignedUsername, responsibleOfficeCode, managementCompanyCode);
 
     public async Task<string> GetAlertDaysTextAsync(CancellationToken ct = default)
         => await _db.Settings.AsNoTracking()
@@ -179,6 +247,7 @@ public sealed class RentalStateService
             {
                 Source = profile,
                 ResponsibleOfficeName = ResolveOfficeDisplayName(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode, offices),
+                AssignedUsernameDisplay = ResolveAssignedUsernameForDisplay(profile.AssignedUsername, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode),
                 NextBillingDate = nextBillingDate,
                 DaysRemaining = daysRemaining,
                 DisplayStatus = BuildBillingDisplayStatus(profile, nextBillingDate, daysRemaining),
@@ -388,7 +457,7 @@ public sealed class RentalStateService
         profile.FollowUpNote = (profile.FollowUpNote ?? string.Empty).Trim();
         profile.ResponsibleOfficeCode = officeCode;
         profile.ManagementCompanyCode = officeCode;
-        profile.AssignedUsername = NormalizeAssignedUsername(profile.AssignedUsername, session, allowBlankForAdmin: true);
+        profile.AssignedUsername = NormalizeAssignedUsername(profile.AssignedUsername, officeCode, session, allowBlankForAdmin: true);
         profile.ProfileKey = string.IsNullOrWhiteSpace(profile.ProfileKey)
             ? BuildProfileKey(profile.ManagementCompanyCode, profile.BusinessNumber, profile.CustomerName, profile.RealCustomerName, profile.ItemName)
             : profile.ProfileKey;
@@ -604,7 +673,7 @@ public sealed class RentalStateService
 
             asset.ManagementCompanyCode = officeCode;
             asset.ResponsibleOfficeCode = officeCode;
-            asset.AssignedUsername = NormalizeAssignedUsername(asset.AssignedUsername, session, allowBlankForAdmin: true);
+            asset.AssignedUsername = NormalizeAssignedUsername(asset.AssignedUsername, officeCode, session, allowBlankForAdmin: true);
             if (!CanEditAssetScope(asset.AssignedUsername, officeCode, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 저장할 수 없습니다.");
             asset.ManagementNumber = existing is null
@@ -966,7 +1035,7 @@ public sealed class RentalStateService
                         profile.LastSettledDate = null;
                     }
                     profile.AssignedUsername = string.IsNullOrWhiteSpace(existing?.AssignedUsername)
-                        ? NormalizeAssignedUsername(existing?.AssignedUsername, session, allowBlankForAdmin: false)
+                        ? NormalizeAssignedUsername(existing?.AssignedUsername, officeCode, session, allowBlankForAdmin: false)
                         : existing!.AssignedUsername;
                     profile.CustomerId = existing?.CustomerId ?? await ResolveCustomerIdAsync(profile.CustomerName, profile.BusinessNumber, ct);
                     profile.IsActive = true;
@@ -1919,20 +1988,49 @@ public sealed class RentalStateService
     private static string ResolveDefaultOfficeName(string officeCode)
         => OfficeCodeCatalog.GetOfficeDisplayName(officeCode);
 
-    private static string NormalizeAssignedUsername(string? assignedUsername, SessionState session, bool allowBlankForAdmin)
+    private static string NormalizeAssignedUsername(string? assignedUsername, string? officeCode, SessionState session, bool allowBlankForAdmin)
     {
-        var normalized = NormalizeUsername(assignedUsername);
+        var normalized = ResolveAssignedUsernameForDisplay(assignedUsername, officeCode, null);
         if (!string.IsNullOrWhiteSpace(normalized))
             return normalized;
 
         if (allowBlankForAdmin && session.HasAdministrativePrivileges)
             return string.Empty;
 
-        return NormalizeUsername(session.User?.Username);
+        return ResolveAssignedUsernameForDisplay(session.User?.Username, officeCode, null);
     }
 
     private static string NormalizeUsername(string? username)
         => (username ?? string.Empty).Trim();
+
+    private static string ResolveAssignedUsernameForDisplay(string? assignedUsername, string? responsibleOfficeCode, string? managementCompanyCode)
+    {
+        var normalized = NormalizeUsername(assignedUsername);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return string.Empty;
+
+        if (!IsRoleLikeAssignedUsername(normalized))
+            return normalized;
+
+        var officeCode = NormalizeOfficeCode(
+            string.IsNullOrWhiteSpace(responsibleOfficeCode) ? managementCompanyCode : responsibleOfficeCode,
+            DomainConstants.OfficeUsenet);
+
+        return DefaultAssignedUsernameByOffice.TryGetValue(officeCode, out var mappedUsername)
+            ? mappedUsername
+            : string.Empty;
+    }
+
+    private static bool IsRoleLikeAssignedUsername(string? assignedUsername)
+    {
+        var normalized = NormalizeUsername(assignedUsername);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return false;
+
+        return string.Equals(normalized, DomainConstants.RoleAdmin, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(normalized, DomainConstants.RoleUser, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(normalized, "administrator", StringComparison.OrdinalIgnoreCase);
+    }
 
     private async Task<Guid?> ResolveCustomerIdAsync(string? customerName, string? businessNumber, CancellationToken ct)
     {
