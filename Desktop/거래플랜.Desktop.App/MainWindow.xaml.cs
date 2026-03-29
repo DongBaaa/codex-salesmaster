@@ -222,7 +222,7 @@ public partial class MainWindow : Window
         if (_sync.HasRecentSuccessfulSync(minInterval))
             return null;
 
-        if (await _local.CountDirtyAsync(_session) > 0)
+        if (await _local.HasPendingSyncChangesAsync())
             return 0L;
 
         if (!requireServerRevisionChange)

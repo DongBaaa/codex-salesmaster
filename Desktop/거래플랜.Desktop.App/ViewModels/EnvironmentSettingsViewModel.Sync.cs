@@ -34,7 +34,7 @@ public sealed partial class EnvironmentSettingsViewModel
         SyncModeText = _session.IsOfflineMode ? "오프라인 모드" : "온라인 동기화";
         SyncDatabaseText = _session.SelectedBusinessDatabaseLabel;
 
-        var pendingDirtyCount = await _local.CountDirtyAsync(_session);
+        var pendingDirtyCount = await _local.CountDirtyAsync();
         SyncPendingChangesText = pendingDirtyCount == 0
             ? "미동기화 변경 없음"
             : $"미동기화 변경 {pendingDirtyCount:N0}건";
@@ -66,7 +66,7 @@ public sealed partial class EnvironmentSettingsViewModel
         {
             StatusMessage = "동기화를 실행하는 중...";
             var syncOk = await _sync.TrySyncAsync();
-            var dirtyCount = await _local.CountDirtyAsync(_session);
+            var dirtyCount = await _local.CountDirtyAsync();
             if (syncOk && dirtyCount == 0)
                 await _sync.RefreshSharedMirrorFromServerAsync();
 

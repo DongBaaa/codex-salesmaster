@@ -798,10 +798,7 @@ public sealed partial class LocalStateService
             if (CanWriteAllScopedData(session) || CanWriteCustomerScope(session, customerMaster.OfficeCode, customerMaster.TenantCode))
                 continue;
 
-            customerMaster.IsDirty = false;
-            customerMaster.UpdatedAtUtc = now;
-            changed = true;
-            result.MarkedCleanOutOfScopeCount++;
+            result.SkippedOutOfScopeCount++;
         }
 
         if (changed)
@@ -892,11 +889,7 @@ public sealed partial class LocalStateService
             if (CanWriteAllScopedData(session) || CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode))
                 continue;
 
-            customer.IsDirty = false;
-            customer.UpdatedAtUtc = now;
-            _officeAccess.RevokeTemporaryCustomerAccess(session, customer.Id);
-            changed = true;
-            result.MarkedCleanOutOfScopeCount++;
+            result.SkippedOutOfScopeCount++;
         }
 
         if (changed)
@@ -1133,10 +1126,7 @@ public sealed partial class LocalStateService
 
             if (!CanWriteAllScopedData(session) && !CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
             {
-                invoice.IsDirty = false;
-                invoice.UpdatedAtUtc = now;
-                changed = true;
-                result.MarkedCleanOutOfScopeCount++;
+                result.SkippedOutOfScopeCount++;
                 continue;
             }
 
@@ -1208,12 +1198,7 @@ public sealed partial class LocalStateService
             if (transactions.TryGetValue(attachment.TransactionId, out var transaction) && !transaction.IsDeleted)
             {
                 if (!CanWriteAllScopedData(session) && !CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode))
-                {
-                    attachment.IsDirty = false;
-                    attachment.UpdatedAtUtc = now;
-                    changed = true;
-                    result.MarkedCleanOutOfScopeCount++;
-                }
+                    result.SkippedOutOfScopeCount++;
 
                 continue;
             }
@@ -5180,6 +5165,7 @@ public sealed partial class LocalStateService
         public int ScannedCount { get; set; }
         public int ResolvedMissingCustomerCount { get; set; }
         public int MarkedCleanOutOfScopeCount { get; set; }
+        public int SkippedOutOfScopeCount { get; set; }
     }
 
     public sealed class TransactionAttachmentSyncRepairResult
@@ -5188,6 +5174,7 @@ public sealed partial class LocalStateService
         public int MarkedDeletedMissingTransactionCount { get; set; }
         public int MarkedCleanStaleDeletedCount { get; set; }
         public int MarkedCleanOutOfScopeCount { get; set; }
+        public int SkippedOutOfScopeCount { get; set; }
     }
 
     public sealed class CustomerSyncRepairResult
@@ -5197,6 +5184,7 @@ public sealed partial class LocalStateService
         public int ClearedMissingCategoryCount { get; set; }
         public int ClearedMissingCustomerMasterCount { get; set; }
         public int MarkedCleanOutOfScopeCount { get; set; }
+        public int SkippedOutOfScopeCount { get; set; }
     }
 
     public sealed class CustomerMasterSyncRepairResult
@@ -5205,6 +5193,7 @@ public sealed partial class LocalStateService
         public int NormalizedScopeCount { get; set; }
         public int ClearedMissingCategoryCount { get; set; }
         public int MarkedCleanOutOfScopeCount { get; set; }
+        public int SkippedOutOfScopeCount { get; set; }
     }
 
     private static bool IsSharedOfficeScope(string? officeCode)

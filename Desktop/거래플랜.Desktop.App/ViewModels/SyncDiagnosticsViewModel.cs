@@ -166,7 +166,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         {
             SummaryStatusText = "동기화를 다시 시도하는 중...";
             var syncOk = await _sync.TrySyncAsync();
-            if (syncOk && await _local.CountDirtyAsync(_session) == 0)
+            if (syncOk && await _local.CountDirtyAsync() == 0)
                 await _sync.RefreshSharedMirrorFromServerAsync();
 
             await ReloadAsync();

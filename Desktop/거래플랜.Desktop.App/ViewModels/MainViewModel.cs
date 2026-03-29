@@ -258,7 +258,7 @@ public sealed partial class MainViewModel : ObservableObject
             return status;
         }
 
-        var dirtyCount = await _local.CountDirtyAsync(_session);
+        var dirtyCount = await _local.CountDirtyAsync();
         if (dirtyCount <= 0)
             return status;
 
@@ -289,11 +289,11 @@ public sealed partial class MainViewModel : ObservableObject
 
         try
         {
-            var dirtyBefore = await _local.CountDirtyAsync(_session);
+            var dirtyBefore = await _local.CountDirtyAsync();
             SyncStatus = "로그인 후 서버 동기화 중...";
 
             var syncOk = await _sync.TrySyncAsync();
-            var dirtyAfter = await _local.CountDirtyAsync(_session);
+            var dirtyAfter = await _local.CountDirtyAsync();
             if (syncOk && dirtyAfter == 0)
             {
                 var refreshOk = true;
@@ -1476,7 +1476,7 @@ public sealed partial class MainViewModel : ObservableObject
     {
         SyncStatus = "수동 동기화 중...";
         var syncOk = await _sync.TrySyncAsync();
-        var dirtyCount = await _local.CountDirtyAsync(_session);
+        var dirtyCount = await _local.CountDirtyAsync();
         if (syncOk && dirtyCount == 0)
             await _sync.RefreshSharedMirrorFromServerAsync();
         await LoadCustomersAsync();

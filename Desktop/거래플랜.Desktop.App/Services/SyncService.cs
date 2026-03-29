@@ -111,14 +111,14 @@ public sealed class SyncService : IDisposable
         {
             attempts++;
             var synced = await StartSyncAsync(waitForRunningSync: true, ct);
-            var dirtyCount = await _local.CountDirtyAsync(_session, ct);
-            if (dirtyCount == 0)
+            var hasPendingChanges = await _local.HasPendingSyncChangesAsync(ct);
+            if (!hasPendingChanges)
                 return synced;
 
             await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
         }
 
-        return await _local.CountDirtyAsync(_session, ct) == 0;
+        return !await _local.HasPendingSyncChangesAsync(ct);
     }
 
     public async Task<bool> RefreshSharedMirrorFromServerAsync(CancellationToken ct = default)
@@ -128,8 +128,11 @@ public sealed class SyncService : IDisposable
         if (IsServerSyncDisabled())
             return true;
 
-        if (await _local.CountDirtyAsync(_session, ct) > 0)
+        if (await _local.HasPendingSyncChangesAsync(ct))
+        {
+            SetStatus("로컬 미동기화 변경이 남아 있어 중앙 서버 기준 캐시를 다시 불러올 수 없습니다.");
             return false;
+        }
 
         SetStatus("중앙 서버 기준 캐시를 다시 불러오는 중...");
 
@@ -434,7 +437,8 @@ public sealed class SyncService : IDisposable
     private async Task PushDirtyAsync(CancellationToken ct)
     {
         var customerMasterRepair = await _local.RepairDirtyCustomerMastersForSyncAsync(_session, ct);
-        if (customerMasterRepair.MarkedCleanOutOfScopeCount > 0 ||
+        if (customerMasterRepair.SkippedOutOfScopeCount > 0 ||
+            customerMasterRepair.MarkedCleanOutOfScopeCount > 0 ||
             customerMasterRepair.ClearedMissingCategoryCount > 0 ||
             customerMasterRepair.NormalizedScopeCount > 0)
         {
@@ -443,11 +447,13 @@ public sealed class SyncService : IDisposable
                 $"동기화 전 거래처 기준정보 보정: scanned={customerMasterRepair.ScannedCount}, " +
                 $"normalizedScope={customerMasterRepair.NormalizedScopeCount}, " +
                 $"clearedMissingCategory={customerMasterRepair.ClearedMissingCategoryCount}, " +
-                $"clearedOutOfScopeDirty={customerMasterRepair.MarkedCleanOutOfScopeCount}");
+                $"clearedOutOfScopeDirty={customerMasterRepair.MarkedCleanOutOfScopeCount}, " +
+                $"skippedOutOfScopeDirty={customerMasterRepair.SkippedOutOfScopeCount}");
         }
 
         var customerRepair = await _local.RepairDirtyCustomersForSyncAsync(_session, ct);
-        if (customerRepair.MarkedCleanOutOfScopeCount > 0 ||
+        if (customerRepair.SkippedOutOfScopeCount > 0 ||
+            customerRepair.MarkedCleanOutOfScopeCount > 0 ||
             customerRepair.ClearedMissingCategoryCount > 0 ||
             customerRepair.ClearedMissingCustomerMasterCount > 0 ||
             customerRepair.NormalizedScopeCount > 0)
@@ -458,7 +464,8 @@ public sealed class SyncService : IDisposable
                 $"normalizedScope={customerRepair.NormalizedScopeCount}, " +
                 $"clearedMissingCategory={customerRepair.ClearedMissingCategoryCount}, " +
                 $"clearedMissingCustomerMaster={customerRepair.ClearedMissingCustomerMasterCount}, " +
-                $"clearedOutOfScopeDirty={customerRepair.MarkedCleanOutOfScopeCount}");
+                $"clearedOutOfScopeDirty={customerRepair.MarkedCleanOutOfScopeCount}, " +
+                $"skippedOutOfScopeDirty={customerRepair.SkippedOutOfScopeCount}");
         }
 
         var scopedDirtyRentalAssetIds = (await _local.GetDirtyRentalAssetsForSyncAsync(_session, ct))
@@ -498,18 +505,21 @@ public sealed class SyncService : IDisposable
 
         var invoiceRepair = await _local.RepairDirtyInvoicesForSyncAsync(_session, ct);
         if (invoiceRepair.ResolvedMissingCustomerCount > 0 ||
+            invoiceRepair.SkippedOutOfScopeCount > 0 ||
             invoiceRepair.MarkedCleanOutOfScopeCount > 0)
         {
             AppLogger.Warn(
                 "SYNC",
                 $"동기화 전 전표 참조 보정: scanned={invoiceRepair.ScannedCount}, " +
                 $"resolvedCustomers={invoiceRepair.ResolvedMissingCustomerCount}, " +
-                $"clearedOutOfScopeDirty={invoiceRepair.MarkedCleanOutOfScopeCount}");
+                $"clearedOutOfScopeDirty={invoiceRepair.MarkedCleanOutOfScopeCount}, " +
+                $"skippedOutOfScopeDirty={invoiceRepair.SkippedOutOfScopeCount}");
         }
 
         var transactionAttachmentRepair = await _local.RepairDirtyTransactionAttachmentsForSyncAsync(_session, ct);
         if (transactionAttachmentRepair.MarkedDeletedMissingTransactionCount > 0 ||
             transactionAttachmentRepair.MarkedCleanStaleDeletedCount > 0 ||
+            transactionAttachmentRepair.SkippedOutOfScopeCount > 0 ||
             transactionAttachmentRepair.MarkedCleanOutOfScopeCount > 0)
         {
             AppLogger.Warn(
@@ -517,7 +527,8 @@ public sealed class SyncService : IDisposable
                 $"동기화 전 증빙 참조 보정: scanned={transactionAttachmentRepair.ScannedCount}, " +
                 $"markedDeletedMissingTransaction={transactionAttachmentRepair.MarkedDeletedMissingTransactionCount}, " +
                 $"cleanedStaleDeleted={transactionAttachmentRepair.MarkedCleanStaleDeletedCount}, " +
-                $"clearedOutOfScopeDirty={transactionAttachmentRepair.MarkedCleanOutOfScopeCount}");
+                $"clearedOutOfScopeDirty={transactionAttachmentRepair.MarkedCleanOutOfScopeCount}, " +
+                $"skippedOutOfScopeDirty={transactionAttachmentRepair.SkippedOutOfScopeCount}");
         }
 
         var paymentRepair = await _local.RepairDirtyPaymentsForSyncAsync(_session, ct);
