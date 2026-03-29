@@ -228,13 +228,44 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void HandleSyncStatusChanged(string status)
     {
+        UiTaskHelper.Forget(
+            ApplySyncStatusAsync(status),
+            "SYNC-UI",
+            "동기화 상태 표시 갱신",
+            ex => AppLogger.Warn("SYNC-UI", $"동기화 상태 표시 갱신 실패: {ex.Message}"));
+        AppLogger.Info("SYNC-UI", status);
+    }
+
+    private async Task ApplySyncStatusAsync(string status)
+    {
+        var resolvedStatus = await ComposeSyncStatusAsync(status);
         var dispatcher = Application.Current?.Dispatcher;
         if (dispatcher is not null && !dispatcher.CheckAccess())
-            _ = dispatcher.BeginInvoke(() => SyncStatus = status);
+            await dispatcher.InvokeAsync(() => SyncStatus = resolvedStatus);
         else
-            SyncStatus = status;
+            SyncStatus = resolvedStatus;
+    }
 
-        AppLogger.Info("SYNC-UI", status);
+    private async Task<string> ComposeSyncStatusAsync(string status)
+    {
+        if (_session.IsOfflineMode)
+            return status;
+
+        if (!status.StartsWith("동기화 완료", StringComparison.Ordinal)
+            && !status.StartsWith("중앙 서버 기준 캐시 재구성 완료", StringComparison.Ordinal)
+            && !status.StartsWith("동기화 오류", StringComparison.Ordinal))
+        {
+            return status;
+        }
+
+        var dirtyCount = await _local.CountDirtyAsync(_session);
+        if (dirtyCount <= 0)
+            return status;
+
+        if (status.StartsWith("동기화 오류", StringComparison.Ordinal))
+            return $"{status} / 서버 반영 대기 데이터 {dirtyCount:N0}건";
+
+        return $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있어 제한 모드입니다.";
     }
 
     public async Task LoadAsync()
@@ -262,11 +293,11 @@ public sealed partial class MainViewModel : ObservableObject
             SyncStatus = "로그인 후 서버 동기화 중...";
 
             var syncOk = await _sync.TrySyncAsync();
-            if (syncOk)
+            var dirtyAfter = await _local.CountDirtyAsync(_session);
+            if (syncOk && dirtyAfter == 0)
             {
                 var refreshOk = true;
-                if (await _local.CountDirtyAsync(_session) == 0)
-                    refreshOk = await _sync.RefreshSharedMirrorFromServerAsync();
+                refreshOk = await _sync.RefreshSharedMirrorFromServerAsync();
 
                 await ReloadAfterPassiveSyncAsync();
                 SyncStatus = refreshOk
@@ -275,7 +306,6 @@ public sealed partial class MainViewModel : ObservableObject
                 return;
             }
 
-            var dirtyAfter = await _local.CountDirtyAsync(_session);
             if (dirtyBefore > 0 || dirtyAfter > 0)
             {
                 var backupOk = await _backup.BackupNowAsync();
@@ -1444,11 +1474,19 @@ public sealed partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task ForceSyncAsync()
     {
-        await _sync.TrySyncAsync();
-        if (await _local.CountDirtyAsync(_session) == 0)
+        SyncStatus = "수동 동기화 중...";
+        var syncOk = await _sync.TrySyncAsync();
+        var dirtyCount = await _local.CountDirtyAsync(_session);
+        if (syncOk && dirtyCount == 0)
             await _sync.RefreshSharedMirrorFromServerAsync();
         await LoadCustomersAsync();
         await LoadInvoiceListAsync();
+
+        SyncStatus = dirtyCount > 0
+            ? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있어 제한 모드입니다."
+            : syncOk
+                ? $"동기화 완료 {DateTime.Now:HH:mm:ss}"
+                : "동기화가 완료되었지만 일부 오류가 남아 있습니다. 동기화 진단을 확인하세요.";
     }
 
     // ?? Backup ???????????????????????????????????????????????????????????
