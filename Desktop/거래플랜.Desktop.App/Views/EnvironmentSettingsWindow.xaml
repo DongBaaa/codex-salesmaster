@@ -1081,7 +1081,7 @@
                                            Foreground="#9FB3C8"
                                            Margin="0,10,0,0"
                                            TextWrapping="Wrap"/>
-                                <TextBlock Text="2. 동기화가 실패하거나 제한 모드가 보이면 동기화 진단에서 오류 유형과 복구 권장을 확인하세요."
+                                <TextBlock Text="2. 동기화가 실패하거나 서버 반영 대기 건수가 남아 있으면 동기화 진단에서 오류 유형과 복구 권장을 확인하세요."
                                            Foreground="#9FB3C8"
                                            Margin="0,10,0,0"
                                            TextWrapping="Wrap"/>

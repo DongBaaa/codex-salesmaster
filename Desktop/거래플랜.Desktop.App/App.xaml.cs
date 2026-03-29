@@ -7,6 +7,7 @@ using System.Windows.Threading;
 using System.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Configuration;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
@@ -81,22 +82,6 @@ public partial class App : Application
             {
                 var db = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
                 await LocalDbInitializer.InitializeAsync(db);
-
-                try
-                {
-                    var localState = scope.ServiceProvider.GetRequiredService<LocalStateService>();
-                    var legacyMigration = new LegacyDataMigrationService(localState);
-                    var migrationResult = await legacyMigration.TryAutoMigrateLocalDataAsync();
-
-                    if (migrationResult.Applied)
-                        AppLogger.Info("LEGACY", $"자동 마이그레이션 완료. source={migrationResult.SourceType}, path={migrationResult.SourcePath}, message={migrationResult.Message}");
-                    else if (!string.IsNullOrWhiteSpace(migrationResult.Message))
-                        AppLogger.Info("LEGACY", $"자동 마이그레이션 건너뜀. source={migrationResult.SourceType}, path={migrationResult.SourcePath}, message={migrationResult.Message}");
-                }
-                catch (Exception ex)
-                {
-                    AppLogger.Warn("LEGACY", $"자동 마이그레이션 실패. {ex.Message}");
-                }
             }
 
             bool? loggedIn;
@@ -113,6 +98,8 @@ public partial class App : Application
                 Shutdown();
                 return;
             }
+
+            await TryRunDeferredLegacyMigrationAsync();
 
             var mainScope = _services.CreateScope();
             var sp = mainScope.ServiceProvider;
@@ -384,11 +371,43 @@ public partial class App : Application
             await TryRecordStartupDiagnosticAsync(ex);
             mainVm.SyncStatus = "초기 로딩 일부에 실패했지만 앱은 계속 사용할 수 있습니다. 필요한 경우 동기화 진단을 확인하세요.";
             MessageBox.Show(
-                $"초기 로딩 중 일부 오류가 발생했습니다.{Environment.NewLine}{ex.Message}{Environment.NewLine}{Environment.NewLine}앱은 제한 모드로 계속 실행됩니다.",
+                $"초기 로딩 중 일부 오류가 발생했습니다.{Environment.NewLine}{ex.Message}{Environment.NewLine}{Environment.NewLine}앱은 계속 실행되며 필요한 데이터는 다시 불러올 수 있습니다.",
                 "거래플랜 경고",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
             return false;
+        }
+    }
+
+    private async Task TryRunDeferredLegacyMigrationAsync()
+    {
+        if (_services is null)
+            return;
+
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
+        var hasCustomers = await db.Customers.AnyAsync();
+        var hasItems = await db.Items.AnyAsync();
+        if (hasCustomers || hasItems)
+        {
+            AppLogger.Info("LEGACY", "기존 거래처/품목 데이터가 존재해 자동 마이그레이션 검사를 건너뜁니다.");
+            return;
+        }
+
+        try
+        {
+            var localState = scope.ServiceProvider.GetRequiredService<LocalStateService>();
+            var legacyMigration = new LegacyDataMigrationService(localState);
+            var migrationResult = await legacyMigration.TryAutoMigrateLocalDataAsync();
+
+            if (migrationResult.Applied)
+                AppLogger.Info("LEGACY", $"자동 마이그레이션 완료. source={migrationResult.SourceType}, path={migrationResult.SourcePath}, message={migrationResult.Message}");
+            else if (!string.IsNullOrWhiteSpace(migrationResult.Message))
+                AppLogger.Info("LEGACY", $"자동 마이그레이션 건너뜀. source={migrationResult.SourceType}, path={migrationResult.SourcePath}, message={migrationResult.Message}");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("LEGACY", $"자동 마이그레이션 실패. {ex.Message}");
         }
     }
 

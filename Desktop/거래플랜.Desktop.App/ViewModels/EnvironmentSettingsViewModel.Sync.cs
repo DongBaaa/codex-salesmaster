@@ -72,7 +72,7 @@ public sealed partial class EnvironmentSettingsViewModel
 
             await RefreshSyncStateAsync();
             StatusMessage = dirtyCount > 0
-                ? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다. 동기화 진단을 확인하세요."
+                ? $"동기화 작업은 끝났지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다. 동기화 진단을 확인하세요."
                 : syncOk
                     ? "동기화를 완료했습니다."
                     : "동기화가 완료되었지만 일부 오류가 남아 있습니다. 동기화 진단을 확인하세요.";

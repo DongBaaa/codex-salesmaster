@@ -265,7 +265,7 @@ public sealed partial class MainViewModel : ObservableObject
         if (status.StartsWith("동기화 오류", StringComparison.Ordinal))
             return $"{status} / 서버 반영 대기 데이터 {dirtyCount:N0}건";
 
-        return $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있어 제한 모드입니다.";
+        return $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다.";
     }
 
     public async Task LoadAsync()
@@ -330,7 +330,7 @@ public sealed partial class MainViewModel : ObservableObject
             }
 
             SyncStatus = dirtyAfter > 0
-                ? $"동기화 오류가 남아 있어 제한 모드로 실행합니다. ({dirtyAfter:N0}건 보류)"
+                ? $"서버 반영 대기 데이터 {dirtyAfter:N0}건이 남아 있습니다. 환경설정 > 동기화에서 확인해 주세요."
                 : "동기화 오류가 발생했지만 앱은 계속 사용할 수 있습니다.";
         }
         catch (Exception ex)
@@ -1483,7 +1483,7 @@ public sealed partial class MainViewModel : ObservableObject
         await LoadInvoiceListAsync();
 
         SyncStatus = dirtyCount > 0
-            ? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있어 제한 모드입니다."
+            ? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다."
             : syncOk
                 ? $"동기화 완료 {DateTime.Now:HH:mm:ss}"
                 : "동기화가 완료되었지만 일부 오류가 남아 있습니다. 동기화 진단을 확인하세요.";
