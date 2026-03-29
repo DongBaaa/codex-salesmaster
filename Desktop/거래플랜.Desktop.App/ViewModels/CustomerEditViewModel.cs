@@ -172,14 +172,17 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             ? DomainConstants.OfficeUsenet
             : NormalizeOfficeCode(customer.ResponsibleOfficeCode);
         TradeType = CustomerTradeTypes.Normalize(customer.TradeType);
-        if (!TradeTypes.Contains(TradeType))
-            TradeTypes.Add(TradeType);
         if (!PriceGrades.Contains(PriceGrade))
             PriceGrades.Add(PriceGrade);
         if (!OfficeCodes.Contains(ResponsibleOfficeCode))
             OfficeCodes.Add(ResponsibleOfficeCode);
         Notes = customer.Notes;
         CategoryId = customer.CategoryId;
+        if ((!CategoryId.HasValue || CategoryId == Guid.Empty) &&
+            CustomerClassificationNormalizer.TryExtractCompositeCategoryAndTradeType(customer.TradeType, out var inferredCategory, out _))
+        {
+            CategoryId = inferredCategory.Id;
+        }
 
         await LoadContractsAsync(CustomerId);
     }
@@ -324,6 +327,14 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             StatusMessage = "거래처명을 입력하세요.";
             return false;
         }
+
+        if (!CustomerTradeTypes.TryNormalize(TradeType, out var normalizedTradeType))
+        {
+            StatusMessage = "거래구분은 매출, 매입, 매출/매입 중 하나만 선택할 수 있습니다.";
+            return false;
+        }
+
+        TradeType = normalizedTradeType;
 
         return true;
     }

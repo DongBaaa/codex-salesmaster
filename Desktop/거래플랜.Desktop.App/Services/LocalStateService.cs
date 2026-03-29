@@ -266,6 +266,7 @@ public sealed partial class LocalStateService
 
     public async Task<LocalCustomer> UpsertCustomerAsync(LocalCustomer customer, CancellationToken ct = default)
     {
+        NormalizeCustomerClassification(customer);
         customer.ResponsibleOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
         customer.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
             customer.TenantCode,
@@ -291,6 +292,7 @@ public sealed partial class LocalStateService
         if (customer is null)
             throw new ArgumentNullException(nameof(customer));
 
+        NormalizeCustomerClassification(customer);
         var normalizedOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
         var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, normalizedOfficeCode);
         var existing = await _db.Customers
@@ -2551,13 +2553,17 @@ public sealed partial class LocalStateService
             .ThenBy(option => option.Name)
             .ToListAsync(ct);
 
-    public Task<List<LocalTradeTypeOption>> GetTradeTypeOptionsAsync(CancellationToken ct = default)
-        => _db.TradeTypeOptions
+    public async Task<List<LocalTradeTypeOption>> GetTradeTypeOptionsAsync(CancellationToken ct = default)
+    {
+        await EnsureTradeTypeOptionIntegrityAsync(ct);
+
+        return await _db.TradeTypeOptions
             .AsNoTracking()
             .Where(option => option.IsActive)
             .OrderBy(option => option.SortOrder)
             .ThenBy(option => option.Name)
             .ToListAsync(ct);
+    }
 
     public Task<List<LocalItemCategoryOption>> GetItemCategoryOptionsAsync(CancellationToken ct = default)
         => _db.ItemCategoryOptions
@@ -2726,12 +2732,13 @@ public sealed partial class LocalStateService
         if (option is null)
             throw new ArgumentNullException(nameof(option));
 
-        var name = CustomerTradeTypes.Normalize(option.Name);
-        if (string.IsNullOrWhiteSpace(name))
-            return LocalMutationResult.Denied("거래구분 이름을 입력하세요.");
+        await EnsureTradeTypeOptionIntegrityAsync(ct);
 
-        if (!option.AllowsSales && !option.AllowsPurchase)
-            return LocalMutationResult.Denied("거래구분은 매출 또는 매입 중 하나 이상 허용되어야 합니다.");
+        if (!CustomerClassificationNormalizer.TryNormalizeTradeType(option.Name, out var name) ||
+            CustomerClassificationNormalizer.TradeTypeDefinition.Find(name) is not { } canonical)
+        {
+            return LocalMutationResult.Denied("거래구분은 매출, 매입, 매출/매입 3개만 사용할 수 있습니다.");
+        }
 
         var options = await _db.TradeTypeOptions.IgnoreQueryFilters().ToListAsync(ct);
         if (options.Any(current =>
@@ -2751,9 +2758,9 @@ public sealed partial class LocalStateService
             {
                 Id = option.Id == Guid.Empty ? Guid.NewGuid() : option.Id,
                 Name = name,
-                AllowsSales = option.AllowsSales,
-                AllowsPurchase = option.AllowsPurchase,
-                SortOrder = option.SortOrder,
+                AllowsSales = canonical.AllowsSales,
+                AllowsPurchase = canonical.AllowsPurchase,
+                SortOrder = canonical.SortOrder,
                 IsSystemDefault = false,
                 IsActive = true,
                 IsDeleted = false,
@@ -2767,9 +2774,9 @@ public sealed partial class LocalStateService
         }
 
         existing.Name = name;
-        existing.AllowsSales = option.AllowsSales;
-        existing.AllowsPurchase = option.AllowsPurchase;
-        existing.SortOrder = option.SortOrder;
+        existing.AllowsSales = canonical.AllowsSales;
+        existing.AllowsPurchase = canonical.AllowsPurchase;
+        existing.SortOrder = canonical.SortOrder;
         existing.IsSystemDefault = false;
         existing.IsActive = true;
         existing.IsDeleted = false;
@@ -2795,9 +2802,14 @@ public sealed partial class LocalStateService
 
     public async Task<LocalMutationResult> DeleteTradeTypeOptionAsync(Guid optionId, CancellationToken ct = default)
     {
+        await EnsureTradeTypeOptionIntegrityAsync(ct);
+
         var option = await _db.TradeTypeOptions.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Id == optionId, ct);
         if (option is null)
             return LocalMutationResult.Missing("거래구분을 찾을 수 없습니다.");
+
+        if (CustomerClassificationNormalizer.TradeTypeDefinition.Find(option.Name) is not null)
+            return LocalMutationResult.Denied("거래구분 기준값은 시스템 고정값이라 삭제할 수 없습니다.");
 
         var inUse = await _db.Customers.IgnoreQueryFilters().AnyAsync(customer => customer.TradeType == option.Name, ct);
         if (inUse)
@@ -2809,6 +2821,139 @@ public sealed partial class LocalStateService
         option.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return LocalMutationResult.Ok(option.Id, "거래구분을 삭제했습니다.");
+    }
+
+    private void NormalizeCustomerClassification(LocalCustomer customer)
+    {
+        if (customer is null)
+            throw new ArgumentNullException(nameof(customer));
+
+        var trimmedTradeType = (customer.TradeType ?? string.Empty).Trim();
+        if (CustomerClassificationNormalizer.TryExtractCompositeCategoryAndTradeType(trimmedTradeType, out var category, out var normalizedCompositeTradeType))
+        {
+            if (!customer.CategoryId.HasValue || customer.CategoryId == Guid.Empty)
+                customer.CategoryId = category.Id;
+
+            customer.TradeType = normalizedCompositeTradeType;
+            return;
+        }
+
+        if (CustomerClassificationNormalizer.TryResolveCategory(trimmedTradeType, out var standaloneCategory))
+        {
+            if (!customer.CategoryId.HasValue || customer.CategoryId == Guid.Empty)
+                customer.CategoryId = standaloneCategory.Id;
+
+            customer.TradeType = CustomerTradeTypes.Sales;
+            return;
+        }
+
+        customer.TradeType = CustomerTradeTypes.Normalize(trimmedTradeType);
+    }
+
+    private async Task EnsureTradeTypeOptionIntegrityAsync(CancellationToken ct = default)
+    {
+        var now = DateTime.UtcNow;
+        var options = await _db.TradeTypeOptions.IgnoreQueryFilters().ToListAsync(ct);
+        var changed = false;
+
+        foreach (var definition in SelectionOptionDefaults.DefaultTradeTypes)
+        {
+            var existing = options.FirstOrDefault(option => option.Id == definition.Id)
+                ?? options.FirstOrDefault(option => string.Equals(option.Name?.Trim(), definition.Name, StringComparison.CurrentCultureIgnoreCase));
+
+            if (existing is null)
+            {
+                var created = new LocalTradeTypeOption
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    AllowsSales = definition.AllowsSales,
+                    AllowsPurchase = definition.AllowsPurchase,
+                    SortOrder = definition.SortOrder,
+                    IsSystemDefault = false,
+                    IsActive = true,
+                    IsDeleted = false,
+                    IsDirty = true,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                };
+                _db.TradeTypeOptions.Add(created);
+                options.Add(created);
+                changed = true;
+                continue;
+            }
+
+            changed |= ApplyTradeTypeOptionIntegrity(existing, definition.Name, definition.AllowsSales, definition.AllowsPurchase, definition.SortOrder, now);
+        }
+
+        foreach (var option in options.Where(option =>
+                     !option.IsDeleted &&
+                     CustomerClassificationNormalizer.TradeTypeDefinition.Find(option.Name) is null))
+        {
+            option.IsDeleted = true;
+            option.IsActive = false;
+            option.IsDirty = true;
+            option.UpdatedAtUtc = now;
+            changed = true;
+        }
+
+        if (changed)
+            await _db.SaveChangesAsync(ct);
+    }
+
+    private static bool ApplyTradeTypeOptionIntegrity(
+        LocalTradeTypeOption option,
+        string canonicalName,
+        bool allowsSales,
+        bool allowsPurchase,
+        int sortOrder,
+        DateTime now)
+    {
+        var changed = false;
+
+        if (!string.Equals(option.Name, canonicalName, StringComparison.CurrentCulture))
+        {
+            option.Name = canonicalName;
+            changed = true;
+        }
+
+        if (option.AllowsSales != allowsSales)
+        {
+            option.AllowsSales = allowsSales;
+            changed = true;
+        }
+
+        if (option.AllowsPurchase != allowsPurchase)
+        {
+            option.AllowsPurchase = allowsPurchase;
+            changed = true;
+        }
+
+        if (option.SortOrder != sortOrder)
+        {
+            option.SortOrder = sortOrder;
+            changed = true;
+        }
+
+        if (!option.IsActive)
+        {
+            option.IsActive = true;
+            changed = true;
+        }
+
+        if (option.IsDeleted)
+        {
+            option.IsDeleted = false;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            option.IsDirty = true;
+            option.UpdatedAtUtc = now;
+        }
+
+        return changed;
     }
 
     public async Task<LocalMutationResult> SaveItemCategoryOptionAsync(LocalItemCategoryOption option, string? previousName = null, CancellationToken ct = default)

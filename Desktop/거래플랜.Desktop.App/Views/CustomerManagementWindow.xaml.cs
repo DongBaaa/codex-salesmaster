@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Views;
 
@@ -40,6 +41,9 @@ public partial class CustomerManagementWindow : Window
 
     private void EditCustomerButton_Click(object sender, RoutedEventArgs e)
         => UiTaskHelper.Run(this, OpenSelectedCustomerEditorAsync, "UI", "거래처 수정 창 열기", "거래처 수정 창을 여는 중 오류가 발생했습니다.");
+
+    private void DeleteCustomerButton_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(this, DeleteSelectedCustomerAsync, "UI", "거래처 삭제", "거래처를 삭제하는 중 오류가 발생했습니다.");
 
     private void CustomerRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
@@ -82,6 +86,44 @@ public partial class CustomerManagementWindow : Window
         var win = new CustomerEditWindow(customerVm) { Owner = this };
         if (win.ShowDialog() == true)
             await _vm.ReloadCommand.ExecuteAsync(null);
+    }
+
+    private async Task DeleteSelectedCustomerAsync()
+    {
+        if (_vm.SelectedCustomer is null)
+        {
+            MessageBox.Show("삭제할 거래처를 먼저 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var selectedCustomer = _vm.SelectedCustomer;
+        var confirm = MessageBox.Show(
+            $"거래처 '{selectedCustomer.NameOriginal}'을(를) 삭제하시겠습니까?\n삭제 후에는 목록에서 숨겨지고 관련 계약도 함께 비활성화됩니다.",
+            "거래처 삭제",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (confirm != MessageBoxResult.Yes)
+            return;
+
+        var result = _session.HasAdministrativePrivileges
+            ? await DeleteCustomerAsAdministratorAsync(selectedCustomer.Id)
+            : await _local.DeleteCustomerAsync(selectedCustomer.Id, _session);
+
+        if (!result.Success)
+        {
+            MessageBox.Show(result.Message, "거래처 삭제", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        MessageBox.Show(result.Message, "거래처 삭제", MessageBoxButton.OK, MessageBoxImage.Information);
+        await _vm.ReloadCommand.ExecuteAsync(null);
+    }
+
+    private async Task<OfficeMutationResult> DeleteCustomerAsAdministratorAsync(Guid customerId)
+    {
+        await _local.DeleteCustomerAsync(customerId);
+        return OfficeMutationResult.Ok(customerId, "거래처를 삭제했습니다.");
     }
 
     private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject

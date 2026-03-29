@@ -121,6 +121,7 @@ public sealed class CustomersController : ControllerBase
         if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
             return Forbid();
 
+        NormalizeCustomerClassification(dto);
         var entity = new Customer { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode);
@@ -143,6 +144,7 @@ public sealed class CustomersController : ControllerBase
             return Forbid();
 
         PreserveCustomerTextWhenIncomingLooksLossy(dto, entity);
+        NormalizeCustomerClassification(dto);
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, entity.TenantCode, entity.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, entity.OfficeCode);
         entity.Apply(dto);
@@ -195,5 +197,30 @@ public sealed class CustomersController : ControllerBase
         dto.Notes = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Notes, dto.Notes);
         dto.Phone = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Phone, dto.Phone);
         dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Email, dto.Email);
+    }
+
+    private static void NormalizeCustomerClassification(CustomerDto dto)
+    {
+        var rawTradeType = (dto.TradeType ?? string.Empty).Trim();
+
+        if (CustomerClassificationNormalizer.TryExtractCompositeCategoryAndTradeType(rawTradeType, out var category, out var normalizedCompositeTradeType))
+        {
+            if (!dto.CategoryId.HasValue || dto.CategoryId == Guid.Empty)
+                dto.CategoryId = category.Id;
+
+            dto.TradeType = normalizedCompositeTradeType;
+            return;
+        }
+
+        if (CustomerClassificationNormalizer.TryResolveCategory(rawTradeType, out var standaloneCategory))
+        {
+            if (!dto.CategoryId.HasValue || dto.CategoryId == Guid.Empty)
+                dto.CategoryId = standaloneCategory.Id;
+
+            dto.TradeType = CustomerClassificationNormalizer.Sales;
+            return;
+        }
+
+        dto.TradeType = CustomerClassificationNormalizer.NormalizeTradeTypeOrDefault(rawTradeType);
     }
 }

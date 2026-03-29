@@ -188,6 +188,11 @@
                             BorderBrush="#8E24AA"
                             Margin="0,0,6,0"
                             Click="EditCustomerButton_Click"/>
+                    <Button Content="선택 거래처 삭제"
+                            Background="#C62828"
+                            BorderBrush="#C62828"
+                            Margin="0,0,6,0"
+                            Click="DeleteCustomerButton_Click"/>
                     <Rectangle Width="1"
                                Height="18"
                                Fill="#3E5875"

@@ -797,7 +797,7 @@ public sealed partial class LegacyDataMigrationService
     }
 
     private static string NormalizeTradeType(string? value)
-        => string.IsNullOrWhiteSpace(value) ? CustomerTradeTypes.Sales : value.Trim();
+        => 거래플랜.Shared.Contracts.CustomerClassificationNormalizer.NormalizeTradeTypeOrDefault(value);
 
     private static string NormalizePriceGrade(string? value)
         => string.IsNullOrWhiteSpace(value) ? "매출단가" : value.Trim();

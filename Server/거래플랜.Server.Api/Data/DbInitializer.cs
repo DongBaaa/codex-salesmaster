@@ -133,6 +133,7 @@ public static class DbInitializer
         }
 
         await EnsureReferenceDataAsync(dbContext, cancellationToken);
+        await NormalizeCustomerClassificationIntegrityAsync(dbContext, cancellationToken);
         await MigrateStoredFilesToCentralStorageAsync(dbContext, fileStorage, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
 
@@ -141,6 +142,7 @@ public static class DbInitializer
             await using var tenantDbContext = CreateDbContext(connectionInfo, revisionClock);
             await SyncTenantConfigurationAsync(dbContext, tenantDbContext, cancellationToken);
             await EnsureReferenceDataAsync(tenantDbContext, cancellationToken);
+            await NormalizeCustomerClassificationIntegrityAsync(tenantDbContext, cancellationToken);
             await MigrateStoredFilesToCentralStorageAsync(tenantDbContext, fileStorage, cancellationToken);
             await tenantDbContext.SaveChangesAsync(cancellationToken);
             logger.LogInformation("Dedicated business database initialized for tenant {TenantCode}.", connectionInfo.TenantCode);
@@ -366,6 +368,15 @@ public static class DbInitializer
             existing.IsDeleted = false;
         }
 
+        var invalidTradeTypeOptions = await dbContext.TradeTypeOptions.IgnoreQueryFilters()
+            .Where(option => !option.IsDeleted)
+            .ToListAsync(cancellationToken);
+        foreach (var option in invalidTradeTypeOptions.Where(option => CustomerClassificationNormalizer.TradeTypeDefinition.Find(option.Name) is null))
+        {
+            option.IsDeleted = true;
+            option.IsActive = false;
+        }
+
         foreach (var definition in DefaultItemCategoryOptions)
         {
             var existing = await dbContext.ItemCategoryOptions.IgnoreQueryFilters().FirstOrDefaultAsync(option => option.Id == definition.Id, cancellationToken)
@@ -403,6 +414,69 @@ public static class DbInitializer
                 BankAccountText = "입금용 계좌번호를 입력하세요."
             });
         }
+    }
+
+    private static async Task NormalizeCustomerClassificationIntegrityAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var customers = await dbContext.Customers.IgnoreQueryFilters().ToListAsync(cancellationToken);
+        if (customers.Count == 0)
+            return;
+
+        var changed = false;
+        foreach (var customer in customers)
+        {
+            var customerChanged = false;
+            var rawTradeType = (customer.TradeType ?? string.Empty).Trim();
+
+            if (CustomerClassificationNormalizer.TryExtractCompositeCategoryAndTradeType(rawTradeType, out var category, out var normalizedCompositeTradeType))
+            {
+                if (!customer.CategoryId.HasValue || customer.CategoryId == Guid.Empty)
+                {
+                    customer.CategoryId = category.Id;
+                    customerChanged = true;
+                }
+
+                if (!string.Equals(customer.TradeType, normalizedCompositeTradeType, StringComparison.CurrentCulture))
+                {
+                    customer.TradeType = normalizedCompositeTradeType;
+                    customerChanged = true;
+                }
+            }
+            else if (CustomerClassificationNormalizer.TryResolveCategory(rawTradeType, out var standaloneCategory))
+            {
+                if (!customer.CategoryId.HasValue || customer.CategoryId == Guid.Empty)
+                {
+                    customer.CategoryId = standaloneCategory.Id;
+                    customerChanged = true;
+                }
+
+                if (!string.Equals(customer.TradeType, CustomerClassificationNormalizer.Sales, StringComparison.CurrentCulture))
+                {
+                    customer.TradeType = CustomerClassificationNormalizer.Sales;
+                    customerChanged = true;
+                }
+            }
+            else if (CustomerClassificationNormalizer.TryNormalizeTradeType(rawTradeType, out var normalizedTradeType) &&
+                     !string.Equals(customer.TradeType, normalizedTradeType, StringComparison.CurrentCulture))
+            {
+                customer.TradeType = normalizedTradeType;
+                customerChanged = true;
+            }
+            else if (!string.IsNullOrWhiteSpace(rawTradeType) &&
+                     !CustomerClassificationNormalizer.TryNormalizeTradeType(rawTradeType, out _) &&
+                     !string.Equals(customer.TradeType, CustomerClassificationNormalizer.Sales, StringComparison.CurrentCulture))
+            {
+                customer.TradeType = CustomerClassificationNormalizer.Sales;
+                customerChanged = true;
+            }
+
+            changed |= customerChanged;
+        }
+
+        if (changed)
+            await dbContext.SaveChangesAsync(cancellationToken);
     }
 
     private static async Task SyncTenantConfigurationAsync(

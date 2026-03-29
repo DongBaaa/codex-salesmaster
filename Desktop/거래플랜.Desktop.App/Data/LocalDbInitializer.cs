@@ -359,6 +359,8 @@ public static class LocalDbInitializer
         await BackfillTransactionResponsibleOfficeCodeAsync(db);
         await NormalizeCompanyProfilesAsync(db);
         await NormalizeCustomerTradeTypeAsync(db);
+        await RepairCustomerClassificationIntegrityAsync(db);
+        await NormalizeTradeTypeOptionCatalogAsync(db);
         await BackfillCustomerScopeFieldsAsync(db);
         await BackfillCustomerMasterScopeFieldsAsync(db);
         await BackfillItemScopeFieldsAsync(db);
@@ -1827,6 +1829,158 @@ public static class LocalDbInitializer
         {
             // ignore
         }
+    }
+
+    private static async Task RepairCustomerClassificationIntegrityAsync(LocalDbContext db)
+    {
+        var customers = await db.Customers.IgnoreQueryFilters().ToListAsync();
+        if (customers.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        var changed = false;
+
+        foreach (var customer in customers)
+        {
+            var customerChanged = false;
+            var rawTradeType = (customer.TradeType ?? string.Empty).Trim();
+            if (CustomerClassificationNormalizer.TryExtractCompositeCategoryAndTradeType(rawTradeType, out var category, out var normalizedCompositeTradeType))
+            {
+                if (!customer.CategoryId.HasValue || customer.CategoryId == Guid.Empty)
+                {
+                    customer.CategoryId = category.Id;
+                    customerChanged = true;
+                }
+
+                if (!string.Equals(customer.TradeType, normalizedCompositeTradeType, StringComparison.CurrentCulture))
+                {
+                    customer.TradeType = normalizedCompositeTradeType;
+                    customerChanged = true;
+                }
+            }
+            else if (CustomerClassificationNormalizer.TryResolveCategory(rawTradeType, out var standaloneCategory))
+            {
+                if (!customer.CategoryId.HasValue || customer.CategoryId == Guid.Empty)
+                {
+                    customer.CategoryId = standaloneCategory.Id;
+                    customerChanged = true;
+                }
+
+                if (!string.Equals(customer.TradeType, CustomerClassificationNormalizer.Sales, StringComparison.CurrentCulture))
+                {
+                    customer.TradeType = CustomerClassificationNormalizer.Sales;
+                    customerChanged = true;
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(rawTradeType) &&
+                     !CustomerClassificationNormalizer.TryNormalizeTradeType(rawTradeType, out _) &&
+                     !string.Equals(customer.TradeType, CustomerClassificationNormalizer.Sales, StringComparison.CurrentCulture))
+            {
+                customer.TradeType = CustomerClassificationNormalizer.Sales;
+                customerChanged = true;
+            }
+
+            if (!customerChanged)
+                continue;
+
+            customer.IsDirty = true;
+            customer.UpdatedAtUtc = now;
+            changed = true;
+        }
+
+        if (changed)
+            await db.SaveChangesAsync();
+    }
+
+    private static async Task NormalizeTradeTypeOptionCatalogAsync(LocalDbContext db)
+    {
+        var options = await db.TradeTypeOptions.IgnoreQueryFilters().ToListAsync();
+        var now = DateTime.UtcNow;
+        var changed = false;
+
+        foreach (var definition in SelectionOptionDefaults.DefaultTradeTypes)
+        {
+            var option = options.FirstOrDefault(current => current.Id == definition.Id)
+                ?? options.FirstOrDefault(current => string.Equals(current.Name?.Trim(), definition.Name, StringComparison.CurrentCultureIgnoreCase));
+
+            if (option is null)
+            {
+                db.TradeTypeOptions.Add(new LocalTradeTypeOption
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    AllowsSales = definition.AllowsSales,
+                    AllowsPurchase = definition.AllowsPurchase,
+                    SortOrder = definition.SortOrder,
+                    IsSystemDefault = false,
+                    IsActive = true,
+                    IsDeleted = false,
+                    IsDirty = true,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                });
+                changed = true;
+                continue;
+            }
+
+            var optionChanged = false;
+            if (!string.Equals(option.Name, definition.Name, StringComparison.CurrentCulture))
+            {
+                option.Name = definition.Name;
+                optionChanged = true;
+            }
+
+            if (option.AllowsSales != definition.AllowsSales)
+            {
+                option.AllowsSales = definition.AllowsSales;
+                optionChanged = true;
+            }
+
+            if (option.AllowsPurchase != definition.AllowsPurchase)
+            {
+                option.AllowsPurchase = definition.AllowsPurchase;
+                optionChanged = true;
+            }
+
+            if (option.SortOrder != definition.SortOrder)
+            {
+                option.SortOrder = definition.SortOrder;
+                optionChanged = true;
+            }
+
+            if (!option.IsActive)
+            {
+                option.IsActive = true;
+                optionChanged = true;
+            }
+
+            if (option.IsDeleted)
+            {
+                option.IsDeleted = false;
+                optionChanged = true;
+            }
+
+            if (optionChanged)
+            {
+                option.IsDirty = true;
+                option.UpdatedAtUtc = now;
+                changed = true;
+            }
+        }
+
+        foreach (var option in options.Where(option =>
+                     !option.IsDeleted &&
+                     CustomerClassificationNormalizer.TradeTypeDefinition.Find(option.Name) is null))
+        {
+            option.IsDeleted = true;
+            option.IsActive = false;
+            option.IsDirty = true;
+            option.UpdatedAtUtc = now;
+            changed = true;
+        }
+
+        if (changed)
+            await db.SaveChangesAsync();
     }
 
     private static async Task BackfillCustomerScopeFieldsAsync(LocalDbContext db)

@@ -276,7 +276,7 @@ public static class DtoMappings
             OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
             NameOriginal = entity.NameOriginal,
             NameMatchKey = entity.NameMatchKey, CategoryId = entity.CategoryId,
-            TradeType = entity.TradeType,
+            TradeType = CustomerClassificationNormalizer.NormalizeTradeTypeOrDefault(entity.TradeType),
             Department = entity.Department, ContactPerson = entity.ContactPerson,
             Representative = entity.Representative,
             BusinessNumber = entity.BusinessNumber,
@@ -290,7 +290,8 @@ public static class DtoMappings
     {
         entity.CustomerMasterId = dto.CustomerMasterId; entity.NameOriginal = dto.NameOriginal;
         entity.NameMatchKey = string.IsNullOrWhiteSpace(dto.NameMatchKey) ? MatchKeyNormalizer.Normalize(dto.NameOriginal) : dto.NameMatchKey;
-        entity.CategoryId = dto.CategoryId; entity.TradeType = dto.TradeType;
+        entity.CategoryId = dto.CategoryId;
+        entity.TradeType = CustomerClassificationNormalizer.NormalizeTradeTypeOrDefault(dto.TradeType);
         entity.Department = dto.Department;
         entity.ContactPerson = dto.ContactPerson;
         entity.Representative = dto.Representative;

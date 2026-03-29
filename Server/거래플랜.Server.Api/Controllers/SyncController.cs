@@ -263,8 +263,28 @@ public sealed class SyncController : ControllerBase
         SyncPushResult result,
         CancellationToken cancellationToken)
     {
+        var normalizedPayload = payload
+            .Select(dto =>
+            {
+                if (!CustomerClassificationNormalizer.TryNormalizeTradeType(dto.Name, out var normalizedName))
+                    return null;
+
+                var definition = CustomerClassificationNormalizer.TradeTypeDefinition.Find(normalizedName);
+                if (definition is null)
+                    return null;
+
+                dto.Name = definition.Name;
+                dto.AllowsSales = definition.AllowsSales;
+                dto.AllowsPurchase = definition.AllowsPurchase;
+                dto.SortOrder = definition.SortOrder;
+                return dto;
+            })
+            .Where(dto => dto is not null)
+            .Cast<TradeTypeOptionDto>()
+            .ToList();
+
         await UpsertSelectionOptionEntitiesAsync(
-            payload,
+            normalizedPayload,
             _dbContext.TradeTypeOptions,
             entity => entity.Name,
             dto => dto.Name,
@@ -470,6 +490,8 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
+            NormalizeCustomerClassification(dto);
+
             if (dto.CategoryId.HasValue &&
                 !await ExistsOrTrackedAsync(_dbContext.CustomerCategories, dto.CategoryId.Value, cancellationToken))
             {
@@ -497,6 +519,31 @@ public sealed class SyncController : ControllerBase
         }
 
         return valid;
+    }
+
+    private static void NormalizeCustomerClassification(CustomerDto dto)
+    {
+        var rawTradeType = (dto.TradeType ?? string.Empty).Trim();
+
+        if (CustomerClassificationNormalizer.TryExtractCompositeCategoryAndTradeType(rawTradeType, out var category, out var normalizedCompositeTradeType))
+        {
+            if (!dto.CategoryId.HasValue || dto.CategoryId == Guid.Empty)
+                dto.CategoryId = category.Id;
+
+            dto.TradeType = normalizedCompositeTradeType;
+            return;
+        }
+
+        if (CustomerClassificationNormalizer.TryResolveCategory(rawTradeType, out var standaloneCategory))
+        {
+            if (!dto.CategoryId.HasValue || dto.CategoryId == Guid.Empty)
+                dto.CategoryId = standaloneCategory.Id;
+
+            dto.TradeType = CustomerClassificationNormalizer.Sales;
+            return;
+        }
+
+        dto.TradeType = CustomerClassificationNormalizer.NormalizeTradeTypeOrDefault(rawTradeType);
     }
 
     private async Task<List<ItemDto>> PrepareScopedItemsAsync(

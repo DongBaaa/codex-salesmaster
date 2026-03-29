@@ -76,7 +76,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
             _allRows.Clear();
             _allRows.AddRange(customers.Select(customer => new EnvironmentCustomerRow(
                 customer,
-                ResolveCategoryName(customer.CategoryId),
+                ResolveCategoryName(customer.CategoryId, customer.TradeType),
                 ResolveContractSummary(customer.Id))));
             AttachRowHandlers();
             ReloadOfficeFilters();
@@ -292,10 +292,18 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
         ApplyFilter();
     }
 
-    private string ResolveCategoryName(Guid? categoryId)
+    private string ResolveCategoryName(Guid? categoryId, string? tradeType)
     {
-        if (!categoryId.HasValue)
+        if (!categoryId.HasValue || categoryId == Guid.Empty)
+        {
+            if (CustomerClassificationNormalizer.TryExtractCompositeCategoryAndTradeType(tradeType, out var inferredCategory, out _))
+                return inferredCategory.Name;
+
+            if (CustomerClassificationNormalizer.TryResolveCategory(tradeType, out inferredCategory))
+                return inferredCategory.Name;
+
             return "-";
+        }
 
         return _categoryNames.TryGetValue(categoryId.Value, out var categoryName) &&
                !string.IsNullOrWhiteSpace(categoryName)

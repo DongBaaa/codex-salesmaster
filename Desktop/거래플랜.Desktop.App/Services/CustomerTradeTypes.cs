@@ -1,46 +1,20 @@
-﻿namespace 거래플랜.Desktop.App.Services;
+using 거래플랜.Shared.Contracts;
+
+namespace 거래플랜.Desktop.App.Services;
 
 public static class CustomerTradeTypes
 {
-    public const string Sales = "매출";
-    public const string Purchase = "매입";
-    public const string SalesAndPurchase = "매출/매입";
+    public const string Sales = CustomerClassificationNormalizer.Sales;
+    public const string Purchase = CustomerClassificationNormalizer.Purchase;
+    public const string SalesAndPurchase = CustomerClassificationNormalizer.SalesAndPurchase;
 
-    public static IReadOnlyList<string> All { get; } =
-    [
-        Sales,
-        Purchase,
-        SalesAndPurchase
-    ];
+    public static IReadOnlyList<string> All { get; } = CustomerClassificationNormalizer.AllowedTradeTypes;
 
     public static string Normalize(string? value)
-    {
-        var normalized = (value ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(normalized))
-            return Sales;
+        => CustomerClassificationNormalizer.NormalizeTradeTypeOrDefault(value);
 
-        if (string.Equals(normalized, Sales, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(normalized, "판매", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(normalized, "매출처", StringComparison.OrdinalIgnoreCase))
-        {
-            return Sales;
-        }
-
-        if (string.Equals(normalized, Purchase, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(normalized, "매입처", StringComparison.OrdinalIgnoreCase))
-        {
-            return Purchase;
-        }
-
-        if (string.Equals(normalized, SalesAndPurchase, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(normalized, "판매/매입", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(normalized, "매출매입", StringComparison.OrdinalIgnoreCase))
-        {
-            return SalesAndPurchase;
-        }
-
-        return normalized;
-    }
+    public static bool TryNormalize(string? value, out string normalizedTradeType)
+        => CustomerClassificationNormalizer.TryNormalizeTradeType(value, out normalizedTradeType);
 
     public static bool AllowsSales(string? tradeType)
     {

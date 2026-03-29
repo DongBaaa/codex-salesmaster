@@ -784,7 +784,8 @@ ORDER BY JAEPUMNAME
             var row = new ImportedCustomerRow
             {
                 Name = ReadString(ws, rowIndex, headerMap, "거래처명", "상호명/고객", "상호명", "고객"),
-                Category = ReadString(ws, rowIndex, headerMap, "고객분류", "고객구분", "거래구분"),
+                Category = ReadString(ws, rowIndex, headerMap, "고객분류", "고객구분"),
+                TradeType = ReadString(ws, rowIndex, headerMap, "거래구분"),
                 RegisterDate = ReadDate(ws, rowIndex, headerMap, "등록일자", "등록일"),
                 Manager = ReadString(ws, rowIndex, headerMap, "담당자"),
                 Staff = ReadString(ws, rowIndex, headerMap, "업체직원", "업체담당자", "담당직원"),
@@ -935,7 +936,23 @@ ORDER BY JAEPUMNAME
     {
         target.NameOriginal = row.Name.Trim();
         target.NameMatchKey = target.NameOriginal.ToUpperInvariant();
-        target.TradeType = CustomerTradeTypes.Normalize(row.Category.Trim());
+        var rawCategory = row.Category.Trim();
+        var rawTradeType = row.TradeType.Trim();
+
+        if (CustomerClassificationNormalizer.TryExtractCompositeCategoryAndTradeType(rawCategory, out var compositeCategory, out var compositeTradeType))
+        {
+            target.CategoryId = compositeCategory.Id;
+            target.TradeType = compositeTradeType;
+        }
+        else
+        {
+            if (DefaultCustomerCategories.TryGetByName(rawCategory, out var categoryDefinition))
+                target.CategoryId = categoryDefinition.Id;
+
+            target.TradeType = CustomerClassificationNormalizer.TryNormalizeTradeType(rawTradeType, out var normalizedTradeType)
+                ? normalizedTradeType
+                : CustomerTradeTypes.Sales;
+        }
         target.Department = string.Empty;
         target.ContactPerson = row.Staff.Trim();
         target.BusinessNumber = row.BusinessNumber.Trim();
@@ -1073,6 +1090,7 @@ ORDER BY JAEPUMNAME
     {
         public string Name { get; init; } = string.Empty;
         public string Category { get; init; } = string.Empty;
+        public string TradeType { get; init; } = string.Empty;
         public DateOnly? RegisterDate { get; init; }
         public string Manager { get; init; } = string.Empty;
         public string Staff { get; init; } = string.Empty;
