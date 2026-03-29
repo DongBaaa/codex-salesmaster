@@ -5,17 +5,29 @@ using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
 
+public enum EnvironmentSettingsInitialTab
+{
+    General,
+    RecycleBin,
+    Sync
+}
+
 public partial class EnvironmentSettingsWindow : Window
 {
-    public EnvironmentSettingsWindow(EnvironmentSettingsViewModel vm, bool openRecycleBinTab = false)
+    public EnvironmentSettingsWindow(EnvironmentSettingsViewModel vm, EnvironmentSettingsInitialTab initialTab = EnvironmentSettingsInitialTab.General)
     {
         InitializeComponent();
         DataContext = vm;
 
-        if (openRecycleBinTab)
+        Loaded += (_, _) =>
         {
-            Loaded += (_, _) => SettingsTabs.SelectedItem = RecycleBinTab;
-        }
+            SettingsTabs.SelectedItem = initialTab switch
+            {
+                EnvironmentSettingsInitialTab.RecycleBin => RecycleBinTab,
+                EnvironmentSettingsInitialTab.Sync => SyncTab,
+                _ => SettingsTabs.SelectedItem
+            };
+        };
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)

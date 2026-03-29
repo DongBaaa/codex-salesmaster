@@ -466,6 +466,7 @@ public sealed class LocalTransaction : LocalSyncEntity
     public Guid? LinkedInvoiceId { get; set; }
     public string LinkedInvoiceNumber { get; set; } = string.Empty;
     public Guid? LinkedRentalBillingProfileId { get; set; }
+    public Guid? LinkedRentalBillingRunId { get; set; }
     public decimal SettlementAmount { get; set; }
     public decimal AdvanceDelta { get; set; }
     public decimal PrepaidDelta { get; set; }
@@ -526,6 +527,10 @@ public sealed class LocalRentalBillingProfile : LocalSyncEntity
     public string BusinessNumber { get; set; } = string.Empty;
     public string RealCustomerName { get; set; } = string.Empty;
     public string ItemName { get; set; } = string.Empty;
+    public string BillingType { get; set; } = "묶음";
+    public string BillToCustomerName { get; set; } = string.Empty;
+    public string InstallSiteName { get; set; } = string.Empty;
+    public string BillingAdvanceMode { get; set; } = "후불";
     public string ManagementCompanyCode { get; set; } = string.Empty;
     public string BillingMethod { get; set; } = string.Empty;
     public string PaymentMethod { get; set; } = string.Empty;
@@ -538,6 +543,7 @@ public sealed class LocalRentalBillingProfile : LocalSyncEntity
     public string SubmissionDocuments { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
     public DateOnly? BillingAnchorDate { get; set; }
+    public DateOnly? BillingStartDate { get; set; }
     public DateOnly? ContractDate { get; set; }
     public DateOnly? ContractStartDate { get; set; }
     public DateOnly? ContractEndDate { get; set; }
@@ -551,6 +557,8 @@ public sealed class LocalRentalBillingProfile : LocalSyncEntity
     public DateOnly? LastSettledDate { get; set; }
     public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUsenet;
     public string AssignedUsername { get; set; } = string.Empty;
+    public string BillingTemplateJson { get; set; } = "[]";
+    public string BillingRunsJson { get; set; } = "[]";
     public bool IsActive { get; set; } = true;
 }
 
@@ -564,6 +572,11 @@ public sealed class LocalRentalAsset : LocalSyncEntity
     public string ManagementNumber { get; set; } = string.Empty;
     public string ManagementCompanyCode { get; set; } = string.Empty;
     public string CurrentLocation { get; set; } = string.Empty;
+    public string CurrentCustomerName { get; set; } = string.Empty;
+    public string BillToCustomerName { get; set; } = string.Empty;
+    public string InstallSiteName { get; set; } = string.Empty;
+    public string BillingEligibilityStatus { get; set; } = string.Empty;
+    public string BillingExclusionReason { get; set; } = string.Empty;
     public string ItemCategoryName { get; set; } = string.Empty;
     public string Manufacturer { get; set; } = string.Empty;
     public string ItemName { get; set; } = string.Empty;

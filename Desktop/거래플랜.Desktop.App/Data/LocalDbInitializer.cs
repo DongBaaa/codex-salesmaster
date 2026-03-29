@@ -192,6 +192,7 @@ public static class LocalDbInitializer
             ("LinkedInvoiceId", "TEXT NULL"),
             ("LinkedInvoiceNumber", "TEXT NOT NULL DEFAULT ''"),
             ("LinkedRentalBillingProfileId", "TEXT NULL"),
+            ("LinkedRentalBillingRunId", "TEXT NULL"),
             ("SettlementAmount", "REAL NOT NULL DEFAULT 0"),
             ("AdvanceDelta", "REAL NOT NULL DEFAULT 0"),
             ("PrepaidDelta", "REAL NOT NULL DEFAULT 0"),
@@ -283,20 +284,32 @@ public static class LocalDbInitializer
 
         var rentalAssetCols = new (string col, string def)[]
         {
-            ("ItemId", "TEXT NULL")
+            ("ItemId", "TEXT NULL"),
+            ("CurrentCustomerName", "TEXT NOT NULL DEFAULT ''"),
+            ("BillToCustomerName", "TEXT NOT NULL DEFAULT ''"),
+            ("InstallSiteName", "TEXT NOT NULL DEFAULT ''"),
+            ("BillingEligibilityStatus", "TEXT NOT NULL DEFAULT ''"),
+            ("BillingExclusionReason", "TEXT NOT NULL DEFAULT ''")
         };
         foreach (var (col, def) in rentalAssetCols)
             await TryAddColumnAsync(db, "RentalAssets", col, def);
 
         var rentalBillingProfileCols = new (string col, string def)[]
         {
+            ("BillingType", "TEXT NOT NULL DEFAULT '묶음'"),
+            ("BillToCustomerName", "TEXT NOT NULL DEFAULT ''"),
+            ("InstallSiteName", "TEXT NOT NULL DEFAULT ''"),
+            ("BillingAdvanceMode", "TEXT NOT NULL DEFAULT '후불'"),
+            ("BillingStartDate", "TEXT NULL"),
             ("SettlementStatus", "TEXT NOT NULL DEFAULT '미입금'"),
             ("CompletionStatus", "TEXT NOT NULL DEFAULT '미완료'"),
             ("SettledAmount", "REAL NOT NULL DEFAULT 0"),
             ("OutstandingAmount", "REAL NOT NULL DEFAULT 0"),
             ("RequiresFollowUp", "INTEGER NOT NULL DEFAULT 0"),
             ("FollowUpNote", "TEXT NOT NULL DEFAULT ''"),
-            ("LastSettledDate", "TEXT NULL")
+            ("LastSettledDate", "TEXT NULL"),
+            ("BillingTemplateJson", "TEXT NOT NULL DEFAULT '[]'"),
+            ("BillingRunsJson", "TEXT NOT NULL DEFAULT '[]'")
         };
         foreach (var (col, def) in rentalBillingProfileCols)
             await TryAddColumnAsync(db, "RentalBillingProfiles", col, def);
@@ -2062,6 +2075,7 @@ public static class LocalDbInitializer
                                               "LinkedInvoiceId" TEXT NULL,
                                               "LinkedInvoiceNumber" TEXT NOT NULL DEFAULT '',
                                               "LinkedRentalBillingProfileId" TEXT NULL,
+                                              "LinkedRentalBillingRunId" TEXT NULL,
                                               "SettlementAmount" REAL NOT NULL DEFAULT 0,
                                               "AdvanceDelta" REAL NOT NULL DEFAULT 0,
                                               "PrepaidDelta" REAL NOT NULL DEFAULT 0,
@@ -2603,6 +2617,10 @@ public static class LocalDbInitializer
                                    "BusinessNumber" TEXT NOT NULL DEFAULT '',
                                    "RealCustomerName" TEXT NOT NULL DEFAULT '',
                                    "ItemName" TEXT NOT NULL DEFAULT '',
+                                   "BillingType" TEXT NOT NULL DEFAULT '묶음',
+                                   "BillToCustomerName" TEXT NOT NULL DEFAULT '',
+                                   "InstallSiteName" TEXT NOT NULL DEFAULT '',
+                                   "BillingAdvanceMode" TEXT NOT NULL DEFAULT '후불',
                                    "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
                                    "BillingMethod" TEXT NOT NULL DEFAULT '',
                                    "PaymentMethod" TEXT NOT NULL DEFAULT '',
@@ -2615,12 +2633,15 @@ public static class LocalDbInitializer
                                    "SubmissionDocuments" TEXT NOT NULL DEFAULT '',
                                    "Notes" TEXT NOT NULL DEFAULT '',
                                    "BillingAnchorDate" TEXT NULL,
+                                   "BillingStartDate" TEXT NULL,
                                    "ContractDate" TEXT NULL,
                                    "ContractStartDate" TEXT NULL,
                                    "ContractEndDate" TEXT NULL,
                                    "LastBilledDate" TEXT NULL,
                                    "ResponsibleOfficeCode" TEXT NOT NULL DEFAULT 'USENET',
                                    "AssignedUsername" TEXT NOT NULL DEFAULT '',
+                                   "BillingTemplateJson" TEXT NOT NULL DEFAULT '[]',
+                                   "BillingRunsJson" TEXT NOT NULL DEFAULT '[]',
                                    "IsActive" INTEGER NOT NULL DEFAULT 1,
                                    "IsDeleted" INTEGER NOT NULL DEFAULT 0,
                                    "CreatedAtUtc" TEXT NOT NULL,
@@ -2652,6 +2673,11 @@ public static class LocalDbInitializer
                                    "ManagementNumber" TEXT NOT NULL DEFAULT '',
                                    "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
                                    "CurrentLocation" TEXT NOT NULL DEFAULT '',
+                                   "CurrentCustomerName" TEXT NOT NULL DEFAULT '',
+                                   "BillToCustomerName" TEXT NOT NULL DEFAULT '',
+                                   "InstallSiteName" TEXT NOT NULL DEFAULT '',
+                                   "BillingEligibilityStatus" TEXT NOT NULL DEFAULT '',
+                                   "BillingExclusionReason" TEXT NOT NULL DEFAULT '',
                                    "ItemCategoryName" TEXT NOT NULL DEFAULT '',
                                    "Manufacturer" TEXT NOT NULL DEFAULT '',
                                    "ItemName" TEXT NOT NULL DEFAULT '',

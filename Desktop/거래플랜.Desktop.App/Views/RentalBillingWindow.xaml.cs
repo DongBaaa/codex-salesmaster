@@ -39,7 +39,11 @@ public partial class RentalBillingWindow : Window
 
             var paymentViewModel = new PaymentViewModel(viewModel.LocalStateService, viewModel.SessionState);
             await paymentViewModel.LoadAsync();
-            await paymentViewModel.ConfigureForRentalBillingAsync(viewModel.SelectedRow.Source);
+            await paymentViewModel.ConfigureForRentalBillingAsync(
+                viewModel.SelectedRow.Source,
+                viewModel.SelectedRow.CurrentBillingRunId,
+                viewModel.SelectedRow.CurrentBilledAmount,
+                viewModel.SelectedRow.CurrentBillingPeriodLabel);
 
             var paymentWindow = new PaymentWindow(paymentViewModel)
             {
@@ -49,5 +53,33 @@ public partial class RentalBillingWindow : Window
             paymentWindow.ShowDialog();
             await viewModel.ReloadCommand.ExecuteAsync(null);
         }, "UI", "렌탈 청구 수금 등록", "렌탈 청구 수금 등록 중 오류가 발생했습니다.");
+    }
+
+    private void NewRentalCustomerButton_Click(object sender, RoutedEventArgs e)
+    {
+        UiTaskHelper.Run(this, async () =>
+        {
+            if (DataContext is not RentalBillingViewModel viewModel)
+                return;
+
+            var onboardingViewModel = new RentalCustomerOnboardingViewModel(
+                viewModel.RentalStateService,
+                viewModel.LocalStateService,
+                viewModel.SessionState);
+            await onboardingViewModel.LoadAsync();
+
+            var onboardingWindow = new RentalCustomerOnboardingWindow(onboardingViewModel)
+            {
+                Owner = this
+            };
+
+            onboardingWindow.ShowDialog();
+            if (!onboardingViewModel.IsCompleted)
+                return;
+
+            await viewModel.ReloadCommand.ExecuteAsync(null);
+            if (onboardingViewModel.SavedBillingProfileId.HasValue)
+                viewModel.SelectedRow = viewModel.Rows.FirstOrDefault(row => row.Source.Id == onboardingViewModel.SavedBillingProfileId.Value);
+        }, "UI", "신규 렌탈 거래처 등록", "신규 렌탈 거래처 등록 중 오류가 발생했습니다.");
     }
 }

@@ -20,8 +20,14 @@ public sealed partial class PaymentViewModel : ObservableObject
     private List<LocalCustomer> _allCustomers = new();
     private LocalInvoice? _contextInvoice;
     private LocalRentalBillingProfile? _contextRentalProfile;
+    private Guid? _contextRentalBillingRunId;
+    private decimal _contextRentalBilledAmount;
+    private string _contextRentalPeriodLabel = string.Empty;
     private LocalInvoice? _linkedInvoice;
     private LocalRentalBillingProfile? _linkedRentalProfile;
+    private Guid? _linkedRentalBillingRunId;
+    private decimal _linkedRentalBilledAmount;
+    private string _linkedRentalPeriodLabel = string.Empty;
     private Guid? _editingTransactionId;
     private bool _suppressTransactionKindChange;
     private int _historyLoadVersion;
@@ -143,8 +149,14 @@ public sealed partial class PaymentViewModel : ObservableObject
         _allCustomers = await _local.GetCustomersAsync(_session);
         _contextInvoice = null;
         _contextRentalProfile = null;
+        _contextRentalBillingRunId = null;
+        _contextRentalBilledAmount = 0m;
+        _contextRentalPeriodLabel = string.Empty;
         _linkedInvoice = null;
         _linkedRentalProfile = null;
+        _linkedRentalBillingRunId = null;
+        _linkedRentalBilledAmount = 0m;
+        _linkedRentalPeriodLabel = string.Empty;
         IsCustomerSelectionLocked = false;
         if (preselect is not null)
             SetCustomer(preselect);
@@ -179,8 +191,14 @@ public sealed partial class PaymentViewModel : ObservableObject
     {
         _contextInvoice = invoice;
         _contextRentalProfile = null;
+        _contextRentalBillingRunId = null;
+        _contextRentalBilledAmount = 0m;
+        _contextRentalPeriodLabel = string.Empty;
         _linkedInvoice = invoice;
         _linkedRentalProfile = null;
+        _linkedRentalBillingRunId = null;
+        _linkedRentalBilledAmount = 0m;
+        _linkedRentalPeriodLabel = string.Empty;
         IsCustomerSelectionLocked = true;
 
         var customer = _allCustomers.FirstOrDefault(current => current.Id == invoice.CustomerId)
@@ -197,12 +215,23 @@ public sealed partial class PaymentViewModel : ObservableObject
         Memo = invoice.Memo;
     }
 
-    public async Task ConfigureForRentalBillingAsync(LocalRentalBillingProfile profile, LocalCustomer? customer = null)
+    public async Task ConfigureForRentalBillingAsync(
+        LocalRentalBillingProfile profile,
+        Guid? billingRunId,
+        decimal billedAmount,
+        string? periodLabel,
+        LocalCustomer? customer = null)
     {
         _contextInvoice = null;
         _contextRentalProfile = profile;
+        _contextRentalBillingRunId = billingRunId;
+        _contextRentalBilledAmount = Math.Max(0m, billedAmount);
+        _contextRentalPeriodLabel = (periodLabel ?? string.Empty).Trim();
         _linkedInvoice = null;
         _linkedRentalProfile = profile;
+        _linkedRentalBillingRunId = billingRunId;
+        _linkedRentalBilledAmount = Math.Max(0m, billedAmount);
+        _linkedRentalPeriodLabel = (periodLabel ?? string.Empty).Trim();
         IsCustomerSelectionLocked = true;
 
         customer ??= profile.CustomerId.HasValue
@@ -218,6 +247,14 @@ public sealed partial class PaymentViewModel : ObservableObject
         Memo = profile.FollowUpNote ?? string.Empty;
     }
 
+    public Task ConfigureForRentalBillingAsync(LocalRentalBillingProfile profile, LocalCustomer? customer = null)
+        => ConfigureForRentalBillingAsync(
+            profile,
+            billingRunId: null,
+            billedAmount: profile.MonthlyAmount,
+            periodLabel: string.Empty,
+            customer);
+
     public Task ConfigureForRentalAsync(LocalRentalBillingProfile profile)
         => ConfigureForRentalBillingAsync(profile);
 
@@ -227,6 +264,9 @@ public sealed partial class PaymentViewModel : ObservableObject
         IsEditingHistory = false;
         _linkedInvoice = _contextInvoice;
         _linkedRentalProfile = _contextRentalProfile;
+        _linkedRentalBillingRunId = _contextRentalBillingRunId;
+        _linkedRentalBilledAmount = _contextRentalBilledAmount;
+        _linkedRentalPeriodLabel = _contextRentalPeriodLabel;
         IsCustomerSelectionLocked = _linkedInvoice is not null || _linkedRentalProfile is not null;
         ReceiptDate = PaymentDate = DateOnly.FromDateTime(DateTime.Today);
         CashReceipt = CardReceipt = BankReceipt = DiscountApplied = ReceiptTotal = 0m;
@@ -588,7 +628,7 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (_linkedRentalProfile is null)
             return;
 
-        var summary = await GetRentalSettlementSummaryAsync(_linkedRentalProfile.Id);
+        var summary = await GetRentalSettlementSummaryAsync(_linkedRentalProfile.Id, _linkedRentalBillingRunId, _linkedRentalBilledAmount);
         if (!IsCurrentSettlementSuggestion(version))
             return;
 
@@ -662,13 +702,18 @@ public sealed partial class PaymentViewModel : ObservableObject
         }
         else if (_linkedRentalProfile is not null)
         {
-            var summary = await _local.GetRentalSettlementSummaryAsync(_linkedRentalProfile.Id, _session);
+            var summary = await _local.GetRentalSettlementSummaryAsync(
+                _linkedRentalProfile.Id,
+                _linkedRentalBillingRunId,
+                _linkedRentalBilledAmount > 0m ? _linkedRentalBilledAmount : null,
+                _session);
             if (!IsCurrentContextRefresh(version))
                 return;
             var customerName = string.IsNullOrWhiteSpace(_linkedRentalProfile.CustomerName)
                 ? SelectedCustomer.NameOriginal
                 : _linkedRentalProfile.CustomerName;
-            TransactionContextSummary = $"{customerName} · 렌탈청구 {summary.BilledAmount:N0}";
+            var periodLabel = string.IsNullOrWhiteSpace(_linkedRentalPeriodLabel) ? "현재 회차" : _linkedRentalPeriodLabel;
+            TransactionContextSummary = $"{customerName} · 렌탈청구 {summary.BilledAmount:N0} · {periodLabel}";
             TransactionSummary = $"수금누계 {summary.SettledAmount:N0} / 미수 {summary.OutstandingAmount:N0} · {summary.BillingStatus} / {summary.SettlementStatus}";
         }
         else if (PaymentFlowConstants.IsAdvanceKind(kind))
@@ -748,11 +793,15 @@ public sealed partial class PaymentViewModel : ObservableObject
         }
     }
 
-    private async Task<RentalSettlementSummary> GetRentalSettlementSummaryAsync(Guid billingProfileId)
+    private async Task<RentalSettlementSummary> GetRentalSettlementSummaryAsync(Guid billingProfileId, Guid? billingRunId, decimal billedAmount)
     {
         try
         {
-            return await _local.GetRentalSettlementSummaryAsync(billingProfileId, _session);
+            return await _local.GetRentalSettlementSummaryAsync(
+                billingProfileId,
+                billingRunId,
+                billedAmount > 0m ? billedAmount : null,
+                _session);
         }
         catch (NotSupportedException)
         {
@@ -764,21 +813,22 @@ public sealed partial class PaymentViewModel : ObservableObject
             var settledAmount = transactions
                 .Where(transaction =>
                     !transaction.IsDeleted &&
-                    transaction.LinkedRentalBillingProfileId == billingProfileId)
+                    transaction.LinkedRentalBillingProfileId == billingProfileId &&
+                    (!billingRunId.HasValue || transaction.LinkedRentalBillingRunId == billingRunId.Value))
                 .Sum(transaction => transaction.SettlementAmount);
-            var billedAmount = profile.MonthlyAmount;
+            var effectiveBilledAmount = billedAmount > 0m ? billedAmount : profile.MonthlyAmount;
             return new RentalSettlementSummary
             {
-                BilledAmount = billedAmount,
+                BilledAmount = effectiveBilledAmount,
                 SettledAmount = settledAmount,
-                OutstandingAmount = Math.Max(0m, billedAmount - settledAmount),
+                OutstandingAmount = Math.Max(0m, effectiveBilledAmount - settledAmount),
                 BillingStatus = string.IsNullOrWhiteSpace(profile.BillingStatus)
                     ? PaymentFlowConstants.BillingStatusInProgress
                     : profile.BillingStatus,
                 SettlementStatus = string.IsNullOrWhiteSpace(profile.SettlementStatus)
                     ? (settledAmount <= 0m ? PaymentFlowConstants.SettlementStatusUnpaid : PaymentFlowConstants.SettlementStatusPartial)
                     : profile.SettlementStatus,
-                CompletionStatus = Math.Max(0m, billedAmount - settledAmount) <= 0m
+                CompletionStatus = Math.Max(0m, effectiveBilledAmount - settledAmount) <= 0m
                     ? PaymentFlowConstants.CompletionDone
                     : PaymentFlowConstants.CompletionPending
             };
@@ -811,6 +861,7 @@ public sealed partial class PaymentViewModel : ObservableObject
                 TransactionKind = kind,
                 LinkedInvoiceId = _linkedInvoice?.Id,
                 LinkedRentalBillingProfileId = _linkedRentalProfile?.Id,
+                LinkedRentalBillingRunId = _linkedRentalBillingRunId,
                 LinkedInvoiceNumber = _linkedInvoice is null
                     ? string.Empty
                     : string.IsNullOrWhiteSpace(_linkedInvoice.InvoiceNumber)
@@ -1274,6 +1325,9 @@ public sealed partial class PaymentViewModel : ObservableObject
         _editingTransactionId = history.Id;
         _linkedInvoice = editInvoice;
         _linkedRentalProfile = editRentalProfile;
+        _linkedRentalBillingRunId = history.LinkedRentalBillingRunId;
+        _linkedRentalBilledAmount = 0m;
+        _linkedRentalPeriodLabel = string.Empty;
         IsCustomerSelectionLocked = editInvoice is not null || editRentalProfile is not null || _contextInvoice is not null || _contextRentalProfile is not null;
 
         var normalizedKind = PaymentFlowConstants.NormalizeTransactionKind(

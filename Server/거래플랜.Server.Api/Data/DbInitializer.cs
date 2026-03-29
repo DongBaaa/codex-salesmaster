@@ -163,6 +163,7 @@ public static class DbInitializer
         await EnsureRentalManagementCompaniesTableAsync(dbContext, cancellationToken);
         await EnsureRentalBillingProfilesTableAsync(dbContext, cancellationToken);
         await EnsureRentalAssetsTableAsync(dbContext, cancellationToken);
+        await EnsureRentalBillingEnhancementColumnsAsync(dbContext, cancellationToken);
         await EnsureLegacyRentalNamingColumnsAsync(dbContext, cancellationToken);
         await EnsureRentalBillingLogsTableAsync(dbContext, cancellationToken);
         await EnsureCustomerTradeTypeColumnAsync(dbContext, cancellationToken);
@@ -3304,10 +3305,38 @@ public static class DbInitializer
         CancellationToken cancellationToken)
         => EnsureNullableTextColumnAsync(dbContext, "TransactionAttachments", "StoragePath", cancellationToken);
 
+    private static async Task EnsureRentalBillingEnhancementColumnsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureColumnAsync(dbContext, "Transactions", "LinkedRentalBillingRunId", "TEXT NULL", "uuid NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingType", "TEXT NOT NULL DEFAULT '묶음'", "text NOT NULL DEFAULT '묶음'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillToCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "InstallSiteName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingAdvanceMode", "TEXT NOT NULL DEFAULT '후불'", "text NOT NULL DEFAULT '후불'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingStartDate", "TEXT NULL", "date NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingTemplateJson", "TEXT NOT NULL DEFAULT '[]'", "text NOT NULL DEFAULT '[]'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingRunsJson", "TEXT NOT NULL DEFAULT '[]'", "text NOT NULL DEFAULT '[]'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "CurrentCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "BillToCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "InstallSiteName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "BillingEligibilityStatus", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "BillingExclusionReason", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+    }
+
     private static async Task EnsureNullableTextColumnAsync(
         AppDbContext dbContext,
         string tableName,
         string columnName,
+        CancellationToken cancellationToken)
+        => await EnsureColumnAsync(dbContext, tableName, columnName, "TEXT NULL", "text NULL", cancellationToken);
+
+    private static async Task EnsureColumnAsync(
+        AppDbContext dbContext,
+        string tableName,
+        string columnName,
+        string sqliteDefinition,
+        string postgresDefinition,
         CancellationToken cancellationToken)
     {
         if (!IsSafeSqlIdentifier(tableName) || !IsSafeSqlIdentifier(columnName))
@@ -3328,12 +3357,12 @@ public static class DbInitializer
                     return;
             }
 
-            var addSql = "ALTER TABLE " + quotedTableName + " ADD COLUMN " + quotedColumnName + " TEXT NULL;";
+            var addSql = "ALTER TABLE " + quotedTableName + " ADD COLUMN " + quotedColumnName + " " + sqliteDefinition + ";";
             await dbContext.Database.ExecuteSqlRawAsync(addSql, cancellationToken);
             return;
         }
 
-        var postgresSql = "ALTER TABLE " + quotedTableName + " ADD COLUMN IF NOT EXISTS " + quotedColumnName + " text NULL;";
+        var postgresSql = "ALTER TABLE " + quotedTableName + " ADD COLUMN IF NOT EXISTS " + quotedColumnName + " " + postgresDefinition + ";";
         await dbContext.Database.ExecuteSqlRawAsync(postgresSql, cancellationToken);
     }
 

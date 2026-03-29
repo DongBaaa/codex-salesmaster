@@ -558,6 +558,10 @@ using System.Reflection;
 
 internal static class Program
 {
+    private const string InstallFolderName = "tradeplan";
+    private const string AppExeName = "거래플랜.exe";
+    private const string AppShortcutName = "거래플랜";
+
     [STAThread]
     private static int Main(string[] args)
     {
@@ -576,6 +580,7 @@ internal static class Program
             stream.CopyTo(fileStream);
         }
 
+        var normalizedArgs = NormalizeArgs(args).ToArray();
         var startInfo = new ProcessStartInfo("msiexec.exe")
         {
             UseShellExecute = false,
@@ -584,7 +589,7 @@ internal static class Program
         startInfo.ArgumentList.Add("/i");
         startInfo.ArgumentList.Add(packagePath);
 
-        foreach (var arg in NormalizeArgs(args))
+        foreach (var arg in normalizedArgs)
         {
             startInfo.ArgumentList.Add(arg);
         }
@@ -596,23 +601,98 @@ internal static class Program
         }
 
         process.WaitForExit();
+        if (process.ExitCode == 0)
+        {
+            TryEnsureMachineShortcuts(ResolveInstallRoot(normalizedArgs));
+        }
+
         return process.ExitCode;
     }
 
-    private static IEnumerable<string> NormalizeArgs(IEnumerable<string> args)
+    private static string[] NormalizeArgs(IEnumerable<string> args)
     {
+        var normalized = new List<string>();
         foreach (var arg in args)
         {
             if (string.Equals(arg, "/Q", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(arg, "/quiet", StringComparison.OrdinalIgnoreCase))
             {
-                yield return "/qn";
-                yield return "/norestart";
+                normalized.Add("/qn");
+                normalized.Add("/norestart");
                 continue;
             }
 
-            yield return arg;
+            normalized.Add(arg);
         }
+
+        return normalized.ToArray();
+    }
+
+    private static string ResolveInstallRoot(IEnumerable<string> args)
+    {
+        foreach (var arg in args)
+        {
+            if (arg.StartsWith("INSTALLFOLDER=", StringComparison.OrdinalIgnoreCase))
+            {
+                var value = arg.Substring("INSTALLFOLDER=".Length).Trim().Trim('"');
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value;
+                }
+            }
+        }
+
+        var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        if (string.IsNullOrWhiteSpace(programFilesX86))
+        {
+            programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        }
+
+        return Path.Combine(programFilesX86, InstallFolderName);
+    }
+
+    private static void TryEnsureMachineShortcuts(string installRoot)
+    {
+        try
+        {
+            var exePath = Path.Combine(installRoot, AppExeName);
+            if (!File.Exists(exePath))
+            {
+                return;
+            }
+
+            var shellType = Type.GetTypeFromProgID("WScript.Shell");
+            if (shellType is null)
+            {
+                return;
+            }
+
+            dynamic shell = Activator.CreateInstance(shellType)!;
+            var commonDesktopShortcutPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
+                AppShortcutName + ".lnk");
+            CreateShortcut(shell, commonDesktopShortcutPath, exePath, installRoot);
+
+            var commonProgramsDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),
+                AppShortcutName);
+            Directory.CreateDirectory(commonProgramsDir);
+            var startMenuShortcutPath = Path.Combine(commonProgramsDir, AppShortcutName + ".lnk");
+            CreateShortcut(shell, startMenuShortcutPath, exePath, installRoot);
+        }
+        catch
+        {
+            // 설치 자체는 성공했으므로 바로가기 생성 실패는 무시
+        }
+    }
+
+    private static void CreateShortcut(dynamic shell, string shortcutPath, string exePath, string workingDirectory)
+    {
+        dynamic shortcut = shell.CreateShortcut(shortcutPath);
+        shortcut.TargetPath = exePath;
+        shortcut.WorkingDirectory = workingDirectory;
+        shortcut.IconLocation = exePath;
+        shortcut.Save();
     }
 }
 '@

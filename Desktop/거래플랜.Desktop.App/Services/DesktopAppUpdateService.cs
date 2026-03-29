@@ -10,6 +10,8 @@ public sealed class DesktopAppUpdateService
 {
     private const long MinimumUpdaterWorkBytes = 512L * 1024 * 1024;
     private const long InstallBufferBytes = 256L * 1024 * 1024;
+    private const string CanonicalInstallFolderName = "tradeplan";
+    private const string CanonicalExecutableName = "거래플랜.exe";
     private static readonly TimeSpan UpdateArtifactRetention = TimeSpan.FromDays(3);
 
     private readonly ErpApiClient _api;
@@ -104,11 +106,11 @@ public sealed class DesktopAppUpdateService
         var stagedUpdaterPath = StageUpdaterForExecution(updaterPath);
 
         var currentProcess = Process.GetCurrentProcess();
-        var currentExePath = Environment.ProcessPath ?? currentProcess.MainModule?.FileName;
-        if (string.IsNullOrWhiteSpace(currentExePath))
+        if (string.IsNullOrWhiteSpace(Environment.ProcessPath ?? currentProcess.MainModule?.FileName))
             throw new InvalidOperationException("현재 실행 파일 경로를 확인하지 못했습니다.");
 
-        var installRoot = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var installRoot = GetCanonicalInstallRoot();
+        var launchExePath = GetCanonicalLaunchExePath();
         EnsureSufficientDiskSpace(package.FileSize, installRoot);
         TryCleanupStaleUpdateArtifacts();
 
@@ -121,7 +123,7 @@ public sealed class DesktopAppUpdateService
             "--install-root",
             QuoteArgument(installRoot),
             "--launch-exe",
-            QuoteArgument(currentExePath),
+            QuoteArgument(launchExePath),
             "--process-id",
             currentProcess.Id.ToString(),
             "--version",
@@ -154,6 +156,21 @@ public sealed class DesktopAppUpdateService
 
         return candidates.FirstOrDefault(File.Exists);
     }
+
+    private static string GetCanonicalInstallRoot()
+    {
+        var programFilesRoot = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        if (string.IsNullOrWhiteSpace(programFilesRoot))
+            programFilesRoot = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+
+        if (string.IsNullOrWhiteSpace(programFilesRoot))
+            throw new InvalidOperationException("Program Files 경로를 확인하지 못했습니다.");
+
+        return Path.Combine(programFilesRoot, CanonicalInstallFolderName);
+    }
+
+    private static string GetCanonicalLaunchExePath()
+        => Path.Combine(GetCanonicalInstallRoot(), CanonicalExecutableName);
 
     private static string StageUpdaterForExecution(string updaterPath)
     {

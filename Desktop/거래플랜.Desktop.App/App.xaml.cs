@@ -126,7 +126,9 @@ public partial class App : Application
                 sp.GetRequiredService<IPrintService>(),
                 sp.GetRequiredService<SessionState>(),
                 sp.GetRequiredService<ErpApiClient>(),
-                sp.GetRequiredService<SyncService>());
+                sp.GetRequiredService<SyncService>(),
+                sp.GetRequiredService<BackupService>(),
+                sp.GetRequiredService<SyncDiagnosticsService>());
 
             MainWindow = mainWin;
 

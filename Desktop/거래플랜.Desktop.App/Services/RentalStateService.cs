@@ -2,6 +2,7 @@
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Text.Json;
 using ExcelDataReader;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
@@ -16,6 +17,10 @@ public sealed class RentalStateService
     private const string AssetWorkbookPathSettingKey = "Rental.ImportAssetWorkbookPath";
     private static readonly TimeZoneInfo KoreaTimeZone = ResolveKoreaTimeZone();
     private static readonly SemaphoreSlim AssetSaveLock = new(1, 1);
+    private static readonly JsonSerializerOptions RentalJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
     private static readonly IReadOnlyDictionary<string, string> ImportLocationStatusMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["렌탈"] = "임대진행중",
@@ -223,11 +228,12 @@ public sealed class RentalStateService
         CancellationToken ct = default)
     {
         var offices = await GetOfficeMapAsync(ct);
-        var assetCounts = await ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+        var billingAssets = await ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
             .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue)
+            .ToListAsync(ct);
+        var assetsByProfile = billingAssets
             .GroupBy(asset => asset.BillingProfileId!.Value)
-            .Select(group => new { BillingProfileId = group.Key, Count = group.Count() })
-            .ToDictionaryAsync(group => group.BillingProfileId, group => group.Count, ct);
+            .ToDictionary(group => group.Key, group => group.ToList());
 
         var query = ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session);
         query = ApplyBillingFilter(query, filter, session);
@@ -236,13 +242,51 @@ public sealed class RentalStateService
             .ThenBy(profile => profile.ItemName)
             .ToListAsync(ct);
 
+        var previewRuns = profiles
+            .Select(profile => GetOrCreateBillingRun(profile, filter.ReferenceDate, persistChanges: false))
+            .Where(run => run is not null)
+            .Cast<RentalBillingRunModel>()
+            .ToDictionary(run => run.RunId, run => run);
+        var settledByRun = previewRuns.Count == 0
+            ? new Dictionary<Guid, decimal>()
+            : (await _db.Transactions.AsNoTracking()
+                    .Where(transaction => !transaction.IsDeleted && transaction.LinkedRentalBillingRunId.HasValue && previewRuns.Keys.Contains(transaction.LinkedRentalBillingRunId.Value))
+                    .Select(transaction => new
+                    {
+                        RunId = transaction.LinkedRentalBillingRunId!.Value,
+                        transaction.SettlementAmount
+                    })
+                    .ToListAsync(ct))
+                .GroupBy(transaction => transaction.RunId)
+                .ToDictionary(group => group.Key, group => group.Sum(transaction => transaction.SettlementAmount));
+
         var alertWindow = (await GetAlertDayValuesAsync(ct)).DefaultIfEmpty(7).Max();
         var rows = profiles.Select(profile =>
         {
+            assetsByProfile.TryGetValue(profile.Id, out var profileAssets);
+            profileAssets ??= new List<LocalRentalAsset>();
+            var templateItems = GetBillingTemplateItems(profile, profileAssets);
+            var includedAssetCount = templateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count();
             var nextBillingDate = GetNextBillingDate(profile, filter.ReferenceDate);
             var daysRemaining = nextBillingDate.HasValue
                 ? nextBillingDate.Value.DayNumber - filter.ReferenceDate.DayNumber
                 : (int?)null;
+            var currentRun = GetOrCreateBillingRun(profile, filter.ReferenceDate, persistChanges: false);
+            var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
+            var settledAmount = currentRun is not null && settledByRun.TryGetValue(currentRun.RunId, out var runSettledAmount)
+                ? runSettledAmount
+                : profile.SettledAmount;
+            var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
+            var currentRunStatus = currentRun?.Status ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(currentRunStatus) || string.Equals(currentRunStatus, PaymentFlowConstants.BillingStatusPlanned, StringComparison.OrdinalIgnoreCase))
+            {
+                currentRunStatus = outstandingAmount <= 0m && billedAmount > 0m
+                    ? PaymentFlowConstants.BillingStatusCompleted
+                    : settledAmount > 0m
+                        ? PaymentFlowConstants.BillingStatusInProgress
+                        : PaymentFlowConstants.BillingStatusPlanned;
+            }
+            var dataIssues = BuildBillingDataIssues(profile, profileAssets, templateItems);
             return new RentalBillingViewRow
             {
                 Source = profile,
@@ -251,14 +295,30 @@ public sealed class RentalStateService
                 NextBillingDate = nextBillingDate,
                 DaysRemaining = daysRemaining,
                 DisplayStatus = BuildBillingDisplayStatus(profile, nextBillingDate, daysRemaining),
-                SettlementStatus = PaymentFlowConstants.NormalizeSettlementStatus(profile.SettlementStatus),
-                CompletionStatus = PaymentFlowConstants.NormalizeCompletionStatus(profile.CompletionStatus),
-                SettledAmount = profile.SettledAmount,
-                OutstandingAmount = profile.OutstandingAmount,
-                RequiresFollowUp = profile.RequiresFollowUp,
+                SettlementStatus = currentRun is not null
+                    ? DetermineBillingSettlementStatus(profile, settledAmount, billedAmount)
+                    : PaymentFlowConstants.NormalizeSettlementStatus(profile.SettlementStatus),
+                CompletionStatus = outstandingAmount <= 0m
+                    ? PaymentFlowConstants.CompletionDone
+                    : PaymentFlowConstants.NormalizeCompletionStatus(profile.CompletionStatus),
+                SettledAmount = settledAmount,
+                OutstandingAmount = outstandingAmount,
+                RequiresFollowUp = profile.RequiresFollowUp || outstandingAmount > 0m,
                 FollowUpNote = profile.FollowUpNote,
                 LastSettledDate = profile.LastSettledDate,
-                AssetCount = assetCounts.TryGetValue(profile.Id, out var count) ? count : 0
+                AssetCount = profileAssets.Count,
+                TemplateItemCount = templateItems.Count,
+                IncludedAssetCount = includedAssetCount,
+                BillingType = string.IsNullOrWhiteSpace(profile.BillingType) ? "묶음" : profile.BillingType,
+                BillToCustomerName = string.IsNullOrWhiteSpace(profile.BillToCustomerName) ? profile.CustomerName : profile.BillToCustomerName,
+                InstallSiteName = string.IsNullOrWhiteSpace(profile.InstallSiteName) ? profile.RealCustomerName : profile.InstallSiteName,
+                BillingAdvanceMode = string.IsNullOrWhiteSpace(profile.BillingAdvanceMode) ? "후불" : profile.BillingAdvanceMode,
+                CurrentBillingRunId = currentRun?.RunId,
+                CurrentBillingPeriodLabel = currentRun?.PeriodLabel ?? string.Empty,
+                CurrentBillingRunStatus = currentRunStatus,
+                CurrentBilledAmount = billedAmount,
+                HasDataIssue = dataIssues.Count > 0,
+                DataIssueSummary = dataIssues.Count == 0 ? string.Empty : string.Join(" / ", dataIssues)
             };
         });
 
@@ -288,13 +348,22 @@ public sealed class RentalStateService
             .ToListAsync(ct);
 
         return assets
-            .Select(asset => new RentalAssetViewRow
+            .Select(asset =>
             {
-                Source = asset,
-                ResponsibleOfficeName = ResolveOfficeDisplayName(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, offices),
-                DaysRemaining = asset.RentalEndDate.HasValue
-                    ? asset.RentalEndDate.Value.DayNumber - filter.ReferenceDate.DayNumber
-                    : null
+                var issues = BuildAssetDataIssues(asset);
+                return new RentalAssetViewRow
+                {
+                    Source = asset,
+                    ResponsibleOfficeName = ResolveOfficeDisplayName(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, offices),
+                    DaysRemaining = asset.RentalEndDate.HasValue
+                        ? asset.RentalEndDate.Value.DayNumber - filter.ReferenceDate.DayNumber
+                        : null,
+                    CurrentCustomerName = string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName,
+                    BillToCustomerName = string.IsNullOrWhiteSpace(asset.BillToCustomerName) ? asset.CustomerName : asset.BillToCustomerName,
+                    InstallSiteName = string.IsNullOrWhiteSpace(asset.InstallSiteName) ? asset.InstallLocation : asset.InstallSiteName,
+                    BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? GetDefaultBillingEligibilityStatus(asset) : asset.BillingEligibilityStatus,
+                    HasDataIssue = issues.Count > 0
+                };
             })
             .OrderBy(row => row.Source.CustomerName, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(row => row.Source.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
@@ -444,7 +513,10 @@ public sealed class RentalStateService
 
         profile.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerName);
         profile.RealCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.RealCustomerName);
-        profile.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(profile.ItemName);
+        profile.BillToCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(string.IsNullOrWhiteSpace(profile.BillToCustomerName) ? profile.CustomerName : profile.BillToCustomerName);
+        profile.InstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(string.IsNullOrWhiteSpace(profile.InstallSiteName) ? profile.RealCustomerName : profile.InstallSiteName);
+        profile.BillingType = NormalizeBillingType(profile.BillingType);
+        profile.BillingAdvanceMode = NormalizeBillingAdvanceMode(profile.BillingAdvanceMode);
         profile.BillingDay = Math.Clamp(profile.BillingDay <= 0 ? 25 : profile.BillingDay, 1, 31);
         profile.BillingCycleMonths = Math.Max(1, profile.BillingCycleMonths);
         profile.BillingMethod = NormalizeBillingMethod(profile.BillingMethod);
@@ -458,6 +530,13 @@ public sealed class RentalStateService
         profile.ResponsibleOfficeCode = officeCode;
         profile.ManagementCompanyCode = officeCode;
         profile.AssignedUsername = NormalizeAssignedUsername(profile.AssignedUsername, officeCode, session, allowBlankForAdmin: true);
+
+        var templateItems = GetBillingTemplateItems(profile, Array.Empty<LocalRentalAsset>());
+        profile.BillingTemplateJson = SerializeBillingTemplateItems(templateItems);
+        profile.MonthlyAmount = templateItems.Count == 0
+            ? Math.Max(0m, profile.MonthlyAmount)
+            : templateItems.Sum(item => ResolveTemplateMonthlyAmount(item));
+        profile.ItemName = BuildProfileItemName(profile, templateItems);
         profile.ProfileKey = string.IsNullOrWhiteSpace(profile.ProfileKey)
             ? BuildProfileKey(profile.ManagementCompanyCode, profile.BusinessNumber, profile.CustomerName, profile.RealCustomerName, profile.ItemName)
             : profile.ProfileKey;
@@ -493,6 +572,7 @@ public sealed class RentalStateService
         }
 
         await _db.SaveChangesAsync(ct);
+        await SyncBillingProfileAssetsAsync(profile, templateItems, ct);
         return LocalMutationResult.Ok(profile.Id, "렌탈 청구 프로필을 저장했습니다.");
     }
 
@@ -532,6 +612,12 @@ public sealed class RentalStateService
         if (string.Equals(profile.SettlementStatus, PaymentFlowConstants.SettlementStatusUnpaid, StringComparison.OrdinalIgnoreCase))
             profile.SettlementStatus = PaymentFlowConstants.SettlementStatusPending;
         profile.RequiresFollowUp = profile.RequiresFollowUp || profile.OutstandingAmount > 0m;
+        var currentRun = GetOrCreateBillingRun(profile, DateOnly.FromDateTime(DateTime.Today), persistChanges: true);
+        if (currentRun is not null)
+        {
+            currentRun.Status = PaymentFlowConstants.BillingStatusInProgress;
+            UpsertBillingRun(profile, currentRun);
+        }
         profile.IsDirty = true;
         profile.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
@@ -557,6 +643,13 @@ public sealed class RentalStateService
         var normalizedNote = (note ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(normalizedNote))
             profile.FollowUpNote = normalizedNote;
+        var currentRun = GetOrCreateBillingRun(profile, DateOnly.FromDateTime(DateTime.Today), persistChanges: true);
+        if (currentRun is not null)
+        {
+            currentRun.Status = PaymentFlowConstants.BillingStatusOnHold;
+            currentRun.Note = normalizedNote;
+            UpsertBillingRun(profile, currentRun);
+        }
         profile.IsDirty = true;
         profile.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
@@ -578,12 +671,14 @@ public sealed class RentalStateService
         if (!CanAccessRental(profile.AssignedUsername, profile.ResponsibleOfficeCode, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구의 수금을 등록할 수 없습니다.");
 
-        var amount = settledAmount.GetValueOrDefault(profile.MonthlyAmount);
+        var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
+        var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
+        var amount = settledAmount.GetValueOrDefault(billedAmount);
         if (amount < 0m)
             amount = 0m;
 
         profile.SettledAmount = amount;
-        profile.OutstandingAmount = Math.Max(0m, profile.MonthlyAmount - amount);
+        profile.OutstandingAmount = Math.Max(0m, billedAmount - amount);
         profile.SettlementStatus = profile.OutstandingAmount <= 0m
             ? PaymentFlowConstants.SettlementStatusConfirmed
             : PaymentFlowConstants.SettlementStatusPartial;
@@ -596,6 +691,18 @@ public sealed class RentalStateService
         if (!string.Equals(profile.BillingStatus, PaymentFlowConstants.BillingStatusCompleted, StringComparison.OrdinalIgnoreCase))
         {
             profile.BillingStatus = PaymentFlowConstants.BillingStatusInProgress;
+        }
+        if (currentRun is not null)
+        {
+            currentRun.BilledAmount = billedAmount;
+            currentRun.SettledAmount = amount;
+            currentRun.SettlementStatus = profile.SettlementStatus;
+            currentRun.SettledDate = referenceDate;
+            currentRun.Note = normalizedNote;
+            currentRun.Status = profile.OutstandingAmount <= 0m
+                ? PaymentFlowConstants.BillingStatusCompleted
+                : PaymentFlowConstants.BillingStatusInProgress;
+            UpsertBillingRun(profile, currentRun);
         }
 
         var scheduledDate = BuildBillingDate(referenceDate.Year, referenceDate.Month, profile.BillingDay);
@@ -615,7 +722,7 @@ public sealed class RentalStateService
                 ProcessedDate = referenceDate,
                 ProcessedByUsername = session.User?.Username ?? string.Empty,
                 Status = profile.SettlementStatus,
-                BilledAmount = profile.SettledAmount,
+                BilledAmount = billedAmount,
                 Note = normalizedNote,
                 ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
                 AssignedUsername = profile.AssignedUsername,
@@ -630,7 +737,7 @@ public sealed class RentalStateService
             log.ProcessedDate = referenceDate;
             log.ProcessedByUsername = session.User?.Username ?? string.Empty;
             log.Status = profile.SettlementStatus;
-            log.BilledAmount = profile.SettledAmount;
+            log.BilledAmount = billedAmount;
             log.Note = normalizedNote;
             log.ResponsibleOfficeCode = profile.ResponsibleOfficeCode;
             log.AssignedUsername = profile.AssignedUsername;
@@ -643,6 +750,57 @@ public sealed class RentalStateService
         profile.UpdatedAtUtc = now;
         await _db.SaveChangesAsync(ct);
         return LocalMutationResult.Ok(billingProfileId, "수금을 등록했습니다.");
+    }
+
+    public async Task<IReadOnlyList<LocalRentalAsset>> GetBillingAssetCandidatesAsync(
+        Guid? billingProfileId,
+        string? customerName,
+        string? billToCustomerName,
+        string? installSiteName,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var trimmedCustomer = (customerName ?? string.Empty).Trim();
+        var trimmedBillTo = (billToCustomerName ?? string.Empty).Trim();
+        var trimmedInstallSite = (installSiteName ?? string.Empty).Trim();
+        var nameCandidates = new[] { trimmedCustomer, trimmedBillTo }
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var query = ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+            .Where(asset => !asset.IsDeleted);
+
+        if (billingProfileId.HasValue && billingProfileId.Value != Guid.Empty)
+        {
+            var profileId = billingProfileId.Value;
+            query = query.Where(asset =>
+                asset.BillingProfileId == profileId ||
+                nameCandidates.Contains(asset.CustomerName) ||
+                nameCandidates.Contains(asset.CurrentCustomerName) ||
+                nameCandidates.Contains(asset.BillToCustomerName) ||
+                (!string.IsNullOrWhiteSpace(trimmedInstallSite) &&
+                    (asset.InstallSiteName == trimmedInstallSite || asset.InstallLocation == trimmedInstallSite)));
+        }
+        else if (nameCandidates.Length > 0 || !string.IsNullOrWhiteSpace(trimmedInstallSite))
+        {
+            query = query.Where(asset =>
+                nameCandidates.Contains(asset.CustomerName) ||
+                nameCandidates.Contains(asset.CurrentCustomerName) ||
+                nameCandidates.Contains(asset.BillToCustomerName) ||
+                (!string.IsNullOrWhiteSpace(trimmedInstallSite) &&
+                    (asset.InstallSiteName == trimmedInstallSite || asset.InstallLocation == trimmedInstallSite)));
+        }
+        else
+        {
+            query = query.Where(asset => asset.BillingProfileId.HasValue);
+        }
+
+        return await query
+            .OrderBy(asset => asset.CustomerName)
+            .ThenBy(asset => asset.ManagementNumber)
+            .Take(200)
+            .ToListAsync(ct);
     }
 
     public async Task<LocalMutationResult> SaveAssetAsync(
@@ -683,7 +841,10 @@ public sealed class RentalStateService
                 ? string.Empty
                 : (asset.ManagementId ?? existing.ManagementId ?? string.Empty).Trim();
             asset.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CustomerName);
+            asset.CurrentCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName);
+            asset.BillToCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(string.IsNullOrWhiteSpace(asset.BillToCustomerName) ? asset.CustomerName : asset.BillToCustomerName);
             asset.CurrentLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CurrentLocation);
+            asset.InstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(string.IsNullOrWhiteSpace(asset.InstallSiteName) ? asset.InstallLocation : asset.InstallSiteName);
             asset.ItemCategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(asset.ItemCategoryName);
             asset.Manufacturer = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.Manufacturer);
             asset.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName);
@@ -691,6 +852,10 @@ public sealed class RentalStateService
             asset.PurchaseVendor = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.PurchaseVendor);
             asset.InstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation);
             asset.DepositText = (asset.DepositText ?? string.Empty).Trim();
+            asset.BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus)
+                ? GetDefaultBillingEligibilityStatus(asset)
+                : asset.BillingEligibilityStatus.Trim();
+            asset.BillingExclusionReason = (asset.BillingExclusionReason ?? string.Empty).Trim();
             await EnsureAssetManagementIdentifiersAsync(
                 asset,
                 existing,
@@ -878,6 +1043,8 @@ public sealed class RentalStateService
             .FirstOrDefaultAsync(current => current.BillingProfileId == billingProfileId && current.BillingYearMonth == billingYearMonth, ct);
 
         var normalizedStatus = string.IsNullOrWhiteSpace(status) ? "완료" : status.Trim();
+        var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
+        var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
         var now = DateTime.UtcNow;
         if (log is null)
         {
@@ -890,7 +1057,7 @@ public sealed class RentalStateService
                 ProcessedDate = referenceDate,
                 ProcessedByUsername = session.User?.Username ?? string.Empty,
                 Status = normalizedStatus,
-                BilledAmount = profile.MonthlyAmount,
+                BilledAmount = billedAmount,
                 Note = (note ?? string.Empty).Trim(),
                 ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
                 AssignedUsername = profile.AssignedUsername,
@@ -905,7 +1072,7 @@ public sealed class RentalStateService
             log.ProcessedDate = referenceDate;
             log.ProcessedByUsername = session.User?.Username ?? string.Empty;
             log.Status = normalizedStatus;
-            log.BilledAmount = profile.MonthlyAmount;
+            log.BilledAmount = billedAmount;
             log.Note = (note ?? string.Empty).Trim();
             log.ResponsibleOfficeCode = profile.ResponsibleOfficeCode;
             log.AssignedUsername = profile.AssignedUsername;
@@ -918,15 +1085,25 @@ public sealed class RentalStateService
         profile.BillingStatus = PaymentFlowConstants.BillingStatusCompleted;
         profile.CompletionStatus = PaymentFlowConstants.NormalizeCompletionStatus(normalizedStatus);
         profile.SettledAmount = profile.SettledAmount <= 0m && profile.OutstandingAmount <= 0m
-            ? profile.MonthlyAmount
+            ? billedAmount
             : profile.SettledAmount;
-        profile.OutstandingAmount = Math.Max(0m, profile.MonthlyAmount - profile.SettledAmount);
+        profile.OutstandingAmount = Math.Max(0m, billedAmount - profile.SettledAmount);
         profile.SettlementStatus = profile.OutstandingAmount <= 0m
             ? PaymentFlowConstants.SettlementStatusConfirmed
             : PaymentFlowConstants.SettlementStatusPartial;
         profile.RequiresFollowUp = profile.OutstandingAmount > 0m;
         if (!profile.RequiresFollowUp)
             profile.FollowUpNote = string.Empty;
+        if (currentRun is not null)
+        {
+            currentRun.BilledAmount = billedAmount;
+            currentRun.SettledAmount = profile.SettledAmount;
+            currentRun.SettlementStatus = profile.SettlementStatus;
+            currentRun.SettledDate = profile.LastSettledDate;
+            currentRun.Status = profile.BillingStatus;
+            currentRun.Note = (note ?? string.Empty).Trim();
+            UpsertBillingRun(profile, currentRun);
+        }
         profile.UpdatedAtUtc = now;
         profile.IsDirty = true;
         await _db.SaveChangesAsync(ct);
@@ -1846,6 +2023,346 @@ public sealed class RentalStateService
                $"- 30일 내 만료 {expiring:N0}건";
     }
 
+    public List<RentalBillingTemplateItemModel> GetBillingTemplateItems(LocalRentalBillingProfile profile, IReadOnlyList<LocalRentalAsset>? assets = null)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        assets ??= Array.Empty<LocalRentalAsset>();
+
+        List<RentalBillingTemplateItemModel>? parsed = null;
+        if (!string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
+        {
+            try
+            {
+                parsed = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(profile.BillingTemplateJson, RentalJsonOptions);
+            }
+            catch
+            {
+                parsed = null;
+            }
+        }
+
+        if (parsed is null || parsed.Count == 0)
+        {
+            var legacyIncludedAssetIds = assets
+                .Where(asset => asset.BillingProfileId == profile.Id)
+                .Select(asset => asset.Id)
+                .Distinct()
+                .ToList();
+            parsed =
+            [
+                new RentalBillingTemplateItemModel
+                {
+                    DisplayItemName = string.IsNullOrWhiteSpace(profile.ItemName) ? "렌탈 임대료" : profile.ItemName,
+                    Quantity = 1m,
+                    UnitPrice = Math.Max(0m, profile.MonthlyAmount),
+                    Amount = Math.Max(0m, profile.MonthlyAmount),
+                    IncludedAssetIds = legacyIncludedAssetIds
+                }
+            ];
+        }
+
+        var normalized = new List<RentalBillingTemplateItemModel>();
+        foreach (var current in parsed)
+        {
+            if (current is null)
+                continue;
+
+            var displayItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(current.DisplayItemName);
+            var quantity = current.Quantity <= 0m ? 1m : current.Quantity;
+            var unitPrice = Math.Max(0m, current.UnitPrice);
+            var amount = current.Amount > 0m ? current.Amount : quantity * unitPrice;
+            var includedAssetIds = (current.IncludedAssetIds ?? new List<Guid>())
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+            normalized.Add(new RentalBillingTemplateItemModel
+            {
+                ItemId = current.ItemId == Guid.Empty ? Guid.NewGuid() : current.ItemId,
+                DisplayItemName = string.IsNullOrWhiteSpace(displayItemName) ? "렌탈 임대료" : displayItemName,
+                Quantity = quantity,
+                UnitPrice = unitPrice,
+                Amount = Math.Max(0m, amount),
+                Note = (current.Note ?? string.Empty).Trim(),
+                IncludedAssetIds = includedAssetIds
+            });
+        }
+
+        if (normalized.Count == 0)
+        {
+            normalized.Add(new RentalBillingTemplateItemModel
+            {
+                DisplayItemName = string.IsNullOrWhiteSpace(profile.ItemName) ? "렌탈 임대료" : profile.ItemName,
+                Quantity = 1m,
+                UnitPrice = Math.Max(0m, profile.MonthlyAmount),
+                Amount = Math.Max(0m, profile.MonthlyAmount)
+            });
+        }
+
+        return normalized;
+    }
+
+    public string SerializeBillingTemplateItems(IEnumerable<RentalBillingTemplateItemModel> items)
+        => JsonSerializer.Serialize((items ?? Enumerable.Empty<RentalBillingTemplateItemModel>()).ToList(), RentalJsonOptions);
+
+    public List<RentalBillingRunModel> GetBillingRuns(LocalRentalBillingProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        if (string.IsNullOrWhiteSpace(profile.BillingRunsJson))
+            return new List<RentalBillingRunModel>();
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<RentalBillingRunModel>>(profile.BillingRunsJson, RentalJsonOptions) ?? new List<RentalBillingRunModel>();
+        }
+        catch
+        {
+            return new List<RentalBillingRunModel>();
+        }
+    }
+
+    public RentalBillingRunModel? GetOrCreateBillingRun(
+        LocalRentalBillingProfile profile,
+        DateOnly referenceDate,
+        bool persistChanges)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        var scheduledDate = GetNextBillingDate(profile, referenceDate);
+        if (!scheduledDate.HasValue)
+            return null;
+
+        var templateItems = GetBillingTemplateItems(profile);
+        var cycleMonths = Math.Max(1, profile.BillingCycleMonths);
+        var period = ResolveBillingPeriod(profile, scheduledDate.Value, cycleMonths);
+        var runKey = $"{period.StartDate:yyyyMMdd}-{period.EndDate:yyyyMMdd}";
+        var runs = GetBillingRuns(profile);
+        var existing = runs.FirstOrDefault(run => string.Equals(run.RunKey, runKey, StringComparison.OrdinalIgnoreCase));
+        var billedAmount = templateItems.Sum(item => ResolveTemplateMonthlyAmount(item)) * cycleMonths;
+        var deterministicRunId = SyncIdentityGenerator.CreateRentalBillingRunId(profile.Id, runKey);
+        if (existing is null)
+        {
+            existing = new RentalBillingRunModel
+            {
+                RunId = deterministicRunId == Guid.Empty ? Guid.NewGuid() : deterministicRunId,
+                RunKey = runKey,
+                ScheduledDate = scheduledDate.Value,
+                PeriodStartDate = period.StartDate,
+                PeriodEndDate = period.EndDate,
+                CycleMonths = cycleMonths,
+                PeriodLabel = BuildBillingPeriodLabel(period.StartDate, period.EndDate),
+                Status = PaymentFlowConstants.BillingStatusPlanned,
+                BilledAmount = billedAmount,
+                SettlementStatus = PaymentFlowConstants.SettlementStatusUnpaid,
+                Items = CloneTemplateItemsForRun(templateItems, cycleMonths)
+            };
+            runs.Add(existing);
+        }
+        else
+        {
+            existing.RunId = existing.RunId == Guid.Empty
+                ? (deterministicRunId == Guid.Empty ? Guid.NewGuid() : deterministicRunId)
+                : existing.RunId;
+            existing.ScheduledDate = scheduledDate.Value;
+            existing.PeriodStartDate = period.StartDate;
+            existing.PeriodEndDate = period.EndDate;
+            existing.CycleMonths = cycleMonths;
+            existing.PeriodLabel = BuildBillingPeriodLabel(period.StartDate, period.EndDate);
+            existing.BilledAmount = billedAmount;
+            existing.Items = CloneTemplateItemsForRun(templateItems, cycleMonths);
+        }
+
+        if (persistChanges)
+            profile.BillingRunsJson = JsonSerializer.Serialize(runs, RentalJsonOptions);
+
+        return existing;
+    }
+
+    private static List<RentalBillingTemplateItemModel> CloneTemplateItemsForRun(
+        IEnumerable<RentalBillingTemplateItemModel> items,
+        int cycleMonths)
+        => (items ?? Enumerable.Empty<RentalBillingTemplateItemModel>())
+            .Select(item => new RentalBillingTemplateItemModel
+            {
+                ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
+                DisplayItemName = item.DisplayItemName,
+                Quantity = item.Quantity,
+                UnitPrice = item.UnitPrice,
+                Amount = ResolveTemplateMonthlyAmount(item) * Math.Max(1, cycleMonths),
+                Note = item.Note,
+                IncludedAssetIds = item.IncludedAssetIds?.Distinct().ToList() ?? new List<Guid>()
+            })
+            .ToList();
+
+    private static decimal ResolveTemplateMonthlyAmount(RentalBillingTemplateItemModel item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (item.Amount > 0m)
+            return item.Amount;
+        return Math.Max(0m, item.Quantity <= 0m ? 1m : item.Quantity) * Math.Max(0m, item.UnitPrice);
+    }
+
+    private static string BuildProfileItemName(LocalRentalBillingProfile profile, IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
+    {
+        if (templateItems.Count == 0)
+            return RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(profile.ItemName);
+
+        if (templateItems.Count == 1)
+            return templateItems[0].DisplayItemName;
+
+        return $"{templateItems[0].DisplayItemName} 외 {templateItems.Count - 1}건";
+    }
+
+    private static string NormalizeBillingType(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        return normalized switch
+        {
+            "개별" => "개별",
+            "혼합" => "혼합",
+            _ => "묶음"
+        };
+    }
+
+    private static string NormalizeBillingAdvanceMode(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        return string.Equals(normalized, "선불", StringComparison.OrdinalIgnoreCase) ? "선불" : "후불";
+    }
+
+    private static (DateOnly StartDate, DateOnly EndDate) ResolveBillingPeriod(LocalRentalBillingProfile profile, DateOnly scheduledDate, int cycleMonths)
+    {
+        var scheduledMonth = new DateOnly(scheduledDate.Year, scheduledDate.Month, 1);
+        if (string.Equals(NormalizeBillingAdvanceMode(profile.BillingAdvanceMode), "선불", StringComparison.OrdinalIgnoreCase))
+        {
+            var endDate = scheduledMonth.AddMonths(cycleMonths).AddDays(-1);
+            return (scheduledMonth, endDate);
+        }
+
+        var startMonth = scheduledMonth.AddMonths(-(cycleMonths - 1));
+        var endDateForMonth = new DateOnly(scheduledMonth.Year, scheduledMonth.Month, DateTime.DaysInMonth(scheduledMonth.Year, scheduledMonth.Month));
+        return (startMonth, endDateForMonth);
+    }
+
+    private static string BuildBillingPeriodLabel(DateOnly startDate, DateOnly endDate)
+        => startDate == endDate || (startDate.Year == endDate.Year && startDate.Month == endDate.Month)
+            ? $"{startDate:yyyy-MM}"
+            : $"{startDate:yyyy-MM} ~ {endDate:yyyy-MM}";
+
+    private static string DetermineBillingSettlementStatus(LocalRentalBillingProfile profile, decimal settledAmount, decimal billedAmount)
+    {
+        if (settledAmount <= 0m)
+            return PaymentFlowConstants.GetPendingSettlementStatus(profile.BillingMethod, profile.BillingMethod);
+        if (settledAmount < billedAmount)
+            return PaymentFlowConstants.SettlementStatusPartial;
+        return PaymentFlowConstants.GetDisplaySettlementCompleteStatus(profile.BillingMethod, profile.BillingMethod);
+    }
+
+    private List<string> BuildBillingDataIssues(
+        LocalRentalBillingProfile profile,
+        IReadOnlyList<LocalRentalAsset> assets,
+        IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
+    {
+        var issues = new List<string>();
+        if (templateItems.Count == 0)
+            issues.Add("표시품목 없음");
+        if (assets.Count == 0)
+            issues.Add("연결장비 없음");
+        if (string.IsNullOrWhiteSpace(profile.BillToCustomerName))
+            issues.Add("청구처 미설정");
+        if (string.IsNullOrWhiteSpace(profile.InstallSiteName))
+            issues.Add("설치처 미설정");
+        if (templateItems.Any(item => item.IncludedAssetIds.Count == 0))
+            issues.Add("장비 미연결 품목");
+        if (assets.Any(asset => string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) || string.Equals(asset.BillingEligibilityStatus, "미확인", StringComparison.OrdinalIgnoreCase)))
+            issues.Add("청구대상 검토 필요");
+        return issues.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private List<string> BuildAssetDataIssues(LocalRentalAsset asset)
+    {
+        var issues = new List<string>();
+        if (string.IsNullOrWhiteSpace(asset.CurrentCustomerName) && string.IsNullOrWhiteSpace(asset.CustomerName))
+            issues.Add("현재거래처 없음");
+        if (string.IsNullOrWhiteSpace(asset.InstallSiteName) && string.IsNullOrWhiteSpace(asset.InstallLocation))
+            issues.Add("설치처 불명");
+        if (string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus))
+            issues.Add("청구상태 미확정");
+        if (string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase) && asset.BillingProfileId.HasValue)
+            issues.Add("회수장비 청구연결");
+        return issues;
+    }
+
+    private static string GetDefaultBillingEligibilityStatus(LocalRentalAsset asset)
+    {
+        if (asset.BillingProfileId.HasValue && !string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase) && !string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase))
+            return "청구대상";
+        if (string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase) || string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase))
+            return "청구제외";
+        return "미확인";
+    }
+
+    private async Task SyncBillingProfileAssetsAsync(
+        LocalRentalBillingProfile profile,
+        IReadOnlyList<RentalBillingTemplateItemModel> templateItems,
+        CancellationToken ct)
+    {
+        var includedAssetIds = templateItems
+            .SelectMany(item => item.IncludedAssetIds ?? Enumerable.Empty<Guid>())
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToHashSet();
+
+        var linkedAssets = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .Where(asset => asset.BillingProfileId == profile.Id || includedAssetIds.Contains(asset.Id))
+            .ToListAsync(ct);
+
+        if (linkedAssets.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        foreach (var asset in linkedAssets)
+        {
+            if (includedAssetIds.Contains(asset.Id))
+            {
+                asset.BillingProfileId = profile.Id;
+                asset.BillToCustomerName = string.IsNullOrWhiteSpace(profile.BillToCustomerName) ? profile.CustomerName : profile.BillToCustomerName;
+                asset.InstallSiteName = string.IsNullOrWhiteSpace(profile.InstallSiteName) ? profile.RealCustomerName : profile.InstallSiteName;
+                asset.CustomerName = string.IsNullOrWhiteSpace(asset.CustomerName) ? profile.CustomerName : asset.CustomerName;
+                asset.CurrentCustomerName = string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? profile.CustomerName : asset.CurrentCustomerName;
+                asset.BillingEligibilityStatus = string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase) || string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase)
+                    ? "청구제외"
+                    : "청구대상";
+            }
+            else if (asset.BillingProfileId == profile.Id)
+            {
+                asset.BillingProfileId = null;
+                asset.BillingEligibilityStatus = string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase) || string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase)
+                    ? "청구제외"
+                    : "미확인";
+            }
+
+            asset.IsDirty = true;
+            asset.UpdatedAtUtc = now;
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private void UpsertBillingRun(LocalRentalBillingProfile profile, RentalBillingRunModel run)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        ArgumentNullException.ThrowIfNull(run);
+
+        var runs = GetBillingRuns(profile);
+        var existingIndex = runs.FindIndex(current => current.RunId == run.RunId);
+        if (existingIndex >= 0)
+            runs[existingIndex] = run;
+        else
+            runs.Add(run);
+
+        profile.BillingRunsJson = JsonSerializer.Serialize(runs, RentalJsonOptions);
+    }
+
     public DateOnly? GetNextBillingDate(LocalRentalBillingProfile profile, DateOnly referenceDate)
     {
         if (profile is null || !profile.IsActive)
@@ -1899,6 +2416,7 @@ public sealed class RentalStateService
     private static DateOnly GetCycleAnchor(LocalRentalBillingProfile profile, DateOnly referenceDate)
     {
         return profile.BillingAnchorDate
+               ?? profile.BillingStartDate
                ?? profile.ContractStartDate
                ?? profile.ContractDate
                ?? profile.LastBilledDate

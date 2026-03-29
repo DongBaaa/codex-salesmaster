@@ -1,4 +1,4 @@
-﻿using 거래플랜.Server.Api.Domain;
+using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 
@@ -429,6 +429,7 @@ public static class DtoMappings
             LinkedInvoiceId = entity.LinkedInvoiceId,
             LinkedInvoiceNumber = entity.LinkedInvoiceNumber,
             LinkedRentalBillingProfileId = entity.LinkedRentalBillingProfileId,
+            LinkedRentalBillingRunId = entity.LinkedRentalBillingRunId,
             SettlementAmount = entity.SettlementAmount,
             AdvanceDelta = entity.AdvanceDelta,
             PrepaidDelta = entity.PrepaidDelta,
@@ -454,6 +455,7 @@ public static class DtoMappings
         entity.LinkedInvoiceId = dto.LinkedInvoiceId;
         entity.LinkedInvoiceNumber = dto.LinkedInvoiceNumber?.Trim() ?? string.Empty;
         entity.LinkedRentalBillingProfileId = dto.LinkedRentalBillingProfileId;
+        entity.LinkedRentalBillingRunId = dto.LinkedRentalBillingRunId;
         entity.SettlementAmount = dto.SettlementAmount;
         entity.AdvanceDelta = dto.AdvanceDelta;
         entity.PrepaidDelta = dto.PrepaidDelta;
@@ -670,6 +672,10 @@ public static class DtoMappings
             BusinessNumber = entity.BusinessNumber,
             RealCustomerName = entity.RealCustomerName,
             ItemName = entity.ItemName,
+            BillingType = entity.BillingType,
+            BillToCustomerName = entity.BillToCustomerName,
+            InstallSiteName = entity.InstallSiteName,
+            BillingAdvanceMode = entity.BillingAdvanceMode,
             ManagementCompanyCode = entity.ManagementCompanyCode,
             BillingMethod = entity.BillingMethod,
             PaymentMethod = entity.PaymentMethod,
@@ -682,6 +688,7 @@ public static class DtoMappings
             SubmissionDocuments = entity.SubmissionDocuments,
             Notes = entity.Notes,
             BillingAnchorDate = entity.BillingAnchorDate,
+            BillingStartDate = entity.BillingStartDate,
             ContractDate = entity.ContractDate,
             ContractStartDate = entity.ContractStartDate,
             ContractEndDate = entity.ContractEndDate,
@@ -694,6 +701,8 @@ public static class DtoMappings
             FollowUpNote = entity.FollowUpNote,
             LastSettledDate = entity.LastSettledDate,
             AssignedUsername = entity.AssignedUsername,
+            BillingTemplateJson = entity.BillingTemplateJson,
+            BillingRunsJson = entity.BillingRunsJson,
             IsActive = entity.IsActive
         };
 
@@ -705,6 +714,10 @@ public static class DtoMappings
         entity.BusinessNumber = dto.BusinessNumber?.Trim() ?? string.Empty;
         entity.RealCustomerName = dto.RealCustomerName?.Trim() ?? string.Empty;
         entity.ItemName = dto.ItemName?.Trim() ?? string.Empty;
+        entity.BillingType = dto.BillingType?.Trim() ?? "묶음";
+        entity.BillToCustomerName = dto.BillToCustomerName?.Trim() ?? string.Empty;
+        entity.InstallSiteName = dto.InstallSiteName?.Trim() ?? string.Empty;
+        entity.BillingAdvanceMode = dto.BillingAdvanceMode?.Trim() ?? "후불";
         entity.ManagementCompanyCode = dto.ManagementCompanyCode?.Trim() ?? string.Empty;
         entity.BillingMethod = dto.BillingMethod?.Trim() ?? string.Empty;
         entity.PaymentMethod = dto.PaymentMethod?.Trim() ?? string.Empty;
@@ -717,6 +730,7 @@ public static class DtoMappings
         entity.SubmissionDocuments = dto.SubmissionDocuments?.Trim() ?? string.Empty;
         entity.Notes = dto.Notes?.Trim() ?? string.Empty;
         entity.BillingAnchorDate = dto.BillingAnchorDate;
+        entity.BillingStartDate = dto.BillingStartDate;
         entity.ContractDate = dto.ContractDate;
         entity.ContractStartDate = dto.ContractStartDate;
         entity.ContractEndDate = dto.ContractEndDate;
@@ -729,6 +743,8 @@ public static class DtoMappings
         entity.FollowUpNote = dto.FollowUpNote?.Trim() ?? string.Empty;
         entity.LastSettledDate = dto.LastSettledDate;
         entity.AssignedUsername = dto.AssignedUsername?.Trim() ?? string.Empty;
+        entity.BillingTemplateJson = dto.BillingTemplateJson ?? "[]";
+        entity.BillingRunsJson = dto.BillingRunsJson ?? "[]";
         entity.IsActive = dto.IsActive;
         entity.IsDeleted = dto.IsDeleted;
         entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
@@ -757,6 +773,11 @@ public static class DtoMappings
             ManagementNumber = entity.ManagementNumber,
             ManagementCompanyCode = entity.ManagementCompanyCode,
             CurrentLocation = entity.CurrentLocation,
+            CurrentCustomerName = entity.CurrentCustomerName,
+            BillToCustomerName = entity.BillToCustomerName,
+            InstallSiteName = entity.InstallSiteName,
+            BillingEligibilityStatus = entity.BillingEligibilityStatus,
+            BillingExclusionReason = entity.BillingExclusionReason,
             ItemCategoryName = entity.ItemCategoryName,
             Manufacturer = entity.Manufacturer,
             ItemName = entity.ItemName,
@@ -792,6 +813,11 @@ public static class DtoMappings
         entity.ManagementNumber = dto.ManagementNumber?.Trim() ?? string.Empty;
         entity.ManagementCompanyCode = dto.ManagementCompanyCode?.Trim() ?? string.Empty;
         entity.CurrentLocation = dto.CurrentLocation?.Trim() ?? string.Empty;
+        entity.CurrentCustomerName = dto.CurrentCustomerName?.Trim() ?? string.Empty;
+        entity.BillToCustomerName = dto.BillToCustomerName?.Trim() ?? string.Empty;
+        entity.InstallSiteName = dto.InstallSiteName?.Trim() ?? string.Empty;
+        entity.BillingEligibilityStatus = dto.BillingEligibilityStatus?.Trim() ?? string.Empty;
+        entity.BillingExclusionReason = dto.BillingExclusionReason?.Trim() ?? string.Empty;
         entity.ItemCategoryName = dto.ItemCategoryName?.Trim() ?? string.Empty;
         entity.Manufacturer = dto.Manufacturer?.Trim() ?? string.Empty;
         entity.ItemName = dto.ItemName?.Trim() ?? string.Empty;

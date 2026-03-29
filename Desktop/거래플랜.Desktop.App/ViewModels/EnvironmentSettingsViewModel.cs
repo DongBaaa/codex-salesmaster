@@ -20,6 +20,10 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     private readonly LocalStateService _local;
     private readonly SessionState _session;
     private readonly ErpApiClient _api;
+    private readonly SyncService _sync;
+    private readonly BackupService _backup;
+    private readonly SyncDiagnosticsService _diagnostics;
+    private readonly RentalStateService _rental;
     private readonly LegacyDataMigrationService _legacyMigrationService;
     private readonly DesktopAppUpdateService _updateService;
 
@@ -98,17 +102,26 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         LocalStateService local,
         SessionState session,
         ErpApiClient api,
+        SyncService sync,
+        BackupService backup,
+        SyncDiagnosticsService diagnostics,
+        RentalStateService rental,
         Func<Task>? applyBusinessDatabaseChangeAsync = null)
     {
         _local = local;
         _session = session;
         _api = api;
+        _sync = sync;
+        _backup = backup;
+        _diagnostics = diagnostics;
+        _rental = rental;
         _legacyMigrationService = new LegacyDataMigrationService(local);
         _updateService = new DesktopAppUpdateService(api);
         _applyBusinessDatabaseChangeAsync = applyBusinessDatabaseChangeAsync;
         InitializeRecycleBinTypeOptions();
         InitializeUpdateState();
         InitializeBusinessDatabaseSelection();
+        InitializeSyncState();
     }
 
     public async Task InitializeAsync()
@@ -124,6 +137,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             await RunInitializationStepAsync(ReloadTenantConfigurationAsync, "업체/데이터 권한", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(ReloadUsersAsync, "사용자", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(LoadCurrentUserCompanyProfileAsync, "현재 사용자 회사설정", () => hadInitializationWarning = true);
+            await RunInitializationStepAsync(RefreshSyncStateAsync, "동기화", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(ReloadRecycleBinAsync, "휴지통", () => hadInitializationWarning = true);
             NewOffice();
             NewUser();

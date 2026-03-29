@@ -3277,6 +3277,19 @@ public sealed partial class LocalStateService
         Guid billingProfileId,
         SessionState session,
         CancellationToken ct = default)
+        => await GetRentalSettlementSummaryAsync(
+            billingProfileId,
+            billingRunId: null,
+            billedAmountOverride: null,
+            session,
+            ct);
+
+    public async Task<RentalSettlementSummary> GetRentalSettlementSummaryAsync(
+        Guid billingProfileId,
+        Guid? billingRunId,
+        decimal? billedAmountOverride,
+        SessionState session,
+        CancellationToken ct = default)
     {
         var profile = await _db.RentalBillingProfiles
             .IgnoreQueryFilters()
@@ -3285,8 +3298,8 @@ public sealed partial class LocalStateService
         if (profile is null || !CanAccessRentalProfile(profile, session))
             return new RentalSettlementSummary();
 
-        var settledAmount = await GetRentalSettledAmountCoreAsync(billingProfileId, ct);
-        var billedAmount = profile.MonthlyAmount;
+        var settledAmount = await GetRentalSettledAmountCoreAsync(billingProfileId, billingRunId, ct);
+        var billedAmount = ResolveBillingRunAmount(profile, billingRunId, billedAmountOverride);
         var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
         return new RentalSettlementSummary
         {
@@ -3361,6 +3374,7 @@ public sealed partial class LocalStateService
 
         var previousLinkedInvoiceId = existing?.LinkedInvoiceId;
         var previousLinkedRentalId = existing?.LinkedRentalBillingProfileId;
+        var previousLinkedRentalRunId = existing?.LinkedRentalBillingRunId;
 
         transaction.TransactionKind = PaymentFlowConstants.NormalizeTransactionKind(
             transaction.TransactionKind,
@@ -3407,6 +3421,7 @@ public sealed partial class LocalStateService
         else
         {
             transaction.LinkedRentalBillingProfileId = null;
+            transaction.LinkedRentalBillingRunId = null;
         }
 
         var derivedResponsibleOfficeCode =
@@ -3438,6 +3453,7 @@ public sealed partial class LocalStateService
                 transaction.LinkedInvoiceId = null;
                 transaction.LinkedInvoiceNumber = string.Empty;
                 transaction.LinkedRentalBillingProfileId = null;
+                transaction.LinkedRentalBillingRunId = null;
                 transaction.SettlementAmount = 0m;
                 transaction.AdvanceDelta = receiptTotal;
                 break;
@@ -3446,6 +3462,7 @@ public sealed partial class LocalStateService
                 transaction.LinkedInvoiceId = null;
                 transaction.LinkedInvoiceNumber = string.Empty;
                 transaction.LinkedRentalBillingProfileId = null;
+                transaction.LinkedRentalBillingRunId = null;
                 transaction.SettlementAmount = 0m;
                 transaction.AdvanceDelta = -paymentTotal;
                 break;
@@ -3481,6 +3498,7 @@ public sealed partial class LocalStateService
                 transaction.LinkedInvoiceId = null;
                 transaction.LinkedInvoiceNumber = string.Empty;
                 transaction.LinkedRentalBillingProfileId = null;
+                transaction.LinkedRentalBillingRunId = null;
                 transaction.SettlementAmount = 0m;
                 break;
 
@@ -3503,6 +3521,7 @@ public sealed partial class LocalStateService
                 transaction.LinkedInvoiceId = null;
                 transaction.LinkedInvoiceNumber = string.Empty;
                 transaction.LinkedRentalBillingProfileId = null;
+                transaction.LinkedRentalBillingRunId = null;
                 transaction.SettlementAmount = 0m;
                 break;
 
@@ -3520,6 +3539,7 @@ public sealed partial class LocalStateService
                 transaction.LinkedInvoiceId = null;
                 transaction.LinkedInvoiceNumber = string.Empty;
                 transaction.LinkedRentalBillingProfileId = null;
+                transaction.LinkedRentalBillingRunId = null;
                 transaction.SettlementAmount = 0m;
                 break;
         }
@@ -3540,13 +3560,14 @@ public sealed partial class LocalStateService
             await RemoveLinkedInvoicePaymentAsync(transaction.Id, ct);
 
         if (linkedRentalProfile is not null)
-            await RecalculateRentalSettlementAsync(linkedRentalProfile.Id, ct);
+            await RecalculateRentalSettlementAsync(linkedRentalProfile.Id, transaction.LinkedRentalBillingRunId, ct);
 
         if (previousLinkedRentalId.HasValue &&
-            previousLinkedRentalId != transaction.LinkedRentalBillingProfileId &&
-            previousLinkedRentalId.Value != Guid.Empty)
+            previousLinkedRentalId.Value != Guid.Empty &&
+            (previousLinkedRentalId != transaction.LinkedRentalBillingProfileId ||
+             previousLinkedRentalRunId != transaction.LinkedRentalBillingRunId))
         {
-            await RecalculateRentalSettlementAsync(previousLinkedRentalId.Value, ct);
+            await RecalculateRentalSettlementAsync(previousLinkedRentalId.Value, previousLinkedRentalRunId, ct);
         }
 
         return OfficeMutationResult.Ok(transaction.Id, "수금/지급을 저장했습니다.");
@@ -3585,6 +3606,7 @@ public sealed partial class LocalStateService
         }
 
         var previousLinkedRentalId = transaction.LinkedRentalBillingProfileId;
+        var previousLinkedRentalRunId = transaction.LinkedRentalBillingRunId;
         var now = DateTime.UtcNow;
 
         transaction.IsDeleted = true;
@@ -3613,6 +3635,7 @@ public sealed partial class LocalStateService
                 transaction.TransactionKind,
                 transaction.LinkedInvoiceId,
                 transaction.LinkedRentalBillingProfileId,
+                transaction.LinkedRentalBillingRunId,
                 transaction.ReceiptTotal,
                 transaction.PaymentTotal,
                 transaction.SettlementAmount,
@@ -3628,7 +3651,7 @@ public sealed partial class LocalStateService
         await RemoveLinkedInvoicePaymentAsync(transactionId, ct);
 
         if (previousLinkedRentalId.HasValue && previousLinkedRentalId.Value != Guid.Empty)
-            await RecalculateRentalSettlementAsync(previousLinkedRentalId.Value, ct);
+            await RecalculateRentalSettlementAsync(previousLinkedRentalId.Value, previousLinkedRentalRunId, ct);
 
         return OfficeMutationResult.Ok(transactionId, "수금/지급 내역을 삭제했습니다.");
     }
@@ -3695,14 +3718,21 @@ public sealed partial class LocalStateService
         return values.Sum();
     }
 
-    private async Task<decimal> GetRentalSettledAmountCoreAsync(Guid billingProfileId, CancellationToken ct)
+    private async Task<decimal> GetRentalSettledAmountCoreAsync(Guid billingProfileId, Guid? billingRunId, CancellationToken ct)
     {
-        var values = await _db.Transactions
+        IQueryable<LocalTransaction> query = _db.Transactions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(transaction =>
                 !transaction.IsDeleted &&
-                transaction.LinkedRentalBillingProfileId == billingProfileId)
+                transaction.LinkedRentalBillingProfileId == billingProfileId);
+
+        if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
+        {
+            query = query.Where(transaction => transaction.LinkedRentalBillingRunId == billingRunId.Value);
+        }
+
+        var values = await query
             .Select(transaction => transaction.SettlementAmount)
             .ToListAsync(ct);
 
@@ -3829,6 +3859,9 @@ public sealed partial class LocalStateService
     }
 
     private async Task RecalculateRentalSettlementAsync(Guid billingProfileId, CancellationToken ct)
+        => await RecalculateRentalSettlementAsync(billingProfileId, billingRunId: null, ct);
+
+    private async Task RecalculateRentalSettlementAsync(Guid billingProfileId, Guid? billingRunId, CancellationToken ct)
     {
         var profile = await _db.RentalBillingProfiles
             .IgnoreQueryFilters()
@@ -3836,8 +3869,8 @@ public sealed partial class LocalStateService
         if (profile is null)
             return;
 
-        var settledAmount = await GetRentalSettledAmountCoreAsync(billingProfileId, ct);
-        var billedAmount = Math.Max(0m, profile.MonthlyAmount);
+        var settledAmount = await GetRentalSettledAmountCoreAsync(billingProfileId, billingRunId, ct);
+        var billedAmount = ResolveBillingRunAmount(profile, billingRunId, billedAmountOverride: null);
         profile.SettledAmount = settledAmount;
         profile.OutstandingAmount = Math.Max(0m, billedAmount - settledAmount);
         profile.SettlementStatus = DetermineRentalSettlementStatus(profile.BillingMethod, settledAmount, billedAmount);
@@ -3845,13 +3878,42 @@ public sealed partial class LocalStateService
             ? PaymentFlowConstants.CompletionDone
             : PaymentFlowConstants.CompletionPending;
 
+        if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
+        {
+            var runs = DeserializeBillingRuns(profile.BillingRunsJson);
+            var run = runs.FirstOrDefault(current => current.RunId == billingRunId.Value);
+            if (run is not null)
+            {
+                run.BilledAmount = billedAmount;
+                run.SettledAmount = settledAmount;
+                run.SettlementStatus = DetermineRentalSettlementStatus(profile.BillingMethod, settledAmount, billedAmount);
+                run.Status = profile.OutstandingAmount <= 0m
+                    ? PaymentFlowConstants.BillingStatusCompleted
+                    : string.Equals(run.Status, PaymentFlowConstants.BillingStatusOnHold, StringComparison.OrdinalIgnoreCase)
+                        ? PaymentFlowConstants.BillingStatusOnHold
+                        : PaymentFlowConstants.BillingStatusInProgress;
+                run.SettledDate = settledAmount > 0m
+                    ? await _db.Transactions
+                        .IgnoreQueryFilters()
+                        .AsNoTracking()
+                        .Where(transaction => !transaction.IsDeleted && transaction.LinkedRentalBillingRunId == billingRunId.Value)
+                        .OrderByDescending(transaction => transaction.TransactionDate)
+                        .Select(transaction => (DateOnly?)transaction.TransactionDate)
+                        .FirstOrDefaultAsync(ct)
+                    : null;
+                profile.BillingRunsJson = JsonSerializer.Serialize(runs, AuditJsonOptions);
+            }
+        }
+
         if (profile.CompletionStatus == PaymentFlowConstants.CompletionDone)
         {
             profile.BillingStatus = PaymentFlowConstants.BillingStatusCompleted;
             profile.LastSettledDate = await _db.Transactions
                 .IgnoreQueryFilters()
                 .AsNoTracking()
-                .Where(transaction => !transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == billingProfileId)
+                .Where(transaction => !transaction.IsDeleted &&
+                    transaction.LinkedRentalBillingProfileId == billingProfileId &&
+                    (!billingRunId.HasValue || transaction.LinkedRentalBillingRunId == billingRunId.Value))
                 .OrderByDescending(transaction => transaction.TransactionDate)
                 .Select(transaction => (DateOnly?)transaction.TransactionDate)
                 .FirstOrDefaultAsync(ct);
@@ -3864,7 +3926,9 @@ public sealed partial class LocalStateService
                 ? await _db.Transactions
                     .IgnoreQueryFilters()
                     .AsNoTracking()
-                    .Where(transaction => !transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == billingProfileId)
+                    .Where(transaction => !transaction.IsDeleted &&
+                        transaction.LinkedRentalBillingProfileId == billingProfileId &&
+                        (!billingRunId.HasValue || transaction.LinkedRentalBillingRunId == billingRunId.Value))
                     .OrderByDescending(transaction => transaction.TransactionDate)
                     .Select(transaction => (DateOnly?)transaction.TransactionDate)
                     .FirstOrDefaultAsync(ct)
@@ -3874,6 +3938,36 @@ public sealed partial class LocalStateService
         profile.IsDirty = true;
         profile.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
+    }
+
+    private static decimal ResolveBillingRunAmount(LocalRentalBillingProfile profile, Guid? billingRunId, decimal? billedAmountOverride)
+    {
+        if (billedAmountOverride.HasValue && billedAmountOverride.Value > 0m)
+            return billedAmountOverride.Value;
+
+        if (!billingRunId.HasValue || billingRunId.Value == Guid.Empty)
+            return Math.Max(0m, profile.MonthlyAmount);
+
+        var run = DeserializeBillingRuns(profile.BillingRunsJson)
+            .FirstOrDefault(current => current.RunId == billingRunId.Value);
+        return run is null
+            ? Math.Max(0m, profile.MonthlyAmount)
+            : Math.Max(0m, run.BilledAmount);
+    }
+
+    private static List<RentalBillingRunModel> DeserializeBillingRuns(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return new List<RentalBillingRunModel>();
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<RentalBillingRunModel>>(json, AuditJsonOptions) ?? new List<RentalBillingRunModel>();
+        }
+        catch
+        {
+            return new List<RentalBillingRunModel>();
+        }
     }
 
     private static string DetermineRentalSettlementStatus(string? billingMethod, decimal settledAmount, decimal billedAmount)

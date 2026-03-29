@@ -22,6 +22,8 @@ public partial class MainWindow : Window
     private readonly SessionState _session;
     private readonly ErpApiClient _api;
     private readonly SyncService _sync;
+    private readonly BackupService _backup;
+    private readonly SyncDiagnosticsService _diagnostics;
     private readonly DesktopAppUpdateService _updateService;
     private readonly DispatcherTimer _centralRevisionPollTimer;
     private bool _isInitialized;
@@ -39,7 +41,9 @@ public partial class MainWindow : Window
                       IPrintService invoicePrintService,
                       SessionState session,
                       ErpApiClient api,
-                      SyncService sync)
+                      SyncService sync,
+                      BackupService backup,
+                      SyncDiagnosticsService diagnostics)
     {
         InitializeComponent();
         _vm = vm;
@@ -51,6 +55,8 @@ public partial class MainWindow : Window
         _session = session;
         _api = api;
         _sync = sync;
+        _backup = backup;
+        _diagnostics = diagnostics;
         _updateService = new DesktopAppUpdateService(api);
         DataContext = vm;
         Activated += MainWindow_Activated;
@@ -404,6 +410,27 @@ public partial class MainWindow : Window
     private void CustomerManagementButton_Click(object sender, RoutedEventArgs e)
         => RunUiAsync(OpenCustomerManagementWindowAsync, "거래처관리 창 열기");
 
+    private void CustomerSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.ContextMenu is null)
+            return;
+
+        button.ContextMenu.PlacementTarget = button;
+        button.ContextMenu.IsOpen = true;
+    }
+
+    private void CustomerRegisterMenuItem_Click(object sender, RoutedEventArgs e)
+        => CustomerEditButton_Click(sender, e);
+
+    private void CustomerDeleteMenuItem_Click(object sender, RoutedEventArgs e)
+        => CustomerDeleteButton_Click(sender, e);
+
+    private void CustomerManagementMenuItem_Click(object sender, RoutedEventArgs e)
+        => CustomerManagementButton_Click(sender, e);
+
+    private void NewRentalCustomerButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenRentalCustomerOnboardingAsync, "신규 렌탈 거래처 등록");
+
     private void DeleteSelectedInvoicesContextMenu_Click(object sender, RoutedEventArgs e)
         => RunUiAsync(
             () => DeleteSelectedInvoicesContextMenu_ClickAsync(sender),
@@ -499,7 +526,7 @@ public partial class MainWindow : Window
         => RunUiAsync(() => OpenEnvironmentSettingsWindowAsync(), "환경설정 창 열기");
 
     private void RecycleBinButton_Click(object sender, RoutedEventArgs e)
-        => RunUiAsync(() => OpenEnvironmentSettingsWindowAsync(openRecycleBinTab: true), "휴지통 창 열기");
+        => RunUiAsync(() => OpenEnvironmentSettingsWindowAsync(EnvironmentSettingsInitialTab.RecycleBin), "휴지통 창 열기");
 
     private void LogoutButton_Click(object sender, RoutedEventArgs e)
         => RunUiAsync(LogoutAsync, "로그아웃", "로그아웃 처리 중 오류가 발생했습니다.");
@@ -664,7 +691,7 @@ public partial class MainWindow : Window
         win.Show();
     }
 
-    private async Task OpenEnvironmentSettingsWindowAsync(bool openRecycleBinTab = false)
+    private async Task OpenEnvironmentSettingsWindowAsync(EnvironmentSettingsInitialTab initialTab = EnvironmentSettingsInitialTab.General)
     {
         try
         {
@@ -673,9 +700,13 @@ public partial class MainWindow : Window
                 _local,
                 _session,
                 _api,
+                _sync,
+                _backup,
+                _diagnostics,
+                _rental,
                 async () => await _vm.ReloadForBusinessDatabaseChangeAsync());
             await vm.InitializeAsync();
-            var win = new EnvironmentSettingsWindow(vm, openRecycleBinTab)
+            var win = new EnvironmentSettingsWindow(vm, initialTab)
             {
                 Owner = this
             };
@@ -706,6 +737,25 @@ public partial class MainWindow : Window
         };
         win.ShowDialog();
         await _vm.RefreshCustomersCommand.ExecuteAsync(null);
+    }
+
+    private async Task OpenRentalCustomerOnboardingAsync()
+    {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
+        var onboardingViewModel = new RentalCustomerOnboardingViewModel(_rental, _local, _session);
+        await onboardingViewModel.LoadAsync();
+
+        var onboardingWindow = new RentalCustomerOnboardingWindow(onboardingViewModel)
+        {
+            Owner = this
+        };
+
+        onboardingWindow.ShowDialog();
+        if (!onboardingViewModel.IsCompleted)
+            return;
+
+        await _vm.RefreshCustomersCommand.ExecuteAsync(null);
+        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
 
     private async Task OpenRentalDashboardWindowAsync()

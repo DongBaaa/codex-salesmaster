@@ -979,6 +979,126 @@
                 </Grid>
             </TabItem>
 
+            <TabItem x:Name="SyncTab" Header="동기화">
+                <Grid Margin="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="동기화 / 동기화 진단 / 백업" Foreground="#4FC3F7" FontWeight="Bold" FontSize="18"/>
+                                <TextBlock Text="동기화 관련 기능을 한 곳에서 실행하고 현재 업체 DB와 미동기화 현황을 함께 확인합니다."
+                                           Foreground="#9FB3C8"
+                                           Margin="0,8,0,0"
+                                           TextWrapping="Wrap"/>
+                            </StackPanel>
+
+                            <WrapPanel Grid.Column="1" VerticalAlignment="Top">
+                                <Button Content="동기화"
+                                        Background="#37474F"
+                                        Margin="0,0,8,0"
+                                        Command="{Binding RunSyncCommand}"/>
+                                <Button Content="동기화 진단"
+                                        Background="#5D4037"
+                                        Margin="0,0,8,0"
+                                        Command="{Binding OpenSyncDiagnosticsCommand}"/>
+                                <Button Content="백업"
+                                        Background="#455A64"
+                                        Command="{Binding RunBackupCommand}"/>
+                            </WrapPanel>
+                        </Grid>
+                    </Border>
+
+                    <UniformGrid Grid.Row="1" Columns="3" Margin="0,14,0,0">
+                        <Border Background="#132742" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,10,0">
+                            <StackPanel>
+                                <TextBlock Text="현재 모드" Foreground="#9FB3C8" FontSize="11"/>
+                                <TextBlock Text="{Binding SyncModeText}" Foreground="#B3E5FC" FontSize="18" FontWeight="Bold" Margin="0,6,0,0"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Background="#132742" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,10,0">
+                            <StackPanel>
+                                <TextBlock Text="업체 DB" Foreground="#9FB3C8" FontSize="11"/>
+                                <TextBlock Text="{Binding SyncDatabaseText}" Foreground="#C5E1A5" FontSize="18" FontWeight="Bold" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Background="#132742" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="14">
+                            <StackPanel>
+                                <TextBlock Text="미동기화 현황" Foreground="#9FB3C8" FontSize="11"/>
+                                <TextBlock Text="{Binding SyncPendingChangesText}" Foreground="#FFCC80" FontSize="18" FontWeight="Bold" Margin="0,6,0,0"/>
+                            </StackPanel>
+                        </Border>
+                    </UniformGrid>
+
+                    <Grid Grid.Row="2" Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.1*"/>
+                            <ColumnDefinition Width="12"/>
+                            <ColumnDefinition Width="0.9*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
+                            <StackPanel>
+                                <TextBlock Text="동기화 요약" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                <TextBlock Text="{Binding SyncSummaryText}" Foreground="#9FB3C8" Margin="0,8,0,12" TextWrapping="Wrap"/>
+
+                                <Border Background="#102039" CornerRadius="6" Padding="12" Margin="0,0,0,10">
+                                    <StackPanel>
+                                        <TextBlock Text="최근 성공" Foreground="#9FB3C8" FontSize="11"/>
+                                        <TextBlock Text="{Binding SyncLastSuccessText}" Foreground="#B3E5FC" FontWeight="Bold" Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="#102039" CornerRadius="6" Padding="12" Margin="0,0,0,10">
+                                    <StackPanel>
+                                        <TextBlock Text="최근 실패" Foreground="#9FB3C8" FontSize="11"/>
+                                        <TextBlock Text="{Binding SyncLastFailureText}" Foreground="#FFCC80" FontWeight="Bold" Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="#102039" CornerRadius="6" Padding="12">
+                                    <StackPanel>
+                                        <TextBlock Text="마지막 오류" Foreground="#9FB3C8" FontSize="11"/>
+                                        <TextBlock Text="{Binding SyncLastErrorText}" Foreground="#EF9A9A" FontWeight="Bold" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
+                            <StackPanel>
+                                <TextBlock Text="사용 가이드" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                <TextBlock Text="1. 일반 작업 후에는 먼저 동기화를 눌러 서버 반영 여부를 확인하세요."
+                                           Foreground="#9FB3C8"
+                                           Margin="0,10,0,0"
+                                           TextWrapping="Wrap"/>
+                                <TextBlock Text="2. 동기화가 실패하거나 제한 모드가 보이면 동기화 진단에서 오류 유형과 복구 권장을 확인하세요."
+                                           Foreground="#9FB3C8"
+                                           Margin="0,10,0,0"
+                                           TextWrapping="Wrap"/>
+                                <TextBlock Text="3. 큰 작업 전후에는 백업을 실행해 현재 로컬 DB를 보관하세요."
+                                           Foreground="#9FB3C8"
+                                           Margin="0,10,0,0"
+                                           TextWrapping="Wrap"/>
+                                <TextBlock Text="4. 미동기화 변경이 남아 있으면 업체 DB 전환 전에 먼저 동기화를 완료하는 것이 안전합니다."
+                                           Foreground="#9FB3C8"
+                                           Margin="0,10,0,0"
+                                           TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
             <TabItem x:Name="RecycleBinTab" Header="휴지통">
                 <Grid Margin="10">
                     <Grid.RowDefinitions>
@@ -1235,4 +1355,3 @@
         </Border>
     </Grid>
 </Window>
-

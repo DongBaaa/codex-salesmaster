@@ -327,14 +327,29 @@ $uninstallPs1Name = 'Uninstall-GeoraePlan.ps1'
 
 $uninstallScriptBody = @"
 param(
-    [string]`$InstallRoot = (Join-Path `$env:LOCALAPPDATA 'Programs\__APP_DISPLAY_NAME__')
+    [string]`$InstallRoot = ''
 )
 
+if ([string]::IsNullOrWhiteSpace(`$InstallRoot)) {
+    `$programFilesRoot = [Environment]::GetFolderPath('ProgramFilesX86')
+    if ([string]::IsNullOrWhiteSpace(`$programFilesRoot)) {
+        `$programFilesRoot = [Environment]::GetFolderPath('ProgramFiles')
+    }
+
+    `$InstallRoot = Join-Path `$programFilesRoot 'tradeplan'
+}
+
 `$desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) '__APP_DISPLAY_NAME__.lnk'
-`$startMenuDir = Join-Path `$env:APPDATA 'Microsoft\Windows\Start Menu\Programs\__APP_DISPLAY_NAME__'
+`$commonDesktopShortcut = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) '__APP_DISPLAY_NAME__.lnk'
+`$startMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) '__APP_DISPLAY_NAME__'
+`$commonStartMenuDir = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) '__APP_DISPLAY_NAME__'
+`$legacyUserRoot = Join-Path `$env:LOCALAPPDATA 'Programs\__APP_DISPLAY_NAME__'
 
 Remove-Item -LiteralPath `$desktopShortcut -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath `$commonDesktopShortcut -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath `$startMenuDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath `$commonStartMenuDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath `$legacyUserRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath `$InstallRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host '__APP_DISPLAY_NAME__ removed'
@@ -345,13 +360,35 @@ $uninstallScriptBodyBase64 = [Convert]::ToBase64String([System.Text.Encoding]::U
 
 $installScriptTemplate = @"
 param(
-    [string]`$InstallRoot = (Join-Path `$env:LOCALAPPDATA 'Programs\__APP_DISPLAY_NAME__'),
+    [string]`$InstallRoot = '',
     [switch]`$NoLaunch,
     [switch]`$NoShortcuts,
     [string]`$LogPath = ''
 )
 
 `$ExpectedVersion = '__EXPECTED_VERSION__'
+
+`$programFilesRoot = [Environment]::GetFolderPath('ProgramFilesX86')
+if ([string]::IsNullOrWhiteSpace(`$programFilesRoot)) {
+    `$programFilesRoot = [Environment]::GetFolderPath('ProgramFiles')
+}
+
+`$CanonicalInstallRoot = Join-Path `$programFilesRoot 'tradeplan'
+`$LegacyUserRoot = Join-Path `$env:LOCALAPPDATA 'Programs\__APP_DISPLAY_NAME__'
+if ([string]::IsNullOrWhiteSpace(`$InstallRoot)) {
+    `$InstallRoot = `$CanonicalInstallRoot
+}
+
+`$requestedInstallRoot = `$InstallRoot
+`$useLegacyBridgeCopy = `$false
+if (-not [string]::IsNullOrWhiteSpace(`$requestedInstallRoot)) {
+    `$requestedInstallRootFullPath = [System.IO.Path]::GetFullPath(`$requestedInstallRoot)
+    `$legacyUserRootFullPath = [System.IO.Path]::GetFullPath(`$LegacyUserRoot)
+    if ([string]::Equals(`$requestedInstallRootFullPath, `$legacyUserRootFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        `$useLegacyBridgeCopy = `$true
+        `$InstallRoot = `$CanonicalInstallRoot
+    }
+}
 
 function Invoke-RobocopyMirror {
     param(
@@ -568,8 +605,11 @@ try {
 
     `$packageRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
     `$sourceRoot = Join-Path `$packageRoot 'App'
-    `$desktopDir = [Environment]::GetFolderPath('Desktop')
-    `$startMenuDir = Join-Path `$env:APPDATA 'Microsoft\Windows\Start Menu\Programs\__APP_DISPLAY_NAME__'
+    `$protectedInstall = Test-ProtectedInstallRoot -Path `$InstallRoot
+    `$desktopDir = if (`$protectedInstall) { [Environment]::GetFolderPath('CommonDesktopDirectory') } else { [Environment]::GetFolderPath('Desktop') }
+    `$startMenuRoot = if (`$protectedInstall) { [Environment]::GetFolderPath('CommonPrograms') } else { [Environment]::GetFolderPath('Programs') }
+    `$startMenuDir = Join-Path `$startMenuRoot '__APP_DISPLAY_NAME__'
+    `$legacyUserRoot = `$LegacyUserRoot
     `$exePath = Join-Path `$InstallRoot '__APP_DISPLAY_NAME__.exe'
     `$uninstallScriptPath = Join-Path `$InstallRoot '__UNINSTALL_PS1_NAME__'
 
@@ -581,6 +621,10 @@ try {
     Ensure-SufficientInstallSpace -SourceRoot `$sourceRoot
     Write-InstallLog '파일 복사를 시작합니다.'
     Invoke-RobocopyMirror -Source `$sourceRoot -Destination `$InstallRoot
+    if (`$useLegacyBridgeCopy) {
+        Write-InstallLog ("기존 사용자 설치 경로도 함께 갱신합니다. LegacyRoot={0}" -f `$legacyUserRoot)
+        Invoke-RobocopyMirror -Source `$sourceRoot -Destination `$legacyUserRoot
+    }
     Write-InstallLog '파일 복사가 완료되었습니다.'
 
     if (-not (Test-Path -LiteralPath `$exePath)) {
@@ -598,6 +642,12 @@ try {
 
     `$uninstallScriptContent = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('__UNINSTALL_SCRIPT_B64__'))
     `$uninstallScriptContent | Set-Content -LiteralPath `$uninstallScriptPath -Encoding UTF8
+
+    `$installRootFullPath = [System.IO.Path]::GetFullPath(`$InstallRoot)
+    `$legacyUserRootFullPath = [System.IO.Path]::GetFullPath(`$legacyUserRoot)
+    if (-not `$useLegacyBridgeCopy -and -not [string]::Equals(`$installRootFullPath, `$legacyUserRootFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath `$legacyUserRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 
     if (-not `$NoShortcuts) {
         New-Item -ItemType Directory -Force -Path `$startMenuDir | Out-Null
@@ -657,7 +707,7 @@ $readme = @(
     "3. After install, launch '$AppDisplayName' from the desktop or Start Menu.",
     '',
     'Default install path:',
-    "%LOCALAPPDATA%\Programs\$AppDisplayName",
+    "C:\Program Files (x86)\tradeplan",
     '',
     'Default server URL:',
     $(if ([string]::IsNullOrWhiteSpace($serverUrl)) { 'Check appsettings.json' } else { $serverUrl })
