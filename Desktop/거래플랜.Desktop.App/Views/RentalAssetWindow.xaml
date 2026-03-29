@@ -106,6 +106,8 @@
             <WrapPanel VerticalAlignment="Center">
                 <TextBlock Text="검색" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <TextBox Width="240" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0"/>
+                <TextBlock Text="품목분류" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <ComboBox Width="150" ItemsSource="{Binding ItemCategoryFilterOptions}" SelectedItem="{Binding SelectedItemCategoryFilter}" Margin="0,0,12,0"/>
                 <TextBlock Text="담당지점" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <ComboBox Width="150" ItemsSource="{Binding FilterOfficeOptions}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedOfficeFilter}" Margin="0,0,12,0"/>
                 <TextBlock Text="담당계정" VerticalAlignment="Center" Margin="0,0,8,0"/>

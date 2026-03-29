@@ -15,6 +15,7 @@ public sealed class RentalBillingFilter
 public sealed class RentalAssetFilter
 {
     public string SearchText { get; set; } = string.Empty;
+    public string ItemCategoryName { get; set; } = string.Empty;
     public string OfficeCode { get; set; } = string.Empty;
     public string AssignedUsername { get; set; } = string.Empty;
     public string AssetStatus { get; set; } = string.Empty;

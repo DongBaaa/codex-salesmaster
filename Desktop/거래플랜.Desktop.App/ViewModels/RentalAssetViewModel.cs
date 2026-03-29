@@ -26,6 +26,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private DisplayOption? _selectedOfficeFilter;
+    [ObservableProperty] private string _selectedItemCategoryFilter = AllOption;
     [ObservableProperty] private string _selectedAssignedUsernameFilter = AllOption;
     [ObservableProperty] private string _selectedStatusFilter = AllOption;
     [ObservableProperty] private DateOnly _referenceDate = DateOnly.FromDateTime(DateTime.Today);
@@ -71,6 +72,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     public ObservableCollection<DisplayOption> FilterOfficeOptions { get; } = new();
     public ObservableCollection<DisplayOption> EditOfficeOptions { get; } = new();
+    public ObservableCollection<string> ItemCategoryFilterOptions { get; } = new();
     public ObservableCollection<string> AssignedUsernameOptions { get; } = new();
     public ObservableCollection<string> EditAssignedUsernameOptions { get; } = new();
     public ObservableCollection<string> AssetStatusOptions { get; } = new();
@@ -138,6 +140,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     partial void OnSearchTextChanged(string value) => RequestFilterReload();
     partial void OnSelectedOfficeFilterChanged(DisplayOption? value) => RequestFilterReload();
+    partial void OnSelectedItemCategoryFilterChanged(string value) => RequestFilterReload();
     partial void OnSelectedAssignedUsernameFilterChanged(string value) => RequestFilterReload();
     partial void OnSelectedStatusFilterChanged(string value) => RequestFilterReload();
     partial void OnReferenceDateChanged(DateOnly value) => RequestFilterReload();
@@ -168,6 +171,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 var rows = await _rental.GetAssetRowsAsync(new RentalAssetFilter
                 {
                     SearchText = SearchText,
+                    ItemCategoryName = SelectedItemCategoryFilter == AllOption ? string.Empty : SelectedItemCategoryFilter,
                     OfficeCode = SelectedOfficeFilter?.Value == AllOption ? string.Empty : SelectedOfficeFilter?.Value ?? string.Empty,
                     AssignedUsername = SelectedAssignedUsernameFilter == AllOption ? string.Empty : SelectedAssignedUsernameFilter,
                     AssetStatus = SelectedStatusFilter == AllOption ? string.Empty : SelectedStatusFilter,
@@ -766,24 +770,45 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private async Task ReloadItemCategoryOptionsAsync()
     {
+        var currentFilterValue = SelectedItemCategoryFilter;
         var currentValue = EditItemCategoryName;
-        ItemCategoryOptions.Clear();
-        foreach (var option in await _local.GetItemCategoryOptionsAsync())
-            ItemCategoryOptions.Add(option);
-
-        if (!string.IsNullOrWhiteSpace(currentValue))
+        _suppressFilterReload = true;
+        try
         {
-            var matched = ItemCategoryOptions.FirstOrDefault(option =>
-                string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name), RentalCatalogValueNormalizer.NormalizeLooseKey(currentValue), StringComparison.OrdinalIgnoreCase));
-            if (matched is not null)
-            {
-                EditItemCategoryName = matched.Name;
-                return;
-            }
-        }
+            ItemCategoryFilterOptions.Clear();
+            ItemCategoryFilterOptions.Add(AllOption);
 
-        if (string.IsNullOrWhiteSpace(SelectedRow?.Source.ItemCategoryName) && string.IsNullOrWhiteSpace(EditItemCategoryName))
-            EditItemCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
+            ItemCategoryOptions.Clear();
+            foreach (var option in await _local.GetItemCategoryOptionsAsync())
+            {
+                ItemCategoryOptions.Add(option);
+                if (!string.IsNullOrWhiteSpace(option.Name) && !ItemCategoryFilterOptions.Contains(option.Name))
+                    ItemCategoryFilterOptions.Add(option.Name);
+            }
+
+            if (!ItemCategoryFilterOptions.Contains(currentFilterValue))
+                currentFilterValue = AllOption;
+
+            SelectedItemCategoryFilter = currentFilterValue;
+
+            if (!string.IsNullOrWhiteSpace(currentValue))
+            {
+                var matched = ItemCategoryOptions.FirstOrDefault(option =>
+                    string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name), RentalCatalogValueNormalizer.NormalizeLooseKey(currentValue), StringComparison.OrdinalIgnoreCase));
+                if (matched is not null)
+                {
+                    EditItemCategoryName = matched.Name;
+                    return;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(SelectedRow?.Source.ItemCategoryName) && string.IsNullOrWhiteSpace(EditItemCategoryName))
+                EditItemCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
+        }
+        finally
+        {
+            _suppressFilterReload = false;
+        }
     }
 
     private void SelectRow(Guid entityId)

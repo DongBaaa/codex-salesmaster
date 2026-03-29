@@ -1436,6 +1436,9 @@ public sealed class RentalStateService
         if (CanViewAllRental(session) && !string.IsNullOrWhiteSpace(filter.AssignedUsername))
             query = query.Where(asset => asset.AssignedUsername == filter.AssignedUsername);
 
+        if (!string.IsNullOrWhiteSpace(filter.ItemCategoryName))
+            query = query.Where(asset => asset.ItemCategoryName == filter.ItemCategoryName);
+
         if (!string.IsNullOrWhiteSpace(filter.AssetStatus))
             query = query.Where(asset => asset.AssetStatus == filter.AssetStatus);
 
