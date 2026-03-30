@@ -257,14 +257,6 @@
                              IsReadOnly="True"
                              FontWeight="Bold"/>
 
-                    <CheckBox Grid.Row="4"
-                              Grid.Column="4"
-                              Grid.ColumnSpan="2"
-                              Content="세금계산서 발행 완료"
-                              IsChecked="{Binding TaxInvoiceIssued}"
-                              Visibility="{Binding ShowTaxInvoiceIssuedOption, Converter={StaticResource BoolToVisibilityConverter}}"
-                              Margin="0,8,0,0"
-                              VerticalAlignment="Center"/>
                 </Grid>
             </Border>
 
@@ -365,7 +357,11 @@
                             <TextBox Grid.Row="1" Grid.Column="3" Height="30" Text="{Binding InputQty, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" TextAlignment="Right"/>
                             <TextBox Grid.Row="1" Grid.Column="4" Height="30" Text="{Binding InputUnit, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
                             <TextBox Grid.Row="1" Grid.Column="5" Height="30" Text="{Binding InputUnitPrice, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" TextAlignment="Right"/>
-                            <TextBox Grid.Row="1" Grid.Column="6" Height="30" Text="{Binding InputLineAmount, StringFormat=N0}" IsReadOnly="True" Margin="4,0,0,0"/>
+                            <TextBox Grid.Row="1" Grid.Column="6"
+                                     Height="30"
+                                     Text="{Binding InputLineAmount, UpdateSourceTrigger=PropertyChanged}"
+                                     Margin="4,0,0,0"
+                                     TextAlignment="Right"/>
                             <TextBox Grid.Row="1" Grid.Column="7" Height="30" Text="{Binding InputRemark, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
 
                             <StackPanel Grid.Row="1" Grid.Column="8" Orientation="Horizontal" Margin="6,0,0,0" HorizontalAlignment="Left">
@@ -385,7 +381,7 @@
                             <DataGridTextColumn Header="수량" Width="60" Binding="{Binding Quantity, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, StringFormat=N0}"/>
                             <DataGridTextColumn Header="단위" Width="52" Binding="{Binding Unit, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                             <DataGridTextColumn Header="단가" Width="92" Binding="{Binding UnitPrice, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, StringFormat=N0}"/>
-                            <DataGridTextColumn Header="금액" Width="98" IsReadOnly="True" Binding="{Binding LineAmount, StringFormat=N0}"/>
+                            <DataGridTextColumn Header="금액" Width="98" Binding="{Binding LineAmount, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, StringFormat=N0}"/>
                             <DataGridTextColumn Header="비고" Width="150" Binding="{Binding Remark, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                         </DataGrid.Columns>
                     </DataGrid>
@@ -432,11 +428,17 @@
                                     Margin="0,0,0,6"
                                     Command="{Binding EditPrintOutputCommand}"
                                     Visibility="{Binding CanEditPrintOutput, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                            <Button Style="{StaticResource BaseButtonStyle}" Content="항목삭제" Margin="0,0,0,10" Command="{Binding DeleteLineCommand}"/>
+                            <CheckBox Content="세금계산서 발행 완료"
+                                      IsChecked="{Binding TaxInvoiceIssued}"
+                                      Visibility="{Binding ShowTaxInvoiceIssuedOption, Converter={StaticResource BoolToVisibilityConverter}}"
+                                      Margin="0,0,0,10"
+                                      Foreground="#EAF2FF"
+                                      VerticalAlignment="Center"/>
                             <Button Style="{StaticResource BaseButtonStyle}" Content="세금계산인쇄"
                                     Margin="0,0,0,6"
                                     Command="{Binding PrintTaxInvoiceCommand}"
                                     Visibility="{Binding CanPrintTaxInvoice, Converter={StaticResource BoolToVisibilityConverter}}"/>
-                            <Button Style="{StaticResource BaseButtonStyle}" Content="항목삭제" Margin="0,0,0,10" Command="{Binding DeleteLineCommand}"/>
 
                         </StackPanel>
                     </ScrollViewer>
@@ -479,4 +481,3 @@
         </Grid>
     </DockPanel>
 </Window>
-

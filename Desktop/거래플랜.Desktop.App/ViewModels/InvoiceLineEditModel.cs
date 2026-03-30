@@ -9,21 +9,26 @@ namespace 거래플랜.Desktop.App.ViewModels;
 /// </summary>
 public sealed partial class InvoiceLineEditModel : ObservableObject
 {
+    private bool _suppressLineAmountSync;
+
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid? ItemId { get; set; }
     public string ItemTrackingType { get; set; } = ItemTrackingTypes.Stock;
 
-    [ObservableProperty][NotifyPropertyChangedFor(nameof(LineAmount))]
+    [ObservableProperty]
     private string _itemName = string.Empty;
 
     [ObservableProperty] private string _specification = string.Empty;
     [ObservableProperty] private string _unit = string.Empty;
 
-    [ObservableProperty][NotifyPropertyChangedFor(nameof(LineAmount))]
+    [ObservableProperty]
     private decimal _quantity = 1m;
 
-    [ObservableProperty][NotifyPropertyChangedFor(nameof(LineAmount))]
+    [ObservableProperty]
     private decimal _unitPrice;
+
+    [ObservableProperty]
+    private decimal _lineAmount;
 
     [ObservableProperty] private string _remark = string.Empty;
     [ObservableProperty] private string _serialNumber = string.Empty;
@@ -32,7 +37,25 @@ public sealed partial class InvoiceLineEditModel : ObservableObject
     [ObservableProperty] private DateOnly? _rentalStartDate;
     [ObservableProperty] private DateOnly? _rentalEndDate;
 
-    public decimal LineAmount => Math.Round(Quantity * UnitPrice, 0, MidpointRounding.AwayFromZero);
+    partial void OnQuantityChanged(decimal value) => SyncLineAmountFromInputs();
+
+    partial void OnUnitPriceChanged(decimal value) => SyncLineAmountFromInputs();
+
+    private void SyncLineAmountFromInputs()
+    {
+        if (_suppressLineAmountSync)
+            return;
+
+        _suppressLineAmountSync = true;
+        try
+        {
+            LineAmount = Math.Round(Quantity * UnitPrice, 0, MidpointRounding.AwayFromZero);
+        }
+        finally
+        {
+            _suppressLineAmountSync = false;
+        }
+    }
 
     public static InvoiceLineEditModel FromLocal(LocalInvoiceLine l) => new()
     {
@@ -43,6 +66,7 @@ public sealed partial class InvoiceLineEditModel : ObservableObject
         Unit = l.Unit,
         Quantity = l.Quantity,
         UnitPrice = l.UnitPrice,
+        LineAmount = l.LineAmount,
         Remark = l.Remark,
         SerialNumber = l.SerialNumber,
         MaterialNumber = l.MaterialNumber,

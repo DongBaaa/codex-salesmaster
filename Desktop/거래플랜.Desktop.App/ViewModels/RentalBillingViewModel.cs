@@ -16,6 +16,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private readonly RentalStateService _rental;
     private readonly LocalStateService _local;
     private readonly SessionState _session;
+    private CancellationTokenSource? _candidateAssetsLoadCts;
+    private Task? _candidateAssetsLoadTask;
     private bool _suppressFilterReload;
     private bool _pendingFilterReload;
 
@@ -652,11 +654,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             ? source.FollowUpNote
             : value.DataIssueSummary;
         LoadTemplateItemsFromProfile(source);
-        UiTaskHelper.Forget(
-            LoadCandidateAssetsAsync(source.Id, EditCustomerName, EditBillToCustomerName, EditInstallSiteName, preserveSelection: false),
-            "RENTAL",
-            "렌탈 청구 후보 장비 조회",
-            ex => StatusMessage = $"후보 장비를 불러오지 못했습니다. {ex.Message}");
+        StartCandidateAssetsLoad(source.Id, EditCustomerName, EditBillToCustomerName, EditInstallSiteName, preserveSelection: false);
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanStartBillingSelected));
         OnPropertyChanged(nameof(CanHoldSelected));
@@ -724,12 +722,46 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         SelectedRow = Rows.FirstOrDefault(row => row.Source.Id == entityId);
     }
 
-    private async Task LoadCandidateAssetsAsync(
+    private void StartCandidateAssetsLoad(
         Guid? billingProfileId,
         string customerName,
         string billToCustomerName,
         string installSiteName,
         bool preserveSelection)
+    {
+        _candidateAssetsLoadCts?.Cancel();
+        _candidateAssetsLoadCts?.Dispose();
+
+        var cts = new CancellationTokenSource();
+        _candidateAssetsLoadCts = cts;
+        _candidateAssetsLoadTask = LoadCandidateAssetsAsync(
+            billingProfileId,
+            customerName,
+            billToCustomerName,
+            installSiteName,
+            preserveSelection,
+            cts.Token);
+
+        UiTaskHelper.Forget(
+            _candidateAssetsLoadTask,
+            "RENTAL",
+            "렌탈 청구 후보 장비 조회",
+            ex =>
+            {
+                if (ex is OperationCanceledException)
+                    return;
+
+                StatusMessage = $"후보 장비를 불러오지 못했습니다. {ex.Message}";
+            });
+    }
+
+    private async Task LoadCandidateAssetsAsync(
+        Guid? billingProfileId,
+        string customerName,
+        string billToCustomerName,
+        string installSiteName,
+        bool preserveSelection,
+        CancellationToken ct = default)
     {
         var previousSelections = preserveSelection && SelectedTemplateItem is not null
             ? SelectedTemplateItem.IncludedAssetIds.ToHashSet()
@@ -740,7 +772,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             customerName,
             billToCustomerName,
             installSiteName,
-            _session);
+            _session,
+            ct);
+
+        ct.ThrowIfCancellationRequested();
 
         CandidateAssets.Clear();
         foreach (var asset in assets)

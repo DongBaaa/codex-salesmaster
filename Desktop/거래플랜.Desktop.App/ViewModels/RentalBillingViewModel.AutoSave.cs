@@ -102,6 +102,24 @@ public sealed partial class RentalBillingViewModel
         await PersistAutoSaveDraftAsync(ct);
     }
 
+    public async Task FlushAutoSaveForCloseAsync(CancellationToken ct = default)
+    {
+        _candidateAssetsLoadCts?.Cancel();
+        var candidateLoadTask = _candidateAssetsLoadTask;
+        if (candidateLoadTask is not null)
+        {
+            try
+            {
+                await candidateLoadTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        await FlushAutoSaveAsync(ct);
+    }
+
     public async Task ClearAutoSaveDraftAsync(CancellationToken ct = default)
     {
         _autoSaveCts?.Cancel();

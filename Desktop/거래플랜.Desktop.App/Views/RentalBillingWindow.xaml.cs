@@ -69,7 +69,12 @@ public partial class RentalBillingWindow : Window
         _closeInProgress = true;
         try
         {
-            await viewModel.FlushAutoSaveAsync();
+            await viewModel.FlushAutoSaveForCloseAsync();
+            _allowClose = true;
+            Close();
+        }
+        catch (OperationCanceledException)
+        {
             _allowClose = true;
             Close();
         }

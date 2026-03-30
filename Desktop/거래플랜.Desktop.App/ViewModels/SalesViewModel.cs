@@ -87,6 +87,7 @@ public sealed partial class SalesViewModel : ObservableObject
     private string _selectedProcurementDocumentTitle = "발주서";
 
     public IReadOnlyList<string> ProcurementDocumentTitleOptions { get; } = ["발주서", "납품서", "의뢰서"];
+    private bool _suppressInputAmountSync;
 
     // ?? ?쇱씤 ?낅젰 (?④굔) ??????????????????????????????????????????????????
     [ObservableProperty] private string _inputItemName = string.Empty;
@@ -532,8 +533,21 @@ public sealed partial class SalesViewModel : ObservableObject
     // ?? ?쇱씤 ?낅젰 ?????????????????????????????????????????????????????????
     partial void OnInputQtyChanged(decimal value) => RecalcInputAmount();
     partial void OnInputUnitPriceChanged(decimal value) => RecalcInputAmount();
-    private void RecalcInputAmount() =>
-        InputLineAmount = Math.Round(InputQty * InputUnitPrice, 0, MidpointRounding.AwayFromZero);
+    private void RecalcInputAmount()
+    {
+        if (_suppressInputAmountSync)
+            return;
+
+        _suppressInputAmountSync = true;
+        try
+        {
+            InputLineAmount = Math.Round(InputQty * InputUnitPrice, 0, MidpointRounding.AwayFromZero);
+        }
+        finally
+        {
+            _suppressInputAmountSync = false;
+        }
+    }
 
     partial void OnSelectedInputItemChanged(LocalItem? value)
     {
@@ -638,6 +652,7 @@ public sealed partial class SalesViewModel : ObservableObject
             Unit = InputUnit,
             Quantity = InputQty,
             UnitPrice = InputUnitPrice,
+            LineAmount = InputLineAmount,
             Remark = InputRemark,
             SerialNumber = InputSerialNumber,
             MaterialNumber = InputMaterialNo,
@@ -668,6 +683,7 @@ public sealed partial class SalesViewModel : ObservableObject
         SelectedLine.Unit = InputUnit;
         SelectedLine.Quantity = InputQty;
         SelectedLine.UnitPrice = InputUnitPrice;
+        SelectedLine.LineAmount = InputLineAmount;
         SelectedLine.Remark = InputRemark;
         SelectedLine.SerialNumber = InputSerialNumber;
         RecalcTotals();
@@ -692,10 +708,10 @@ public sealed partial class SalesViewModel : ObservableObject
         InputUnit = value.Unit;
         InputQty = value.Quantity;
         InputUnitPrice = value.UnitPrice;
+        InputLineAmount = value.LineAmount;
         InputRemark = value.Remark;
         InputSerialNumber = value.SerialNumber;
         InputMaterialNo = value.MaterialNumber;
-        RecalcInputAmount();
     }
 
     private void ClearLineInput()
