@@ -1,4 +1,5 @@
-﻿using System.Windows;
+﻿using System.ComponentModel;
+using System.Windows;
 using System.Windows.Input;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
@@ -7,10 +8,14 @@ namespace 거래플랜.Desktop.App.Views;
 
 public partial class RentalBillingWindow : Window
 {
+    private bool _allowClose;
+    private bool _closeInProgress;
+
     public RentalBillingWindow(RentalBillingViewModel viewModel)
     {
         InitializeComponent();
         DataContext = viewModel;
+        Closing += HandleClosing;
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
@@ -53,6 +58,29 @@ public partial class RentalBillingWindow : Window
             paymentWindow.ShowDialog();
             await viewModel.ReloadCommand.ExecuteAsync(null);
         }, "UI", "렌탈 청구 수금 등록", "렌탈 청구 수금 등록 중 오류가 발생했습니다.");
+    }
+
+    private async void HandleClosing(object? sender, CancelEventArgs e)
+    {
+        if (_allowClose || _closeInProgress || DataContext is not RentalBillingViewModel viewModel)
+            return;
+
+        e.Cancel = true;
+        _closeInProgress = true;
+        try
+        {
+            await viewModel.FlushAutoSaveAsync();
+            _allowClose = true;
+            Close();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"자동저장 후 닫기에 실패했습니다.\n{ex.Message}", "렌탈 청구관리", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _closeInProgress = false;
+        }
     }
 
     private void NewRentalCustomerButton_Click(object sender, RoutedEventArgs e)

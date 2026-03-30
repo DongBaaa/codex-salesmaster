@@ -118,6 +118,78 @@ public sealed class RentalBillingRunModel
     public List<RentalBillingTemplateItemModel> Items { get; set; } = new();
 }
 
+public sealed class RentalBillingEditorDraftModel
+{
+    public Guid EditId { get; set; }
+    public string CustomerName { get; set; } = string.Empty;
+    public string BusinessNumber { get; set; } = string.Empty;
+    public string RealCustomerName { get; set; } = string.Empty;
+    public string BillToCustomerName { get; set; } = string.Empty;
+    public string InstallSiteName { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
+    public string BillingType { get; set; } = "묶음";
+    public string BillingAdvanceMode { get; set; } = "후불";
+    public string OfficeCode { get; set; } = string.Empty;
+    public string BillingMethod { get; set; } = string.Empty;
+    public string PaymentMethod { get; set; } = string.Empty;
+    public string BillingStatus { get; set; } = "예정";
+    public string SettlementStatus { get; set; } = PaymentFlowConstants.SettlementStatusUnpaid;
+    public string CompletionStatus { get; set; } = PaymentFlowConstants.CompletionPending;
+    public string Email { get; set; } = string.Empty;
+    public int BillingDay { get; set; } = 25;
+    public int BillingCycleMonths { get; set; } = 1;
+    public decimal MonthlyAmount { get; set; }
+    public decimal DepositAmount { get; set; }
+    public decimal SettledAmount { get; set; }
+    public decimal OutstandingAmount { get; set; }
+    public bool RequiresFollowUp { get; set; }
+    public string FollowUpNote { get; set; } = string.Empty;
+    public string SubmissionDocuments { get; set; } = string.Empty;
+    public string Notes { get; set; } = string.Empty;
+    public string AssignedUsername { get; set; } = string.Empty;
+    public bool LinkAssetsLater { get; set; }
+    public DateTime? BillingAnchorDate { get; set; }
+    public DateTime? BillingStartDate { get; set; }
+    public DateTime? ContractDate { get; set; }
+    public DateTime? ContractStartDate { get; set; }
+    public DateTime? ContractEndDate { get; set; }
+    public DateTime? LastBilledDate { get; set; }
+    public DateTime? LastSettledDate { get; set; }
+    public bool IsActive { get; set; } = true;
+    public Guid? SelectedTemplateItemId { get; set; }
+    public List<RentalBillingTemplateItemModel> TemplateItems { get; set; } = new();
+}
+
+public sealed class RentalCustomerOnboardingDraftModel
+{
+    public int CurrentStepIndex { get; set; }
+    public string CustomerName { get; set; } = string.Empty;
+    public string BusinessNumber { get; set; } = string.Empty;
+    public string Representative { get; set; } = string.Empty;
+    public string ContactPerson { get; set; } = string.Empty;
+    public string Phone { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public string Address { get; set; } = string.Empty;
+    public string OfficeCode { get; set; } = string.Empty;
+    public string AssignedUsername { get; set; } = string.Empty;
+    public string RealCustomerName { get; set; } = string.Empty;
+    public string BillToCustomerName { get; set; } = string.Empty;
+    public string InstallSiteName { get; set; } = string.Empty;
+    public string BillingType { get; set; } = "묶음";
+    public string BillingAdvanceMode { get; set; } = "후불";
+    public int BillingDay { get; set; } = 25;
+    public int BillingCycleMonths { get; set; } = 1;
+    public DateTime BillingStartDate { get; set; } = DateTime.Today;
+    public decimal MonthlyAmount { get; set; }
+    public string BillingMethod { get; set; } = string.Empty;
+    public string PaymentMethod { get; set; } = string.Empty;
+    public string SubmissionDocuments { get; set; } = string.Empty;
+    public string Notes { get; set; } = string.Empty;
+    public bool LinkAssetsLater { get; set; }
+    public Guid? SelectedTemplateItemId { get; set; }
+    public List<RentalBillingTemplateItemModel> TemplateItems { get; set; } = new();
+}
+
 public sealed class RentalBillingViewRow
 {
     public LocalRentalBillingProfile Source { get; init; } = new();

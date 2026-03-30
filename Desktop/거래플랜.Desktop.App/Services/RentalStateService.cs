@@ -16,6 +16,8 @@ public sealed class RentalStateService
     private const string AlertDaysSettingKey = "Rental.AlertDaysBefore";
     private const string BillingWorkbookPathSettingKey = "Rental.ImportBillingWorkbookPath";
     private const string AssetWorkbookPathSettingKey = "Rental.ImportAssetWorkbookPath";
+    private const string BillingEditorDraftSettingPrefix = "Rental.BillingEditorDraft";
+    private const string OnboardingDraftSettingPrefix = "Rental.OnboardingDraft";
     private static readonly TimeZoneInfo KoreaTimeZone = ResolveKoreaTimeZone();
     private static readonly SemaphoreSlim AssetSaveLock = new(1, 1);
     private static readonly JsonSerializerOptions RentalJsonOptions = new()
@@ -167,6 +169,30 @@ public sealed class RentalStateService
         await UpsertSettingAsync(BillingWorkbookPathSettingKey, billingPath ?? string.Empty, ct);
         await UpsertSettingAsync(AssetWorkbookPathSettingKey, assetPath ?? string.Empty, ct);
     }
+
+    public async Task<RentalBillingEditorDraftModel?> GetBillingEditorDraftAsync(SessionState session, CancellationToken ct = default)
+        => await GetDraftAsync<RentalBillingEditorDraftModel>(BuildDraftSettingKey(BillingEditorDraftSettingPrefix, session), ct);
+
+    public async Task SaveBillingEditorDraftAsync(RentalBillingEditorDraftModel draft, SessionState session, CancellationToken ct = default)
+        => await UpsertSettingAsync(
+            BuildDraftSettingKey(BillingEditorDraftSettingPrefix, session),
+            JsonSerializer.Serialize(draft, RentalJsonOptions),
+            ct);
+
+    public async Task ClearBillingEditorDraftAsync(SessionState session, CancellationToken ct = default)
+        => await RemoveSettingAsync(BuildDraftSettingKey(BillingEditorDraftSettingPrefix, session), ct);
+
+    public async Task<RentalCustomerOnboardingDraftModel?> GetOnboardingDraftAsync(SessionState session, CancellationToken ct = default)
+        => await GetDraftAsync<RentalCustomerOnboardingDraftModel>(BuildDraftSettingKey(OnboardingDraftSettingPrefix, session), ct);
+
+    public async Task SaveOnboardingDraftAsync(RentalCustomerOnboardingDraftModel draft, SessionState session, CancellationToken ct = default)
+        => await UpsertSettingAsync(
+            BuildDraftSettingKey(OnboardingDraftSettingPrefix, session),
+            JsonSerializer.Serialize(draft, RentalJsonOptions),
+            ct);
+
+    public async Task ClearOnboardingDraftAsync(SessionState session, CancellationToken ct = default)
+        => await RemoveSettingAsync(BuildDraftSettingKey(OnboardingDraftSettingPrefix, session), ct);
 
     public async Task<RentalDashboardSummary> GetDashboardSummaryAsync(
         SessionState session,
@@ -1921,6 +1947,46 @@ public sealed class RentalStateService
             setting.Value = value;
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task RemoveSettingAsync(string key, CancellationToken ct)
+    {
+        var setting = await _db.Settings.FindAsync([key], ct);
+        if (setting is null)
+            return;
+
+        _db.Settings.Remove(setting);
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task<TDraft?> GetDraftAsync<TDraft>(string key, CancellationToken ct)
+        where TDraft : class
+    {
+        var payload = await _db.Settings.AsNoTracking()
+            .Where(setting => setting.Key == key)
+            .Select(setting => setting.Value)
+            .FirstOrDefaultAsync(ct);
+        if (string.IsNullOrWhiteSpace(payload))
+            return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<TDraft>(payload, RentalJsonOptions);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private string BuildDraftSettingKey(string prefix, SessionState session)
+    {
+        var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, DomainConstants.OfficeUsenet);
+        var username = (session.User?.Username ?? "anonymous").Trim();
+        if (string.IsNullOrWhiteSpace(username))
+            username = "anonymous";
+
+        return $"{prefix}.{officeCode}.{username}".ToUpperInvariant();
     }
 
     private async Task<Dictionary<string, string>> GetOfficeMapAsync(CancellationToken ct)

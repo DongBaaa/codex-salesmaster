@@ -93,6 +93,8 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         BillingMethodOptions.Add("CMS");
         BillingMethodOptions.Add("현금");
         BillingMethodOptions.Add("카드");
+
+        InitializeAutoSave();
     }
 
     partial void OnCurrentStepIndexChanged(int value)
@@ -144,34 +146,46 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
-        _customers = await _local.GetCustomersAsync(_session);
-        var offices = await _local.GetOfficesAsync();
-        OfficeOptions.Clear();
-        foreach (var office in offices)
+        BeginAutoSaveSuppression();
+        try
         {
-            OfficeOptions.Add(new DisplayOption
+            _customers = await _local.GetCustomersAsync(_session);
+            var offices = await _local.GetOfficesAsync();
+            OfficeOptions.Clear();
+            foreach (var office in offices)
             {
-                Value = office.Code,
-                DisplayName = office.Name
-            });
+                OfficeOptions.Add(new DisplayOption
+                {
+                    Value = office.Code,
+                    DisplayName = office.Name
+                });
+            }
+
+            AssignedUsernameOptions.Clear();
+            foreach (var username in await _rental.GetAssignedUsernamesAsync())
+                AssignedUsernameOptions.Add(username);
+            if (!AssignedUsernameOptions.Contains(_session.User?.Username ?? string.Empty) && !string.IsNullOrWhiteSpace(_session.User?.Username))
+                AssignedUsernameOptions.Insert(0, _session.User!.Username);
+
+            OfficeCode = OfficeOptions.FirstOrDefault()?.Value
+                ?? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
+            AssignedUsername = _session.User?.Username ?? string.Empty;
+            BillingMethod = "전자세금계산서";
+            PaymentMethod = "계좌이체";
+            TemplateItems.Clear();
+            var defaultItem = CreateTemplateItem();
+            TemplateItems.Add(defaultItem);
+            SelectedTemplateItem = defaultItem;
+            CurrentStepIndex = 0;
+            StatusMessage = "신규 렌탈 거래처 등록을 시작하세요.";
+            UpdateBillingPreview();
+        }
+        finally
+        {
+            EndAutoSaveSuppression();
         }
 
-        AssignedUsernameOptions.Clear();
-        foreach (var username in await _rental.GetAssignedUsernamesAsync())
-            AssignedUsernameOptions.Add(username);
-        if (!AssignedUsernameOptions.Contains(_session.User?.Username ?? string.Empty) && !string.IsNullOrWhiteSpace(_session.User?.Username))
-            AssignedUsernameOptions.Insert(0, _session.User!.Username);
-
-        OfficeCode = OfficeOptions.FirstOrDefault()?.Value
-            ?? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
-        AssignedUsername = _session.User?.Username ?? string.Empty;
-        BillingMethod = "전자세금계산서";
-        PaymentMethod = "계좌이체";
-        TemplateItems.Clear();
-        var defaultItem = CreateTemplateItem();
-        TemplateItems.Add(defaultItem);
-        SelectedTemplateItem = defaultItem;
-        UpdateBillingPreview();
+        await RestoreAutoSaveDraftAsync();
     }
 
     [RelayCommand(CanExecute = nameof(CanGoPrevious))]
@@ -346,6 +360,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
 
             SavedBillingProfileId = result.EntityId;
             IsCompleted = true;
+            await ClearAutoSaveDraftAsync();
             StatusMessage = existingCustomer is null
                 ? "신규 렌탈 거래처 등록을 완료했습니다."
                 : "기존 거래처에 렌탈 청구 설정을 추가했습니다.";

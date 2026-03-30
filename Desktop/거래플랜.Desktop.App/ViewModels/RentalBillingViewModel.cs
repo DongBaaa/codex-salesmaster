@@ -150,6 +150,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         BillingAdvanceModeOptions.Add("후불");
         BillingAdvanceModeOptions.Add("선불");
+
+        InitializeAutoSave();
     }
 
     partial void OnSearchTextChanged(string value) => RequestFilterReload();
@@ -179,7 +181,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         await _rental.RepairRoleBasedAssignedUsernamesAsync();
         await ReloadFiltersAsync();
         await ReloadAsync();
-        NewProfile();
+
+        BeginAutoSaveSuppression();
+        try
+        {
+            if (!await RestoreAutoSaveDraftAsync())
+                NewProfile();
+        }
+        finally
+        {
+            EndAutoSaveSuppression();
+        }
     }
 
     [RelayCommand]
@@ -292,6 +304,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (!result.Success)
             return;
 
+        await ClearAutoSaveDraftAsync();
         await ReloadAsync();
         SelectRow(result.EntityId);
     }
@@ -445,6 +458,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [RelayCommand]
     private void NewProfile()
     {
+        DiscardAutoSaveDraft();
         EditId = Guid.NewGuid();
         EditCustomerName = string.Empty;
         EditBusinessNumber = string.Empty;
@@ -576,6 +590,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     partial void OnSelectedRowChanged(RentalBillingViewRow? value)
     {
+        PersistDraftBeforeContextSwitch();
+
         if (value is null)
         {
             OnPropertyChanged(nameof(CanSave));
