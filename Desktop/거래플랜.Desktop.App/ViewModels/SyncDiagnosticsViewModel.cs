@@ -166,11 +166,17 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         {
             SummaryStatusText = "동기화를 다시 시도하는 중...";
             var syncOk = await _sync.TrySyncAsync();
-            if (syncOk && await _local.CountDirtyAsync() == 0)
+            var dirtyCount = await _local.CountDirtyAsync();
+            if (syncOk && dirtyCount == 0)
                 await _sync.RefreshSharedMirrorFromServerAsync();
 
             await ReloadAsync();
-            SummaryStatusText = syncOk ? "동기화 재시도를 완료했습니다." : "동기화 재시도는 완료되었지만 일부 오류가 남아 있습니다.";
+            SummaryStatusText = dirtyCount > 0
+                ? await _local.GetPendingSyncWaitingMessageAsync("동기화 작업은 완료됐지만")
+                    ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다."
+                : syncOk
+                    ? "동기화 재시도를 완료했습니다."
+                    : "동기화 재시도는 완료되었지만 일부 오류가 남아 있습니다.";
         }
         finally
         {

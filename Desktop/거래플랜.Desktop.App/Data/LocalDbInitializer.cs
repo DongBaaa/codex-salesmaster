@@ -10,6 +10,23 @@ public static class LocalDbInitializer
     private const string FallbackUtcText = "1970-01-01T00:00:00Z";
     private const string YeonsuOfficeIdSettingKey = "SystemOffice.YeonsuOfficeId";
     private const string LegacyLinkedGeneralSettlementCleanupKey = "Migration.CleanupLegacyLinkedGeneralSettlements.v1";
+    private const string NormalizeSelectionOptionSystemDefaultsStepKey = "Migration.NormalizeSelectionOptionSystemDefaults.v1";
+    private const string CustomerCategoryMaintenanceStepKey = "Migration.CustomerCategoryMaintenance.v1";
+    private const string NormalizeLegacyOfficeCodesStepKey = "Migration.NormalizeLegacyOfficeCodes.v1";
+    private const string NormalizeOfficeReferenceDataStepKey = "Migration.NormalizeOfficeReferenceData.v1";
+    private const string NormalizeWarehouseDataStepKey = "Migration.NormalizeWarehouseData.v1";
+    private const string BackfillTransactionResponsibleOfficeCodeStepKey = "Migration.BackfillTransactionResponsibleOfficeCode.v1";
+    private const string NormalizeCompanyProfilesStepKey = "Migration.NormalizeCompanyProfiles.v1";
+    private const string NormalizeCustomerTradeTypeStepKey = "Migration.NormalizeCustomerTradeType.v1";
+    private const string RepairCustomerClassificationIntegrityStepKey = "Migration.RepairCustomerClassificationIntegrity.v1";
+    private const string NormalizeTradeTypeOptionCatalogStepKey = "Migration.NormalizeTradeTypeOptionCatalog.v1";
+    private const string BackfillCustomerScopeFieldsStepKey = "Migration.BackfillCustomerScopeFields.v1";
+    private const string BackfillCustomerMasterScopeFieldsStepKey = "Migration.BackfillCustomerMasterScopeFields.v1";
+    private const string NormalizeItemCategoryOptionDuplicatesStepKey = "Migration.NormalizeItemCategoryOptionDuplicates.v1";
+    private const string BackfillItemScopeFieldsStepKey = "Migration.BackfillItemScopeFields.v1";
+    private const string BackfillItemOperationalFieldsStepKey = "Migration.BackfillItemOperationalFields.v1";
+    private const string BackfillInvoiceLineTrackingTypesStepKey = "Migration.BackfillInvoiceLineTrackingTypes.v1";
+    private const string NormalizeRentalOfficeDataStepKey = "Migration.NormalizeRentalOfficeData.v1";
     private static readonly Regex SqlIdentifierPattern = new(
         "^[A-Za-z0-9_]+$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -37,7 +54,10 @@ public static class LocalDbInitializer
         }
 
         SeedSelectionOptions(db);
-        await NormalizeItemCategoryOptionDuplicatesAsync(db);
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeItemCategoryOptionDuplicatesStepKey,
+            async () => await NormalizeItemCategoryOptionDuplicatesAsync(db));
 
         if (!db.Units.Any())
         {
@@ -54,12 +74,21 @@ public static class LocalDbInitializer
         await UpsertSettingAsync(db, "Theme", "Dark");
 
         await CleanupLegacyLinkedGeneralSettlementsAsync(db);
-        await CustomerCategoryMaintenance.NormalizeAsync(db);
-        await NormalizeSelectionOptionSystemDefaultsAsync(db);
+        await RunStartupMaintenanceStepAsync(
+            db,
+            CustomerCategoryMaintenanceStepKey,
+            async () => await CustomerCategoryMaintenance.NormalizeAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeSelectionOptionSystemDefaultsStepKey,
+            async () => await NormalizeSelectionOptionSystemDefaultsAsync(db));
         await SeedOfficeAndWarehouseAsync(db);
         await SeedCompanyProfilesAsync(db);
         await SeedRentalDefaultsAsync(db);
-        await NormalizeRentalOfficeDataAsync(db);
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeRentalOfficeDataStepKey,
+            async () => await NormalizeRentalOfficeDataAsync(db));
         await db.SaveChangesAsync();
         await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_ItemCategoryOptions_Name_Active\" ON \"ItemCategoryOptions\" (\"Name\") WHERE COALESCE(TRIM(\"Name\"), '') <> '' AND COALESCE(\"IsDeleted\", 0) = 0;");
 
@@ -80,32 +109,28 @@ public static class LocalDbInitializer
         foreach (var current in customerCategories)
         {
             current.IsSystemDefault = false;
-            current.IsDirty = true;
-            current.UpdatedAtUtc = now;
+            PreserveDirtyStateForStartupMaintenance(current, now);
         }
 
         var priceGradeOptions = await db.PriceGradeOptions.IgnoreQueryFilters().Where(current => current.IsSystemDefault).ToListAsync();
         foreach (var current in priceGradeOptions)
         {
             current.IsSystemDefault = false;
-            current.IsDirty = true;
-            current.UpdatedAtUtc = now;
+            PreserveDirtyStateForStartupMaintenance(current, now);
         }
 
         var tradeTypeOptions = await db.TradeTypeOptions.IgnoreQueryFilters().Where(current => current.IsSystemDefault).ToListAsync();
         foreach (var current in tradeTypeOptions)
         {
             current.IsSystemDefault = false;
-            current.IsDirty = true;
-            current.UpdatedAtUtc = now;
+            PreserveDirtyStateForStartupMaintenance(current, now);
         }
 
         var itemCategoryOptions = await db.ItemCategoryOptions.IgnoreQueryFilters().Where(current => current.IsSystemDefault).ToListAsync();
         foreach (var current in itemCategoryOptions)
         {
             current.IsSystemDefault = false;
-            current.IsDirty = true;
-            current.UpdatedAtUtc = now;
+            PreserveDirtyStateForStartupMaintenance(current, now);
         }
     }
 
@@ -356,16 +381,46 @@ public static class LocalDbInitializer
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionStatus\" ON \"TransactionAttachments\" (\"TransactionId\", \"VerificationStatus\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TransferStatus\" ON \"InventoryTransfers\" (\"TransferStatus\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Items_TenantCode_OfficeCode\" ON \"Items\" (\"TenantCode\", \"OfficeCode\");");
-        await BackfillTransactionResponsibleOfficeCodeAsync(db);
-        await NormalizeCompanyProfilesAsync(db);
-        await NormalizeCustomerTradeTypeAsync(db);
-        await RepairCustomerClassificationIntegrityAsync(db);
-        await NormalizeTradeTypeOptionCatalogAsync(db);
-        await BackfillCustomerScopeFieldsAsync(db);
-        await BackfillCustomerMasterScopeFieldsAsync(db);
-        await BackfillItemScopeFieldsAsync(db);
-        await BackfillItemOperationalFieldsAsync(db);
-        await BackfillInvoiceLineTrackingTypesAsync(db);
+        await RunStartupMaintenanceStepAsync(
+            db,
+            BackfillTransactionResponsibleOfficeCodeStepKey,
+            async () => await BackfillTransactionResponsibleOfficeCodeAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeCompanyProfilesStepKey,
+            async () => await NormalizeCompanyProfilesAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeCustomerTradeTypeStepKey,
+            async () => await NormalizeCustomerTradeTypeAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            RepairCustomerClassificationIntegrityStepKey,
+            async () => await RepairCustomerClassificationIntegrityAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeTradeTypeOptionCatalogStepKey,
+            async () => await NormalizeTradeTypeOptionCatalogAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            BackfillCustomerScopeFieldsStepKey,
+            async () => await BackfillCustomerScopeFieldsAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            BackfillCustomerMasterScopeFieldsStepKey,
+            async () => await BackfillCustomerMasterScopeFieldsAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            BackfillItemScopeFieldsStepKey,
+            async () => await BackfillItemScopeFieldsAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            BackfillItemOperationalFieldsStepKey,
+            async () => await BackfillItemOperationalFieldsAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            BackfillInvoiceLineTrackingTypesStepKey,
+            async () => await BackfillInvoiceLineTrackingTypesAsync(db));
     }
 
     private static void SeedSelectionOptions(LocalDbContext db)
@@ -504,9 +559,18 @@ public static class LocalDbInitializer
 
         await db.SaveChangesAsync();
 
-        await NormalizeLegacyOfficeCodesAsync(db);
-        await NormalizeOfficeReferenceDataAsync(db);
-        await NormalizeWarehouseDataAsync(db);
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeLegacyOfficeCodesStepKey,
+            async () => await NormalizeLegacyOfficeCodesAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeOfficeReferenceDataStepKey,
+            async () => await NormalizeOfficeReferenceDataAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeWarehouseDataStepKey,
+            async () => await NormalizeWarehouseDataAsync(db));
         await db.SaveChangesAsync();
 
         var offices = await db.Offices.AsNoTracking().Where(office => !office.IsDeleted).ToListAsync();
@@ -681,8 +745,7 @@ public static class LocalDbInitializer
 
             if (changed)
             {
-                profile.IsDirty = true;
-                profile.UpdatedAtUtc = DateTime.UtcNow;
+                PreserveDirtyStateForStartupMaintenance(profile, DateTime.UtcNow);
             }
         }
     }
@@ -747,8 +810,7 @@ public static class LocalDbInitializer
             {
                 warehouse.OfficeId = canonicalOffice.Id;
                 warehouse.OfficeCode = canonicalCode;
-                warehouse.IsDirty = true;
-                warehouse.UpdatedAtUtc = DateTime.UtcNow;
+                PreserveDirtyStateForStartupMaintenance(warehouse, DateTime.UtcNow);
             }
 
             if (yeonsuSetting is not null &&
@@ -809,6 +871,33 @@ public static class LocalDbInitializer
         setting.Value = value;
     }
 
+    private static async Task<bool> HasSettingValueAsync(LocalDbContext db, string key, string expectedValue)
+    {
+        var value = db.Settings.Local.FirstOrDefault(current => string.Equals(current.Key, key, StringComparison.OrdinalIgnoreCase))?.Value
+            ?? await db.Settings.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(current => current.Key == key)
+                .Select(current => current.Value)
+                .FirstOrDefaultAsync();
+
+        return string.Equals(value, expectedValue, StringComparison.Ordinal);
+    }
+
+    private static async Task RunStartupMaintenanceStepAsync(LocalDbContext db, string stepKey, Func<Task> action)
+    {
+        if (await HasSettingValueAsync(db, stepKey, "1"))
+            return;
+
+        await action();
+        await UpsertSettingAsync(db, stepKey, "1");
+        await db.SaveChangesAsync();
+    }
+
+    private static void PreserveDirtyStateForStartupMaintenance(ILocalSyncEntity entity, DateTime updatedAtUtc)
+    {
+        entity.UpdatedAtUtc = updatedAtUtc;
+    }
+
     private static async Task NormalizeOfficeReferenceDataAsync(LocalDbContext db)
     {
         var now = DateTime.UtcNow;
@@ -819,8 +908,7 @@ public static class LocalDbInitializer
             if (!string.Equals(profile.OfficeCode, canonicalOfficeCode, StringComparison.OrdinalIgnoreCase))
             {
                 profile.OfficeCode = canonicalOfficeCode;
-                profile.IsDirty = true;
-                profile.UpdatedAtUtc = now;
+                PreserveDirtyStateForStartupMaintenance(profile, now);
             }
         }
 
@@ -830,8 +918,7 @@ public static class LocalDbInitializer
             if (!string.Equals(customer.ResponsibleOfficeCode, canonicalOfficeCode, StringComparison.OrdinalIgnoreCase))
             {
                 customer.ResponsibleOfficeCode = canonicalOfficeCode;
-                customer.IsDirty = true;
-                customer.UpdatedAtUtc = now;
+                PreserveDirtyStateForStartupMaintenance(customer, now);
             }
         }
 
@@ -841,8 +928,7 @@ public static class LocalDbInitializer
             if (!string.Equals(invoice.ResponsibleOfficeCode, canonicalOfficeCode, StringComparison.OrdinalIgnoreCase))
             {
                 invoice.ResponsibleOfficeCode = canonicalOfficeCode;
-                invoice.IsDirty = true;
-                invoice.UpdatedAtUtc = now;
+                PreserveDirtyStateForStartupMaintenance(invoice, now);
             }
         }
 
@@ -852,8 +938,7 @@ public static class LocalDbInitializer
             if (!string.Equals(transaction.ResponsibleOfficeCode, canonicalOfficeCode, StringComparison.OrdinalIgnoreCase))
             {
                 transaction.ResponsibleOfficeCode = canonicalOfficeCode;
-                transaction.IsDirty = true;
-                transaction.UpdatedAtUtc = now;
+                PreserveDirtyStateForStartupMaintenance(transaction, now);
             }
         }
 
@@ -970,8 +1055,7 @@ public static class LocalDbInitializer
                      .ToListAsync())
         {
             invoice.SourceWarehouseCode = newCode;
-            invoice.IsDirty = true;
-            invoice.UpdatedAtUtc = DateTime.UtcNow;
+            PreserveDirtyStateForStartupMaintenance(invoice, DateTime.UtcNow);
         }
 
         foreach (var movement in await db.InventoryMovements
@@ -1039,8 +1123,7 @@ public static class LocalDbInitializer
                 transfer.FromWarehouseCode = newCode;
             if (string.Equals(transfer.ToWarehouseCode, oldCode, StringComparison.OrdinalIgnoreCase))
                 transfer.ToWarehouseCode = newCode;
-            transfer.IsDirty = true;
-            transfer.UpdatedAtUtc = DateTime.UtcNow;
+            PreserveDirtyStateForStartupMaintenance(transfer, DateTime.UtcNow);
         }
     }
 
@@ -1216,8 +1299,7 @@ public static class LocalDbInitializer
 
             if (changed)
             {
-                profile.IsDirty = true;
-                profile.UpdatedAtUtc = DateTime.UtcNow;
+                PreserveDirtyStateForStartupMaintenance(profile, DateTime.UtcNow);
             }
         }
 
@@ -1253,8 +1335,7 @@ public static class LocalDbInitializer
 
             if (changed)
             {
-                asset.IsDirty = true;
-                asset.UpdatedAtUtc = DateTime.UtcNow;
+                PreserveDirtyStateForStartupMaintenance(asset, DateTime.UtcNow);
             }
         }
 
@@ -1266,8 +1347,7 @@ public static class LocalDbInitializer
                 continue;
 
             log.ResponsibleOfficeCode = officeCode;
-            log.IsDirty = true;
-            log.UpdatedAtUtc = DateTime.UtcNow;
+            PreserveDirtyStateForStartupMaintenance(log, DateTime.UtcNow);
         }
     }
 
@@ -1299,8 +1379,7 @@ public static class LocalDbInitializer
             if (!string.Equals(canonical.Name, canonicalName, StringComparison.Ordinal))
             {
                 canonical.Name = canonicalName;
-                canonical.IsDirty = true;
-                canonical.UpdatedAtUtc = now;
+                PreserveDirtyStateForStartupMaintenance(canonical, now);
             }
 
             foreach (var duplicate in group.Where(option => option.Id != canonical.Id))
@@ -1331,8 +1410,7 @@ public static class LocalDbInitializer
                 continue;
 
             item.CategoryName = canonicalName;
-            item.IsDirty = true;
-            item.UpdatedAtUtc = now;
+            PreserveDirtyStateForStartupMaintenance(item, now);
         }
 
         var assets = await db.RentalAssets.IgnoreQueryFilters().ToListAsync();
@@ -1346,8 +1424,7 @@ public static class LocalDbInitializer
                 continue;
 
             asset.ItemCategoryName = canonicalName;
-            asset.IsDirty = true;
-            asset.UpdatedAtUtc = now;
+            PreserveDirtyStateForStartupMaintenance(asset, now);
         }
     }
 
@@ -1555,8 +1632,7 @@ public static class LocalDbInitializer
 
             if (changed)
             {
-                item.IsDirty = true;
-                item.UpdatedAtUtc = now;
+                PreserveDirtyStateForStartupMaintenance(item, now);
             }
         }
 
@@ -1612,8 +1688,7 @@ public static class LocalDbInitializer
                 .ToListAsync();
             foreach (var invoice in invoices)
             {
-                invoice.IsDirty = true;
-                invoice.UpdatedAtUtc = now;
+                PreserveDirtyStateForStartupMaintenance(invoice, now);
             }
         }
 
@@ -1883,8 +1958,7 @@ public static class LocalDbInitializer
             if (!customerChanged)
                 continue;
 
-            customer.IsDirty = true;
-            customer.UpdatedAtUtc = now;
+            PreserveDirtyStateForStartupMaintenance(customer, now);
             changed = true;
         }
 
@@ -1915,7 +1989,7 @@ public static class LocalDbInitializer
                     IsSystemDefault = false,
                     IsActive = true,
                     IsDeleted = false,
-                    IsDirty = true,
+                    IsDirty = false,
                     CreatedAtUtc = now,
                     UpdatedAtUtc = now
                 });
@@ -1962,8 +2036,7 @@ public static class LocalDbInitializer
 
             if (optionChanged)
             {
-                option.IsDirty = true;
-                option.UpdatedAtUtc = now;
+                PreserveDirtyStateForStartupMaintenance(option, now);
                 changed = true;
             }
         }
@@ -1974,8 +2047,7 @@ public static class LocalDbInitializer
         {
             option.IsDeleted = true;
             option.IsActive = false;
-            option.IsDirty = true;
-            option.UpdatedAtUtc = now;
+            PreserveDirtyStateForStartupMaintenance(option, now);
             changed = true;
         }
 

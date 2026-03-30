@@ -496,9 +496,12 @@ public partial class App : Application
 
             if (isShutdown)
             {
+                var pendingMessage = remainingDirtyCount > 0
+                    ? await localState.GetPendingSyncWaitingMessageAsync(ct: CancellationToken.None)
+                    : null;
                 mainVm.SyncStatus = remainingDirtyCount == 0
                     ? "저장이 완료되었습니다. 종료합니다."
-                    : $"서버 반영 대기 데이터 {remainingDirtyCount}건이 남아 있습니다.";
+                    : pendingMessage ?? $"서버 반영 대기 데이터 {remainingDirtyCount}건이 남아 있습니다.";
             }
             else
             {

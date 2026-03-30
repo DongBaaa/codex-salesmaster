@@ -130,7 +130,8 @@ public sealed class SyncService : IDisposable
 
         if (await _local.HasPendingSyncChangesAsync(ct))
         {
-            SetStatus("로컬 미동기화 변경이 남아 있어 중앙 서버 기준 캐시를 다시 불러올 수 없습니다.");
+            var pendingMessage = await _local.GetPendingSyncWaitingMessageAsync("로컬 미동기화 변경이 남아 있어 중앙 서버 기준 캐시를 다시 불러올 수 없습니다.");
+            SetStatus(pendingMessage ?? "로컬 미동기화 변경이 남아 있어 중앙 서버 기준 캐시를 다시 불러올 수 없습니다.");
             return false;
         }
 

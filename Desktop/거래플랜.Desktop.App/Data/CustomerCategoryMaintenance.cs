@@ -48,8 +48,7 @@ internal static class CustomerCategoryMaintenance
             foreach (var customer in customers)
             {
                 customer.CategoryId = canonical.Id;
-                customer.IsDirty = true;
-                customer.UpdatedAtUtc = now;
+                PreserveDirtyState(customer, now);
             }
 
             var customerMasters = await db.CustomerMasters.IgnoreQueryFilters()
@@ -58,8 +57,7 @@ internal static class CustomerCategoryMaintenance
             foreach (var customerMaster in customerMasters)
             {
                 customerMaster.CategoryId = canonical.Id;
-                customerMaster.IsDirty = true;
-                customerMaster.UpdatedAtUtc = now;
+                PreserveDirtyState(customerMaster, now);
             }
 
             foreach (var duplicate in group.Where(category => category.Id != canonical.Id))
@@ -68,8 +66,7 @@ internal static class CustomerCategoryMaintenance
                     continue;
 
                 duplicate.IsDeleted = true;
-                duplicate.IsDirty = true;
-                duplicate.UpdatedAtUtc = now;
+                PreserveDirtyState(duplicate, now);
             }
         }
 
@@ -111,8 +108,12 @@ internal static class CustomerCategoryMaintenance
 
         if (changed)
         {
-            category.IsDirty = true;
-            category.UpdatedAtUtc = now;
+            PreserveDirtyState(category, now);
         }
+    }
+
+    private static void PreserveDirtyState(ILocalSyncEntity entity, DateTime updatedAtUtc)
+    {
+        entity.UpdatedAtUtc = updatedAtUtc;
     }
 }

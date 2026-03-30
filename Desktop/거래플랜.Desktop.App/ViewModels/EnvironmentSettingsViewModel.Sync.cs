@@ -34,10 +34,10 @@ public sealed partial class EnvironmentSettingsViewModel
         SyncModeText = _session.IsOfflineMode ? "오프라인 모드" : "온라인 동기화";
         SyncDatabaseText = _session.SelectedBusinessDatabaseLabel;
 
-        var pendingDirtyCount = await _local.CountDirtyAsync();
-        SyncPendingChangesText = pendingDirtyCount == 0
+        var pendingSummary = await _local.GetPendingSyncSummaryAsync();
+        SyncPendingChangesText = pendingSummary.TotalCount == 0
             ? "미동기화 변경 없음"
-            : $"미동기화 변경 {pendingDirtyCount:N0}건";
+            : pendingSummary.BuildWaitingMessage();
 
         var summary = await _diagnostics.GetSummaryAsync();
         SyncSummaryText = summary.OpenIssueCount == 0
@@ -72,7 +72,8 @@ public sealed partial class EnvironmentSettingsViewModel
 
             await RefreshSyncStateAsync();
             StatusMessage = dirtyCount > 0
-                ? $"동기화 작업은 끝났지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다. 동기화 진단을 확인하세요."
+                ? await _local.GetPendingSyncWaitingMessageAsync("동기화 작업은 완료됐지만")
+                    ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다. 동기화 진단을 확인하세요."
                 : syncOk
                     ? "동기화를 완료했습니다."
                     : "동기화가 완료되었지만 일부 오류가 남아 있습니다. 동기화 진단을 확인하세요.";

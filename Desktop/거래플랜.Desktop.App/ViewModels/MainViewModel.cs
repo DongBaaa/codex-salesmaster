@@ -263,9 +263,11 @@ public sealed partial class MainViewModel : ObservableObject
             return status;
 
         if (status.StartsWith("동기화 오류", StringComparison.Ordinal))
-            return $"{status} / 서버 반영 대기 데이터 {dirtyCount:N0}건";
+            return await _local.GetPendingSyncWaitingMessageAsync($"{status} /", CancellationToken.None)
+                   ?? $"{status} / 서버 반영 대기 데이터 {dirtyCount:N0}건";
 
-        return $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다.";
+        return await _local.GetPendingSyncWaitingMessageAsync("동기화 작업은 완료됐지만", CancellationToken.None)
+               ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다.";
     }
 
     public async Task LoadAsync()
@@ -329,9 +331,17 @@ public sealed partial class MainViewModel : ObservableObject
                     recoverySucceeded: false);
             }
 
-            SyncStatus = dirtyAfter > 0
-                ? $"서버 반영 대기 데이터 {dirtyAfter:N0}건이 남아 있습니다. 환경설정 > 동기화에서 확인해 주세요."
-                : "동기화 오류가 발생했지만 앱은 계속 사용할 수 있습니다.";
+            if (dirtyAfter > 0)
+            {
+                var pendingMessage = await _local.GetPendingSyncWaitingMessageAsync(ct: CancellationToken.None);
+                SyncStatus = string.IsNullOrWhiteSpace(pendingMessage)
+                    ? $"서버 반영 대기 데이터 {dirtyAfter:N0}건이 남아 있습니다. 환경설정 > 동기화에서 확인해 주세요."
+                    : $"{pendingMessage} 환경설정 > 동기화에서 확인해 주세요.";
+            }
+            else
+            {
+                SyncStatus = "동기화 오류가 발생했지만 앱은 계속 사용할 수 있습니다.";
+            }
         }
         catch (Exception ex)
         {
@@ -1483,7 +1493,8 @@ public sealed partial class MainViewModel : ObservableObject
         await LoadInvoiceListAsync();
 
         SyncStatus = dirtyCount > 0
-            ? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다."
+            ? await _local.GetPendingSyncWaitingMessageAsync("동기화 작업은 완료됐지만", CancellationToken.None)
+                ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다."
             : syncOk
                 ? $"동기화 완료 {DateTime.Now:HH:mm:ss}"
                 : "동기화가 완료되었지만 일부 오류가 남아 있습니다. 동기화 진단을 확인하세요.";
