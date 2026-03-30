@@ -1015,6 +1015,7 @@ public sealed class SyncService : IDisposable
 
         try
         {
+            _db.ChangeTracker.Clear();
             using (_local.SuppressSyncDispatch())
             {
                 await ApplyPullAsync(pull, sinceRev, ct);
@@ -1034,6 +1035,11 @@ public sealed class SyncService : IDisposable
 
             if (!await TryRefreshSharedMirrorCoreAsync(ct))
                 throw;
+        }
+        catch
+        {
+            _db.ChangeTracker.Clear();
+            throw;
         }
     }
 
@@ -1418,35 +1424,80 @@ public sealed class SyncService : IDisposable
         where TLocal : class, ILocalSyncEntity
         where TDto : class
     {
+        if (dtos.Count == 0)
+            return;
+
+        var incomingOptions = dtos
+            .Select(toLocal)
+            .Select(local =>
+            {
+                local.IsDirty = false;
+                return local;
+            })
+            .Where(local => !string.IsNullOrWhiteSpace(NormalizeOptionName(nameSelector(local))))
+            .GroupBy(local => local.Id)
+            .Select(group => group
+                .OrderByDescending(entity => entity.Revision)
+                .ThenByDescending(entity => entity.UpdatedAtUtc)
+                .ThenByDescending(entity => entity.CreatedAtUtc)
+                .First())
+            .GroupBy(local => NormalizeOptionName(nameSelector(local)), StringComparer.CurrentCultureIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(entity => entity.Revision)
+                .ThenByDescending(entity => entity.UpdatedAtUtc)
+                .ThenByDescending(entity => entity.CreatedAtUtc)
+                .First())
+            .ToList();
+
         var existingEntities = await set.IgnoreQueryFilters().ToListAsync(ct);
 
-        foreach (var dto in dtos)
+        foreach (var local in incomingOptions)
         {
-            var local = toLocal(dto);
-            local.IsDirty = false;
+            var normalizedName = NormalizeOptionName(nameSelector(local));
+            if (string.IsNullOrWhiteSpace(normalizedName))
+                continue;
+
+            var conflictingEntities = existingEntities
+                .Where(entity =>
+                    entity.Id != local.Id &&
+                    !entity.IsDeleted &&
+                    string.Equals(
+                        NormalizeOptionName(nameSelector(entity)),
+                        normalizedName,
+                        StringComparison.CurrentCultureIgnoreCase))
+                .ToList();
+
+            if (conflictingEntities.Any(entity => entity.IsDirty))
+            {
+                AppLogger.Warn(
+                    "SYNC",
+                    $"선택옵션 pull 충돌 보류: {typeof(TLocal).Name} '{nameSelector(local)}' 이름이 로컬 수정 중 데이터와 충돌해 서버값 적용을 건너뜁니다.");
+                continue;
+            }
+
+            if (conflictingEntities.Count > 0)
+            {
+                foreach (var conflict in conflictingEntities)
+                {
+                    conflict.IsDeleted = true;
+                    conflict.IsDirty = false;
+                    conflict.UpdatedAtUtc = local.UpdatedAtUtc;
+                    conflict.Revision = local.Revision;
+                    SetOptionalBoolProperty(conflict, "IsActive", false);
+                }
+
+                await _db.SaveChangesAsync(ct);
+                _db.ChangeTracker.Clear();
+                existingEntities = await set.IgnoreQueryFilters().ToListAsync(ct);
+
+                AppLogger.Warn(
+                    "SYNC",
+                    $"선택옵션 pull 충돌 복구: {typeof(TLocal).Name} '{nameSelector(local)}' 이름 충돌 {conflictingEntities.Count}건을 정리했습니다.");
+            }
 
             var existing = existingEntities.FirstOrDefault(entity => entity.Id == local.Id);
             if (existing is null)
             {
-                var normalizedName = NormalizeOptionName(nameSelector(local));
-                var existingByName = existingEntities.FirstOrDefault(entity =>
-                    string.Equals(NormalizeOptionName(nameSelector(entity)), normalizedName, StringComparison.CurrentCultureIgnoreCase));
-
-                if (existingByName is not null)
-                {
-                    if (existingByName.IsDirty)
-                        continue;
-
-                    existingByName.IsDeleted = true;
-                    existingByName.IsDirty = false;
-                    _db.Entry(existingByName).CurrentValues[nameof(ILocalSyncEntity.UpdatedAtUtc)] = local.UpdatedAtUtc;
-                    _db.Entry(existingByName).CurrentValues[nameof(ILocalSyncEntity.Revision)] = local.Revision;
-
-                    set.Add(local);
-                    existingEntities.Add(local);
-                    continue;
-                }
-
                 set.Add(local);
                 existingEntities.Add(local);
             }
@@ -1457,6 +1508,17 @@ public sealed class SyncService : IDisposable
         }
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    private void SetOptionalBoolProperty<TEntity>(TEntity entity, string propertyName, bool value)
+        where TEntity : class
+    {
+        var entry = _db.Entry(entity);
+        var property = entry.Metadata.FindProperty(propertyName);
+        if (property is null || property.ClrType != typeof(bool))
+            return;
+
+        entry.Property(propertyName).CurrentValue = value;
     }
 
     private async Task UpsertPulledItemWarehouseStocksAsync(IReadOnlyList<ItemWarehouseStockDto> dtos, CancellationToken ct)
@@ -1528,6 +1590,7 @@ public sealed class SyncService : IDisposable
 
             try
             {
+                _db.ChangeTracker.Clear();
                 using (_local.SuppressSyncDispatch())
                 {
                     await _local.ResetSharedMirrorCacheAsync(ct);
@@ -1552,6 +1615,11 @@ public sealed class SyncService : IDisposable
                     recoveryAttempted: true,
                     recoverySucceeded: false);
                 _db.ChangeTracker.Clear();
+            }
+            catch
+            {
+                _db.ChangeTracker.Clear();
+                throw;
             }
         }
 
