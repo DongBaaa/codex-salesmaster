@@ -88,12 +88,14 @@ internal static class Program
         var individualScenario = VerifyIndividualScenario(db, local, rental, userSession, individualProfileId, referenceDate);
 
         var januaryBoundaryScenario = VerifyJanuaryBoundaryScenarios(db, rental, adminSession, customerId);
+        var customerResolutionScenario = VerifyCustomerResolutionFallbackScenario(db, local, rental, adminSession, userSession);
 
         var output = new
         {
             Grouped = groupedScenario,
             Individual = individualScenario,
-            JanuaryBoundary = januaryBoundaryScenario
+            JanuaryBoundary = januaryBoundaryScenario,
+            CustomerResolutionFallback = customerResolutionScenario
         };
 
         Console.WriteLine(JsonSerializer.Serialize(output, JsonOptions));
@@ -328,6 +330,86 @@ internal static class Program
         };
     }
 
+    private static object VerifyCustomerResolutionFallbackScenario(
+        LocalDbContext db,
+        LocalStateService local,
+        RentalStateService rental,
+        SessionState adminSession,
+        SessionState userSession)
+    {
+        var customer = new LocalCustomer
+        {
+            Id = Guid.NewGuid(),
+            NameOriginal = "인천보건환경연구원[대기평가과]",
+            NameMatchKey = "인천보건환경연구원[대기평가과]".ToUpperInvariant(),
+            ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Phone = "032-555-9999",
+            BusinessNumber = string.Empty,
+            TradeType = CustomerTradeTypes.Sales,
+            PriceGrade = "매출단가",
+            Address = "테스트 주소"
+        };
+
+        var customerSave = local.UpsertCustomerAsync(customer, adminSession).GetAwaiter().GetResult();
+        Ensure(customerSave.Success, customerSave.Message);
+
+        SeedResolutionCandidateAssets(db, customer.Id, userSession.User?.Username ?? string.Empty);
+
+        var profile = new LocalRentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = null,
+            CustomerName = "[보건환경연구원]대기평가과",
+            BusinessNumber = string.Empty,
+            RealCustomerName = "[보건환경연구원]대기평가과",
+            BillToCustomerName = "[보건환경연구원]대기평가과",
+            InstallSiteName = "[보건환경연구원]대기평가과",
+            BillingType = "묶음",
+            BillingAdvanceMode = "후불",
+            ManagementCompanyCode = DomainConstants.OfficeUsenet,
+            ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
+            AssignedUsername = userSession.User?.Username ?? "billing-user",
+            BillingMethod = "전자세금계산서",
+            PaymentMethod = "계좌이체",
+            BillingStatus = PaymentFlowConstants.BillingStatusPlanned,
+            SettlementStatus = PaymentFlowConstants.SettlementStatusPending,
+            CompletionStatus = PaymentFlowConstants.CompletionPending,
+            BillingDay = 30,
+            BillingCycleMonths = 1,
+            BillingStartDate = new DateOnly(2026, 3, 1),
+            BillingAnchorDate = new DateOnly(2026, 3, 1),
+            MonthlyAmount = 150000m,
+            BillingTemplateJson = rental.SerializeBillingTemplateItems(new[]
+            {
+                new RentalBillingTemplateItemModel
+                {
+                    ItemId = Guid.NewGuid(),
+                    DisplayItemName = "IMC2010",
+                    BillingLineMode = "묶음",
+                    Quantity = 1m,
+                    UnitPrice = 150000m,
+                    Amount = 150000m,
+                    IncludedAssetIds = new List<Guid>()
+                }
+            })
+        };
+
+        var profileSave = rental.SaveBillingProfileAsync(profile, adminSession).GetAwaiter().GetResult();
+        Ensure(profileSave.Success, profileSave.Message);
+
+        var start = rental.StartBillingAsync(profile.Id, new DateOnly(2026, 3, 31), userSession).GetAwaiter().GetResult();
+        Ensure(!start.Success, "후보 장비 연결 검증은 실패해야 합니다.");
+        Ensure(!start.Message.Contains("거래처를 찾을 수 없습니다", StringComparison.Ordinal), $"약칭 거래처 매칭이 실패했습니다. 실제 메시지: {start.Message}");
+        Ensure(start.Message.Contains("후보 장비 2대", StringComparison.Ordinal), $"후보 장비 안내 메시지가 누락되었습니다. 실제 메시지: {start.Message}");
+        Ensure(start.Message.Contains("선택 장비를 현재 품목에 연결", StringComparison.Ordinal), $"후보 장비 연결 안내 문구가 누락되었습니다. 실제 메시지: {start.Message}");
+
+        return new
+        {
+            start.Message
+        };
+    }
+
     private static Guid SeedCustomer(LocalStateService local, SessionState adminSession)
     {
         var customer = new LocalCustomer
@@ -347,6 +429,60 @@ internal static class Program
         var result = local.UpsertCustomerAsync(customer, adminSession).GetAwaiter().GetResult();
         Ensure(result.Success, result.Message);
         return result.EntityId;
+    }
+
+    private static void SeedResolutionCandidateAssets(LocalDbContext db, Guid customerId, string assignedUsername)
+    {
+        var now = DateTime.UtcNow;
+        db.RentalAssets.AddRange(
+            new LocalRentalAsset
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                BillingProfileId = null,
+                AssetKey = "USENET|C-001",
+                ManagementCompanyCode = DomainConstants.OfficeUsenet,
+                ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
+                AssignedUsername = assignedUsername,
+                ManagementNumber = "C-001",
+                ManagementId = "C-001",
+                ItemName = "IMC2010",
+                CustomerName = "[보건환경연구원]대기평가과",
+                CurrentCustomerName = "[보건환경연구원]대기평가과",
+                BillToCustomerName = "[보건환경연구원]대기평가과",
+                InstallSiteName = "[보건환경연구원]대기평가과",
+                InstallLocation = "[보건환경연구원]대기평가과",
+                BillingEligibilityStatus = "청구가능",
+                AssetStatus = "임대진행중",
+                MonthlyFee = 150000m,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            },
+            new LocalRentalAsset
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                BillingProfileId = null,
+                AssetKey = "USENET|C-002",
+                ManagementCompanyCode = DomainConstants.OfficeUsenet,
+                ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
+                AssignedUsername = assignedUsername,
+                ManagementNumber = "C-002",
+                ManagementId = "C-002",
+                ItemName = "IMC2010",
+                CustomerName = "[보건환경연구원]대기평가과",
+                CurrentCustomerName = "[보건환경연구원]대기평가과",
+                BillToCustomerName = "[보건환경연구원]대기평가과",
+                InstallSiteName = "[보건환경연구원]대기평가과",
+                InstallLocation = "[보건환경연구원]대기평가과",
+                BillingEligibilityStatus = "청구가능",
+                AssetStatus = "임대진행중",
+                MonthlyFee = 150000m,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            });
+
+        db.SaveChanges();
     }
 
     private static void SeedGroupedAssets(LocalDbContext db, Guid customerId, Guid billingProfileId, string assignedUsername)

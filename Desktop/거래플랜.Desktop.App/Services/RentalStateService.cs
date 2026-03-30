@@ -660,13 +660,19 @@ public sealed class RentalStateService
             var customerId = profile.CustomerId;
             if (!customerId.HasValue || customerId.Value == Guid.Empty)
                 customerId = await ResolveCustomerIdAsync(profile.CustomerName, profile.BusinessNumber, ct);
+            if ((!customerId.HasValue || customerId.Value == Guid.Empty) && !string.IsNullOrWhiteSpace(profile.BillToCustomerName))
+                customerId = await ResolveCustomerIdAsync(profile.BillToCustomerName, profile.BusinessNumber, ct);
+            if ((!customerId.HasValue || customerId.Value == Guid.Empty) && !string.IsNullOrWhiteSpace(profile.RealCustomerName))
+                customerId = await ResolveCustomerIdAsync(profile.RealCustomerName, profile.BusinessNumber, ct);
             if (!customerId.HasValue || customerId.Value == Guid.Empty)
                 return LocalMutationResult.Denied("렌탈 청구 전표를 만들 거래처를 찾을 수 없습니다.");
+
+            profile.CustomerId = customerId;
 
             var templateItems = currentRun.Items.Count > 0
                 ? currentRun.Items
                 : GetBillingTemplateItems(profile);
-            var lineBuildResult = await BuildRentalBillingInvoiceLinesAsync(profile, currentRun, templateItems, ct);
+            var lineBuildResult = await BuildRentalBillingInvoiceLinesAsync(profile, currentRun, templateItems, session, ct);
             if (!lineBuildResult.Success)
                 return LocalMutationResult.Denied(lineBuildResult.Message);
 
@@ -2368,6 +2374,7 @@ public sealed class RentalStateService
         LocalRentalBillingProfile profile,
         RentalBillingRunModel run,
         IReadOnlyList<RentalBillingTemplateItemModel> templateItems,
+        SessionState session,
         CancellationToken ct)
     {
         if (templateItems.Count == 0)
@@ -2398,6 +2405,7 @@ public sealed class RentalStateService
 
         var lines = new List<LocalInvoiceLine>();
         var profileBillingType = NormalizeBillingType(profile.BillingType);
+        IReadOnlyList<LocalRentalAsset>? billingAssetCandidates = null;
 
         foreach (var templateItem in templateItems)
         {
@@ -2419,6 +2427,21 @@ public sealed class RentalStateService
 
             if (templateAssetIds.Count == 0)
             {
+                billingAssetCandidates ??= await GetBillingAssetCandidatesAsync(
+                    profile.Id,
+                    profile.CustomerName,
+                    profile.BillToCustomerName,
+                    profile.InstallSiteName,
+                    session,
+                    ct);
+
+                if (billingAssetCandidates.Count > 0)
+                {
+                    return (false,
+                        $"청구항목 '{templateItem.DisplayItemName}'에 연결된 설치장비가 없습니다. 후보 장비 {billingAssetCandidates.Count}대를 '선택 장비를 현재 품목에 연결' 버튼으로 연결한 뒤 다시 시도하세요.",
+                        new List<LocalInvoiceLine>());
+                }
+
                 return (false,
                     $"청구항목 '{templateItem.DisplayItemName}'에 연결된 설치장비가 없어 판매전표를 만들 수 없습니다.",
                     new List<LocalInvoiceLine>());
@@ -2955,14 +2978,52 @@ public sealed class RentalStateService
 
         var keyMatches = await _db.Customers.AsNoTracking()
             .Where(customer => customer.NameMatchKey != string.Empty)
-            .Select(customer => new { customer.Id, customer.NameMatchKey, customer.UpdatedAtUtc })
+            .Select(customer => new { customer.Id, customer.NameMatchKey, customer.NameOriginal, customer.UpdatedAtUtc })
             .ToListAsync(ct);
 
-        return keyMatches
-            .Where(customer => string.Equals(customer.NameMatchKey, normalizedNameKey, StringComparison.OrdinalIgnoreCase))
+        var normalizedMatches = keyMatches
+            .Select(customer => new
+            {
+                customer.Id,
+                customer.NameOriginal,
+                customer.UpdatedAtUtc,
+                MatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(
+                    string.IsNullOrWhiteSpace(customer.NameMatchKey) ? customer.NameOriginal : customer.NameMatchKey)
+            })
+            .Where(customer => !string.IsNullOrWhiteSpace(customer.MatchKey))
+            .ToList();
+
+        var exactMatch = normalizedMatches
+            .Where(customer => string.Equals(customer.MatchKey, normalizedNameKey, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(customer => customer.UpdatedAtUtc)
             .Select(customer => (Guid?)customer.Id)
             .FirstOrDefault();
+        if (exactMatch.HasValue)
+            return exactMatch;
+
+        if (normalizedNameKey.Length < 4)
+            return null;
+
+        var fuzzyMatches = normalizedMatches
+            .Where(customer =>
+                customer.MatchKey.Contains(normalizedNameKey, StringComparison.OrdinalIgnoreCase) ||
+                normalizedNameKey.Contains(customer.MatchKey, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(customer => Math.Abs(customer.MatchKey.Length - normalizedNameKey.Length))
+            .ThenByDescending(customer => customer.MatchKey.StartsWith(normalizedNameKey, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(customer => customer.UpdatedAtUtc)
+            .ToList();
+
+        if (fuzzyMatches.Count == 0)
+            return null;
+
+        var distinctMatches = fuzzyMatches
+            .Select(customer => customer.Id)
+            .Distinct()
+            .ToList();
+
+        return distinctMatches.Count == 1
+            ? distinctMatches[0]
+            : null;
     }
 
     private async Task EnrichAssetReferencesAsync(
