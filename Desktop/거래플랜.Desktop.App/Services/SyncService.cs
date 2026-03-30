@@ -1059,7 +1059,7 @@ public sealed class SyncService : IDisposable
         await UpsertPulledAsync(pull.Transactions, _db.Transactions, LocalMappings.ToLocal, ct);
         await UpsertPulledTransactionAttachmentsAsync(pull.TransactionAttachments, ct);
         await UpsertPulledInventoryTransfersAsync(pull.InventoryTransfers, ct);
-        await UpsertPulledAsync(pull.RentalManagementCompanies, _db.RentalManagementCompanies, LocalMappings.ToLocal, ct);
+        await UpsertPulledRentalManagementCompaniesAsync(pull.RentalManagementCompanies, ct);
         await UpsertPulledRentalBillingProfilesAsync(pull.RentalBillingProfiles, ct);
         await UpsertPulledRentalAssetsAsync(pull.RentalAssets, ct);
         await UpsertPulledAsync(pull.RentalBillingLogs, _db.RentalBillingLogs, LocalMappings.ToLocal, ct);
@@ -1510,6 +1510,119 @@ public sealed class SyncService : IDisposable
         await _db.SaveChangesAsync(ct);
     }
 
+    private async Task UpsertPulledRentalManagementCompaniesAsync(
+        IReadOnlyList<RentalManagementCompanyDto> dtos,
+        CancellationToken ct)
+    {
+        if (dtos.Count == 0)
+            return;
+
+        var incomingCompanies = dtos
+            .Select(LocalMappings.ToLocal)
+            .Select(local =>
+            {
+                local.IsDirty = false;
+                return local;
+            })
+            .Where(local => !string.IsNullOrWhiteSpace(NormalizeRentalManagementCompanyCode(local.Code)))
+            .GroupBy(local => local.Id)
+            .Select(group => group
+                .OrderByDescending(entity => entity.Revision)
+                .ThenByDescending(entity => entity.UpdatedAtUtc)
+                .ThenByDescending(entity => entity.CreatedAtUtc)
+                .First())
+            .GroupBy(local => NormalizeRentalManagementCompanyCode(local.Code), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(entity => entity.Revision)
+                .ThenByDescending(entity => entity.UpdatedAtUtc)
+                .ThenByDescending(entity => entity.CreatedAtUtc)
+                .First())
+            .ToList();
+
+        var existingCompanies = await _db.RentalManagementCompanies.IgnoreQueryFilters().ToListAsync(ct);
+
+        foreach (var local in incomingCompanies)
+        {
+            var normalizedCode = NormalizeRentalManagementCompanyCode(local.Code);
+            if (string.IsNullOrWhiteSpace(normalizedCode))
+                continue;
+
+            var conflictingCompanies = existingCompanies
+                .Where(company =>
+                    company.Id != local.Id &&
+                    string.Equals(
+                        NormalizeRentalManagementCompanyCode(company.Code),
+                        normalizedCode,
+                        StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (conflictingCompanies.Any(company => company.IsDirty))
+            {
+                AppLogger.Warn(
+                    "SYNC",
+                    $"렌탈 관리업체 pull 충돌 보류: 코드 '{local.Code}' 가 로컬 수정 중 데이터와 충돌해 서버값 적용을 건너뜁니다.");
+                continue;
+            }
+
+            if (conflictingCompanies.Count > 0)
+            {
+                var staleConflictIds = conflictingCompanies
+                    .Select(company => company.Id)
+                    .Distinct()
+                    .ToList();
+
+                _db.ChangeTracker.Clear();
+                await _db.RentalManagementCompanies.IgnoreQueryFilters()
+                    .Where(company => staleConflictIds.Contains(company.Id))
+                    .ExecuteDeleteAsync(ct);
+                _db.ChangeTracker.Clear();
+
+                existingCompanies = await _db.RentalManagementCompanies.IgnoreQueryFilters().ToListAsync(ct);
+
+                AppLogger.Warn(
+                    "SYNC",
+                    $"렌탈 관리업체 pull 충돌 복구: 코드 '{local.Code}' 충돌 {staleConflictIds.Count}건을 서버 기준으로 정리했습니다.");
+            }
+
+            var existing = existingCompanies.FirstOrDefault(company => company.Id == local.Id);
+
+            if (local.IsDeleted)
+            {
+                if (existing is not null)
+                {
+                    if (existing.IsDirty)
+                    {
+                        AppLogger.Warn(
+                            "SYNC",
+                            $"렌탈 관리업체 pull 삭제 보류: 코드 '{local.Code}' 삭제가 로컬 수정 중 데이터와 충돌해 적용을 건너뜁니다.");
+                        continue;
+                    }
+
+                    _db.ChangeTracker.Clear();
+                    await _db.RentalManagementCompanies.IgnoreQueryFilters()
+                        .Where(company => company.Id == local.Id)
+                        .ExecuteDeleteAsync(ct);
+                    _db.ChangeTracker.Clear();
+                    existingCompanies = await _db.RentalManagementCompanies.IgnoreQueryFilters().ToListAsync(ct);
+                }
+
+                continue;
+            }
+
+            if (existing is null)
+            {
+                _db.RentalManagementCompanies.Add(local);
+                existingCompanies.Add(local);
+            }
+            else if (!existing.IsDirty)
+            {
+                _db.Entry(existing).CurrentValues.SetValues(local);
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
     private void SetOptionalBoolProperty<TEntity>(TEntity entity, string propertyName, bool value)
         where TEntity : class
     {
@@ -1744,6 +1857,9 @@ public sealed class SyncService : IDisposable
 
     private static string NormalizeOptionName(string? value)
         => (value ?? string.Empty).Trim();
+
+    private static string NormalizeRentalManagementCompanyCode(string? value)
+        => (value ?? string.Empty).Trim().ToUpperInvariant();
 
     private static string NormalizeRentalAssetNaturalKey(string? value)
         => (value ?? string.Empty).Trim();
