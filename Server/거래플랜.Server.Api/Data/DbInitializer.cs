@@ -16,7 +16,7 @@ using System.Text.RegularExpressions;
 
 namespace 거래플랜.Server.Api.Data;
 
-public static class DbInitializer
+public static partial class DbInitializer
 {
     private static readonly Regex SqlIdentifierPattern = new(
         "^[A-Za-z0-9_]+$",
@@ -134,8 +134,14 @@ public static class DbInitializer
 
         await EnsureReferenceDataAsync(dbContext, cancellationToken);
         await NormalizeCustomerClassificationIntegrityAsync(dbContext, cancellationToken);
+        await NormalizeUnitCatalogAsync(dbContext, cancellationToken);
+        await NormalizeInventoryTransferIntegrityAsync(dbContext, cancellationToken);
+        await PurgeDeletedInventoryTransferDataAsync(dbContext, cancellationToken);
+        await RepairDeletedCustomerRentalProfileLinksAsync(dbContext, cancellationToken);
+        await CleanupDeletedInvoiceChainAsync(dbContext, cancellationToken);
         await MigrateStoredFilesToCentralStorageAsync(dbContext, fileStorage, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await EnsureUnitsUniqueIndexAsync(dbContext, cancellationToken);
 
         foreach (var connectionInfo in dedicatedBusinessConnections)
         {
@@ -143,8 +149,14 @@ public static class DbInitializer
             await SyncTenantConfigurationAsync(dbContext, tenantDbContext, cancellationToken);
             await EnsureReferenceDataAsync(tenantDbContext, cancellationToken);
             await NormalizeCustomerClassificationIntegrityAsync(tenantDbContext, cancellationToken);
+            await NormalizeUnitCatalogAsync(tenantDbContext, cancellationToken);
+            await NormalizeInventoryTransferIntegrityAsync(tenantDbContext, cancellationToken);
+            await PurgeDeletedInventoryTransferDataAsync(tenantDbContext, cancellationToken);
+            await RepairDeletedCustomerRentalProfileLinksAsync(tenantDbContext, cancellationToken);
+            await CleanupDeletedInvoiceChainAsync(tenantDbContext, cancellationToken);
             await MigrateStoredFilesToCentralStorageAsync(tenantDbContext, fileStorage, cancellationToken);
             await tenantDbContext.SaveChangesAsync(cancellationToken);
+            await EnsureUnitsUniqueIndexAsync(tenantDbContext, cancellationToken);
             logger.LogInformation("Dedicated business database initialized for tenant {TenantCode}.", connectionInfo.TenantCode);
         }
     }
@@ -191,6 +203,8 @@ public static class DbInitializer
         await EnsureInvoiceOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceTenantCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceTaxInvoiceIssuedColumnAsync(dbContext, cancellationToken);
+        await EnsureInvoiceVersionColumnsAsync(dbContext, cancellationToken);
+        await EnsureRecycleBinPurgeRecordsTableAsync(dbContext, cancellationToken);
         await EnsureCustomerContractStoragePathColumnAsync(dbContext, cancellationToken);
         await EnsurePaymentAttachmentStoragePathColumnAsync(dbContext, cancellationToken);
         await EnsureTransactionAttachmentStoragePathColumnAsync(dbContext, cancellationToken);
@@ -2050,6 +2064,193 @@ public static class DbInitializer
         }
         catch
         {
+        }
+    }
+
+    private static async Task EnsureInvoiceVersionColumnsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureColumnAsync(dbContext, "Invoices", "VersionGroupId", "TEXT NULL", "uuid NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "Invoices", "VersionNumber", "INTEGER NOT NULL DEFAULT 1", "integer NOT NULL DEFAULT 1", cancellationToken);
+        await EnsureColumnAsync(dbContext, "Invoices", "PreviousVersionId", "TEXT NULL", "uuid NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "Invoices", "IsLatestVersion", "INTEGER NOT NULL DEFAULT 1", "boolean NOT NULL DEFAULT true", cancellationToken);
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_Invoices_VersionGroupId\" ON \"Invoices\" (\"VersionGroupId\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_Invoices_IsLatestVersion\" ON \"Invoices\" (\"IsLatestVersion\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE "Invoices"
+                SET "VersionGroupId" = "Id"
+                WHERE "VersionGroupId" IS NULL;
+                """,
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE "Invoices"
+                SET "VersionNumber" = 1
+                WHERE "VersionNumber" IS NULL OR "VersionNumber" <= 0;
+                """,
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE "Invoices"
+                SET "IsLatestVersion" = TRUE
+                WHERE "IsLatestVersion" IS NULL;
+                """,
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        var invoices = await dbContext.Invoices
+            .IgnoreQueryFilters()
+            .ToListAsync(cancellationToken);
+        if (invoices.Count == 0)
+            return;
+
+        var changed = false;
+        foreach (var invoice in invoices)
+        {
+            var desiredGroupId = invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
+            var desiredVersion = invoice.VersionNumber <= 0 ? 1 : invoice.VersionNumber;
+
+            if (invoice.VersionGroupId != desiredGroupId)
+            {
+                invoice.VersionGroupId = desiredGroupId;
+                changed = true;
+            }
+
+            if (invoice.VersionNumber != desiredVersion)
+            {
+                invoice.VersionNumber = desiredVersion;
+                changed = true;
+            }
+        }
+
+        foreach (var group in invoices.GroupBy(current => current.VersionGroupId == Guid.Empty ? current.Id : current.VersionGroupId))
+        {
+            var latest = group
+                .OrderByDescending(current => current.VersionNumber <= 0 ? 1 : current.VersionNumber)
+                .ThenByDescending(current => current.UpdatedAtUtc)
+                .ThenByDescending(current => current.Id)
+                .First();
+
+            foreach (var invoice in group)
+            {
+                var shouldBeLatest = invoice.Id == latest.Id;
+                if (invoice.IsLatestVersion != shouldBeLatest)
+                {
+                    invoice.IsLatestVersion = shouldBeLatest;
+                    changed = true;
+                }
+            }
+        }
+
+        if (changed)
+            await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private static async Task EnsureRecycleBinPurgeRecordsTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "RecycleBinPurgeRecords" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_RecycleBinPurgeRecords" PRIMARY KEY,
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0,
+                        "Kind" TEXT NOT NULL,
+                        "EntityId" TEXT NOT NULL,
+                        "TenantCode" TEXT NOT NULL,
+                        "OfficeCode" TEXT NOT NULL,
+                        "PurgedAtUtc" TEXT NOT NULL
+                    );
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "RecycleBinPurgeRecords" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "IsDeleted" boolean NOT NULL DEFAULT false,
+                        "CreatedAtUtc" timestamp with time zone NOT NULL,
+                        "UpdatedAtUtc" timestamp with time zone NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0,
+                        "Kind" text NOT NULL,
+                        "EntityId" uuid NOT NULL,
+                        "TenantCode" text NOT NULL,
+                        "OfficeCode" text NOT NULL,
+                        "PurgedAtUtc" timestamp with time zone NOT NULL
+                    );
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        foreach (var sql in new[]
+                 {
+                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RecycleBinPurgeRecords_Kind_EntityId\" ON \"RecycleBinPurgeRecords\" (\"Kind\", \"EntityId\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_RecycleBinPurgeRecords_TenantCode\" ON \"RecycleBinPurgeRecords\" (\"TenantCode\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_RecycleBinPurgeRecords_OfficeCode\" ON \"RecycleBinPurgeRecords\" (\"OfficeCode\");"
+                 })
+        {
+            try
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+            }
+            catch
+            {
+            }
         }
     }
 

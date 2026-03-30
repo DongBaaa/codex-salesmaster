@@ -1209,40 +1209,92 @@
                         </Border>
 
                         <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14">
-                            <StackPanel>
-                                <TextBlock Text="복원 / 영구삭제 상세" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
-                                <TextBlock Text="삭제된 항목을 선택하면 복원 전 내용을 미리 확인하고, 필요 시 영구삭제까지 처리할 수 있습니다."
-                                           Foreground="#9FB3C8"
-                                           Margin="0,8,0,12"
-                                           TextWrapping="Wrap"/>
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Text="복원 / 영구삭제 상세" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                    <TextBlock Text="삭제된 항목을 선택하면 복원 전 내용을 미리 확인하고, 필요 시 영구삭제까지 처리할 수 있습니다."
+                                               Foreground="#9FB3C8"
+                                               Margin="0,8,0,12"
+                                               TextWrapping="Wrap"/>
 
-                                <Label Content="구분"/>
-                                <TextBlock Text="{Binding SelectedRecycleBinEntry.KindText, TargetNullValue=항목을 선택하세요.}" Margin="0,0,0,10"/>
+                                    <Label Content="구분"/>
+                                    <TextBlock Text="{Binding SelectedRecycleBinEntry.KindText, TargetNullValue=항목을 선택하세요.}" Margin="0,0,0,10"/>
 
-                                <Label Content="제목"/>
-                                <TextBlock Text="{Binding SelectedRecycleBinEntry.Title}" Margin="0,0,0,10" TextWrapping="Wrap"/>
+                                    <Label Content="제목"/>
+                                    <TextBlock Text="{Binding SelectedRecycleBinEntry.Title}" Margin="0,0,0,10" TextWrapping="Wrap"/>
 
-                                <Label Content="보조정보"/>
-                                <TextBlock Text="{Binding SelectedRecycleBinEntry.Subtitle}" Margin="0,0,0,10" TextWrapping="Wrap"/>
+                                    <Label Content="보조정보"/>
+                                    <TextBlock Text="{Binding SelectedRecycleBinEntry.Subtitle}" Margin="0,0,0,10" TextWrapping="Wrap"/>
 
-                                <Label Content="상세"/>
-                                <TextBlock Text="{Binding SelectedRecycleBinEntry.Detail}" Margin="0,0,0,10" TextWrapping="Wrap"/>
+                                    <Label Content="상세"/>
+                                    <TextBlock Text="{Binding SelectedRecycleBinEntry.Detail}" Margin="0,0,0,10" TextWrapping="Wrap"/>
 
-                                <Label Content="삭제시각"/>
-                                <TextBlock Text="{Binding SelectedRecycleBinEntry.DeletedAtLocalText}" Margin="0,0,0,16"/>
+                                    <Label Content="삭제시각"/>
+                                    <TextBlock Text="{Binding SelectedRecycleBinEntry.DeletedAtLocalText}" Margin="0,0,0,12"/>
 
-                                <WrapPanel>
-                                    <Button Content="선택 항목 복원"
-                                            Background="#1565C0"
-                                            Command="{Binding RestoreSelectedRecycleBinEntryCommand}"
-                                            Margin="0,0,8,0"
-                                            IsEnabled="{Binding HasSelectedRecycleBinEntry}"/>
-                                    <Button Content="선택 항목 영구삭제"
-                                            Background="#C62828"
-                                            Command="{Binding PermanentlyDeleteSelectedRecycleBinEntryCommand}"
-                                            IsEnabled="{Binding HasSelectedRecycleBinEntry}"/>
-                                </WrapPanel>
-                            </StackPanel>
+                                    <Label Content="삭제 차단 사유"/>
+                                    <Border Background="#102039" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,10">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding SelectedRecycleBinDependencySummary}" TextWrapping="Wrap" Foreground="#FFD180"/>
+                                            <TextBlock Text="삭제 차단 사유를 불러오는 중입니다."
+                                                       Margin="0,8,0,0"
+                                                       Foreground="#90CAF9"
+                                                       Visibility="{Binding IsRecycleBinDependencyBusy, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <ItemsControl ItemsSource="{Binding SelectedRecycleBinDependencies}"
+                                                  Visibility="{Binding HasSelectedRecycleBinDependencies, Converter={StaticResource BoolToVisibilityConverter}}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Background="#132742" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,8">
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding DisplayText}" Foreground="#B3E5FC" FontWeight="Bold"/>
+                                                        <TextBlock Text="{Binding Detail}" Foreground="#9FB3C8" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <Border Background="#102039"
+                                            BorderBrush="#2E4060"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            Padding="12"
+                                            Margin="0,0,0,12"
+                                            Visibility="{Binding HasSelectedRecycleBinMergeCandidates, Converter={StaticResource BoolToVisibilityConverter}}">
+                                        <StackPanel>
+                                            <TextBlock Text="중복 거래처 정리" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                            <TextBlock Text="삭제된 거래처에 남아 있는 연결 데이터를 다른 활성 거래처로 옮긴 뒤 영구삭제할 수 있습니다."
+                                                       Foreground="#9FB3C8"
+                                                       Margin="0,6,0,10"
+                                                       TextWrapping="Wrap"/>
+                                            <ComboBox ItemsSource="{Binding SelectedRecycleBinMergeCandidates}"
+                                                      SelectedItem="{Binding SelectedRecycleBinMergeTarget}"
+                                                      DisplayMemberPath="DisplayText"
+                                                      Height="34"
+                                                      Margin="0,0,0,10"/>
+                                            <Button Content="선택 거래처로 연결 이동 후 영구삭제"
+                                                    Background="#8E24AA"
+                                                    Command="{Binding MergeSelectedRecycleBinCustomerCommand}"
+                                                    IsEnabled="{Binding CanMergeSelectedRecycleBinCustomer}"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <WrapPanel>
+                                        <Button Content="선택 항목 복원"
+                                                Background="#1565C0"
+                                                Command="{Binding RestoreSelectedRecycleBinEntryCommand}"
+                                                Margin="0,0,8,0"
+                                                IsEnabled="{Binding HasSelectedRecycleBinEntry}"/>
+                                        <Button Content="선택 항목 영구삭제"
+                                                Background="#C62828"
+                                                Command="{Binding PermanentlyDeleteSelectedRecycleBinEntryCommand}"
+                                                IsEnabled="{Binding HasSelectedRecycleBinEntry}"/>
+                                    </WrapPanel>
+                                </StackPanel>
+                            </ScrollViewer>
                         </Border>
                     </Grid>
                 </Grid>

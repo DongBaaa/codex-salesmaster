@@ -53,6 +53,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<PaymentAttachment> PaymentAttachments => Set<PaymentAttachment>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<ConflictLog> ConflictLogs => Set<ConflictLog>();
+    public DbSet<RecycleBinPurgeRecord> RecycleBinPurgeRecords => Set<RecycleBinPurgeRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -175,6 +176,11 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<RentalAsset>().HasIndex(x => x.OfficeCode);
         modelBuilder.Entity<RentalBillingLog>().HasIndex(x => new { x.BillingProfileId, x.BillingYearMonth }).IsUnique();
         modelBuilder.Entity<RentalBillingLog>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => new { x.Kind, x.EntityId }).IsUnique();
+        modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => x.TenantCode);
+        modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<Invoice>().HasIndex(x => x.VersionGroupId);
+        modelBuilder.Entity<Invoice>().HasIndex(x => x.IsLatestVersion);
 
         ApplySoftDeleteFilter<UserAccount>(modelBuilder);
         ApplySoftDeleteFilter<CompanyProfile>(modelBuilder);

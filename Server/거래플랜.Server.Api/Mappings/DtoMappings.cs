@@ -144,12 +144,12 @@ public static class DtoMappings
         {
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
-            Name = entity.Name, IsActive = entity.IsActive
+            Name = UnitCatalogNormalizer.Normalize(entity.Name), IsActive = entity.IsActive
         };
 
     public static void Apply(this Unit entity, UnitDto dto)
     {
-        entity.Name = dto.Name; entity.IsActive = dto.IsActive; entity.IsDeleted = dto.IsDeleted;
+        entity.Name = UnitCatalogNormalizer.Normalize(dto.Name); entity.IsActive = dto.IsActive; entity.IsDeleted = dto.IsDeleted;
     }
 
     public static CustomerCategoryDto ToDto(this CustomerCategory entity) =>
@@ -364,7 +364,7 @@ public static class DtoMappings
             CategoryName = entity.CategoryName,
             ItemKind = ItemOperationalPolicy.NormalizeItemKind(entity.ItemKind, entity.TrackingType, entity.CategoryName, entity.IsRental),
             TrackingType = ItemOperationalPolicy.NormalizeTrackingType(entity.TrackingType, entity.ItemKind, entity.CategoryName, entity.IsRental),
-            Unit = entity.Unit,
+            Unit = UnitCatalogNormalizer.Normalize(entity.Unit),
             CurrentStock = entity.CurrentStock,
             SafetyStock = entity.SafetyStock,
             PurchasePrice = entity.PurchasePrice,
@@ -389,7 +389,7 @@ public static class DtoMappings
         entity.CategoryName = dto.CategoryName;
         entity.ItemKind = ItemOperationalPolicy.NormalizeItemKind(dto.ItemKind, dto.TrackingType, dto.CategoryName, dto.IsRental);
         entity.TrackingType = ItemOperationalPolicy.NormalizeTrackingType(dto.TrackingType, dto.ItemKind, dto.CategoryName, dto.IsRental);
-        entity.Unit = dto.Unit;
+        entity.Unit = UnitCatalogNormalizer.Normalize(dto.Unit);
         entity.CurrentStock = dto.CurrentStock;
         entity.SafetyStock = dto.SafetyStock;
         entity.PurchasePrice = dto.PurchasePrice;
@@ -547,7 +547,7 @@ public static class DtoMappings
             CreatedByUsername = entity.CreatedByUsername,
             LastSavedByUsername = entity.LastSavedByUsername,
             LastSavedAtUtc = entity.LastSavedAtUtc,
-            TransferStatus = entity.TransferStatus,
+            TransferStatus = InventoryTransferStatusNormalizer.Normalize(entity.TransferStatus, entity.ReceivedByUsername, entity.ReceivedAtUtc, entity.RejectedByUsername, entity.RejectedAtUtc),
             RequestedByUsername = entity.RequestedByUsername,
             RequestedAtUtc = entity.RequestedAtUtc,
             ReceivedByUsername = entity.ReceivedByUsername,
@@ -574,7 +574,7 @@ public static class DtoMappings
             ItemId = entity.ItemId,
             ItemNameOriginal = entity.ItemNameOriginal,
             SpecificationOriginal = entity.SpecificationOriginal,
-            Unit = entity.Unit,
+            Unit = UnitCatalogNormalizer.Normalize(entity.Unit),
             Quantity = entity.Quantity,
             ReceivedQuantity = entity.ReceivedQuantity,
             QuantityDifference = entity.QuantityDifference,
@@ -593,7 +593,7 @@ public static class DtoMappings
         entity.CreatedByUsername = dto.CreatedByUsername?.Trim() ?? string.Empty;
         entity.LastSavedByUsername = dto.LastSavedByUsername?.Trim() ?? string.Empty;
         entity.LastSavedAtUtc = NormalizeUtc(dto.LastSavedAtUtc);
-        entity.TransferStatus = dto.TransferStatus?.Trim() ?? "수령대기";
+        entity.TransferStatus = InventoryTransferStatusNormalizer.Normalize(dto.TransferStatus, dto.ReceivedByUsername, dto.ReceivedAtUtc, dto.RejectedByUsername, dto.RejectedAtUtc);
         entity.RequestedByUsername = dto.RequestedByUsername?.Trim() ?? string.Empty;
         entity.RequestedAtUtc = NormalizeUtc(dto.RequestedAtUtc);
         entity.ReceivedByUsername = dto.ReceivedByUsername?.Trim() ?? string.Empty;
@@ -623,7 +623,7 @@ public static class DtoMappings
             ItemId = dto.ItemId,
             ItemNameOriginal = dto.ItemNameOriginal?.Trim() ?? string.Empty,
             SpecificationOriginal = dto.SpecificationOriginal?.Trim() ?? string.Empty,
-            Unit = dto.Unit?.Trim() ?? string.Empty,
+            Unit = UnitCatalogNormalizer.Normalize(dto.Unit),
             Quantity = dto.Quantity,
             ReceivedQuantity = dto.ReceivedQuantity,
             QuantityDifference = dto.QuantityDifference,
@@ -902,7 +902,12 @@ public static class DtoMappings
             TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
             OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
             InvoiceNumber = entity.InvoiceNumber,
-            LocalTempNumber = entity.LocalTempNumber, VoucherType = entity.VoucherType,
+            LocalTempNumber = entity.LocalTempNumber,
+            VersionGroupId = entity.VersionGroupId == Guid.Empty ? entity.Id : entity.VersionGroupId,
+            VersionNumber = entity.VersionNumber <= 0 ? 1 : entity.VersionNumber,
+            PreviousVersionId = entity.PreviousVersionId,
+            IsLatestVersion = entity.IsLatestVersion,
+            VoucherType = entity.VoucherType,
             InvoiceDate = entity.InvoiceDate, TotalAmount = entity.TotalAmount,
             SupplyAmount = entity.SupplyAmount, VatAmount = entity.VatAmount, TaxInvoiceIssued = entity.TaxInvoiceIssued, Memo = entity.Memo,
             Lines = entity.Lines.Where(x => !x.IsDeleted).OrderBy(x => x.Id).Select(x => x.ToDto()).ToList(),
@@ -914,7 +919,7 @@ public static class DtoMappings
         {
             Id = entity.Id, InvoiceId = entity.InvoiceId, ItemId = entity.ItemId,
             ItemNameOriginal = entity.ItemNameOriginal, SpecificationOriginal = entity.SpecificationOriginal,
-            Unit = entity.Unit, Quantity = entity.Quantity, UnitPrice = entity.UnitPrice,
+            Unit = UnitCatalogNormalizer.Normalize(entity.Unit), Quantity = entity.Quantity, UnitPrice = entity.UnitPrice,
             LineAmount = entity.LineAmount, Remark = entity.Remark,
             SerialNumber = entity.SerialNumber, MaterialNumber = entity.MaterialNumber,
             InstallLocation = entity.InstallLocation, RentalStartDate = entity.RentalStartDate,
@@ -926,6 +931,10 @@ public static class DtoMappings
         entity.CustomerId = dto.CustomerId; entity.InvoiceNumber = dto.InvoiceNumber;
         entity.LocalTempNumber = dto.LocalTempNumber; entity.VoucherType = dto.VoucherType;
         entity.InvoiceDate = dto.InvoiceDate; entity.TaxInvoiceIssued = dto.TaxInvoiceIssued; entity.Memo = dto.Memo; entity.IsDeleted = dto.IsDeleted;
+        entity.VersionGroupId = dto.VersionGroupId == Guid.Empty ? dto.Id : dto.VersionGroupId;
+        entity.VersionNumber = dto.VersionNumber <= 0 ? 1 : dto.VersionNumber;
+        entity.PreviousVersionId = dto.PreviousVersionId;
+        entity.IsLatestVersion = dto.IsLatestVersion;
         entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
             dto.TenantCode,
             dto.OfficeCode,
@@ -939,6 +948,38 @@ public static class DtoMappings
         entity.TotalAmount = lines.Sum(x => x.LineAmount);
         entity.SupplyAmount = Math.Round(entity.TotalAmount / 1.1m, 0, MidpointRounding.AwayFromZero);
         entity.VatAmount = entity.TotalAmount - entity.SupplyAmount;
+    }
+
+    public static RecycleBinPurgeRecordDto ToDto(this RecycleBinPurgeRecord entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            Kind = entity.Kind,
+            EntityId = entity.EntityId,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            PurgedAtUtc = entity.PurgedAtUtc
+        };
+
+    public static void Apply(this RecycleBinPurgeRecord entity, RecycleBinPurgeRecordDto dto)
+    {
+        entity.Kind = dto.Kind.Trim().ToLowerInvariant();
+        entity.EntityId = dto.EntityId;
+        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            dto.TenantCode,
+            dto.OfficeCode,
+            entity.TenantCode,
+            entity.OfficeCode);
+        if (!string.IsNullOrWhiteSpace(dto.OfficeCode))
+            entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
+        else if (string.IsNullOrWhiteSpace(entity.OfficeCode))
+            entity.OfficeCode = OfficeCodeCatalog.Shared;
+        entity.PurgedAtUtc = dto.PurgedAtUtc == default ? DateTime.UtcNow : dto.PurgedAtUtc;
+        entity.IsDeleted = false;
     }
 
     public static PaymentDto ToDto(this Payment entity) =>

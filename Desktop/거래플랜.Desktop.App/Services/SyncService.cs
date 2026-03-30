@@ -1065,6 +1065,7 @@ public sealed class SyncService : IDisposable
         await UpsertPulledAsync(pull.RentalBillingLogs, _db.RentalBillingLogs, LocalMappings.ToLocal, ct);
         await UpsertPulledInvoicesAsync(pull.Invoices, ct);
         await UpsertPulledAsync(pull.Payments, _db.Payments, LocalMappings.ToLocal, ct);
+        await ApplyPulledPurgeRecordsAsync(pull.PurgeRecords, ct);
 
         if (pull.LatestRevision > sinceRev)
             await TrySetSettingSafeAsync("LastSyncRevision", pull.LatestRevision.ToString(), ct);
@@ -1907,6 +1908,75 @@ public sealed class SyncService : IDisposable
             }
         }
         await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task ApplyPulledPurgeRecordsAsync(
+        IReadOnlyList<RecycleBinPurgeRecordDto> dtos,
+        CancellationToken ct)
+    {
+        if (dtos.Count == 0)
+            return;
+
+        foreach (var dto in dtos
+                     .Where(current => current.EntityId != Guid.Empty && !string.IsNullOrWhiteSpace(current.Kind))
+                     .GroupBy(current => (NormalizePurgeRecordKind(current.Kind), current.EntityId))
+                     .Select(group => group
+                         .OrderByDescending(current => current.PurgedAtUtc)
+                         .ThenByDescending(current => current.Revision)
+                         .First())
+                     .OrderBy(current => GetPurgeApplyOrder(NormalizePurgeRecordKind(current.Kind))))
+        {
+            var kind = NormalizePurgeRecordKind(dto.Kind);
+            if (!TryParseRecycleBinEntityKind(kind, out var entityKind))
+                continue;
+
+            var result = await _local.ApplyServerPurgeRecycleBinEntryAsync(entityKind, dto.EntityId, ct);
+            if (!result.Success && !result.NotFound)
+                AppLogger.Warn("SYNC", $"서버 영구삭제 반영 실패: {kind} / {dto.EntityId:D} / {result.Message}");
+        }
+    }
+
+    private static string NormalizePurgeRecordKind(string? value)
+        => (value ?? string.Empty).Trim().ToLowerInvariant();
+
+    private static int GetPurgeApplyOrder(string normalizedKind)
+        => normalizedKind switch
+        {
+            "payment" => 0,
+            "transaction" => 1,
+            "contract" => 2,
+            "invoice" => 3,
+            "item" => 4,
+            "customer" => 5,
+            _ => 99
+        };
+
+    private static bool TryParseRecycleBinEntityKind(string normalizedKind, out RecycleBinEntityKind kind)
+    {
+        switch (normalizedKind)
+        {
+            case "customer":
+                kind = RecycleBinEntityKind.Customer;
+                return true;
+            case "contract":
+                kind = RecycleBinEntityKind.CustomerContract;
+                return true;
+            case "item":
+                kind = RecycleBinEntityKind.Item;
+                return true;
+            case "invoice":
+                kind = RecycleBinEntityKind.Invoice;
+                return true;
+            case "payment":
+                kind = RecycleBinEntityKind.Payment;
+                return true;
+            case "transaction":
+                kind = RecycleBinEntityKind.Transaction;
+                return true;
+            default:
+                kind = default;
+                return false;
+        }
     }
 
     private static bool IsServerSyncDisabled()

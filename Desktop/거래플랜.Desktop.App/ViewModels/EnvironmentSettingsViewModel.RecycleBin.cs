@@ -13,6 +13,12 @@ public sealed partial class EnvironmentSettingsViewModel
     private const string RecycleBinFilterAll = "ALL";
     private List<RecycleBinEntry> _allRecycleBinEntries = new();
 
+    private sealed class RecycleBinMirrorResult
+    {
+        public List<RecycleBinEntry> SucceededEntries { get; } = new();
+        public List<string> Failures { get; } = new();
+    }
+
     [ObservableProperty] private DisplayOption? _selectedRecycleBinTypeOption;
     [ObservableProperty] private string _recycleBinSearchText = string.Empty;
     [ObservableProperty] private RecycleBinEntry? _selectedRecycleBinEntry;
@@ -25,18 +31,35 @@ public sealed partial class EnvironmentSettingsViewModel
     [ObservableProperty] private int _recycleBinTransactionCount;
     [ObservableProperty] private int _markedRecycleBinCount;
     [ObservableProperty] private string _recycleBinSummary = "휴지통이 비어 있습니다.";
+    [ObservableProperty] private string _selectedRecycleBinDependencySummary = "삭제 차단 사유를 확인하려면 항목을 선택하세요.";
+    [ObservableProperty] private RecycleBinCustomerMergeCandidate? _selectedRecycleBinMergeTarget;
+    [ObservableProperty] private bool _isRecycleBinDependencyBusy;
 
     public ObservableCollection<DisplayOption> RecycleBinTypeOptions { get; } = new();
     public ObservableCollection<RecycleBinEntry> RecycleBinEntries { get; } = new();
+    public ObservableCollection<RecycleBinDependencyItem> SelectedRecycleBinDependencies { get; } = new();
+    public ObservableCollection<RecycleBinCustomerMergeCandidate> SelectedRecycleBinMergeCandidates { get; } = new();
 
     public bool HasRecycleBinEntries => RecycleBinEntries.Count > 0;
     public bool HasSelectedRecycleBinEntry => SelectedRecycleBinEntry is not null;
     public bool HasMarkedRecycleBinEntries => MarkedRecycleBinCount > 0;
+    public bool HasSelectedRecycleBinDependencies => SelectedRecycleBinDependencies.Count > 0;
+    public bool HasSelectedRecycleBinMergeCandidates => SelectedRecycleBinMergeCandidates.Count > 0;
+    public bool CanMergeSelectedRecycleBinCustomer => SelectedRecycleBinEntry?.Kind == RecycleBinEntityKind.Customer &&
+                                                      SelectedRecycleBinEntry is not null &&
+                                                      SelectedRecycleBinMergeTarget is not null;
 
     partial void OnSelectedRecycleBinTypeOptionChanged(DisplayOption? value) => ApplyRecycleBinFilter();
     partial void OnRecycleBinSearchTextChanged(string value) => ApplyRecycleBinFilter();
-    partial void OnSelectedRecycleBinEntryChanged(RecycleBinEntry? value) => OnPropertyChanged(nameof(HasSelectedRecycleBinEntry));
+    partial void OnSelectedRecycleBinEntryChanged(RecycleBinEntry? value)
+    {
+        OnPropertyChanged(nameof(HasSelectedRecycleBinEntry));
+        OnPropertyChanged(nameof(CanMergeSelectedRecycleBinCustomer));
+        _ = LoadSelectedRecycleBinContextAsync(value);
+    }
     partial void OnMarkedRecycleBinCountChanged(int value) => OnPropertyChanged(nameof(HasMarkedRecycleBinEntries));
+    partial void OnSelectedRecycleBinMergeTargetChanged(RecycleBinCustomerMergeCandidate? value)
+        => OnPropertyChanged(nameof(CanMergeSelectedRecycleBinCustomer));
 
     private void InitializeRecycleBinTypeOptions()
     {
@@ -158,6 +181,80 @@ public sealed partial class EnvironmentSettingsViewModel
     }
 
     [RelayCommand]
+    private async Task MergeSelectedRecycleBinCustomerAsync()
+    {
+        if (SelectedRecycleBinEntry?.Kind != RecycleBinEntityKind.Customer)
+        {
+            StatusMessage = "병합할 삭제 거래처를 먼저 선택하세요.";
+            return;
+        }
+
+        if (SelectedRecycleBinMergeTarget is null)
+        {
+            StatusMessage = "연결을 옮길 활성 거래처를 먼저 선택하세요.";
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            $"삭제된 거래처 '{SelectedRecycleBinEntry.Title}'의 연결 데이터를 '{SelectedRecycleBinMergeTarget.Name}'로 이동한 뒤 영구삭제하시겠습니까?",
+            "중복 거래처 정리",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            IsBusy = true;
+
+            if (_session.IsOfflineMode)
+            {
+                StatusMessage = "오프라인 모드에서는 중복 거래처 정리를 진행할 수 없습니다. 로그인 후 다시 시도하세요.";
+                return;
+            }
+
+            var mergeResult = await _local.MergeDeletedCustomerIntoAsync(
+                SelectedRecycleBinEntry.EntityId,
+                SelectedRecycleBinMergeTarget.CustomerId,
+                _session);
+            if (!mergeResult.Success)
+            {
+                StatusMessage = mergeResult.Message;
+                return;
+            }
+
+            var syncSucceeded = await _sync.TrySyncAsync();
+            var hasPendingChanges = await _local.HasPendingSyncChangesAsync();
+            if (syncSucceeded && !hasPendingChanges)
+                await _sync.RefreshSharedMirrorFromServerAsync();
+
+            await ReloadRecycleBinAsync();
+
+            var refreshed = _allRecycleBinEntries.FirstOrDefault(entry =>
+                entry.Kind == RecycleBinEntityKind.Customer &&
+                entry.EntityId == SelectedRecycleBinEntry.EntityId);
+            if (refreshed is null)
+            {
+                StatusMessage = $"{mergeResult.Message} 삭제본 거래처가 더 이상 휴지통에 없어 정리를 완료했습니다.";
+                return;
+            }
+
+            SelectedRecycleBinEntry = refreshed;
+            if (hasPendingChanges)
+            {
+                StatusMessage = $"{mergeResult.Message} 서버 반영 대기 데이터가 남아 있어 영구삭제는 보류했습니다.";
+                return;
+            }
+
+            await PermanentlyDeleteRecycleBinEntriesCoreAsync([refreshed]);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand]
     private void MarkAllFilteredRecycleBinEntries()
     {
         foreach (var entry in RecycleBinEntries)
@@ -185,26 +282,33 @@ public sealed partial class EnvironmentSettingsViewModel
         {
             IsBusy = true;
 
+            var orderedEntries = entries
+                .DistinctBy(entry => (entry.Kind, entry.EntityId))
+                .ToList();
+
+            if (_session.IsOfflineMode)
+            {
+                StatusMessage = "오프라인 모드에서는 휴지통 복원을 진행할 수 없습니다. 로그인 후 다시 시도하세요.";
+                return;
+            }
+
+            var serverMirror = await MirrorRecycleBinMutationToServerAsync("복원", orderedEntries);
+            var actionEntries = serverMirror.SucceededEntries;
             var succeeded = 0;
-            var succeededEntries = new List<RecycleBinEntry>();
             var failures = new List<string>();
-            foreach (var entry in entries.DistinctBy(entry => (entry.Kind, entry.EntityId)))
+            foreach (var entry in actionEntries)
             {
                 var result = await _local.RestoreRecycleBinEntryAsync(entry.Kind, entry.EntityId, _session);
                 if (result.Success)
-                {
                     succeeded++;
-                    succeededEntries.Add(entry);
-                }
                 else
                     failures.Add($"{entry.KindText} · {entry.Title}: {result.Message}");
             }
 
-            var serverMessage = await MirrorRecycleBinMutationToServerAsync("복원", succeededEntries);
+            failures.AddRange(serverMirror.Failures);
+
             await ReloadRecycleBinAsync();
-            StatusMessage = BuildRecycleBinMutationStatusMessage("복원", entries.Count, succeeded, failures);
-            if (!string.IsNullOrWhiteSpace(serverMessage))
-                StatusMessage = $"{StatusMessage} / {serverMessage}";
+            StatusMessage = BuildRecycleBinMutationStatusMessage("복원", orderedEntries.Count, succeeded, failures);
         }
         finally
         {
@@ -224,26 +328,29 @@ public sealed partial class EnvironmentSettingsViewModel
                 .ThenByDescending(entry => entry.DeletedAtUtc)
                 .ToList();
 
-            var succeeded = 0;
-            var succeededEntries = new List<RecycleBinEntry>();
-            var failures = new List<string>();
-            foreach (var entry in orderedEntries)
+            if (_session.IsOfflineMode)
             {
-                var result = await _local.PermanentlyDeleteRecycleBinEntryAsync(entry.Kind, entry.EntityId, _session);
+                StatusMessage = "오프라인 모드에서는 휴지통 영구삭제를 진행할 수 없습니다. 로그인 후 다시 시도하세요.";
+                return;
+            }
+
+            var serverMirror = await MirrorRecycleBinMutationToServerAsync("영구삭제", orderedEntries);
+            var actionEntries = serverMirror.SucceededEntries;
+            var failures = new List<string>();
+            var succeeded = 0;
+            foreach (var entry in actionEntries)
+            {
+                var result = await _local.ApplyServerPurgeRecycleBinEntryAsync(entry.Kind, entry.EntityId);
                 if (result.Success)
-                {
                     succeeded++;
-                    succeededEntries.Add(entry);
-                }
                 else
                     failures.Add($"{entry.KindText} · {entry.Title}: {result.Message}");
             }
 
-            var serverMessage = await MirrorRecycleBinMutationToServerAsync("영구삭제", succeededEntries);
+            failures.AddRange(serverMirror.Failures);
+
             await ReloadRecycleBinAsync();
             StatusMessage = BuildRecycleBinMutationStatusMessage("영구삭제", orderedEntries.Count, succeeded, failures);
-            if (!string.IsNullOrWhiteSpace(serverMessage))
-                StatusMessage = $"{StatusMessage} / {serverMessage}";
         }
         finally
         {
@@ -343,38 +450,162 @@ public sealed partial class EnvironmentSettingsViewModel
         };
     }
 
-    private async Task<string?> MirrorRecycleBinMutationToServerAsync(
+    private async Task LoadSelectedRecycleBinContextAsync(RecycleBinEntry? entry)
+    {
+        SelectedRecycleBinDependencies.Clear();
+        SelectedRecycleBinMergeCandidates.Clear();
+        SelectedRecycleBinMergeTarget = null;
+        SelectedRecycleBinDependencySummary = entry is null
+            ? "삭제 차단 사유를 확인하려면 항목을 선택하세요."
+            : "삭제 차단 사유를 확인하는 중입니다.";
+        OnPropertyChanged(nameof(HasSelectedRecycleBinDependencies));
+        OnPropertyChanged(nameof(HasSelectedRecycleBinMergeCandidates));
+        OnPropertyChanged(nameof(CanMergeSelectedRecycleBinCustomer));
+
+        if (entry is null)
+            return;
+
+        try
+        {
+            IsRecycleBinDependencyBusy = true;
+
+            var dependencyInfo = await _local.GetRecycleBinDependencyInfoAsync(entry.Kind, entry.EntityId, _session);
+            SelectedRecycleBinDependencySummary = dependencyInfo.Summary;
+            foreach (var dependency in dependencyInfo.Dependencies)
+                SelectedRecycleBinDependencies.Add(dependency);
+
+            if (entry.Kind == RecycleBinEntityKind.Customer)
+            {
+                var candidates = await _local.GetRecycleBinCustomerMergeCandidatesAsync(entry.EntityId, _session);
+                foreach (var candidate in candidates)
+                    SelectedRecycleBinMergeCandidates.Add(candidate);
+                SelectedRecycleBinMergeTarget = SelectedRecycleBinMergeCandidates.FirstOrDefault();
+            }
+        }
+        catch (Exception ex)
+        {
+            SelectedRecycleBinDependencySummary = $"삭제 차단 사유를 불러오지 못했습니다: {ex.Message}";
+        }
+        finally
+        {
+            IsRecycleBinDependencyBusy = false;
+            OnPropertyChanged(nameof(HasSelectedRecycleBinDependencies));
+            OnPropertyChanged(nameof(HasSelectedRecycleBinMergeCandidates));
+            OnPropertyChanged(nameof(CanMergeSelectedRecycleBinCustomer));
+        }
+    }
+
+    private async Task<RecycleBinMirrorResult> MirrorRecycleBinMutationToServerAsync(
         string action,
         IReadOnlyList<RecycleBinEntry> entries)
     {
-        if (_session.IsOfflineMode || entries.Count == 0)
-            return null;
+        var mirrorResult = new RecycleBinMirrorResult();
+        if (entries.Count == 0)
+            return mirrorResult;
+        if (_session.IsOfflineMode)
+        {
+            mirrorResult.Failures.Add($"오프라인 모드에서는 휴지통 {action}를 서버에 반영할 수 없습니다.");
+            return mirrorResult;
+        }
 
-        var targets = entries
-            .Select(ToServerRecycleBinTarget)
-            .Where(target => target is not null)
-            .Cast<RecycleBinMutationTargetDto>()
+        var targetEntries = entries
+            .Select(entry => new { Entry = entry, Target = ToServerRecycleBinTarget(entry) })
             .ToList();
+        var unsupportedEntries = targetEntries
+            .Where(current => current.Target is null)
+            .Select(current => current.Entry)
+            .ToList();
+        foreach (var unsupported in unsupportedEntries)
+            mirrorResult.Failures.Add($"{unsupported.KindText} · {unsupported.Title}: 서버 휴지통 연동 대상이 아닙니다.");
+
+        var targets = targetEntries
+            .Where(current => current.Target is not null)
+            .ToDictionary(
+                current => (current.Entry.EntityId, NormalizeServerRecycleBinKind(current.Target!.Kind)),
+                current => current.Entry);
         if (targets.Count == 0)
-            return null;
+            return mirrorResult;
 
         try
         {
             var result = string.Equals(action, "복원", StringComparison.Ordinal)
-                ? await _api.RestoreRecycleBinAsync(targets)
-                : await _api.PurgeRecycleBinAsync(targets);
+                ? await _api.RestoreRecycleBinAsync(targets.Keys.Select(key =>
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = key.Item1,
+                        Kind = targets[key].Kind switch
+                        {
+                            RecycleBinEntityKind.Customer => "customer",
+                            RecycleBinEntityKind.CustomerContract => "contract",
+                            RecycleBinEntityKind.Item => "item",
+                            RecycleBinEntityKind.Invoice => "invoice",
+                            RecycleBinEntityKind.Payment => "payment",
+                            RecycleBinEntityKind.Transaction => "transaction",
+                            _ => string.Empty
+                        }
+                    }).Where(target => !string.IsNullOrWhiteSpace(target.Kind)).ToList())
+                : await _api.PurgeRecycleBinAsync(targets.Keys.Select(key =>
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = key.Item1,
+                        Kind = targets[key].Kind switch
+                        {
+                            RecycleBinEntityKind.Customer => "customer",
+                            RecycleBinEntityKind.CustomerContract => "contract",
+                            RecycleBinEntityKind.Item => "item",
+                            RecycleBinEntityKind.Invoice => "invoice",
+                            RecycleBinEntityKind.Payment => "payment",
+                            RecycleBinEntityKind.Transaction => "transaction",
+                            _ => string.Empty
+                        }
+                    }).Where(target => !string.IsNullOrWhiteSpace(target.Kind)).ToList());
 
-            if (result is null || result.SucceededCount >= result.RequestedCount)
-                return null;
+            if (result is null)
+            {
+                mirrorResult.Failures.Add($"NAS 서버 {action} 반영 결과를 확인하지 못했습니다.");
+                return mirrorResult;
+            }
 
-            var failedCount = result.RequestedCount - result.SucceededCount;
-            return result.Messages.FirstOrDefault()
-                   ?? $"NAS 서버 {action} 반영 중 {failedCount:N0}건이 실패했습니다.";
+            if (result.Results.Count == 0)
+            {
+                if (result.SucceededCount >= targets.Count)
+                    mirrorResult.SucceededEntries.AddRange(targets.Values);
+                else
+                    mirrorResult.Failures.Add(result.Messages.FirstOrDefault()
+                                              ?? $"NAS 서버 {action} 반영 중 실패한 항목이 있습니다.");
+                return mirrorResult;
+            }
+
+            var reported = new HashSet<(Guid EntityId, string Kind)>();
+            foreach (var itemResult in result.Results)
+            {
+                var key = (itemResult.EntityId, NormalizeServerRecycleBinKind(itemResult.Kind));
+                if (!targets.TryGetValue(key, out var entry))
+                {
+                    if (!itemResult.Success && !string.IsNullOrWhiteSpace(itemResult.Message))
+                        mirrorResult.Failures.Add(itemResult.Message);
+                    continue;
+                }
+
+                reported.Add(key);
+                if (itemResult.Success)
+                    mirrorResult.SucceededEntries.Add(entry);
+                else
+                    mirrorResult.Failures.Add($"{entry.KindText} · {entry.Title}: {itemResult.Message}");
+            }
+
+            foreach (var key in targets.Keys.Where(key => !reported.Contains(key)))
+            {
+                var entry = targets[key];
+                mirrorResult.Failures.Add($"{entry.KindText} · {entry.Title}: NAS 서버 {action} 결과를 확인하지 못했습니다.");
+            }
         }
         catch (Exception ex)
         {
-            return $"NAS 서버 {action} 반영 실패: {ex.Message}";
+            mirrorResult.Failures.Add($"NAS 서버 {action} 반영 실패: {ex.Message}");
         }
+
+        return mirrorResult;
     }
 
     private static RecycleBinMutationTargetDto? ToServerRecycleBinTarget(RecycleBinEntry entry)
@@ -386,6 +617,7 @@ public sealed partial class EnvironmentSettingsViewModel
             RecycleBinEntityKind.Item => "item",
             RecycleBinEntityKind.Invoice => "invoice",
             RecycleBinEntityKind.Payment => "payment",
+            RecycleBinEntityKind.Transaction => "transaction",
             _ => string.Empty
         };
 
@@ -397,6 +629,18 @@ public sealed partial class EnvironmentSettingsViewModel
                 Kind = kind
             };
     }
+
+    private static string NormalizeServerRecycleBinKind(string? kind)
+        => (kind ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "customer" => "customer",
+            "contract" => "contract",
+            "item" => "item",
+            "invoice" => "invoice",
+            "payment" => "payment",
+            "transaction" => "transaction",
+            _ => string.Empty
+        };
 
     private static string BuildRecycleBinMutationStatusMessage(
         string action,

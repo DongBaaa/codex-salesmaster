@@ -109,7 +109,15 @@ public sealed class SyncController : ControllerBase
                 .Where(x => x.Revision > sinceRev).OrderBy(x => x.CreatedAtUtc)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             Payments = await _officeScopeService.ApplyPaymentScope(_dbContext.Payments.IgnoreQueryFilters().Include(x => x.Invoice).ThenInclude(invoice => invoice!.Customer).AsNoTracking())
-                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken)
+                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            PurgeRecords = (await _dbContext.RecycleBinPurgeRecords
+                    .AsNoTracking()
+                    .Where(x => x.Revision > sinceRev)
+                    .OrderBy(x => x.Revision)
+                    .ToListAsync(cancellationToken))
+                .Where(x => _officeScopeService.CanReadOffice(x.OfficeCode, x.TenantCode))
+                .Select(x => x.ToDto())
+                .ToList()
         };
 
         response.CurrentServerRevision = await GetCurrentRevisionAsync(cancellationToken);
@@ -365,13 +373,19 @@ public sealed class SyncController : ControllerBase
     {
         foreach (var dto in payload)
         {
+            dto.VersionNumber = dto.VersionNumber <= 0 ? 1 : dto.VersionNumber;
             var entity = await _dbContext.Invoices.IgnoreQueryFilters()
                 .Include(x => x.Customer)
                 .Include(x => x.Lines).FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
 
             if (entity is null)
             {
-                entity = new Invoice { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
+                var invoiceId = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id;
+                dto.Id = invoiceId;
+                if (dto.VersionGroupId == Guid.Empty)
+                    dto.VersionGroupId = invoiceId;
+
+                entity = new Invoice { Id = invoiceId };
                 entity.Apply(dto);
                 if (string.IsNullOrWhiteSpace(entity.InvoiceNumber))
                 {
@@ -384,6 +398,9 @@ public sealed class SyncController : ControllerBase
                 result.AcceptedCount++;
                 continue;
             }
+
+            if (dto.VersionGroupId == Guid.Empty)
+                dto.VersionGroupId = entity.VersionGroupId == Guid.Empty ? entity.Id : entity.VersionGroupId;
 
             if (!_officeScopeService.CanWriteOfficeForInvoices(entity.OfficeCode, entity.TenantCode))
             {
@@ -2293,6 +2310,7 @@ public sealed class SyncController : ControllerBase
         maxRevision = Math.Max(maxRevision, await _dbContext.RentalBillingLogs.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Invoices.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Payments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.RecycleBinPurgeRecords.Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         return maxRevision;
     }
 

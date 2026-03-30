@@ -222,6 +222,10 @@ public sealed class Invoice : TrackedEntity
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
+    public Guid VersionGroupId { get; set; }
+    public int VersionNumber { get; set; } = 1;
+    public Guid? PreviousVersionId { get; set; }
+    public bool IsLatestVersion { get; set; } = true;
     public VoucherType VoucherType { get; set; }
     public DateOnly InvoiceDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public decimal TotalAmount { get; set; }
@@ -518,5 +522,14 @@ public sealed class ConflictLog
     public string ServerJson { get; set; } = string.Empty;
     public string Reason { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class RecycleBinPurgeRecord : TrackedEntity
+{
+    public string Kind { get; set; } = string.Empty;
+    public Guid EntityId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public DateTime PurgedAtUtc { get; set; } = DateTime.UtcNow;
 }
 

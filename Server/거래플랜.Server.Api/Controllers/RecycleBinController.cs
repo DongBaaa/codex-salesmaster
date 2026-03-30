@@ -1,5 +1,6 @@
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
+using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Services;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
@@ -183,6 +184,43 @@ public sealed class RecycleBinController : ControllerBase
             }));
         }
 
+        if (ShouldIncludeKind(normalizedKind, "transaction"))
+        {
+            var deletedTransactions = await _officeScopeService.ApplyTransactionScope(_dbContext.Transactions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(transaction => transaction.IsDeleted))
+                .OrderByDescending(transaction => transaction.UpdatedAtUtc)
+                .ToListAsync(cancellationToken);
+
+            var customerMap = await _dbContext.Customers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(customer => deletedTransactions.Select(transaction => transaction.CustomerId).Contains(customer.Id))
+                .ToDictionaryAsync(customer => customer.Id, customer => customer.NameOriginal, cancellationToken);
+
+            entries.AddRange(deletedTransactions.Select(transaction =>
+            {
+                customerMap.TryGetValue(transaction.CustomerId, out var customerName);
+                var totalAmount = transaction.ReceiptTotal > 0m
+                    ? transaction.ReceiptTotal
+                    : transaction.PaymentTotal;
+
+                return new RecycleBinEntryDto
+                {
+                    EntityId = transaction.Id,
+                    Kind = "transaction",
+                    KindText = "거래내역",
+                    Title = $"{customerName ?? "(삭제된 거래처)"} · {GetTransactionKindLabel(transaction.TransactionKind)}",
+                    Subtitle = JoinSegments(
+                        transaction.TransactionDate.ToString("yyyy-MM-dd"),
+                        totalAmount > 0m ? $"{totalAmount:N0}원" : null),
+                    Detail = JoinSegments(transaction.Note, transaction.Memo),
+                    DeletedAtUtc = transaction.UpdatedAtUtc
+                };
+            }));
+        }
+
         if (!string.IsNullOrWhiteSpace(q))
         {
             var searchText = q.Trim();
@@ -220,6 +258,13 @@ public sealed class RecycleBinController : ControllerBase
         {
             var mutation = await RestoreCoreAsync(target, cancellationToken);
             result.Messages.Add(mutation.Message);
+            result.Results.Add(new RecycleBinMutationItemResultDto
+            {
+                EntityId = target.EntityId,
+                Kind = NormalizeKind(target.Kind),
+                Success = mutation.Success,
+                Message = mutation.Message
+            });
             if (mutation.Success)
                 result.SucceededCount++;
         }
@@ -247,6 +292,13 @@ public sealed class RecycleBinController : ControllerBase
         {
             var mutation = await PurgeCoreAsync(target, cancellationToken);
             result.Messages.Add(mutation.Message);
+            result.Results.Add(new RecycleBinMutationItemResultDto
+            {
+                EntityId = target.EntityId,
+                Kind = NormalizeKind(target.Kind),
+                Success = mutation.Success,
+                Message = mutation.Message
+            });
             if (mutation.Success)
                 result.SucceededCount++;
         }
@@ -265,6 +317,7 @@ public sealed class RecycleBinController : ControllerBase
             "item" => await RestoreItemAsync(target.EntityId, cancellationToken),
             "invoice" => await RestoreInvoiceAsync(target.EntityId, cancellationToken),
             "payment" => await RestorePaymentAsync(target.EntityId, cancellationToken),
+            "transaction" => await RestoreTransactionAsync(target.EntityId, cancellationToken),
             _ => (false, $"지원하지 않는 휴지통 종류입니다: {target.Kind}")
         };
     }
@@ -280,6 +333,7 @@ public sealed class RecycleBinController : ControllerBase
             "item" => await PurgeItemAsync(target.EntityId, cancellationToken),
             "invoice" => await PurgeInvoiceAsync(target.EntityId, cancellationToken),
             "payment" => await PurgePaymentAsync(target.EntityId, cancellationToken),
+            "transaction" => await PurgeTransactionAsync(target.EntityId, cancellationToken),
             _ => (false, $"지원하지 않는 휴지통 종류입니다: {target.Kind}")
         };
     }
@@ -375,12 +429,11 @@ public sealed class RecycleBinController : ControllerBase
         if (!_officeScopeService.CanWriteOfficeForInvoices(invoice.OfficeCode, invoice.TenantCode))
             return (false, "현재 계정으로 복원할 수 없는 전표입니다.");
 
-        if (customer.IsDeleted)
-            customer.IsDeleted = false;
-
-        invoice.IsDeleted = false;
+        var customerRestored = await RestoreInvoiceGroupAsync(invoice, customer, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return (true, "전표를 복원했습니다.");
+        return (true, customerRestored
+            ? "전표를 복원하고 연결된 거래처도 함께 활성화했습니다."
+            : "전표를 복원했습니다.");
     }
 
     private async Task<(bool Success, string Message)> RestorePaymentAsync(Guid paymentId, CancellationToken cancellationToken)
@@ -407,14 +460,76 @@ public sealed class RecycleBinController : ControllerBase
         if (!_officeScopeService.CanWriteOfficeForPayments(invoice.OfficeCode, invoice.TenantCode))
             return (false, "현재 계정으로 복원할 수 없는 수금/지급 기록입니다.");
 
-        if (customer.IsDeleted)
-            customer.IsDeleted = false;
+        var customerRestored = false;
+        var invoiceRestored = false;
         if (invoice.IsDeleted)
-            invoice.IsDeleted = false;
+        {
+            customerRestored = await RestoreInvoiceGroupAsync(invoice, customer, cancellationToken);
+            invoiceRestored = true;
+        }
+        else if (customer.IsDeleted)
+        {
+            customer.IsDeleted = false;
+            customerRestored = true;
+        }
 
         payment.IsDeleted = false;
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return (true, "수금/지급 기록을 복원했습니다.");
+        return (true, customerRestored || invoiceRestored
+            ? "수금/지급 기록을 복원하고 연결 전표도 함께 활성화했습니다."
+            : "수금/지급 기록을 복원했습니다.");
+    }
+
+    private async Task<(bool Success, string Message)> RestoreTransactionAsync(Guid transactionId, CancellationToken cancellationToken)
+    {
+        var transaction = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == transactionId, cancellationToken);
+        if (transaction is null)
+            return (false, "복원할 거래내역을 찾을 수 없습니다.");
+        if (!transaction.IsDeleted)
+            return (true, "이미 활성 상태인 거래내역입니다.");
+        if (!_officeScopeService.CanWriteOfficeForPayments(transaction.OfficeCode, transaction.TenantCode))
+            return (false, "현재 계정으로 복원할 수 없는 거래내역입니다.");
+
+        var customer = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == transaction.CustomerId, cancellationToken);
+        if (customer is null)
+            return (false, "연결된 거래처를 찾을 수 없습니다.");
+
+        var customerRestored = false;
+        var invoiceRestored = false;
+
+        if (customer.IsDeleted)
+        {
+            customer.IsDeleted = false;
+            customerRestored = true;
+        }
+
+        if (transaction.LinkedInvoiceId is Guid linkedInvoiceId && linkedInvoiceId != Guid.Empty)
+        {
+            var linkedInvoice = await _dbContext.Invoices
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == linkedInvoiceId, cancellationToken);
+            if (linkedInvoice is not null)
+            {
+                if (!_officeScopeService.CanWriteOfficeForInvoices(linkedInvoice.OfficeCode, linkedInvoice.TenantCode))
+                    return (false, "현재 계정으로 연결 전표를 복원할 수 없습니다.");
+
+                if (linkedInvoice.IsDeleted)
+                {
+                    invoiceRestored = true;
+                    customerRestored = await RestoreInvoiceGroupAsync(linkedInvoice, customer, cancellationToken) || customerRestored;
+                }
+            }
+        }
+
+        transaction.IsDeleted = false;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return (true, customerRestored || invoiceRestored
+            ? "거래내역을 복원하고 연결된 거래처/전표를 함께 활성화했습니다."
+            : "거래내역을 복원했습니다.");
     }
 
     private async Task<(bool Success, string Message)> PurgeCustomerAsync(Guid customerId, CancellationToken cancellationToken)
@@ -435,6 +550,34 @@ public sealed class RecycleBinController : ControllerBase
         if (hasInvoices)
             return (false, "연결된 전표가 남아 있어 거래처를 영구삭제할 수 없습니다.");
 
+        var hasTransactions = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.CustomerId == customerId, cancellationToken);
+        if (hasTransactions)
+            return (false, "연결된 거래내역이 남아 있어 거래처를 영구삭제할 수 없습니다.");
+
+        var hasRentalProfiles = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.CustomerId == customerId, cancellationToken);
+        if (hasRentalProfiles)
+            return (false, "연결된 렌탈 청구 프로필이 남아 있어 거래처를 영구삭제할 수 없습니다.");
+
+        var hasActiveContracts = await _dbContext.CustomerContracts
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.CustomerId == customerId && !current.IsDeleted, cancellationToken);
+        if (hasActiveContracts)
+            return (false, "활성 계약서가 남아 있어 거래처를 영구삭제할 수 없습니다.");
+
+        var hasRentalAssets = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.CustomerId == customerId, cancellationToken);
+        if (hasRentalAssets)
+            return (false, "연결된 렌탈 자산이 남아 있어 거래처를 영구삭제할 수 없습니다.");
+
+        await TouchPurgeRecordsAsync(
+        [
+            CreatePurgeRecord("customer", customer.Id, customer.TenantCode, customer.OfficeCode)
+        ], cancellationToken);
         _dbContext.Customers.Remove(customer);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return (true, "거래처를 영구삭제했습니다.");
@@ -453,6 +596,10 @@ public sealed class RecycleBinController : ControllerBase
         if (!contract.IsDeleted)
             return (false, "활성 상태 계약서는 휴지통에서 영구삭제할 수 없습니다.");
 
+        await TouchPurgeRecordsAsync(
+        [
+            CreatePurgeRecord("contract", contract.Id, contractCustomer.TenantCode, contractCustomer.OfficeCode)
+        ], cancellationToken);
         _fileStorage.DeleteIfExists(contract.StoragePath);
         _dbContext.CustomerContracts.Remove(contract);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -471,6 +618,10 @@ public sealed class RecycleBinController : ControllerBase
         if (!item.IsDeleted)
             return (false, "활성 상태 품목은 휴지통에서 영구삭제할 수 없습니다.");
 
+        await TouchPurgeRecordsAsync(
+        [
+            CreatePurgeRecord("item", item.Id, item.TenantCode, item.OfficeCode)
+        ], cancellationToken);
         _dbContext.Items.Remove(item);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return (true, "품목을 영구삭제했습니다.");
@@ -489,13 +640,27 @@ public sealed class RecycleBinController : ControllerBase
         if (!invoice.IsDeleted)
             return (false, "활성 상태 전표는 휴지통에서 영구삭제할 수 없습니다.");
 
+        var invoiceGroup = await GetInvoiceGroupAsync(invoice, cancellationToken);
+        var invoiceIds = invoiceGroup.Select(current => current.Id).Distinct().ToList();
+
+        var hasTransactions = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.LinkedInvoiceId.HasValue && invoiceIds.Contains(current.LinkedInvoiceId.Value), cancellationToken);
+        if (hasTransactions)
+            return (false, "연결된 거래내역이 남아 있어 전표를 영구삭제할 수 없습니다.");
+
         var hasActivePayments = await _dbContext.Payments
             .IgnoreQueryFilters()
-            .AnyAsync(current => current.InvoiceId == invoiceId && !current.IsDeleted, cancellationToken);
+            .AnyAsync(current => invoiceIds.Contains(current.InvoiceId) && !current.IsDeleted, cancellationToken);
         if (hasActivePayments)
             return (false, "활성 수금/지급 기록이 남아 있어 전표를 영구삭제할 수 없습니다.");
 
-        _dbContext.Invoices.Remove(invoice);
+        await TouchPurgeRecordsAsync(
+            invoiceGroup
+                .Select(current => CreatePurgeRecord("invoice", current.Id, current.TenantCode, current.OfficeCode))
+                .ToList(),
+            cancellationToken);
+        _dbContext.Invoices.RemoveRange(invoiceGroup);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return (true, "전표를 영구삭제했습니다.");
     }
@@ -521,9 +686,104 @@ public sealed class RecycleBinController : ControllerBase
         foreach (var attachment in attachments)
             _fileStorage.DeleteIfExists(attachment.StoragePath);
 
+        await TouchPurgeRecordsAsync(
+        [
+            CreatePurgeRecord("payment", payment.Id, purgeInvoice.TenantCode, purgeInvoice.OfficeCode)
+        ], cancellationToken);
         _dbContext.Payments.Remove(payment);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return (true, "수금/지급 기록을 영구삭제했습니다.");
+    }
+
+    private async Task<(bool Success, string Message)> PurgeTransactionAsync(Guid transactionId, CancellationToken cancellationToken)
+    {
+        var transaction = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == transactionId, cancellationToken);
+        if (transaction is null)
+            return (false, "영구삭제할 거래내역을 찾을 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForPayments(transaction.OfficeCode, transaction.TenantCode))
+            return (false, "현재 계정으로 영구삭제할 수 없는 거래내역입니다.");
+        if (!transaction.IsDeleted)
+            return (false, "활성 상태 거래내역은 휴지통에서 영구삭제할 수 없습니다.");
+
+        var attachments = await _dbContext.TransactionAttachments
+            .IgnoreQueryFilters()
+            .Where(current => current.TransactionId == transactionId)
+            .ToListAsync(cancellationToken);
+        foreach (var attachment in attachments)
+            _fileStorage.DeleteIfExists(attachment.StoragePath);
+
+        var linkedPayment = await _dbContext.Payments
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == transactionId, cancellationToken);
+        var purgeRecords = new List<RecycleBinPurgeRecordDto>
+        {
+            CreatePurgeRecord("transaction", transaction.Id, transaction.TenantCode, transaction.OfficeCode)
+        };
+        if (linkedPayment is not null)
+        {
+            purgeRecords.Add(CreatePurgeRecord("payment", linkedPayment.Id, transaction.TenantCode, transaction.OfficeCode));
+            _dbContext.Payments.Remove(linkedPayment);
+        }
+
+        await TouchPurgeRecordsAsync(purgeRecords, cancellationToken);
+        _dbContext.TransactionAttachments.RemoveRange(attachments);
+        _dbContext.Transactions.Remove(transaction);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return (true, "거래내역을 영구삭제했습니다.");
+    }
+
+    private async Task<List<Invoice>> GetInvoiceGroupAsync(Invoice invoice, CancellationToken cancellationToken)
+    {
+        var versionGroupId = invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
+        return await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(current =>
+                current.Id == invoice.Id ||
+                current.Id == versionGroupId ||
+                current.VersionGroupId == versionGroupId)
+            .ToListAsync(cancellationToken);
+    }
+
+    private async Task<bool> RestoreInvoiceGroupAsync(
+        Invoice invoice,
+        Customer customer,
+        CancellationToken cancellationToken)
+    {
+        var customerRestored = false;
+        if (customer.IsDeleted)
+        {
+            customer.IsDeleted = false;
+            customerRestored = true;
+        }
+
+        var invoiceGroup = await GetInvoiceGroupAsync(invoice, cancellationToken);
+        var latestVersion = invoiceGroup
+            .Where(current => !current.IsDeleted)
+            .OrderByDescending(current => current.VersionNumber)
+            .ThenByDescending(current => current.UpdatedAtUtc)
+            .FirstOrDefault();
+        var resolvedGroupId = latestVersion?.VersionGroupId == Guid.Empty
+            ? latestVersion?.Id ?? invoice.Id
+            : latestVersion?.VersionGroupId ?? invoice.Id;
+
+        foreach (var current in invoiceGroup)
+        {
+            current.IsDeleted = false;
+            current.VersionGroupId = current.VersionGroupId == Guid.Empty ? resolvedGroupId : current.VersionGroupId;
+            current.VersionNumber = current.VersionNumber <= 0 ? 1 : current.VersionNumber;
+        }
+
+        var maxVersionNumber = invoiceGroup.Max(candidate => candidate.VersionNumber <= 0 ? 1 : candidate.VersionNumber);
+
+        foreach (var current in invoiceGroup)
+        {
+            current.VersionGroupId = resolvedGroupId;
+            current.IsLatestVersion = current.VersionNumber == maxVersionNumber;
+        }
+
+        return customerRestored;
     }
 
     private static string NormalizeKind(string? kind)
@@ -535,6 +795,7 @@ public sealed class RecycleBinController : ControllerBase
             "item" or "items" or "품목" => "item",
             "invoice" or "invoices" or "전표" => "invoice",
             "payment" or "payments" or "수금" or "지급" or "수금/지급" => "payment",
+            "transaction" or "transactions" or "거래내역" => "transaction",
             _ => string.Empty
         };
     }
@@ -547,10 +808,11 @@ public sealed class RecycleBinController : ControllerBase
         return normalizedKind switch
         {
             "payment" => 0,
-            "contract" => 1,
-            "invoice" => 2,
-            "item" => 3,
-            "customer" => 4,
+            "transaction" => 1,
+            "contract" => 2,
+            "invoice" => 3,
+            "item" => 4,
+            "customer" => 5,
             _ => 99
         };
     }
@@ -569,5 +831,87 @@ public sealed class RecycleBinController : ControllerBase
             VoucherType.Collection => "수금",
             _ => voucherType.ToString()
         };
+    }
+
+    private static string NormalizeTransactionKind(string? transactionKind)
+        => (transactionKind ?? string.Empty).Trim().ToLowerInvariant();
+
+    private static string GetTransactionKindLabel(string? transactionKind)
+    {
+        return NormalizeTransactionKind(transactionKind) switch
+        {
+            "receipt" => "일반수금",
+            "payment" => "일반지급",
+            "advance-deposit" => "선수금입금",
+            "advance-refund" => "선수금환불",
+            "advance-apply" => "선수금차감",
+            "invoice-receipt" => "전표수금",
+            "invoice-payment" => "전표지급",
+            "rental-receipt" => "렌탈수금",
+            _ => string.IsNullOrWhiteSpace(transactionKind) ? "거래내역" : transactionKind.Trim()
+        };
+    }
+
+    private static RecycleBinPurgeRecordDto CreatePurgeRecord(
+        string kind,
+        Guid entityId,
+        string? tenantCode,
+        string? officeCode)
+    {
+        return new RecycleBinPurgeRecordDto
+        {
+            Id = Guid.NewGuid(),
+            Kind = NormalizeKind(kind),
+            EntityId = entityId,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                tenantCode,
+                officeCode,
+                TenantScopeCatalog.UsenetGroup,
+                officeCode),
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, OfficeCodeCatalog.Shared),
+            PurgedAtUtc = DateTime.UtcNow,
+            IsDeleted = false
+        };
+    }
+
+    private async Task TouchPurgeRecordsAsync(
+        IReadOnlyList<RecycleBinPurgeRecordDto> records,
+        CancellationToken cancellationToken)
+    {
+        if (records.Count == 0)
+            return;
+
+        foreach (var dto in records
+                     .Where(current => current.EntityId != Guid.Empty && !string.IsNullOrWhiteSpace(current.Kind))
+                     .GroupBy(current => (NormalizeKind(current.Kind), current.EntityId))
+                     .Select(group => group
+                         .OrderByDescending(current => current.PurgedAtUtc)
+                         .ThenByDescending(current => current.Revision)
+                         .First()))
+        {
+            var kind = NormalizeKind(dto.Kind);
+            if (string.IsNullOrWhiteSpace(kind))
+                continue;
+
+            var existing = await _dbContext.RecycleBinPurgeRecords
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Kind == kind && current.EntityId == dto.EntityId, cancellationToken);
+
+            if (existing is null)
+            {
+                existing = new RecycleBinPurgeRecord
+                {
+                    Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id
+                };
+                dto.Kind = kind;
+                existing.Apply(dto);
+                _dbContext.RecycleBinPurgeRecords.Add(existing);
+                continue;
+            }
+
+            dto.Kind = kind;
+            existing.Apply(dto);
+            existing.IsDeleted = false;
+        }
     }
 }

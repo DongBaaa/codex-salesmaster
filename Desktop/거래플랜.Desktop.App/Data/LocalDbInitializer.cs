@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace 거래플랜.Desktop.App.Data;
 
-public static class LocalDbInitializer
+public static partial class LocalDbInitializer
 {
     private const string FallbackUtcText = "1970-01-01T00:00:00Z";
     private const string YeonsuOfficeIdSettingKey = "SystemOffice.YeonsuOfficeId";
@@ -24,6 +24,11 @@ public static class LocalDbInitializer
     private const string BackfillCustomerMasterScopeFieldsStepKey = "Migration.BackfillCustomerMasterScopeFields.v1";
     private const string NormalizeItemCategoryOptionDuplicatesStepKey = "Migration.NormalizeItemCategoryOptionDuplicates.v1";
     private const string CleanupLegacyRentalStartupDirtyItemsStepKey = "Migration.CleanupLegacyRentalStartupDirtyItems.v1";
+    private const string NormalizeUnitCatalogStepKey = "Migration.NormalizeUnitCatalog.v1";
+    private const string NormalizeInventoryTransferIntegrityStepKey = "Migration.NormalizeInventoryTransferIntegrity.v1";
+    private const string PurgeDeletedInventoryTransferDataStepKey = "Migration.PurgeDeletedInventoryTransferData.v1";
+    private const string RepairDeletedCustomerRentalProfileLinksStepKey = "Migration.RepairDeletedCustomerRentalProfileLinks.v1";
+    private const string CleanupDeletedInvoiceChainStepKey = "Migration.CleanupDeletedInvoiceChain.v1";
     private const string BackfillItemScopeFieldsStepKey = "Migration.BackfillItemScopeFields.v1";
     private const string BackfillItemOperationalFieldsStepKey = "Migration.BackfillItemOperationalFields.v1";
     private const string BackfillInvoiceLineTrackingTypesStepKey = "Migration.BackfillInvoiceLineTrackingTypes.v1";
@@ -71,6 +76,11 @@ public static class LocalDbInitializer
             );
         }
 
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeUnitCatalogStepKey,
+            async () => await NormalizeUnitCatalogAsync(db));
+
         await UpsertSettingAsync(db, "LastSyncRevision", "0");
         await UpsertSettingAsync(db, "Theme", "Dark");
 
@@ -94,6 +104,22 @@ public static class LocalDbInitializer
             db,
             CleanupLegacyRentalStartupDirtyItemsStepKey,
             async () => await CleanupLegacyRentalStartupDirtyItemsAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeInventoryTransferIntegrityStepKey,
+            async () => await NormalizeInventoryTransferIntegrityAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            PurgeDeletedInventoryTransferDataStepKey,
+            async () => await PurgeDeletedInventoryTransferDataAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            RepairDeletedCustomerRentalProfileLinksStepKey,
+            async () => await RepairDeletedCustomerRentalProfileLinksAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            CleanupDeletedInvoiceChainStepKey,
+            async () => await CleanupDeletedInvoiceChainAsync(db));
         await db.SaveChangesAsync();
         await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_ItemCategoryOptions_Name_Active\" ON \"ItemCategoryOptions\" (\"Name\") WHERE COALESCE(TRIM(\"Name\"), '') <> '' AND COALESCE(\"IsDeleted\", 0) = 0;");
     }

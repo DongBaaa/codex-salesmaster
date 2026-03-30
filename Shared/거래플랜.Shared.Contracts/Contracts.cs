@@ -308,6 +308,10 @@ public sealed class InvoiceDto : SyncEntityDto
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
+    public Guid VersionGroupId { get; set; }
+    public int VersionNumber { get; set; } = 1;
+    public Guid? PreviousVersionId { get; set; }
+    public bool IsLatestVersion { get; set; } = true;
     public VoucherType VoucherType { get; set; }
     public DateOnly InvoiceDate { get; set; }
     public decimal TotalAmount { get; set; }
@@ -639,6 +643,7 @@ public sealed class SyncPullResponse
     public List<RentalBillingLogDto> RentalBillingLogs { get; set; } = new();
     public List<InvoiceDto> Invoices { get; set; } = new();
     public List<PaymentDto> Payments { get; set; } = new();
+    public List<RecycleBinPurgeRecordDto> PurgeRecords { get; set; } = new();
 }
 
 public sealed class SyncPushRequest
@@ -709,6 +714,24 @@ public sealed class RecycleBinMutationResultDto
     public int RequestedCount { get; set; }
     public int SucceededCount { get; set; }
     public List<string> Messages { get; set; } = new();
+    public List<RecycleBinMutationItemResultDto> Results { get; set; } = new();
+}
+
+public sealed class RecycleBinMutationItemResultDto
+{
+    public Guid EntityId { get; set; }
+    public string Kind { get; set; } = string.Empty;
+    public bool Success { get; set; }
+    public string Message { get; set; } = string.Empty;
+}
+
+public sealed class RecycleBinPurgeRecordDto : SyncEntityDto
+{
+    public string Kind { get; set; } = string.Empty;
+    public Guid EntityId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public DateTime PurgedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
 public sealed class TenantDefinitionDto : SyncEntityDto

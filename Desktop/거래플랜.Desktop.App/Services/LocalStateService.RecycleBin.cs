@@ -261,6 +261,23 @@ public sealed partial class LocalStateService
         };
     }
 
+    public Task<OfficeMutationResult> ApplyServerPurgeRecycleBinEntryAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        CancellationToken ct = default)
+    {
+        return kind switch
+        {
+            RecycleBinEntityKind.Customer => ApplyServerPurgedCustomerAsync(entityId, ct),
+            RecycleBinEntityKind.CustomerContract => ApplyServerPurgedCustomerContractAsync(entityId, ct),
+            RecycleBinEntityKind.Item => ApplyServerPurgedItemAsync(entityId, ct),
+            RecycleBinEntityKind.Invoice => ApplyServerPurgedInvoiceAsync(entityId, ct),
+            RecycleBinEntityKind.Payment => ApplyServerPurgedPaymentAsync(entityId, ct),
+            RecycleBinEntityKind.Transaction => ApplyServerPurgedTransactionAsync(entityId, ct),
+            _ => Task.FromResult(OfficeMutationResult.Denied("서버 영구삭제 반영을 지원하지 않는 휴지통 항목입니다."))
+        };
+    }
+
     public async Task<OfficeMutationResult> RestoreCustomerAsync(
         Guid customerId,
         SessionState session,
@@ -287,6 +304,164 @@ public sealed partial class LocalStateService
 
         await _db.SaveChangesAsync(ct);
         return OfficeMutationResult.Ok(customer.Id, "거래처를 휴지통에서 복원했습니다.");
+    }
+
+    private async Task<OfficeMutationResult> ApplyServerPurgedCustomerAsync(
+        Guid customerId,
+        CancellationToken ct)
+    {
+        var customer = await _db.Customers
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == customerId, ct);
+        if (customer is null)
+            return OfficeMutationResult.Ok(customerId, "거래처 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
+
+        var contracts = await _db.CustomerContracts
+            .IgnoreQueryFilters()
+            .Where(current => current.CustomerId == customerId)
+            .ToListAsync(ct);
+
+        _db.CustomerContracts.RemoveRange(contracts);
+        _db.Customers.Remove(customer);
+        await _db.SaveChangesAsync(ct);
+        return OfficeMutationResult.Ok(customerId, "거래처 서버 영구삭제를 로컬에 반영했습니다.");
+    }
+
+    private async Task<OfficeMutationResult> ApplyServerPurgedCustomerContractAsync(
+        Guid contractId,
+        CancellationToken ct)
+    {
+        var contract = await _db.CustomerContracts
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == contractId, ct);
+        if (contract is null)
+            return OfficeMutationResult.Ok(contractId, "계약서 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
+
+        _db.CustomerContracts.Remove(contract);
+        await _db.SaveChangesAsync(ct);
+        return OfficeMutationResult.Ok(contractId, "계약서 서버 영구삭제를 로컬에 반영했습니다.");
+    }
+
+    private async Task<OfficeMutationResult> ApplyServerPurgedItemAsync(
+        Guid itemId,
+        CancellationToken ct)
+    {
+        var item = await _db.Items
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == itemId, ct);
+        if (item is null)
+            return OfficeMutationResult.Ok(itemId, "품목 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
+
+        var invoiceLines = await _db.InvoiceLines
+            .IgnoreQueryFilters()
+            .Where(current => current.ItemId == itemId)
+            .ToListAsync(ct);
+        foreach (var line in invoiceLines)
+            line.ItemId = null;
+
+        var transferLines = await _db.InventoryTransferLines
+            .IgnoreQueryFilters()
+            .Where(current => current.ItemId == itemId)
+            .ToListAsync(ct);
+        foreach (var line in transferLines)
+            line.ItemId = null;
+
+        var invoiceLineSerials = await _db.InvoiceLineSerials
+            .Where(current => current.ItemId == itemId)
+            .ToListAsync(ct);
+        foreach (var serial in invoiceLineSerials)
+            serial.ItemId = null;
+
+        var serialLedgers = await _db.SerialLedgers
+            .Where(current => current.ItemId == itemId)
+            .ToListAsync(ct);
+        foreach (var ledger in serialLedgers)
+            ledger.ItemId = null;
+
+        var movements = await _db.InventoryMovements.Where(current => current.ItemId == itemId).ToListAsync(ct);
+        var stockLayers = await _db.StockLayers.Where(current => current.ItemId == itemId).ToListAsync(ct);
+        var warehouseStocks = await _db.ItemWarehouseStocks.Where(current => current.ItemId == itemId).ToListAsync(ct);
+
+        _db.InventoryMovements.RemoveRange(movements);
+        _db.StockLayers.RemoveRange(stockLayers);
+        _db.ItemWarehouseStocks.RemoveRange(warehouseStocks);
+        _db.Items.Remove(item);
+        await _db.SaveChangesAsync(ct);
+
+        await RebuildInventorySnapshotsAsync(CreateServerPurgeInvoiceSaveContext(), ct);
+        RaiseInventoryStateChanged();
+        return OfficeMutationResult.Ok(itemId, "품목 서버 영구삭제를 로컬에 반영했습니다.");
+    }
+
+    private async Task<OfficeMutationResult> ApplyServerPurgedInvoiceAsync(
+        Guid invoiceId,
+        CancellationToken ct)
+    {
+        var target = await _db.Invoices
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == invoiceId, ct);
+        if (target is null)
+            return OfficeMutationResult.Ok(invoiceId, "전표 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
+
+        var versionGroupId = target.VersionGroupId == Guid.Empty ? target.Id : target.VersionGroupId;
+        var groupInvoices = await _db.Invoices
+            .IgnoreQueryFilters()
+            .Where(current => current.Id == target.Id || current.VersionGroupId == versionGroupId)
+            .ToListAsync(ct);
+
+        _db.Invoices.RemoveRange(groupInvoices);
+        await _db.SaveChangesAsync(ct);
+
+        await RebuildInventorySnapshotsAsync(CreateServerPurgeInvoiceSaveContext(), ct);
+        return OfficeMutationResult.Ok(invoiceId, "전표 서버 영구삭제를 로컬에 반영했습니다.");
+    }
+
+    private async Task<OfficeMutationResult> ApplyServerPurgedPaymentAsync(
+        Guid paymentId,
+        CancellationToken ct)
+    {
+        var payment = await _db.Payments
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == paymentId, ct);
+        if (payment is null)
+            return OfficeMutationResult.Ok(paymentId, "수금/지급 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
+
+        _db.Payments.Remove(payment);
+        await _db.SaveChangesAsync(ct);
+        return OfficeMutationResult.Ok(paymentId, "수금/지급 서버 영구삭제를 로컬에 반영했습니다.");
+    }
+
+    private async Task<OfficeMutationResult> ApplyServerPurgedTransactionAsync(
+        Guid transactionId,
+        CancellationToken ct)
+    {
+        var transaction = await _db.Transactions
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == transactionId, ct);
+        if (transaction is null)
+            return OfficeMutationResult.Ok(transactionId, "거래내역 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
+
+        var attachments = await _db.TransactionAttachments
+            .IgnoreQueryFilters()
+            .Where(current => current.TransactionId == transactionId)
+            .ToListAsync(ct);
+        foreach (var attachment in attachments)
+            TryDeleteAttachmentFile(attachment);
+
+        var linkedPayment = await _db.Payments
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == transactionId, ct);
+        if (linkedPayment is not null)
+            _db.Payments.Remove(linkedPayment);
+
+        _db.TransactionAttachments.RemoveRange(attachments);
+        _db.Transactions.Remove(transaction);
+        await _db.SaveChangesAsync(ct);
+
+        if (transaction.LinkedRentalBillingProfileId.HasValue && transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
+            await RecalculateRentalSettlementAsync(transaction.LinkedRentalBillingProfileId.Value, ct);
+
+        return OfficeMutationResult.Ok(transactionId, "거래내역 서버 영구삭제를 로컬에 반영했습니다.");
     }
 
     public async Task<OfficeMutationResult> PermanentlyDeleteCustomerAsync(
@@ -321,6 +496,12 @@ public sealed partial class LocalStateService
             .AnyAsync(current => current.CustomerId == customerId, ct);
         if (hasRentalProfiles)
             return OfficeMutationResult.Denied("연결된 렌탈 청구 프로필이 남아 있어 거래처를 영구삭제할 수 없습니다.");
+
+        var hasRentalAssets = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.CustomerId == customerId, ct);
+        if (hasRentalAssets)
+            return OfficeMutationResult.Denied("연결된 렌탈 자산이 남아 있어 거래처를 영구삭제할 수 없습니다.");
 
         var contracts = await _db.CustomerContracts
             .IgnoreQueryFilters()
@@ -883,6 +1064,14 @@ public sealed partial class LocalStateService
 
         return customerRestored;
     }
+
+    private static InvoiceSaveContext CreateServerPurgeInvoiceSaveContext() => new()
+    {
+        Username = "server-sync",
+        Role = DomainConstants.RoleAdmin,
+        OfficeCode = DomainConstants.OfficeUsenet,
+        ForceOverride = true
+    };
 
     private void RestoreCustomerCore(
         LocalCustomer customer,

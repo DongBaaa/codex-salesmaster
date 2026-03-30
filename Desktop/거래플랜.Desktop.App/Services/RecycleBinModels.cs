@@ -37,3 +37,38 @@ public sealed partial class RecycleBinEntry : ObservableObject
         ? "-"
         : DeletedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
 }
+
+public sealed class RecycleBinDependencyInfo
+{
+    public bool CanPurge { get; init; }
+    public string Summary { get; init; } = string.Empty;
+    public List<RecycleBinDependencyItem> Dependencies { get; init; } = new();
+}
+
+public sealed class RecycleBinDependencyItem
+{
+    public string Label { get; init; } = string.Empty;
+    public int Count { get; init; }
+    public string Detail { get; init; } = string.Empty;
+    public string DisplayText => Count > 0
+        ? $"{Label} {Count:N0}건"
+        : Label;
+}
+
+public sealed class RecycleBinCustomerMergeCandidate
+{
+    public Guid CustomerId { get; init; }
+    public string Name { get; init; } = string.Empty;
+    public string BusinessNumber { get; init; } = string.Empty;
+    public string Phone { get; init; } = string.Empty;
+    public string ResponsibleOfficeCode { get; init; } = string.Empty;
+    public string DisplayText
+        => string.Join(" / ",
+            new[]
+            {
+                Name,
+                string.IsNullOrWhiteSpace(BusinessNumber) ? null : BusinessNumber,
+                string.IsNullOrWhiteSpace(Phone) ? null : Phone,
+                string.IsNullOrWhiteSpace(ResponsibleOfficeCode) ? null : ResponsibleOfficeCode
+            }.Where(segment => !string.IsNullOrWhiteSpace(segment)));
+}
