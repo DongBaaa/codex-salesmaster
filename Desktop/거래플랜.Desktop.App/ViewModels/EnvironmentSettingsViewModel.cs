@@ -155,7 +155,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     {
         if (!CanEditCompanyProfiles)
         {
-            StatusMessage = "회사 정보를 수정할 권한이 없습니다.";
+            StatusMessage = "회사 정보는 관리자 권한이 있는 계정만 수정할 수 있습니다.";
             return;
         }
 
@@ -228,7 +228,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
 
         if (!CanEditCompanyProfiles)
         {
-            StatusMessage = "회사 정보를 수정할 권한이 없습니다.";
+            StatusMessage = "회사 정보는 관리자 권한이 있는 계정만 수정할 수 있습니다.";
             return;
         }
 
@@ -539,7 +539,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         {
             StatusMessage = _session.IsOfflineMode
                 ? "오프라인 모드에서는 사용자 관리를 사용할 수 없습니다."
-                : "사용자 관리 권한이 없습니다.";
+                : "사용자 관리는 관리자 권한이 있는 계정만 사용할 수 있습니다.";
             return;
         }
 
@@ -638,7 +638,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     {
         if (!CanManageUsers)
         {
-            StatusMessage = "사용자 관리 권한이 없습니다.";
+            StatusMessage = "사용자 관리는 관리자 권한이 있는 계정만 사용할 수 있습니다.";
             return;
         }
 

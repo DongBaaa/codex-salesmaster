@@ -114,7 +114,10 @@ public partial class MainWindow : Window
         if (popupSections.Count > 0)
         {
             MessageBox.Show(
-                string.Join(Environment.NewLine + Environment.NewLine, popupSections),
+                string.Join(Environment.NewLine + Environment.NewLine, popupSections)
+                + Environment.NewLine
+                + Environment.NewLine
+                + "확인을 누르면 메인화면으로 이동해 계속 작업할 수 있습니다.",
                 "대시보드 알림",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);

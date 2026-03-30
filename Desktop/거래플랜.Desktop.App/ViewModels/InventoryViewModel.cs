@@ -291,7 +291,7 @@ public sealed partial class InventoryViewModel : ObservableObject
     {
         if (!_session.HasAdministrativePrivileges)
         {
-            StatusMessage = "관리자 또는 god 권한 계정만 품목을 저장할 수 있습니다.";
+            StatusMessage = "현재 계정은 품목을 저장할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 저장을 요청하세요.";
             return;
         }
 
@@ -345,7 +345,7 @@ public sealed partial class InventoryViewModel : ObservableObject
     {
         if (!_session.HasAdministrativePrivileges)
         {
-            StatusMessage = "관리자 또는 god 권한 계정만 품목을 삭제할 수 있습니다.";
+            StatusMessage = "현재 계정은 품목을 삭제할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 삭제를 요청하세요.";
             return;
         }
 

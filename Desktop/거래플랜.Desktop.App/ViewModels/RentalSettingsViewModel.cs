@@ -64,7 +64,7 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
     {
         if (!CanManage)
         {
-            StatusMessage = "권한이 없어 렌탈 기준설정을 저장할 수 없습니다.";
+            StatusMessage = "렌탈 기준설정 저장은 관리자 또는 렌탈 관리 권한이 있는 계정만 처리할 수 있습니다.";
             return;
         }
 
@@ -78,7 +78,7 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
     {
         if (!CanImport)
         {
-            StatusMessage = "권한이 없어 렌탈 청구 엑셀을 가져올 수 없습니다.";
+            StatusMessage = "렌탈 청구 엑셀 가져오기는 관리자 또는 렌탈 가져오기 권한이 있는 계정만 사용할 수 있습니다.";
             return;
         }
 
@@ -92,7 +92,7 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
     {
         if (!CanImport)
         {
-            StatusMessage = "권한이 없어 렌탈 자산 엑셀을 가져올 수 없습니다.";
+            StatusMessage = "렌탈 자산 엑셀 가져오기는 관리자 또는 렌탈 가져오기 권한이 있는 계정만 사용할 수 있습니다.";
             return;
         }
 

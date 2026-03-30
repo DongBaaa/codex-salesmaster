@@ -484,13 +484,36 @@
 
             <TabItem Header="담당지점 관리">
                 <Grid Margin="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="2*"/>
                         <ColumnDefinition Width="12"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
 
-                    <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+                    <Border Grid.Row="0"
+                            Grid.ColumnSpan="3"
+                            Background="#102039"
+                            BorderBrush="#2E4060"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="12">
+                        <StackPanel>
+                            <TextBlock Text="담당지점 안내"
+                                       Foreground="#4FC3F7"
+                                       FontWeight="Bold"/>
+                            <TextBlock Text="이 화면은 자유롭게 담당지점을 추가/삭제하는 마스터 관리 화면이 아니라, 시스템 기준 담당지점(USENET, ITWORLD, YEONSU)을 확인하는 용도입니다."
+                                       Foreground="#9FB3C8"
+                                       Margin="0,6,0,0"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="2" Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
                         <DockPanel>
                             <Border DockPanel.Dock="Top" Background="#102039" Padding="12" CornerRadius="6,6,0,0">
                                 <DockPanel>
@@ -516,7 +539,7 @@
                         </DockPanel>
                     </Border>
 
-                    <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14">
+                    <Border Grid.Row="2" Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14">
                         <StackPanel>
                             <TextBlock Text="담당지점 편집" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
                             <TextBlock Text="담당지점 코드는 서버/로컬 공통 canonical 값(USENET, ITWORLD, YEONSU)으로 고정됩니다." Foreground="#9FB3C8" Margin="0,8,0,12" TextWrapping="Wrap"/>

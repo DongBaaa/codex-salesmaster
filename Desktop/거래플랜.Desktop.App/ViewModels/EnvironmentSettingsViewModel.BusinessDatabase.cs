@@ -70,7 +70,7 @@ public sealed partial class EnvironmentSettingsViewModel
     {
         if (!CanManageBusinessDatabaseSelection)
         {
-            StatusMessage = "업체 DB를 변경할 권한이 없습니다.";
+            StatusMessage = "업체 DB 선택은 관리자 권한이 있는 계정만 변경할 수 있습니다.";
             return;
         }
 

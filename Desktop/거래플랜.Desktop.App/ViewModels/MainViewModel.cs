@@ -1232,7 +1232,7 @@ public sealed partial class MainViewModel : ObservableObject
         if (!_session.HasPermission("CompanyProfile.Edit")
             && _session.User?.Role != "Admin")
         {
-            System.Windows.MessageBox.Show("권한이 없습니다.", "오류", System.Windows.MessageBoxButton.OK);
+            System.Windows.MessageBox.Show("회사 정보는 관리자 권한이 있는 계정만 저장할 수 있습니다.", "권한 제한", System.Windows.MessageBoxButton.OK);
             return;
         }
 

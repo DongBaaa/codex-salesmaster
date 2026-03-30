@@ -85,7 +85,7 @@ public sealed partial class EnvironmentSettingsViewModel
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Forbidden || ex.Message.Contains("403", StringComparison.Ordinal))
         {
-            StatusMessage = "업체/데이터 권한은 관리자 또는 god 권한 계정만 조회할 수 있습니다.";
+            StatusMessage = "업체 / 데이터 권한 화면은 관리자 계정만 조회하거나 변경할 수 있습니다.";
             NewSharingPolicy();
             return;
         }
