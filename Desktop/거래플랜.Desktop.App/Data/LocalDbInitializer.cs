@@ -23,6 +23,7 @@ public static class LocalDbInitializer
     private const string BackfillCustomerScopeFieldsStepKey = "Migration.BackfillCustomerScopeFields.v1";
     private const string BackfillCustomerMasterScopeFieldsStepKey = "Migration.BackfillCustomerMasterScopeFields.v1";
     private const string NormalizeItemCategoryOptionDuplicatesStepKey = "Migration.NormalizeItemCategoryOptionDuplicates.v1";
+    private const string CleanupLegacyRentalStartupDirtyItemsStepKey = "Migration.CleanupLegacyRentalStartupDirtyItems.v1";
     private const string BackfillItemScopeFieldsStepKey = "Migration.BackfillItemScopeFields.v1";
     private const string BackfillItemOperationalFieldsStepKey = "Migration.BackfillItemOperationalFields.v1";
     private const string BackfillInvoiceLineTrackingTypesStepKey = "Migration.BackfillInvoiceLineTrackingTypes.v1";
@@ -89,11 +90,12 @@ public static class LocalDbInitializer
             db,
             NormalizeRentalOfficeDataStepKey,
             async () => await NormalizeRentalOfficeDataAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            CleanupLegacyRentalStartupDirtyItemsStepKey,
+            async () => await CleanupLegacyRentalStartupDirtyItemsAsync(db));
         await db.SaveChangesAsync();
         await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_ItemCategoryOptions_Name_Active\" ON \"ItemCategoryOptions\" (\"Name\") WHERE COALESCE(TRIM(\"Name\"), '') <> '' AND COALESCE(\"IsDeleted\", 0) = 0;");
-
-        var rentalState = new RentalStateService(db);
-        await rentalState.RepairRentalCatalogLinksAsync();
     }
 
     private static void LogSchemaStepFailure(string stepName, Exception ex)
@@ -896,6 +898,46 @@ public static class LocalDbInitializer
     private static void PreserveDirtyStateForStartupMaintenance(ILocalSyncEntity entity, DateTime updatedAtUtc)
     {
         entity.UpdatedAtUtc = updatedAtUtc;
+    }
+
+    private static async Task CleanupLegacyRentalStartupDirtyItemsAsync(LocalDbContext db)
+    {
+        var dirtyItems = await db.Items
+            .IgnoreQueryFilters()
+            .Where(item =>
+                !item.IsDeleted &&
+                item.IsDirty &&
+                item.SimpleMemo == RentalStateService.AutoCreatedRentalItemMemo)
+            .ToListAsync();
+        if (dirtyItems.Count == 0)
+            return;
+
+        var dirtyItemIds = dirtyItems
+            .Select(item => item.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (dirtyItemIds.Count == 0)
+            return;
+
+        var linkedItemIds = await db.RentalAssets
+            .IgnoreQueryFilters()
+            .Where(asset => !asset.IsDeleted && asset.ItemId.HasValue && dirtyItemIds.Contains(asset.ItemId.Value))
+            .Select(asset => asset.ItemId!.Value)
+            .Distinct()
+            .ToListAsync();
+        if (linkedItemIds.Count == 0)
+            return;
+
+        var cleanedCount = 0;
+        foreach (var item in dirtyItems.Where(current => linkedItemIds.Contains(current.Id)))
+        {
+            item.IsDirty = false;
+            cleanedCount++;
+        }
+
+        if (cleanedCount > 0)
+            AppLogger.Warn("LOCALDB", $"앱 시작 자동 렌탈 보정으로 남아 있던 품목 dirty {cleanedCount}건을 정리했습니다.");
     }
 
     private static async Task NormalizeOfficeReferenceDataAsync(LocalDbContext db)

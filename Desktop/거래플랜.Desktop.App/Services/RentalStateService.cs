@@ -12,6 +12,7 @@ namespace 거래플랜.Desktop.App.Services;
 
 public sealed class RentalStateService
 {
+    public const string AutoCreatedRentalItemMemo = "렌탈 자산/설치현황 자동 동기화 생성";
     private const string AlertDaysSettingKey = "Rental.AlertDaysBefore";
     private const string BillingWorkbookPathSettingKey = "Rental.ImportBillingWorkbookPath";
     private const string AssetWorkbookPathSettingKey = "Rental.ImportAssetWorkbookPath";
@@ -2848,7 +2849,7 @@ public sealed class RentalStateService
             PurchasePrice = asset.PurchasePrice,
             SalePrice = asset.SalePrice,
             RetailPrice = asset.SalePrice,
-            SimpleMemo = "렌탈 자산/설치현황 자동 동기화 생성",
+            SimpleMemo = AutoCreatedRentalItemMemo,
             IsRental = true,
             IsSale = false,
             SerialNumber = (asset.MachineNumber ?? string.Empty).Trim(),
@@ -2927,7 +2928,7 @@ public sealed class RentalStateService
                 continue;
             if (!ItemOperationalPolicy.IsAsset(item.TrackingType))
                 continue;
-            if (!string.Equals(item.SimpleMemo, "렌탈 자산/설치현황 자동 동기화 생성", StringComparison.Ordinal))
+            if (!string.Equals(item.SimpleMemo, AutoCreatedRentalItemMemo, StringComparison.Ordinal))
                 continue;
 
             item.IsDeleted = true;
@@ -3079,7 +3080,7 @@ public sealed class RentalStateService
 
         if (string.IsNullOrWhiteSpace(item.SimpleMemo))
         {
-            item.SimpleMemo = "렌탈 자산/설치현황 자동 동기화 생성";
+            item.SimpleMemo = AutoCreatedRentalItemMemo;
             itemChanged = true;
         }
 
