@@ -784,6 +784,14 @@ public partial class MainWindow : Window
             Owner = this
         };
         win.ShowDialog();
+
+        if (vm.InvoiceToOpenAfterClose.HasValue)
+        {
+            var invoice = await _local.GetInvoiceAsync(vm.InvoiceToOpenAfterClose.Value);
+            if (invoice is not null)
+                await OpenInvoiceWindowAsync(invoice);
+        }
+
         await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
 

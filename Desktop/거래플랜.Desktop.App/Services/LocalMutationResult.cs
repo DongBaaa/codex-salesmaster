@@ -6,12 +6,14 @@ public sealed class LocalMutationResult
     public bool PermissionDenied { get; init; }
     public bool NotFound { get; init; }
     public Guid EntityId { get; init; }
+    public Guid RelatedEntityId { get; init; }
     public string Message { get; init; } = string.Empty;
 
-    public static LocalMutationResult Ok(Guid entityId = default, string message = "") => new()
+    public static LocalMutationResult Ok(Guid entityId = default, string message = "", Guid relatedEntityId = default) => new()
     {
         Success = true,
         EntityId = entityId,
+        RelatedEntityId = relatedEntityId,
         Message = message
     };
 

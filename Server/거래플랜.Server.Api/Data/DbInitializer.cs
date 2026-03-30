@@ -2071,6 +2071,8 @@ public static partial class DbInitializer
         AppDbContext dbContext,
         CancellationToken cancellationToken)
     {
+        await EnsureColumnAsync(dbContext, "Invoices", "LinkedRentalBillingProfileId", "TEXT NULL", "uuid NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "Invoices", "LinkedRentalBillingRunId", "TEXT NULL", "uuid NULL", cancellationToken);
         await EnsureColumnAsync(dbContext, "Invoices", "VersionGroupId", "TEXT NULL", "uuid NULL", cancellationToken);
         await EnsureColumnAsync(dbContext, "Invoices", "VersionNumber", "INTEGER NOT NULL DEFAULT 1", "integer NOT NULL DEFAULT 1", cancellationToken);
         await EnsureColumnAsync(dbContext, "Invoices", "PreviousVersionId", "TEXT NULL", "uuid NULL", cancellationToken);
@@ -2090,6 +2092,26 @@ public static partial class DbInitializer
         {
             await dbContext.Database.ExecuteSqlRawAsync(
                 "CREATE INDEX IF NOT EXISTS \"IX_Invoices_IsLatestVersion\" ON \"Invoices\" (\"IsLatestVersion\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_Invoices_LinkedRentalBillingProfileId\" ON \"Invoices\" (\"LinkedRentalBillingProfileId\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_Invoices_LinkedRentalBillingRunId\" ON \"Invoices\" (\"LinkedRentalBillingRunId\");",
                 cancellationToken);
         }
         catch

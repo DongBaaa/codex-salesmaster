@@ -185,6 +185,8 @@ public sealed class LocalInvoice : LocalSyncEntity
     public string SourceWarehouseCode { get; set; } = DomainConstants.WarehouseUsenetMain;
     public Guid? DeliveryGroupId { get; set; }
     public Guid? ParentInvoiceId { get; set; }
+    public Guid? LinkedRentalBillingProfileId { get; set; }
+    public Guid? LinkedRentalBillingRunId { get; set; }
     public Guid VersionGroupId { get; set; }
     public int VersionNumber { get; set; } = 1;
     public Guid? PreviousVersionId { get; set; }

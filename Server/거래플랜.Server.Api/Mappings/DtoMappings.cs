@@ -903,6 +903,8 @@ public static class DtoMappings
             OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
             InvoiceNumber = entity.InvoiceNumber,
             LocalTempNumber = entity.LocalTempNumber,
+            LinkedRentalBillingProfileId = entity.LinkedRentalBillingProfileId,
+            LinkedRentalBillingRunId = entity.LinkedRentalBillingRunId,
             VersionGroupId = entity.VersionGroupId == Guid.Empty ? entity.Id : entity.VersionGroupId,
             VersionNumber = entity.VersionNumber <= 0 ? 1 : entity.VersionNumber,
             PreviousVersionId = entity.PreviousVersionId,
@@ -931,6 +933,8 @@ public static class DtoMappings
         entity.CustomerId = dto.CustomerId; entity.InvoiceNumber = dto.InvoiceNumber;
         entity.LocalTempNumber = dto.LocalTempNumber; entity.VoucherType = dto.VoucherType;
         entity.InvoiceDate = dto.InvoiceDate; entity.TaxInvoiceIssued = dto.TaxInvoiceIssued; entity.Memo = dto.Memo; entity.IsDeleted = dto.IsDeleted;
+        entity.LinkedRentalBillingProfileId = dto.LinkedRentalBillingProfileId;
+        entity.LinkedRentalBillingRunId = dto.LinkedRentalBillingRunId;
         entity.VersionGroupId = dto.VersionGroupId == Guid.Empty ? dto.Id : dto.VersionGroupId;
         entity.VersionNumber = dto.VersionNumber <= 0 ? 1 : dto.VersionNumber;
         entity.PreviousVersionId = dto.PreviousVersionId;

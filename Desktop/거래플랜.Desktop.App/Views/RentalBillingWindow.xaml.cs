@@ -32,6 +32,23 @@ public partial class RentalBillingWindow : Window
         e.Handled = true;
     }
 
+    private void StartBillingButton_Click(object sender, RoutedEventArgs e)
+    {
+        UiTaskHelper.Run(this, async () =>
+        {
+            if (DataContext is not RentalBillingViewModel viewModel)
+                return;
+
+            await viewModel.StartBillingCommand.ExecuteAsync(null);
+            if (!viewModel.InvoiceToOpenAfterClose.HasValue)
+                return;
+
+            _allowClose = true;
+            DialogResult = true;
+            Close();
+        }, "UI", "렌탈 청구 시작", "렌탈 청구 시작 중 오류가 발생했습니다.");
+    }
+
     private void RegisterSettlementButton_Click(object sender, RoutedEventArgs e)
     {
         UiTaskHelper.Run(this, async () =>

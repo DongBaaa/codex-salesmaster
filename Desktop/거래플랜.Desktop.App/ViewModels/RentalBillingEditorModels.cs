@@ -7,6 +7,7 @@ public sealed partial class RentalBillingTemplateEditorItem : ObservableObject
 {
     [ObservableProperty] private Guid _itemId = Guid.NewGuid();
     [ObservableProperty] private string _displayItemName = string.Empty;
+    [ObservableProperty] private string _billingLineMode = string.Empty;
     [ObservableProperty] private decimal _quantity = 1m;
     [ObservableProperty] private decimal _unitPrice;
     [ObservableProperty] private decimal _amount;

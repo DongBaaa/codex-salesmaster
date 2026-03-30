@@ -167,6 +167,10 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalInvoice>()
             .HasIndex(i => i.IsLatestVersion);
         model.Entity<LocalInvoice>()
+            .HasIndex(i => i.LinkedRentalBillingProfileId);
+        model.Entity<LocalInvoice>()
+            .HasIndex(i => i.LinkedRentalBillingRunId);
+        model.Entity<LocalInvoice>()
             .HasIndex(i => i.SourceWarehouseCode);
         model.Entity<LocalInvoice>()
             .HasIndex(i => i.ResponsibleOfficeCode);

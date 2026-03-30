@@ -303,6 +303,8 @@ public static partial class LocalDbInitializer
             ("SourceWarehouseCode", "TEXT NOT NULL DEFAULT 'USENET_MAIN'"),
             ("DeliveryGroupId", "TEXT NULL"),
             ("ParentInvoiceId", "TEXT NULL"),
+            ("LinkedRentalBillingProfileId", "TEXT NULL"),
+            ("LinkedRentalBillingRunId", "TEXT NULL"),
             ("VersionGroupId", "TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'"),
             ("VersionNumber", "INTEGER NOT NULL DEFAULT 1"),
             ("PreviousVersionId", "TEXT NULL"),
@@ -398,6 +400,8 @@ public static partial class LocalDbInitializer
 
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_VersionGroupId\" ON \"Invoices\" (\"VersionGroupId\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_IsLatestVersion\" ON \"Invoices\" (\"IsLatestVersion\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_LinkedRentalBillingProfileId\" ON \"Invoices\" (\"LinkedRentalBillingProfileId\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_LinkedRentalBillingRunId\" ON \"Invoices\" (\"LinkedRentalBillingRunId\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_SourceWarehouseCode\" ON \"Invoices\" (\"SourceWarehouseCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_ResponsibleOfficeCode\" ON \"Invoices\" (\"ResponsibleOfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CompanyProfiles_OfficeCode_ProfileName\" ON \"CompanyProfiles\" (\"OfficeCode\", \"ProfileName\");");

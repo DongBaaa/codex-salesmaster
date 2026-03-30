@@ -93,6 +93,7 @@ public sealed class RentalBillingTemplateItemModel
 {
     public Guid ItemId { get; set; } = Guid.NewGuid();
     public string DisplayItemName { get; set; } = string.Empty;
+    public string BillingLineMode { get; set; } = string.Empty;
     public decimal Quantity { get; set; } = 1m;
     public decimal UnitPrice { get; set; }
     public decimal Amount { get; set; }

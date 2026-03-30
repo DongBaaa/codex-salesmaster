@@ -50,6 +50,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     public ObservableCollection<DisplayOption> OfficeOptions { get; } = new();
     public ObservableCollection<string> AssignedUsernameOptions { get; } = new();
     public ObservableCollection<string> BillingTypeOptions { get; } = new();
+    public ObservableCollection<string> BillingLineModeOptions { get; } = new();
     public ObservableCollection<string> BillingAdvanceModeOptions { get; } = new();
     public ObservableCollection<string> BillingMethodOptions { get; } = new();
     public ObservableCollection<string> CandidateAssetSummaryLines { get; } = new();
@@ -85,6 +86,9 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         BillingTypeOptions.Add("묶음");
         BillingTypeOptions.Add("개별");
         BillingTypeOptions.Add("혼합");
+
+        BillingLineModeOptions.Add("묶음");
+        BillingLineModeOptions.Add("개별");
 
         BillingAdvanceModeOptions.Add("후불");
         BillingAdvanceModeOptions.Add("선불");
@@ -132,6 +136,19 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     partial void OnBillingCycleMonthsChanged(int value) => UpdateBillingPreview();
     partial void OnBillingStartDateChanged(DateTime value) => UpdateBillingPreview();
     partial void OnBillingAdvanceModeChanged(string value) => UpdateBillingPreview();
+    partial void OnBillingTypeChanged(string value)
+    {
+        if (string.Equals((value ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal))
+        {
+            UpdateTemplateTotals();
+            return;
+        }
+
+        foreach (var item in TemplateItems)
+            item.BillingLineMode = NormalizeBillingLineModeValue(value);
+
+        UpdateTemplateTotals();
+    }
     partial void OnMonthlyAmountChanged(decimal value)
     {
         if (TemplateItems.Count == 1)
@@ -285,6 +302,12 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         if (!ValidateAllSteps())
             return;
 
+        if (!TryValidateTemplateConfiguration(out var validationMessage))
+        {
+            StatusMessage = validationMessage;
+            return;
+        }
+
         try
         {
             IsBusy = true;
@@ -436,14 +459,9 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 return true;
 
             case 4:
-                if (TemplateItems.Count == 0)
+                if (!TryValidateTemplateConfiguration(out var templateValidationMessage))
                 {
-                    StatusMessage = "청구항목을 하나 이상 입력하세요.";
-                    return false;
-                }
-                if (TemplateItems.Any(item => string.IsNullOrWhiteSpace(item.DisplayItemName)))
-                {
-                    StatusMessage = "표시 품목명은 비워둘 수 없습니다.";
+                    StatusMessage = templateValidationMessage;
                     return false;
                 }
                 return true;
@@ -533,6 +551,9 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         var item = new RentalBillingTemplateEditorItem
         {
             DisplayItemName = "렌탈 임대료",
+            BillingLineMode = string.Equals((BillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal)
+                ? string.Empty
+                : NormalizeBillingLineModeValue(BillingType),
             Quantity = 1m,
             UnitPrice = MonthlyAmount,
             Amount = MonthlyAmount
@@ -546,12 +567,58 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         {
             ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
             DisplayItemName = (item.DisplayItemName ?? string.Empty).Trim(),
+            BillingLineMode = string.Equals((BillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal)
+                ? NormalizeBillingLineModeValue(item.BillingLineMode)
+                : NormalizeBillingLineModeValue(BillingType),
             Quantity = item.Quantity <= 0m ? 1m : item.Quantity,
             UnitPrice = Math.Max(0m, item.UnitPrice),
             Amount = item.Amount > 0m ? item.Amount : item.EffectiveAmount,
             Note = (item.Note ?? string.Empty).Trim(),
             IncludedAssetIds = item.IncludedAssetIds.Distinct().ToList()
         }).ToList();
+
+    private bool TryValidateTemplateConfiguration(out string message)
+    {
+        message = string.Empty;
+        if (TemplateItems.Count == 0)
+        {
+            message = "청구항목을 하나 이상 입력하세요.";
+            return false;
+        }
+
+        if (TemplateItems.Any(item => string.IsNullOrWhiteSpace(item.DisplayItemName)))
+        {
+            message = "표시 품목명은 비워둘 수 없습니다.";
+            return false;
+        }
+
+        if (string.Equals((BillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal))
+        {
+            if (TemplateItems.Any(item => string.IsNullOrWhiteSpace(NormalizeBillingLineModeValue(item.BillingLineMode))))
+            {
+                message = "혼합 청구는 모든 청구항목에 라인유형(묶음/개별)을 지정해야 합니다.";
+                return false;
+            }
+
+            return true;
+        }
+
+        var normalizedMode = NormalizeBillingLineModeValue(BillingType);
+        foreach (var item in TemplateItems)
+            item.BillingLineMode = normalizedMode;
+
+        return true;
+    }
+
+    private static string NormalizeBillingLineModeValue(string? value)
+    {
+        var trimmed = (value ?? string.Empty).Trim();
+        return string.Equals(trimmed, "개별", StringComparison.Ordinal)
+            ? "개별"
+            : string.Equals(trimmed, "묶음", StringComparison.Ordinal)
+                ? "묶음"
+                : string.Empty;
+    }
 
     private void UpdateTemplateTotals()
     {

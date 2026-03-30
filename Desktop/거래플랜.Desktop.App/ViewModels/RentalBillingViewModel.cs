@@ -1,4 +1,5 @@
 ﻿using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -20,6 +21,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private Task? _candidateAssetsLoadTask;
     private bool _suppressFilterReload;
     private bool _pendingFilterReload;
+    private string _selectedRowBaselineSignature = string.Empty;
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private DisplayOption? _selectedOfficeFilter;
@@ -86,6 +88,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public ObservableCollection<string> CompletionStatusOptions { get; } = new();
     public ObservableCollection<string> BillingMethodOptions { get; } = new();
     public ObservableCollection<string> BillingTypeOptions { get; } = new();
+    public ObservableCollection<string> BillingLineModeOptions { get; } = new();
     public ObservableCollection<string> BillingAdvanceModeOptions { get; } = new();
     public ObservableCollection<RentalBillingViewRow> Rows { get; } = new();
     public ObservableCollection<RentalBillingTemplateEditorItem> TemplateItems { get; } = new();
@@ -96,7 +99,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                               _session.HasAssignedPermission(AppPermissionNames.RentalEditAll);
     public bool CanManageAll => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.RentalEditAll);
     public bool CanSave => SelectedRow is null || CanEditCurrentSelection;
-    public bool CanStartBillingSelected => SelectedRow is not null && CanEditCurrentSelection;
+    public bool CanStartBillingSelected => SelectedRow is not null && CanAccessCurrentSelection;
     public bool CanHoldSelected => SelectedRow is not null && CanEditCurrentSelection;
     public bool CanRegisterSettlementSelected => SelectedRow is not null && CanEditCurrentSelection;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;
@@ -106,8 +109,15 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public LocalStateService LocalStateService => _local;
     public RentalStateService RentalStateService => _rental;
     public SessionState SessionState => _session;
+    public Guid? InvoiceToOpenAfterClose { get; private set; }
 
-    private bool CanEditCurrentSelection => SelectedRow is null || CanEditScope(
+    private bool CanAccessCurrentSelection => SelectedRow is null || CanOperateScope(
+        SelectedRow.Source.AssignedUsername,
+        string.IsNullOrWhiteSpace(SelectedRow.Source.ResponsibleOfficeCode)
+            ? SelectedRow.Source.ManagementCompanyCode
+            : SelectedRow.Source.ResponsibleOfficeCode);
+
+    private bool CanEditCurrentSelection => SelectedRow is null || CanOperateScope(
         SelectedRow.Source.AssignedUsername,
         string.IsNullOrWhiteSpace(SelectedRow.Source.ResponsibleOfficeCode)
             ? SelectedRow.Source.ManagementCompanyCode
@@ -150,6 +160,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         BillingTypeOptions.Add("개별");
         BillingTypeOptions.Add("혼합");
 
+        BillingLineModeOptions.Add("묶음");
+        BillingLineModeOptions.Add("개별");
+
         BillingAdvanceModeOptions.Add("후불");
         BillingAdvanceModeOptions.Add("선불");
 
@@ -171,6 +184,19 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     partial void OnCompletionNoteChanged(string value) => EditFollowUpNote = value;
     partial void OnEditFollowUpNoteChanged(string value) => CompletionNote = value;
     partial void OnEditBillingCycleMonthsChanged(int value) => UpdateTemplateDerivedValues();
+    partial void OnEditBillingTypeChanged(string value)
+    {
+        if (string.Equals((value ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal))
+        {
+            UpdateTemplateDerivedValues();
+            return;
+        }
+
+        foreach (var item in TemplateItems)
+            item.BillingLineMode = NormalizeBillingLineModeValue(value);
+
+        UpdateTemplateDerivedValues();
+    }
     partial void OnSelectedTemplateItemChanged(RentalBillingTemplateEditorItem? value)
     {
         SyncAssetSelectionFromTemplate();
@@ -254,6 +280,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveAsync()
     {
+        if (!TryValidateTemplateConfiguration(out var validationMessage))
+        {
+            StatusMessage = validationMessage;
+            return;
+        }
+
         UpdateTemplateDerivedValues();
 
         var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
@@ -320,12 +352,23 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
+        if (HasUnsavedSelectedRowChanges())
+        {
+            StatusMessage = "현재 청구 설정 편집 내용이 저장되지 않았습니다. 먼저 저장한 뒤 청구를 시작하세요.";
+            return;
+        }
+
+        InvoiceToOpenAfterClose = null;
         var targetId = SelectedRow.Source.Id;
-        var result = await _rental.StartBillingAsync(targetId, _session);
+        var result = await _rental.StartBillingAsync(targetId, ReferenceDate, _session);
         StatusMessage = result.Message;
         if (!result.Success)
             return;
 
+        if (result.RelatedEntityId != Guid.Empty)
+            InvoiceToOpenAfterClose = result.RelatedEntityId;
+
+        await ClearAutoSaveDraftAsync();
         await ReloadAsync();
         SelectRow(targetId);
     }
@@ -506,6 +549,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         AssetCandidateSummary = "후보 장비가 없습니다.";
         LinkAssetsLater = false;
         SelectedRow = null;
+        InvoiceToOpenAfterClose = null;
+        _selectedRowBaselineSignature = string.Empty;
         UpdateTemplateDerivedValues();
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanStartBillingSelected));
@@ -819,6 +864,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             {
                 ItemId = item.ItemId,
                 DisplayItemName = item.DisplayItemName,
+                BillingLineMode = string.Equals((EditBillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal)
+                    ? NormalizeBillingLineModeValue(item.BillingLineMode)
+                    : NormalizeBillingLineModeValue(EditBillingType),
                 Quantity = item.Quantity,
                 UnitPrice = item.UnitPrice,
                 Amount = item.Amount,
@@ -838,6 +886,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         SelectedTemplateItem = TemplateItems.FirstOrDefault();
         UpdateTemplateDerivedValues();
+        _selectedRowBaselineSignature = BuildCurrentEditorSignature();
     }
 
     private RentalBillingTemplateEditorItem CreateDefaultTemplateItem()
@@ -845,6 +894,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var item = new RentalBillingTemplateEditorItem
         {
             DisplayItemName = string.IsNullOrWhiteSpace(EditItemName) ? "렌탈 임대료" : EditItemName,
+            BillingLineMode = string.Equals((EditBillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal)
+                ? string.Empty
+                : NormalizeBillingLineModeValue(EditBillingType),
             Quantity = 1m,
             UnitPrice = EditMonthlyAmount,
             Amount = EditMonthlyAmount
@@ -884,6 +936,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         {
             ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
             DisplayItemName = (item.DisplayItemName ?? string.Empty).Trim(),
+            BillingLineMode = string.Equals((EditBillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal)
+                ? NormalizeBillingLineModeValue(item.BillingLineMode)
+                : NormalizeBillingLineModeValue(EditBillingType),
             Quantity = item.Quantity <= 0m ? 1m : item.Quantity,
             UnitPrice = Math.Max(0m, item.UnitPrice),
             Amount = item.Amount > 0m ? item.Amount : item.EffectiveAmount,
@@ -939,7 +994,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 : string.Join(", ", labels);
     }
 
-    private bool CanEditScope(string? assignedUsername, string? officeCode)
+    private bool CanOperateScope(string? assignedUsername, string? officeCode)
     {
         if (CanManageAll)
             return true;
@@ -958,6 +1013,135 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                !string.IsNullOrWhiteSpace(rowOffice) &&
                string.Equals(rowOffice, userOffice, StringComparison.OrdinalIgnoreCase);
     }
+
+    private bool TryValidateTemplateConfiguration(out string message)
+    {
+        message = string.Empty;
+        if (TemplateItems.Count == 0)
+        {
+            message = "청구항목을 하나 이상 입력하세요.";
+            return false;
+        }
+
+        if (TemplateItems.Any(item => string.IsNullOrWhiteSpace(item.DisplayItemName)))
+        {
+            message = "표시 품목명은 비워둘 수 없습니다.";
+            return false;
+        }
+
+        if (string.Equals((EditBillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal))
+        {
+            if (TemplateItems.Any(item => string.IsNullOrWhiteSpace(NormalizeBillingLineModeValue(item.BillingLineMode))))
+            {
+                message = "혼합 청구는 모든 청구항목에 라인유형(묶음/개별)을 지정해야 합니다.";
+                return false;
+            }
+
+            return true;
+        }
+
+        var normalizedMode = NormalizeBillingLineModeValue(EditBillingType);
+        foreach (var item in TemplateItems)
+            item.BillingLineMode = normalizedMode;
+
+        return true;
+    }
+
+    private bool HasUnsavedSelectedRowChanges()
+    {
+        if (SelectedRow is null)
+            return false;
+
+        return !string.Equals(_selectedRowBaselineSignature, BuildCurrentEditorSignature(), StringComparison.Ordinal);
+    }
+
+    private string BuildCurrentEditorSignature()
+        => string.Join("||",
+            NormalizeText(EditCustomerName),
+            NormalizeText(EditBusinessNumber),
+            NormalizeText(EditRealCustomerName),
+            NormalizeText(EditBillToCustomerName),
+            NormalizeText(EditInstallSiteName),
+            NormalizeText(EditItemName),
+            NormalizeBillingLineModeValue(EditBillingType),
+            NormalizeBillingAdvanceModeValue(EditBillingAdvanceMode),
+            NormalizeText(EditOfficeCode),
+            NormalizeText(EditBillingMethod),
+            NormalizeText(EditPaymentMethod),
+            NormalizeText(EditBillingStatus),
+            NormalizeText(EditSettlementStatus),
+            NormalizeText(EditCompletionStatus),
+            NormalizeText(EditEmail),
+            EditBillingDay.ToString(CultureInfo.InvariantCulture),
+            EditBillingCycleMonths.ToString(CultureInfo.InvariantCulture),
+            NormalizeDecimal(EditMonthlyAmount),
+            NormalizeDecimal(EditDepositAmount),
+            NormalizeDecimal(EditSettledAmount),
+            NormalizeDecimal(EditOutstandingAmount),
+            EditRequiresFollowUp ? "Y" : "N",
+            NormalizeText(EditFollowUpNote),
+            NormalizeText(EditSubmissionDocuments),
+            NormalizeText(EditNotes),
+            NormalizeText(EditAssignedUsername),
+            LinkAssetsLater ? "Y" : "N",
+            NormalizeNullableDate(EditBillingAnchorDate),
+            NormalizeNullableDate(EditBillingStartDate),
+            NormalizeNullableDate(EditContractDate),
+            NormalizeNullableDate(EditContractStartDate),
+            NormalizeNullableDate(EditContractEndDate),
+            NormalizeNullableDate(EditLastBilledDate),
+            NormalizeNullableDate(EditLastSettledDate),
+            EditIsActive ? "Y" : "N",
+            BuildTemplateSignature(ToTemplateModels(), EditBillingType));
+
+    private static string BuildTemplateSignature(IEnumerable<RentalBillingTemplateItemModel> items, string billingType)
+        => string.Join(";;", items.Select(item => BuildTemplateItemSignature(item, billingType)));
+
+    private static string BuildTemplateItemSignature(RentalBillingTemplateItemModel item, string billingType)
+    {
+        var effectiveMode = string.Equals((billingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal)
+            ? NormalizeBillingLineModeValue(item.BillingLineMode)
+            : NormalizeBillingLineModeValue(billingType);
+        var quantity = item.Quantity <= 0m ? 1m : item.Quantity;
+        var unitPrice = Math.Max(0m, item.UnitPrice);
+        var amount = item.Amount > 0m ? item.Amount : Math.Max(0m, quantity) * unitPrice;
+        var includedAssetIds = string.Join(",", item.IncludedAssetIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .OrderBy(id => id)
+            .Select(id => id.ToString("N")));
+
+        return string.Join("|",
+            NormalizeText(item.DisplayItemName),
+            effectiveMode,
+            NormalizeDecimal(quantity),
+            NormalizeDecimal(unitPrice),
+            NormalizeDecimal(amount),
+            NormalizeText(item.Note),
+            includedAssetIds);
+    }
+
+    private static string NormalizeBillingLineModeValue(string? value)
+    {
+        var trimmed = (value ?? string.Empty).Trim();
+        return string.Equals(trimmed, "개별", StringComparison.Ordinal)
+            ? "개별"
+            : string.Equals(trimmed, "묶음", StringComparison.Ordinal)
+                ? "묶음"
+                : string.Empty;
+    }
+
+    private static string NormalizeBillingAdvanceModeValue(string? value)
+        => string.Equals((value ?? string.Empty).Trim(), "선불", StringComparison.Ordinal) ? "선불" : "후불";
+
+    private static string NormalizeText(string? value)
+        => (value ?? string.Empty).Trim();
+
+    private static string NormalizeDecimal(decimal value)
+        => value.ToString("0.####", CultureInfo.InvariantCulture);
+
+    private static string NormalizeNullableDate(DateTime? value)
+        => value?.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty;
 
     private void RequestFilterReload()
     {

@@ -88,6 +88,8 @@ public sealed partial class SalesViewModel : ObservableObject
 
     public IReadOnlyList<string> ProcurementDocumentTitleOptions { get; } = ["발주서", "납품서", "의뢰서"];
     private bool _suppressInputAmountSync;
+    private Guid? _linkedRentalBillingProfileId;
+    private Guid? _linkedRentalBillingRunId;
 
     // ?? ?쇱씤 ?낅젰 (?④굔) ??????????????????????????????????????????????????
     [ObservableProperty] private string _inputItemName = string.Empty;
@@ -327,6 +329,8 @@ public sealed partial class SalesViewModel : ObservableObject
         WorkDate = DateOnly.FromDateTime(DateTime.Today);
         VoucherType = _newInvoiceVoucherType;
         SelectedProcurementDocumentTitle = "발주서";
+        _linkedRentalBillingProfileId = null;
+        _linkedRentalBillingRunId = null;
         CurrentConcurrencyStamp = string.Empty;
         LastSavedBy = string.Empty;
         LastSavedAtDisplay = string.Empty;
@@ -1010,6 +1014,8 @@ public sealed partial class SalesViewModel : ObservableObject
             TaxInvoiceIssued = TaxInvoiceIssued,
             ResponsibleOfficeCode = SelectedResponsibleOfficeCode,
             SourceWarehouseCode = SelectedWarehouseCode,
+            LinkedRentalBillingProfileId = _linkedRentalBillingProfileId,
+            LinkedRentalBillingRunId = _linkedRentalBillingRunId,
             ConcurrencyStamp = CurrentConcurrencyStamp,
             Lines = validLines.Select(l => l.ToLocal(InvoiceId)).ToList()
         };
@@ -1056,6 +1062,8 @@ public sealed partial class SalesViewModel : ObservableObject
         {
             InvoiceId = savedInvoice.Id;
             CurrentConcurrencyStamp = savedInvoice.ConcurrencyStamp;
+            _linkedRentalBillingProfileId = savedInvoice.LinkedRentalBillingProfileId;
+            _linkedRentalBillingRunId = savedInvoice.LinkedRentalBillingRunId;
             LastSavedBy = savedInvoice.LastSavedByUsername;
             LastSavedAtDisplay = savedInvoice.LastSavedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
             VersionDisplay = $"v{savedInvoice.VersionNumber}";
@@ -1098,6 +1106,8 @@ public sealed partial class SalesViewModel : ObservableObject
         VoucherType = inv.VoucherType;
         InvoiceMemo = inv.Memo;
         TaxInvoiceIssued = inv.TaxInvoiceIssued;
+        _linkedRentalBillingProfileId = inv.LinkedRentalBillingProfileId;
+        _linkedRentalBillingRunId = inv.LinkedRentalBillingRunId;
         SelectedResponsibleOfficeCode = string.IsNullOrWhiteSpace(inv.ResponsibleOfficeCode)
             ? SelectedResponsibleOfficeCode
             : OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(inv.ResponsibleOfficeCode, SelectedResponsibleOfficeCode);

@@ -2115,6 +2115,8 @@ public sealed partial class LocalStateService
             SourceWarehouseCode = sourceWarehouseCode,
             DeliveryGroupId = invoice.DeliveryGroupId,
             ParentInvoiceId = invoice.ParentInvoiceId,
+            LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId,
+            LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId,
             VersionGroupId = versionGroupId,
             VersionNumber = versionNumber,
             PreviousVersionId = latest?.Id,

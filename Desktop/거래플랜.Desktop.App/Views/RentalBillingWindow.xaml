@@ -94,7 +94,7 @@
                     <Button Content="신규 렌탈 거래처 등록" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,6,6" Click="NewRentalCustomerButton_Click"/>
                     <Button Content="신규 설정" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,6,6" Command="{Binding NewProfileCommand}"/>
                     <Button Content="저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,6,6" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}"/>
-                    <Button Content="청구시작" Background="#2E7D32" BorderBrush="#2E7D32" Margin="0,0,6,6" Command="{Binding StartBillingCommand}" IsEnabled="{Binding CanStartBillingSelected}"/>
+                    <Button Content="청구시작" Background="#2E7D32" BorderBrush="#2E7D32" Margin="0,0,6,6" Click="StartBillingButton_Click" IsEnabled="{Binding CanStartBillingSelected}"/>
                     <Button Content="보류" Background="#F9A825" BorderBrush="#F9A825" Margin="0,0,6,6" Command="{Binding HoldBillingCommand}" IsEnabled="{Binding CanHoldSelected}"/>
                     <Button Content="수금등록" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,6" Click="RegisterSettlementButton_Click" IsEnabled="{Binding CanRegisterSettlementSelected}"/>
                     <Button Content="완료" Background="#00695C" BorderBrush="#00695C" Margin="0,0,6,6" Command="{Binding MarkCompletedCommand}" IsEnabled="{Binding CanMarkCompletedSelected}"/>
@@ -295,7 +295,15 @@
                         <TextBlock Text="청구서 표시 품목" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,6"/>
                         <DataGrid ItemsSource="{Binding TemplateItems}" SelectedItem="{Binding SelectedTemplateItem}" Height="210" Margin="0,0,0,10">
                             <DataGrid.Columns>
-                                <DataGridTextColumn Header="표시 품목명" Binding="{Binding DisplayItemName, UpdateSourceTrigger=PropertyChanged}" Width="180"/>
+                                <DataGridTextColumn Header="표시 품목명" Binding="{Binding DisplayItemName, UpdateSourceTrigger=PropertyChanged}" Width="160"/>
+                                <DataGridTemplateColumn Header="라인유형" Width="90">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <ComboBox ItemsSource="{Binding DataContext.BillingLineModeOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      SelectedItem="{Binding BillingLineMode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
                                 <DataGridTextColumn Header="수량" Binding="{Binding Quantity, UpdateSourceTrigger=PropertyChanged}" Width="70"/>
                                 <DataGridTextColumn Header="단가" Binding="{Binding UnitPrice, UpdateSourceTrigger=PropertyChanged}" Width="90"/>
                                 <DataGridTextColumn Header="금액" Binding="{Binding Amount, UpdateSourceTrigger=PropertyChanged}" Width="90"/>

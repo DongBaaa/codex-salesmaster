@@ -48,10 +48,17 @@ public sealed class RentalStateService
     };
 
     private readonly LocalDbContext _db;
+    private readonly LocalStateService? _local;
 
     public RentalStateService(LocalDbContext db)
+        : this(db, null)
+    {
+    }
+
+    public RentalStateService(LocalDbContext db, LocalStateService? local)
     {
         _db = db;
+        _local = local;
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
     }
 
@@ -621,6 +628,7 @@ public sealed class RentalStateService
 
     public async Task<LocalMutationResult> StartBillingAsync(
         Guid billingProfileId,
+        DateOnly referenceDate,
         SessionState session,
         CancellationToken ct = default)
     {
@@ -630,25 +638,76 @@ public sealed class RentalStateService
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
         if (!CanAccessRental(profile.AssignedUsername, profile.ResponsibleOfficeCode, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 시작할 수 없습니다.");
+        if (_local is null)
+            return LocalMutationResult.Denied("렌탈 청구 전표 저장 서비스를 사용할 수 없습니다.");
+        if (!IsBillingMonth(profile, referenceDate))
+            return LocalMutationResult.Denied("선택한 기준일은 해당 렌탈의 청구월이 아닙니다.");
+
+        var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
+        if (currentRun is null)
+            return LocalMutationResult.Denied("이번 회차 청구 정보를 만들 수 없습니다.");
+
+        var linkedInvoice = await GetActiveBillingInvoiceAsync(currentRun.RunId, ct);
+        Guid invoiceId;
+        decimal billedAmount;
+        if (linkedInvoice is not null)
+        {
+            invoiceId = linkedInvoice.Id;
+            billedAmount = linkedInvoice.TotalAmount;
+        }
+        else
+        {
+            var customerId = profile.CustomerId;
+            if (!customerId.HasValue || customerId.Value == Guid.Empty)
+                customerId = await ResolveCustomerIdAsync(profile.CustomerName, profile.BusinessNumber, ct);
+            if (!customerId.HasValue || customerId.Value == Guid.Empty)
+                return LocalMutationResult.Denied("렌탈 청구 전표를 만들 거래처를 찾을 수 없습니다.");
+
+            var templateItems = currentRun.Items.Count > 0
+                ? currentRun.Items
+                : GetBillingTemplateItems(profile);
+            var lineBuildResult = await BuildRentalBillingInvoiceLinesAsync(profile, currentRun, templateItems, ct);
+            if (!lineBuildResult.Success)
+                return LocalMutationResult.Denied(lineBuildResult.Message);
+
+            var officeCode = NormalizeOfficeCode(profile.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+            var invoice = new LocalInvoice
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId.Value,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = currentRun.ScheduledDate,
+                Memo = $"렌탈 청구관리 자동생성 · {currentRun.PeriodLabel}",
+                ResponsibleOfficeCode = officeCode,
+                SourceWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(null, officeCode, officeCode),
+                TaxInvoiceIssued = false,
+                LinkedRentalBillingProfileId = profile.Id,
+                LinkedRentalBillingRunId = currentRun.RunId,
+                Lines = lineBuildResult.Lines
+            };
+
+            var savedInvoice = await _local.SaveInvoiceAsync(invoice, ct);
+            invoiceId = savedInvoice.Id;
+            billedAmount = savedInvoice.TotalAmount;
+        }
 
         profile.BillingStatus = PaymentFlowConstants.BillingStatusInProgress;
         profile.CompletionStatus = PaymentFlowConstants.CompletionPending;
-        profile.SettlementStatus = string.IsNullOrWhiteSpace(profile.SettlementStatus)
-            ? PaymentFlowConstants.SettlementStatusPending
-            : PaymentFlowConstants.NormalizeSettlementStatus(profile.SettlementStatus);
+        profile.SettledAmount = Math.Max(0m, profile.SettledAmount);
+        profile.OutstandingAmount = Math.Max(0m, billedAmount - profile.SettledAmount);
+        profile.SettlementStatus = DetermineBillingSettlementStatus(profile, profile.SettledAmount, billedAmount);
         if (string.Equals(profile.SettlementStatus, PaymentFlowConstants.SettlementStatusUnpaid, StringComparison.OrdinalIgnoreCase))
             profile.SettlementStatus = PaymentFlowConstants.SettlementStatusPending;
         profile.RequiresFollowUp = profile.RequiresFollowUp || profile.OutstandingAmount > 0m;
-        var currentRun = GetOrCreateBillingRun(profile, DateOnly.FromDateTime(DateTime.Today), persistChanges: true);
-        if (currentRun is not null)
-        {
-            currentRun.Status = PaymentFlowConstants.BillingStatusInProgress;
-            UpsertBillingRun(profile, currentRun);
-        }
+        currentRun.Status = PaymentFlowConstants.BillingStatusInProgress;
+        currentRun.BilledAmount = billedAmount;
+        currentRun.SettledAmount = profile.SettledAmount;
+        currentRun.SettlementStatus = profile.SettlementStatus;
+        UpsertBillingRun(profile, currentRun);
         profile.IsDirty = true;
         profile.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
-        return LocalMutationResult.Ok(billingProfileId, "렌탈 청구를 시작했습니다.");
+        return LocalMutationResult.Ok(billingProfileId, "렌탈 청구를 시작했습니다.", invoiceId);
     }
 
     public async Task<LocalMutationResult> HoldBillingAsync(
@@ -2097,6 +2156,7 @@ public sealed class RentalStateService
     {
         ArgumentNullException.ThrowIfNull(profile);
         assets ??= Array.Empty<LocalRentalAsset>();
+        var profileBillingType = NormalizeBillingType(profile.BillingType);
 
         List<RentalBillingTemplateItemModel>? parsed = null;
         if (!string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
@@ -2123,6 +2183,7 @@ public sealed class RentalStateService
                 new RentalBillingTemplateItemModel
                 {
                     DisplayItemName = string.IsNullOrWhiteSpace(profile.ItemName) ? "렌탈 임대료" : profile.ItemName,
+                    BillingLineMode = profileBillingType == "혼합" ? string.Empty : profileBillingType,
                     Quantity = 1m,
                     UnitPrice = Math.Max(0m, profile.MonthlyAmount),
                     Amount = Math.Max(0m, profile.MonthlyAmount),
@@ -2145,10 +2206,14 @@ public sealed class RentalStateService
                 .Where(id => id != Guid.Empty)
                 .Distinct()
                 .ToList();
+            var billingLineMode = NormalizeBillingLineMode(current.BillingLineMode);
+            if (!string.Equals(profileBillingType, "혼합", StringComparison.OrdinalIgnoreCase))
+                billingLineMode = profileBillingType;
             normalized.Add(new RentalBillingTemplateItemModel
             {
                 ItemId = current.ItemId == Guid.Empty ? Guid.NewGuid() : current.ItemId,
                 DisplayItemName = string.IsNullOrWhiteSpace(displayItemName) ? "렌탈 임대료" : displayItemName,
+                BillingLineMode = billingLineMode,
                 Quantity = quantity,
                 UnitPrice = unitPrice,
                 Amount = Math.Max(0m, amount),
@@ -2162,6 +2227,7 @@ public sealed class RentalStateService
             normalized.Add(new RentalBillingTemplateItemModel
             {
                 DisplayItemName = string.IsNullOrWhiteSpace(profile.ItemName) ? "렌탈 임대료" : profile.ItemName,
+                BillingLineMode = profileBillingType == "혼합" ? string.Empty : profileBillingType,
                 Quantity = 1m,
                 UnitPrice = Math.Max(0m, profile.MonthlyAmount),
                 Amount = Math.Max(0m, profile.MonthlyAmount)
@@ -2254,9 +2320,10 @@ public sealed class RentalStateService
             {
                 ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
                 DisplayItemName = item.DisplayItemName,
+                BillingLineMode = item.BillingLineMode,
                 Quantity = item.Quantity,
                 UnitPrice = item.UnitPrice,
-                Amount = ResolveTemplateMonthlyAmount(item) * Math.Max(1, cycleMonths),
+                Amount = ResolveTemplateMonthlyAmount(item),
                 Note = item.Note,
                 IncludedAssetIds = item.IncludedAssetIds?.Distinct().ToList() ?? new List<Guid>()
             })
@@ -2269,6 +2336,236 @@ public sealed class RentalStateService
             return item.Amount;
         return Math.Max(0m, item.Quantity <= 0m ? 1m : item.Quantity) * Math.Max(0m, item.UnitPrice);
     }
+
+    private static string NormalizeBillingLineMode(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        return normalized switch
+        {
+            "개별" => "개별",
+            "묶음" => "묶음",
+            _ => string.Empty
+        };
+    }
+
+    private async Task<LocalInvoice?> GetActiveBillingInvoiceAsync(Guid billingRunId, CancellationToken ct)
+    {
+        if (billingRunId == Guid.Empty)
+            return null;
+
+        return await _db.Invoices
+            .Include(invoice => invoice.Lines.Where(line => !line.IsDeleted))
+            .Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
+            .AsNoTracking()
+            .Where(invoice => !invoice.IsDeleted &&
+                              invoice.IsLatestVersion &&
+                              invoice.LinkedRentalBillingRunId == billingRunId)
+            .OrderByDescending(invoice => invoice.LastSavedAtUtc)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    private async Task<(bool Success, string Message, List<LocalInvoiceLine> Lines)> BuildRentalBillingInvoiceLinesAsync(
+        LocalRentalBillingProfile profile,
+        RentalBillingRunModel run,
+        IReadOnlyList<RentalBillingTemplateItemModel> templateItems,
+        CancellationToken ct)
+    {
+        if (templateItems.Count == 0)
+            return (false, "청구항목이 없어 판매전표를 만들 수 없습니다.", new List<LocalInvoiceLine>());
+
+        var billingMonths = BuildBillingMonths(run);
+        if (billingMonths.Count == 0)
+            return (false, "청구월 정보를 계산할 수 없어 판매전표를 만들 수 없습니다.", new List<LocalInvoiceLine>());
+        if (billingMonths.Count != Math.Max(1, run.CycleMonths))
+        {
+            return (false,
+                $"청구월 계산 결과({billingMonths.Count}개월)가 청구주기({Math.Max(1, run.CycleMonths)}개월)와 맞지 않습니다.",
+                new List<LocalInvoiceLine>());
+        }
+
+        var includedAssetIds = templateItems
+            .SelectMany(item => item.IncludedAssetIds ?? Enumerable.Empty<Guid>())
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        var assetsById = includedAssetIds.Count == 0
+            ? new Dictionary<Guid, LocalRentalAsset>()
+            : await _db.RentalAssets
+                .AsNoTracking()
+                .Where(asset => !asset.IsDeleted && includedAssetIds.Contains(asset.Id))
+                .ToDictionaryAsync(asset => asset.Id, ct);
+
+        var lines = new List<LocalInvoiceLine>();
+        var profileBillingType = NormalizeBillingType(profile.BillingType);
+
+        foreach (var templateItem in templateItems)
+        {
+            var lineMode = string.Equals(profileBillingType, "혼합", StringComparison.OrdinalIgnoreCase)
+                ? NormalizeBillingLineMode(templateItem.BillingLineMode)
+                : profileBillingType;
+
+            if (string.IsNullOrWhiteSpace(lineMode))
+            {
+                return (false,
+                    $"청구항목 '{templateItem.DisplayItemName}'의 라인유형이 지정되지 않아 판매전표를 만들 수 없습니다.",
+                    new List<LocalInvoiceLine>());
+            }
+
+            var templateAssetIds = (templateItem.IncludedAssetIds ?? new List<Guid>())
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+
+            if (templateAssetIds.Count == 0)
+            {
+                return (false,
+                    $"청구항목 '{templateItem.DisplayItemName}'에 연결된 설치장비가 없어 판매전표를 만들 수 없습니다.",
+                    new List<LocalInvoiceLine>());
+            }
+
+            var templateAssets = new List<LocalRentalAsset>();
+            foreach (var assetId in templateAssetIds)
+            {
+                if (!assetsById.TryGetValue(assetId, out var asset))
+                {
+                    return (false,
+                        $"청구항목 '{templateItem.DisplayItemName}'에 연결된 장비를 찾을 수 없어 판매전표를 만들 수 없습니다.",
+                        new List<LocalInvoiceLine>());
+                }
+
+                if (asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != profile.Id)
+                {
+                    return (false,
+                        $"장비 '{asset.ItemName}'가 다른 렌탈 청구설정에 연결되어 있어 판매전표를 만들 수 없습니다.",
+                        new List<LocalInvoiceLine>());
+                }
+
+                var eligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus)
+                    ? GetDefaultBillingEligibilityStatus(asset)
+                    : asset.BillingEligibilityStatus.Trim();
+
+                if (string.Equals(eligibilityStatus, "청구제외", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase))
+                {
+                    return (false,
+                        $"장비 '{asset.ItemName}'는 청구제외 상태라 판매전표를 만들 수 없습니다.",
+                        new List<LocalInvoiceLine>());
+                }
+
+                templateAssets.Add(asset);
+            }
+
+            if (string.Equals(lineMode, "묶음", StringComparison.OrdinalIgnoreCase))
+            {
+                var representativeAsset = SelectRepresentativeBillingAsset(templateAssets);
+                if (representativeAsset is null)
+                {
+                    return (false,
+                        $"청구항목 '{templateItem.DisplayItemName}'의 대표 장비명을 정할 수 없어 판매전표를 만들 수 없습니다.",
+                        new List<LocalInvoiceLine>());
+                }
+
+                var monthlyAmount = ResolveTemplateMonthlyAmount(templateItem);
+                foreach (var billingMonth in billingMonths)
+                {
+                    lines.Add(new LocalInvoiceLine
+                    {
+                        Id = Guid.NewGuid(),
+                        ItemId = null,
+                        ItemTrackingType = ItemTrackingTypes.NonStock,
+                        ItemNameOriginal = BuildMonthlyRentalInvoiceItemName(billingMonth),
+                        SpecificationOriginal = representativeAsset.ItemName.Trim(),
+                        Unit = string.Empty,
+                        Quantity = 1m,
+                        UnitPrice = monthlyAmount,
+                        LineAmount = monthlyAmount,
+                        Remark = (templateItem.Note ?? string.Empty).Trim()
+                    });
+                }
+
+                continue;
+            }
+
+            foreach (var asset in templateAssets)
+            {
+                if (asset.MonthlyFee <= 0m)
+                {
+                    return (false,
+                        $"장비 '{asset.ItemName}'의 월 청구금액이 없어 판매전표를 만들 수 없습니다.",
+                        new List<LocalInvoiceLine>());
+                }
+            }
+
+            var groupedAssets = templateAssets
+                .GroupBy(
+                    asset => new
+                    {
+                        ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName),
+                        UnitPrice = asset.MonthlyFee
+                    })
+                .OrderBy(group => group.Key.ItemName, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(group => group.Key.UnitPrice)
+                .ToList();
+
+            foreach (var billingMonth in billingMonths)
+            {
+                foreach (var assetGroup in groupedAssets)
+                {
+                    var firstAsset = assetGroup.FirstOrDefault();
+                    if (firstAsset is null)
+                        continue;
+
+                    var quantity = assetGroup.Count();
+                    var unitPrice = firstAsset.MonthlyFee;
+                    lines.Add(new LocalInvoiceLine
+                    {
+                        Id = Guid.NewGuid(),
+                        ItemId = null,
+                        ItemTrackingType = ItemTrackingTypes.NonStock,
+                        ItemNameOriginal = BuildMonthlyRentalInvoiceItemName(billingMonth),
+                        SpecificationOriginal = firstAsset.ItemName.Trim(),
+                        Unit = string.Empty,
+                        Quantity = quantity,
+                        UnitPrice = unitPrice,
+                        LineAmount = quantity * unitPrice,
+                        Remark = (templateItem.Note ?? string.Empty).Trim()
+                    });
+                }
+            }
+        }
+
+        if (lines.Count == 0)
+            return (false, "판매전표에 넣을 청구라인을 만들지 못했습니다.", new List<LocalInvoiceLine>());
+
+        return (true, string.Empty, lines);
+    }
+
+    private static List<DateOnly> BuildBillingMonths(RentalBillingRunModel run)
+    {
+        var months = new List<DateOnly>();
+        var current = new DateOnly(run.PeriodStartDate.Year, run.PeriodStartDate.Month, 1);
+        var end = new DateOnly(run.PeriodEndDate.Year, run.PeriodEndDate.Month, 1);
+        while (current <= end)
+        {
+            months.Add(current);
+            current = current.AddMonths(1);
+        }
+
+        return months;
+    }
+
+    private static LocalRentalAsset? SelectRepresentativeBillingAsset(IReadOnlyList<LocalRentalAsset> assets)
+        => assets
+            .Where(asset => !string.IsNullOrWhiteSpace(asset.ItemName))
+            .OrderBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.ItemName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.MachineNumber, StringComparer.CurrentCultureIgnoreCase)
+            .FirstOrDefault();
+
+    private static string BuildMonthlyRentalInvoiceItemName(DateOnly billingMonth)
+        => $"사무기기 렌탈대금[{billingMonth.Month}월]";
 
     private static string BuildProfileItemName(LocalRentalBillingProfile profile, IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
     {
@@ -2332,6 +2629,7 @@ public sealed class RentalStateService
         IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
     {
         var issues = new List<string>();
+        var profileBillingType = NormalizeBillingType(profile.BillingType);
         if (templateItems.Count == 0)
             issues.Add("표시품목 없음");
         if (assets.Count == 0)
@@ -2342,6 +2640,11 @@ public sealed class RentalStateService
             issues.Add("설치처 미설정");
         if (templateItems.Any(item => item.IncludedAssetIds.Count == 0))
             issues.Add("장비 미연결 품목");
+        if (string.Equals(profileBillingType, "혼합", StringComparison.OrdinalIgnoreCase) &&
+            templateItems.Any(item => string.IsNullOrWhiteSpace(NormalizeBillingLineMode(item.BillingLineMode))))
+        {
+            issues.Add("혼합 라인유형 미지정");
+        }
         if (assets.Any(asset => string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) || string.Equals(asset.BillingEligibilityStatus, "미확인", StringComparison.OrdinalIgnoreCase)))
             issues.Add("청구대상 검토 필요");
         return issues.Distinct(StringComparer.OrdinalIgnoreCase).ToList();

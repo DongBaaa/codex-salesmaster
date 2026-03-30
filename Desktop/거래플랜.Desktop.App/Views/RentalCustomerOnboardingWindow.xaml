@@ -294,11 +294,19 @@
                             </WrapPanel>
                             <DataGrid Grid.Row="1" ItemsSource="{Binding TemplateItems}" SelectedItem="{Binding SelectedTemplateItem}" BorderThickness="0">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="표시 품목명" Binding="{Binding DisplayItemName, UpdateSourceTrigger=PropertyChanged}" Width="220"/>
+                                    <DataGridTextColumn Header="표시 품목명" Binding="{Binding DisplayItemName, UpdateSourceTrigger=PropertyChanged}" Width="190"/>
+                                    <DataGridTemplateColumn Header="라인유형" Width="90">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <ComboBox ItemsSource="{Binding DataContext.BillingLineModeOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                          SelectedItem="{Binding BillingLineMode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
                                     <DataGridTextColumn Header="수량" Binding="{Binding Quantity, UpdateSourceTrigger=PropertyChanged}" Width="80"/>
                                     <DataGridTextColumn Header="단가" Binding="{Binding UnitPrice, UpdateSourceTrigger=PropertyChanged}" Width="110"/>
                                     <DataGridTextColumn Header="금액" Binding="{Binding Amount, UpdateSourceTrigger=PropertyChanged}" Width="110"/>
-                                    <DataGridTextColumn Header="연결 장비" Binding="{Binding IncludedAssetSummary}" Width="280" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="연결 장비" Binding="{Binding IncludedAssetSummary}" Width="250" IsReadOnly="True"/>
                                     <DataGridTextColumn Header="비고" Binding="{Binding Note, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
                                 </DataGrid.Columns>
                             </DataGrid>

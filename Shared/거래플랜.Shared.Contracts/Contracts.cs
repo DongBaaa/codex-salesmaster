@@ -308,6 +308,8 @@ public sealed class InvoiceDto : SyncEntityDto
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
+    public Guid? LinkedRentalBillingProfileId { get; set; }
+    public Guid? LinkedRentalBillingRunId { get; set; }
     public Guid VersionGroupId { get; set; }
     public int VersionNumber { get; set; } = 1;
     public Guid? PreviousVersionId { get; set; }

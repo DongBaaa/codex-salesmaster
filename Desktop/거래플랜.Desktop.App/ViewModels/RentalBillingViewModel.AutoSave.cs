@@ -339,6 +339,9 @@ public sealed partial class RentalBillingViewModel
             {
                 ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
                 DisplayItemName = item.DisplayItemName,
+                BillingLineMode = string.Equals((EditBillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal)
+                    ? NormalizeBillingLineModeValue(item.BillingLineMode)
+                    : NormalizeBillingLineModeValue(EditBillingType),
                 Quantity = item.Quantity,
                 UnitPrice = item.UnitPrice,
                 Amount = item.Amount,

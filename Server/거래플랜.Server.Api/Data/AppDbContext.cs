@@ -181,6 +181,8 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => x.OfficeCode);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.VersionGroupId);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.IsLatestVersion);
+        modelBuilder.Entity<Invoice>().HasIndex(x => x.LinkedRentalBillingProfileId);
+        modelBuilder.Entity<Invoice>().HasIndex(x => x.LinkedRentalBillingRunId);
 
         ApplySoftDeleteFilter<UserAccount>(modelBuilder);
         ApplySoftDeleteFilter<CompanyProfile>(modelBuilder);
