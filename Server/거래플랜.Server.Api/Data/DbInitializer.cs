@@ -138,6 +138,13 @@ public static partial class DbInitializer
         await NormalizeInventoryTransferIntegrityAsync(dbContext, cancellationToken);
         await PurgeDeletedInventoryTransferDataAsync(dbContext, cancellationToken);
         await RepairDeletedCustomerRentalProfileLinksAsync(dbContext, cancellationToken);
+        await MergeDuplicateCustomerMastersAsync(dbContext, cancellationToken);
+        await MergeDuplicateCustomersAsync(dbContext, cancellationToken);
+        await MergeBusinessDuplicateCustomersAsync(dbContext, cancellationToken);
+        await MergeDuplicateRentalBillingProfilesAsync(dbContext, cancellationToken);
+        await MergeDuplicateRentalAssetsAsync(dbContext, cancellationToken);
+        await MergeDuplicateCompanyProfilesAsync(dbContext, cancellationToken);
+        await MergeDuplicateItemsAsync(dbContext, cancellationToken);
         await CleanupDeletedInvoiceChainAsync(dbContext, cancellationToken);
         await MigrateStoredFilesToCentralStorageAsync(dbContext, fileStorage, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -153,6 +160,13 @@ public static partial class DbInitializer
             await NormalizeInventoryTransferIntegrityAsync(tenantDbContext, cancellationToken);
             await PurgeDeletedInventoryTransferDataAsync(tenantDbContext, cancellationToken);
             await RepairDeletedCustomerRentalProfileLinksAsync(tenantDbContext, cancellationToken);
+            await MergeDuplicateCustomerMastersAsync(tenantDbContext, cancellationToken);
+            await MergeDuplicateCustomersAsync(tenantDbContext, cancellationToken);
+            await MergeBusinessDuplicateCustomersAsync(tenantDbContext, cancellationToken);
+            await MergeDuplicateRentalBillingProfilesAsync(tenantDbContext, cancellationToken);
+            await MergeDuplicateRentalAssetsAsync(tenantDbContext, cancellationToken);
+            await MergeDuplicateCompanyProfilesAsync(tenantDbContext, cancellationToken);
+            await MergeDuplicateItemsAsync(tenantDbContext, cancellationToken);
             await CleanupDeletedInvoiceChainAsync(tenantDbContext, cancellationToken);
             await MigrateStoredFilesToCentralStorageAsync(tenantDbContext, fileStorage, cancellationToken);
             await tenantDbContext.SaveChangesAsync(cancellationToken);

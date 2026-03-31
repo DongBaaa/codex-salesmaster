@@ -28,6 +28,13 @@ public static partial class LocalDbInitializer
     private const string NormalizeInventoryTransferIntegrityStepKey = "Migration.NormalizeInventoryTransferIntegrity.v1";
     private const string PurgeDeletedInventoryTransferDataStepKey = "Migration.PurgeDeletedInventoryTransferData.v1";
     private const string RepairDeletedCustomerRentalProfileLinksStepKey = "Migration.RepairDeletedCustomerRentalProfileLinks.v1";
+    private const string MergeDuplicateCustomerMastersStepKey = "Migration.MergeDuplicateCustomerMasters.v1";
+    private const string MergeDuplicateCustomersStepKey = "Migration.MergeDuplicateCustomers.v1";
+    private const string MergeBusinessDuplicateCustomersStepKey = "Migration.MergeBusinessDuplicateCustomers.v1";
+    private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.MergeDuplicateRentalBillingProfiles.v1";
+    private const string MergeDuplicateRentalAssetsStepKey = "Migration.MergeDuplicateRentalAssets.v2";
+    private const string MergeDuplicateCompanyProfilesStepKey = "Migration.MergeDuplicateCompanyProfiles.v1";
+    private const string MergeDuplicateItemsStepKey = "Migration.MergeDuplicateItems.v1";
     private const string CleanupDeletedInvoiceChainStepKey = "Migration.CleanupDeletedInvoiceChain.v1";
     private const string BackfillItemScopeFieldsStepKey = "Migration.BackfillItemScopeFields.v1";
     private const string BackfillItemOperationalFieldsStepKey = "Migration.BackfillItemOperationalFields.v1";
@@ -116,6 +123,34 @@ public static partial class LocalDbInitializer
             db,
             RepairDeletedCustomerRentalProfileLinksStepKey,
             async () => await RepairDeletedCustomerRentalProfileLinksAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            MergeDuplicateCustomerMastersStepKey,
+            async () => await MergeDuplicateCustomerMastersAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            MergeDuplicateCustomersStepKey,
+            async () => await MergeDuplicateCustomersAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            MergeBusinessDuplicateCustomersStepKey,
+            async () => await MergeBusinessDuplicateCustomersAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            MergeDuplicateRentalBillingProfilesStepKey,
+            async () => await MergeDuplicateRentalBillingProfilesAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            MergeDuplicateRentalAssetsStepKey,
+            async () => await MergeDuplicateRentalAssetsAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            MergeDuplicateCompanyProfilesStepKey,
+            async () => await MergeDuplicateCompanyProfilesAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            MergeDuplicateItemsStepKey,
+            async () => await MergeDuplicateItemsAsync(db));
         await RunStartupMaintenanceStepAsync(
             db,
             CleanupDeletedInvoiceChainStepKey,
