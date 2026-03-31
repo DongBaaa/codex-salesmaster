@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Services;
@@ -89,13 +89,15 @@ internal static class Program
 
         var januaryBoundaryScenario = VerifyJanuaryBoundaryScenarios(db, rental, adminSession, customerId);
         var customerResolutionScenario = VerifyCustomerResolutionFallbackScenario(db, local, rental, adminSession, userSession);
+        var singleCandidateAutoLinkScenario = VerifySingleCandidateAutoLinkScenario(db, local, rental, adminSession, userSession);
 
         var output = new
         {
             Grouped = groupedScenario,
             Individual = individualScenario,
             JanuaryBoundary = januaryBoundaryScenario,
-            CustomerResolutionFallback = customerResolutionScenario
+            CustomerResolutionFallback = customerResolutionScenario,
+            SingleCandidateAutoLink = singleCandidateAutoLinkScenario
         };
 
         Console.WriteLine(JsonSerializer.Serialize(output, JsonOptions));
@@ -235,11 +237,51 @@ internal static class Program
         SessionState adminSession,
         Guid customerId)
     {
-        var arrearsProfileId = Guid.NewGuid();
-        var arrearsSave = SaveBillingProfile(
+        var quarterEndProfileId = Guid.NewGuid();
+        var quarterEndSave = SaveBillingProfile(
             rental,
             adminSession,
-            arrearsProfileId,
+            quarterEndProfileId,
+            customerId,
+            customerName: "ZZZ-분기말 후불 검증 거래처",
+            billingType: "묶음",
+            cycleMonths: 3,
+            monthlyAmount: 100000m,
+            templateItems: new[]
+            {
+                new RentalBillingTemplateItemModel
+                {
+                    ItemId = Guid.NewGuid(),
+                    DisplayItemName = "사무기기 렌탈대금",
+                    BillingLineMode = "묶음",
+                    Quantity = 1m,
+                    UnitPrice = 100000m,
+                    Amount = 100000m,
+                    IncludedAssetIds = new List<Guid>()
+                }
+            },
+            billingAdvanceMode: "후불",
+            billingStartDate: new DateOnly(2026, 3, 1),
+            billingAnchorDate: new DateOnly(2026, 3, 1),
+            billingAnchorMonth: 3,
+            billingDayMode: RentalBillingScheduleRules.BillingDayModeEndOfMonth);
+        Ensure(quarterEndSave.Success, quarterEndSave.Message);
+
+        var quarterEndProfile = db.RentalBillingProfiles.IgnoreQueryFilters().FirstOrDefault(current => current.Id == quarterEndProfileId);
+        Ensure(quarterEndProfile is not null, "분기말 후불 검증 프로필을 불러오지 못했습니다.");
+        var quarterEndRun = rental.GetOrCreateBillingRun(quarterEndProfile!, new DateOnly(2026, 3, 25), persistChanges: false);
+        Ensure(quarterEndRun is not null, "분기말 후불 청구 run을 계산하지 못했습니다.");
+
+        var arrearsMonths = BuildMonthLabels(quarterEndRun!);
+        Ensure(
+            arrearsMonths.SequenceEqual(new[] { 1, 2, 3 }),
+            $"후불 분기말 3개월 청구는 1월, 2월, 3월이어야 합니다. 실제: {string.Join(", ", arrearsMonths)}");
+
+        var explicitAnchorProfileId = Guid.NewGuid();
+        var explicitAnchorSave = SaveBillingProfile(
+            rental,
+            adminSession,
+            explicitAnchorProfileId,
             customerId,
             customerName: "ZZZ-연도경계 후불 검증 거래처",
             billingType: "묶음",
@@ -260,18 +302,20 @@ internal static class Program
             },
             billingAdvanceMode: "후불",
             billingStartDate: new DateOnly(2026, 1, 1),
-            billingAnchorDate: new DateOnly(2026, 1, 1));
-        Ensure(arrearsSave.Success, arrearsSave.Message);
+            billingAnchorDate: new DateOnly(2026, 1, 1),
+            billingAnchorMonth: 1,
+            billingDayMode: RentalBillingScheduleRules.BillingDayModeEndOfMonth);
+        Ensure(explicitAnchorSave.Success, explicitAnchorSave.Message);
 
-        var arrearsProfile = db.RentalBillingProfiles.IgnoreQueryFilters().FirstOrDefault(current => current.Id == arrearsProfileId);
-        Ensure(arrearsProfile is not null, "후불 연도경계 검증 프로필을 불러오지 못했습니다.");
-        var arrearsRun = rental.GetOrCreateBillingRun(arrearsProfile!, new DateOnly(2026, 1, 25), persistChanges: false);
-        Ensure(arrearsRun is not null, "후불 연도경계 청구 run을 계산하지 못했습니다.");
+        var explicitAnchorProfile = db.RentalBillingProfiles.IgnoreQueryFilters().FirstOrDefault(current => current.Id == explicitAnchorProfileId);
+        Ensure(explicitAnchorProfile is not null, "연도경계 후불 검증 프로필을 불러오지 못했습니다.");
+        var explicitAnchorRun = rental.GetOrCreateBillingRun(explicitAnchorProfile!, new DateOnly(2026, 1, 25), persistChanges: false);
+        Ensure(explicitAnchorRun is not null, "연도경계 후불 청구 run을 계산하지 못했습니다.");
 
-        var arrearsMonths = BuildMonthLabels(arrearsRun!);
+        var explicitAnchorMonths = BuildMonthLabels(explicitAnchorRun!);
         Ensure(
-            arrearsMonths.SequenceEqual(new[] { 11, 12, 1 }),
-            $"후불 1월 3개월 청구는 11월, 12월, 1월이어야 합니다. 실제: {string.Join(", ", arrearsMonths)}");
+            explicitAnchorMonths.SequenceEqual(new[] { 11, 12, 1 }),
+            $"기준월 1월인 후불 1월 3개월 청구는 11월, 12월, 1월이어야 합니다. 실제: {string.Join(", ", explicitAnchorMonths)}");
 
         var advanceProfileId = Guid.NewGuid();
         var advanceSave = SaveBillingProfile(
@@ -298,7 +342,9 @@ internal static class Program
             },
             billingAdvanceMode: "선불",
             billingStartDate: new DateOnly(2026, 1, 1),
-            billingAnchorDate: new DateOnly(2026, 1, 1));
+            billingAnchorDate: new DateOnly(2026, 1, 1),
+            billingAnchorMonth: 1,
+            billingDayMode: RentalBillingScheduleRules.BillingDayModeEndOfMonth);
         Ensure(advanceSave.Success, advanceSave.Message);
 
         var advanceProfile = db.RentalBillingProfiles.IgnoreQueryFilters().FirstOrDefault(current => current.Id == advanceProfileId);
@@ -313,12 +359,19 @@ internal static class Program
 
         return new
         {
-            Arrears = new
+            QuarterEndArrears = new
             {
-                ScheduledDate = arrearsRun!.ScheduledDate,
-                PeriodStartDate = arrearsRun.PeriodStartDate,
-                PeriodEndDate = arrearsRun.PeriodEndDate,
+                ScheduledDate = quarterEndRun!.ScheduledDate,
+                PeriodStartDate = quarterEndRun.PeriodStartDate,
+                PeriodEndDate = quarterEndRun.PeriodEndDate,
                 Months = arrearsMonths
+            },
+            ExplicitAnchorArrears = new
+            {
+                ScheduledDate = explicitAnchorRun!.ScheduledDate,
+                PeriodStartDate = explicitAnchorRun.PeriodStartDate,
+                PeriodEndDate = explicitAnchorRun.PeriodEndDate,
+                Months = explicitAnchorMonths
             },
             Advance = new
             {
@@ -410,6 +463,89 @@ internal static class Program
         };
     }
 
+    private static object VerifySingleCandidateAutoLinkScenario(
+        LocalDbContext db,
+        LocalStateService local,
+        RentalStateService rental,
+        SessionState adminSession,
+        SessionState userSession)
+    {
+        var customer = new LocalCustomer
+        {
+            Id = Guid.NewGuid(),
+            NameOriginal = "ZZZ-단일후보 자동연결 거래처",
+            NameMatchKey = "ZZZ-단일후보 자동연결 거래처".ToUpperInvariant(),
+            ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Phone = "032-111-2222",
+            BusinessNumber = "888-88-88888",
+            TradeType = CustomerTradeTypes.Sales,
+            PriceGrade = "매출단가",
+            Address = "테스트 주소"
+        };
+
+        var customerSave = local.UpsertCustomerAsync(customer, adminSession).GetAwaiter().GetResult();
+        Ensure(customerSave.Success, customerSave.Message);
+
+        var assetId = SeedSingleCandidateAsset(db, customer.Id, userSession.User?.Username ?? string.Empty);
+
+        var profileId = Guid.NewGuid();
+        var profileSave = SaveBillingProfile(
+            rental,
+            adminSession,
+            profileId,
+            customer.Id,
+            customerName: customer.NameOriginal,
+            billingType: "묶음",
+            cycleMonths: 1,
+            monthlyAmount: 150000m,
+            templateItems: new[]
+            {
+                new RentalBillingTemplateItemModel
+                {
+                    ItemId = Guid.NewGuid(),
+                    DisplayItemName = "IMC2010",
+                    BillingLineMode = "묶음",
+                    Quantity = 1m,
+                    UnitPrice = 150000m,
+                    Amount = 150000m,
+                    IncludedAssetIds = new List<Guid>()
+                }
+            },
+            billingAdvanceMode: "후불",
+            billingStartDate: new DateOnly(2026, 3, 1),
+            billingAnchorDate: new DateOnly(2026, 3, 1));
+
+        Ensure(profileSave.Success, profileSave.Message);
+
+        var start = rental.StartBillingAsync(profileId, new DateOnly(2026, 3, 31), userSession).GetAwaiter().GetResult();
+        Ensure(start.Success, $"단일 후보 자동 연결 청구는 성공해야 합니다. 실제: {start.Message}");
+        Ensure(start.RelatedEntityId != Guid.Empty, "단일 후보 자동 연결 전표 ID가 반환되지 않았습니다.");
+
+        var invoice = local.GetInvoiceAsync(start.RelatedEntityId).GetAwaiter().GetResult();
+        Ensure(invoice is not null, "단일 후보 자동 연결 전표를 다시 불러오지 못했습니다.");
+        var line = invoice!.Lines.Single();
+        Ensure(invoice.Lines.Count == 1, $"단일 후보 자동 연결 전표 라인 수가 1건이 아닙니다. 실제: {invoice.Lines.Count}건");
+        Ensure(string.Equals(line.SpecificationOriginal, "IMC2010", StringComparison.Ordinal), $"단일 후보 자동 연결 대표 규격이 잘못되었습니다. 실제: {line.SpecificationOriginal}");
+
+        var persistedProfile = db.RentalBillingProfiles.IgnoreQueryFilters().First(current => current.Id == profileId);
+        var persistedItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(persistedProfile.BillingTemplateJson ?? "[]", JsonOptions) ?? new List<RentalBillingTemplateItemModel>();
+        Ensure(persistedItems.Count == 1, "단일 후보 자동 연결 후 저장된 청구항목 수가 잘못되었습니다.");
+        Ensure(persistedItems[0].IncludedAssetIds.Count == 1, $"단일 후보 자동 연결 후 IncludedAssetIds 수가 1이 아닙니다. 실제: {persistedItems[0].IncludedAssetIds.Count}");
+        Ensure(persistedItems[0].IncludedAssetIds[0] == assetId, "단일 후보 자동 연결 후 잘못된 자산이 저장되었습니다.");
+
+        var persistedAsset = db.RentalAssets.IgnoreQueryFilters().First(current => current.Id == assetId);
+        Ensure(persistedAsset.BillingProfileId == profileId, "단일 후보 자동 연결 후 자산 BillingProfileId 가 프로필에 연결되지 않았습니다.");
+
+        return new
+        {
+            start.Message,
+            start.RelatedEntityId,
+            LinkedAssetId = assetId,
+            PersistedIncludedAssetIds = persistedItems[0].IncludedAssetIds
+        };
+    }
+
     private static Guid SeedCustomer(LocalStateService local, SessionState adminSession)
     {
         var customer = new LocalCustomer
@@ -483,6 +619,38 @@ internal static class Program
             });
 
         db.SaveChanges();
+    }
+
+    private static Guid SeedSingleCandidateAsset(LocalDbContext db, Guid customerId, string assignedUsername)
+    {
+        var now = DateTime.UtcNow;
+        var asset = new LocalRentalAsset
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customerId,
+            BillingProfileId = null,
+            AssetKey = "USENET|D-001",
+            ManagementCompanyCode = DomainConstants.OfficeUsenet,
+            ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
+            AssignedUsername = assignedUsername,
+            ManagementNumber = "D-001",
+            ManagementId = "D-001",
+            ItemName = "IMC2010",
+            CustomerName = "ZZZ-단일후보 자동연결 거래처",
+            CurrentCustomerName = "ZZZ-단일후보 자동연결 거래처",
+            BillToCustomerName = "ZZZ-단일후보 자동연결 거래처",
+            InstallSiteName = "단일후보 테스트실",
+            InstallLocation = "단일후보 테스트실",
+            BillingEligibilityStatus = "청구가능",
+            AssetStatus = "임대진행중",
+            MonthlyFee = 150000m,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+
+        db.RentalAssets.Add(asset);
+        db.SaveChanges();
+        return asset.Id;
     }
 
     private static void SeedGroupedAssets(LocalDbContext db, Guid customerId, Guid billingProfileId, string assignedUsername)
@@ -599,7 +767,11 @@ internal static class Program
         IReadOnlyList<RentalBillingTemplateItemModel> templateItems,
         string billingAdvanceMode = "후불",
         DateOnly? billingStartDate = null,
-        DateOnly? billingAnchorDate = null)
+        DateOnly? billingAnchorDate = null,
+        int? billingAnchorMonth = null,
+        string? billingDayMode = null,
+        string? documentIssueMode = null,
+        int documentLeadDays = 0)
     {
         var profile = new LocalRentalBillingProfile
         {
@@ -621,9 +793,13 @@ internal static class Program
             SettlementStatus = PaymentFlowConstants.SettlementStatusPending,
             CompletionStatus = PaymentFlowConstants.CompletionPending,
             BillingDay = 25,
+            BillingDayMode = billingDayMode ?? RentalBillingScheduleRules.BillingDayModeFixedDay,
             BillingCycleMonths = cycleMonths,
+            BillingAnchorMonth = billingAnchorMonth ?? 0,
             BillingStartDate = billingStartDate ?? new DateOnly(2026, 6, 1),
             BillingAnchorDate = billingAnchorDate ?? new DateOnly(2026, 6, 1),
+            DocumentIssueMode = documentIssueMode ?? RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate,
+            DocumentLeadDays = documentLeadDays,
             MonthlyAmount = monthlyAmount,
             BillingTemplateJson = rental.SerializeBillingTemplateItems(templateItems)
         };

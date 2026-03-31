@@ -1,6 +1,7 @@
 ﻿using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Threading;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
 
@@ -88,21 +89,26 @@ public partial class RentalBillingWindow : Window
         {
             await viewModel.FlushAutoSaveForCloseAsync();
             _allowClose = true;
-            Close();
         }
         catch (OperationCanceledException)
         {
             _allowClose = true;
-            Close();
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"자동저장 후 닫기에 실패했습니다.\n{ex.Message}", "렌탈 청구관리", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        finally
-        {
             _closeInProgress = false;
+            viewModel.StatusMessage = $"자동저장 후 창을 닫지 못했습니다. {ex.Message}";
+            return;
         }
+
+        _closeInProgress = false;
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
+        {
+            if (!_allowClose || !IsLoaded)
+                return;
+
+            Close();
+        }));
     }
 
     private void NewRentalCustomerButton_Click(object sender, RoutedEventArgs e)

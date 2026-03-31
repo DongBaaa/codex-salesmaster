@@ -302,9 +302,17 @@ public sealed class RentalStateService
             var templateItems = GetBillingTemplateItems(profile, profileAssets);
             var includedAssetCount = templateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count();
             var nextBillingDate = GetNextBillingDate(profile, filter.ReferenceDate);
-            var daysRemaining = nextBillingDate.HasValue
-                ? nextBillingDate.Value.DayNumber - filter.ReferenceDate.DayNumber
-                : (int?)null;
+            var documentIssueDate = nextBillingDate.HasValue
+                ? RentalBillingScheduleRules.CalculateDocumentIssueDate(nextBillingDate, profile.DocumentIssueMode, profile.DocumentLeadDays)
+                : null;
+            var alertDate = nextBillingDate.HasValue
+                ? RentalBillingScheduleRules.ResolveAlertDate(nextBillingDate.Value, documentIssueDate)
+                : (DateOnly?)null;
+            var daysRemaining = alertDate.HasValue
+                ? alertDate.Value.DayNumber - filter.ReferenceDate.DayNumber
+                : nextBillingDate.HasValue
+                    ? nextBillingDate.Value.DayNumber - filter.ReferenceDate.DayNumber
+                    : (int?)null;
             var currentRun = GetOrCreateBillingRun(profile, filter.ReferenceDate, persistChanges: false);
             var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
             var settledAmount = currentRun is not null && settledByRun.TryGetValue(currentRun.RunId, out var runSettledAmount)
@@ -328,7 +336,7 @@ public sealed class RentalStateService
                 AssignedUsernameDisplay = ResolveAssignedUsernameForDisplay(profile.AssignedUsername, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode),
                 NextBillingDate = nextBillingDate,
                 DaysRemaining = daysRemaining,
-                DisplayStatus = BuildBillingDisplayStatus(profile, nextBillingDate, daysRemaining),
+                DisplayStatus = BuildBillingDisplayStatus(profile, alertDate ?? nextBillingDate, daysRemaining),
                 SettlementStatus = currentRun is not null
                     ? DetermineBillingSettlementStatus(profile, settledAmount, billedAmount)
                     : PaymentFlowConstants.NormalizeSettlementStatus(profile.SettlementStatus),
@@ -347,6 +355,23 @@ public sealed class RentalStateService
                 BillToCustomerName = string.IsNullOrWhiteSpace(profile.BillToCustomerName) ? profile.CustomerName : profile.BillToCustomerName,
                 InstallSiteName = string.IsNullOrWhiteSpace(profile.InstallSiteName) ? profile.RealCustomerName : profile.InstallSiteName,
                 BillingAdvanceMode = string.IsNullOrWhiteSpace(profile.BillingAdvanceMode) ? "후불" : profile.BillingAdvanceMode,
+                BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(profile.BillingDayMode),
+                BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+                    profile.BillingCycleMonths,
+                    profile.BillingAnchorMonth,
+                    profile.BillingAnchorDate,
+                    profile.BillingStartDate,
+                    profile.ContractStartDate,
+                    profile.ContractDate,
+                    profile.LastBilledDate,
+                    filter.ReferenceDate),
+                DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(profile.DocumentIssueMode),
+                DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(profile.DocumentLeadDays),
+                DocumentIssueDate = documentIssueDate,
+                AlertDate = alertDate,
+                AlertReason = nextBillingDate.HasValue
+                    ? RentalBillingScheduleRules.ResolveAlertReason(nextBillingDate.Value, documentIssueDate)
+                    : string.Empty,
                 CurrentBillingRunId = currentRun?.RunId,
                 CurrentBillingPeriodLabel = currentRun?.PeriodLabel ?? string.Empty,
                 CurrentBillingRunStatus = currentRunStatus,
@@ -551,8 +576,7 @@ public sealed class RentalStateService
         profile.InstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(string.IsNullOrWhiteSpace(profile.InstallSiteName) ? profile.RealCustomerName : profile.InstallSiteName);
         profile.BillingType = NormalizeBillingType(profile.BillingType);
         profile.BillingAdvanceMode = NormalizeBillingAdvanceMode(profile.BillingAdvanceMode);
-        profile.BillingDay = Math.Clamp(profile.BillingDay <= 0 ? 25 : profile.BillingDay, 1, 31);
-        profile.BillingCycleMonths = Math.Max(1, profile.BillingCycleMonths);
+        NormalizeBillingSchedule(profile, DateOnly.FromDateTime(DateTime.Today));
         profile.BillingMethod = NormalizeBillingMethod(profile.BillingMethod);
         profile.BillingStatus = PaymentFlowConstants.NormalizeBillingStatus(profile.BillingStatus);
         profile.SettlementStatus = PaymentFlowConstants.NormalizeSettlementStatus(profile.SettlementStatus);
@@ -640,8 +664,12 @@ public sealed class RentalStateService
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 시작할 수 없습니다.");
         if (_local is null)
             return LocalMutationResult.Denied("렌탈 청구 전표 저장 서비스를 사용할 수 없습니다.");
+        NormalizeBillingSchedule(profile, referenceDate);
         if (!IsBillingMonth(profile, referenceDate))
-            return LocalMutationResult.Denied("선택한 기준일은 해당 렌탈의 청구월이 아닙니다.");
+        {
+            var nextBillingDate = GetNextBillingDate(profile, referenceDate);
+            return LocalMutationResult.Denied(BuildBillingMonthDeniedMessage(profile, referenceDate, nextBillingDate));
+        }
 
         var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
         if (currentRun is null)
@@ -675,6 +703,15 @@ public sealed class RentalStateService
             var lineBuildResult = await BuildRentalBillingInvoiceLinesAsync(profile, currentRun, templateItems, session, ct);
             if (!lineBuildResult.Success)
                 return LocalMutationResult.Denied(lineBuildResult.Message);
+
+            var serializedTemplateItems = SerializeBillingTemplateItems(templateItems);
+            if (!string.Equals(serializedTemplateItems, profile.BillingTemplateJson ?? string.Empty, StringComparison.Ordinal))
+            {
+                profile.BillingTemplateJson = serializedTemplateItems;
+                profile.MonthlyAmount = templateItems.Sum(ResolveTemplateMonthlyAmount);
+                profile.ItemName = BuildProfileItemName(profile, templateItems);
+                await SyncBillingProfileAssetsAsync(profile, templateItems, ct);
+            }
 
             var officeCode = NormalizeOfficeCode(profile.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
             var invoice = new LocalInvoice
@@ -763,6 +800,7 @@ public sealed class RentalStateService
         if (!CanAccessRental(profile.AssignedUsername, profile.ResponsibleOfficeCode, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구의 수금을 등록할 수 없습니다.");
 
+        NormalizeBillingSchedule(profile, referenceDate);
         var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
         var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
         var amount = settledAmount.GetValueOrDefault(billedAmount);
@@ -797,7 +835,9 @@ public sealed class RentalStateService
             UpsertBillingRun(profile, currentRun);
         }
 
-        var scheduledDate = BuildBillingDate(referenceDate.Year, referenceDate.Month, profile.BillingDay);
+        var scheduledDate = currentRun?.ScheduledDate
+            ?? GetNextBillingDate(profile, referenceDate)
+            ?? RentalBillingScheduleRules.BuildBillingDate(referenceDate.Year, referenceDate.Month, profile.BillingDay, profile.BillingDayMode);
         var billingYearMonth = $"{scheduledDate.Year:0000}-{scheduledDate.Month:00}";
         var log = await _db.RentalBillingLogs.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.BillingProfileId == billingProfileId && current.BillingYearMonth == billingYearMonth, ct);
@@ -1126,16 +1166,21 @@ public sealed class RentalStateService
         if (!CanAccessRental(profile.AssignedUsername, profile.ResponsibleOfficeCode, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 처리할 수 없습니다.");
 
+        NormalizeBillingSchedule(profile, referenceDate);
         if (!IsBillingMonth(profile, referenceDate))
-            return LocalMutationResult.Denied("선택한 기준일은 해당 렌탈의 청구월이 아닙니다.");
-
-        var scheduledDate = BuildBillingDate(referenceDate.Year, referenceDate.Month, profile.BillingDay);
-        var billingYearMonth = $"{scheduledDate.Year:0000}-{scheduledDate.Month:00}";
-        var log = await _db.RentalBillingLogs.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(current => current.BillingProfileId == billingProfileId && current.BillingYearMonth == billingYearMonth, ct);
+        {
+            var nextBillingDate = GetNextBillingDate(profile, referenceDate);
+            return LocalMutationResult.Denied(BuildBillingMonthDeniedMessage(profile, referenceDate, nextBillingDate));
+        }
 
         var normalizedStatus = string.IsNullOrWhiteSpace(status) ? "완료" : status.Trim();
         var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
+        var scheduledDate = currentRun?.ScheduledDate
+            ?? GetNextBillingDate(profile, referenceDate)
+            ?? RentalBillingScheduleRules.BuildBillingDate(referenceDate.Year, referenceDate.Month, profile.BillingDay, profile.BillingDayMode);
+        var billingYearMonth = $"{scheduledDate.Year:0000}-{scheduledDate.Month:00}";
+        var log = await _db.RentalBillingLogs.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.BillingProfileId == billingProfileId && current.BillingYearMonth == billingYearMonth, ct);
         var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
         var now = DateTime.UtcNow;
         if (log is null)
@@ -1251,8 +1296,11 @@ public sealed class RentalStateService
                     var billingCycleMonths = ParseIntValue(GetCellValue(row, headerMap, "청구기간[개월수]")) ?? 1;
                     var businessNumber = GetCellString(row, headerMap, "사업자번호");
                     var realCustomerName = GetCellString(row, headerMap, "실거래처명");
+                    var billingDayMode = billingDay >= 31
+                        ? RentalBillingScheduleRules.BillingDayModeEndOfMonth
+                        : RentalBillingScheduleRules.BillingDayModeFixedDay;
                     var anchorDate = sheetInfo.Anchor.HasValue
-                        ? BuildBillingDate(sheetInfo.Anchor.Value.Year, sheetInfo.Anchor.Value.Month, billingDay)
+                        ? RentalBillingScheduleRules.BuildBillingDate(sheetInfo.Anchor.Value.Year, sheetInfo.Anchor.Value.Month, billingDay, billingDayMode)
                         : (DateOnly?)null;
 
                     var profileKey = BuildProfileKey(officeCode, businessNumber, customerName, realCustomerName, itemName);
@@ -1278,12 +1326,24 @@ public sealed class RentalStateService
                         ? profile.BillingStatus
                         : GetCellString(row, headerMap, "청구상태").Trim();
                     profile.Email = GetCellString(row, headerMap, "E-Mail").Trim();
-                    profile.BillingDay = Math.Clamp(billingDay, 1, 31);
-                    profile.BillingCycleMonths = Math.Max(1, billingCycleMonths);
+                    profile.BillingDayMode = billingDayMode;
+                    profile.BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(billingDay);
+                    profile.BillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(billingCycleMonths);
                     profile.MonthlyAmount = ParseDecimalValue(GetCellValue(row, headerMap, "월청구대금"));
                     profile.SubmissionDocuments = GetCellString(row, headerMap, "추가제출서류").Trim();
                     profile.Notes = GetCellString(row, headerMap, "비고").Trim();
                     profile.BillingAnchorDate = anchorDate ?? profile.BillingAnchorDate;
+                    profile.BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+                        profile.BillingCycleMonths,
+                        profile.BillingAnchorMonth,
+                        profile.BillingAnchorDate,
+                        profile.BillingStartDate,
+                        profile.ContractStartDate,
+                        profile.ContractDate,
+                        profile.LastBilledDate,
+                        sheetInfo.Anchor ?? DateOnly.FromDateTime(DateTime.Today));
+                    profile.DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(profile.DocumentIssueMode);
+                    profile.DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(profile.DocumentLeadDays);
                     if (existing is not null)
                     {
                         profile.SettlementStatus = existing.SettlementStatus;
@@ -2097,9 +2157,14 @@ public sealed class RentalStateService
         IReadOnlyDictionary<string, string> officeMap,
         DateOnly referenceDate)
     {
+        NormalizeBillingSchedule(profile, referenceDate);
         var nextBillingDate = GetNextBillingDate(profile, referenceDate);
         if (!nextBillingDate.HasValue)
             return null;
+
+        var documentIssueDate = RentalBillingScheduleRules.CalculateDocumentIssueDate(nextBillingDate, profile.DocumentIssueMode, profile.DocumentLeadDays);
+        var alertDate = RentalBillingScheduleRules.ResolveAlertDate(nextBillingDate.Value, documentIssueDate);
+        var alertReason = RentalBillingScheduleRules.ResolveAlertReason(nextBillingDate.Value, documentIssueDate);
 
         return new RentalAlertItem
         {
@@ -2111,10 +2176,13 @@ public sealed class RentalStateService
             AssignedUsername = profile.AssignedUsername,
             MonthlyAmount = profile.MonthlyAmount,
             NextBillingDate = nextBillingDate.Value,
-            DaysRemaining = nextBillingDate.Value.DayNumber - referenceDate.DayNumber,
-            Severity = nextBillingDate.Value.DayNumber < referenceDate.DayNumber
+            DocumentIssueDate = documentIssueDate,
+            AlertDate = alertDate,
+            AlertReason = alertReason,
+            DaysRemaining = alertDate.DayNumber - referenceDate.DayNumber,
+            Severity = alertDate.DayNumber < referenceDate.DayNumber
                 ? "지연"
-                : nextBillingDate.Value == referenceDate ? "오늘" : "예정"
+                : alertDate == referenceDate ? "오늘" : "예정"
         };
     }
 
@@ -2268,12 +2336,13 @@ public sealed class RentalStateService
         bool persistChanges)
     {
         ArgumentNullException.ThrowIfNull(profile);
+        NormalizeBillingSchedule(profile, referenceDate);
         var scheduledDate = GetNextBillingDate(profile, referenceDate);
         if (!scheduledDate.HasValue)
             return null;
 
         var templateItems = GetBillingTemplateItems(profile);
-        var cycleMonths = Math.Max(1, profile.BillingCycleMonths);
+        var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
         var period = ResolveBillingPeriod(profile, scheduledDate.Value, cycleMonths);
         var runKey = $"{period.StartDate:yyyyMMdd}-{period.EndDate:yyyyMMdd}";
         var runs = GetBillingRuns(profile);
@@ -2435,16 +2504,35 @@ public sealed class RentalStateService
                     session,
                     ct);
 
-                if (billingAssetCandidates.Count > 0)
+                if (billingAssetCandidates.Count == 1)
+                {
+                    var autoLinkedAssetId = billingAssetCandidates[0].Id;
+                    templateItem.IncludedAssetIds ??= new List<Guid>();
+                    if (!templateItem.IncludedAssetIds.Contains(autoLinkedAssetId))
+                        templateItem.IncludedAssetIds.Add(autoLinkedAssetId);
+
+                    templateAssetIds = templateItem.IncludedAssetIds
+                        .Where(id => id != Guid.Empty)
+                        .Distinct()
+                        .ToList();
+
+                    if (!assetsById.ContainsKey(autoLinkedAssetId))
+                        assetsById[autoLinkedAssetId] = billingAssetCandidates[0];
+                }
+
+                if (templateAssetIds.Count == 0 && billingAssetCandidates.Count > 0)
                 {
                     return (false,
                         $"청구항목 '{templateItem.DisplayItemName}'에 연결된 설치장비가 없습니다. 후보 장비 {billingAssetCandidates.Count}대를 '선택 장비를 현재 품목에 연결' 버튼으로 연결한 뒤 다시 시도하세요.",
                         new List<LocalInvoiceLine>());
                 }
 
-                return (false,
-                    $"청구항목 '{templateItem.DisplayItemName}'에 연결된 설치장비가 없어 판매전표를 만들 수 없습니다.",
-                    new List<LocalInvoiceLine>());
+                if (templateAssetIds.Count == 0)
+                {
+                    return (false,
+                        $"청구항목 '{templateItem.DisplayItemName}'에 연결된 설치장비가 없어 판매전표를 만들 수 없습니다.",
+                        new List<LocalInvoiceLine>());
+                }
             }
 
             var templateAssets = new List<LocalRentalAsset>();
@@ -2618,19 +2706,56 @@ public sealed class RentalStateService
         return string.Equals(normalized, "선불", StringComparison.OrdinalIgnoreCase) ? "선불" : "후불";
     }
 
-    private static (DateOnly StartDate, DateOnly EndDate) ResolveBillingPeriod(LocalRentalBillingProfile profile, DateOnly scheduledDate, int cycleMonths)
-    {
-        var scheduledMonth = new DateOnly(scheduledDate.Year, scheduledDate.Month, 1);
-        if (string.Equals(NormalizeBillingAdvanceMode(profile.BillingAdvanceMode), "선불", StringComparison.OrdinalIgnoreCase))
-        {
-            var endDate = scheduledMonth.AddMonths(cycleMonths).AddDays(-1);
-            return (scheduledMonth, endDate);
-        }
+    private static DateOnly NormalizeReferenceDate(DateOnly referenceDate)
+        => referenceDate == default
+            ? DateOnly.FromDateTime(DateTime.Today)
+            : referenceDate;
 
-        var startMonth = scheduledMonth.AddMonths(-(cycleMonths - 1));
-        var endDateForMonth = new DateOnly(scheduledMonth.Year, scheduledMonth.Month, DateTime.DaysInMonth(scheduledMonth.Year, scheduledMonth.Month));
-        return (startMonth, endDateForMonth);
+    private static void NormalizeBillingSchedule(LocalRentalBillingProfile profile, DateOnly referenceDate)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+
+        var normalizedReference = NormalizeReferenceDate(referenceDate);
+        profile.BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(profile.BillingDayMode);
+        profile.BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(profile.BillingDay);
+        profile.BillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
+        profile.BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+            profile.BillingCycleMonths,
+            profile.BillingAnchorMonth,
+            profile.BillingAnchorDate,
+            profile.BillingStartDate,
+            profile.ContractStartDate,
+            profile.ContractDate,
+            profile.LastBilledDate,
+            normalizedReference);
+        profile.DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(profile.DocumentIssueMode);
+        profile.DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(profile.DocumentLeadDays);
     }
+
+    private static string BuildBillingMonthDeniedMessage(
+        LocalRentalBillingProfile profile,
+        DateOnly referenceDate,
+        DateOnly? nextBillingDate)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+
+        var dayModeText = string.Equals(
+            RentalBillingScheduleRules.NormalizeBillingDayMode(profile.BillingDayMode),
+            RentalBillingScheduleRules.BillingDayModeEndOfMonth,
+            StringComparison.Ordinal)
+            ? "말일"
+            : $"매월 {RentalBillingScheduleRules.NormalizeBillingDay(profile.BillingDay)}일";
+        var nextDateText = nextBillingDate.HasValue
+            ? $"다음 결제예정일은 {nextBillingDate.Value:yyyy-MM-dd}입니다."
+            : "다음 결제예정일을 계산할 수 없습니다.";
+        return $"이 렌탈은 {RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths)}개월 {NormalizeBillingAdvanceMode(profile.BillingAdvanceMode)} / {dayModeText} / 기준월 {profile.BillingAnchorMonth}월로 계산되어 {NormalizeReferenceDate(referenceDate):yyyy-MM-dd}에는 청구할 수 없습니다. {nextDateText}";
+    }
+
+    private static (DateOnly StartDate, DateOnly EndDate) ResolveBillingPeriod(LocalRentalBillingProfile profile, DateOnly scheduledDate, int cycleMonths)
+        => RentalBillingScheduleRules.ResolveBillingPeriod(
+            RentalBillingScheduleRules.NormalizeCycleMonths(cycleMonths),
+            NormalizeBillingAdvanceMode(profile.BillingAdvanceMode),
+            scheduledDate);
 
     private static string BuildBillingPeriodLabel(DateOnly startDate, DateOnly endDate)
         => startDate == endDate || (startDate.Year == endDate.Year && startDate.Month == endDate.Month)
@@ -2764,66 +2889,47 @@ public sealed class RentalStateService
         if (profile is null || !profile.IsActive)
             return null;
 
-        var billingDay = Math.Clamp(profile.BillingDay <= 0 ? 25 : profile.BillingDay, 1, 31);
-        var cycleMonths = Math.Max(1, profile.BillingCycleMonths);
-        var anchorDate = GetCycleAnchor(profile, referenceDate);
-        var anchorMonth = new DateOnly(anchorDate.Year, anchorDate.Month, 1);
-        var referenceMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1);
-        var monthsDiff = ((referenceMonth.Year - anchorMonth.Year) * 12) + (referenceMonth.Month - anchorMonth.Month);
-        if (monthsDiff < 0)
-            monthsDiff = 0;
-
-        var steps = monthsDiff / cycleMonths;
-        var candidateMonth = anchorMonth.AddMonths(steps * cycleMonths);
-        var candidate = BuildBillingDate(candidateMonth.Year, candidateMonth.Month, billingDay);
-
-        while (candidate > referenceDate && candidateMonth > anchorMonth)
-        {
-            candidateMonth = candidateMonth.AddMonths(-cycleMonths);
-            candidate = BuildBillingDate(candidateMonth.Year, candidateMonth.Month, billingDay);
-        }
-
-        if (profile.LastBilledDate.HasValue)
-        {
-            while (candidate <= profile.LastBilledDate.Value)
-            {
-                candidateMonth = candidateMonth.AddMonths(cycleMonths);
-                candidate = BuildBillingDate(candidateMonth.Year, candidateMonth.Month, billingDay);
-            }
-        }
-
-        return candidate;
+        NormalizeBillingSchedule(profile, referenceDate);
+        return RentalBillingScheduleRules.ResolveApplicableBillingDate(
+            profile.BillingDay,
+            profile.BillingDayMode,
+            profile.BillingCycleMonths,
+            profile.BillingAnchorMonth,
+            NormalizeReferenceDate(referenceDate),
+            profile.LastBilledDate);
     }
 
     public bool IsBillingMonth(LocalRentalBillingProfile profile, DateOnly referenceDate)
     {
-        var cycleMonths = Math.Max(1, profile.BillingCycleMonths);
-        if (cycleMonths == 1)
-            return true;
-
-        var anchor = GetCycleAnchor(profile, referenceDate);
-        var monthsDiff = ((referenceDate.Year - anchor.Year) * 12) + (referenceDate.Month - anchor.Month);
-        if (monthsDiff < 0)
-            return false;
-
-        return monthsDiff % cycleMonths == 0;
+        NormalizeBillingSchedule(profile, referenceDate);
+        return RentalBillingScheduleRules.IsBillingMonth(
+            profile.BillingCycleMonths,
+            profile.BillingAnchorMonth,
+            NormalizeReferenceDate(referenceDate));
     }
 
     private static DateOnly GetCycleAnchor(LocalRentalBillingProfile profile, DateOnly referenceDate)
     {
+        var normalizedReference = NormalizeReferenceDate(referenceDate);
+        var anchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+            profile.BillingCycleMonths,
+            profile.BillingAnchorMonth,
+            profile.BillingAnchorDate,
+            profile.BillingStartDate,
+            profile.ContractStartDate,
+            profile.ContractDate,
+            profile.LastBilledDate,
+            normalizedReference);
         return profile.BillingAnchorDate
                ?? profile.BillingStartDate
                ?? profile.ContractStartDate
                ?? profile.ContractDate
                ?? profile.LastBilledDate
-               ?? new DateOnly(referenceDate.Year, referenceDate.Month, 1);
+               ?? new DateOnly(normalizedReference.Year, anchorMonth, 1);
     }
 
     private static DateOnly BuildBillingDate(int year, int month, int billingDay)
-    {
-        var day = Math.Clamp(billingDay, 1, DateTime.DaysInMonth(year, month));
-        return new DateOnly(year, month, day);
-    }
+        => RentalBillingScheduleRules.BuildBillingDate(year, month, billingDay, RentalBillingScheduleRules.BillingDayModeFixedDay);
 
     private async Task<string> ResolveRentalOfficeCodeAsync(
         string? officeCode,

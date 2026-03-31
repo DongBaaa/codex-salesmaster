@@ -152,7 +152,7 @@
         <Border Grid.Row="2" Margin="0,10,0,0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
             <WrapPanel VerticalAlignment="Center">
                 <TextBlock Text="검색" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <TextBox Width="220" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0"/>
+                <TextBox Width="220" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=350}" Margin="0,0,12,0"/>
                 <TextBlock Text="담당지점" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <ComboBox Width="150" ItemsSource="{Binding OfficeOptions}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedOfficeFilter}" Margin="0,0,12,0"/>
                 <TextBlock Text="담당계정" VerticalAlignment="Center" Margin="0,0,8,0"/>
@@ -228,6 +228,8 @@
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="거래처명" VerticalAlignment="Center" Margin="0,0,10,8"/>
@@ -255,19 +257,29 @@
                             <TextBlock Grid.Row="4" Grid.Column="3" Text="이메일" VerticalAlignment="Center" Margin="0,0,10,8"/>
                             <TextBox Grid.Row="4" Grid.Column="4" Text="{Binding EditEmail, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
 
-                            <TextBlock Grid.Row="5" Grid.Column="0" Text="청구일" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding EditBillingDay, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="5" Grid.Column="3" Text="주기(개월)" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <TextBox Grid.Row="5" Grid.Column="4" Text="{Binding EditBillingCycleMonths, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                            <TextBlock Grid.Row="5" Grid.Column="0" Text="청구일 유형" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <ComboBox Grid.Row="5" Grid.Column="1" ItemsSource="{Binding BillingDayModeOptions}" SelectedItem="{Binding EditBillingDayMode}" Margin="0,0,0,8"/>
+                            <TextBlock Grid.Row="5" Grid.Column="3" Text="청구일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBox Grid.Row="5" Grid.Column="4" Text="{Binding EditBillingDay, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsFixedBillingDayMode}" Margin="0,0,0,8"/>
 
-                            <TextBlock Grid.Row="6" Grid.Column="0" Text="회차기준일" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <DatePicker Grid.Row="6" Grid.Column="1" SelectedDate="{Binding EditBillingStartDate}" SelectedDateFormat="Short">
+                            <TextBlock Grid.Row="6" Grid.Column="0" Text="주기(개월)" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding EditBillingCycleMonths, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                            <TextBlock Grid.Row="6" Grid.Column="3" Text="청구 기준월" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <ComboBox Grid.Row="6" Grid.Column="4" ItemsSource="{Binding BillingAnchorMonthOptions}" SelectedItem="{Binding EditBillingAnchorMonth}" Margin="0,0,0,8"/>
+
+                            <TextBlock Grid.Row="7" Grid.Column="0" Text="회차기준일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <DatePicker Grid.Row="7" Grid.Column="1" SelectedDate="{Binding EditBillingStartDate}" SelectedDateFormat="Short" Margin="0,0,0,8">
                                 <DatePicker.Resources>
                                     <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
                                 </DatePicker.Resources>
                             </DatePicker>
-                            <TextBlock Grid.Row="6" Grid.Column="3" Text="월 기준금액" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <TextBox Grid.Row="6" Grid.Column="4" Text="{Binding EditMonthlyAmount, StringFormat=N0}" IsReadOnly="True" Background="#24364F" BorderBrush="#324A69"/>
+                            <TextBlock Grid.Row="7" Grid.Column="3" Text="월 기준금액" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBox Grid.Row="7" Grid.Column="4" Text="{Binding EditMonthlyAmount, StringFormat=N0}" IsReadOnly="True" Background="#24364F" BorderBrush="#324A69" Margin="0,0,0,8"/>
+
+                            <TextBlock Grid.Row="8" Grid.Column="0" Text="서류 발송 규칙" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <ComboBox Grid.Row="8" Grid.Column="1" ItemsSource="{Binding DocumentIssueModeOptions}" SelectedItem="{Binding EditDocumentIssueMode}" Margin="0,0,0,0"/>
+                            <TextBlock Grid.Row="8" Grid.Column="3" Text="선행일수" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBox Grid.Row="8" Grid.Column="4" Text="{Binding EditDocumentLeadDays, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsDocumentLeadDaysVisible}"/>
                         </Grid>
 
                         <WrapPanel Margin="0,10,0,10">
@@ -282,6 +294,8 @@
                                 <TextBlock Text="청구항목 요약" Foreground="#4FC3F7" FontWeight="Bold"/>
                                 <TextBlock Text="{Binding TemplateSummary}" Margin="0,6,0,0"/>
                                 <TextBlock Text="{Binding AssetCandidateSummary}" Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                                <TextBlock Text="{Binding BillingSchedulePreviewText}" Foreground="#B3E5FC" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding DocumentIssuePreviewText}" Foreground="#B3E5FC" Margin="0,4,0,0" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
 
@@ -289,8 +303,9 @@
                             <Button Content="후보 장비 새로고침" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,8,0" Command="{Binding RefreshCandidateAssetsCommand}"/>
                             <Button Content="표시 품목 추가" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,8,0" Command="{Binding AddTemplateItemCommand}"/>
                             <Button Content="선택 품목 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveTemplateItemCommand}"/>
-                            <Button Content="선택 장비를 현재 품목에 연결" Background="#00897B" BorderBrush="#00897B" Command="{Binding ApplySelectedAssetsToTemplateCommand}"/>
+                            <Button Content="선택 장비를 현재 품목에 연결" Background="#00897B" BorderBrush="#00897B" Command="{Binding ApplySelectedAssetsToTemplateCommand}" IsEnabled="{Binding CanApplySelectedAssets}"/>
                         </WrapPanel>
+                        <TextBlock Text="{Binding ApplySelectedAssetsHint}" Foreground="#90CAF9" Margin="0,0,0,8" TextWrapping="Wrap"/>
 
                         <TextBlock Text="청구서 표시 품목" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,6"/>
                         <DataGrid ItemsSource="{Binding TemplateItems}" SelectedItem="{Binding SelectedTemplateItem}" Height="210" Margin="0,0,0,10">

@@ -22,6 +22,7 @@ public sealed partial class SalesViewModel : ObservableObject
     private readonly IPrintService _invoicePrintService;
     private readonly SessionState _session;
     private readonly VoucherType _newInvoiceVoucherType;
+    private readonly UiDebouncer _itemSearchDebouncer = new();
     private List<LocalItem> _allItems = new();
     private List<LocalCustomer> _allCustomers = new();
     private readonly Dictionary<string, string> _priceGradeSourceMap = new(StringComparer.CurrentCultureIgnoreCase);
@@ -743,7 +744,8 @@ public sealed partial class SalesViewModel : ObservableObject
     }
 
     // ?? ?곹뭹 寃???????????????????????????????????????????????????????????
-    partial void OnItemSearchTextChanged(string value) => RefreshItemSearch();
+    partial void OnItemSearchTextChanged(string value)
+        => _itemSearchDebouncer.Debounce(TimeSpan.FromMilliseconds(250), RefreshItemSearch);
 
     private void RefreshItemSearch()
     {

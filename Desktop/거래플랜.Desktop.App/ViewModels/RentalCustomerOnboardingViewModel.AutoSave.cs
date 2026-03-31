@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using 거래플랜.Desktop.App.Services;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
@@ -29,7 +30,11 @@ public sealed partial class RentalCustomerOnboardingViewModel
         nameof(BillingType),
         nameof(BillingAdvanceMode),
         nameof(BillingDay),
+        nameof(BillingDayMode),
         nameof(BillingCycleMonths),
+        nameof(BillingAnchorMonth),
+        nameof(DocumentIssueMode),
+        nameof(DocumentLeadDays),
         nameof(BillingStartDate),
         nameof(MonthlyAmount),
         nameof(BillingMethod),
@@ -217,7 +222,11 @@ public sealed partial class RentalCustomerOnboardingViewModel
             BillingType = BillingType,
             BillingAdvanceMode = BillingAdvanceMode,
             BillingDay = BillingDay,
+            BillingDayMode = BillingDayMode,
             BillingCycleMonths = BillingCycleMonths,
+            BillingAnchorMonth = BillingAnchorMonth,
+            DocumentIssueMode = DocumentIssueMode,
+            DocumentLeadDays = DocumentLeadDays,
             BillingStartDate = BillingStartDate,
             MonthlyAmount = MonthlyAmount,
             BillingMethod = BillingMethod,
@@ -246,9 +255,21 @@ public sealed partial class RentalCustomerOnboardingViewModel
         InstallSiteName = draft.InstallSiteName ?? string.Empty;
         BillingType = string.IsNullOrWhiteSpace(draft.BillingType) ? "묶음" : draft.BillingType;
         BillingAdvanceMode = string.IsNullOrWhiteSpace(draft.BillingAdvanceMode) ? "후불" : draft.BillingAdvanceMode;
-        BillingDay = draft.BillingDay <= 0 ? 25 : draft.BillingDay;
-        BillingCycleMonths = draft.BillingCycleMonths <= 0 ? 1 : draft.BillingCycleMonths;
+        BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(draft.BillingDayMode);
+        BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(draft.BillingDay);
+        BillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(draft.BillingCycleMonths);
         BillingStartDate = draft.BillingStartDate == default ? DateTime.Today : draft.BillingStartDate;
+        BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+            BillingCycleMonths,
+            draft.BillingAnchorMonth,
+            DateOnly.FromDateTime(BillingStartDate),
+            DateOnly.FromDateTime(BillingStartDate),
+            null,
+            null,
+            null,
+            DateOnly.FromDateTime(BillingStartDate));
+        DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(draft.DocumentIssueMode);
+        DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(draft.DocumentLeadDays);
         MonthlyAmount = draft.MonthlyAmount;
         BillingMethod = draft.BillingMethod ?? BillingMethod;
         PaymentMethod = draft.PaymentMethod ?? PaymentMethod;
@@ -304,8 +325,18 @@ public sealed partial class RentalCustomerOnboardingViewModel
             return true;
         }
 
-        if (CurrentStepIndex > 0 || LinkAssetsLater || BillingDay != 25 || BillingCycleMonths != 1 || BillingStartDate.Date != DateTime.Today.Date)
+        if (CurrentStepIndex > 0 ||
+            LinkAssetsLater ||
+            !string.Equals(BillingDayMode, RentalBillingScheduleRules.BillingDayModeFixedDay, StringComparison.Ordinal) ||
+            BillingDay != 25 ||
+            BillingCycleMonths != 1 ||
+            BillingAnchorMonth != 3 ||
+            !string.Equals(DocumentIssueMode, RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate, StringComparison.Ordinal) ||
+            DocumentLeadDays != 0 ||
+            BillingStartDate.Date != DateTime.Today.Date)
+        {
             return true;
+        }
 
         if (TemplateItems.Count != 1)
             return true;

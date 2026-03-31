@@ -2954,7 +2954,11 @@ public static partial class DbInitializer
                         "BillingStatus" TEXT NOT NULL DEFAULT '',
                         "Email" TEXT NOT NULL DEFAULT '',
                         "BillingDay" INTEGER NOT NULL DEFAULT 25,
+                        "BillingDayMode" TEXT NOT NULL DEFAULT '고정일',
                         "BillingCycleMonths" INTEGER NOT NULL DEFAULT 1,
+                        "BillingAnchorMonth" INTEGER NOT NULL DEFAULT 3,
+                        "DocumentIssueMode" TEXT NOT NULL DEFAULT '결제일과 동일',
+                        "DocumentLeadDays" INTEGER NOT NULL DEFAULT 0,
                         "MonthlyAmount" REAL NOT NULL DEFAULT 0,
                         "DepositAmount" REAL NOT NULL DEFAULT 0,
                         "SubmissionDocuments" TEXT NOT NULL DEFAULT '',
@@ -3001,7 +3005,11 @@ public static partial class DbInitializer
                         "BillingStatus" text NOT NULL DEFAULT '',
                         "Email" text NOT NULL DEFAULT '',
                         "BillingDay" integer NOT NULL DEFAULT 25,
+                        "BillingDayMode" text NOT NULL DEFAULT '고정일',
                         "BillingCycleMonths" integer NOT NULL DEFAULT 1,
+                        "BillingAnchorMonth" integer NOT NULL DEFAULT 3,
+                        "DocumentIssueMode" text NOT NULL DEFAULT '결제일과 동일',
+                        "DocumentLeadDays" integer NOT NULL DEFAULT 0,
                         "MonthlyAmount" numeric(18,2) NOT NULL DEFAULT 0,
                         "DepositAmount" numeric(18,2) NOT NULL DEFAULT 0,
                         "SubmissionDocuments" text NOT NULL DEFAULT '',
@@ -3626,6 +3634,10 @@ public static partial class DbInitializer
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "InstallSiteName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingAdvanceMode", "TEXT NOT NULL DEFAULT '후불'", "text NOT NULL DEFAULT '후불'", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingStartDate", "TEXT NULL", "date NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingDayMode", "TEXT NOT NULL DEFAULT '고정일'", "text NOT NULL DEFAULT '고정일'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingAnchorMonth", "INTEGER NOT NULL DEFAULT 3", "integer NOT NULL DEFAULT 3", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "DocumentIssueMode", "TEXT NOT NULL DEFAULT '결제일과 동일'", "text NOT NULL DEFAULT '결제일과 동일'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "DocumentLeadDays", "INTEGER NOT NULL DEFAULT 0", "integer NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingTemplateJson", "TEXT NOT NULL DEFAULT '[]'", "text NOT NULL DEFAULT '[]'", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingRunsJson", "TEXT NOT NULL DEFAULT '[]'", "text NOT NULL DEFAULT '[]'", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalAssets", "CurrentCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
@@ -3773,3 +3785,4 @@ public static partial class DbInitializer
         public bool HasPermission(string permission) => true;
     }
 }
+

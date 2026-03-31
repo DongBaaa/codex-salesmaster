@@ -21,6 +21,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private readonly RentalDocumentService _documents;
     private readonly IPrintService _printService;
     private readonly SessionState _session;
+    private readonly UiDebouncer _searchDebouncer = new();
     private bool _suppressFilterReload;
     private bool _pendingFilterReload;
 
@@ -821,10 +822,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         if (_suppressFilterReload)
             return;
 
-        UiTaskHelper.Forget(
-            ReloadAsync(),
-            "RENTAL",
-            "렌탈 자산 필터 재조회",
+        _searchDebouncer.DebounceAsync(
+            TimeSpan.FromMilliseconds(350),
+            () => ReloadAsync(),
             ex => StatusMessage = $"렌탈 자산 목록을 다시 불러오지 못했습니다. {ex.Message}");
     }
 

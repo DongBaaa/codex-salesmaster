@@ -1,4 +1,5 @@
 ﻿using 거래플랜.Desktop.App.Data;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -32,6 +33,9 @@ public sealed class RentalAlertItem
     public string AssignedUsername { get; set; } = string.Empty;
     public decimal MonthlyAmount { get; set; }
     public DateOnly NextBillingDate { get; set; }
+    public DateOnly? DocumentIssueDate { get; set; }
+    public DateOnly AlertDate { get; set; }
+    public string AlertReason { get; set; } = string.Empty;
     public int DaysRemaining { get; set; }
     public string Severity { get; set; } = string.Empty;
     public string Summary => string.IsNullOrWhiteSpace(RealCustomerName)
@@ -138,7 +142,11 @@ public sealed class RentalBillingEditorDraftModel
     public string CompletionStatus { get; set; } = PaymentFlowConstants.CompletionPending;
     public string Email { get; set; } = string.Empty;
     public int BillingDay { get; set; } = 25;
+    public string BillingDayMode { get; set; } = RentalBillingScheduleRules.BillingDayModeFixedDay;
     public int BillingCycleMonths { get; set; } = 1;
+    public int BillingAnchorMonth { get; set; } = 3;
+    public string DocumentIssueMode { get; set; } = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate;
+    public int DocumentLeadDays { get; set; }
     public decimal MonthlyAmount { get; set; }
     public decimal DepositAmount { get; set; }
     public decimal SettledAmount { get; set; }
@@ -179,7 +187,11 @@ public sealed class RentalCustomerOnboardingDraftModel
     public string BillingType { get; set; } = "묶음";
     public string BillingAdvanceMode { get; set; } = "후불";
     public int BillingDay { get; set; } = 25;
+    public string BillingDayMode { get; set; } = RentalBillingScheduleRules.BillingDayModeFixedDay;
     public int BillingCycleMonths { get; set; } = 1;
+    public int BillingAnchorMonth { get; set; } = 3;
+    public string DocumentIssueMode { get; set; } = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate;
+    public int DocumentLeadDays { get; set; }
     public DateTime BillingStartDate { get; set; } = DateTime.Today;
     public decimal MonthlyAmount { get; set; }
     public string BillingMethod { get; set; } = string.Empty;
@@ -213,6 +225,13 @@ public sealed class RentalBillingViewRow
     public string BillToCustomerName { get; init; } = string.Empty;
     public string InstallSiteName { get; init; } = string.Empty;
     public string BillingAdvanceMode { get; init; } = string.Empty;
+    public string BillingDayMode { get; init; } = RentalBillingScheduleRules.BillingDayModeFixedDay;
+    public int BillingAnchorMonth { get; init; }
+    public string DocumentIssueMode { get; init; } = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate;
+    public int DocumentLeadDays { get; init; }
+    public DateOnly? DocumentIssueDate { get; init; }
+    public DateOnly? AlertDate { get; init; }
+    public string AlertReason { get; init; } = string.Empty;
     public Guid? CurrentBillingRunId { get; init; }
     public string CurrentBillingPeriodLabel { get; init; } = string.Empty;
     public string CurrentBillingRunStatus { get; init; } = string.Empty;
@@ -234,3 +253,4 @@ public sealed class RentalAssetViewRow
     public bool HasDataIssue { get; init; }
     public bool IsSelected { get; set; }
 }
+

@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -18,6 +19,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
 
     private readonly LocalStateService _local;
     private readonly SessionState _session;
+    private readonly UiDebouncer _filterDebouncer = new();
     private readonly List<EnvironmentCustomerRow> _allRows = new();
     private Dictionary<Guid, string> _categoryNames = new();
     private Dictionary<Guid, CustomerContractSummaryItem> _contractSummaryMap = new();
@@ -274,22 +276,22 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
 
     partial void OnSearchTextChanged(string value)
     {
-        ApplyFilter();
+        _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(300), ApplyFilter);
     }
 
     partial void OnSelectedCategoryFilterChanged(string value)
     {
-        ApplyFilter();
+        _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(200), ApplyFilter);
     }
 
     partial void OnSelectedOfficeFilterChanged(string value)
     {
-        ApplyFilter();
+        _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(200), ApplyFilter);
     }
 
     partial void OnSelectedSortOptionChanged(string value)
     {
-        ApplyFilter();
+        _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(150), ApplyFilter);
     }
 
     private string ResolveCategoryName(Guid? categoryId, string? tradeType)

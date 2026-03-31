@@ -488,7 +488,11 @@ public sealed class RentalBillingProfileDto : SyncEntityDto
     public string BillingStatus { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
     public int BillingDay { get; set; } = 25;
+    public string BillingDayMode { get; set; } = RentalBillingScheduleRules.BillingDayModeFixedDay;
     public int BillingCycleMonths { get; set; } = 1;
+    public int BillingAnchorMonth { get; set; } = 3;
+    public string DocumentIssueMode { get; set; } = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate;
+    public int DocumentLeadDays { get; set; }
     public decimal MonthlyAmount { get; set; }
     public decimal DepositAmount { get; set; }
     public string SubmissionDocuments { get; set; } = string.Empty;

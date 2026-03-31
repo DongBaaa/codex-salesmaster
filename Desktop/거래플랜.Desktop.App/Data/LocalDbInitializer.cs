@@ -35,6 +35,7 @@ public static partial class LocalDbInitializer
     private const string MergeDuplicateRentalAssetsStepKey = "Migration.MergeDuplicateRentalAssets.v2";
     private const string MergeDuplicateCompanyProfilesStepKey = "Migration.MergeDuplicateCompanyProfiles.v1";
     private const string MergeDuplicateItemsStepKey = "Migration.MergeDuplicateItems.v1";
+    private const string NormalizeRentalBillingScheduleRulesStepKey = "Migration.NormalizeRentalBillingScheduleRules.v1";
     private const string CleanupDeletedInvoiceChainStepKey = "Migration.CleanupDeletedInvoiceChain.v1";
     private const string BackfillItemScopeFieldsStepKey = "Migration.BackfillItemScopeFields.v1";
     private const string BackfillItemOperationalFieldsStepKey = "Migration.BackfillItemOperationalFields.v1";
@@ -390,6 +391,10 @@ public static partial class LocalDbInitializer
             ("BillToCustomerName", "TEXT NOT NULL DEFAULT ''"),
             ("InstallSiteName", "TEXT NOT NULL DEFAULT ''"),
             ("BillingAdvanceMode", "TEXT NOT NULL DEFAULT '후불'"),
+            ("BillingDayMode", "TEXT NOT NULL DEFAULT '고정일'"),
+            ("BillingAnchorMonth", "INTEGER NOT NULL DEFAULT 3"),
+            ("DocumentIssueMode", "TEXT NOT NULL DEFAULT '결제일과 동일'"),
+            ("DocumentLeadDays", "INTEGER NOT NULL DEFAULT 0"),
             ("BillingStartDate", "TEXT NULL"),
             ("SettlementStatus", "TEXT NOT NULL DEFAULT '미입금'"),
             ("CompletionStatus", "TEXT NOT NULL DEFAULT '미완료'"),
@@ -484,6 +489,10 @@ public static partial class LocalDbInitializer
             db,
             BackfillItemOperationalFieldsStepKey,
             async () => await BackfillItemOperationalFieldsAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeRentalBillingScheduleRulesStepKey,
+            async () => await NormalizeRentalBillingScheduleRulesAsync(db));
         await RunStartupMaintenanceStepAsync(
             db,
             BackfillInvoiceLineTrackingTypesStepKey,
@@ -2954,6 +2963,10 @@ public static partial class LocalDbInitializer
                                    "BillToCustomerName" TEXT NOT NULL DEFAULT '',
                                    "InstallSiteName" TEXT NOT NULL DEFAULT '',
                                    "BillingAdvanceMode" TEXT NOT NULL DEFAULT '후불',
+                                   "BillingDayMode" TEXT NOT NULL DEFAULT '고정일',
+                                   "BillingAnchorMonth" INTEGER NOT NULL DEFAULT 3,
+                                   "DocumentIssueMode" TEXT NOT NULL DEFAULT '결제일과 동일',
+                                   "DocumentLeadDays" INTEGER NOT NULL DEFAULT 0,
                                    "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
                                    "BillingMethod" TEXT NOT NULL DEFAULT '',
                                    "PaymentMethod" TEXT NOT NULL DEFAULT '',

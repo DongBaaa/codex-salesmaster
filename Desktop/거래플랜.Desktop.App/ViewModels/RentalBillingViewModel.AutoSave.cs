@@ -1,6 +1,7 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
 using 거래플랜.Desktop.App.Services;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
@@ -28,7 +29,11 @@ public sealed partial class RentalBillingViewModel
         nameof(EditCompletionStatus),
         nameof(EditEmail),
         nameof(EditBillingDay),
+        nameof(EditBillingDayMode),
         nameof(EditBillingCycleMonths),
+        nameof(EditBillingAnchorMonth),
+        nameof(EditDocumentIssueMode),
+        nameof(EditDocumentLeadDays),
         nameof(EditMonthlyAmount),
         nameof(EditDepositAmount),
         nameof(EditSettledAmount),
@@ -269,7 +274,11 @@ public sealed partial class RentalBillingViewModel
             CompletionStatus = EditCompletionStatus,
             Email = EditEmail,
             BillingDay = EditBillingDay,
+            BillingDayMode = EditBillingDayMode,
             BillingCycleMonths = EditBillingCycleMonths,
+            BillingAnchorMonth = EditBillingAnchorMonth,
+            DocumentIssueMode = EditDocumentIssueMode,
+            DocumentLeadDays = EditDocumentLeadDays,
             MonthlyAmount = EditMonthlyAmount,
             DepositAmount = EditDepositAmount,
             SettledAmount = EditSettledAmount,
@@ -311,8 +320,20 @@ public sealed partial class RentalBillingViewModel
         EditSettlementStatus = string.IsNullOrWhiteSpace(draft.SettlementStatus) ? PaymentFlowConstants.SettlementStatusUnpaid : draft.SettlementStatus;
         EditCompletionStatus = string.IsNullOrWhiteSpace(draft.CompletionStatus) ? PaymentFlowConstants.CompletionPending : draft.CompletionStatus;
         EditEmail = draft.Email ?? string.Empty;
-        EditBillingDay = draft.BillingDay <= 0 ? 25 : draft.BillingDay;
-        EditBillingCycleMonths = draft.BillingCycleMonths <= 0 ? 1 : draft.BillingCycleMonths;
+        EditBillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(draft.BillingDayMode);
+        EditBillingDay = RentalBillingScheduleRules.NormalizeBillingDay(draft.BillingDay);
+        EditBillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(draft.BillingCycleMonths);
+        EditBillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+            EditBillingCycleMonths,
+            draft.BillingAnchorMonth,
+            ToDateOnly(draft.BillingAnchorDate),
+            ToDateOnly(draft.BillingStartDate),
+            ToDateOnly(draft.ContractStartDate),
+            ToDateOnly(draft.ContractDate),
+            ToDateOnly(draft.LastBilledDate),
+            DateOnly.FromDateTime(DateTime.Today));
+        EditDocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(draft.DocumentIssueMode);
+        EditDocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(draft.DocumentLeadDays);
         EditMonthlyAmount = draft.MonthlyAmount;
         EditDepositAmount = draft.DepositAmount;
         EditSettledAmount = draft.SettledAmount;
@@ -400,8 +421,20 @@ public sealed partial class RentalBillingViewModel
             return true;
         }
 
-        if (LinkAssetsLater || EditBillingDay != 25 || EditBillingCycleMonths != 1 || EditMonthlyAmount != 0m || EditDepositAmount != 0m || EditSettledAmount != 0m || EditRequiresFollowUp)
+        if (LinkAssetsLater ||
+            !string.Equals(EditBillingDayMode, RentalBillingScheduleRules.BillingDayModeFixedDay, StringComparison.Ordinal) ||
+            EditBillingDay != 25 ||
+            EditBillingCycleMonths != 1 ||
+            EditBillingAnchorMonth != 3 ||
+            !string.Equals(EditDocumentIssueMode, RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate, StringComparison.Ordinal) ||
+            EditDocumentLeadDays != 0 ||
+            EditMonthlyAmount != 0m ||
+            EditDepositAmount != 0m ||
+            EditSettledAmount != 0m ||
+            EditRequiresFollowUp)
+        {
             return true;
+        }
 
         if (!string.Equals(EditBillingType, "묶음", StringComparison.Ordinal) ||
             !string.Equals(EditBillingAdvanceMode, "후불", StringComparison.Ordinal) ||

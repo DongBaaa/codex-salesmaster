@@ -13,6 +13,7 @@ public sealed partial class InventoryViewModel : ObservableObject
 {
     private readonly LocalStateService _local;
     private readonly SessionState _session;
+    private readonly UiDebouncer _filterDebouncer = new();
     private readonly Dictionary<Guid, Dictionary<string, decimal>> _itemOfficeQuantities = new();
     private readonly Dictionary<string, string> _warehouseOfficeCodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _warehouseDisplayNames = new(StringComparer.OrdinalIgnoreCase);
@@ -186,8 +187,8 @@ public sealed partial class InventoryViewModel : ObservableObject
     private bool CanShowYeonsuOffice()
         => IsAdmin && !string.Equals(SelectedOfficeCode, DomainConstants.OfficeYeonsu, StringComparison.OrdinalIgnoreCase);
 
-    partial void OnSearchTextChanged(string value) => ApplyFilter();
-    partial void OnSelectedTrackingTypeFilterChanged(string value) => ApplyFilter();
+    partial void OnSearchTextChanged(string value) => _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(300), ApplyFilter);
+    partial void OnSelectedTrackingTypeFilterChanged(string value) => _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(200), ApplyFilter);
 
     partial void OnSelectedItemChanged(InventoryItemRow? value)
     {
@@ -213,7 +214,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         ShowUsenetOfficeCommand.NotifyCanExecuteChanged();
         ShowItworldOfficeCommand.NotifyCanExecuteChanged();
         ShowYeonsuOfficeCommand.NotifyCanExecuteChanged();
-        ApplyFilter();
+        _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(150), ApplyFilter);
     }
 
     partial void OnEditItemKindChanged(string value)

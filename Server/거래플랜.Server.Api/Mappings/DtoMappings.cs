@@ -683,7 +683,11 @@ public static class DtoMappings
             BillingStatus = entity.BillingStatus,
             Email = entity.Email,
             BillingDay = entity.BillingDay,
+            BillingDayMode = entity.BillingDayMode,
             BillingCycleMonths = entity.BillingCycleMonths,
+            BillingAnchorMonth = entity.BillingAnchorMonth,
+            DocumentIssueMode = entity.DocumentIssueMode,
+            DocumentLeadDays = entity.DocumentLeadDays,
             MonthlyAmount = entity.MonthlyAmount,
             DepositAmount = entity.DepositAmount,
             SubmissionDocuments = entity.SubmissionDocuments,
@@ -724,8 +728,12 @@ public static class DtoMappings
         entity.PaymentMethod = dto.PaymentMethod?.Trim() ?? string.Empty;
         entity.BillingStatus = dto.BillingStatus?.Trim() ?? string.Empty;
         entity.Email = dto.Email?.Trim() ?? string.Empty;
-        entity.BillingDay = dto.BillingDay;
-        entity.BillingCycleMonths = dto.BillingCycleMonths;
+        entity.BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(dto.BillingDay);
+        entity.BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(dto.BillingDayMode);
+        entity.BillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(dto.BillingCycleMonths);
+        entity.BillingAnchorMonth = dto.BillingAnchorMonth;
+        entity.DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(dto.DocumentIssueMode);
+        entity.DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(dto.DocumentLeadDays);
         entity.MonthlyAmount = dto.MonthlyAmount;
         entity.DepositAmount = dto.DepositAmount;
         entity.SubmissionDocuments = dto.SubmissionDocuments?.Trim() ?? string.Empty;

@@ -17,6 +17,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private readonly RentalStateService _rental;
     private readonly LocalStateService _local;
     private readonly SessionState _session;
+    private readonly UiDebouncer _searchDebouncer = new();
     private CancellationTokenSource? _candidateAssetsLoadCts;
     private Task? _candidateAssetsLoadTask;
     private bool _suppressFilterReload;
@@ -51,7 +52,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private string _editCompletionStatus = PaymentFlowConstants.CompletionPending;
     [ObservableProperty] private string _editEmail = string.Empty;
     [ObservableProperty] private int _editBillingDay = 25;
+    [ObservableProperty] private string _editBillingDayMode = RentalBillingScheduleRules.BillingDayModeFixedDay;
     [ObservableProperty] private int _editBillingCycleMonths = 1;
+    [ObservableProperty] private int _editBillingAnchorMonth = 3;
+    [ObservableProperty] private string _editDocumentIssueMode = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate;
+    [ObservableProperty] private int _editDocumentLeadDays;
     [ObservableProperty] private decimal _editMonthlyAmount;
     [ObservableProperty] private decimal _editDepositAmount;
     [ObservableProperty] private decimal _editSettledAmount;
@@ -73,6 +78,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private DateTime? _editLastSettledDate;
     [ObservableProperty] private bool _editIsActive = true;
     [ObservableProperty] private string _completionNote = string.Empty;
+    [ObservableProperty] private string _billingSchedulePreviewText = "청구일 규칙을 설정하면 다음 청구일이 표시됩니다.";
+    [ObservableProperty] private string _documentIssuePreviewText = "서류 발송 규칙을 설정하면 예상 발송일이 표시됩니다.";
+    [ObservableProperty] private string _applySelectedAssetsHint = "청구서 표시 품목과 후보 장비를 선택하면 연결할 수 있습니다.";
     [ObservableProperty] private int _totalCount;
     [ObservableProperty] private int _dueCount;
     [ObservableProperty] private int _issueCount;
@@ -90,6 +98,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public ObservableCollection<string> BillingTypeOptions { get; } = new();
     public ObservableCollection<string> BillingLineModeOptions { get; } = new();
     public ObservableCollection<string> BillingAdvanceModeOptions { get; } = new();
+    public ObservableCollection<string> BillingDayModeOptions { get; } = new();
+    public ObservableCollection<int> BillingAnchorMonthOptions { get; } = new();
+    public ObservableCollection<string> DocumentIssueModeOptions { get; } = new();
     public ObservableCollection<RentalBillingViewRow> Rows { get; } = new();
     public ObservableCollection<RentalBillingTemplateEditorItem> TemplateItems { get; } = new();
     public ObservableCollection<RentalBillingAssetOption> CandidateAssets { get; } = new();
@@ -106,6 +117,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public bool CanMarkCompletedSelected => SelectedRow is not null && CanEditCurrentSelection;
     public bool CanRemoveTemplateItem => SelectedTemplateItem is not null;
     public bool CanApplySelectedAssets => SelectedTemplateItem is not null && CandidateAssets.Any(asset => asset.IsSelected);
+    public bool IsFixedBillingDayMode => string.Equals(EditBillingDayMode, RentalBillingScheduleRules.BillingDayModeFixedDay, StringComparison.Ordinal);
+    public bool IsDocumentLeadDaysVisible => string.Equals(EditDocumentIssueMode, RentalBillingScheduleRules.DocumentIssueModeDaysBeforeDueDate, StringComparison.Ordinal);
     public LocalStateService LocalStateService => _local;
     public RentalStateService RentalStateService => _rental;
     public SessionState SessionState => _session;
@@ -166,6 +179,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         BillingAdvanceModeOptions.Add("후불");
         BillingAdvanceModeOptions.Add("선불");
 
+        BillingDayModeOptions.Add(RentalBillingScheduleRules.BillingDayModeFixedDay);
+        BillingDayModeOptions.Add(RentalBillingScheduleRules.BillingDayModeEndOfMonth);
+
+        for (var month = 1; month <= 12; month++)
+            BillingAnchorMonthOptions.Add(month);
+
+        DocumentIssueModeOptions.Add(RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate);
+        DocumentIssueModeOptions.Add(RentalBillingScheduleRules.DocumentIssueModeDaysBeforeDueDate);
+        DocumentIssueModeOptions.Add(RentalBillingScheduleRules.DocumentIssueModePreviousBusinessDay);
+        DocumentIssueModeOptions.Add(RentalBillingScheduleRules.DocumentIssueModePreviousMonthEnd);
+
         InitializeAutoSave();
     }
 
@@ -183,7 +207,38 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     partial void OnEditSettledAmountChanged(decimal value) => EditOutstandingAmount = Math.Max(0m, EditMonthlyAmount - value);
     partial void OnCompletionNoteChanged(string value) => EditFollowUpNote = value;
     partial void OnEditFollowUpNoteChanged(string value) => CompletionNote = value;
-    partial void OnEditBillingCycleMonthsChanged(int value) => UpdateTemplateDerivedValues();
+    partial void OnEditBillingDayChanged(int value) => UpdateTemplateDerivedValues();
+    partial void OnEditBillingDayModeChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsFixedBillingDayMode));
+        UpdateTemplateDerivedValues();
+    }
+    partial void OnEditBillingAnchorMonthChanged(int value) => UpdateTemplateDerivedValues();
+    partial void OnEditDocumentIssueModeChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsDocumentLeadDaysVisible));
+        UpdateTemplateDerivedValues();
+    }
+    partial void OnEditDocumentLeadDaysChanged(int value) => UpdateTemplateDerivedValues();
+    partial void OnEditBillingStartDateChanged(DateTime? value) => UpdateTemplateDerivedValues();
+    partial void OnEditBillingAdvanceModeChanged(string value) => UpdateTemplateDerivedValues();
+    partial void OnEditContractStartDateChanged(DateTime? value) => UpdateTemplateDerivedValues();
+    partial void OnEditContractDateChanged(DateTime? value) => UpdateTemplateDerivedValues();
+    partial void OnEditLastBilledDateChanged(DateTime? value) => UpdateTemplateDerivedValues();
+    partial void OnEditBillingCycleMonthsChanged(int value)
+    {
+        EditBillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(value);
+        EditBillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+            EditBillingCycleMonths,
+            EditBillingAnchorMonth,
+            ToDateOnly(EditBillingAnchorDate),
+            ToDateOnly(EditBillingStartDate),
+            ToDateOnly(EditContractStartDate),
+            ToDateOnly(EditContractDate),
+            ToDateOnly(EditLastBilledDate),
+            DateOnly.FromDateTime(DateTime.Today));
+        UpdateTemplateDerivedValues();
+    }
     partial void OnEditBillingTypeChanged(string value)
     {
         if (string.Equals((value ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal))
@@ -200,6 +255,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     partial void OnSelectedTemplateItemChanged(RentalBillingTemplateEditorItem? value)
     {
         SyncAssetSelectionFromTemplate();
+        UpdateTemplateDerivedValues();
         RemoveTemplateItemCommand.NotifyCanExecuteChanged();
         ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
     }
@@ -311,7 +367,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             CompletionStatus = EditCompletionStatus,
             Email = EditEmail,
             BillingDay = EditBillingDay,
+            BillingDayMode = EditBillingDayMode,
             BillingCycleMonths = Math.Max(1, EditBillingCycleMonths),
+            BillingAnchorMonth = EditBillingAnchorMonth,
+            DocumentIssueMode = EditDocumentIssueMode,
+            DocumentLeadDays = EditDocumentLeadDays,
             MonthlyAmount = EditMonthlyAmount,
             DepositAmount = EditDepositAmount,
             SettledAmount = EditSettledAmount,
@@ -671,8 +731,20 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditSettlementStatus = PaymentFlowConstants.NormalizeSettlementStatus(source.SettlementStatus);
         EditCompletionStatus = PaymentFlowConstants.NormalizeCompletionStatus(source.CompletionStatus);
         EditEmail = source.Email;
-        EditBillingDay = source.BillingDay;
-        EditBillingCycleMonths = source.BillingCycleMonths;
+        EditBillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(source.BillingDayMode);
+        EditBillingDay = RentalBillingScheduleRules.NormalizeBillingDay(source.BillingDay);
+        EditBillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(source.BillingCycleMonths);
+        EditBillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+            EditBillingCycleMonths,
+            source.BillingAnchorMonth,
+            source.BillingAnchorDate,
+            source.BillingStartDate,
+            source.ContractStartDate,
+            source.ContractDate,
+            source.LastBilledDate,
+            value.NextBillingDate ?? ReferenceDate);
+        EditDocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(source.DocumentIssueMode);
+        EditDocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(source.DocumentLeadDays);
         EditMonthlyAmount = value.CurrentBilledAmount > 0m ? value.CurrentBilledAmount : source.MonthlyAmount;
         EditDepositAmount = source.DepositAmount;
         EditSettledAmount = value.SettledAmount;
@@ -822,6 +894,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         ct.ThrowIfCancellationRequested();
 
+        var autoAssignedAssetId = Guid.Empty;
+        if (SelectedTemplateItem is not null &&
+            !LinkAssetsLater &&
+            !preserveSelection &&
+            !SelectedTemplateItem.IncludedAssetIds.Any() &&
+            assets.Count == 1)
+        {
+            autoAssignedAssetId = assets[0].Id;
+            SelectedTemplateItem.IncludedAssetIds.Add(autoAssignedAssetId);
+        }
+
         CandidateAssets.Clear();
         foreach (var asset in assets)
         {
@@ -837,7 +920,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 AssetStatus = asset.AssetStatus,
                 BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? "미확인" : asset.BillingEligibilityStatus,
                 MonthlyFee = asset.MonthlyFee,
-                IsSelected = previousSelections.Contains(asset.Id)
+                IsSelected = autoAssignedAssetId == asset.Id || previousSelections.Contains(asset.Id)
             };
             option.PropertyChanged += (_, _) =>
             {
@@ -960,7 +1043,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditMonthlyAmount = TemplateItems.Sum(item => item.EffectiveAmount);
         EditItemName = BuildTemplateItemName();
         EditOutstandingAmount = Math.Max(0m, EditMonthlyAmount - EditSettledAmount);
-        TemplateSummary = $"표시품목 {TemplateItems.Count:N0}건 / 연결장비 {TemplateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count():N0}대";
+        var linkedAssetCount = TemplateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count();
+        TemplateSummary = $"표시품목 {TemplateItems.Count:N0}건 / 연결장비 {linkedAssetCount:N0}대";
+        BillingSchedulePreviewText = BuildBillingSchedulePreview();
+        DocumentIssuePreviewText = BuildDocumentIssuePreview();
+        ApplySelectedAssetsHint = BuildApplySelectedAssetsHint(linkedAssetCount);
+        OnPropertyChanged(nameof(CanApplySelectedAssets));
     }
 
     private string BuildTemplateItemName()
@@ -1072,8 +1160,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             NormalizeText(EditSettlementStatus),
             NormalizeText(EditCompletionStatus),
             NormalizeText(EditEmail),
+            NormalizeText(EditBillingDayMode),
             EditBillingDay.ToString(CultureInfo.InvariantCulture),
             EditBillingCycleMonths.ToString(CultureInfo.InvariantCulture),
+            EditBillingAnchorMonth.ToString(CultureInfo.InvariantCulture),
+            NormalizeText(EditDocumentIssueMode),
+            EditDocumentLeadDays.ToString(CultureInfo.InvariantCulture),
             NormalizeDecimal(EditMonthlyAmount),
             NormalizeDecimal(EditDepositAmount),
             NormalizeDecimal(EditSettledAmount),
@@ -1093,6 +1185,85 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             NormalizeNullableDate(EditLastSettledDate),
             EditIsActive ? "Y" : "N",
             BuildTemplateSignature(ToTemplateModels(), EditBillingType));
+
+    private string BuildBillingSchedulePreview()
+    {
+        var referenceDate = ToDateOnly(EditBillingStartDate) ?? DateOnly.FromDateTime(DateTime.Today);
+        var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(EditBillingCycleMonths);
+        var anchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+            cycleMonths,
+            EditBillingAnchorMonth,
+            ToDateOnly(EditBillingAnchorDate),
+            ToDateOnly(EditBillingStartDate),
+            ToDateOnly(EditContractStartDate),
+            ToDateOnly(EditContractDate),
+            ToDateOnly(EditLastBilledDate),
+            referenceDate);
+        var dueDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+            EditBillingDay,
+            EditBillingDayMode,
+            cycleMonths,
+            anchorMonth,
+            referenceDate,
+            ToDateOnly(EditLastBilledDate));
+        var period = RentalBillingScheduleRules.ResolveBillingPeriod(cycleMonths, EditBillingAdvanceMode, dueDate);
+        var dayModeText = string.Equals(EditBillingDayMode, RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal)
+            ? "말일"
+            : $"매월 {RentalBillingScheduleRules.NormalizeBillingDay(EditBillingDay)}일";
+        var anchorText = cycleMonths == 1
+            ? "매월"
+            : $"{anchorMonth}월 기준";
+        return $"청구 대상 기간: {period.StartDate:yyyy-MM} ~ {period.EndDate:yyyy-MM} / 청구일 규칙: {dayModeText} / 기준월: {anchorText} / 예상 결제일: {dueDate:yyyy-MM-dd}";
+    }
+
+    private string BuildDocumentIssuePreview()
+    {
+        var referenceDate = ToDateOnly(EditBillingStartDate) ?? DateOnly.FromDateTime(DateTime.Today);
+        var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(EditBillingCycleMonths);
+        var anchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+            cycleMonths,
+            EditBillingAnchorMonth,
+            ToDateOnly(EditBillingAnchorDate),
+            ToDateOnly(EditBillingStartDate),
+            ToDateOnly(EditContractStartDate),
+            ToDateOnly(EditContractDate),
+            ToDateOnly(EditLastBilledDate),
+            referenceDate);
+        var dueDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+            EditBillingDay,
+            EditBillingDayMode,
+            cycleMonths,
+            anchorMonth,
+            referenceDate,
+            ToDateOnly(EditLastBilledDate));
+        var issueDate = RentalBillingScheduleRules.CalculateDocumentIssueDate(dueDate, EditDocumentIssueMode, EditDocumentLeadDays);
+        if (!issueDate.HasValue)
+            return "서류 발송일을 계산할 수 없습니다.";
+
+        var modeText = EditDocumentIssueMode switch
+        {
+            RentalBillingScheduleRules.DocumentIssueModeDaysBeforeDueDate => $"결제일 {RentalBillingScheduleRules.NormalizeDocumentLeadDays(EditDocumentLeadDays)}일 전",
+            RentalBillingScheduleRules.DocumentIssueModePreviousBusinessDay => "결제일 직전 영업일",
+            RentalBillingScheduleRules.DocumentIssueModePreviousMonthEnd => "전월 말일",
+            _ => "결제일과 동일"
+        };
+
+        return $"서류 발송 규칙: {modeText} / 예상 발송일: {issueDate.Value:yyyy-MM-dd}";
+    }
+
+    private string BuildApplySelectedAssetsHint(int linkedAssetCount)
+    {
+        if (SelectedTemplateItem is null)
+            return "청구서 표시 품목을 선택하면 연결 안내가 표시됩니다.";
+
+        if (linkedAssetCount == 0 && CandidateAssets.Count > 0 && !CandidateAssets.Any(asset => asset.IsSelected))
+            return $"후보 장비 {CandidateAssets.Count:N0}대가 있습니다. 아래 후보 장비를 체크한 뒤 현재 품목에 연결하세요.";
+
+        if (!CandidateAssets.Any(asset => asset.IsSelected))
+            return "후보 장비를 체크한 뒤 현재 품목에 연결하세요.";
+
+        return $"선택한 장비 {CandidateAssets.Count(asset => asset.IsSelected):N0}대를 현재 품목에 연결할 수 있습니다.";
+    }
 
     private static string BuildTemplateSignature(IEnumerable<RentalBillingTemplateItemModel> items, string billingType)
         => string.Join(";;", items.Select(item => BuildTemplateItemSignature(item, billingType)));
@@ -1148,10 +1319,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (_suppressFilterReload)
             return;
 
-        UiTaskHelper.Forget(
-            ReloadAsync(),
-            "RENTAL",
-            "렌탈 청구 필터 재조회",
+        _searchDebouncer.DebounceAsync(
+            TimeSpan.FromMilliseconds(350),
+            () => ReloadAsync(),
             ex => StatusMessage = $"렌탈 청구 목록을 다시 불러오지 못했습니다. {ex.Message}");
     }
 
