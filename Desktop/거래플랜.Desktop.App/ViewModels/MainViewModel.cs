@@ -64,8 +64,10 @@ public sealed partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSelectedCustomer))]
+    [NotifyPropertyChangedFor(nameof(InvoicePrimaryColumnHeader))]
     private LocalCustomer? _selectedCustomerFilter;
     public bool HasSelectedCustomer => SelectedCustomerFilter is not null;
+    public string InvoicePrimaryColumnHeader => HasSelectedCustomer ? "거래내역" : "거래처";
 
     // ?? 嫄곕옒泥??몃씪???몄쭛 (?곗륫 ?⑤꼸) ??????????????????????????????????????
     private bool _suppressCustomerSave;
@@ -155,6 +157,8 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _filterMaxAmountText = string.Empty;
     public IReadOnlyList<string> VoucherTypeFilterOptions { get; } = ["전체", "매출", "매입", "발주", "경비", "수금"];
     private bool _suppressFilterAutoSave;
+    private DateOnly _invoiceDefaultFrom = new(DateTime.Today.Year, DateTime.Today.Month, 1);
+    private DateOnly _invoiceDefaultTo = DateOnly.FromDateTime(DateTime.Today);
     private const string InvoiceFilterFromSettingKey = "InvoiceFilter.From";
     private const string InvoiceFilterToSettingKey = "InvoiceFilter.To";
     private const string InvoiceFilterCustomerSettingKey = "InvoiceFilter.CustomerName";
@@ -279,6 +283,14 @@ public sealed partial class MainViewModel : ObservableObject
         await LoadLegacyMigrationSettingsAsync();
         if (_session.IsOfflineMode)
             SyncStatus = "오프라인 모드에서는 자동 동기화를 진행하지 않습니다.";
+    }
+
+    public void SetInvoiceDefaultDateRange(DateOnly serverToday)
+    {
+        _invoiceDefaultFrom = new DateOnly(serverToday.Year, serverToday.Month, 1);
+        _invoiceDefaultTo = serverToday;
+        FilterFrom = _invoiceDefaultFrom;
+        FilterTo = _invoiceDefaultTo;
     }
 
     public async Task RunPostLoginSyncAsync()
@@ -406,8 +418,8 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task ResetInvoiceFiltersAsync()
     {
         _suppressFilterAutoSave = true;
-        FilterFrom = new DateOnly(DateTime.Today.Year, DateTime.Today.Month, 1);
-        FilterTo = DateOnly.FromDateTime(DateTime.Today);
+        FilterFrom = _invoiceDefaultFrom;
+        FilterTo = _invoiceDefaultTo;
         FilterCustomerName = string.Empty;
         SelectedVoucherTypeFilter = "전체";
         SelectedInvoiceOfficeFilterCode = GetDefaultInvoiceOfficeFilterCode();
@@ -600,6 +612,7 @@ public sealed partial class MainViewModel : ObservableObject
         Guid? customerId = SelectedCustomerFilter?.Id;
         var invoices = await _local.GetInvoicesAsync(FilterFrom, FilterTo, customerId, _session);
         var customerMap = await _local.GetCustomerNameMapAsync(invoices.Select(invoice => invoice.CustomerId));
+        var showCustomerName = customerId is null;
         IEnumerable<LocalInvoice> filteredInvoices = invoices;
 
         filteredInvoices = filteredInvoices.Where(MatchesSelectedInvoiceOffice);
@@ -646,7 +659,7 @@ public sealed partial class MainViewModel : ObservableObject
         foreach (var inv in finalInvoices)
         {
             var custName = customerMap.TryGetValue(inv.CustomerId, out var n) ? n : "(미지정)";
-            InvoiceRows.Add(InvoiceListRow.From(inv, custName));
+            InvoiceRows.Add(InvoiceListRow.From(inv, custName, showCustomerName));
         }
 
         await RefreshDashboardMetricsAsync();
@@ -756,19 +769,13 @@ public sealed partial class MainViewModel : ObservableObject
         _suppressFilterAutoSave = true;
 
         InitializeInvoiceOfficeFilterOptions();
-
-        var fromValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterFromSettingKey));
-        var toValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterToSettingKey));
         var customerNameValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterCustomerSettingKey));
         var voucherTypeValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterVoucherTypeSettingKey));
         var officeCodeValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterOfficeCodeSettingKey));
         var minAmountValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMinAmountSettingKey));
         var maxAmountValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMaxAmountSettingKey));
-
-        if (DateOnly.TryParse(fromValue, out var parsedFrom))
-            FilterFrom = parsedFrom;
-        if (DateOnly.TryParse(toValue, out var parsedTo))
-            FilterTo = parsedTo;
+        FilterFrom = _invoiceDefaultFrom;
+        FilterTo = _invoiceDefaultTo;
 
         FilterCustomerName = customerNameValue ?? string.Empty;
         SelectedVoucherTypeFilter = VoucherTypeFilterOptions.Contains(voucherTypeValue ?? string.Empty)

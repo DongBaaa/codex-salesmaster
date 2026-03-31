@@ -11,6 +11,13 @@ public static partial class LocalDbInitializer
         if (profiles.Count == 0)
             return;
 
+        var customers = await db.Customers.IgnoreQueryFilters()
+            .Where(customer => !customer.IsDeleted)
+            .ToListAsync();
+        var customerNameById = customers
+            .Where(customer => !string.IsNullOrWhiteSpace(customer.NameOriginal))
+            .ToDictionary(customer => customer.Id, customer => customer.NameOriginal.Trim());
+
         var referenceDate = DateOnly.FromDateTime(DateTime.Today);
         var changed = false;
 
@@ -22,6 +29,26 @@ public static partial class LocalDbInitializer
             var originalAnchorMonth = profile.BillingAnchorMonth;
             var originalDocumentIssueMode = profile.DocumentIssueMode;
             var originalLeadDays = profile.DocumentLeadDays;
+            var originalCustomerId = profile.CustomerId;
+            var originalCustomerName = profile.CustomerName;
+            var originalRealCustomerName = profile.RealCustomerName;
+            var originalBillToCustomerName = profile.BillToCustomerName;
+
+            if ((!profile.CustomerId.HasValue || profile.CustomerId.Value == Guid.Empty)
+                && TryResolveBillingProfileCustomer(customers, profile, out var resolvedCustomerId))
+            {
+                profile.CustomerId = resolvedCustomerId;
+            }
+
+            if (profile.CustomerId.HasValue &&
+                profile.CustomerId.Value != Guid.Empty &&
+                customerNameById.TryGetValue(profile.CustomerId.Value, out var customerMasterName))
+            {
+                var normalizedMasterName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerMasterName);
+                profile.CustomerName = normalizedMasterName;
+                profile.RealCustomerName = normalizedMasterName;
+                profile.BillToCustomerName = normalizedMasterName;
+            }
 
             var normalizedCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
             var shouldTreatAsEndOfMonth = profile.BillingDay == 31 || string.Equals((profile.BillingDayMode ?? string.Empty).Trim(), RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal);
@@ -47,7 +74,11 @@ public static partial class LocalDbInitializer
                 || originalCycleMonths != profile.BillingCycleMonths
                 || originalAnchorMonth != profile.BillingAnchorMonth
                 || !string.Equals(originalDocumentIssueMode, profile.DocumentIssueMode, StringComparison.Ordinal)
-                || originalLeadDays != profile.DocumentLeadDays)
+                || originalLeadDays != profile.DocumentLeadDays
+                || originalCustomerId != profile.CustomerId
+                || !string.Equals(originalCustomerName, profile.CustomerName, StringComparison.Ordinal)
+                || !string.Equals(originalRealCustomerName, profile.RealCustomerName, StringComparison.Ordinal)
+                || !string.Equals(originalBillToCustomerName, profile.BillToCustomerName, StringComparison.Ordinal))
             {
                 changed = true;
             }
@@ -56,4 +87,59 @@ public static partial class LocalDbInitializer
         if (changed)
             await db.SaveChangesAsync();
     }
+
+    private static bool TryResolveBillingProfileCustomer(
+        IReadOnlyCollection<LocalCustomer> customers,
+        LocalRentalBillingProfile profile,
+        out Guid customerId)
+    {
+        customerId = Guid.Empty;
+        var businessNumber = NormalizeBusinessNumber(profile.BusinessNumber);
+        if (!string.IsNullOrWhiteSpace(businessNumber))
+        {
+            var businessMatches = customers
+                .Where(customer => NormalizeBusinessNumber(customer.BusinessNumber) == businessNumber)
+                .ToList();
+            if (businessMatches.Count == 1)
+            {
+                customerId = businessMatches[0].Id;
+                return true;
+            }
+        }
+
+        var candidateNames = new[]
+            {
+                profile.CustomerName,
+                profile.RealCustomerName,
+                profile.BillToCustomerName
+            }
+            .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (candidateNames.Count == 0)
+            return false;
+
+        var nameMatches = customers
+            .Where(customer =>
+            {
+                if (!string.IsNullOrWhiteSpace(businessNumber) &&
+                    NormalizeBusinessNumber(customer.BusinessNumber) != businessNumber)
+                {
+                    return false;
+                }
+
+                var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeLooseKey(customer.NameOriginal);
+                return candidateNames.Contains(normalizedCustomerName, StringComparer.OrdinalIgnoreCase);
+            })
+            .ToList();
+        if (nameMatches.Count != 1)
+            return false;
+
+        customerId = nameMatches[0].Id;
+        return true;
+    }
+
+    private static string NormalizeBusinessNumber(string? businessNumber)
+        => new((businessNumber ?? string.Empty).Where(char.IsDigit).ToArray());
 }

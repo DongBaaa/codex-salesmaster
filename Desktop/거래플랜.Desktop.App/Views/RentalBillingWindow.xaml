@@ -189,7 +189,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="거래처명" Binding="{Binding Source.CustomerName}" Width="250" IsReadOnly="True"/>
+                                        <DataGridTextColumn Header="거래처명" Binding="{Binding CustomerDisplayName}" Width="250" IsReadOnly="True"/>
                         <DataGridTextColumn Header="예정일" Binding="{Binding NextBillingDate}" Width="100" IsReadOnly="True"/>
                         <DataGridTextColumn Header="청구기간" Binding="{Binding CurrentBillingPeriodLabel}" Width="120" IsReadOnly="True"/>
                         <DataGridTextColumn Header="상태" Binding="{Binding DisplayStatus}" Width="88" IsReadOnly="True"/>

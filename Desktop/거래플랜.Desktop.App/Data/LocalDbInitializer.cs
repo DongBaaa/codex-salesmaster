@@ -35,7 +35,7 @@ public static partial class LocalDbInitializer
     private const string MergeDuplicateRentalAssetsStepKey = "Migration.MergeDuplicateRentalAssets.v2";
     private const string MergeDuplicateCompanyProfilesStepKey = "Migration.MergeDuplicateCompanyProfiles.v1";
     private const string MergeDuplicateItemsStepKey = "Migration.MergeDuplicateItems.v1";
-    private const string NormalizeRentalBillingScheduleRulesStepKey = "Migration.NormalizeRentalBillingScheduleRules.v1";
+    private const string NormalizeRentalBillingScheduleRulesStepKey = "Migration.NormalizeRentalBillingScheduleRules.v2";
     private const string CleanupDeletedInvoiceChainStepKey = "Migration.CleanupDeletedInvoiceChain.v1";
     private const string BackfillItemScopeFieldsStepKey = "Migration.BackfillItemScopeFields.v1";
     private const string BackfillItemOperationalFieldsStepKey = "Migration.BackfillItemOperationalFields.v1";

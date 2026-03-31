@@ -524,7 +524,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 continue;
             }
 
-            failureMessages.Add($"{row.Source.CustomerName}: {result.Message}");
+                failureMessages.Add($"{row.CustomerDisplayName}: {result.Message}");
         }
 
         await ReloadAsync();
@@ -712,7 +712,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var source = value.Source;
         EditId = source.Id;
-        EditCustomerName = source.CustomerName;
+        EditCustomerName = string.IsNullOrWhiteSpace(value.CustomerDisplayName) ? source.CustomerName : value.CustomerDisplayName;
         EditBusinessNumber = source.BusinessNumber;
         EditRealCustomerName = source.RealCustomerName;
         EditBillToCustomerName = string.IsNullOrWhiteSpace(source.BillToCustomerName) ? source.CustomerName : source.BillToCustomerName;

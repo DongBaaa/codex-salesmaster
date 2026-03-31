@@ -206,6 +206,7 @@ public sealed class RentalCustomerOnboardingDraftModel
 public sealed class RentalBillingViewRow
 {
     public LocalRentalBillingProfile Source { get; init; } = new();
+    public string CustomerDisplayName { get; init; } = string.Empty;
     public string ResponsibleOfficeName { get; init; } = string.Empty;
     public string AssignedUsernameDisplay { get; init; } = string.Empty;
     public DateOnly? NextBillingDate { get; init; }

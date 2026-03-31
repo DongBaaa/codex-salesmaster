@@ -98,6 +98,7 @@ public partial class MainWindow : Window
         if (_isClosingOrClosed)
             return;
 
+        _vm.SetInvoiceDefaultDateRange(await ResolveServerTodayAsync());
         await _vm.LoadAsync();
         if (!_session.IsOfflineMode)
         {
@@ -126,6 +127,30 @@ public partial class MainWindow : Window
         await CheckAndPromptForDesktopUpdateAsync();
 
         _isInitialized = true;
+    }
+
+    private async Task<DateOnly> ResolveServerTodayAsync()
+    {
+        if (_session.IsOfflineMode)
+            return DateOnly.FromDateTime(DateTime.Today);
+
+        try
+        {
+            var syncStatus = await _api.GetSyncStatusAsync();
+            if (syncStatus is null)
+                return DateOnly.FromDateTime(DateTime.Today);
+
+            var serverUtc = syncStatus.ServerUtc.Kind == DateTimeKind.Unspecified
+                ? DateTime.SpecifyKind(syncStatus.ServerUtc, DateTimeKind.Utc)
+                : syncStatus.ServerUtc.ToUniversalTime();
+            var serverLocal = TimeZoneInfo.ConvertTimeFromUtc(serverUtc, TimeZoneInfo.Local);
+            return DateOnly.FromDateTime(serverLocal);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("MAIN", $"서버 기준 날짜 조회 실패: {ex.Message}");
+            return DateOnly.FromDateTime(DateTime.Today);
+        }
     }
 
     private void MainWindow_Activated(object? sender, EventArgs e)

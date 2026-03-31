@@ -13,6 +13,8 @@ public sealed class InvoiceListRow
     public string LocalTempNumber { get; init; } = string.Empty;
     public DateOnly InvoiceDate { get; init; }
     public string CustomerName { get; init; } = string.Empty;
+    public string FirstItemSummary { get; init; } = string.Empty;
+    public string PrimaryColumnText { get; init; } = string.Empty;
     public VoucherType VoucherType { get; init; }
     public decimal TotalAmount { get; init; }
     public decimal SupplyAmount { get; init; }
@@ -37,9 +39,10 @@ public sealed class InvoiceListRow
         _                       => VoucherType.ToString()
     };
 
-    public static InvoiceListRow From(LocalInvoice inv, string customerName)
+    public static InvoiceListRow From(LocalInvoice inv, string customerName, bool showCustomerName)
     {
         var settledAmount = inv.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount);
+        var firstItemSummary = BuildFirstItemSummary(inv);
         return new InvoiceListRow
         {
             Id = inv.Id,
@@ -47,6 +50,8 @@ public sealed class InvoiceListRow
             LocalTempNumber = inv.LocalTempNumber,
             InvoiceDate = inv.InvoiceDate,
             CustomerName = customerName,
+            FirstItemSummary = firstItemSummary,
+            PrimaryColumnText = showCustomerName ? customerName : firstItemSummary,
             VoucherType = inv.VoucherType,
             TotalAmount = inv.TotalAmount,
             SupplyAmount = inv.SupplyAmount,
@@ -56,5 +61,25 @@ public sealed class InvoiceListRow
             TaxInvoiceIssued = inv.TaxInvoiceIssued,
             IsDirty = inv.IsDirty
         };
+    }
+
+    public static string BuildFirstItemSummary(LocalInvoice invoice)
+    {
+        var activeLines = invoice.Lines
+            .Where(line => !line.IsDeleted)
+            .ToList();
+        if (activeLines.Count == 0)
+            return "(품목 없음)";
+
+        var firstLabel = activeLines
+            .Select(line => string.IsNullOrWhiteSpace(line.ItemNameOriginal) ? line.Remark : line.ItemNameOriginal)
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+            ?.Trim();
+        if (string.IsNullOrWhiteSpace(firstLabel))
+            firstLabel = "(품목 없음)";
+
+        return activeLines.Count == 1
+            ? firstLabel
+            : $"{firstLabel} 외 {activeLines.Count - 1}건";
     }
 }

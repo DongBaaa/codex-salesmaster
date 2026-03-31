@@ -275,6 +275,18 @@ public sealed class RentalStateService
             .OrderBy(profile => profile.CustomerName)
             .ThenBy(profile => profile.ItemName)
             .ToListAsync(ct);
+        var customerIds = profiles
+            .Where(profile => profile.CustomerId.HasValue && profile.CustomerId.Value != Guid.Empty)
+            .Select(profile => profile.CustomerId!.Value)
+            .Distinct()
+            .ToList();
+        var customerNameMap = customerIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _db.Customers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(customer => customerIds.Contains(customer.Id))
+                .ToDictionaryAsync(customer => customer.Id, customer => customer.NameOriginal, ct);
 
         var previewRuns = profiles
             .Select(profile => GetOrCreateBillingRun(profile, filter.ReferenceDate, persistChanges: false))
@@ -297,6 +309,7 @@ public sealed class RentalStateService
         var alertWindow = (await GetAlertDayValuesAsync(ct)).DefaultIfEmpty(7).Max();
         var rows = profiles.Select(profile =>
         {
+            var customerDisplayName = ResolveBillingProfileCustomerDisplayName(profile, customerNameMap);
             assetsByProfile.TryGetValue(profile.Id, out var profileAssets);
             profileAssets ??= new List<LocalRentalAsset>();
             var templateItems = GetBillingTemplateItems(profile, profileAssets);
@@ -332,6 +345,7 @@ public sealed class RentalStateService
             return new RentalBillingViewRow
             {
                 Source = profile,
+                CustomerDisplayName = customerDisplayName,
                 ResponsibleOfficeName = ResolveOfficeDisplayName(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode, offices),
                 AssignedUsernameDisplay = ResolveAssignedUsernameForDisplay(profile.AssignedUsername, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode),
                 NextBillingDate = nextBillingDate,
@@ -352,7 +366,7 @@ public sealed class RentalStateService
                 TemplateItemCount = templateItems.Count,
                 IncludedAssetCount = includedAssetCount,
                 BillingType = string.IsNullOrWhiteSpace(profile.BillingType) ? "묶음" : profile.BillingType,
-                BillToCustomerName = string.IsNullOrWhiteSpace(profile.BillToCustomerName) ? profile.CustomerName : profile.BillToCustomerName,
+                BillToCustomerName = string.IsNullOrWhiteSpace(profile.BillToCustomerName) ? customerDisplayName : profile.BillToCustomerName,
                 InstallSiteName = string.IsNullOrWhiteSpace(profile.InstallSiteName) ? profile.RealCustomerName : profile.InstallSiteName,
                 BillingAdvanceMode = string.IsNullOrWhiteSpace(profile.BillingAdvanceMode) ? "후불" : profile.BillingAdvanceMode,
                 BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(profile.BillingDayMode),
@@ -388,8 +402,25 @@ public sealed class RentalStateService
 
         return rows
             .OrderBy(row => row.DaysRemaining ?? int.MaxValue)
-            .ThenBy(row => row.Source.CustomerName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(row => row.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+    }
+
+    private static string ResolveBillingProfileCustomerDisplayName(
+        LocalRentalBillingProfile profile,
+        IReadOnlyDictionary<Guid, string> customerNameMap)
+    {
+        if (profile.CustomerId.HasValue &&
+            profile.CustomerId.Value != Guid.Empty &&
+            customerNameMap.TryGetValue(profile.CustomerId.Value, out var customerName) &&
+            !string.IsNullOrWhiteSpace(customerName))
+        {
+            return customerName.Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(profile.CustomerName)
+            ? "(거래처 미지정)"
+            : profile.CustomerName.Trim();
     }
 
     public async Task<IReadOnlyList<RentalAssetViewRow>> GetAssetRowsAsync(
