@@ -5711,7 +5711,7 @@ ON CONFLICT(ItemId, WarehouseCode) DO UPDATE SET
         item.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(item.TenantCode, item.OfficeCode);
     }
 
-    private async Task<string> EnsureItemCategoryOptionExistsAsync(string? categoryName, CancellationToken ct)
+    private async Task<string> EnsureItemCategoryOptionExistsAsync(string? categoryName, CancellationToken ct, bool allowCreateOrReactivate = false)
     {
         var normalizedName = SelectionOptionDefaults.NormalizeItemCategoryName(categoryName);
         if (string.IsNullOrWhiteSpace(normalizedName))
@@ -5724,16 +5724,17 @@ ON CONFLICT(ItemId, WarehouseCode) DO UPDATE SET
             .Select(group => group.First())
             .ToList();
         var existing = options.FirstOrDefault(option =>
-            !option.IsDeleted &&
             string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name), normalizedKey, StringComparison.OrdinalIgnoreCase));
         if (existing is not null)
         {
-            if (!string.Equals(existing.Name, normalizedName, StringComparison.Ordinal))
-            {
-                normalizedName = existing.Name;
-            }
+            normalizedName = string.IsNullOrWhiteSpace(existing.Name) ? normalizedName : existing.Name;
+            if (existing.IsActive && !existing.IsDeleted)
+                return normalizedName;
 
-            if (!existing.IsActive)
+            if (!allowCreateOrReactivate)
+                throw new InvalidOperationException($"등록되지 않았거나 삭제된 품목분류 '{normalizedName}'입니다. 선택값 관리에서 먼저 복구하거나 다시 추가하세요.");
+
+            if (!existing.IsActive || existing.IsDeleted)
             {
                 existing.IsActive = true;
                 existing.IsDeleted = false;
@@ -5743,6 +5744,9 @@ ON CONFLICT(ItemId, WarehouseCode) DO UPDATE SET
 
             return normalizedName;
         }
+
+        if (!allowCreateOrReactivate)
+            throw new InvalidOperationException($"등록되지 않은 품목분류 '{normalizedName}'입니다. 선택값 관리에서 먼저 추가하세요.");
 
         var now = DateTime.UtcNow;
         var nextSortOrder = options

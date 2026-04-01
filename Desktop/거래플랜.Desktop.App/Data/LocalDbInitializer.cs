@@ -562,70 +562,8 @@ public static partial class LocalDbInitializer
             option.IsDeleted = false;
         }
 
-        foreach (var definition in SelectionOptionDefaults.DefaultItemCategories)
-        {
-            var option = itemCategoryOptions.FirstOrDefault(current => current.Id == definition.Id);
-            if (option is null)
-            {
-                option = new LocalItemCategoryOption
-                {
-                    Id = definition.Id,
-                    Name = definition.Name,
-                    SortOrder = definition.SortOrder,
-                    IsSystemDefault = definition.IsSystemDefault,
-                    IsActive = true,
-                    IsDirty = false,
-                    CreatedAtUtc = now,
-                    UpdatedAtUtc = now
-                };
-                db.ItemCategoryOptions.Add(option);
-                itemCategoryOptions.Add(option);
-                continue;
-            }
-
-            option.Name = string.IsNullOrWhiteSpace(option.Name) ? definition.Name : option.Name.Trim();
-            option.SortOrder = option.SortOrder == 0 ? definition.SortOrder : option.SortOrder;
+        foreach (var option in itemCategoryOptions.Where(current => current.IsSystemDefault))
             option.IsSystemDefault = false;
-            option.IsActive = true;
-            option.IsDeleted = false;
-        }
-
-        var nextSortOrder = itemCategoryOptions
-            .Where(option => !option.IsDeleted)
-            .Select(option => option.SortOrder)
-            .DefaultIfEmpty(0)
-            .Max() + 10;
-
-        foreach (var categoryName in db.Items
-                     .IgnoreQueryFilters()
-                     .Select(item => item.CategoryName)
-                     .AsEnumerable()
-                     .Select(SelectionOptionDefaults.NormalizeItemCategoryName)
-                     .Where(name => !string.IsNullOrWhiteSpace(name))
-                     .Distinct(StringComparer.CurrentCultureIgnoreCase))
-        {
-            var existing = itemCategoryOptions.FirstOrDefault(option =>
-                !option.IsDeleted &&
-                string.Equals(option.Name, categoryName, StringComparison.CurrentCultureIgnoreCase));
-
-            if (existing is not null)
-                continue;
-
-            existing = new LocalItemCategoryOption
-            {
-                Id = Guid.NewGuid(),
-                Name = categoryName,
-                SortOrder = nextSortOrder,
-                IsSystemDefault = false,
-                IsActive = true,
-                IsDirty = false,
-                CreatedAtUtc = now,
-                UpdatedAtUtc = now
-            };
-            db.ItemCategoryOptions.Add(existing);
-            itemCategoryOptions.Add(existing);
-            nextSortOrder += 10;
-        }
     }
 
     private static async Task SeedOfficeAndWarehouseAsync(LocalDbContext db)

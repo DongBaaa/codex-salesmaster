@@ -37,18 +37,6 @@ public static partial class DbInitializer
         (Guid.Parse("9c305d74-3dd4-4fff-9679-dbd4dd6fdb49"), "매출/매입", true, true, 20)
     ];
 
-    private static readonly (Guid Id, string Name, int SortOrder)[] DefaultItemCategoryOptions =
-    [
-        (Guid.Parse("93b57e9c-718b-4681-9eb0-dadfc1b1032d"), "기타", 0),
-        (Guid.Parse("fd74f88a-a4d2-45b8-b1cc-36a13150e1c0"), "흑백프린터", 10),
-        (Guid.Parse("e6599678-ec29-4a79-9234-07ca959d48f9"), "컬러프린터", 20),
-        (Guid.Parse("6fd94157-1d79-4c92-a7c1-7db89cff531e"), "흑백복합기", 30),
-        (Guid.Parse("d69d30ae-f1b4-4b3b-a850-2d5cd92d8d1d"), "컬러복합기", 40),
-        (Guid.Parse("f55b6bcf-cde2-4f1a-91c4-7d8d78f9f4fd"), "하드웨어", 50),
-        (Guid.Parse("3443493a-660f-49e0-b626-e282640db690"), "소모품", 60),
-        (Guid.Parse("3f5e8f32-eb5d-4957-a291-7e0cb09049b6"), "렌탈료", 70)
-    ];
-
     public static async Task InitializeAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken = default)
     {
         await using var scope = serviceProvider.CreateAsyncScope();
@@ -405,28 +393,6 @@ public static partial class DbInitializer
         {
             option.IsDeleted = true;
             option.IsActive = false;
-        }
-
-        foreach (var definition in DefaultItemCategoryOptions)
-        {
-            var existing = await dbContext.ItemCategoryOptions.IgnoreQueryFilters().FirstOrDefaultAsync(option => option.Id == definition.Id, cancellationToken)
-                ?? await dbContext.ItemCategoryOptions.IgnoreQueryFilters().FirstOrDefaultAsync(option => option.Name == definition.Name, cancellationToken);
-            if (existing is null)
-            {
-                dbContext.ItemCategoryOptions.Add(new ItemCategoryOption
-                {
-                    Id = definition.Id,
-                    Name = definition.Name,
-                    SortOrder = definition.SortOrder,
-                    IsActive = true
-                });
-                continue;
-            }
-
-            existing.Name = definition.Name;
-            existing.SortOrder = definition.SortOrder;
-            existing.IsActive = true;
-            existing.IsDeleted = false;
         }
 
         if (!await dbContext.CompanyProfiles.IgnoreQueryFilters().AnyAsync(cancellationToken))
@@ -3787,4 +3753,3 @@ public static partial class DbInitializer
         public bool HasPermission(string permission) => true;
     }
 }
-

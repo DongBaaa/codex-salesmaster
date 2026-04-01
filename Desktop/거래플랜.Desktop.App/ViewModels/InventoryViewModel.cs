@@ -330,7 +330,16 @@ public sealed partial class InventoryViewModel : ObservableObject
             IsRental = string.Equals(ItemTrackingTypes.Normalize(EditTrackingType), ItemTrackingTypes.Asset, StringComparison.Ordinal),
         };
 
-        await _local.UpsertItemAsync(item, SelectedOfficeCode);
+        try
+        {
+            await _local.UpsertItemAsync(item, SelectedOfficeCode);
+        }
+        catch (InvalidOperationException ex)
+        {
+            StatusMessage = ex.Message;
+            return;
+        }
+
         await LoadAsync();
         var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
 

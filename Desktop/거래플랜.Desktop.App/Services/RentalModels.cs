@@ -88,9 +88,74 @@ public sealed class RentalCatalogRepairResult
     public int AddedCategoryCount => AddedCategoryNames.Count;
     public int AddedItemCount => AddedItemNames.Count;
     public int AmbiguousItemNameCount => AmbiguousItemNames.Count;
+    public int MissingCategoryCount => MissingCategoryNames.Count;
     public List<string> AddedCategoryNames { get; } = new();
     public List<string> AddedItemNames { get; } = new();
     public List<string> AmbiguousItemNames { get; } = new();
+    public List<string> MissingCategoryNames { get; } = new();
+}
+
+public sealed class RentalWorkbookAuditEntry
+{
+    public int RowNumber { get; set; }
+    public string Action { get; set; } = string.Empty;
+    public string MatchedBy { get; set; } = string.Empty;
+    public Guid? ExistingAssetId { get; set; }
+    public string ExistingManagementNumber { get; set; } = string.Empty;
+    public string WorkbookManagementNumber { get; set; } = string.Empty;
+    public string WorkbookManagementId { get; set; } = string.Empty;
+    public string WorkbookOfficeCode { get; set; } = string.Empty;
+    public string WorkbookCustomerName { get; set; } = string.Empty;
+    public string WorkbookItemName { get; set; } = string.Empty;
+    public string WorkbookMachineNumber { get; set; } = string.Empty;
+    public string WorkbookInstallLocation { get; set; } = string.Empty;
+    public List<string> Differences { get; set; } = new();
+    public List<string> Warnings { get; set; } = new();
+}
+
+public sealed class RentalWorkbookMissingAssetEntry
+{
+    public Guid AssetId { get; set; }
+    public string ManagementNumber { get; set; } = string.Empty;
+    public string ManagementId { get; set; } = string.Empty;
+    public string OfficeCode { get; set; } = string.Empty;
+    public string CustomerName { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
+    public string MachineNumber { get; set; } = string.Empty;
+    public string InstallLocation { get; set; } = string.Empty;
+}
+
+public sealed class RentalWorkbookAuditResult
+{
+    public string WorkbookPath { get; set; } = string.Empty;
+    public string SheetName { get; set; } = string.Empty;
+    public DateTime GeneratedAtUtc { get; set; }
+    public int ProcessedRowCount { get; set; }
+    public int ExactMatchCount { get; set; }
+    public int UpdateSafeCount { get; set; }
+    public int CreateNewCount { get; set; }
+    public int AmbiguousCount { get; set; }
+    public int MissingInWorkbookCount { get; set; }
+    public int UnresolvedCustomerCount { get; set; }
+    public List<RentalWorkbookAuditEntry> Entries { get; set; } = new();
+    public List<RentalWorkbookMissingAssetEntry> MissingInWorkbookAssets { get; set; } = new();
+}
+
+public sealed class RentalWorkbookRebuildResult
+{
+    public string WorkbookPath { get; set; } = string.Empty;
+    public string BackupPath { get; set; } = string.Empty;
+    public DateTime ProcessedAtUtc { get; set; }
+    public int UpdatedCount { get; set; }
+    public int CreatedCount { get; set; }
+    public int AmbiguousCount { get; set; }
+    public int MissingInWorkbookCount { get; set; }
+    public int LinkedBillingProfileCount { get; set; }
+    public int AutoCreatedCategoryCount { get; set; }
+    public int AutoCreatedItemCount { get; set; }
+    public List<RentalWorkbookAuditEntry> UpdatedEntries { get; set; } = new();
+    public List<RentalWorkbookAuditEntry> AmbiguousEntries { get; set; } = new();
+    public List<RentalWorkbookMissingAssetEntry> MissingInWorkbookAssets { get; set; } = new();
 }
 
 public sealed class RentalBillingTemplateItemModel
