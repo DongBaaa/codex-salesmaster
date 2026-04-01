@@ -64,8 +64,8 @@ public sealed class SyncController : ControllerBase
         {
             CompanyProfiles = await _dbContext.CompanyProfiles.IgnoreQueryFilters().AsNoTracking()
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            Units = await _dbContext.Units.IgnoreQueryFilters().AsNoTracking()
-                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            Units = DeduplicatePulledUnits(await _dbContext.Units.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken)),
             CustomerCategories = await _dbContext.CustomerCategories.IgnoreQueryFilters().AsNoTracking()
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
             PriceGradeOptions = await _dbContext.PriceGradeOptions.IgnoreQueryFilters().AsNoTracking()
@@ -124,6 +124,40 @@ public sealed class SyncController : ControllerBase
         return Ok(response);
     }
 
+    private static List<UnitDto> DeduplicatePulledUnits(List<UnitDto> units)
+    {
+        if (units.Count == 0)
+            return units;
+
+        var latestById = units
+            .GroupBy(unit => unit.Id)
+            .Select(group => group
+                .OrderByDescending(unit => unit.Revision)
+                .ThenByDescending(unit => unit.UpdatedAtUtc)
+                .ThenByDescending(unit => unit.CreatedAtUtc)
+                .ThenBy(unit => unit.Id)
+                .First())
+            .ToList();
+
+        var canonicalActiveIds = latestById
+            .Where(unit => !unit.IsDeleted && unit.IsActive)
+            .GroupBy(unit => UnitCatalogNormalizer.Normalize(unit.Name), StringComparer.Ordinal)
+            .Where(group => !string.IsNullOrWhiteSpace(group.Key))
+            .Select(group => group
+                .OrderByDescending(unit => string.Equals(unit.Name, group.Key, StringComparison.Ordinal))
+                .ThenByDescending(unit => unit.Revision)
+                .ThenByDescending(unit => unit.UpdatedAtUtc)
+                .ThenByDescending(unit => unit.CreatedAtUtc)
+                .ThenBy(unit => unit.Id)
+                .First()
+                .Id)
+            .ToHashSet();
+
+        return latestById
+            .Where(unit => unit.IsDeleted || !unit.IsActive || canonicalActiveIds.Contains(unit.Id))
+            .ToList();
+    }
+
     [HttpPost("push")]
     [ProducesResponseType(typeof(SyncPushResult), StatusCodes.Status200OK)]
     public async Task<ActionResult<SyncPushResult>> Push([FromBody] SyncPushRequest request, CancellationToken cancellationToken)
@@ -132,7 +166,7 @@ public sealed class SyncController : ControllerBase
 
         await UpsertEntitiesAsync(request.CompanyProfiles ?? [], _dbContext.CompanyProfiles,
             (e, d) => e.Apply(d), d => new CompanyProfile { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        await UpsertEntitiesAsync(request.Units ?? [], _dbContext.Units,
+        await UpsertEntitiesAsync(DeduplicatePulledUnits(request.Units ?? []), _dbContext.Units,
             (e, d) => e.Apply(d), d => new Unit { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
         await UpsertEntitiesAsync(request.CustomerCategories ?? [], _dbContext.CustomerCategories,
             (e, d) => e.Apply(d), d => new CustomerCategory { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);

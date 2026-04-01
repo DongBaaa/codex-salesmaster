@@ -239,6 +239,7 @@ public sealed class SyncService : IDisposable
             SetStatus("동기화 중...");
             AppLogger.Info("SYNC", "동기화 시작");
 
+            await EnsureUnitCatalogSyncSafetyAsync(ct);
             await ExecuteWithRetryAsync(PushDirtyAsync, "업로드", ct);
             await ExecuteWithRetryAsync(PullNewAsync, "다운로드", ct);
 
@@ -1101,10 +1102,50 @@ public sealed class SyncService : IDisposable
         IReadOnlyList<UnitDto> dtos,
         CancellationToken ct)
     {
-        foreach (var dto in dtos)
+        if (dtos.Count == 0)
+            return;
+
+        await NormalizeActiveUnitsAsync(DateTime.UtcNow, ct);
+
+        var dedupedDtos = DeduplicatePulledUnits(dtos);
+        var incomingActiveByNormalizedName = dedupedDtos
+            .Where(dto => !dto.IsDeleted && dto.IsActive)
+            .Select(dto => new
+            {
+                Dto = dto,
+                NormalizedName = UnitCatalogNormalizer.Normalize(dto.Name)
+            })
+            .Where(current => !string.IsNullOrWhiteSpace(current.NormalizedName))
+            .GroupBy(current => current.NormalizedName, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Single().Dto, StringComparer.Ordinal);
+
+        var conflictingExisting = await _db.Units.IgnoreQueryFilters()
+            .Where(unit => !unit.IsDeleted && unit.IsActive)
+            .ToListAsync(ct);
+
+        var unitsToDelete = conflictingExisting
+            .Where(unit =>
+            {
+                var normalizedName = UnitCatalogNormalizer.Normalize(unit.Name);
+                return incomingActiveByNormalizedName.TryGetValue(normalizedName, out var incoming)
+                       && incoming.Id != unit.Id;
+            })
+            .ToList();
+
+        if (unitsToDelete.Count > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"pull Units 충돌 정리: incomingGroups={incomingActiveByNormalizedName.Count}, removedExisting={unitsToDelete.Count}");
+            _db.Units.RemoveRange(unitsToDelete);
+            await _db.SaveChangesAsync(ct);
+        }
+
+        foreach (var dto in dedupedDtos)
         {
             var local = LocalMappings.ToLocal(dto);
             local.IsDirty = false;
+            local.Name = UnitCatalogNormalizer.Normalize(local.Name);
 
             var existing = await _db.Units.IgnoreQueryFilters().FirstOrDefaultAsync(unit => unit.Id == local.Id, ct);
             if (existing is null)
@@ -1117,14 +1158,23 @@ public sealed class SyncService : IDisposable
             }
         }
 
-        var now = DateTime.UtcNow;
-        var activeGroups = await _db.Units.IgnoreQueryFilters()
+        await _db.SaveChangesAsync(ct);
+        await NormalizeActiveUnitsAsync(DateTime.UtcNow, ct);
+    }
+
+    private async Task EnsureUnitCatalogSyncSafetyAsync(CancellationToken ct)
+        => await NormalizeActiveUnitsAsync(DateTime.UtcNow, ct);
+
+    private async Task NormalizeActiveUnitsAsync(DateTime now, CancellationToken ct)
+    {
+        var activeUnits = await _db.Units.IgnoreQueryFilters()
             .Where(unit => !unit.IsDeleted && unit.IsActive)
             .OrderBy(unit => unit.CreatedAtUtc)
             .ThenBy(unit => unit.Name)
             .ToListAsync(ct);
 
-        foreach (var group in activeGroups
+        var changed = false;
+        foreach (var group in activeUnits
                      .GroupBy(unit => UnitCatalogNormalizer.Normalize(unit.Name), StringComparer.Ordinal)
                      .Where(group => !string.IsNullOrWhiteSpace(group.Key)))
         {
@@ -1132,6 +1182,7 @@ public sealed class SyncService : IDisposable
             var canonical = group
                 .OrderByDescending(unit => string.Equals(unit.Name, canonicalName, StringComparison.Ordinal))
                 .ThenByDescending(unit => unit.Revision)
+                .ThenByDescending(unit => unit.UpdatedAtUtc)
                 .ThenBy(unit => unit.CreatedAtUtc)
                 .ThenBy(unit => unit.Id)
                 .First();
@@ -1140,13 +1191,59 @@ public sealed class SyncService : IDisposable
             {
                 canonical.Name = canonicalName;
                 canonical.UpdatedAtUtc = now;
+                changed = true;
             }
 
             foreach (var duplicate in group.Where(unit => unit.Id != canonical.Id))
+            {
                 _db.Units.Remove(duplicate);
+                changed = true;
+            }
         }
 
-        await _db.SaveChangesAsync(ct);
+        if (changed)
+            await _db.SaveChangesAsync(ct);
+    }
+
+    private static IReadOnlyList<UnitDto> DeduplicatePulledUnits(IReadOnlyList<UnitDto> dtos)
+    {
+        var latestById = dtos
+            .GroupBy(dto => dto.Id)
+            .Select(group => group
+                .OrderByDescending(dto => dto.Revision)
+                .ThenByDescending(dto => dto.UpdatedAtUtc)
+                .ThenByDescending(dto => dto.CreatedAtUtc)
+                .ThenBy(dto => dto.Id)
+                .First())
+            .ToList();
+
+        var canonicalActiveIds = latestById
+            .Where(dto => !dto.IsDeleted && dto.IsActive)
+            .GroupBy(dto => UnitCatalogNormalizer.Normalize(dto.Name), StringComparer.Ordinal)
+            .Where(group => !string.IsNullOrWhiteSpace(group.Key))
+            .Select(group => group
+                .OrderByDescending(dto => string.Equals(dto.Name, group.Key, StringComparison.Ordinal))
+                .ThenByDescending(dto => dto.Revision)
+                .ThenByDescending(dto => dto.UpdatedAtUtc)
+                .ThenByDescending(dto => dto.CreatedAtUtc)
+                .ThenBy(dto => dto.Id)
+                .First()
+                .Id)
+            .ToHashSet();
+
+        var deduped = latestById
+            .Where(dto => dto.IsDeleted || !dto.IsActive || canonicalActiveIds.Contains(dto.Id))
+            .ToList();
+
+        var droppedActiveDuplicates = latestById.Count - deduped.Count;
+        if (droppedActiveDuplicates > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"pull Units 중복 수신 정리: received={dtos.Count}, byId={latestById.Count}, droppedActiveDuplicates={droppedActiveDuplicates}");
+        }
+
+        return deduped;
     }
 
     private async Task UpsertPulledRentalAssetsAsync(
