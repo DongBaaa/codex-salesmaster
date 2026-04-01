@@ -751,7 +751,7 @@ public sealed class RentalStateService
                 CustomerId = customerId.Value,
                 VoucherType = VoucherType.Sales,
                 InvoiceDate = currentRun.ScheduledDate,
-                Memo = $"렌탈 청구관리 자동생성 · {currentRun.PeriodLabel}",
+                Memo = string.Empty,
                 ResponsibleOfficeCode = officeCode,
                 SourceWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(null, officeCode, officeCode),
                 TaxInvoiceIssued = false,

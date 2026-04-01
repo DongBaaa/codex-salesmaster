@@ -282,7 +282,7 @@ public static class StatementDocumentBuilder
             {
                 var line = lines[i];
                 row.Cells.Add(CreateValueCell((i + 1).ToString(), accent, align: TextAlignment.Center));
-                row.Cells.Add(CreateValueCell(FormatItemText(line), accent, wrap: true));
+                row.Cells.Add(CreateValueCell(FormatItemText(line), accent, align: TextAlignment.Left, wrap: true));
                 row.Cells.Add(CreateValueCell(line.Unit, accent, align: TextAlignment.Center));
                 row.Cells.Add(CreateValueCell($"{line.Quantity:N0}", accent, align: TextAlignment.Right));
                 row.Cells.Add(CreateValueCell(
@@ -298,7 +298,7 @@ public static class StatementDocumentBuilder
             {
                 addedBlankGuide = true;
                 row.Cells.Add(CreateValueCell(string.Empty, accent, align: TextAlignment.Center));
-                row.Cells.Add(CreateValueCell("*** 이하 여백 ***", accent));
+                row.Cells.Add(CreateValueCell("*** 이하 여백 ***", accent, align: TextAlignment.Left));
                 row.Cells.Add(CreateValueCell(string.Empty, accent, align: TextAlignment.Center));
                 row.Cells.Add(CreateValueCell(string.Empty, accent, align: TextAlignment.Right));
                 row.Cells.Add(CreateValueCell(string.Empty, accent, align: TextAlignment.Right));
@@ -307,7 +307,7 @@ public static class StatementDocumentBuilder
             else
             {
                 row.Cells.Add(CreateValueCell(string.Empty, accent, align: TextAlignment.Center));
-                row.Cells.Add(CreateValueCell(string.Empty, accent));
+                row.Cells.Add(CreateValueCell(string.Empty, accent, align: TextAlignment.Left));
                 row.Cells.Add(CreateValueCell(string.Empty, accent, align: TextAlignment.Center));
                 row.Cells.Add(CreateValueCell(string.Empty, accent, align: TextAlignment.Right));
                 row.Cells.Add(CreateValueCell(string.Empty, accent, align: TextAlignment.Right));
@@ -464,7 +464,7 @@ public static class StatementDocumentBuilder
             {
                 var line = lines[i];
                 row.Cells.Add(CreateValueCell((i + 1).ToString(), BlueAccentBrush, align: TextAlignment.Center));
-                row.Cells.Add(CreateValueCell(FormatItemText(line), BlueAccentBrush, wrap: true));
+                row.Cells.Add(CreateValueCell(FormatItemText(line), BlueAccentBrush, align: TextAlignment.Left, wrap: true));
                 row.Cells.Add(CreateValueCell($"{line.Quantity:N0}", BlueAccentBrush, align: TextAlignment.Right));
                 row.Cells.Add(CreateValueCell(
                     printWithPrice ? $"{line.LineAmount:N0}" : string.Empty,

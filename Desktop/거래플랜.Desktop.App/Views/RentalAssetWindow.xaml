@@ -86,7 +86,7 @@
             <DockPanel>
                 <StackPanel DockPanel.Dock="Left">
                     <TextBlock Text="렌탈 자산 / 설치현황" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
-                    <TextBlock Text="장비 상태, 실제 설치처, 청구 연결 상태를 함께 관리해 청구 누락과 소속 오류를 줄입니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                    <TextBlock Text="장비 상태와 청구 연결 상태를 함께 관리해 청구 누락과 소속 오류를 줄입니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
                 </StackPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                     <Button Content="새로고침" Margin="0,0,6,0" Command="{Binding ReloadCommand}"/>
@@ -145,7 +145,6 @@
                         </DataGridTemplateColumn>
                         <DataGridTextColumn Header="관리번호" Binding="{Binding Source.ManagementNumber}" Width="110"/>
                         <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="110"/>
-                        <DataGridTextColumn Header="현재 거래처" Binding="{Binding CurrentCustomerName}" Width="150"/>
                         <DataGridTextColumn Header="청구 거래처" Binding="{Binding BillToCustomerName}" Width="150"/>
                         <DataGridTextColumn Header="설치처" Binding="{Binding InstallSiteName}" Width="170"/>
                         <DataGridTextColumn Header="품목분류" Binding="{Binding Source.ItemCategoryName}" Width="120"/>
@@ -210,18 +209,11 @@
                             <TextBox Grid.Column="0" Text="{Binding EditCustomerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
                             <Button Grid.Column="1" Content="조회" MinWidth="72" Padding="10,0" Click="CustomerLookupButton_Click"/>
                         </Grid>
-                        <TextBlock Grid.Row="3" Grid.Column="3" Text="현재 거래처" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                        <TextBox Grid.Row="3" Grid.Column="4" Text="{Binding EditCurrentCustomerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-
                         <TextBlock Grid.Row="4" Grid.Column="0" Text="청구 거래처" VerticalAlignment="Center" Margin="0,0,10,8"/>
                         <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding EditBillToCustomerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                        <TextBlock Grid.Row="4" Grid.Column="3" Text="실제 설치처" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                        <TextBox Grid.Row="4" Grid.Column="4" Text="{Binding EditInstallSiteName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
 
                         <TextBlock Grid.Row="5" Grid.Column="0" Text="설치위치" VerticalAlignment="Center" Margin="0,0,10,8"/>
                         <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding EditInstallLocation, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                        <TextBlock Grid.Row="5" Grid.Column="3" Text="현재위치" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                        <TextBox Grid.Row="5" Grid.Column="4" Text="{Binding EditCurrentLocation, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
 
                         <TextBlock Grid.Row="6" Grid.Column="0" Text="청구상태" VerticalAlignment="Center" Margin="0,0,10,8"/>
                         <ComboBox Grid.Row="6" Grid.Column="1" ItemsSource="{Binding BillingEligibilityStatusOptions}" SelectedItem="{Binding EditBillingEligibilityStatus}" IsEditable="True" Margin="0,0,0,8"/>

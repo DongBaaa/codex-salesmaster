@@ -1046,7 +1046,7 @@ public sealed class SyncService : IDisposable
     private async Task ApplyPullAsync(SyncPullResponse pull, long sinceRev, CancellationToken ct)
     {
         await UpsertPulledAsync(pull.CompanyProfiles, _db.CompanyProfiles, LocalMappings.ToLocal, ct);
-        await UpsertPulledAsync(pull.Units, _db.Units, LocalMappings.ToLocal, ct);
+        await UpsertPulledUnitsAsync(pull.Units, ct);
         await UpsertPulledAsync(pull.CustomerCategories, _db.CustomerCategories, LocalMappings.ToLocal, ct);
         await UpsertPulledSelectionOptionsAsync(pull.PriceGradeOptions, _db.PriceGradeOptions, LocalMappings.ToLocal, option => option.Name, ct);
         await UpsertPulledSelectionOptionsAsync(pull.TradeTypeOptions, _db.TradeTypeOptions, LocalMappings.ToLocal, option => option.Name, ct);
@@ -1094,6 +1094,58 @@ public sealed class SyncService : IDisposable
                     _db.Entry(existing).CurrentValues.SetValues(local);
             }
         }
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task UpsertPulledUnitsAsync(
+        IReadOnlyList<UnitDto> dtos,
+        CancellationToken ct)
+    {
+        foreach (var dto in dtos)
+        {
+            var local = LocalMappings.ToLocal(dto);
+            local.IsDirty = false;
+
+            var existing = await _db.Units.IgnoreQueryFilters().FirstOrDefaultAsync(unit => unit.Id == local.Id, ct);
+            if (existing is null)
+            {
+                _db.Units.Add(local);
+            }
+            else if (!existing.IsDirty)
+            {
+                _db.Entry(existing).CurrentValues.SetValues(local);
+            }
+        }
+
+        var now = DateTime.UtcNow;
+        var activeGroups = await _db.Units.IgnoreQueryFilters()
+            .Where(unit => !unit.IsDeleted && unit.IsActive)
+            .OrderBy(unit => unit.CreatedAtUtc)
+            .ThenBy(unit => unit.Name)
+            .ToListAsync(ct);
+
+        foreach (var group in activeGroups
+                     .GroupBy(unit => UnitCatalogNormalizer.Normalize(unit.Name), StringComparer.Ordinal)
+                     .Where(group => !string.IsNullOrWhiteSpace(group.Key)))
+        {
+            var canonicalName = group.Key;
+            var canonical = group
+                .OrderByDescending(unit => string.Equals(unit.Name, canonicalName, StringComparison.Ordinal))
+                .ThenByDescending(unit => unit.Revision)
+                .ThenBy(unit => unit.CreatedAtUtc)
+                .ThenBy(unit => unit.Id)
+                .First();
+
+            if (!string.Equals(canonical.Name, canonicalName, StringComparison.Ordinal))
+            {
+                canonical.Name = canonicalName;
+                canonical.UpdatedAtUtc = now;
+            }
+
+            foreach (var duplicate in group.Where(unit => unit.Id != canonical.Id))
+                _db.Units.Remove(duplicate);
+        }
+
         await _db.SaveChangesAsync(ct);
     }
 

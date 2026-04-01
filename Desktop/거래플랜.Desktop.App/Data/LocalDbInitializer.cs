@@ -24,7 +24,7 @@ public static partial class LocalDbInitializer
     private const string BackfillCustomerMasterScopeFieldsStepKey = "Migration.BackfillCustomerMasterScopeFields.v1";
     private const string NormalizeItemCategoryOptionDuplicatesStepKey = "Migration.NormalizeItemCategoryOptionDuplicates.v1";
     private const string CleanupLegacyRentalStartupDirtyItemsStepKey = "Migration.CleanupLegacyRentalStartupDirtyItems.v1";
-    private const string NormalizeUnitCatalogStepKey = "Migration.NormalizeUnitCatalog.v1";
+    private const string NormalizeUnitCatalogStepKey = "Migration.NormalizeUnitCatalog.v2";
     private const string NormalizeInventoryTransferIntegrityStepKey = "Migration.NormalizeInventoryTransferIntegrity.v1";
     private const string PurgeDeletedInventoryTransferDataStepKey = "Migration.PurgeDeletedInventoryTransferData.v1";
     private const string RepairDeletedCustomerRentalProfileLinksStepKey = "Migration.RepairDeletedCustomerRentalProfileLinks.v1";

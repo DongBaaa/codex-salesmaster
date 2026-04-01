@@ -168,8 +168,8 @@ public sealed class StatementPrintService
                         c.Background(bg).Padding(2);
 
                     table.Cell().Element(c => DataCell(c, bg)).AlignCenter().Text(line is not null ? (i + 1).ToString() : "");
-                    table.Cell().Element(c => DataCell(c, bg)).Text(line?.ItemNameOriginal ?? "");
-                    table.Cell().Element(c => DataCell(c, bg)).Text(line?.SpecificationOriginal ?? "");
+                    table.Cell().Element(c => DataCell(c, bg)).AlignLeft().Text(line?.ItemNameOriginal ?? "");
+                    table.Cell().Element(c => DataCell(c, bg)).AlignLeft().Text(line?.SpecificationOriginal ?? "");
                     table.Cell().Element(c => DataCell(c, bg)).AlignCenter().Text(line?.Unit ?? "");
                     table.Cell().Element(c => DataCell(c, bg)).AlignRight().Text(line is not null ? $"{line.Quantity:N0}" : "");
                     table.Cell().Element(c => DataCell(c, bg)).AlignRight().Text(line is not null ? $"{line.UnitPrice:N0}" : "");
