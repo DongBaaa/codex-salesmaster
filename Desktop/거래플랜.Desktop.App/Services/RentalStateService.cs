@@ -215,6 +215,18 @@ public sealed partial class RentalStateService
         var assets = await ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
             .Where(asset => asset.AssetStatus != "폐기")
             .ToListAsync(ct);
+        var customerQuery = _db.Customers.AsNoTracking().Where(customer => !customer.IsDeleted);
+        if (!CanViewAllRental(session))
+        {
+            var readableOfficeCodes = GetReadableOfficeCodes(session);
+            customerQuery = customerQuery.Where(customer => readableOfficeCodes.Contains(customer.ResponsibleOfficeCode));
+        }
+
+        var customers = await customerQuery.ToListAsync(ct);
+        var assetsByProfile = assets
+            .Where(asset => asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
+            .GroupBy(asset => asset.BillingProfileId!.Value)
+            .ToDictionary(group => group.Key, group => group.ToList());
 
         var alertItems = profiles
             .Select(profile => ToAlertItem(profile, offices, referenceDate))
@@ -236,6 +248,77 @@ public sealed partial class RentalStateService
             .Take(20)
             .ToList();
 
+        var billingCustomerUnlinked = profiles
+            .Where(profile => !profile.CustomerId.HasValue || profile.CustomerId.Value == Guid.Empty)
+            .ToList();
+        var assetCustomerUnlinked = assets
+            .Where(asset => !asset.CustomerId.HasValue || asset.CustomerId.Value == Guid.Empty)
+            .ToList();
+        var assetBillingUnlinked = assets
+            .Where(asset => (!asset.BillingProfileId.HasValue || asset.BillingProfileId.Value == Guid.Empty) &&
+                            !string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase) &&
+                            !string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var assetlessProfiles = profiles
+            .Where(profile => !assetsByProfile.TryGetValue(profile.Id, out var linkedAssets) || linkedAssets.Count == 0)
+            .ToList();
+
+        var unresolvedLinkItems = new List<RentalLinkReviewItem>();
+        unresolvedLinkItems.AddRange(billingCustomerUnlinked
+            .OrderBy(profile => profile.CustomerName, StringComparer.CurrentCultureIgnoreCase)
+            .Take(12)
+            .Select(profile => new RentalLinkReviewItem
+            {
+                QueueType = "프로필 고객 미연결",
+                ResponsibleOfficeName = ResolveOfficeDisplayName(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode, offices),
+                CustomerName = ResolvePrimaryBillingCustomerName(profile),
+                ItemName = profile.ItemName,
+                InstallLocation = profile.InstallSiteName,
+                CandidateCount = CountCustomerCandidates(customers, profile.BusinessNumber, profile.CustomerName, profile.BillToCustomerName, profile.RealCustomerName),
+                ReviewNote = string.Join(" / ", BuildBillingDataIssues(profile, assetsByProfile.GetValueOrDefault(profile.Id, []), GetBillingTemplateItems(profile, assetsByProfile.GetValueOrDefault(profile.Id, []))))
+            }));
+        unresolvedLinkItems.AddRange(assetCustomerUnlinked
+            .OrderBy(asset => asset.CustomerName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
+            .Take(12)
+            .Select(asset => new RentalLinkReviewItem
+            {
+                QueueType = "자산 고객 미연결",
+                ResponsibleOfficeName = ResolveOfficeDisplayName(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, offices),
+                CustomerName = ResolvePrimaryAssetCustomerName(asset),
+                ItemName = asset.ItemName,
+                InstallLocation = string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
+                CandidateCount = CountCustomerCandidates(customers, null, asset.CustomerName, asset.CurrentCustomerName, asset.BillToCustomerName),
+                ReviewNote = string.Join(" / ", BuildAssetDataIssues(asset))
+            }));
+        unresolvedLinkItems.AddRange(assetBillingUnlinked
+            .OrderBy(asset => asset.CustomerName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
+            .Take(12)
+            .Select(asset => new RentalLinkReviewItem
+            {
+                QueueType = "자산 청구 미연결",
+                ResponsibleOfficeName = ResolveOfficeDisplayName(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, offices),
+                CustomerName = ResolvePrimaryAssetCustomerName(asset),
+                ItemName = asset.ItemName,
+                InstallLocation = string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
+                CandidateCount = CountBillingProfileCandidates(profiles, asset),
+                ReviewNote = string.Join(" / ", BuildAssetDataIssues(asset).DefaultIfEmpty("자동 연결 후보 확인 필요"))
+            }));
+        unresolvedLinkItems.AddRange(assetlessProfiles
+            .OrderBy(profile => profile.CustomerName, StringComparer.CurrentCultureIgnoreCase)
+            .Take(12)
+            .Select(profile => new RentalLinkReviewItem
+            {
+                QueueType = "자산 없는 청구프로필",
+                ResponsibleOfficeName = ResolveOfficeDisplayName(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode, offices),
+                CustomerName = ResolvePrimaryBillingCustomerName(profile),
+                ItemName = profile.ItemName,
+                InstallLocation = profile.InstallSiteName,
+                CandidateCount = 0,
+                ReviewNote = "보류 상태 유지 / 연결 자산 확인 필요"
+            }));
+
         var summary = new RentalDashboardSummary
         {
             DueTodayCount = alertItems.Count(item => item.DaysRemaining == 0),
@@ -243,16 +326,96 @@ public sealed partial class RentalStateService
             OverdueCount = alertItems.Count(item => item.DaysRemaining < 0),
             ActiveAssetCount = assets.Count,
             ExpiringContractCount = expiringAssets.Count,
-            UnassignedCount = CanViewAllRental(session)
-                ? profiles.Count(profile => string.IsNullOrWhiteSpace(profile.AssignedUsername)) +
-                  assets.Count(asset => string.IsNullOrWhiteSpace(asset.AssignedUsername))
-                : 0,
+            UnassignedCount = billingCustomerUnlinked.Count + assetCustomerUnlinked.Count + assetBillingUnlinked.Count + assetlessProfiles.Count,
+            BillingCustomerUnlinkedCount = billingCustomerUnlinked.Count,
+            AssetCustomerUnlinkedCount = assetCustomerUnlinked.Count,
+            AssetBillingUnlinkedCount = assetBillingUnlinked.Count,
+            AssetlessBillingProfileCount = assetlessProfiles.Count,
             AlertItems = alertItems,
             ExpiringAssets = expiringAssets,
+            UnresolvedLinkItems = unresolvedLinkItems
+                .OrderBy(item => item.QueueType, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(item => item.ResponsibleOfficeName, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(item => item.CustomerName, StringComparer.CurrentCultureIgnoreCase)
+                .Take(30)
+                .ToList(),
             AlertPopupMessage = BuildAlertPopupMessage(alertItems, expiringAssets)
         };
 
         return summary;
+    }
+
+    private static string ResolvePrimaryBillingCustomerName(LocalRentalBillingProfile profile)
+    {
+        if (!string.IsNullOrWhiteSpace(profile.CustomerName))
+            return profile.CustomerName;
+        if (!string.IsNullOrWhiteSpace(profile.BillToCustomerName))
+            return profile.BillToCustomerName;
+        return profile.RealCustomerName;
+    }
+
+    private static string ResolvePrimaryAssetCustomerName(LocalRentalAsset asset)
+    {
+        if (!string.IsNullOrWhiteSpace(asset.CustomerName))
+            return asset.CustomerName;
+        if (!string.IsNullOrWhiteSpace(asset.CurrentCustomerName))
+            return asset.CurrentCustomerName;
+        return asset.BillToCustomerName;
+    }
+
+    private static int CountCustomerCandidates(
+        IReadOnlyCollection<LocalCustomer> customers,
+        string? businessNumber,
+        params string?[] names)
+    {
+        var candidateNames = names
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var normalizedBusinessNumber = (businessNumber ?? string.Empty).Trim();
+
+        var matches = customers
+            .Where(customer =>
+                (!string.IsNullOrWhiteSpace(normalizedBusinessNumber) &&
+                 string.Equals((customer.BusinessNumber ?? string.Empty).Trim(), normalizedBusinessNumber, StringComparison.OrdinalIgnoreCase)) ||
+                candidateNames.Contains(customer.NameOriginal, StringComparer.CurrentCultureIgnoreCase))
+            .Select(customer => customer.Id)
+            .Distinct()
+            .Count();
+        return matches;
+    }
+
+    private static int CountBillingProfileCandidates(
+        IReadOnlyCollection<LocalRentalBillingProfile> profiles,
+        LocalRentalAsset asset)
+    {
+        var candidateNames = new[]
+            {
+                asset.CustomerName,
+                asset.CurrentCustomerName,
+                asset.BillToCustomerName
+            }
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var installLocation = (asset.InstallLocation ?? string.Empty).Trim();
+
+        var candidates = profiles
+            .Where(profile =>
+                (asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty && profile.CustomerId == asset.CustomerId) ||
+                candidateNames.Contains(profile.CustomerName, StringComparer.CurrentCultureIgnoreCase) ||
+                candidateNames.Contains(profile.BillToCustomerName, StringComparer.CurrentCultureIgnoreCase) ||
+                candidateNames.Contains(profile.RealCustomerName, StringComparer.CurrentCultureIgnoreCase))
+            .Where(profile =>
+                string.IsNullOrWhiteSpace(installLocation) ||
+                string.Equals((profile.InstallSiteName ?? string.Empty).Trim(), installLocation, StringComparison.CurrentCultureIgnoreCase) ||
+                string.Equals((profile.ItemName ?? string.Empty).Trim(), (asset.ItemName ?? string.Empty).Trim(), StringComparison.CurrentCultureIgnoreCase))
+            .Select(profile => profile.Id)
+            .Distinct()
+            .Count();
+        return candidates;
     }
 
     public async Task<IReadOnlyList<RentalBillingViewRow>> GetBillingRowsAsync(

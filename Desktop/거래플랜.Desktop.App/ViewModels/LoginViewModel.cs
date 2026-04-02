@@ -84,6 +84,7 @@ public sealed partial class LoginViewModel : ObservableObject
                 result.User.TenantCode,
                 result.User.ScopeType,
                 ResolveOfficeCode(result.User));
+            await _local.SaveOfficeSyncCredentialAsync(result.User, Username, Password);
             await SaveRememberOptionsAsync();
             _session.SetSession(result.Token, result.User);
             LoginSucceeded?.Invoke();

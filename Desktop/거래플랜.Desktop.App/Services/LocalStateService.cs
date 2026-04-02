@@ -2497,10 +2497,12 @@ public sealed partial class LocalStateService
             return null;
 
         var settingKey = GetCompanyProfileAssignmentKey(normalizedUsername);
-        var rawValue = await GetSettingAsync(settingKey, ct);
-        return Guid.TryParse(rawValue, out var profileId)
-            ? await ResolveAssignedCompanyProfileIdAsync(settingKey, profileId, ct)
-            : null;
+        return await GetValidatedGuidSettingAsync(
+            settingKey,
+            profileId => _db.CompanyProfiles
+                .IgnoreQueryFilters()
+                .AnyAsync(profile => profile.Id == profileId && !profile.IsDeleted && profile.IsActive, ct),
+            ct);
     }
 
     public async Task SetAssignedCompanyProfileAsync(string? username, Guid? profileId, CancellationToken ct = default)
@@ -2512,26 +2514,65 @@ public sealed partial class LocalStateService
         var value = string.Empty;
         if (profileId.HasValue && profileId.Value != Guid.Empty)
         {
-            var isValidProfile = await _db.CompanyProfiles
-                .IgnoreQueryFilters()
-                .AnyAsync(profile => profile.Id == profileId.Value && !profile.IsDeleted && profile.IsActive, ct);
-            if (isValidProfile)
+            if (await ValidateGuidReferenceAsync(
+                    profileId.Value,
+                    candidateId => _db.CompanyProfiles
+                        .IgnoreQueryFilters()
+                        .AnyAsync(profile => profile.Id == candidateId && !profile.IsDeleted && profile.IsActive, ct)))
+            {
                 value = profileId.Value.ToString("D");
+            }
         }
 
         await SetSettingAsync(GetCompanyProfileAssignmentKey(normalizedUsername), value, ct);
     }
 
-    private async Task<Guid?> ResolveAssignedCompanyProfileIdAsync(string settingKey, Guid profileId, CancellationToken ct)
+    public async Task<Guid?> GetValidatedGuidSettingAsync(
+        string settingKey,
+        Func<Guid, Task<bool>> existsAsync,
+        CancellationToken ct = default)
     {
-        var exists = await _db.CompanyProfiles
-            .IgnoreQueryFilters()
-            .AnyAsync(profile => profile.Id == profileId && !profile.IsDeleted && profile.IsActive, ct);
-        if (exists)
-            return profileId;
+        var rawValue = await GetSettingAsync(settingKey, ct);
+        if (!Guid.TryParse(rawValue, out var referenceId))
+            return null;
+
+        if (await ValidateGuidReferenceAsync(referenceId, existsAsync))
+            return referenceId;
 
         await SetSettingAsync(settingKey, string.Empty, ct);
         return null;
+    }
+
+    public async Task SetValidatedGuidSettingAsync(
+        string settingKey,
+        Guid? referenceId,
+        Func<Guid, Task<bool>> existsAsync,
+        CancellationToken ct = default)
+    {
+        var value = string.Empty;
+        if (referenceId.HasValue &&
+            referenceId.Value != Guid.Empty &&
+            await ValidateGuidReferenceAsync(referenceId.Value, existsAsync))
+        {
+            value = referenceId.Value.ToString("D");
+        }
+
+        await SetSettingAsync(settingKey, value, ct);
+    }
+
+    private static async Task<bool> ValidateGuidReferenceAsync(Guid referenceId, Func<Guid, Task<bool>> existsAsync)
+    {
+        if (referenceId == Guid.Empty)
+            return false;
+
+        if (existsAsync is null)
+            return false;
+
+        var exists = await existsAsync(referenceId);
+        if (exists)
+            return true;
+
+        return false;
     }
 
     // Units & Categories

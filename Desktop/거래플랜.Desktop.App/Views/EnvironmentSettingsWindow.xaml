@@ -1007,6 +1007,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
@@ -1099,24 +1100,115 @@
 
                         <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
                             <StackPanel>
-                                <TextBlock Text="사용 가이드" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
-                                <TextBlock Text="1. 일반 작업 후에는 먼저 동기화를 눌러 서버 반영 여부를 확인하세요."
+                                <TextBlock Text="지점별 동기화 계정" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                <TextBlock Text="{Binding SyncStoredCredentialsSummaryText}"
+                                           Foreground="#9FB3C8"
+                                           Margin="0,8,0,12"
+                                           TextWrapping="Wrap"/>
+
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="100"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="지점" VerticalAlignment="Center"/>
+                                    <ComboBox Grid.Row="0"
+                                              Grid.Column="1"
+                                              ItemsSource="{Binding UserOfficeOptions}"
+                                              DisplayMemberPath="DisplayName"
+                                              SelectedValuePath="Value"
+                                              SelectedValue="{Binding SyncCredentialOfficeCode}"
+                                              Margin="0,0,0,8"/>
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="아이디" VerticalAlignment="Center"/>
+                                    <TextBox Grid.Row="1" Grid.Column="1"
+                                             Text="{Binding SyncCredentialUsername, UpdateSourceTrigger=PropertyChanged}"
+                                             Margin="0,0,0,8"/>
+
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="비밀번호" VerticalAlignment="Center"/>
+                                    <TextBox Grid.Row="2" Grid.Column="1"
+                                             Text="{Binding SyncCredentialPassword, UpdateSourceTrigger=PropertyChanged}"
+                                             Margin="0,0,0,8"/>
+                                </Grid>
+
+                                <WrapPanel>
+                                    <Button Content="지점 로그인 저장"
+                                            Background="#1565C0"
+                                            Margin="0,0,8,0"
+                                            Command="{Binding SaveSyncCredentialCommand}"/>
+                                    <Button Content="선택 삭제"
+                                            Background="#C62828"
+                                            Command="{Binding DeleteSyncCredentialCommand}"/>
+                                </WrapPanel>
+
+                                <TextBlock Text="현재 지점/계정으로 로그인 검증 후 암호화 저장합니다. 저장된 지점 계정은 office별 dirty 추가 업로드에 사용됩니다."
                                            Foreground="#9FB3C8"
                                            Margin="0,10,0,0"
                                            TextWrapping="Wrap"/>
-                                <TextBlock Text="2. 동기화가 실패하거나 서버 반영 대기 건수가 남아 있으면 동기화 진단에서 오류 유형과 복구 권장을 확인하세요."
-                                           Foreground="#9FB3C8"
-                                           Margin="0,10,0,0"
-                                           TextWrapping="Wrap"/>
-                                <TextBlock Text="3. 큰 작업 전후에는 백업을 실행해 현재 로컬 DB를 보관하세요."
-                                           Foreground="#9FB3C8"
-                                           Margin="0,10,0,0"
-                                           TextWrapping="Wrap"/>
-                                <TextBlock Text="4. 미동기화 변경이 남아 있으면 업체 DB 전환 전에 먼저 동기화를 완료하는 것이 안전합니다."
+                                <TextBlock Text="저장된 계정이 없어도 현재 로그인 지점은 현재 세션으로 계속 동기화됩니다."
                                            Foreground="#9FB3C8"
                                            Margin="0,10,0,0"
                                            TextWrapping="Wrap"/>
                             </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <Grid Grid.Row="3" Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.05*"/>
+                            <ColumnDefinition Width="12"/>
+                            <ColumnDefinition Width="1.35*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+                            <DockPanel>
+                                <Border DockPanel.Dock="Top" Background="#102039" CornerRadius="6,6,0,0" Padding="12">
+                                    <TextBlock Text="저장된 지점 로그인" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                </Border>
+                                <DataGrid ItemsSource="{Binding StoredSyncCredentials}"
+                                          SelectedItem="{Binding SelectedStoredSyncCredential}"
+                                          IsReadOnly="True"
+                                          BorderThickness="0">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="지점" Binding="{Binding OfficeDisplayName}" Width="140"/>
+                                        <DataGridTextColumn Header="업체" Binding="{Binding TenantDisplayName}" Width="110"/>
+                                        <DataGridTextColumn Header="아이디" Binding="{Binding Username}" Width="120"/>
+                                        <DataGridTextColumn Header="저장시각" Binding="{Binding SavedAtText}" Width="160"/>
+                                        <DataGridTextColumn Header="상태" Binding="{Binding StatusText}" Width="140"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </DockPanel>
+                        </Border>
+
+                        <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+                            <DockPanel>
+                                <Border DockPanel.Dock="Top" Background="#102039" CornerRadius="6,6,0,0" Padding="12">
+                                    <StackPanel>
+                                        <TextBlock Text="지점별 / 공용 동기화 상태" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                        <TextBlock Text="{Binding SyncScopeStatusSummaryText}" Foreground="#9FB3C8" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Border>
+                                <DataGrid ItemsSource="{Binding SyncScopeStatuses}"
+                                          SelectedItem="{Binding SelectedSyncScopeStatus}"
+                                          IsReadOnly="True"
+                                          BorderThickness="0">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="구분" Binding="{Binding ScopeTypeText}" Width="70"/>
+                                        <DataGridTextColumn Header="대상" Binding="{Binding ScopeDisplayName}" Width="130"/>
+                                        <DataGridTextColumn Header="대기건수" Binding="{Binding PendingCount}" Width="80"/>
+                                        <DataGridTextColumn Header="대기요약" Binding="{Binding PendingSummary}" Width="2*"/>
+                                        <DataGridTextColumn Header="계정상태" Binding="{Binding CredentialStatusText}" Width="150"/>
+                                        <DataGridTextColumn Header="계정" Binding="{Binding CredentialUsername}" Width="120"/>
+                                        <DataGridTextColumn Header="저장시각" Binding="{Binding SavedAtText}" Width="160"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </DockPanel>
                         </Border>
                     </Grid>
                 </Grid>

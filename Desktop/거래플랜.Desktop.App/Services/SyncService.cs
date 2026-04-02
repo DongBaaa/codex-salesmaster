@@ -240,7 +240,9 @@ public sealed class SyncService : IDisposable
             AppLogger.Info("SYNC", "동기화 시작");
 
             await EnsureUnitCatalogSyncSafetyAsync(ct);
-            await ExecuteWithRetryAsync(PushDirtyAsync, "업로드", ct);
+            await ExecuteWithRetryAsync(token => PushDirtyAsync(_api, _session, includeSharedDirty: true, token), "업로드", ct);
+            await PushDirtyWithStoredOfficeSessionsAsync(ct);
+            await ClearStaleDirtyWithStoredOfficeSessionsAsync(ct);
             await ExecuteWithRetryAsync(PullNewAsync, "다운로드", ct);
 
             await TrySetSettingSafeAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
@@ -436,9 +438,297 @@ public sealed class SyncService : IDisposable
 
     private void SetStatus(string message) => SyncStatusChanged?.Invoke(message);
 
-    private async Task PushDirtyAsync(CancellationToken ct)
+    private async Task PushDirtyWithStoredOfficeSessionsAsync(CancellationToken ct)
     {
-        var customerMasterRepair = await _local.RepairDirtyCustomerMastersForSyncAsync(_session, ct);
+        var remainingDirtyCount = await _local.CountDirtyAsync(ct);
+        if (remainingDirtyCount == 0)
+            return;
+
+        var storedCredentials = await _local.GetStoredSyncCredentialsAsync(ct);
+        if (storedCredentials.Count == 0)
+        {
+            await ReportRemainingDirtyOfficesAsync("저장된 지점별 로그인 정보가 없어 일부 변경을 보류했습니다.", ct);
+            return;
+        }
+
+        var attemptedOffices = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, _session.OfficeCode)
+        };
+
+        foreach (var credential in storedCredentials)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(credential.OfficeCode, credential.OfficeCode);
+            if (!attemptedOffices.Add(normalizedOfficeCode))
+                continue;
+
+            try
+            {
+                var login = await _api.LoginAsync(credential.Username, credential.Password, ct);
+                if (login is null || string.IsNullOrWhiteSpace(login.Token))
+                {
+                    AppLogger.Warn("SYNC", $"지점별 동기화 로그인 실패: office={normalizedOfficeCode}, username={credential.Username}");
+                    await TryRecordDiagnosticAsync(
+                        phase: "office-sync-login",
+                        rawMessage: $"지점별 동기화 로그인 실패: {normalizedOfficeCode} / {credential.Username}",
+                        severity: "Warning");
+                    continue;
+                }
+
+                var officeSession = new SessionState();
+                officeSession.SetSession(login.Token, login.User);
+
+                var officeDirtyCount = await _local.CountDirtyAsync(officeSession, ct);
+                if (officeDirtyCount == 0)
+                    continue;
+
+                using var officeHttpClient = new HttpClient
+                {
+                    BaseAddress = _api.GetBaseUri(),
+                    Timeout = TimeSpan.FromSeconds(100)
+                };
+                var officeApi = new ErpApiClient(officeHttpClient, officeSession);
+                SetStatus($"{normalizedOfficeCode} 지점 변경분을 추가 동기화하는 중...");
+                await ExecuteWithRetryAsync(
+                    token => PushDirtyAsync(officeApi, officeSession, includeSharedDirty: false, token),
+                    $"{normalizedOfficeCode} 지점 업로드",
+                    ct);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                AppLogger.Warn("SYNC", $"지점별 추가 동기화 실패: office={normalizedOfficeCode}, detail={ex.Message}");
+                await TryRecordDiagnosticAsync(
+                    phase: "office-sync",
+                    rawMessage: $"지점별 추가 동기화 실패({normalizedOfficeCode}): {ex.InnerException?.Message ?? ex.Message}",
+                    exception: ex,
+                    severity: "Warning");
+            }
+        }
+
+        await ReportRemainingDirtyOfficesAsync(null, ct);
+    }
+
+    private async Task ClearStaleDirtyWithStoredOfficeSessionsAsync(CancellationToken ct)
+    {
+        if (await _local.CountDirtyAsync(ct) == 0)
+            return;
+
+        await ClearStaleDirtyAsync(_api, _session, includeSharedDirty: true, ct);
+        if (await _local.CountDirtyAsync(ct) == 0)
+            return;
+
+        var storedCredentials = await _local.GetStoredSyncCredentialsAsync(ct);
+        if (storedCredentials.Count == 0)
+            return;
+
+        var attemptedOffices = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, _session.OfficeCode)
+        };
+
+        foreach (var credential in storedCredentials)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(credential.OfficeCode, credential.OfficeCode);
+            if (!attemptedOffices.Add(normalizedOfficeCode))
+                continue;
+
+            try
+            {
+                var login = await _api.LoginAsync(credential.Username, credential.Password, ct);
+                if (login is null || string.IsNullOrWhiteSpace(login.Token))
+                    continue;
+
+                var officeSession = new SessionState();
+                officeSession.SetSession(login.Token, login.User);
+                if (await _local.CountDirtyAsync(officeSession, ct) == 0)
+                    continue;
+
+                using var officeHttpClient = new HttpClient
+                {
+                    BaseAddress = _api.GetBaseUri(),
+                    Timeout = TimeSpan.FromSeconds(100)
+                };
+                var officeApi = new ErpApiClient(officeHttpClient, officeSession);
+                await ClearStaleDirtyAsync(officeApi, officeSession, includeSharedDirty: false, ct);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                AppLogger.Warn("SYNC", $"stale dirty 정리 실패: office={normalizedOfficeCode}, detail={ex.Message}");
+            }
+        }
+    }
+
+    private async Task ClearStaleDirtyAsync(
+        ErpApiClient apiClient,
+        SessionState session,
+        bool includeSharedDirty,
+        CancellationToken ct)
+    {
+        var sessionDirtyCount = await _local.CountDirtyAsync(session, ct);
+        if (sessionDirtyCount == 0 && (!includeSharedDirty || !session.HasAdministrativePrivileges))
+            return;
+
+        var pull = await apiClient.PullAsync(0, ct);
+        if (pull is null)
+            return;
+
+        using (_local.SuppressSyncDispatch())
+        {
+            var clearedCount = 0;
+
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyCustomerMastersForSyncAsync(session, ct), pull.CustomerMasters, ct);
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyCustomersForSyncAsync(session, ct), pull.Customers, ct);
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyCustomerContractsForSyncAsync(session, ct), pull.CustomerContracts, ct);
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyItemsForSyncAsync(session, ct), pull.Items, ct);
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyTransactionsForSyncAsync(session, ct), pull.Transactions, ct);
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyTransactionAttachmentsForSyncAsync(session, ct), pull.TransactionAttachments, ct);
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyInventoryTransfersForSyncAsync(session, ct), pull.InventoryTransfers, ct);
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyRentalBillingProfilesForSyncAsync(session, ct), pull.RentalBillingProfiles, ct);
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyRentalAssetsForSyncAsync(session, ct), pull.RentalAssets, ct);
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyRentalBillingLogsForSyncAsync(session, ct), pull.RentalBillingLogs, ct);
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyInvoicesForSyncAsync(session, ct), pull.Invoices, ct);
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyPaymentsForSyncAsync(session, ct), pull.Payments, ct);
+
+            if (includeSharedDirty && session.HasAdministrativePrivileges)
+            {
+                clearedCount += await ClearStaleDirtyEntitiesAsync(
+                    await _db.CompanyProfiles.IgnoreQueryFilters().Where(entity => entity.IsDirty).ToListAsync(ct),
+                    pull.CompanyProfiles,
+                    ct);
+                clearedCount += await ClearStaleDirtyEntitiesAsync(
+                    await _db.Units.IgnoreQueryFilters().Where(entity => entity.IsDirty).ToListAsync(ct),
+                    pull.Units,
+                    ct);
+                clearedCount += await ClearStaleDirtyEntitiesAsync(
+                    await _db.CustomerCategories.IgnoreQueryFilters().Where(entity => entity.IsDirty).ToListAsync(ct),
+                    pull.CustomerCategories,
+                    ct);
+                clearedCount += await ClearStaleDirtyEntitiesAsync(
+                    await _db.PriceGradeOptions.IgnoreQueryFilters().Where(entity => entity.IsDirty).ToListAsync(ct),
+                    pull.PriceGradeOptions,
+                    ct);
+                clearedCount += await ClearStaleDirtyEntitiesAsync(
+                    await _db.TradeTypeOptions.IgnoreQueryFilters().Where(entity => entity.IsDirty).ToListAsync(ct),
+                    pull.TradeTypeOptions,
+                    ct);
+                clearedCount += await ClearStaleDirtyEntitiesAsync(
+                    await _db.ItemCategoryOptions.IgnoreQueryFilters().Where(entity => entity.IsDirty).ToListAsync(ct),
+                    pull.ItemCategoryOptions,
+                    ct);
+                clearedCount += await ClearStaleDirtyEntitiesAsync(
+                    await _db.RentalManagementCompanies.IgnoreQueryFilters().Where(entity => entity.IsDirty).ToListAsync(ct),
+                    pull.RentalManagementCompanies,
+                    ct);
+            }
+
+            if (clearedCount > 0)
+                AppLogger.Info("SYNC", $"stale dirty 자동정리: office={session.OfficeCode}, cleaned={clearedCount}");
+        }
+    }
+
+    private async Task<int> ClearStaleDirtyEntitiesAsync<TLocal, TDto>(
+        IReadOnlyCollection<TLocal> dirtyEntities,
+        IReadOnlyCollection<TDto> serverEntities,
+        CancellationToken ct)
+        where TLocal : class, ILocalSyncEntity
+        where TDto : SyncEntityDto
+    {
+        if (dirtyEntities.Count == 0 || serverEntities.Count == 0)
+            return 0;
+
+        var dirtyIds = dirtyEntities.Select(entity => entity.Id).Distinct().ToList();
+        if (dirtyIds.Count == 0)
+            return 0;
+
+        var serverMap = serverEntities
+            .Where(entity => dirtyIds.Contains(entity.Id))
+            .ToDictionary(entity => entity.Id, entity => entity);
+        if (serverMap.Count == 0)
+            return 0;
+
+        var trackedEntities = await _db.Set<TLocal>()
+            .IgnoreQueryFilters()
+            .Where(entity => dirtyIds.Contains(entity.Id))
+            .ToListAsync(ct);
+
+        var changed = 0;
+        foreach (var entity in trackedEntities)
+        {
+            if (!entity.IsDirty || !serverMap.TryGetValue(entity.Id, out var serverEntity))
+                continue;
+
+            if (!IsStaleDirtyMatch(entity, serverEntity))
+                continue;
+
+            entity.Revision = serverEntity.Revision;
+            entity.UpdatedAtUtc = serverEntity.UpdatedAtUtc;
+            entity.IsDeleted = serverEntity.IsDeleted;
+            entity.IsDirty = false;
+            changed++;
+        }
+
+        if (changed > 0)
+            await _db.SaveChangesAsync(ct);
+
+        return changed;
+    }
+
+    private static bool IsStaleDirtyMatch(ILocalSyncEntity localEntity, SyncEntityDto serverEntity)
+    {
+        if (localEntity.Id != serverEntity.Id)
+            return false;
+        if (localEntity.IsDeleted != serverEntity.IsDeleted)
+            return false;
+        if (localEntity.Revision == serverEntity.Revision)
+            return true;
+
+        return localEntity.Revision <= serverEntity.Revision &&
+               AreEquivalentUtc(localEntity.UpdatedAtUtc, serverEntity.UpdatedAtUtc);
+    }
+
+    private static bool AreEquivalentUtc(DateTime left, DateTime right)
+        => Math.Abs((left.ToUniversalTime() - right.ToUniversalTime()).TotalSeconds) < 1;
+
+    private async Task ReportRemainingDirtyOfficesAsync(string? prefix, CancellationToken ct)
+    {
+        var remainingDirtyCount = await _local.CountDirtyAsync(ct);
+        if (remainingDirtyCount == 0)
+            return;
+
+        var officeSummaries = await _local.GetDirtyOfficeSummariesAsync(ct);
+        if (officeSummaries.Count == 0)
+        {
+            var message = string.IsNullOrWhiteSpace(prefix)
+                ? $"일부 변경 {remainingDirtyCount}건이 아직 남아 있습니다."
+                : $"{prefix} 남은 변경 {remainingDirtyCount}건을 확인하세요.";
+            SetStatus(message);
+            AppLogger.Warn("SYNC", message);
+            return;
+        }
+
+        var detail = string.Join(", ",
+            officeSummaries
+                .Take(5)
+                .Select(summary => $"{summary.OfficeCode} {summary.Count}건"));
+        var status = string.IsNullOrWhiteSpace(prefix)
+            ? $"일부 지점 변경이 남아 있습니다: {detail}"
+            : $"{prefix} ({detail})";
+
+        SetStatus(status);
+        AppLogger.Warn("SYNC", $"미동기화 지점별 변경 감지: total={remainingDirtyCount}, detail={detail}");
+    }
+
+    private async Task PushDirtyAsync(
+        ErpApiClient apiClient,
+        SessionState session,
+        bool includeSharedDirty,
+        CancellationToken ct)
+    {
+        var customerMasterRepair = await _local.RepairDirtyCustomerMastersForSyncAsync(session, ct);
         if (customerMasterRepair.SkippedOutOfScopeCount > 0 ||
             customerMasterRepair.MarkedCleanOutOfScopeCount > 0 ||
             customerMasterRepair.ClearedMissingCategoryCount > 0 ||
@@ -453,7 +743,7 @@ public sealed class SyncService : IDisposable
                 $"skippedOutOfScopeDirty={customerMasterRepair.SkippedOutOfScopeCount}");
         }
 
-        var customerRepair = await _local.RepairDirtyCustomersForSyncAsync(_session, ct);
+        var customerRepair = await _local.RepairDirtyCustomersForSyncAsync(session, ct);
         if (customerRepair.SkippedOutOfScopeCount > 0 ||
             customerRepair.MarkedCleanOutOfScopeCount > 0 ||
             customerRepair.ClearedMissingCategoryCount > 0 ||
@@ -470,7 +760,7 @@ public sealed class SyncService : IDisposable
                 $"skippedOutOfScopeDirty={customerRepair.SkippedOutOfScopeCount}");
         }
 
-        var scopedDirtyRentalAssetIds = (await _local.GetDirtyRentalAssetsForSyncAsync(_session, ct))
+        var scopedDirtyRentalAssetIds = (await _local.GetDirtyRentalAssetsForSyncAsync(session, ct))
             .Where(asset => !asset.IsDeleted)
             .Select(asset => asset.Id)
             .Distinct()
@@ -492,7 +782,7 @@ public sealed class SyncService : IDisposable
             }
         }
 
-        var transactionRepair = await _local.RepairDirtyTransactionsForSyncAsync(_session, ct);
+        var transactionRepair = await _local.RepairDirtyTransactionsForSyncAsync(session, ct);
         if (transactionRepair.ClearedMissingInvoiceLinkCount > 0 ||
             transactionRepair.ClearedMissingRentalLinkCount > 0 ||
             transactionRepair.ResolvedMissingCustomerCount > 0)
@@ -505,7 +795,7 @@ public sealed class SyncService : IDisposable
                 $"resolvedCustomers={transactionRepair.ResolvedMissingCustomerCount}");
         }
 
-        var invoiceRepair = await _local.RepairDirtyInvoicesForSyncAsync(_session, ct);
+        var invoiceRepair = await _local.RepairDirtyInvoicesForSyncAsync(session, ct);
         if (invoiceRepair.ResolvedMissingCustomerCount > 0 ||
             invoiceRepair.SkippedOutOfScopeCount > 0 ||
             invoiceRepair.MarkedCleanOutOfScopeCount > 0)
@@ -518,7 +808,7 @@ public sealed class SyncService : IDisposable
                 $"skippedOutOfScopeDirty={invoiceRepair.SkippedOutOfScopeCount}");
         }
 
-        var transactionAttachmentRepair = await _local.RepairDirtyTransactionAttachmentsForSyncAsync(_session, ct);
+        var transactionAttachmentRepair = await _local.RepairDirtyTransactionAttachmentsForSyncAsync(session, ct);
         if (transactionAttachmentRepair.MarkedDeletedMissingTransactionCount > 0 ||
             transactionAttachmentRepair.MarkedCleanStaleDeletedCount > 0 ||
             transactionAttachmentRepair.SkippedOutOfScopeCount > 0 ||
@@ -533,7 +823,7 @@ public sealed class SyncService : IDisposable
                 $"skippedOutOfScopeDirty={transactionAttachmentRepair.SkippedOutOfScopeCount}");
         }
 
-        var paymentRepair = await _local.RepairDirtyPaymentsForSyncAsync(_session, ct);
+        var paymentRepair = await _local.RepairDirtyPaymentsForSyncAsync(session, ct);
         if (paymentRepair.MarkedDeletedMissingInvoiceCount > 0)
         {
             AppLogger.Warn(
@@ -542,49 +832,65 @@ public sealed class SyncService : IDisposable
                 $"deletedMissingInvoicePayments={paymentRepair.MarkedDeletedMissingInvoiceCount}");
         }
 
-        var companyProfilesTask = _db.CompanyProfiles.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
-        var unitsTask = _db.Units.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
-        var customerCategoriesTask = _db.CustomerCategories.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
-        var priceGradeOptionsTask = _db.PriceGradeOptions.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
-        var tradeTypeOptionsTask = _db.TradeTypeOptions.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
-        var itemCategoryOptionsTask = _db.ItemCategoryOptions.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
-        var customerMastersTask = _local.GetDirtyCustomerMastersForSyncAsync(_session, ct);
-        var customersTask = _local.GetDirtyCustomersForSyncAsync(_session, ct);
-        var customerContractsTask = _local.GetDirtyCustomerContractsForSyncAsync(_session, ct);
-        var itemsTask = _local.GetDirtyItemsForSyncAsync(_session, ct);
-        var itemWarehouseStocksTask = _db.ItemWarehouseStocks
-            .AsNoTracking()
-            .ToListAsync(ct);
-        var transactionsTask = _local.GetDirtyTransactionsForSyncAsync(_session, ct);
-        var transactionAttachmentsTask = _local.GetDirtyTransactionAttachmentsForSyncAsync(_session, ct);
-        var inventoryTransfersTask = _local.GetDirtyInventoryTransfersForSyncAsync(_session, ct);
-        var rentalManagementCompaniesTask = _db.RentalManagementCompanies.IgnoreQueryFilters()
-            .Where(e => e.IsDirty)
-            .AsNoTracking()
-            .ToListAsync(ct);
-        var rentalBillingProfilesTask = _local.GetDirtyRentalBillingProfilesForSyncAsync(_session, ct);
-        var rentalAssetsTask = _local.GetDirtyRentalAssetsForSyncAsync(_session, ct);
-        var rentalBillingLogsTask = _local.GetDirtyRentalBillingLogsForSyncAsync(_session, ct);
-        var invoicesTask = _local.GetDirtyInvoicesForSyncAsync(_session, ct);
-        var paymentsTask = _local.GetDirtyPaymentsForSyncAsync(_session, ct);
+        var companyProfilesTask = includeSharedDirty
+            ? _db.CompanyProfiles.IgnoreQueryFilters()
+                .Where(e => e.IsDirty)
+                .AsNoTracking()
+                .ToListAsync(ct)
+            : Task.FromResult(new List<LocalCompanyProfile>());
+        var unitsTask = includeSharedDirty
+            ? _db.Units.IgnoreQueryFilters()
+                .Where(e => e.IsDirty)
+                .AsNoTracking()
+                .ToListAsync(ct)
+            : Task.FromResult(new List<LocalUnit>());
+        var customerCategoriesTask = includeSharedDirty
+            ? _db.CustomerCategories.IgnoreQueryFilters()
+                .Where(e => e.IsDirty)
+                .AsNoTracking()
+                .ToListAsync(ct)
+            : Task.FromResult(new List<LocalCustomerCategory>());
+        var priceGradeOptionsTask = includeSharedDirty
+            ? _db.PriceGradeOptions.IgnoreQueryFilters()
+                .Where(e => e.IsDirty)
+                .AsNoTracking()
+                .ToListAsync(ct)
+            : Task.FromResult(new List<LocalPriceGradeOption>());
+        var tradeTypeOptionsTask = includeSharedDirty
+            ? _db.TradeTypeOptions.IgnoreQueryFilters()
+                .Where(e => e.IsDirty)
+                .AsNoTracking()
+                .ToListAsync(ct)
+            : Task.FromResult(new List<LocalTradeTypeOption>());
+        var itemCategoryOptionsTask = includeSharedDirty
+            ? _db.ItemCategoryOptions.IgnoreQueryFilters()
+                .Where(e => e.IsDirty)
+                .AsNoTracking()
+                .ToListAsync(ct)
+            : Task.FromResult(new List<LocalItemCategoryOption>());
+        var customerMastersTask = _local.GetDirtyCustomerMastersForSyncAsync(session, ct);
+        var customersTask = _local.GetDirtyCustomersForSyncAsync(session, ct);
+        var customerContractsTask = _local.GetDirtyCustomerContractsForSyncAsync(session, ct);
+        var itemsTask = _local.GetDirtyItemsForSyncAsync(session, ct);
+        var itemWarehouseStocksTask = includeSharedDirty
+            ? _db.ItemWarehouseStocks
+                .AsNoTracking()
+                .ToListAsync(ct)
+            : Task.FromResult(new List<LocalItemWarehouseStock>());
+        var transactionsTask = _local.GetDirtyTransactionsForSyncAsync(session, ct);
+        var transactionAttachmentsTask = _local.GetDirtyTransactionAttachmentsForSyncAsync(session, ct);
+        var inventoryTransfersTask = _local.GetDirtyInventoryTransfersForSyncAsync(session, ct);
+        var rentalManagementCompaniesTask = includeSharedDirty
+            ? _db.RentalManagementCompanies.IgnoreQueryFilters()
+                .Where(e => e.IsDirty)
+                .AsNoTracking()
+                .ToListAsync(ct)
+            : Task.FromResult(new List<LocalRentalManagementCompany>());
+        var rentalBillingProfilesTask = _local.GetDirtyRentalBillingProfilesForSyncAsync(session, ct);
+        var rentalAssetsTask = _local.GetDirtyRentalAssetsForSyncAsync(session, ct);
+        var rentalBillingLogsTask = _local.GetDirtyRentalBillingLogsForSyncAsync(session, ct);
+        var invoicesTask = _local.GetDirtyInvoicesForSyncAsync(session, ct);
+        var paymentsTask = _local.GetDirtyPaymentsForSyncAsync(session, ct);
 
         await Task.WhenAll(
             companyProfilesTask,
@@ -734,7 +1040,7 @@ public sealed class SyncService : IDisposable
         if (!hasDirty)
             return;
 
-        var result = await _api.PushAsync(req, ct);
+        var result = await apiClient.PushAsync(req, ct);
         if (result is null)
             return;
 

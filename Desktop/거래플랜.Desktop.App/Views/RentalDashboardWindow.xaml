@@ -100,7 +100,7 @@
             </Border>
             <Border Background="#1A2B4A" CornerRadius="6" Padding="10">
                 <StackPanel>
-                    <TextBlock Text="미배정" Foreground="#9FB3C8" FontSize="11"/>
+                    <TextBlock Text="연계 검토" Foreground="#9FB3C8" FontSize="11"/>
                     <TextBlock Text="{Binding UnassignedCount, StringFormat={}{0:N0}건}" Foreground="#CE93D8" FontWeight="Bold" FontSize="18"/>
                 </StackPanel>
             </Border>
@@ -108,6 +108,8 @@
 
         <Grid Grid.Row="2" Margin="0,10,0,0">
             <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="10"/>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="10"/>
                 <RowDefinition Height="*"/>
@@ -147,6 +149,33 @@
                             <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="220"/>
                             <DataGridTextColumn Header="만료일" Binding="{Binding RentalEndDate}" Width="110"/>
                             <DataGridTextColumn Header="남은일수" Binding="{Binding DaysRemaining}" Width="90"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </Border>
+
+            <Border Grid.Row="4" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+                <DockPanel>
+                    <Border DockPanel.Dock="Top" Background="#102039" CornerRadius="6,6,0,0" Padding="10,8">
+                        <StackPanel>
+                            <TextBlock Text="렌탈 연계 검토 큐" Foreground="#4FC3F7" FontWeight="Bold"/>
+                            <TextBlock Text="{Binding UnresolvedLinkSummaryText1}"
+                                       Foreground="#9FB3C8"
+                                       Margin="0,4,0,0"/>
+                            <TextBlock Text="{Binding UnresolvedLinkSummaryText2}"
+                                       Foreground="#9FB3C8"
+                                       Margin="0,2,0,0"/>
+                        </StackPanel>
+                    </Border>
+                    <DataGrid ItemsSource="{Binding UnresolvedLinkItems}" BorderThickness="0" IsReadOnly="True">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="구분" Binding="{Binding QueueType}" Width="130"/>
+                            <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="120"/>
+                            <DataGridTextColumn Header="거래처" Binding="{Binding CustomerName}" Width="220"/>
+                            <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="180"/>
+                            <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="220"/>
+                            <DataGridTextColumn Header="후보수" Binding="{Binding CandidateCount}" Width="80"/>
+                            <DataGridTextColumn Header="검토메모" Binding="{Binding ReviewNote}" Width="2*"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </DockPanel>

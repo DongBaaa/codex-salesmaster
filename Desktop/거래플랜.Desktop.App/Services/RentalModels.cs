@@ -54,6 +54,17 @@ public sealed class RentalExpiringAssetItem
     public int DaysRemaining { get; set; }
 }
 
+public sealed class RentalLinkReviewItem
+{
+    public string QueueType { get; set; } = string.Empty;
+    public string ResponsibleOfficeName { get; set; } = string.Empty;
+    public string CustomerName { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
+    public string InstallLocation { get; set; } = string.Empty;
+    public string ReviewNote { get; set; } = string.Empty;
+    public int CandidateCount { get; set; }
+}
+
 public sealed class RentalDashboardSummary
 {
     public int DueTodayCount { get; set; }
@@ -62,9 +73,14 @@ public sealed class RentalDashboardSummary
     public int ActiveAssetCount { get; set; }
     public int ExpiringContractCount { get; set; }
     public int UnassignedCount { get; set; }
+    public int BillingCustomerUnlinkedCount { get; set; }
+    public int AssetCustomerUnlinkedCount { get; set; }
+    public int AssetBillingUnlinkedCount { get; set; }
+    public int AssetlessBillingProfileCount { get; set; }
     public string AlertPopupMessage { get; set; } = string.Empty;
     public IReadOnlyList<RentalAlertItem> AlertItems { get; set; } = Array.Empty<RentalAlertItem>();
     public IReadOnlyList<RentalExpiringAssetItem> ExpiringAssets { get; set; } = Array.Empty<RentalExpiringAssetItem>();
+    public IReadOnlyList<RentalLinkReviewItem> UnresolvedLinkItems { get; set; } = Array.Empty<RentalLinkReviewItem>();
 }
 
 public sealed class RentalImportResult
