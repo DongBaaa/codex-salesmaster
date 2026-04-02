@@ -405,7 +405,8 @@ function New-ProductWxsContent {
     return @"
 <?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package Name="$productName"
            Manufacturer="$manufacturerName"
            Version="`$(var.ProductVersion)"
@@ -425,6 +426,10 @@ function New-ProductWxsContent {
     <SetProperty Id="ARPINSTALLLOCATION"
                  Value="[INSTALLFOLDER]"
                  Before="RegisterProduct"
+                 Sequence="execute" />
+    <SetProperty Id="GEORAEPLANLOCALAPPDATAROOT"
+                 Value="[LocalAppDataFolder]$productName"
+                 Before="CostInitialize"
                  Sequence="execute" />
 
     <StandardDirectory Id="ProgramFilesFolder">
@@ -464,6 +469,7 @@ function New-ProductWxsContent {
                 IconIndex="0"
                 Advertise="no" />
       <RemoveFolder Id="CleanProgramMenuDir" Directory="ProgramMenuDir" On="uninstall" />
+      <util:RemoveFolderEx Property="GEORAEPLANLOCALAPPDATAROOT" On="uninstall" />
       <RegistryValue Root="HKLM" Key="Software\$registryManufacturer\$registryProduct" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
     </Component>
   </Fragment>

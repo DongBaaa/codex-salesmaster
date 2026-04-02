@@ -344,12 +344,14 @@ if ([string]::IsNullOrWhiteSpace(`$InstallRoot)) {
 `$startMenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) '__APP_DISPLAY_NAME__'
 `$commonStartMenuDir = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) '__APP_DISPLAY_NAME__'
 `$legacyUserRoot = Join-Path `$env:LOCALAPPDATA 'Programs\__APP_DISPLAY_NAME__'
+`$localAppDataRoot = Join-Path `$env:LOCALAPPDATA '__APP_DISPLAY_NAME__'
 
 Remove-Item -LiteralPath `$desktopShortcut -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath `$commonDesktopShortcut -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath `$startMenuDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath `$commonStartMenuDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath `$legacyUserRoot -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath `$localAppDataRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath `$InstallRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host '__APP_DISPLAY_NAME__ removed'
