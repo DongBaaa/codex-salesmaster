@@ -33,17 +33,34 @@ public static class RentalDuplicateNormalizer
 
     public static string BuildProfileKey(
         string? managementCompanyCode,
+        Guid? customerId,
         string? businessNumber,
         string? customerName,
-        string? realCustomerName,
-        string? itemName)
+        string? billingType,
+        string? billingAdvanceMode,
+        int billingDay,
+        int billingCycleMonths,
+        string? billingMethod,
+        string? paymentMethod)
     {
+        var ownerKey = customerId.HasValue && customerId.Value != Guid.Empty
+            ? $"CUSTOMER:{customerId.Value:N}"
+            : string.Join('|',
+                NormalizeProfileKeyPart(businessNumber),
+                NormalizeProfileKeyPart(customerName));
+
+        var billingKey = string.Join('|',
+            NormalizeProfileKeyPart(billingType),
+            NormalizeProfileKeyPart(billingAdvanceMode),
+            billingDay.ToString(CultureInfo.InvariantCulture),
+            billingCycleMonths.ToString(CultureInfo.InvariantCulture),
+            NormalizeProfileKeyPart(billingMethod),
+            NormalizeProfileKeyPart(paymentMethod));
+
         return string.Join('|',
             NormalizeProfileKeyPart(managementCompanyCode),
-            NormalizeProfileKeyPart(businessNumber),
-            NormalizeProfileKeyPart(customerName),
-            NormalizeProfileKeyPart(realCustomerName),
-            NormalizeProfileKeyPart(itemName));
+            ownerKey,
+            billingKey);
     }
 
     public static string ExtractImportedManagementId(string? notes)
@@ -82,40 +99,28 @@ public static class RentalDuplicateNormalizer
     }
 
     public static string BuildRentalBillingProfileDuplicateKey(
+        string? managementCompanyCode,
+        string? responsibleOfficeCode,
+        Guid? customerId,
+        string? businessNumber,
         string? customerName,
-        string? billToCustomerName,
-        string? realCustomerName,
-        string? installSiteName,
-        string? itemName,
-        int billingDay,
-        int billingCycleMonths,
-        decimal monthlyAmount,
-        decimal depositAmount,
         string? billingType,
         string? billingAdvanceMode,
-        string? managementCompanyCode,
+        int billingDay,
+        int billingCycleMonths,
         string? billingMethod,
-        string? paymentMethod,
-        string? responsibleOfficeCode,
-        string? assignedUsername)
-    {
-        return string.Join('|',
-            NormalizeTextKey(customerName),
-            NormalizeTextKey(billToCustomerName),
-            NormalizeTextKey(realCustomerName),
-            NormalizeTextKey(installSiteName),
-            NormalizeTextKey(itemName),
-            billingDay.ToString(CultureInfo.InvariantCulture),
-            billingCycleMonths.ToString(CultureInfo.InvariantCulture),
-            monthlyAmount.ToString("0.################", CultureInfo.InvariantCulture),
-            depositAmount.ToString("0.################", CultureInfo.InvariantCulture),
-            NormalizeProfileKeyPart(billingType),
-            NormalizeProfileKeyPart(billingAdvanceMode),
-            NormalizeProfileKeyPart(managementCompanyCode),
-            NormalizeProfileKeyPart(billingMethod),
-            NormalizeProfileKeyPart(paymentMethod),
-            NormalizeProfileKeyPart(responsibleOfficeCode));
-    }
+        string? paymentMethod)
+        => BuildProfileKey(
+            string.IsNullOrWhiteSpace(responsibleOfficeCode) ? managementCompanyCode : responsibleOfficeCode,
+            customerId,
+            businessNumber,
+            customerName,
+            billingType,
+            billingAdvanceMode,
+            billingDay,
+            billingCycleMonths,
+            billingMethod,
+            paymentMethod);
 
     public static string RemapBillingTemplateIncludedAssetIds(
         string? templateJson,

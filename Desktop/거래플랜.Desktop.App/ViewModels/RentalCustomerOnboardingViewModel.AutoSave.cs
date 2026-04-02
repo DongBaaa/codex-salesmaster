@@ -22,10 +22,11 @@ public sealed partial class RentalCustomerOnboardingViewModel
         nameof(Phone),
         nameof(Email),
         nameof(Address),
+        nameof(CustomerId),
         nameof(OfficeCode),
         nameof(RealCustomerName),
         nameof(BillToCustomerName),
-        nameof(InstallSiteName),
+        nameof(InstallLocation),
         nameof(BillingType),
         nameof(BillingAdvanceMode),
         nameof(BillingDay),
@@ -206,6 +207,7 @@ public sealed partial class RentalCustomerOnboardingViewModel
         => new()
         {
             CurrentStepIndex = CurrentStepIndex,
+            CustomerId = CustomerId,
             CustomerName = CustomerName,
             BusinessNumber = BusinessNumber,
             Representative = Representative,
@@ -216,7 +218,8 @@ public sealed partial class RentalCustomerOnboardingViewModel
             OfficeCode = OfficeCode,
             RealCustomerName = RealCustomerName,
             BillToCustomerName = BillToCustomerName,
-            InstallSiteName = InstallSiteName,
+            InstallLocation = InstallLocation,
+            InstallSiteName = InstallLocation,
             BillingType = BillingType,
             BillingAdvanceMode = BillingAdvanceMode,
             BillingDay = BillingDay,
@@ -239,6 +242,7 @@ public sealed partial class RentalCustomerOnboardingViewModel
     private void ApplyOnboardingDraft(RentalCustomerOnboardingDraftModel draft)
     {
         CurrentStepIndex = Math.Clamp(draft.CurrentStepIndex, 0, 5);
+        CustomerId = draft.CustomerId;
         CustomerName = draft.CustomerName ?? string.Empty;
         BusinessNumber = draft.BusinessNumber ?? string.Empty;
         Representative = draft.Representative ?? string.Empty;
@@ -249,7 +253,9 @@ public sealed partial class RentalCustomerOnboardingViewModel
         OfficeCode = draft.OfficeCode ?? OfficeCode;
         RealCustomerName = draft.RealCustomerName ?? string.Empty;
         BillToCustomerName = draft.BillToCustomerName ?? string.Empty;
-        InstallSiteName = draft.InstallSiteName ?? string.Empty;
+        InstallLocation = string.IsNullOrWhiteSpace(draft.InstallLocation)
+            ? draft.InstallSiteName ?? string.Empty
+            : draft.InstallLocation;
         BillingType = string.IsNullOrWhiteSpace(draft.BillingType) ? "묶음" : draft.BillingType;
         BillingAdvanceMode = string.IsNullOrWhiteSpace(draft.BillingAdvanceMode) ? "후불" : draft.BillingAdvanceMode;
         BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(draft.BillingDayMode);
@@ -313,9 +319,10 @@ public sealed partial class RentalCustomerOnboardingViewModel
             !string.IsNullOrWhiteSpace(Phone) ||
             !string.IsNullOrWhiteSpace(Email) ||
             !string.IsNullOrWhiteSpace(Address) ||
+            CustomerId.HasValue ||
             !string.IsNullOrWhiteSpace(RealCustomerName) ||
             !string.IsNullOrWhiteSpace(BillToCustomerName) ||
-            !string.IsNullOrWhiteSpace(InstallSiteName) ||
+            !string.IsNullOrWhiteSpace(InstallLocation) ||
             !string.IsNullOrWhiteSpace(SubmissionDocuments) ||
             !string.IsNullOrWhiteSpace(Notes))
         {

@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Services;
+using 거래플랜.Desktop.App.Views;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
@@ -26,10 +27,11 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     [ObservableProperty] private string _email = string.Empty;
     [ObservableProperty] private string _address = string.Empty;
 
+    [ObservableProperty] private Guid? _customerId;
     [ObservableProperty] private string _officeCode = string.Empty;
     [ObservableProperty] private string _realCustomerName = string.Empty;
     [ObservableProperty] private string _billToCustomerName = string.Empty;
-    [ObservableProperty] private string _installSiteName = string.Empty;
+    [ObservableProperty] private string _installLocation = string.Empty;
 
     [ObservableProperty] private string _billingType = "묶음";
     [ObservableProperty] private string _billingAdvanceMode = "후불";
@@ -86,6 +88,8 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     public bool CanApplySelectedAssets => SelectedTemplateItem is not null && CandidateAssets.Any(asset => asset.IsSelected);
     public bool IsFixedBillingDayMode => string.Equals(BillingDayMode, RentalBillingScheduleRules.BillingDayModeFixedDay, StringComparison.Ordinal);
     public bool IsDocumentLeadDaysVisible => string.Equals(DocumentIssueMode, RentalBillingScheduleRules.DocumentIssueModeDaysBeforeDueDate, StringComparison.Ordinal);
+    public LocalStateService LocalStateService => _local;
+    public SessionState SessionState => _session;
 
     public RentalCustomerOnboardingViewModel(RentalStateService rental, LocalStateService local, SessionState session)
     {
@@ -151,8 +155,8 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             BillToCustomerName = value;
         if (string.IsNullOrWhiteSpace(RealCustomerName))
             RealCustomerName = value;
-        if (string.IsNullOrWhiteSpace(InstallSiteName))
-            InstallSiteName = value;
+        if (string.IsNullOrWhiteSpace(InstallLocation))
+            InstallLocation = value;
     }
 
     partial void OnBillingDayChanged(int value) => UpdateBillingPreview();
@@ -394,7 +398,22 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             }
 
             customer.Id = customerResult.EntityId;
+            CustomerId = customer.Id;
             SavedCustomerId = customer.Id;
+
+            if (!LinkAssetsLater &&
+                CandidateAssets.Count > 0 &&
+                TemplateItems.All(item => item.IncludedAssetIds.Count == 0))
+            {
+                var targetTemplate = SelectedTemplateItem ?? TemplateItems.FirstOrDefault() ?? CreateTemplateItem();
+                if (!TemplateItems.Contains(targetTemplate))
+                    TemplateItems.Add(targetTemplate);
+                foreach (var assetId in CandidateAssets.Select(asset => asset.AssetId).Distinct())
+                {
+                    if (!targetTemplate.IncludedAssetIds.Contains(assetId))
+                        targetTemplate.IncludedAssetIds.Add(assetId);
+                }
+            }
 
             UpdateTemplateTotals();
             var profile = new LocalRentalBillingProfile
@@ -405,7 +424,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 BusinessNumber = (BusinessNumber ?? string.Empty).Trim(),
                 RealCustomerName = string.IsNullOrWhiteSpace(RealCustomerName) ? CustomerName.Trim() : RealCustomerName.Trim(),
                 BillToCustomerName = string.IsNullOrWhiteSpace(BillToCustomerName) ? CustomerName.Trim() : BillToCustomerName.Trim(),
-                InstallSiteName = string.IsNullOrWhiteSpace(InstallSiteName) ? (string.IsNullOrWhiteSpace(RealCustomerName) ? CustomerName.Trim() : RealCustomerName.Trim()) : InstallSiteName.Trim(),
+                InstallSiteName = string.IsNullOrWhiteSpace(InstallLocation) ? (string.IsNullOrWhiteSpace(RealCustomerName) ? CustomerName.Trim() : RealCustomerName.Trim()) : InstallLocation.Trim(),
                 BillingType = BillingType,
                 BillingAdvanceMode = BillingAdvanceMode,
                 ManagementCompanyCode = OfficeCode,
@@ -462,6 +481,13 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
 
     private LocalCustomer? ResolveExistingCustomer()
     {
+        if (CustomerId.HasValue && CustomerId.Value != Guid.Empty)
+        {
+            var byId = _customers.FirstOrDefault(customer => customer.Id == CustomerId.Value);
+            if (byId is not null)
+                return byId;
+        }
+
         var trimmedBusinessNumber = (BusinessNumber ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(trimmedBusinessNumber))
         {
@@ -501,8 +527,8 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 }
                 if (string.IsNullOrWhiteSpace(BillToCustomerName))
                     BillToCustomerName = CustomerName.Trim();
-                if (string.IsNullOrWhiteSpace(InstallSiteName))
-                    InstallSiteName = string.IsNullOrWhiteSpace(RealCustomerName) ? CustomerName.Trim() : RealCustomerName.Trim();
+                if (string.IsNullOrWhiteSpace(InstallLocation))
+                    InstallLocation = string.IsNullOrWhiteSpace(RealCustomerName) ? CustomerName.Trim() : RealCustomerName.Trim();
                 return true;
 
             case 2:
@@ -575,9 +601,10 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     {
         var assets = await _rental.GetBillingAssetCandidatesAsync(
             billingProfileId: null,
+            customerId: CustomerId,
             customerName: CustomerName,
             billToCustomerName: BillToCustomerName,
-            installSiteName: InstallSiteName,
+            installSiteName: InstallLocation,
             _session);
 
         CandidateAssets.Clear();
@@ -592,7 +619,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 MachineNumber = asset.MachineNumber,
                 CurrentCustomerName = string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName,
                 BillToCustomerName = string.IsNullOrWhiteSpace(asset.BillToCustomerName) ? asset.CustomerName : asset.BillToCustomerName,
-                InstallSiteName = string.IsNullOrWhiteSpace(asset.InstallSiteName) ? asset.InstallLocation : asset.InstallSiteName,
+                InstallLocation = string.IsNullOrWhiteSpace(asset.InstallSiteName) ? asset.InstallLocation : asset.InstallSiteName,
                 AssetStatus = asset.AssetStatus,
                 BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? "미확인" : asset.BillingEligibilityStatus
             };
@@ -608,9 +635,13 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         if (!LinkAssetsLater &&
             SelectedTemplateItem is not null &&
             !SelectedTemplateItem.IncludedAssetIds.Any() &&
-            assets.Count == 1)
+            assets.Count > 0)
         {
-            SelectedTemplateItem.IncludedAssetIds.Add(assets[0].Id);
+            foreach (var asset in assets.Select(asset => asset.Id).Distinct())
+            {
+                if (!SelectedTemplateItem.IncludedAssetIds.Contains(asset))
+                    SelectedTemplateItem.IncludedAssetIds.Add(asset);
+            }
         }
 
         CandidateAssetSummaryLines.Add(assets.Count == 0
@@ -618,6 +649,50 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             : $"후보 장비 {assets.Count:N0}대를 찾았습니다.");
         UpdateTemplateTotals();
         SyncAssetSelectionFromTemplate();
+    }
+
+    public async Task<IReadOnlyList<LookupRow>> BuildCustomerLookupRowsAsync()
+    {
+        if (_customers.Count == 0)
+            _customers = await _local.GetCustomersAsync(_session);
+
+        return _customers
+            .OrderBy(customer => customer.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
+            .Select(customer => new LookupRow
+            {
+                Id = customer.Id,
+                PrimaryText = customer.NameOriginal,
+                SecondaryText = string.Join(" | ", new[]
+                {
+                    customer.BusinessNumber,
+                    customer.Phone,
+                    customer.Address
+                }.Where(value => !string.IsNullOrWhiteSpace(value))),
+                Tag = customer
+            })
+            .ToList();
+    }
+
+    public void ApplySelectedCustomer(LocalCustomer customer)
+    {
+        ArgumentNullException.ThrowIfNull(customer);
+
+        CustomerId = customer.Id;
+        CustomerName = customer.NameOriginal?.Trim() ?? string.Empty;
+        BusinessNumber = customer.BusinessNumber?.Trim() ?? string.Empty;
+        Representative = customer.Representative?.Trim() ?? string.Empty;
+        ContactPerson = customer.ContactPerson?.Trim() ?? string.Empty;
+        Phone = customer.Phone?.Trim() ?? string.Empty;
+        Email = customer.Email?.Trim() ?? string.Empty;
+        Address = string.Join(" ", new[] { customer.Address, customer.DetailAddress }.Where(value => !string.IsNullOrWhiteSpace(value)));
+        OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            customer.ResponsibleOfficeCode,
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet));
+        RealCustomerName = string.IsNullOrWhiteSpace(customer.Department) ? CustomerName : customer.Department.Trim();
+        BillToCustomerName = CustomerName;
+        InstallLocation = string.IsNullOrWhiteSpace(customer.Department)
+            ? Address
+            : customer.Department.Trim();
     }
 
     private void SyncAssetSelectionFromTemplate()

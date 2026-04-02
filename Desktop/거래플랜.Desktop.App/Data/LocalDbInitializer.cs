@@ -32,7 +32,7 @@ public static partial class LocalDbInitializer
     private const string MergeDuplicateCustomerMastersStepKey = "Migration.MergeDuplicateCustomerMasters.v1";
     private const string MergeDuplicateCustomersStepKey = "Migration.MergeDuplicateCustomers.v1";
     private const string MergeBusinessDuplicateCustomersStepKey = "Migration.MergeBusinessDuplicateCustomers.v1";
-    private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.MergeDuplicateRentalBillingProfiles.v1";
+    private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.MergeDuplicateRentalBillingProfiles.v2";
     private const string MergeDuplicateRentalAssetsStepKey = "Migration.MergeDuplicateRentalAssets.v2";
     private const string MergeDuplicateCompanyProfilesStepKey = "Migration.MergeDuplicateCompanyProfiles.v1";
     private const string RepairRentalCustomerLinkageStepKey = "Migration.RepairRentalCustomerLinkage.v4";

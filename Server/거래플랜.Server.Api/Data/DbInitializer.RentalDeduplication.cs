@@ -240,10 +240,15 @@ public static partial class DbInitializer
 
             var canonicalProfileKey = RentalDuplicateNormalizer.BuildProfileKey(
                 canonical.ManagementCompanyCode,
+                canonical.CustomerId,
                 canonical.BusinessNumber,
                 canonical.CustomerName,
-                canonical.RealCustomerName,
-                canonical.ItemName);
+                canonical.BillingType,
+                canonical.BillingAdvanceMode,
+                canonical.BillingDay,
+                canonical.BillingCycleMonths,
+                canonical.BillingMethod,
+                canonical.PaymentMethod);
             if (!string.IsNullOrWhiteSpace(canonicalProfileKey) &&
                 !string.Equals(canonical.ProfileKey, canonicalProfileKey, StringComparison.Ordinal) &&
                 !profiles.Any(current => current.Id != canonical.Id && !groupIds.Contains(current.Id) && !current.IsDeleted && string.Equals(current.ProfileKey, canonicalProfileKey, StringComparison.Ordinal)))
@@ -346,22 +351,17 @@ public static partial class DbInitializer
 
     private static string BuildRentalBillingProfileDuplicateKey(RentalBillingProfile current)
         => RentalDuplicateNormalizer.BuildRentalBillingProfileDuplicateKey(
+            current.ManagementCompanyCode,
+            current.OfficeCode,
+            current.CustomerId,
+            current.BusinessNumber,
             current.CustomerName,
-            current.BillToCustomerName,
-            current.RealCustomerName,
-            current.InstallSiteName,
-            current.ItemName,
-            current.BillingDay,
-            current.BillingCycleMonths,
-            current.MonthlyAmount,
-            current.DepositAmount,
             current.BillingType,
             current.BillingAdvanceMode,
-            current.ManagementCompanyCode,
+            current.BillingDay,
+            current.BillingCycleMonths,
             current.BillingMethod,
-            current.PaymentMethod,
-            current.OfficeCode,
-            current.AssignedUsername);
+            current.PaymentMethod);
 
     private static string BuildRentalAssetDuplicateKey(RentalAsset current)
         => RentalDuplicateNormalizer.BuildRentalAssetDuplicateKey(

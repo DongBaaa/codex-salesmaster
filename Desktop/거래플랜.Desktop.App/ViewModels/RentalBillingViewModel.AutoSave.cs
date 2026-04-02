@@ -13,11 +13,12 @@ public sealed partial class RentalBillingViewModel
 
     private static readonly HashSet<string> TrackedAutoSaveProperties = new(StringComparer.Ordinal)
     {
+        nameof(EditCustomerId),
         nameof(EditCustomerName),
         nameof(EditBusinessNumber),
         nameof(EditRealCustomerName),
         nameof(EditBillToCustomerName),
-        nameof(EditInstallSiteName),
+        nameof(EditInstallLocation),
         nameof(EditItemName),
         nameof(EditBillingType),
         nameof(EditBillingAdvanceMode),
@@ -90,10 +91,12 @@ public sealed partial class RentalBillingViewModel
         {
             await LoadCandidateAssetsAsync(
                 EditId == Guid.Empty ? null : EditId,
+                EditCustomerId,
                 EditCustomerName,
                 EditBillToCustomerName,
-                EditInstallSiteName,
-                preserveSelection: true);
+                EditInstallLocation,
+                preserveSelection: true,
+                autoIncludeAllCandidates: false);
         }
 
         StatusMessage = "자동저장된 렌탈 청구 편집 내역을 불러왔습니다.";
@@ -257,11 +260,13 @@ public sealed partial class RentalBillingViewModel
         => new()
         {
             EditId = EditId,
+            CustomerId = EditCustomerId,
             CustomerName = EditCustomerName,
             BusinessNumber = EditBusinessNumber,
             RealCustomerName = EditRealCustomerName,
             BillToCustomerName = EditBillToCustomerName,
-            InstallSiteName = EditInstallSiteName,
+            InstallLocation = EditInstallLocation,
+            InstallSiteName = EditInstallLocation,
             ItemName = EditItemName,
             BillingType = EditBillingType,
             BillingAdvanceMode = EditBillingAdvanceMode,
@@ -303,11 +308,14 @@ public sealed partial class RentalBillingViewModel
     {
         SelectedRow = null;
         EditId = draft.EditId == Guid.Empty ? Guid.NewGuid() : draft.EditId;
+        EditCustomerId = draft.CustomerId;
         EditCustomerName = draft.CustomerName ?? string.Empty;
         EditBusinessNumber = draft.BusinessNumber ?? string.Empty;
         EditRealCustomerName = draft.RealCustomerName ?? string.Empty;
         EditBillToCustomerName = draft.BillToCustomerName ?? string.Empty;
-        EditInstallSiteName = draft.InstallSiteName ?? string.Empty;
+        EditInstallLocation = string.IsNullOrWhiteSpace(draft.InstallLocation)
+            ? draft.InstallSiteName ?? string.Empty
+            : draft.InstallLocation;
         EditItemName = draft.ItemName ?? string.Empty;
         EditBillingType = string.IsNullOrWhiteSpace(draft.BillingType) ? "묶음" : draft.BillingType;
         EditBillingAdvanceMode = string.IsNullOrWhiteSpace(draft.BillingAdvanceMode) ? "후불" : draft.BillingAdvanceMode;
@@ -403,10 +411,11 @@ public sealed partial class RentalBillingViewModel
     private bool HasMeaningfulDraftState()
     {
         if (!string.IsNullOrWhiteSpace(EditCustomerName) ||
+            EditCustomerId.HasValue ||
             !string.IsNullOrWhiteSpace(EditBusinessNumber) ||
             !string.IsNullOrWhiteSpace(EditRealCustomerName) ||
             !string.IsNullOrWhiteSpace(EditBillToCustomerName) ||
-            !string.IsNullOrWhiteSpace(EditInstallSiteName) ||
+            !string.IsNullOrWhiteSpace(EditInstallLocation) ||
             !string.IsNullOrWhiteSpace(EditItemName) ||
             !string.IsNullOrWhiteSpace(EditBillingMethod) ||
             !string.IsNullOrWhiteSpace(EditPaymentMethod) ||

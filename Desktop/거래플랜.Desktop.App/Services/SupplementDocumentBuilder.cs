@@ -7,6 +7,7 @@ using System.Windows.Documents;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Printing;
 
@@ -443,15 +444,37 @@ public static class SupplementDocumentBuilder
     {
         ArgumentNullException.ThrowIfNull(sourcePage);
 
-        using var stream = new MemoryStream();
-        XamlWriter.Save(sourcePage, stream);
-        stream.Position = 0;
+        sourcePage.Measure(new Size(sourcePage.Width, sourcePage.Height));
+        sourcePage.Arrange(new Rect(0, 0, sourcePage.Width, sourcePage.Height));
+        sourcePage.UpdateLayout();
 
-        if (XamlReader.Load(stream) is not FixedPage clonedPage)
-            throw new InvalidOperationException("인쇄 문서 페이지 복제에 실패했습니다.");
+        var brush = new VisualBrush(sourcePage)
+        {
+            Stretch = Stretch.None,
+            AlignmentX = AlignmentX.Left,
+            AlignmentY = AlignmentY.Top
+        };
 
-        clonedPage.Width = sourcePage.Width;
-        clonedPage.Height = sourcePage.Height;
+        var clonedPage = new FixedPage
+        {
+            Width = sourcePage.Width,
+            Height = sourcePage.Height,
+            Background = Brushes.White,
+            UseLayoutRounding = true,
+            SnapsToDevicePixels = true
+        };
+
+        var surface = new Rectangle
+        {
+            Width = sourcePage.Width,
+            Height = sourcePage.Height,
+            Fill = brush,
+            SnapsToDevicePixels = true
+        };
+
+        FixedPage.SetLeft(surface, 0d);
+        FixedPage.SetTop(surface, 0d);
+        clonedPage.Children.Add(surface);
         clonedPage.Measure(new Size(sourcePage.Width, sourcePage.Height));
         clonedPage.Arrange(new Rect(0, 0, sourcePage.Width, sourcePage.Height));
         clonedPage.UpdateLayout();

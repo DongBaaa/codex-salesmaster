@@ -9,7 +9,10 @@ public enum RecycleBinEntityKind
     Item,
     Invoice,
     Payment,
-    Transaction
+    Transaction,
+    RentalBillingProfile,
+    RentalAsset,
+    RentalBillingLog
 }
 
 public sealed partial class RecycleBinEntry : ObservableObject
@@ -26,6 +29,9 @@ public sealed partial class RecycleBinEntry : ObservableObject
         RecycleBinEntityKind.Invoice => "전표",
         RecycleBinEntityKind.Payment => "수금/지급",
         RecycleBinEntityKind.Transaction => "거래내역",
+        RecycleBinEntityKind.RentalBillingProfile => "렌탈 청구프로필",
+        RecycleBinEntityKind.RentalAsset => "렌탈 자산",
+        RecycleBinEntityKind.RentalBillingLog => "렌탈 청구로그",
         _ => "휴지통"
     };
 

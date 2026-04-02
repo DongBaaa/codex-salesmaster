@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
+using 거래플랜.Desktop.App.Views;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
@@ -35,11 +36,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private RentalBillingTemplateEditorItem? _selectedTemplateItem;
 
     [ObservableProperty] private Guid _editId = Guid.NewGuid();
+    [ObservableProperty] private Guid? _editCustomerId;
     [ObservableProperty] private string _editCustomerName = string.Empty;
     [ObservableProperty] private string _editBusinessNumber = string.Empty;
     [ObservableProperty] private string _editRealCustomerName = string.Empty;
     [ObservableProperty] private string _editBillToCustomerName = string.Empty;
-    [ObservableProperty] private string _editInstallSiteName = string.Empty;
+    [ObservableProperty] private string _editInstallLocation = string.Empty;
     [ObservableProperty] private string _editItemName = string.Empty;
     [ObservableProperty] private string _editBillingType = "묶음";
     [ObservableProperty] private string _editBillingAdvanceMode = "후불";
@@ -343,11 +345,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var entity = new LocalRentalBillingProfile
         {
             Id = EditId,
+            CustomerId = EditCustomerId,
             CustomerName = EditCustomerName,
             BusinessNumber = EditBusinessNumber,
             RealCustomerName = EditRealCustomerName,
             BillToCustomerName = EditBillToCustomerName,
-            InstallSiteName = EditInstallSiteName,
+            InstallSiteName = EditInstallLocation,
             ItemName = EditItemName,
             BillingType = EditBillingType,
             BillingAdvanceMode = EditBillingAdvanceMode,
@@ -557,11 +560,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         DiscardAutoSaveDraft();
         EditId = Guid.NewGuid();
+        EditCustomerId = null;
         EditCustomerName = string.Empty;
         EditBusinessNumber = string.Empty;
         EditRealCustomerName = string.Empty;
         EditBillToCustomerName = string.Empty;
-        EditInstallSiteName = string.Empty;
+        EditInstallLocation = string.Empty;
         EditItemName = string.Empty;
         EditBillingType = "묶음";
         EditBillingAdvanceMode = "후불";
@@ -649,10 +653,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         await LoadCandidateAssetsAsync(
             EditId == Guid.Empty ? null : EditId,
+            EditCustomerId,
             EditCustomerName,
             EditBillToCustomerName,
-            EditInstallSiteName,
-            preserveSelection: true);
+            EditInstallLocation,
+            preserveSelection: true,
+            autoIncludeAllCandidates: false);
     }
 
     [RelayCommand(CanExecute = nameof(CanApplySelectedAssets))]
@@ -703,11 +709,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var source = value.Source;
         EditId = source.Id;
+        EditCustomerId = source.CustomerId;
         EditCustomerName = string.IsNullOrWhiteSpace(value.CustomerDisplayName) ? source.CustomerName : value.CustomerDisplayName;
         EditBusinessNumber = source.BusinessNumber;
         EditRealCustomerName = source.RealCustomerName;
         EditBillToCustomerName = string.IsNullOrWhiteSpace(source.BillToCustomerName) ? source.CustomerName : source.BillToCustomerName;
-        EditInstallSiteName = string.IsNullOrWhiteSpace(source.InstallSiteName) ? source.RealCustomerName : source.InstallSiteName;
+        EditInstallLocation = string.IsNullOrWhiteSpace(value.InstallLocationDisplay)
+            ? (string.IsNullOrWhiteSpace(source.InstallSiteName) ? source.RealCustomerName : source.InstallSiteName)
+            : value.InstallLocationDisplay;
         EditItemName = source.ItemName;
         EditBillingType = string.IsNullOrWhiteSpace(source.BillingType) ? "묶음" : source.BillingType;
         EditBillingAdvanceMode = string.IsNullOrWhiteSpace(source.BillingAdvanceMode) ? "후불" : source.BillingAdvanceMode;
@@ -756,7 +765,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             ? source.FollowUpNote
             : value.DataIssueSummary;
         LoadTemplateItemsFromProfile(source);
-        StartCandidateAssetsLoad(source.Id, EditCustomerName, EditBillToCustomerName, EditInstallSiteName, preserveSelection: false);
+        StartCandidateAssetsLoad(
+            source.Id,
+            EditCustomerId,
+            EditCustomerName,
+            EditBillToCustomerName,
+            EditInstallLocation,
+            preserveSelection: false,
+            autoIncludeAllCandidates: false);
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanStartBillingSelected));
         OnPropertyChanged(nameof(CanHoldSelected));
@@ -805,6 +821,54 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
     }
 
+    public async Task<IReadOnlyList<LookupRow>> BuildCustomerLookupRowsAsync()
+    {
+        var customers = await _local.GetCustomersForRentalScopeAsync(_session);
+        return customers
+            .OrderBy(customer => customer.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
+            .Select(customer => new LookupRow
+            {
+                Id = customer.Id,
+                PrimaryText = customer.NameOriginal,
+                SecondaryText = string.Join(" | ", new[]
+                {
+                    customer.BusinessNumber,
+                    customer.Phone,
+                    customer.Address
+                }.Where(value => !string.IsNullOrWhiteSpace(value))),
+                Tag = customer
+            })
+            .ToList();
+    }
+
+    public void ApplySelectedCustomer(LocalCustomer customer)
+    {
+        ArgumentNullException.ThrowIfNull(customer);
+
+        EditCustomerId = customer.Id;
+        EditCustomerName = customer.NameOriginal?.Trim() ?? string.Empty;
+        EditBusinessNumber = customer.BusinessNumber?.Trim() ?? string.Empty;
+        EditOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            customer.ResponsibleOfficeCode,
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet));
+
+        var department = customer.Department?.Trim() ?? string.Empty;
+        EditRealCustomerName = string.IsNullOrWhiteSpace(department) ? EditCustomerName : department;
+        EditBillToCustomerName = EditCustomerName;
+        EditInstallLocation = string.IsNullOrWhiteSpace(department)
+            ? string.Join(" ", new[] { customer.Address, customer.DetailAddress }.Where(value => !string.IsNullOrWhiteSpace(value)))
+            : department;
+
+        StartCandidateAssetsLoad(
+            EditId == Guid.Empty ? null : EditId,
+            EditCustomerId,
+            EditCustomerName,
+            EditBillToCustomerName,
+            EditInstallLocation,
+            preserveSelection: false,
+            autoIncludeAllCandidates: true);
+    }
+
     private void SelectRow(Guid entityId)
     {
         SelectedRow = Rows.FirstOrDefault(row => row.Source.Id == entityId);
@@ -812,10 +876,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private void StartCandidateAssetsLoad(
         Guid? billingProfileId,
+        Guid? customerId,
         string customerName,
         string billToCustomerName,
-        string installSiteName,
-        bool preserveSelection)
+        string installLocation,
+        bool preserveSelection,
+        bool autoIncludeAllCandidates = false)
     {
         _candidateAssetsLoadCts?.Cancel();
         _candidateAssetsLoadCts?.Dispose();
@@ -824,10 +890,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         _candidateAssetsLoadCts = cts;
         _candidateAssetsLoadTask = LoadCandidateAssetsAsync(
             billingProfileId,
+            customerId,
             customerName,
             billToCustomerName,
-            installSiteName,
+            installLocation,
             preserveSelection,
+            autoIncludeAllCandidates,
             cts.Token);
 
         UiTaskHelper.Forget(
@@ -845,10 +913,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private async Task LoadCandidateAssetsAsync(
         Guid? billingProfileId,
+        Guid? customerId,
         string customerName,
         string billToCustomerName,
-        string installSiteName,
+        string installLocation,
         bool preserveSelection,
+        bool autoIncludeAllCandidates,
         CancellationToken ct = default)
     {
         var previousSelections = preserveSelection && SelectedTemplateItem is not null
@@ -857,23 +927,29 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var assets = await _rental.GetBillingAssetCandidatesAsync(
             billingProfileId,
+            customerId,
             customerName,
             billToCustomerName,
-            installSiteName,
+            installLocation,
             _session,
             ct);
 
         ct.ThrowIfCancellationRequested();
 
-        var autoAssignedAssetId = Guid.Empty;
+        var autoAssignedAssetIds = new HashSet<Guid>();
         if (SelectedTemplateItem is not null &&
             !LinkAssetsLater &&
+            autoIncludeAllCandidates &&
             !preserveSelection &&
             !SelectedTemplateItem.IncludedAssetIds.Any() &&
-            assets.Count == 1)
+            assets.Count > 0)
         {
-            autoAssignedAssetId = assets[0].Id;
-            SelectedTemplateItem.IncludedAssetIds.Add(autoAssignedAssetId);
+            foreach (var asset in assets.Select(asset => asset.Id).Distinct())
+            {
+                if (!SelectedTemplateItem.IncludedAssetIds.Contains(asset))
+                    SelectedTemplateItem.IncludedAssetIds.Add(asset);
+                autoAssignedAssetIds.Add(asset);
+            }
         }
 
         CandidateAssets.Clear();
@@ -887,11 +963,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 MachineNumber = asset.MachineNumber,
                 CurrentCustomerName = string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName,
                 BillToCustomerName = string.IsNullOrWhiteSpace(asset.BillToCustomerName) ? asset.CustomerName : asset.BillToCustomerName,
-                InstallSiteName = string.IsNullOrWhiteSpace(asset.InstallSiteName) ? asset.InstallLocation : asset.InstallSiteName,
+                InstallLocation = string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
                 AssetStatus = asset.AssetStatus,
                 BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? "미확인" : asset.BillingEligibilityStatus,
                 MonthlyFee = asset.MonthlyFee,
-                IsSelected = autoAssignedAssetId == asset.Id || previousSelections.Contains(asset.Id)
+                IsSelected = autoAssignedAssetIds.Contains(asset.Id) || previousSelections.Contains(asset.Id)
             };
             option.PropertyChanged += (_, _) =>
             {
@@ -1121,11 +1197,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private string BuildCurrentEditorSignature()
         => string.Join("||",
+            EditCustomerId?.ToString("N") ?? string.Empty,
             NormalizeText(EditCustomerName),
             NormalizeText(EditBusinessNumber),
             NormalizeText(EditRealCustomerName),
             NormalizeText(EditBillToCustomerName),
-            NormalizeText(EditInstallSiteName),
+            NormalizeText(EditInstallLocation),
             NormalizeText(EditItemName),
             NormalizeBillingLineModeValue(EditBillingType),
             NormalizeBillingAdvanceModeValue(EditBillingAdvanceMode),

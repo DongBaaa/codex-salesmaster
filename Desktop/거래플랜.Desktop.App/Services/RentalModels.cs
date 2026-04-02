@@ -204,10 +204,12 @@ public sealed class RentalBillingRunModel
 public sealed class RentalBillingEditorDraftModel
 {
     public Guid EditId { get; set; }
+    public Guid? CustomerId { get; set; }
     public string CustomerName { get; set; } = string.Empty;
     public string BusinessNumber { get; set; } = string.Empty;
     public string RealCustomerName { get; set; } = string.Empty;
     public string BillToCustomerName { get; set; } = string.Empty;
+    public string InstallLocation { get; set; } = string.Empty;
     public string InstallSiteName { get; set; } = string.Empty;
     public string ItemName { get; set; } = string.Empty;
     public string BillingType { get; set; } = "묶음";
@@ -249,6 +251,7 @@ public sealed class RentalBillingEditorDraftModel
 public sealed class RentalCustomerOnboardingDraftModel
 {
     public int CurrentStepIndex { get; set; }
+    public Guid? CustomerId { get; set; }
     public string CustomerName { get; set; } = string.Empty;
     public string BusinessNumber { get; set; } = string.Empty;
     public string Representative { get; set; } = string.Empty;
@@ -259,6 +262,7 @@ public sealed class RentalCustomerOnboardingDraftModel
     public string OfficeCode { get; set; } = string.Empty;
     public string RealCustomerName { get; set; } = string.Empty;
     public string BillToCustomerName { get; set; } = string.Empty;
+    public string InstallLocation { get; set; } = string.Empty;
     public string InstallSiteName { get; set; } = string.Empty;
     public string BillingType { get; set; } = "묶음";
     public string BillingAdvanceMode { get; set; } = "후불";
@@ -300,6 +304,7 @@ public sealed class RentalBillingViewRow
     public string BillingType { get; init; } = string.Empty;
     public string BillToCustomerName { get; init; } = string.Empty;
     public string InstallSiteName { get; init; } = string.Empty;
+    public string InstallLocationDisplay { get; init; } = string.Empty;
     public string BillingAdvanceMode { get; init; } = string.Empty;
     public string BillingDayMode { get; init; } = RentalBillingScheduleRules.BillingDayModeFixedDay;
     public int BillingAnchorMonth { get; init; }

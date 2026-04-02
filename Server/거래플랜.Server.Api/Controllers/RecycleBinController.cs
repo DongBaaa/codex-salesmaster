@@ -1,3 +1,4 @@
+﻿using System.Text.Json;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
@@ -221,6 +222,105 @@ public sealed class RecycleBinController : ControllerBase
             }));
         }
 
+        if (ShouldIncludeKind(normalizedKind, "rental-billing-profile"))
+        {
+            var deletedProfiles = await _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(profile => profile.IsDeleted))
+                .OrderByDescending(profile => profile.UpdatedAtUtc)
+                .ToListAsync(cancellationToken);
+
+            entries.AddRange(deletedProfiles.Select(profile => new RecycleBinEntryDto
+            {
+                EntityId = profile.Id,
+                Kind = "rental-billing-profile",
+                KindText = "렌탈 청구프로필",
+                Title = string.IsNullOrWhiteSpace(profile.CustomerName) ? "(거래처 미상)" : profile.CustomerName,
+                Subtitle = JoinSegments(profile.BillToCustomerName, profile.InstallSiteName, profile.ItemName),
+                Detail = JoinSegments(
+                    string.IsNullOrWhiteSpace(profile.BusinessNumber) ? null : $"사업자번호 {profile.BusinessNumber}",
+                    string.IsNullOrWhiteSpace(profile.BillingType) ? null : $"청구유형 {profile.BillingType}",
+                    profile.MonthlyAmount > 0m ? $"월기준금액 {profile.MonthlyAmount:N0}원" : null),
+                DeletedAtUtc = profile.UpdatedAtUtc
+            }));
+        }
+
+        if (ShouldIncludeKind(normalizedKind, "rental-asset"))
+        {
+            var deletedAssets = await _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(asset => asset.IsDeleted))
+                .OrderByDescending(asset => asset.UpdatedAtUtc)
+                .ToListAsync(cancellationToken);
+
+            entries.AddRange(deletedAssets.Select(asset => new RecycleBinEntryDto
+            {
+                EntityId = asset.Id,
+                Kind = "rental-asset",
+                KindText = "렌탈 자산",
+                Title = string.IsNullOrWhiteSpace(asset.ManagementNumber)
+                    ? string.IsNullOrWhiteSpace(asset.ItemName) ? "(렌탈 자산)" : asset.ItemName
+                    : $"{asset.ManagementNumber} · {asset.ItemName}".Trim(),
+                Subtitle = JoinSegments(
+                    asset.CustomerName,
+                    asset.BillToCustomerName,
+                    string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation),
+                Detail = JoinSegments(
+                    string.IsNullOrWhiteSpace(asset.MachineNumber) ? null : $"기계번호 {asset.MachineNumber}",
+                    string.IsNullOrWhiteSpace(asset.AssetStatus) ? null : $"상태 {asset.AssetStatus}",
+                    asset.MonthlyFee > 0m ? $"월요금 {asset.MonthlyFee:N0}원" : null),
+                DeletedAtUtc = asset.UpdatedAtUtc
+            }));
+        }
+
+        if (ShouldIncludeKind(normalizedKind, "rental-billing-log"))
+        {
+            var deletedLogs = await _officeScopeService.ApplyRentalBillingLogScope(_dbContext.RentalBillingLogs
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(log => log.IsDeleted))
+                .OrderByDescending(log => log.UpdatedAtUtc)
+                .ToListAsync(cancellationToken);
+
+            var deletedProfileIds = deletedLogs
+                .Select(log => log.BillingProfileId)
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+            var profileMap = deletedProfileIds.Count == 0
+                ? new Dictionary<Guid, RentalBillingProfile>()
+                : await _dbContext.RentalBillingProfiles
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(profile => deletedProfileIds.Contains(profile.Id))
+                    .ToDictionaryAsync(profile => profile.Id, cancellationToken);
+
+            entries.AddRange(deletedLogs.Select(log =>
+            {
+                profileMap.TryGetValue(log.BillingProfileId, out var profile);
+                var title = profile is null
+                    ? $"청구로그 {log.BillingYearMonth}"
+                    : $"{(string.IsNullOrWhiteSpace(profile.CustomerName) ? "(거래처 미상)" : profile.CustomerName)} · {log.BillingYearMonth}";
+                return new RecycleBinEntryDto
+                {
+                    EntityId = log.Id,
+                    Kind = "rental-billing-log",
+                    KindText = "렌탈 청구로그",
+                    Title = title,
+                    Subtitle = JoinSegments(
+                        profile?.BillToCustomerName,
+                        log.ScheduledDate.ToString("yyyy-MM-dd"),
+                        string.IsNullOrWhiteSpace(log.Status) ? null : log.Status),
+                    Detail = JoinSegments(
+                        log.BilledAmount > 0m ? $"청구금액 {log.BilledAmount:N0}원" : null,
+                        string.IsNullOrWhiteSpace(log.Note) ? null : log.Note),
+                    DeletedAtUtc = log.UpdatedAtUtc
+                };
+            }));
+        }
+
         if (!string.IsNullOrWhiteSpace(q))
         {
             var searchText = q.Trim();
@@ -318,6 +418,9 @@ public sealed class RecycleBinController : ControllerBase
             "invoice" => await RestoreInvoiceAsync(target.EntityId, cancellationToken),
             "payment" => await RestorePaymentAsync(target.EntityId, cancellationToken),
             "transaction" => await RestoreTransactionAsync(target.EntityId, cancellationToken),
+            "rental-billing-profile" => await RestoreRentalBillingProfileAsync(target.EntityId, cancellationToken),
+            "rental-asset" => await RestoreRentalAssetAsync(target.EntityId, cancellationToken),
+            "rental-billing-log" => await RestoreRentalBillingLogAsync(target.EntityId, cancellationToken),
             _ => (false, $"지원하지 않는 휴지통 종류입니다: {target.Kind}")
         };
     }
@@ -334,6 +437,9 @@ public sealed class RecycleBinController : ControllerBase
             "invoice" => await PurgeInvoiceAsync(target.EntityId, cancellationToken),
             "payment" => await PurgePaymentAsync(target.EntityId, cancellationToken),
             "transaction" => await PurgeTransactionAsync(target.EntityId, cancellationToken),
+            "rental-billing-profile" => await PurgeRentalBillingProfileAsync(target.EntityId, cancellationToken),
+            "rental-asset" => await PurgeRentalAssetAsync(target.EntityId, cancellationToken),
+            "rental-billing-log" => await PurgeRentalBillingLogAsync(target.EntityId, cancellationToken),
             _ => (false, $"지원하지 않는 휴지통 종류입니다: {target.Kind}")
         };
     }
@@ -530,6 +636,108 @@ public sealed class RecycleBinController : ControllerBase
         return (true, customerRestored || invoiceRestored
             ? "거래내역을 복원하고 연결된 거래처/전표를 함께 활성화했습니다."
             : "거래내역을 복원했습니다.");
+    }
+
+    private async Task<(bool Success, string Message)> RestoreRentalBillingProfileAsync(Guid profileId, CancellationToken cancellationToken)
+    {
+        var profile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == profileId, cancellationToken);
+        if (profile is null)
+            return (false, "복원할 렌탈 청구프로필을 찾을 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForRentals(profile.OfficeCode, profile.TenantCode))
+            return (false, "현재 계정으로 복원할 수 없는 렌탈 청구프로필입니다.");
+        if (!profile.IsDeleted)
+            return (true, "이미 활성 상태인 렌탈 청구프로필입니다.");
+
+        var customerRestored = false;
+        if (profile.CustomerId.HasValue && profile.CustomerId.Value != Guid.Empty)
+        {
+            var customer = await _dbContext.Customers
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == profile.CustomerId.Value, cancellationToken);
+            if (customer is not null && customer.IsDeleted)
+            {
+                if (!_officeScopeService.CanWriteOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
+                    return (false, "현재 계정으로 연결된 거래처를 복원할 수 없습니다.");
+
+                customer.IsDeleted = false;
+                customerRestored = true;
+            }
+        }
+
+        profile.IsDeleted = false;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return (true, customerRestored
+            ? "렌탈 청구프로필을 복원하고 연결된 거래처도 함께 활성화했습니다."
+            : "렌탈 청구프로필을 복원했습니다.");
+    }
+
+    private async Task<(bool Success, string Message)> RestoreRentalAssetAsync(Guid assetId, CancellationToken cancellationToken)
+    {
+        var asset = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == assetId, cancellationToken);
+        if (asset is null)
+            return (false, "복원할 렌탈 자산을 찾을 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForRentals(asset.OfficeCode, asset.TenantCode))
+            return (false, "현재 계정으로 복원할 수 없는 렌탈 자산입니다.");
+        if (!asset.IsDeleted)
+            return (true, "이미 활성 상태인 렌탈 자산입니다.");
+
+        var customerRestored = false;
+        if (asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
+        {
+            var customer = await _dbContext.Customers
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == asset.CustomerId.Value, cancellationToken);
+            if (customer is not null && customer.IsDeleted)
+            {
+                if (!_officeScopeService.CanWriteOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
+                    return (false, "현재 계정으로 연결된 거래처를 복원할 수 없습니다.");
+
+                customer.IsDeleted = false;
+                customerRestored = true;
+            }
+        }
+
+        asset.IsDeleted = false;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return (true, customerRestored
+            ? "렌탈 자산을 복원하고 연결된 거래처도 함께 활성화했습니다."
+            : "렌탈 자산을 복원했습니다.");
+    }
+
+    private async Task<(bool Success, string Message)> RestoreRentalBillingLogAsync(Guid logId, CancellationToken cancellationToken)
+    {
+        var log = await _dbContext.RentalBillingLogs
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == logId, cancellationToken);
+        if (log is null)
+            return (false, "복원할 렌탈 청구로그를 찾을 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForRentals(log.OfficeCode, log.TenantCode))
+            return (false, "현재 계정으로 복원할 수 없는 렌탈 청구로그입니다.");
+        if (!log.IsDeleted)
+            return (true, "이미 활성 상태인 렌탈 청구로그입니다.");
+
+        var profileRestored = false;
+        var profile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == log.BillingProfileId, cancellationToken);
+        if (profile is not null && profile.IsDeleted)
+        {
+            if (!_officeScopeService.CanWriteOfficeForRentals(profile.OfficeCode, profile.TenantCode))
+                return (false, "현재 계정으로 연결된 렌탈 청구프로필을 복원할 수 없습니다.");
+
+            profile.IsDeleted = false;
+            profileRestored = true;
+        }
+
+        log.IsDeleted = false;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return (true, profileRestored
+            ? "렌탈 청구로그를 복원하고 연결된 렌탈 청구프로필도 함께 활성화했습니다."
+            : "렌탈 청구로그를 복원했습니다.");
     }
 
     private async Task<(bool Success, string Message)> PurgeCustomerAsync(Guid customerId, CancellationToken cancellationToken)
@@ -734,6 +942,110 @@ public sealed class RecycleBinController : ControllerBase
         return (true, "거래내역을 영구삭제했습니다.");
     }
 
+    private async Task<(bool Success, string Message)> PurgeRentalBillingProfileAsync(Guid profileId, CancellationToken cancellationToken)
+    {
+        var profile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == profileId, cancellationToken);
+        if (profile is null)
+            return (false, "영구삭제할 렌탈 청구프로필을 찾을 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForRentals(profile.OfficeCode, profile.TenantCode))
+            return (false, "현재 계정으로 영구삭제할 수 없는 렌탈 청구프로필입니다.");
+        if (!profile.IsDeleted)
+            return (false, "활성 상태 렌탈 청구프로필은 휴지통에서 영구삭제할 수 없습니다.");
+
+        var hasInvoices = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.LinkedRentalBillingProfileId == profileId, cancellationToken);
+        if (hasInvoices)
+            return (false, "연결된 전표가 남아 있어 렌탈 청구프로필을 영구삭제할 수 없습니다.");
+
+        var hasTransactions = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.LinkedRentalBillingProfileId == profileId, cancellationToken);
+        if (hasTransactions)
+            return (false, "연결된 수금/거래내역이 남아 있어 렌탈 청구프로필을 영구삭제할 수 없습니다.");
+
+        var linkedAssets = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .Where(current => current.BillingProfileId == profileId)
+            .ToListAsync(cancellationToken);
+        foreach (var asset in linkedAssets)
+        {
+            asset.BillingProfileId = null;
+            asset.BillingEligibilityStatus = GetBillingEligibilityStatusAfterProfilePurge(asset.AssetStatus);
+            if (!string.Equals(asset.BillingEligibilityStatus, "청구제외", StringComparison.OrdinalIgnoreCase))
+                asset.BillingExclusionReason = string.Empty;
+        }
+
+        var logs = await _dbContext.RentalBillingLogs
+            .IgnoreQueryFilters()
+            .Where(current => current.BillingProfileId == profileId)
+            .ToListAsync(cancellationToken);
+
+        await TouchPurgeRecordsAsync(
+        [
+            CreatePurgeRecord("rental-billing-profile", profile.Id, profile.TenantCode, profile.OfficeCode)
+        ], cancellationToken);
+        _dbContext.RentalBillingLogs.RemoveRange(logs);
+        _dbContext.RentalBillingProfiles.Remove(profile);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return (true, "렌탈 청구프로필을 영구삭제했습니다.");
+    }
+
+    private async Task<(bool Success, string Message)> PurgeRentalAssetAsync(Guid assetId, CancellationToken cancellationToken)
+    {
+        var asset = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == assetId, cancellationToken);
+        if (asset is null)
+            return (false, "영구삭제할 렌탈 자산을 찾을 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForRentals(asset.OfficeCode, asset.TenantCode))
+            return (false, "현재 계정으로 영구삭제할 수 없는 렌탈 자산입니다.");
+        if (!asset.IsDeleted)
+            return (false, "활성 상태 렌탈 자산은 휴지통에서 영구삭제할 수 없습니다.");
+
+        var profiles = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .Where(current => current.BillingTemplateJson.Contains(assetId.ToString()))
+            .ToListAsync(cancellationToken);
+        foreach (var profile in profiles)
+        {
+            var normalizedJson = RemoveIncludedAssetId(profile.BillingTemplateJson, assetId);
+            if (!string.Equals(normalizedJson, profile.BillingTemplateJson, StringComparison.Ordinal))
+                profile.BillingTemplateJson = normalizedJson;
+        }
+
+        await TouchPurgeRecordsAsync(
+        [
+            CreatePurgeRecord("rental-asset", asset.Id, asset.TenantCode, asset.OfficeCode)
+        ], cancellationToken);
+        _dbContext.RentalAssets.Remove(asset);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return (true, "렌탈 자산을 영구삭제했습니다.");
+    }
+
+    private async Task<(bool Success, string Message)> PurgeRentalBillingLogAsync(Guid logId, CancellationToken cancellationToken)
+    {
+        var log = await _dbContext.RentalBillingLogs
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == logId, cancellationToken);
+        if (log is null)
+            return (false, "영구삭제할 렌탈 청구로그를 찾을 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForRentals(log.OfficeCode, log.TenantCode))
+            return (false, "현재 계정으로 영구삭제할 수 없는 렌탈 청구로그입니다.");
+        if (!log.IsDeleted)
+            return (false, "활성 상태 렌탈 청구로그는 휴지통에서 영구삭제할 수 없습니다.");
+
+        await TouchPurgeRecordsAsync(
+        [
+            CreatePurgeRecord("rental-billing-log", log.Id, log.TenantCode, log.OfficeCode)
+        ], cancellationToken);
+        _dbContext.RentalBillingLogs.Remove(log);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return (true, "렌탈 청구로그를 영구삭제했습니다.");
+    }
+
     private async Task<List<Invoice>> GetInvoiceGroupAsync(Invoice invoice, CancellationToken cancellationToken)
     {
         var versionGroupId = invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
@@ -796,6 +1108,9 @@ public sealed class RecycleBinController : ControllerBase
             "invoice" or "invoices" or "전표" => "invoice",
             "payment" or "payments" or "수금" or "지급" or "수금/지급" => "payment",
             "transaction" or "transactions" or "거래내역" => "transaction",
+            "rental-billing-profile" or "rentalbillingprofile" or "rental-profile" or "rentalprofile" or "렌탈청구프로필" or "렌탈 청구프로필" => "rental-billing-profile",
+            "rental-asset" or "rentalasset" or "렌탈자산" or "렌탈 자산" => "rental-asset",
+            "rental-billing-log" or "rentalbillinglog" or "rental-log" or "rentallog" or "렌탈청구로그" or "렌탈 청구로그" => "rental-billing-log",
             _ => string.Empty
         };
     }
@@ -809,12 +1124,48 @@ public sealed class RecycleBinController : ControllerBase
         {
             "payment" => 0,
             "transaction" => 1,
-            "contract" => 2,
-            "invoice" => 3,
-            "item" => 4,
-            "customer" => 5,
+            "rental-billing-log" => 2,
+            "contract" => 3,
+            "invoice" => 4,
+            "rental-asset" => 5,
+            "item" => 6,
+            "rental-billing-profile" => 7,
+            "customer" => 8,
             _ => 99
         };
+    }
+
+    private static string RemoveIncludedAssetId(string? templateJson, Guid assetId)
+    {
+        if (assetId == Guid.Empty)
+            return templateJson ?? "[]";
+
+        try
+        {
+            var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(templateJson ?? "[]") ?? new List<RentalBillingTemplateItemModel>();
+            foreach (var item in items)
+            {
+                item.IncludedAssetIds = item.IncludedAssetIds
+                    .Where(id => id != Guid.Empty && id != assetId)
+                    .Distinct()
+                    .ToList();
+            }
+
+            return JsonSerializer.Serialize(items);
+        }
+        catch
+        {
+            return templateJson ?? "[]";
+        }
+    }
+
+    private static string GetBillingEligibilityStatusAfterProfilePurge(string? assetStatus)
+    {
+        if (string.Equals(assetStatus, "회수", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(assetStatus, "폐기", StringComparison.OrdinalIgnoreCase))
+            return "청구제외";
+
+        return "미확인";
     }
 
     private static string JoinSegments(params string?[] segments)
@@ -913,5 +1264,10 @@ public sealed class RecycleBinController : ControllerBase
             existing.Apply(dto);
             existing.IsDeleted = false;
         }
+    }
+
+    private sealed class RentalBillingTemplateItemModel
+    {
+        public List<Guid> IncludedAssetIds { get; set; } = new();
     }
 }

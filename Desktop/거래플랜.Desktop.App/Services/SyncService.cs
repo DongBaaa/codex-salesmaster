@@ -2438,10 +2438,16 @@ public sealed class SyncService : IDisposable
         {
             "payment" => 0,
             "transaction" => 1,
-            "contract" => 2,
-            "invoice" => 3,
-            "item" => 4,
-            "customer" => 5,
+            "rental-billing-log" => 2,
+            "rentalbillinglog" => 2,
+            "contract" => 3,
+            "invoice" => 4,
+            "rental-asset" => 5,
+            "rentalasset" => 5,
+            "item" => 6,
+            "rental-billing-profile" => 7,
+            "rentalbillingprofile" => 7,
+            "customer" => 8,
             _ => 99
         };
 
@@ -2466,6 +2472,18 @@ public sealed class SyncService : IDisposable
                 return true;
             case "transaction":
                 kind = RecycleBinEntityKind.Transaction;
+                return true;
+            case "rentalbillingprofile":
+            case "rental-billing-profile":
+                kind = RecycleBinEntityKind.RentalBillingProfile;
+                return true;
+            case "rentalasset":
+            case "rental-asset":
+                kind = RecycleBinEntityKind.RentalAsset;
+                return true;
+            case "rentalbillinglog":
+            case "rental-billing-log":
+                kind = RecycleBinEntityKind.RentalBillingLog;
                 return true;
             default:
                 kind = default;
@@ -2529,3 +2547,4 @@ public sealed class SyncService : IDisposable
         }
     }
 }
+

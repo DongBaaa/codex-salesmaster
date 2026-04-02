@@ -29,6 +29,9 @@ public sealed partial class EnvironmentSettingsViewModel
     [ObservableProperty] private int _recycleBinInvoiceCount;
     [ObservableProperty] private int _recycleBinPaymentCount;
     [ObservableProperty] private int _recycleBinTransactionCount;
+    [ObservableProperty] private int _recycleBinRentalBillingProfileCount;
+    [ObservableProperty] private int _recycleBinRentalAssetCount;
+    [ObservableProperty] private int _recycleBinRentalBillingLogCount;
     [ObservableProperty] private int _markedRecycleBinCount;
     [ObservableProperty] private string _recycleBinSummary = "휴지통이 비어 있습니다.";
     [ObservableProperty] private string _selectedRecycleBinDependencySummary = "삭제 차단 사유를 확인하려면 항목을 선택하세요.";
@@ -73,6 +76,9 @@ public sealed partial class EnvironmentSettingsViewModel
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.Invoice.ToString(), DisplayName = "전표" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.Payment.ToString(), DisplayName = "수금/지급" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.Transaction.ToString(), DisplayName = "거래내역" });
+        RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.RentalBillingProfile.ToString(), DisplayName = "렌탈 청구프로필" });
+        RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.RentalAsset.ToString(), DisplayName = "렌탈 자산" });
+        RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.RentalBillingLog.ToString(), DisplayName = "렌탈 청구로그" });
 
         SelectedRecycleBinTypeOption = RecycleBinTypeOptions[0];
     }
@@ -406,10 +412,13 @@ public sealed partial class EnvironmentSettingsViewModel
         RecycleBinInvoiceCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.Invoice);
         RecycleBinPaymentCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.Payment);
         RecycleBinTransactionCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.Transaction);
+        RecycleBinRentalBillingProfileCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.RentalBillingProfile);
+        RecycleBinRentalAssetCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.RentalAsset);
+        RecycleBinRentalBillingLogCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.RentalBillingLog);
 
         RecycleBinSummary = RecycleBinTotalCount == 0
             ? "삭제된 항목이 없습니다."
-            : $"거래처 {RecycleBinCustomerCount:N0} · 계약서 {RecycleBinContractCount:N0} · 품목 {RecycleBinItemCount:N0} · 전표 {RecycleBinInvoiceCount:N0} · 수금/지급 {RecycleBinPaymentCount:N0} · 거래내역 {RecycleBinTransactionCount:N0}";
+            : $"거래처 {RecycleBinCustomerCount:N0} · 계약서 {RecycleBinContractCount:N0} · 품목 {RecycleBinItemCount:N0} · 전표 {RecycleBinInvoiceCount:N0} · 수금/지급 {RecycleBinPaymentCount:N0} · 거래내역 {RecycleBinTransactionCount:N0} · 렌탈청구 {RecycleBinRentalBillingProfileCount:N0} · 렌탈자산 {RecycleBinRentalAssetCount:N0} · 렌탈로그 {RecycleBinRentalBillingLogCount:N0}";
     }
 
     private void RefreshMarkedRecycleBinCount()
@@ -442,10 +451,13 @@ public sealed partial class EnvironmentSettingsViewModel
         {
             RecycleBinEntityKind.Payment => 0,
             RecycleBinEntityKind.Transaction => 1,
-            RecycleBinEntityKind.CustomerContract => 2,
-            RecycleBinEntityKind.Invoice => 3,
-            RecycleBinEntityKind.Item => 4,
-            RecycleBinEntityKind.Customer => 5,
+            RecycleBinEntityKind.RentalBillingLog => 2,
+            RecycleBinEntityKind.CustomerContract => 3,
+            RecycleBinEntityKind.Invoice => 4,
+            RecycleBinEntityKind.RentalAsset => 5,
+            RecycleBinEntityKind.Item => 6,
+            RecycleBinEntityKind.RentalBillingProfile => 7,
+            RecycleBinEntityKind.Customer => 8,
             _ => 99
         };
     }
@@ -522,43 +534,31 @@ public sealed partial class EnvironmentSettingsViewModel
             .Where(current => current.Target is not null)
             .ToDictionary(
                 current => (current.Entry.EntityId, NormalizeServerRecycleBinKind(current.Target!.Kind)),
-                current => current.Entry);
+                current => new
+                {
+                    current.Entry,
+                    Target = current.Target!
+                });
         if (targets.Count == 0)
             return mirrorResult;
 
         try
         {
             var result = string.Equals(action, "복원", StringComparison.Ordinal)
-                ? await _api.RestoreRecycleBinAsync(targets.Keys.Select(key =>
-                    new RecycleBinMutationTargetDto
+                ? await _api.RestoreRecycleBinAsync(targets.Values
+                    .Select(current => new RecycleBinMutationTargetDto
                     {
-                        EntityId = key.Item1,
-                        Kind = targets[key].Kind switch
-                        {
-                            RecycleBinEntityKind.Customer => "customer",
-                            RecycleBinEntityKind.CustomerContract => "contract",
-                            RecycleBinEntityKind.Item => "item",
-                            RecycleBinEntityKind.Invoice => "invoice",
-                            RecycleBinEntityKind.Payment => "payment",
-                            RecycleBinEntityKind.Transaction => "transaction",
-                            _ => string.Empty
-                        }
-                    }).Where(target => !string.IsNullOrWhiteSpace(target.Kind)).ToList())
-                : await _api.PurgeRecycleBinAsync(targets.Keys.Select(key =>
-                    new RecycleBinMutationTargetDto
+                        EntityId = current.Target.EntityId,
+                        Kind = current.Target.Kind
+                    })
+                    .ToList())
+                : await _api.PurgeRecycleBinAsync(targets.Values
+                    .Select(current => new RecycleBinMutationTargetDto
                     {
-                        EntityId = key.Item1,
-                        Kind = targets[key].Kind switch
-                        {
-                            RecycleBinEntityKind.Customer => "customer",
-                            RecycleBinEntityKind.CustomerContract => "contract",
-                            RecycleBinEntityKind.Item => "item",
-                            RecycleBinEntityKind.Invoice => "invoice",
-                            RecycleBinEntityKind.Payment => "payment",
-                            RecycleBinEntityKind.Transaction => "transaction",
-                            _ => string.Empty
-                        }
-                    }).Where(target => !string.IsNullOrWhiteSpace(target.Kind)).ToList());
+                        EntityId = current.Target.EntityId,
+                        Kind = current.Target.Kind
+                    })
+                    .ToList());
 
             if (result is null)
             {
@@ -569,7 +569,7 @@ public sealed partial class EnvironmentSettingsViewModel
             if (result.Results.Count == 0)
             {
                 if (result.SucceededCount >= targets.Count)
-                    mirrorResult.SucceededEntries.AddRange(targets.Values);
+                    mirrorResult.SucceededEntries.AddRange(targets.Values.Select(current => current.Entry));
                 else
                     mirrorResult.Failures.Add(result.Messages.FirstOrDefault()
                                               ?? $"NAS 서버 {action} 반영 중 실패한 항목이 있습니다.");
@@ -580,7 +580,7 @@ public sealed partial class EnvironmentSettingsViewModel
             foreach (var itemResult in result.Results)
             {
                 var key = (itemResult.EntityId, NormalizeServerRecycleBinKind(itemResult.Kind));
-                if (!targets.TryGetValue(key, out var entry))
+                if (!targets.TryGetValue(key, out var target))
                 {
                     if (!itemResult.Success && !string.IsNullOrWhiteSpace(itemResult.Message))
                         mirrorResult.Failures.Add(itemResult.Message);
@@ -589,15 +589,15 @@ public sealed partial class EnvironmentSettingsViewModel
 
                 reported.Add(key);
                 if (itemResult.Success)
-                    mirrorResult.SucceededEntries.Add(entry);
+                    mirrorResult.SucceededEntries.Add(target.Entry);
                 else
-                    mirrorResult.Failures.Add($"{entry.KindText} · {entry.Title}: {itemResult.Message}");
+                    mirrorResult.Failures.Add($"{target.Entry.KindText} · {target.Entry.Title}: {itemResult.Message}");
             }
 
             foreach (var key in targets.Keys.Where(key => !reported.Contains(key)))
             {
-                var entry = targets[key];
-                mirrorResult.Failures.Add($"{entry.KindText} · {entry.Title}: NAS 서버 {action} 결과를 확인하지 못했습니다.");
+                var target = targets[key];
+                mirrorResult.Failures.Add($"{target.Entry.KindText} · {target.Entry.Title}: NAS 서버 {action} 결과를 확인하지 못했습니다.");
             }
         }
         catch (Exception ex)
@@ -618,6 +618,9 @@ public sealed partial class EnvironmentSettingsViewModel
             RecycleBinEntityKind.Invoice => "invoice",
             RecycleBinEntityKind.Payment => "payment",
             RecycleBinEntityKind.Transaction => "transaction",
+            RecycleBinEntityKind.RentalBillingProfile => "rental-billing-profile",
+            RecycleBinEntityKind.RentalAsset => "rental-asset",
+            RecycleBinEntityKind.RentalBillingLog => "rental-billing-log",
             _ => string.Empty
         };
 
@@ -639,6 +642,12 @@ public sealed partial class EnvironmentSettingsViewModel
             "invoice" => "invoice",
             "payment" => "payment",
             "transaction" => "transaction",
+            "rentalbillingprofile" => "rental-billing-profile",
+            "rental-billing-profile" => "rental-billing-profile",
+            "rentalasset" => "rental-asset",
+            "rental-asset" => "rental-asset",
+            "rentalbillinglog" => "rental-billing-log",
+            "rental-billing-log" => "rental-billing-log",
             _ => string.Empty
         };
 
@@ -657,3 +666,4 @@ public sealed partial class EnvironmentSettingsViewModel
         return $"휴지통 {action} 완료: 성공 {succeededCount:N0}건 / 실패 {failedCount:N0}건. {failures[0]}";
     }
 }
+

@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -19,6 +19,9 @@ public sealed partial class LocalStateService
             RecycleBinEntityKind.Transaction => await GetTransactionRecycleBinDependencyInfoAsync(entityId, session, ct),
             RecycleBinEntityKind.CustomerContract => await GetContractRecycleBinDependencyInfoAsync(entityId, session, ct),
             RecycleBinEntityKind.Item => await GetItemRecycleBinDependencyInfoAsync(entityId, session, ct),
+            RecycleBinEntityKind.RentalBillingProfile => await GetRentalBillingProfileRecycleBinDependencyInfoAsync(entityId, session, ct),
+            RecycleBinEntityKind.RentalAsset => await GetRentalAssetRecycleBinDependencyInfoAsync(entityId, session, ct),
+            RecycleBinEntityKind.RentalBillingLog => await GetRentalBillingLogRecycleBinDependencyInfoAsync(entityId, session, ct),
             _ => new RecycleBinDependencyInfo
             {
                 CanPurge = false,
@@ -370,6 +373,118 @@ public sealed partial class LocalStateService
         };
     }
 
+    private async Task<RecycleBinDependencyInfo> GetRentalBillingProfileRecycleBinDependencyInfoAsync(Guid profileId, SessionState session, CancellationToken ct)
+    {
+        var profile = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == profileId, ct);
+        if (profile is null || !CanAccessRental(
+                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
+                    ? profile.ManagementCompanyCode
+                    : profile.ResponsibleOfficeCode,
+                session))
+        {
+            return new RecycleBinDependencyInfo
+            {
+                CanPurge = false,
+                Summary = "삭제 차단 사유를 확인할 렌탈 청구 프로필을 찾을 수 없습니다."
+            };
+        }
+
+        var invoiceCount = await _db.Invoices.IgnoreQueryFilters()
+            .CountAsync(current => current.LinkedRentalBillingProfileId == profileId, ct);
+        var transactionCount = await _db.Transactions.IgnoreQueryFilters()
+            .CountAsync(current => current.LinkedRentalBillingProfileId == profileId, ct);
+        var assetCount = await _db.RentalAssets.IgnoreQueryFilters()
+            .CountAsync(current => current.BillingProfileId == profileId, ct);
+        var logCount = await _db.RentalBillingLogs.IgnoreQueryFilters()
+            .CountAsync(current => current.BillingProfileId == profileId, ct);
+
+        var dependencies = new List<RecycleBinDependencyItem>();
+        AppendDependency(dependencies, "연결 전표", invoiceCount, "연결된 전표가 남아 있으면 렌탈 청구 프로필을 영구삭제할 수 없습니다.");
+        AppendDependency(dependencies, "연결 거래내역", transactionCount, "연결된 거래내역이 남아 있으면 렌탈 청구 프로필을 영구삭제할 수 없습니다.");
+        AppendDependency(dependencies, "연결 렌탈 자산", assetCount, "영구삭제 시 연결 자산은 자동으로 프로필 연결이 해제됩니다.");
+        AppendDependency(dependencies, "연결 청구로그", logCount, "영구삭제 시 연결 청구로그는 함께 정리됩니다.");
+
+        var blockingCount = invoiceCount + transactionCount;
+        return new RecycleBinDependencyInfo
+        {
+            CanPurge = blockingCount == 0,
+            Summary = blockingCount == 0
+                ? "이 렌탈 청구 프로필은 현재 영구삭제 가능합니다. 연결 자산/청구로그는 자동 정리됩니다."
+                : "연결된 전표 또는 거래내역이 남아 있어 렌탈 청구 프로필을 영구삭제할 수 없습니다.",
+            Dependencies = dependencies
+        };
+    }
+
+    private async Task<RecycleBinDependencyInfo> GetRentalAssetRecycleBinDependencyInfoAsync(Guid assetId, SessionState session, CancellationToken ct)
+    {
+        var asset = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == assetId, ct);
+        if (asset is null || !CanAccessRental(
+                string.IsNullOrWhiteSpace(asset.ResponsibleOfficeCode)
+                    ? asset.ManagementCompanyCode
+                    : asset.ResponsibleOfficeCode,
+                session))
+        {
+            return new RecycleBinDependencyInfo
+            {
+                CanPurge = false,
+                Summary = "삭제 차단 사유를 확인할 렌탈 자산을 찾을 수 없습니다."
+            };
+        }
+
+        var directProfileCount = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .CountAsync(current => current.Id == asset.BillingProfileId, ct);
+        var templateProfileCount = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .CountAsync(current => current.BillingTemplateJson.Contains(assetId.ToString()), ct);
+
+        var dependencies = new List<RecycleBinDependencyItem>();
+        AppendDependency(dependencies, "현재 연결 프로필", directProfileCount, "현재 연결된 렌탈 청구 프로필이 있으면 영구삭제 시 자동으로 연결이 해제됩니다.");
+        AppendDependency(dependencies, "청구항목 포함 프로필", templateProfileCount, "청구항목 내부 포함 장비에서 이 자산을 참조하는 프로필은 자동으로 정리됩니다.");
+
+        return new RecycleBinDependencyInfo
+        {
+            CanPurge = true,
+            Summary = templateProfileCount + directProfileCount > 0
+                ? "이 렌탈 자산은 현재 영구삭제 가능합니다. 연결된 청구 프로필 참조는 자동 정리됩니다."
+                : "이 렌탈 자산은 현재 영구삭제 가능합니다.",
+            Dependencies = dependencies
+        };
+    }
+
+    private async Task<RecycleBinDependencyInfo> GetRentalBillingLogRecycleBinDependencyInfoAsync(Guid logId, SessionState session, CancellationToken ct)
+    {
+        var log = await _db.RentalBillingLogs
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == logId, ct);
+        if (log is null || !CanAccessRental(log.ResponsibleOfficeCode, session))
+        {
+            return new RecycleBinDependencyInfo
+            {
+                CanPurge = false,
+                Summary = "삭제 차단 사유를 확인할 렌탈 청구로그를 찾을 수 없습니다."
+            };
+        }
+
+        var linkedProfileCount = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .CountAsync(current => current.Id == log.BillingProfileId, ct);
+
+        var dependencies = new List<RecycleBinDependencyItem>();
+        AppendDependency(dependencies, "연결 렌탈 청구 프로필", linkedProfileCount, "청구로그는 연결 프로필과 독립적으로 영구삭제할 수 있습니다.");
+
+        return new RecycleBinDependencyInfo
+        {
+            CanPurge = true,
+            Summary = "이 렌탈 청구로그는 현재 영구삭제 가능합니다.",
+            Dependencies = dependencies
+        };
+    }
+
     private static void AppendDependency(ICollection<RecycleBinDependencyItem> items, string label, int count, string detail)
     {
         if (count <= 0)
@@ -411,4 +526,13 @@ public sealed partial class LocalStateService
 
     private static string NormalizeDigits(string? value)
         => string.Concat((value ?? string.Empty).Where(char.IsDigit));
+
+    private static bool CanAccessRental(string? officeCode, SessionState session)
+    {
+        if (CanManageAllRentalScope(session))
+            return true;
+
+        var normalizedOfficeCode = NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet);
+        return GetReadableOfficeCodes(session).Contains(normalizedOfficeCode);
+    }
 }

@@ -2,6 +2,7 @@
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
+using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
 
@@ -137,5 +138,31 @@ public partial class RentalBillingWindow : Window
             if (onboardingViewModel.SavedBillingProfileId.HasValue)
                 viewModel.SelectedRow = viewModel.Rows.FirstOrDefault(row => row.Source.Id == onboardingViewModel.SavedBillingProfileId.Value);
         }, "UI", "신규 렌탈 거래처 등록", "신규 렌탈 거래처 등록 중 오류가 발생했습니다.");
+    }
+
+    private void CustomerLookupButton_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(this, OpenCustomerLookupAsync, "UI", "렌탈 청구 거래처 조회", "거래처 조회 중 오류가 발생했습니다.");
+
+    private async Task OpenCustomerLookupAsync()
+    {
+        if (DataContext is not RentalBillingViewModel viewModel)
+            return;
+
+        var dialog = new LookupWindow(
+            "거래처 조회",
+            await viewModel.BuildCustomerLookupRowsAsync(),
+            "거래처 등록",
+            async () =>
+            {
+                var customerVm = new CustomerEditViewModel(viewModel.LocalStateService, viewModel.SessionState);
+                await customerVm.LoadAsync();
+                var customerWindow = new CustomerEditWindow(customerVm) { Owner = this };
+                customerWindow.ShowDialog();
+                return await viewModel.BuildCustomerLookupRowsAsync();
+            })
+        { Owner = this };
+
+        if (dialog.ShowDialog() == true && dialog.SelectedRow?.Tag is LocalCustomer customer)
+            viewModel.ApplySelectedCustomer(customer);
     }
 }

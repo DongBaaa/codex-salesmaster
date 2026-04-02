@@ -430,6 +430,8 @@ public static partial class DbInitializer
             .ToList();
         if (customerProfiles.Count == 0)
             return null;
+        if (customerProfiles.Count == 1)
+            return customerProfiles[0].Id;
 
         var normalizedItemKey = RentalCatalogValueNormalizer.NormalizeLooseKey(asset.ItemName);
         var siteKeys = BuildRentalSiteKeys(asset.InstallLocation, asset.InstallSiteName);
