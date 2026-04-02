@@ -112,11 +112,10 @@ public sealed partial class RentalStateService
 
         foreach (var asset in await _db.RentalAssets.IgnoreQueryFilters().ToListAsync(ct))
         {
-            var normalized = ResolveAssignedUsernameForDisplay(asset.AssignedUsername, asset.ResponsibleOfficeCode, asset.ManagementCompanyCode);
-            if (string.Equals(asset.AssignedUsername ?? string.Empty, normalized, StringComparison.Ordinal))
+            if (string.IsNullOrWhiteSpace(asset.AssignedUsername))
                 continue;
 
-            asset.AssignedUsername = normalized;
+            asset.AssignedUsername = string.Empty;
             asset.UpdatedAtUtc = now;
             asset.IsDirty = true;
             changed++;
@@ -450,7 +449,7 @@ public sealed partial class RentalStateService
                         : null,
                     CurrentCustomerName = string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName,
                     BillToCustomerName = string.IsNullOrWhiteSpace(asset.BillToCustomerName) ? asset.CustomerName : asset.BillToCustomerName,
-                    InstallSiteName = string.IsNullOrWhiteSpace(asset.InstallSiteName) ? asset.InstallLocation : asset.InstallSiteName,
+                    InstallLocationDisplay = string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
                     BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? GetDefaultBillingEligibilityStatus(asset) : asset.BillingEligibilityStatus,
                     HasDataIssue = issues.Count > 0
                 };
@@ -979,7 +978,7 @@ public sealed partial class RentalStateService
         {
             var existing = await _db.RentalAssets.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id == asset.Id, ct);
-            if (existing is not null && !CanEditAssetScope(existing.AssignedUsername, existing.ResponsibleOfficeCode, session))
+            if (existing is not null && !CanEditAssetScope(existing.ResponsibleOfficeCode, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 수정할 수 없습니다.");
 
             var officeCode = await ResolveRentalOfficeCodeAsync(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, session.OfficeCode, ct);
@@ -994,8 +993,8 @@ public sealed partial class RentalStateService
 
             asset.ManagementCompanyCode = officeCode;
             asset.ResponsibleOfficeCode = officeCode;
-            asset.AssignedUsername = NormalizeAssignedUsername(asset.AssignedUsername, officeCode, session, allowBlankForAdmin: true);
-            if (!CanEditAssetScope(asset.AssignedUsername, officeCode, session))
+            asset.AssignedUsername = string.Empty;
+            if (!CanEditAssetScope(officeCode, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 저장할 수 없습니다.");
             asset.ManagementNumber = existing is null
                 ? string.Empty
@@ -1007,7 +1006,7 @@ public sealed partial class RentalStateService
             asset.CurrentCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName);
             asset.BillToCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(string.IsNullOrWhiteSpace(asset.BillToCustomerName) ? asset.CustomerName : asset.BillToCustomerName);
             asset.CurrentLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CurrentLocation);
-            asset.InstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(string.IsNullOrWhiteSpace(asset.InstallSiteName) ? asset.InstallLocation : asset.InstallSiteName);
+            asset.InstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation);
             asset.ItemCategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(asset.ItemCategoryName);
             asset.Manufacturer = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.Manufacturer);
             asset.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName);
@@ -1084,8 +1083,8 @@ public sealed partial class RentalStateService
             .FirstOrDefaultAsync(current => current.Id == assetId, ct);
         if (asset is null)
             return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
-        if (!CanEditAssetScope(asset.AssignedUsername, asset.ResponsibleOfficeCode, session))
-            return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 삭제할 수 없습니다.");
+            if (!CanEditAssetScope(asset.ResponsibleOfficeCode, session))
+                return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 삭제할 수 없습니다.");
 
         asset.IsDeleted = true;
         asset.IsDirty = true;
@@ -1515,7 +1514,7 @@ public sealed partial class RentalStateService
                     BillingProfileId = existing?.BillingProfileId,
                     ManagementId = existing?.ManagementId ?? string.Empty,
                     ManagementNumber = existing?.ManagementNumber ?? string.Empty,
-                    AssignedUsername = existing?.AssignedUsername ?? string.Empty,
+                    AssignedUsername = string.Empty,
                     CreatedAtUtc = existing?.CreatedAtUtc ?? DateTime.UtcNow,
                     Notes = BuildImportedAssetNotes(existing?.Notes, sourceManagementId, sourceManagementNumber)
                 };
@@ -1622,9 +1621,6 @@ public sealed partial class RentalStateService
             query = query.Where(asset =>
                 asset.ResponsibleOfficeCode == filter.OfficeCode ||
                 asset.ManagementCompanyCode == filter.OfficeCode);
-
-        if (CanViewAllRental(session) && !string.IsNullOrWhiteSpace(filter.AssignedUsername))
-            query = query.Where(asset => asset.AssignedUsername == filter.AssignedUsername);
 
         if (!string.IsNullOrWhiteSpace(filter.ItemCategoryName))
             query = query.Where(asset => asset.ItemCategoryName == filter.ItemCategoryName);
@@ -1735,7 +1731,7 @@ public sealed partial class RentalStateService
     public string GetDefaultAssetOfficeCode(SessionState session)
         => NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
 
-    public bool CanEditAssetScope(string? assignedUsername, string? officeCode, SessionState? session)
+    public bool CanEditAssetScope(string? officeCode, SessionState? session)
     {
         if (session is null || !session.IsLoggedIn)
             return false;
@@ -1745,14 +1741,7 @@ public sealed partial class RentalStateService
 
         var normalizedOfficeCode = NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet);
         var defaultOfficeCode = GetDefaultAssetOfficeCode(session);
-        if (!string.Equals(normalizedOfficeCode, defaultOfficeCode, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        var normalizedAssigned = NormalizeUsername(assignedUsername);
-        if (string.IsNullOrWhiteSpace(normalizedAssigned))
-            return true;
-
-        return string.Equals(normalizedAssigned, NormalizeUsername(session.User?.Username), StringComparison.OrdinalIgnoreCase);
+        return string.Equals(normalizedOfficeCode, defaultOfficeCode, StringComparison.OrdinalIgnoreCase);
     }
 
     private static HashSet<string> GetReadableOfficeCodes(SessionState session)
@@ -2842,7 +2831,7 @@ public sealed partial class RentalStateService
         if (string.IsNullOrWhiteSpace(asset.CurrentCustomerName) && string.IsNullOrWhiteSpace(asset.CustomerName))
             issues.Add("현재거래처 없음");
         if (string.IsNullOrWhiteSpace(asset.InstallSiteName) && string.IsNullOrWhiteSpace(asset.InstallLocation))
-            issues.Add("설치처 불명");
+            issues.Add("설치위치 불명");
         if (string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus))
             issues.Add("청구상태 미확정");
         if (string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase) && asset.BillingProfileId.HasValue)

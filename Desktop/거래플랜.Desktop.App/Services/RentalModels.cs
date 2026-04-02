@@ -18,7 +18,6 @@ public sealed class RentalAssetFilter
     public string SearchText { get; set; } = string.Empty;
     public string ItemCategoryName { get; set; } = string.Empty;
     public string OfficeCode { get; set; } = string.Empty;
-    public string AssignedUsername { get; set; } = string.Empty;
     public string AssetStatus { get; set; } = string.Empty;
     public DateOnly ReferenceDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
 }
@@ -314,7 +313,7 @@ public sealed class RentalAssetViewRow
     public int? DaysRemaining { get; init; }
     public string CurrentCustomerName { get; init; } = string.Empty;
     public string BillToCustomerName { get; init; } = string.Empty;
-    public string InstallSiteName { get; init; } = string.Empty;
+    public string InstallLocationDisplay { get; init; } = string.Empty;
     public string BillingEligibilityStatus { get; init; } = string.Empty;
     public bool HasDataIssue { get; init; }
     public bool IsSelected { get; set; }

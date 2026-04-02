@@ -42,6 +42,7 @@ public static partial class LocalDbInitializer
     private const string BackfillItemOperationalFieldsStepKey = "Migration.BackfillItemOperationalFields.v1";
     private const string BackfillInvoiceLineTrackingTypesStepKey = "Migration.BackfillInvoiceLineTrackingTypes.v1";
     private const string NormalizeRentalOfficeDataStepKey = "Migration.NormalizeRentalOfficeData.v1";
+    private const string NormalizeRentalAssetOfficeOwnershipStepKey = "Migration.NormalizeRentalAssetOfficeOwnership.v1";
     private static readonly Regex SqlIdentifierPattern = new(
         "^[A-Za-z0-9_]+$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -113,6 +114,10 @@ public static partial class LocalDbInitializer
             db,
             NormalizeRentalOfficeDataStepKey,
             async () => await NormalizeRentalOfficeDataAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeRentalAssetOfficeOwnershipStepKey,
+            async () => await NormalizeRentalAssetOfficeOwnershipAsync(db));
         await RunStartupMaintenanceStepAsync(
             db,
             CleanupLegacyRentalStartupDirtyItemsStepKey,

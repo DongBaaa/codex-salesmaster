@@ -130,6 +130,7 @@ public static partial class DbInitializer
         await MergeDuplicateCustomersAsync(dbContext, cancellationToken);
         await MergeBusinessDuplicateCustomersAsync(dbContext, cancellationToken);
         await NormalizeRentalBillingScheduleRulesAsync(dbContext, cancellationToken);
+        await NormalizeRentalAssetOfficeOwnershipAsync(dbContext, cancellationToken);
         await MergeDuplicateRentalBillingProfilesAsync(dbContext, cancellationToken);
         await MergeDuplicateRentalAssetsAsync(dbContext, cancellationToken);
         await MergeDuplicateCompanyProfilesAsync(dbContext, cancellationToken);
@@ -153,6 +154,7 @@ public static partial class DbInitializer
             await MergeDuplicateCustomersAsync(tenantDbContext, cancellationToken);
             await MergeBusinessDuplicateCustomersAsync(tenantDbContext, cancellationToken);
             await NormalizeRentalBillingScheduleRulesAsync(tenantDbContext, cancellationToken);
+            await NormalizeRentalAssetOfficeOwnershipAsync(tenantDbContext, cancellationToken);
             await MergeDuplicateRentalBillingProfilesAsync(tenantDbContext, cancellationToken);
             await MergeDuplicateRentalAssetsAsync(tenantDbContext, cancellationToken);
             await MergeDuplicateCompanyProfilesAsync(tenantDbContext, cancellationToken);

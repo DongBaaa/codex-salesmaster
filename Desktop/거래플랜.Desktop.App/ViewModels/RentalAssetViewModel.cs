@@ -28,7 +28,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private DisplayOption? _selectedOfficeFilter;
     [ObservableProperty] private string _selectedItemCategoryFilter = AllOption;
-    [ObservableProperty] private string _selectedAssignedUsernameFilter = AllOption;
     [ObservableProperty] private string _selectedStatusFilter = AllOption;
     [ObservableProperty] private DateOnly _referenceDate = DateOnly.FromDateTime(DateTime.Today);
     [ObservableProperty] private bool _isBusy;
@@ -53,13 +52,11 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private string _editCurrentCustomerName = string.Empty;
     [ObservableProperty] private string _editBillToCustomerName = string.Empty;
     [ObservableProperty] private string _editInstallLocation = string.Empty;
-    [ObservableProperty] private string _editInstallSiteName = string.Empty;
     [ObservableProperty] private string _editDepositText = string.Empty;
     [ObservableProperty] private decimal _editMonthlyFee;
     [ObservableProperty] private int _editContractMonths;
     [ObservableProperty] private string _editFreeSupplyItems = string.Empty;
     [ObservableProperty] private string _editPaidSupplyItems = string.Empty;
-    [ObservableProperty] private string _editAssignedUsername = string.Empty;
     [ObservableProperty] private string _editAssetStatus = "임대진행중";
     [ObservableProperty] private string _editBillingEligibilityStatus = "미확인";
     [ObservableProperty] private string _editBillingExclusionReason = string.Empty;
@@ -74,8 +71,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public ObservableCollection<DisplayOption> FilterOfficeOptions { get; } = new();
     public ObservableCollection<DisplayOption> EditOfficeOptions { get; } = new();
     public ObservableCollection<string> ItemCategoryFilterOptions { get; } = new();
-    public ObservableCollection<string> AssignedUsernameOptions { get; } = new();
-    public ObservableCollection<string> EditAssignedUsernameOptions { get; } = new();
     public ObservableCollection<string> AssetStatusOptions { get; } = new();
     public ObservableCollection<string> EditableAssetStatusOptions { get; } = new();
     public ObservableCollection<string> BillingEligibilityStatusOptions { get; } = new();
@@ -92,7 +87,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public SessionState SessionState => _session;
 
     private bool CanEditCurrentSelection => SelectedRow is null || _rental.CanEditAssetScope(
-        SelectedRow.Source.AssignedUsername,
         string.IsNullOrWhiteSpace(SelectedRow.Source.ResponsibleOfficeCode)
             ? SelectedRow.Source.ManagementCompanyCode
             : SelectedRow.Source.ResponsibleOfficeCode,
@@ -142,7 +136,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     partial void OnSearchTextChanged(string value) => RequestFilterReload();
     partial void OnSelectedOfficeFilterChanged(DisplayOption? value) => RequestFilterReload();
     partial void OnSelectedItemCategoryFilterChanged(string value) => RequestFilterReload();
-    partial void OnSelectedAssignedUsernameFilterChanged(string value) => RequestFilterReload();
     partial void OnSelectedStatusFilterChanged(string value) => RequestFilterReload();
     partial void OnReferenceDateChanged(DateOnly value) => RequestFilterReload();
     partial void OnEditCustomerNameChanged(string value)
@@ -174,7 +167,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                     SearchText = SearchText,
                     ItemCategoryName = SelectedItemCategoryFilter == AllOption ? string.Empty : SelectedItemCategoryFilter,
                     OfficeCode = SelectedOfficeFilter?.Value == AllOption ? string.Empty : SelectedOfficeFilter?.Value ?? string.Empty,
-                    AssignedUsername = SelectedAssignedUsernameFilter == AllOption ? string.Empty : SelectedAssignedUsernameFilter,
                     AssetStatus = SelectedStatusFilter == AllOption ? string.Empty : SelectedStatusFilter,
                     ReferenceDate = ReferenceDate
                 }, _session);
@@ -229,14 +221,14 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             CurrentCustomerName = EditCurrentCustomerName,
             BillToCustomerName = EditBillToCustomerName,
             InstallLocation = EditInstallLocation,
-            InstallSiteName = EditInstallSiteName,
+            InstallSiteName = EditInstallLocation,
             DepositText = EditDepositText,
             MonthlyFee = EditMonthlyFee,
             ContractMonths = EditContractMonths,
             FreeSupplyItems = EditFreeSupplyItems,
             PaidSupplyItems = EditPaidSupplyItems,
             ResponsibleOfficeCode = officeCode,
-            AssignedUsername = EditAssignedUsername,
+            AssignedUsername = string.Empty,
             AssetStatus = EditAssetStatus,
             BillingEligibilityStatus = EditBillingEligibilityStatus,
             BillingExclusionReason = EditBillingExclusionReason,
@@ -340,13 +332,11 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         EditCurrentCustomerName = string.Empty;
         EditBillToCustomerName = string.Empty;
         EditInstallLocation = string.Empty;
-        EditInstallSiteName = string.Empty;
         EditDepositText = string.Empty;
         EditMonthlyFee = 0m;
         EditContractMonths = 0;
         EditFreeSupplyItems = string.Empty;
         EditPaidSupplyItems = string.Empty;
-        EditAssignedUsername = CanManageAll ? string.Empty : (_session.User?.Username ?? string.Empty);
         EditAssetStatus = "임대진행중";
         EditBillingEligibilityStatus = "미확인";
         EditBillingExclusionReason = string.Empty;
@@ -462,16 +452,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         EditCustomerName = source.CustomerName;
         EditCurrentCustomerName = string.IsNullOrWhiteSpace(source.CurrentCustomerName) ? source.CustomerName : source.CurrentCustomerName;
         EditBillToCustomerName = string.IsNullOrWhiteSpace(source.BillToCustomerName) ? source.CustomerName : source.BillToCustomerName;
-        EditInstallLocation = source.InstallLocation;
-        EditInstallSiteName = string.IsNullOrWhiteSpace(source.InstallSiteName) ? source.InstallLocation : source.InstallSiteName;
+        EditInstallLocation = string.IsNullOrWhiteSpace(source.InstallLocation) ? source.InstallSiteName : source.InstallLocation;
         EditDepositText = source.DepositText;
         EditMonthlyFee = source.MonthlyFee;
         EditContractMonths = source.ContractMonths;
         EditFreeSupplyItems = source.FreeSupplyItems;
         EditPaidSupplyItems = source.PaidSupplyItems;
-        EditAssignedUsername = string.IsNullOrWhiteSpace(source.AssignedUsername)
-            ? (_session.User?.Username ?? string.Empty)
-            : source.AssignedUsername;
         EditAssetStatus = source.AssetStatus;
         EditBillingEligibilityStatus = string.IsNullOrWhiteSpace(source.BillingEligibilityStatus) ? "미확인" : source.BillingEligibilityStatus;
         EditBillingExclusionReason = source.BillingExclusionReason;
@@ -524,6 +510,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             SalePrice = EditSalePrice,
             CustomerName = EditCustomerName,
             InstallLocation = EditInstallLocation,
+            InstallSiteName = EditInstallLocation,
             DepositText = EditDepositText,
             MonthlyFee = EditMonthlyFee,
             ContractMonths = EditContractMonths,
@@ -534,7 +521,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             FreeSupplyItems = EditFreeSupplyItems,
             PaidSupplyItems = EditPaidSupplyItems,
             ResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(EditOfficeCode, _session.OfficeCode),
-            AssignedUsername = EditAssignedUsername,
+            AssignedUsername = string.Empty,
             AssetStatus = EditAssetStatus,
             Notes = EditNotes
         };
@@ -742,23 +729,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                                string.Equals(option.Value, currentEditOfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
                            ?? EditOfficeOptions.First().Value;
 
-            AssignedUsernameOptions.Clear();
-            EditAssignedUsernameOptions.Clear();
-            AssignedUsernameOptions.Add(AllOption);
-            if (CanViewAll)
-            {
-                foreach (var username in await _rental.GetAssignedUsernamesAsync())
-                {
-                    AssignedUsernameOptions.Add(username);
-                    EditAssignedUsernameOptions.Add(username);
-                }
-            }
-
-            if (CanManageAll && !EditAssignedUsernameOptions.Contains(string.Empty))
-                EditAssignedUsernameOptions.Insert(0, string.Empty);
-
-            if (!AssignedUsernameOptions.Contains(SelectedAssignedUsernameFilter))
-                SelectedAssignedUsernameFilter = AllOption;
         }
         finally
         {

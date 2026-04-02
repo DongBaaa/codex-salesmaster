@@ -110,8 +110,6 @@
                 <ComboBox Width="150" ItemsSource="{Binding ItemCategoryFilterOptions}" SelectedItem="{Binding SelectedItemCategoryFilter}" Margin="0,0,12,0"/>
                 <TextBlock Text="담당지점" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <ComboBox Width="150" ItemsSource="{Binding FilterOfficeOptions}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedOfficeFilter}" Margin="0,0,12,0"/>
-                <TextBlock Text="담당계정" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <ComboBox Width="130" ItemsSource="{Binding AssignedUsernameOptions}" SelectedItem="{Binding SelectedAssignedUsernameFilter}" IsEnabled="{Binding CanViewAll}" Margin="0,0,12,0"/>
                 <TextBlock Text="상태" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <ComboBox Width="130" ItemsSource="{Binding AssetStatusOptions}" SelectedItem="{Binding SelectedStatusFilter}" Margin="0,0,12,0"/>
                 <TextBlock Text="기준일" VerticalAlignment="Center" Margin="0,0,8,0"/>
@@ -146,7 +144,7 @@
                         <DataGridTextColumn Header="관리번호" Binding="{Binding Source.ManagementNumber}" Width="110"/>
                         <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="110"/>
                         <DataGridTextColumn Header="청구 거래처" Binding="{Binding BillToCustomerName}" Width="150"/>
-                        <DataGridTextColumn Header="설치처" Binding="{Binding InstallSiteName}" Width="170"/>
+                        <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocationDisplay}" Width="170"/>
                         <DataGridTextColumn Header="품목분류" Binding="{Binding Source.ItemCategoryName}" Width="120"/>
                         <DataGridTextColumn Header="품명" Binding="{Binding Source.ItemName}" Width="150"/>
                         <DataGridTextColumn Header="기계번호" Binding="{Binding Source.MachineNumber}" Width="140"/>
@@ -246,8 +244,6 @@
                             <TextBox Grid.Column="0" Text="{Binding EditPurchaseVendor, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
                             <Button Grid.Column="1" Content="조회" MinWidth="72" Padding="10,0" Click="PurchaseVendorLookupButton_Click"/>
                         </Grid>
-                        <TextBlock Grid.Row="9" Grid.Column="3" Text="담당계정" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                        <ComboBox Grid.Row="9" Grid.Column="4" ItemsSource="{Binding EditAssignedUsernameOptions}" SelectedItem="{Binding EditAssignedUsername}" IsEditable="True" IsEnabled="{Binding CanManageAll}" Margin="0,0,0,8"/>
 
                         <TextBlock Grid.Row="10" Grid.Column="0" Text="월요금" VerticalAlignment="Center" Margin="0,0,10,8"/>
                         <TextBox Grid.Row="10" Grid.Column="1" Text="{Binding EditMonthlyFee, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
