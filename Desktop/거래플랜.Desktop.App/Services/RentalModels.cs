@@ -7,7 +7,6 @@ public sealed class RentalBillingFilter
 {
     public string SearchText { get; set; } = string.Empty;
     public string OfficeCode { get; set; } = string.Empty;
-    public string AssignedUsername { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public bool DueOnly { get; set; }
     public DateOnly ReferenceDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
@@ -29,7 +28,6 @@ public sealed class RentalAlertItem
     public string CustomerName { get; set; } = string.Empty;
     public string RealCustomerName { get; set; } = string.Empty;
     public string ItemName { get; set; } = string.Empty;
-    public string AssignedUsername { get; set; } = string.Empty;
     public decimal MonthlyAmount { get; set; }
     public DateOnly NextBillingDate { get; set; }
     public DateOnly? DocumentIssueDate { get; set; }
@@ -235,7 +233,6 @@ public sealed class RentalBillingEditorDraftModel
     public string FollowUpNote { get; set; } = string.Empty;
     public string SubmissionDocuments { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
-    public string AssignedUsername { get; set; } = string.Empty;
     public bool LinkAssetsLater { get; set; }
     public DateTime? BillingAnchorDate { get; set; }
     public DateTime? BillingStartDate { get; set; }
@@ -260,7 +257,6 @@ public sealed class RentalCustomerOnboardingDraftModel
     public string Email { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
     public string OfficeCode { get; set; } = string.Empty;
-    public string AssignedUsername { get; set; } = string.Empty;
     public string RealCustomerName { get; set; } = string.Empty;
     public string BillToCustomerName { get; set; } = string.Empty;
     public string InstallSiteName { get; set; } = string.Empty;
@@ -288,7 +284,6 @@ public sealed class RentalBillingViewRow
     public LocalRentalBillingProfile Source { get; init; } = new();
     public string CustomerDisplayName { get; init; } = string.Empty;
     public string ResponsibleOfficeName { get; init; } = string.Empty;
-    public string AssignedUsernameDisplay { get; init; } = string.Empty;
     public DateOnly? NextBillingDate { get; init; }
     public int? DaysRemaining { get; init; }
     public string DisplayStatus { get; init; } = string.Empty;

@@ -201,18 +201,12 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalRentalBillingProfile>()
             .HasIndex(profile => profile.ProfileKey)
             .IsUnique();
-        model.Entity<LocalRentalBillingProfile>()
-            .HasIndex(profile => new { profile.AssignedUsername, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode });
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => asset.AssetKey)
             .IsUnique();
-        model.Entity<LocalRentalAsset>()
-            .HasIndex(asset => new { asset.AssignedUsername, asset.ResponsibleOfficeCode, asset.ManagementCompanyCode });
         model.Entity<LocalRentalBillingLog>()
             .HasIndex(log => new { log.BillingProfileId, log.BillingYearMonth })
             .IsUnique();
-        model.Entity<LocalRentalBillingLog>()
-            .HasIndex(log => new { log.AssignedUsername, log.ResponsibleOfficeCode, log.ScheduledDate });
         model.Entity<LocalAuditLog>()
             .HasIndex(a => new { a.EntityName, a.EntityId, a.CreatedAtUtc });
         model.Entity<LocalInventoryTransfer>()

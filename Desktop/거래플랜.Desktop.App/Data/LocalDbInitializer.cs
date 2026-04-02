@@ -35,7 +35,7 @@ public static partial class LocalDbInitializer
     private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.MergeDuplicateRentalBillingProfiles.v1";
     private const string MergeDuplicateRentalAssetsStepKey = "Migration.MergeDuplicateRentalAssets.v2";
     private const string MergeDuplicateCompanyProfilesStepKey = "Migration.MergeDuplicateCompanyProfiles.v1";
-    private const string RepairRentalCustomerLinkageStepKey = "Migration.RepairRentalCustomerLinkage.v3";
+    private const string RepairRentalCustomerLinkageStepKey = "Migration.RepairRentalCustomerLinkage.v4";
     private const string MergeDuplicateItemsStepKey = "Migration.MergeDuplicateItems.v1";
     private const string NormalizeRentalBillingScheduleRulesStepKey = "Migration.NormalizeRentalBillingScheduleRules.v2";
     private const string CleanupDeletedInvoiceChainStepKey = "Migration.CleanupDeletedInvoiceChain.v1";
@@ -44,6 +44,7 @@ public static partial class LocalDbInitializer
     private const string BackfillInvoiceLineTrackingTypesStepKey = "Migration.BackfillInvoiceLineTrackingTypes.v1";
     private const string NormalizeRentalOfficeDataStepKey = "Migration.NormalizeRentalOfficeData.v1";
     private const string NormalizeRentalAssetOfficeOwnershipStepKey = "Migration.NormalizeRentalAssetOfficeOwnership.v1";
+    private const string DropLegacyRentalAssignedUsernameIndexesStepKey = "Migration.DropLegacyRentalAssignedUsernameIndexes.v1";
     private static readonly Regex SqlIdentifierPattern = new(
         "^[A-Za-z0-9_]+$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -119,6 +120,10 @@ public static partial class LocalDbInitializer
             db,
             NormalizeRentalAssetOfficeOwnershipStepKey,
             async () => await NormalizeRentalAssetOfficeOwnershipAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            DropLegacyRentalAssignedUsernameIndexesStepKey,
+            async () => await DropLegacyRentalAssignedUsernameIndexesAsync(db));
         await RunStartupMaintenanceStepAsync(
             db,
             CleanupLegacyRentalStartupDirtyItemsStepKey,
@@ -2984,7 +2989,6 @@ public static partial class LocalDbInitializer
                                """;
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_ProfileKey\" ON \"RentalBillingProfiles\" (\"ProfileKey\");");
-            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_Assignee\" ON \"RentalBillingProfiles\" (\"AssignedUsername\", \"ResponsibleOfficeCode\", \"ManagementCompanyCode\");");
         }
         catch
         {
@@ -3045,7 +3049,6 @@ public static partial class LocalDbInitializer
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_AssetKey\" ON \"RentalAssets\" (\"AssetKey\");");
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"ManagementId\") WHERE TRIM(\"ManagementId\") <> '';");
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"ManagementNumber\") WHERE TRIM(\"ManagementNumber\") <> '';");
-            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_Assignee\" ON \"RentalAssets\" (\"AssignedUsername\", \"ResponsibleOfficeCode\", \"ManagementCompanyCode\");");
         }
         catch
         {
@@ -3078,7 +3081,6 @@ public static partial class LocalDbInitializer
                                """;
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalBillingLogs_ProfileMonth\" ON \"RentalBillingLogs\" (\"BillingProfileId\", \"BillingYearMonth\");");
-            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingLogs_AssigneeDate\" ON \"RentalBillingLogs\" (\"AssignedUsername\", \"ResponsibleOfficeCode\", \"ScheduledDate\");");
         }
         catch
         {

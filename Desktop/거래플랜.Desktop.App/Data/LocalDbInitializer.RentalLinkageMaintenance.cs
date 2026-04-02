@@ -50,6 +50,30 @@ public static partial class LocalDbInitializer
                 asset.CustomerName,
                 asset.CurrentCustomerName,
                 asset.BillToCustomerName);
+            var normalizedInstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation);
+            var normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallSiteName);
+            var canonicalInstallLocation = !string.IsNullOrWhiteSpace(normalizedInstallLocation)
+                ? normalizedInstallLocation
+                : normalizedInstallSiteName;
+
+            if (!string.Equals(asset.InstallLocation, canonicalInstallLocation, StringComparison.Ordinal))
+            {
+                asset.InstallLocation = canonicalInstallLocation;
+                changed = true;
+            }
+
+            if (!string.Equals(asset.InstallSiteName, canonicalInstallLocation, StringComparison.Ordinal))
+            {
+                asset.InstallSiteName = canonicalInstallLocation;
+                changed = true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(asset.AssignedUsername))
+            {
+                asset.AssignedUsername = string.Empty;
+                changed = true;
+            }
+
             if (asset.BillingProfileId.HasValue &&
                 (!activeProfilesById.ContainsKey(asset.BillingProfileId.Value) || asset.BillingProfileId.Value == Guid.Empty))
             {
@@ -204,6 +228,36 @@ public static partial class LocalDbInitializer
                 }
             }
 
+            if (!string.IsNullOrWhiteSpace(profile.AssignedUsername))
+            {
+                profile.AssignedUsername = string.Empty;
+                changed = true;
+            }
+
+            var normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.InstallSiteName);
+            if (string.IsNullOrWhiteSpace(normalizedInstallSiteName) &&
+                activeAssetsByProfileId.TryGetValue(profile.Id, out var linkedAssets))
+            {
+                var assetInstallLocations = linkedAssets
+                    .Select(asset => RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation))
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (assetInstallLocations.Count == 1)
+                    normalizedInstallSiteName = assetInstallLocations[0];
+            }
+
+            if (string.IsNullOrWhiteSpace(normalizedInstallSiteName))
+                normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.RealCustomerName);
+            if (string.IsNullOrWhiteSpace(normalizedInstallSiteName))
+                normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.CustomerName);
+
+            if (!string.Equals(profile.InstallSiteName, normalizedInstallSiteName, StringComparison.Ordinal))
+            {
+                profile.InstallSiteName = normalizedInstallSiteName;
+                changed = true;
+            }
+
             var hasLinkedAssets = activeAssetsByProfileId.ContainsKey(profile.Id);
             if (!hasLinkedAssets)
             {
@@ -245,14 +299,35 @@ public static partial class LocalDbInitializer
 
         foreach (var log in billingLogs.Where(log => !log.IsDeleted))
         {
+            var changed = false;
             if (!activeProfilesByIdAfterRepair.TryGetValue(log.BillingProfileId, out var profile))
-                continue;
+            {
+                if (!string.IsNullOrWhiteSpace(log.AssignedUsername))
+                {
+                    log.AssignedUsername = string.Empty;
+                    changed = true;
+                }
 
-            if (string.Equals(log.ResponsibleOfficeCode, profile.ResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
-                continue;
+                if (changed)
+                    MarkStartupMaintenanceChange(log, now);
 
-            log.ResponsibleOfficeCode = profile.ResponsibleOfficeCode;
-            MarkStartupMaintenanceChange(log, now);
+                continue;
+            }
+
+            if (!string.Equals(log.ResponsibleOfficeCode, profile.ResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                log.ResponsibleOfficeCode = profile.ResponsibleOfficeCode;
+                changed = true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(log.AssignedUsername))
+            {
+                log.AssignedUsername = string.Empty;
+                changed = true;
+            }
+
+            if (changed)
+                MarkStartupMaintenanceChange(log, now);
         }
     }
 

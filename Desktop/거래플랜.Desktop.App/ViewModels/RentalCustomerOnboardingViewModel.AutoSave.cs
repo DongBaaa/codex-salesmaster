@@ -23,7 +23,6 @@ public sealed partial class RentalCustomerOnboardingViewModel
         nameof(Email),
         nameof(Address),
         nameof(OfficeCode),
-        nameof(AssignedUsername),
         nameof(RealCustomerName),
         nameof(BillToCustomerName),
         nameof(InstallSiteName),
@@ -215,7 +214,6 @@ public sealed partial class RentalCustomerOnboardingViewModel
             Email = Email,
             Address = Address,
             OfficeCode = OfficeCode,
-            AssignedUsername = AssignedUsername,
             RealCustomerName = RealCustomerName,
             BillToCustomerName = BillToCustomerName,
             InstallSiteName = InstallSiteName,
@@ -249,7 +247,6 @@ public sealed partial class RentalCustomerOnboardingViewModel
         Email = draft.Email ?? string.Empty;
         Address = draft.Address ?? string.Empty;
         OfficeCode = draft.OfficeCode ?? OfficeCode;
-        AssignedUsername = draft.AssignedUsername ?? AssignedUsername;
         RealCustomerName = draft.RealCustomerName ?? string.Empty;
         BillToCustomerName = draft.BillToCustomerName ?? string.Empty;
         InstallSiteName = draft.InstallSiteName ?? string.Empty;

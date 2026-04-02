@@ -78,7 +78,6 @@ public static class RentalDuplicateNormalizer
             NormalizeTextKey(machineNumber),
             monthlyFee.ToString("0.################", CultureInfo.InvariantCulture),
             contractMonths.ToString(CultureInfo.InvariantCulture),
-            NormalizeProfileKeyPart(assignedUsername),
             NormalizeProfileKeyPart(assetStatus));
     }
 
@@ -115,8 +114,7 @@ public static class RentalDuplicateNormalizer
             NormalizeProfileKeyPart(managementCompanyCode),
             NormalizeProfileKeyPart(billingMethod),
             NormalizeProfileKeyPart(paymentMethod),
-            NormalizeProfileKeyPart(responsibleOfficeCode),
-            NormalizeProfileKeyPart(assignedUsername));
+            NormalizeProfileKeyPart(responsibleOfficeCode));
     }
 
     public static string RemapBillingTemplateIncludedAssetIds(

@@ -41,7 +41,6 @@ public sealed partial class RentalBillingViewModel
         nameof(EditFollowUpNote),
         nameof(EditSubmissionDocuments),
         nameof(EditNotes),
-        nameof(EditAssignedUsername),
         nameof(LinkAssetsLater),
         nameof(EditBillingAnchorDate),
         nameof(EditBillingStartDate),
@@ -287,7 +286,6 @@ public sealed partial class RentalBillingViewModel
             FollowUpNote = EditFollowUpNote,
             SubmissionDocuments = EditSubmissionDocuments,
             Notes = EditNotes,
-            AssignedUsername = EditAssignedUsername,
             LinkAssetsLater = LinkAssetsLater,
             BillingAnchorDate = EditBillingAnchorDate,
             BillingStartDate = EditBillingStartDate,
@@ -342,7 +340,6 @@ public sealed partial class RentalBillingViewModel
         EditFollowUpNote = draft.FollowUpNote ?? string.Empty;
         EditSubmissionDocuments = draft.SubmissionDocuments ?? string.Empty;
         EditNotes = draft.Notes ?? string.Empty;
-        EditAssignedUsername = draft.AssignedUsername ?? string.Empty;
         LinkAssetsLater = draft.LinkAssetsLater;
         EditBillingAnchorDate = draft.BillingAnchorDate;
         EditBillingStartDate = draft.BillingStartDate;

@@ -402,7 +402,6 @@ public static partial class DbInitializer
         changed |= TryAssignString(() => canonical.SubmissionDocuments, value => canonical.SubmissionDocuments = value, duplicate.SubmissionDocuments, preferLonger: true);
         changed |= TryAssignString(() => canonical.Notes, value => canonical.Notes = value, duplicate.Notes, preferLonger: true);
         changed |= TryAssignString(() => canonical.OfficeCode, value => canonical.OfficeCode = value, duplicate.OfficeCode);
-        changed |= TryAssignString(() => canonical.AssignedUsername, value => canonical.AssignedUsername = value, duplicate.AssignedUsername);
         changed |= TryAssignString(() => canonical.FollowUpNote, value => canonical.FollowUpNote = value, duplicate.FollowUpNote, preferLonger: true);
         changed |= TryAssignString(() => canonical.ItemName, value => canonical.ItemName = value, duplicate.ItemName);
         changed |= TryAssignString(() => canonical.TenantCode, value => canonical.TenantCode = value, duplicate.TenantCode);
@@ -551,7 +550,6 @@ public static partial class DbInitializer
         changed |= TryAssignString(() => canonical.FreeSupplyItems, value => canonical.FreeSupplyItems = value, duplicate.FreeSupplyItems, preferLonger: true);
         changed |= TryAssignString(() => canonical.PaidSupplyItems, value => canonical.PaidSupplyItems = value, duplicate.PaidSupplyItems, preferLonger: true);
         changed |= TryAssignString(() => canonical.OfficeCode, value => canonical.OfficeCode = value, duplicate.OfficeCode);
-        changed |= TryAssignString(() => canonical.AssignedUsername, value => canonical.AssignedUsername = value, duplicate.AssignedUsername);
         changed |= TryAssignString(() => canonical.AssetStatus, value => canonical.AssetStatus = value, duplicate.AssetStatus);
         changed |= TryAssignString(() => canonical.Notes, value => canonical.Notes = value, duplicate.Notes, preferLonger: true);
         changed |= TryAssignString(() => canonical.TenantCode, value => canonical.TenantCode = value, duplicate.TenantCode);
@@ -636,7 +634,6 @@ public static partial class DbInitializer
             current.SubmissionDocuments,
             current.Notes,
             current.OfficeCode,
-            current.AssignedUsername,
             current.FollowUpNote,
             current.TenantCode)
             + (current.CustomerId.HasValue && current.CustomerId.Value != Guid.Empty ? 1 : 0)
@@ -675,7 +672,6 @@ public static partial class DbInitializer
             current.FreeSupplyItems,
             current.PaidSupplyItems,
             current.OfficeCode,
-            current.AssignedUsername,
             current.AssetStatus,
             current.Notes,
             current.TenantCode)

@@ -40,13 +40,6 @@ public sealed partial class RentalStateService
         ["연수구"] = DomainConstants.OfficeYeonsu,
         ["YEONSU"] = DomainConstants.OfficeYeonsu
     };
-    private static readonly IReadOnlyDictionary<string, string> DefaultAssignedUsernameByOffice = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-    {
-        [DomainConstants.OfficeUsenet] = "usenet",
-        [DomainConstants.OfficeItworld] = "itworld",
-        [DomainConstants.OfficeYeonsu] = "yeonsu"
-    };
-
     private readonly LocalDbContext _db;
     private readonly LocalStateService? _local;
 
@@ -68,43 +61,17 @@ public sealed partial class RentalStateService
             .OrderBy(company => company.Name)
             .ToListAsync(ct);
 
-    public async Task<IReadOnlyList<string>> GetAssignedUsernamesAsync(CancellationToken ct = default)
-    {
-        var assignments = await _db.RentalBillingProfiles.IgnoreQueryFilters()
-            .Select(profile => new
-            {
-                profile.AssignedUsername,
-                profile.ResponsibleOfficeCode,
-                profile.ManagementCompanyCode
-            })
-            .Concat(_db.RentalAssets.IgnoreQueryFilters().Select(asset => new
-            {
-                asset.AssignedUsername,
-                asset.ResponsibleOfficeCode,
-                asset.ManagementCompanyCode
-            }))
-            .ToListAsync(ct);
-
-        return assignments
-            .Select(entry => ResolveAssignedUsernameForDisplay(entry.AssignedUsername, entry.ResponsibleOfficeCode, entry.ManagementCompanyCode))
-            .Where(username => !string.IsNullOrWhiteSpace(username))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(username => username, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    public async Task<int> RepairRoleBasedAssignedUsernamesAsync(CancellationToken ct = default)
+    public async Task<int> CleanupLegacyAssignedUsernamesAsync(CancellationToken ct = default)
     {
         var changed = 0;
         var now = DateTime.UtcNow;
 
         foreach (var profile in await _db.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync(ct))
         {
-            var normalized = ResolveAssignedUsernameForDisplay(profile.AssignedUsername, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode);
-            if (string.Equals(profile.AssignedUsername ?? string.Empty, normalized, StringComparison.Ordinal))
+            if (string.IsNullOrWhiteSpace(profile.AssignedUsername))
                 continue;
 
-            profile.AssignedUsername = normalized;
+            profile.AssignedUsername = string.Empty;
             profile.UpdatedAtUtc = now;
             profile.IsDirty = true;
             changed++;
@@ -123,11 +90,10 @@ public sealed partial class RentalStateService
 
         foreach (var log in await _db.RentalBillingLogs.IgnoreQueryFilters().ToListAsync(ct))
         {
-            var normalized = ResolveAssignedUsernameForDisplay(log.AssignedUsername, log.ResponsibleOfficeCode, null);
-            if (string.Equals(log.AssignedUsername ?? string.Empty, normalized, StringComparison.Ordinal))
+            if (string.IsNullOrWhiteSpace(log.AssignedUsername))
                 continue;
 
-            log.AssignedUsername = normalized;
+            log.AssignedUsername = string.Empty;
             log.UpdatedAtUtc = now;
             log.IsDirty = true;
             changed++;
@@ -138,9 +104,6 @@ public sealed partial class RentalStateService
 
         return changed;
     }
-
-    public string GetAssignedUsernameDisplay(string? assignedUsername, string? responsibleOfficeCode, string? managementCompanyCode = null)
-        => ResolveAssignedUsernameForDisplay(assignedUsername, responsibleOfficeCode, managementCompanyCode);
 
     public async Task<string> GetAlertDaysTextAsync(CancellationToken ct = default)
         => await _db.Settings.AsNoTracking()
@@ -509,7 +472,6 @@ public sealed partial class RentalStateService
                 Source = profile,
                 CustomerDisplayName = customerDisplayName,
                 ResponsibleOfficeName = ResolveOfficeDisplayName(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode, offices),
-                AssignedUsernameDisplay = ResolveAssignedUsernameForDisplay(profile.AssignedUsername, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode),
                 NextBillingDate = nextBillingDate,
                 DaysRemaining = daysRemaining,
                 DisplayStatus = BuildBillingDisplayStatus(profile, alertDate ?? nextBillingDate, daysRemaining),
@@ -752,7 +714,11 @@ public sealed partial class RentalStateService
 
         var existing = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == profile.Id, ct);
-        if (existing is not null && !CanAccessRental(existing.AssignedUsername, existing.ResponsibleOfficeCode, session))
+        if (existing is not null && !CanAccessRental(
+                string.IsNullOrWhiteSpace(existing.ResponsibleOfficeCode)
+                    ? existing.ManagementCompanyCode
+                    : existing.ResponsibleOfficeCode,
+                session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 수정할 수 없습니다.");
 
         var customerName = (profile.CustomerName ?? string.Empty).Trim();
@@ -797,8 +763,8 @@ public sealed partial class RentalStateService
         profile.FollowUpNote = (profile.FollowUpNote ?? string.Empty).Trim();
         profile.ResponsibleOfficeCode = officeCode;
         profile.ManagementCompanyCode = officeCode;
-        profile.AssignedUsername = NormalizeAssignedUsername(profile.AssignedUsername, officeCode, session, allowBlankForAdmin: true);
-        if (!CanAccessRental(profile.AssignedUsername, profile.ResponsibleOfficeCode, session))
+        profile.AssignedUsername = string.Empty;
+        if (!CanAccessRental(profile.ResponsibleOfficeCode, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 저장할 수 없습니다.");
 
         var templateItems = GetBillingTemplateItems(profile, Array.Empty<LocalRentalAsset>());
@@ -849,7 +815,11 @@ public sealed partial class RentalStateService
             .FirstOrDefaultAsync(current => current.Id == profileId, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanAccessRental(profile.AssignedUsername, profile.ResponsibleOfficeCode, session))
+        if (!CanAccessRental(
+                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
+                    ? profile.ManagementCompanyCode
+                    : profile.ResponsibleOfficeCode,
+                session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 삭제할 수 없습니다.");
 
         profile.IsDeleted = true;
@@ -869,7 +839,11 @@ public sealed partial class RentalStateService
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanAccessRental(profile.AssignedUsername, profile.ResponsibleOfficeCode, session))
+        if (!CanAccessRental(
+                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
+                    ? profile.ManagementCompanyCode
+                    : profile.ResponsibleOfficeCode,
+                session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 시작할 수 없습니다.");
         if (_local is null)
             return LocalMutationResult.Denied("렌탈 청구 전표 저장 서비스를 사용할 수 없습니다.");
@@ -972,7 +946,11 @@ public sealed partial class RentalStateService
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanAccessRental(profile.AssignedUsername, profile.ResponsibleOfficeCode, session))
+        if (!CanAccessRental(
+                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
+                    ? profile.ManagementCompanyCode
+                    : profile.ResponsibleOfficeCode,
+                session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 보류할 수 없습니다.");
 
         profile.BillingStatus = PaymentFlowConstants.BillingStatusOnHold;
@@ -1006,7 +984,11 @@ public sealed partial class RentalStateService
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanAccessRental(profile.AssignedUsername, profile.ResponsibleOfficeCode, session))
+        if (!CanAccessRental(
+                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
+                    ? profile.ManagementCompanyCode
+                    : profile.ResponsibleOfficeCode,
+                session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구의 수금을 등록할 수 없습니다.");
 
         NormalizeBillingSchedule(profile, referenceDate);
@@ -1066,7 +1048,7 @@ public sealed partial class RentalStateService
                 BilledAmount = billedAmount,
                 Note = normalizedNote,
                 ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
-                AssignedUsername = profile.AssignedUsername,
+                AssignedUsername = string.Empty,
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now,
                 IsDirty = true
@@ -1081,7 +1063,7 @@ public sealed partial class RentalStateService
             log.BilledAmount = billedAmount;
             log.Note = normalizedNote;
             log.ResponsibleOfficeCode = profile.ResponsibleOfficeCode;
-            log.AssignedUsername = profile.AssignedUsername;
+            log.AssignedUsername = string.Empty;
             log.UpdatedAtUtc = now;
             log.IsDirty = true;
             log.IsDeleted = false;
@@ -1396,7 +1378,11 @@ public sealed partial class RentalStateService
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanAccessRental(profile.AssignedUsername, profile.ResponsibleOfficeCode, session))
+        if (!CanAccessRental(
+                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
+                    ? profile.ManagementCompanyCode
+                    : profile.ResponsibleOfficeCode,
+                session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 처리할 수 없습니다.");
 
         NormalizeBillingSchedule(profile, referenceDate);
@@ -1430,7 +1416,7 @@ public sealed partial class RentalStateService
                 BilledAmount = billedAmount,
                 Note = (note ?? string.Empty).Trim(),
                 ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
-                AssignedUsername = profile.AssignedUsername,
+                AssignedUsername = string.Empty,
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now,
                 IsDirty = true
@@ -1445,7 +1431,7 @@ public sealed partial class RentalStateService
             log.BilledAmount = billedAmount;
             log.Note = (note ?? string.Empty).Trim();
             log.ResponsibleOfficeCode = profile.ResponsibleOfficeCode;
-            log.AssignedUsername = profile.AssignedUsername;
+            log.AssignedUsername = string.Empty;
             log.UpdatedAtUtc = now;
             log.IsDirty = true;
             log.IsDeleted = false;
@@ -1597,9 +1583,7 @@ public sealed partial class RentalStateService
                         profile.FollowUpNote = string.Empty;
                         profile.LastSettledDate = null;
                     }
-                    profile.AssignedUsername = string.IsNullOrWhiteSpace(existing?.AssignedUsername)
-                        ? NormalizeAssignedUsername(existing?.AssignedUsername, officeCode, session, allowBlankForAdmin: false)
-                        : existing!.AssignedUsername;
+                    profile.AssignedUsername = string.Empty;
                     profile.CustomerId = existing?.CustomerId ?? await ResolveCustomerIdAsync(profile.CustomerName, profile.BusinessNumber, ct);
                     profile.IsActive = true;
                     profile.IsDeleted = false;
@@ -1780,9 +1764,6 @@ public sealed partial class RentalStateService
                 profile.ResponsibleOfficeCode == filter.OfficeCode ||
                 profile.ManagementCompanyCode == filter.OfficeCode);
 
-        if (CanViewAllRental(session) && !string.IsNullOrWhiteSpace(filter.AssignedUsername))
-            query = query.Where(profile => profile.AssignedUsername == filter.AssignedUsername);
-
         if (!string.IsNullOrWhiteSpace(filter.Status))
         {
             if (filter.Status == "활성")
@@ -1840,11 +1821,10 @@ public sealed partial class RentalStateService
             return query.Where(profile => readableOfficeCodes.Contains(profile.ResponsibleOfficeCode));
         }
 
-        var username = NormalizeUsername(session.User?.Username);
         var officeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
         return query.Where(profile =>
-            profile.AssignedUsername == username ||
-            (profile.AssignedUsername == string.Empty && profile.ResponsibleOfficeCode == officeCode));
+            profile.ResponsibleOfficeCode == officeCode ||
+            profile.ManagementCompanyCode == officeCode);
     }
 
     private IQueryable<LocalRentalAsset> ApplyAssetScope(
@@ -1860,21 +1840,15 @@ public sealed partial class RentalStateService
             asset.ManagementCompanyCode == officeCode);
     }
 
-    private bool CanAccessRental(string? assignedUsername, string? officeCode, SessionState session)
+    private bool CanAccessRental(string? officeCode, SessionState session)
     {
         if (CanEditAllRental(session))
-            return true;
-
-        var username = NormalizeUsername(session.User?.Username);
-        var normalizedAssigned = NormalizeUsername(assignedUsername);
-        if (!string.IsNullOrWhiteSpace(normalizedAssigned) && normalizedAssigned == username)
             return true;
 
         if (CanViewTenantRental(session))
             return GetReadableOfficeCodes(session).Contains(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet));
 
-        return string.IsNullOrWhiteSpace(normalizedAssigned) &&
-               string.Equals(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet), NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet), StringComparison.OrdinalIgnoreCase);
+        return string.Equals(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet), NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet), StringComparison.OrdinalIgnoreCase);
     }
 
     private bool CanViewAllRental(SessionState? session)
@@ -2396,7 +2370,6 @@ public sealed partial class RentalStateService
             CustomerName = profile.CustomerName,
             RealCustomerName = profile.RealCustomerName,
             ItemName = profile.ItemName,
-            AssignedUsername = profile.AssignedUsername,
             MonthlyAmount = profile.MonthlyAmount,
             NextBillingDate = nextBillingDate.Value,
             DocumentIssueDate = documentIssueDate,
@@ -3231,50 +3204,6 @@ public sealed partial class RentalStateService
 
     private static string ResolveDefaultOfficeName(string officeCode)
         => OfficeCodeCatalog.GetOfficeDisplayName(officeCode);
-
-    private static string NormalizeAssignedUsername(string? assignedUsername, string? officeCode, SessionState session, bool allowBlankForAdmin)
-    {
-        var normalized = ResolveAssignedUsernameForDisplay(assignedUsername, officeCode, null);
-        if (!string.IsNullOrWhiteSpace(normalized))
-            return normalized;
-
-        if (allowBlankForAdmin && session.HasAdministrativePrivileges)
-            return string.Empty;
-
-        return ResolveAssignedUsernameForDisplay(session.User?.Username, officeCode, null);
-    }
-
-    private static string NormalizeUsername(string? username)
-        => (username ?? string.Empty).Trim();
-
-    private static string ResolveAssignedUsernameForDisplay(string? assignedUsername, string? responsibleOfficeCode, string? managementCompanyCode)
-    {
-        var normalized = NormalizeUsername(assignedUsername);
-        if (string.IsNullOrWhiteSpace(normalized))
-            return string.Empty;
-
-        if (!IsRoleLikeAssignedUsername(normalized))
-            return normalized;
-
-        var officeCode = NormalizeOfficeCode(
-            string.IsNullOrWhiteSpace(responsibleOfficeCode) ? managementCompanyCode : responsibleOfficeCode,
-            DomainConstants.OfficeUsenet);
-
-        return DefaultAssignedUsernameByOffice.TryGetValue(officeCode, out var mappedUsername)
-            ? mappedUsername
-            : string.Empty;
-    }
-
-    private static bool IsRoleLikeAssignedUsername(string? assignedUsername)
-    {
-        var normalized = NormalizeUsername(assignedUsername);
-        if (string.IsNullOrWhiteSpace(normalized))
-            return false;
-
-        return string.Equals(normalized, DomainConstants.RoleAdmin, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(normalized, DomainConstants.RoleUser, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(normalized, "administrator", StringComparison.OrdinalIgnoreCase);
-    }
 
     private async Task<Guid?> ResolveCustomerIdAsync(string? customerName, string? businessNumber, CancellationToken ct)
     {

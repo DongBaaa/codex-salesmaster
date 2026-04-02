@@ -21,4 +21,11 @@ public static partial class LocalDbInitializer
                 PreserveDirtyStateForStartupMaintenance(asset, now);
         }
     }
+
+    private static async Task DropLegacyRentalAssignedUsernameIndexesAsync(LocalDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("DROP INDEX IF EXISTS \"IX_RentalBillingProfiles_Assignee\";");
+        await db.Database.ExecuteSqlRawAsync("DROP INDEX IF EXISTS \"IX_RentalAssets_Assignee\";");
+        await db.Database.ExecuteSqlRawAsync("DROP INDEX IF EXISTS \"IX_RentalBillingLogs_AssigneeDate\";");
+    }
 }

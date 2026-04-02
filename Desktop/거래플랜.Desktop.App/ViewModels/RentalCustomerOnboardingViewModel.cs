@@ -27,7 +27,6 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     [ObservableProperty] private string _address = string.Empty;
 
     [ObservableProperty] private string _officeCode = string.Empty;
-    [ObservableProperty] private string _assignedUsername = string.Empty;
     [ObservableProperty] private string _realCustomerName = string.Empty;
     [ObservableProperty] private string _billToCustomerName = string.Empty;
     [ObservableProperty] private string _installSiteName = string.Empty;
@@ -55,7 +54,6 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     [ObservableProperty] private string _applySelectedAssetsHint = "청구항목과 후보 장비를 선택하면 연결할 수 있습니다.";
 
     public ObservableCollection<DisplayOption> OfficeOptions { get; } = new();
-    public ObservableCollection<string> AssignedUsernameOptions { get; } = new();
     public ObservableCollection<string> BillingTypeOptions { get; } = new();
     public ObservableCollection<string> BillingLineModeOptions { get; } = new();
     public ObservableCollection<string> BillingAdvanceModeOptions { get; } = new();
@@ -228,15 +226,8 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 });
             }
 
-            AssignedUsernameOptions.Clear();
-            foreach (var username in await _rental.GetAssignedUsernamesAsync())
-                AssignedUsernameOptions.Add(username);
-            if (!AssignedUsernameOptions.Contains(_session.User?.Username ?? string.Empty) && !string.IsNullOrWhiteSpace(_session.User?.Username))
-                AssignedUsernameOptions.Insert(0, _session.User!.Username);
-
             OfficeCode = OfficeOptions.FirstOrDefault()?.Value
                 ?? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
-            AssignedUsername = _session.User?.Username ?? string.Empty;
             BillingMethod = "전자세금계산서";
             PaymentMethod = "계좌이체";
             BillingDayMode = RentalBillingScheduleRules.BillingDayModeFixedDay;
@@ -419,7 +410,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 BillingAdvanceMode = BillingAdvanceMode,
                 ManagementCompanyCode = OfficeCode,
                 ResponsibleOfficeCode = OfficeCode,
-                AssignedUsername = AssignedUsername,
+                AssignedUsername = string.Empty,
                 BillingMethod = BillingMethod,
                 PaymentMethod = PaymentMethod,
                 BillingStatus = "예정",

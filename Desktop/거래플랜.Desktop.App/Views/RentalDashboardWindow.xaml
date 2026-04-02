@@ -129,7 +129,6 @@
                             <DataGridTextColumn Header="거래처 / 실거래처" Binding="{Binding Summary}" Width="240"/>
                             <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="180"/>
                             <DataGridTextColumn Header="월청구대금" Binding="{Binding MonthlyAmount, StringFormat=N0}" Width="120"/>
-                            <DataGridTextColumn Header="담당계정" Binding="{Binding AssignedUsername}" Width="120"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </DockPanel>

@@ -4179,8 +4179,7 @@ public sealed partial class LocalStateService
            string.Equals(
                NormalizeOfficeCode(profile.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
                NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet),
-               StringComparison.OrdinalIgnoreCase) ||
-           string.Equals(profile.AssignedUsername, session.User?.Username ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+               StringComparison.OrdinalIgnoreCase);
 
     public async Task<List<LocalTransactionAttachment>> GetTransactionAttachmentsAsync(
         Guid transactionId,

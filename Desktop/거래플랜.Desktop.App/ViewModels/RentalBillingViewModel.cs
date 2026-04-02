@@ -26,7 +26,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private DisplayOption? _selectedOfficeFilter;
-    [ObservableProperty] private string _selectedAssignedUsernameFilter = AllOption;
     [ObservableProperty] private string _selectedStatusFilter = AllOption;
     [ObservableProperty] private bool _dueOnly;
     [ObservableProperty] private DateOnly _referenceDate = DateOnly.FromDateTime(DateTime.Today);
@@ -65,7 +64,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private string _editFollowUpNote = string.Empty;
     [ObservableProperty] private string _editSubmissionDocuments = string.Empty;
     [ObservableProperty] private string _editNotes = string.Empty;
-    [ObservableProperty] private string _editAssignedUsername = string.Empty;
     [ObservableProperty] private string _templateSummary = string.Empty;
     [ObservableProperty] private string _assetCandidateSummary = string.Empty;
     [ObservableProperty] private bool _linkAssetsLater;
@@ -89,8 +87,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     public ObservableCollection<DisplayOption> OfficeOptions { get; } = new();
     public ObservableCollection<DisplayOption> EditOfficeOptions { get; } = new();
-    public ObservableCollection<string> AssignedUsernameOptions { get; } = new();
-    public ObservableCollection<string> EditAssignedUsernameOptions { get; } = new();
     public ObservableCollection<string> StatusOptions { get; } = new();
     public ObservableCollection<string> SettlementStatusOptions { get; } = new();
     public ObservableCollection<string> CompletionStatusOptions { get; } = new();
@@ -125,13 +121,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public Guid? InvoiceToOpenAfterClose { get; private set; }
 
     private bool CanAccessCurrentSelection => SelectedRow is null || CanOperateScope(
-        SelectedRow.Source.AssignedUsername,
         string.IsNullOrWhiteSpace(SelectedRow.Source.ResponsibleOfficeCode)
             ? SelectedRow.Source.ManagementCompanyCode
             : SelectedRow.Source.ResponsibleOfficeCode);
 
     private bool CanEditCurrentSelection => SelectedRow is null || CanOperateScope(
-        SelectedRow.Source.AssignedUsername,
         string.IsNullOrWhiteSpace(SelectedRow.Source.ResponsibleOfficeCode)
             ? SelectedRow.Source.ManagementCompanyCode
             : SelectedRow.Source.ResponsibleOfficeCode);
@@ -195,7 +189,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     partial void OnSearchTextChanged(string value) => RequestFilterReload();
     partial void OnSelectedOfficeFilterChanged(DisplayOption? value) => RequestFilterReload();
-    partial void OnSelectedAssignedUsernameFilterChanged(string value) => RequestFilterReload();
     partial void OnSelectedStatusFilterChanged(string value) => RequestFilterReload();
     partial void OnDueOnlyChanged(bool value) => RequestFilterReload();
     partial void OnReferenceDateChanged(DateOnly value) => RequestFilterReload();
@@ -262,7 +255,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
-        await _rental.RepairRoleBasedAssignedUsernamesAsync();
+        await _rental.CleanupLegacyAssignedUsernamesAsync();
         await ReloadFiltersAsync();
         await ReloadAsync();
 
@@ -298,7 +291,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 {
                     SearchText = SearchText,
                     OfficeCode = SelectedOfficeFilter?.Value == AllOption ? string.Empty : SelectedOfficeFilter?.Value ?? string.Empty,
-                    AssignedUsername = SelectedAssignedUsernameFilter == AllOption ? string.Empty : SelectedAssignedUsernameFilter,
                     Status = SelectedStatusFilter == AllOption ? string.Empty : SelectedStatusFilter,
                     DueOnly = DueOnly,
                     ReferenceDate = ReferenceDate
@@ -381,7 +373,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             SubmissionDocuments = EditSubmissionDocuments,
             Notes = EditNotes,
             ResponsibleOfficeCode = officeCode,
-            AssignedUsername = EditAssignedUsername,
+            AssignedUsername = string.Empty,
             BillingAnchorDate = ToDateOnly(EditBillingAnchorDate),
             BillingStartDate = ToDateOnly(EditBillingStartDate),
             ContractDate = ToDateOnly(EditContractDate),
@@ -591,7 +583,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditFollowUpNote = string.Empty;
         EditSubmissionDocuments = string.Empty;
         EditNotes = string.Empty;
-        EditAssignedUsername = CanManageAll ? string.Empty : (_session.User?.Username ?? string.Empty);
         EditBillingAnchorDate = null;
         EditBillingStartDate = DateTime.Today;
         EditContractDate = null;
@@ -753,12 +744,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditFollowUpNote = source.FollowUpNote;
         EditSubmissionDocuments = source.SubmissionDocuments;
         EditNotes = source.Notes;
-        EditAssignedUsername = _rental.GetAssignedUsernameDisplay(
-            source.AssignedUsername,
-            source.ResponsibleOfficeCode,
-            source.ManagementCompanyCode);
-        if (string.IsNullOrWhiteSpace(EditAssignedUsername))
-            EditAssignedUsername = _session.User?.Username ?? string.Empty;
         EditBillingAnchorDate = ToDateTime(source.BillingAnchorDate);
         EditBillingStartDate = ToDateTime(source.BillingStartDate);
         EditContractDate = ToDateTime(source.ContractDate);
@@ -813,20 +798,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             if (!EditOfficeOptions.Any(option => option.Value == EditOfficeCode) && EditOfficeOptions.Count > 0)
                 EditOfficeCode = EditOfficeOptions[0].Value;
 
-            AssignedUsernameOptions.Clear();
-            EditAssignedUsernameOptions.Clear();
-            AssignedUsernameOptions.Add(AllOption);
-            foreach (var username in await _rental.GetAssignedUsernamesAsync())
-            {
-                AssignedUsernameOptions.Add(username);
-                EditAssignedUsernameOptions.Add(username);
-            }
-
-            if (CanManageAll && !EditAssignedUsernameOptions.Contains(string.Empty))
-                EditAssignedUsernameOptions.Insert(0, string.Empty);
-
-            if (!AssignedUsernameOptions.Contains(SelectedAssignedUsernameFilter))
-                SelectedAssignedUsernameFilter = AllOption;
         }
         finally
         {
@@ -1082,24 +1053,29 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 : string.Join(", ", labels);
     }
 
-    private bool CanOperateScope(string? assignedUsername, string? officeCode)
+    private bool CanOperateScope(string? officeCode)
     {
         if (CanManageAll)
             return true;
 
-        var username = (_session.User?.Username ?? string.Empty).Trim();
-        var normalizedAssigned = _rental.GetAssignedUsernameDisplay(assignedUsername, officeCode);
-        if (!string.IsNullOrWhiteSpace(normalizedAssigned) &&
-            string.Equals(normalizedAssigned, username, StringComparison.OrdinalIgnoreCase))
-        {
+        if (_session.HasGlobalDataScope)
             return true;
-        }
 
         var rowOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, DomainConstants.OfficeUsenet);
+        if (string.IsNullOrWhiteSpace(rowOffice))
+            return false;
+
+        if (string.Equals(_session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            return TenantScopeCatalog.GetOfficeCodesForTenant(_session.TenantCode)
+                .Any(code => string.Equals(
+                    OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(code, DomainConstants.OfficeUsenet),
+                    rowOffice,
+                    StringComparison.OrdinalIgnoreCase));
+        }
+
         var userOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
-        return string.IsNullOrWhiteSpace(normalizedAssigned) &&
-               !string.IsNullOrWhiteSpace(rowOffice) &&
-               string.Equals(rowOffice, userOffice, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(rowOffice, userOffice, StringComparison.OrdinalIgnoreCase);
     }
 
     private bool TryValidateTemplateConfiguration(out string message)
@@ -1174,7 +1150,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             NormalizeText(EditFollowUpNote),
             NormalizeText(EditSubmissionDocuments),
             NormalizeText(EditNotes),
-            NormalizeText(EditAssignedUsername),
             LinkAssetsLater ? "Y" : "N",
             NormalizeNullableDate(EditBillingAnchorDate),
             NormalizeNullableDate(EditBillingStartDate),

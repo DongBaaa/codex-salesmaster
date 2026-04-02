@@ -155,9 +155,7 @@
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="담당지점" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <ComboBox Grid.Row="0" Grid.Column="1" ItemsSource="{Binding OfficeOptions}" DisplayMemberPath="DisplayName" SelectedValuePath="Value" SelectedValue="{Binding OfficeCode}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="0" Grid.Column="3" Text="담당계정" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <ComboBox Grid.Row="0" Grid.Column="4" ItemsSource="{Binding AssignedUsernameOptions}" SelectedItem="{Binding AssignedUsername}" IsEditable="True" Margin="0,0,0,8"/>
+                            <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="4" ItemsSource="{Binding OfficeOptions}" DisplayMemberPath="DisplayName" SelectedValuePath="Value" SelectedValue="{Binding OfficeCode}" Margin="0,0,0,8"/>
                             <TextBlock Grid.Row="1" Grid.Column="0" Text="실거래처/부서" VerticalAlignment="Center" Margin="0,0,10,8"/>
                             <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding RealCustomerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
                             <TextBlock Grid.Row="1" Grid.Column="3" Text="청구 대상 거래처" VerticalAlignment="Center" Margin="0,0,10,8"/>

@@ -399,7 +399,6 @@ public static partial class LocalDbInitializer
         changed |= TryAssignString(() => canonical.SubmissionDocuments, value => canonical.SubmissionDocuments = value, duplicate.SubmissionDocuments, preferLonger: true);
         changed |= TryAssignString(() => canonical.Notes, value => canonical.Notes = value, duplicate.Notes, preferLonger: true);
         changed |= TryAssignString(() => canonical.ResponsibleOfficeCode, value => canonical.ResponsibleOfficeCode = value, duplicate.ResponsibleOfficeCode);
-        changed |= TryAssignString(() => canonical.AssignedUsername, value => canonical.AssignedUsername = value, duplicate.AssignedUsername);
         changed |= TryAssignString(() => canonical.FollowUpNote, value => canonical.FollowUpNote = value, duplicate.FollowUpNote, preferLonger: true);
         changed |= TryAssignString(() => canonical.ItemName, value => canonical.ItemName = value, duplicate.ItemName);
 
@@ -547,7 +546,6 @@ public static partial class LocalDbInitializer
         changed |= TryAssignString(() => canonical.FreeSupplyItems, value => canonical.FreeSupplyItems = value, duplicate.FreeSupplyItems, preferLonger: true);
         changed |= TryAssignString(() => canonical.PaidSupplyItems, value => canonical.PaidSupplyItems = value, duplicate.PaidSupplyItems, preferLonger: true);
         changed |= TryAssignString(() => canonical.ResponsibleOfficeCode, value => canonical.ResponsibleOfficeCode = value, duplicate.ResponsibleOfficeCode);
-        changed |= TryAssignString(() => canonical.AssignedUsername, value => canonical.AssignedUsername = value, duplicate.AssignedUsername);
         changed |= TryAssignString(() => canonical.AssetStatus, value => canonical.AssetStatus = value, duplicate.AssetStatus);
         changed |= TryAssignString(() => canonical.Notes, value => canonical.Notes = value, duplicate.Notes, preferLonger: true);
 
@@ -631,7 +629,6 @@ public static partial class LocalDbInitializer
             current.SubmissionDocuments,
             current.Notes,
             current.ResponsibleOfficeCode,
-            current.AssignedUsername,
             current.FollowUpNote)
             + (current.CustomerId.HasValue && current.CustomerId.Value != Guid.Empty ? 1 : 0)
             + (current.BillingAnchorDate.HasValue ? 1 : 0)
@@ -669,7 +666,6 @@ public static partial class LocalDbInitializer
             current.FreeSupplyItems,
             current.PaidSupplyItems,
             current.ResponsibleOfficeCode,
-            current.AssignedUsername,
             current.AssetStatus,
             current.Notes)
             + (current.CustomerId.HasValue && current.CustomerId.Value != Guid.Empty ? 1 : 0)
