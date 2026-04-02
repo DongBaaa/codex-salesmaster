@@ -1607,6 +1607,34 @@ public sealed class SyncService : IDisposable
             if (string.IsNullOrWhiteSpace(normalizedName))
                 continue;
 
+            var existing = existingEntities.FirstOrDefault(entity => entity.Id == local.Id);
+            if (existing is not null)
+            {
+                if (existing.IsDirty)
+                    continue;
+
+                if (existing.UpdatedAtUtc > local.UpdatedAtUtc)
+                    continue;
+            }
+
+            var localDeletion = existingEntities
+                .Where(entity =>
+                    string.Equals(
+                        NormalizeOptionName(nameSelector(entity)),
+                        normalizedName,
+                        StringComparison.CurrentCultureIgnoreCase) &&
+                    (entity.IsDeleted || !GetOptionalBoolProperty(entity, "IsActive", true)))
+                .OrderByDescending(entity => entity.UpdatedAtUtc)
+                .FirstOrDefault();
+
+            if (localDeletion is not null && localDeletion.UpdatedAtUtc >= local.UpdatedAtUtc)
+            {
+                AppLogger.Warn(
+                    "SYNC",
+                    $"선택옵션 pull 삭제상태 유지: {typeof(TLocal).Name} '{nameSelector(local)}' 서버값보다 로컬 삭제가 최신이라 복구하지 않습니다.");
+                continue;
+            }
+
             var conflictingEntities = existingEntities
                 .Where(entity =>
                     entity.Id != local.Id &&
@@ -1645,7 +1673,6 @@ public sealed class SyncService : IDisposable
                     $"선택옵션 pull 충돌 복구: {typeof(TLocal).Name} '{nameSelector(local)}' 이름 충돌 {conflictingEntities.Count}건을 정리했습니다.");
             }
 
-            var existing = existingEntities.FirstOrDefault(entity => entity.Id == local.Id);
             if (existing is null)
             {
                 set.Add(local);
@@ -1782,6 +1809,18 @@ public sealed class SyncService : IDisposable
             return;
 
         entry.Property(propertyName).CurrentValue = value;
+    }
+
+    private bool GetOptionalBoolProperty<TEntity>(TEntity entity, string propertyName, bool defaultValue)
+        where TEntity : class
+    {
+        var entry = _db.Entry(entity);
+        var property = entry.Metadata.FindProperty(propertyName);
+        if (property is null || property.ClrType != typeof(bool))
+            return defaultValue;
+
+        var currentValue = entry.Property(propertyName).CurrentValue;
+        return currentValue is bool value ? value : defaultValue;
     }
 
     private async Task UpsertPulledItemWarehouseStocksAsync(IReadOnlyList<ItemWarehouseStockDto> dtos, CancellationToken ct)

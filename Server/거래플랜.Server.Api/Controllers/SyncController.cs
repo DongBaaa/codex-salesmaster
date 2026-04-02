@@ -379,8 +379,15 @@ public sealed class SyncController : ControllerBase
             }
 
             var entity = existingEntities.FirstOrDefault(current => current.Id == dto.Id)
-                ?? existingEntities.FirstOrDefault(current =>
-                    string.Equals(NormalizeOptionName(entityNameSelector(current)), normalizedName, StringComparison.CurrentCultureIgnoreCase));
+                ?? existingEntities
+                    .Where(current =>
+                        string.Equals(
+                            NormalizeOptionName(entityNameSelector(current)),
+                            normalizedName,
+                            StringComparison.CurrentCultureIgnoreCase))
+                    .OrderByDescending(current => current.UpdatedAtUtc)
+                    .ThenByDescending(current => current.Revision)
+                    .FirstOrDefault();
 
             if (entity is null)
             {

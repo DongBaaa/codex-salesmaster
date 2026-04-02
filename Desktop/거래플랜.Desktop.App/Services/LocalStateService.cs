@@ -2496,9 +2496,10 @@ public sealed partial class LocalStateService
         if (string.IsNullOrWhiteSpace(normalizedUsername))
             return null;
 
-        var rawValue = await GetSettingAsync(GetCompanyProfileAssignmentKey(normalizedUsername), ct);
+        var settingKey = GetCompanyProfileAssignmentKey(normalizedUsername);
+        var rawValue = await GetSettingAsync(settingKey, ct);
         return Guid.TryParse(rawValue, out var profileId)
-            ? profileId
+            ? await ResolveAssignedCompanyProfileIdAsync(settingKey, profileId, ct)
             : null;
     }
 
@@ -2508,10 +2509,29 @@ public sealed partial class LocalStateService
         if (string.IsNullOrWhiteSpace(normalizedUsername))
             return;
 
-        var value = profileId.HasValue && profileId.Value != Guid.Empty
-            ? profileId.Value.ToString("D")
-            : string.Empty;
+        var value = string.Empty;
+        if (profileId.HasValue && profileId.Value != Guid.Empty)
+        {
+            var isValidProfile = await _db.CompanyProfiles
+                .IgnoreQueryFilters()
+                .AnyAsync(profile => profile.Id == profileId.Value && !profile.IsDeleted && profile.IsActive, ct);
+            if (isValidProfile)
+                value = profileId.Value.ToString("D");
+        }
+
         await SetSettingAsync(GetCompanyProfileAssignmentKey(normalizedUsername), value, ct);
+    }
+
+    private async Task<Guid?> ResolveAssignedCompanyProfileIdAsync(string settingKey, Guid profileId, CancellationToken ct)
+    {
+        var exists = await _db.CompanyProfiles
+            .IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId && !profile.IsDeleted && profile.IsActive, ct);
+        if (exists)
+            return profileId;
+
+        await SetSettingAsync(settingKey, string.Empty, ct);
+        return null;
     }
 
     // Units & Categories

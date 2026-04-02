@@ -112,7 +112,7 @@ public sealed partial class RentalStateService
 
                     ApplyWorkbookRowToAsset(operation.Asset, operation.Row, session, now);
                     operation.Asset.CustomerId = await ResolveCustomerIdAsync(operation.Row.CustomerName, operation.Row.CustomerBusinessNumber, ct);
-                    await EnrichAssetReferencesAsync(operation.Asset, ct, repairResult, activeItems, allowCategoryRecovery: true, allowDerivedAssetBackfill: false);
+                    await EnrichAssetReferencesAsync(operation.Asset, ct, repairResult, activeItems, allowCategoryRecovery: false, allowDerivedAssetBackfill: false);
                     operation.Asset.BillingProfileId = await FindMatchingBillingProfileIdAsync(operation.Asset, ct);
                     if (operation.Asset.BillingProfileId.HasValue && operation.Asset.BillingProfileId.Value != Guid.Empty)
                         rebuildResult.LinkedBillingProfileCount++;

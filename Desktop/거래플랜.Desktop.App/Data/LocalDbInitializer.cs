@@ -17,6 +17,7 @@ public static partial class LocalDbInitializer
     private const string NormalizeWarehouseDataStepKey = "Migration.NormalizeWarehouseData.v1";
     private const string BackfillTransactionResponsibleOfficeCodeStepKey = "Migration.BackfillTransactionResponsibleOfficeCode.v1";
     private const string NormalizeCompanyProfilesStepKey = "Migration.NormalizeCompanyProfiles.v1";
+    private const string NormalizeCompanyProfileAssignmentSettingsStepKey = "Migration.NormalizeCompanyProfileAssignments.v1";
     private const string NormalizeCustomerTradeTypeStepKey = "Migration.NormalizeCustomerTradeType.v1";
     private const string RepairCustomerClassificationIntegrityStepKey = "Migration.RepairCustomerClassificationIntegrity.v1";
     private const string NormalizeTradeTypeOptionCatalogStepKey = "Migration.NormalizeTradeTypeOptionCatalog.v1";
@@ -103,6 +104,10 @@ public static partial class LocalDbInitializer
             async () => await NormalizeSelectionOptionSystemDefaultsAsync(db));
         await SeedOfficeAndWarehouseAsync(db);
         await SeedCompanyProfilesAsync(db);
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeCompanyProfileAssignmentSettingsStepKey,
+            async () => await NormalizeCompanyProfileAssignmentSettingsAsync(db));
         await SeedRentalDefaultsAsync(db);
         await RunStartupMaintenanceStepAsync(
             db,
@@ -762,6 +767,39 @@ public static partial class LocalDbInitializer
                 PreserveDirtyStateForStartupMaintenance(profile, DateTime.UtcNow);
             }
         }
+    }
+
+    private static async Task NormalizeCompanyProfileAssignmentSettingsAsync(LocalDbContext db)
+    {
+        const string assignmentPrefix = "CompanyProfile.Assigned.";
+
+        var validProfileIds = await db.CompanyProfiles
+            .IgnoreQueryFilters()
+            .Where(profile => !profile.IsDeleted && profile.IsActive)
+            .Select(profile => profile.Id)
+            .ToListAsync();
+        var validProfileIdSet = validProfileIds.ToHashSet();
+
+        var settings = await db.Settings
+            .IgnoreQueryFilters()
+            .Where(setting => setting.Key.StartsWith(assignmentPrefix))
+            .ToListAsync();
+
+        var changed = false;
+        foreach (var setting in settings)
+        {
+            if (string.IsNullOrWhiteSpace(setting.Value))
+                continue;
+
+            if (!Guid.TryParse(setting.Value, out var profileId) || !validProfileIdSet.Contains(profileId))
+            {
+                setting.Value = string.Empty;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            await db.SaveChangesAsync();
     }
 
     private static async Task EnsureOfficeAsync(LocalDbContext db, string code, string name, bool isHeadOffice)
