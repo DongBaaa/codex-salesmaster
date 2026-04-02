@@ -134,6 +134,7 @@ public static partial class DbInitializer
         await MergeDuplicateRentalBillingProfilesAsync(dbContext, cancellationToken);
         await MergeDuplicateRentalAssetsAsync(dbContext, cancellationToken);
         await MergeDuplicateCompanyProfilesAsync(dbContext, cancellationToken);
+        await RepairRentalCustomerLinkageAsync(dbContext, cancellationToken);
         await MergeDuplicateItemsAsync(dbContext, cancellationToken);
         await CleanupDeletedInvoiceChainAsync(dbContext, cancellationToken);
         await MigrateStoredFilesToCentralStorageAsync(dbContext, fileStorage, cancellationToken);
@@ -158,6 +159,7 @@ public static partial class DbInitializer
             await MergeDuplicateRentalBillingProfilesAsync(tenantDbContext, cancellationToken);
             await MergeDuplicateRentalAssetsAsync(tenantDbContext, cancellationToken);
             await MergeDuplicateCompanyProfilesAsync(tenantDbContext, cancellationToken);
+            await RepairRentalCustomerLinkageAsync(tenantDbContext, cancellationToken);
             await MergeDuplicateItemsAsync(tenantDbContext, cancellationToken);
             await CleanupDeletedInvoiceChainAsync(tenantDbContext, cancellationToken);
             await MigrateStoredFilesToCentralStorageAsync(tenantDbContext, fileStorage, cancellationToken);

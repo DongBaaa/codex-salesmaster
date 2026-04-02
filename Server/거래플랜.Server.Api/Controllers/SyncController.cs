@@ -1098,6 +1098,22 @@ public sealed class SyncController : ControllerBase
         foreach (var dto in payload)
         {
             dto.CustomerId = await ResolveRentalBillingProfileCustomerReferenceAsync(dto, cancellationToken);
+            var linkedCustomer = await GetRentalReferenceCustomerAsync(dto.CustomerId, cancellationToken);
+            if (linkedCustomer is not null)
+            {
+                var resolvedOfficeCode = ResolveRentalCustomerOfficeCode(linkedCustomer.OfficeCode);
+                dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(
+                    dto.TenantCode,
+                    resolvedOfficeCode,
+                    linkedCustomer.TenantCode,
+                    linkedCustomer.OfficeCode);
+                dto.OfficeCode = resolvedOfficeCode;
+                dto.ManagementCompanyCode = resolvedOfficeCode;
+                var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
+                dto.CustomerName = normalizedCustomerName;
+                dto.RealCustomerName = normalizedCustomerName;
+                dto.BillToCustomerName = normalizedCustomerName;
+            }
 
             if (!string.IsNullOrWhiteSpace(dto.ManagementCompanyCode))
             {
@@ -1122,13 +1138,19 @@ public sealed class SyncController : ControllerBase
         RentalBillingProfileDto dto,
         CancellationToken cancellationToken)
     {
+        var candidateKeys = BuildRentalCustomerKeys(
+            dto.CustomerName,
+            dto.RealCustomerName,
+            dto.BillToCustomerName);
+        var normalizedBusinessNumber = NormalizeBusinessNumber(dto.BusinessNumber);
         if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
         {
             var directCustomer = await _dbContext.Customers.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(customer => customer.Id == dto.CustomerId.Value, cancellationToken);
             if (directCustomer is not null &&
                 !directCustomer.IsDeleted &&
-                CanReadCustomerForRentalReference(directCustomer))
+                CanReadCustomerForRentalReference(directCustomer) &&
+                CustomerReferenceLooksValid(directCustomer, candidateKeys, normalizedBusinessNumber))
             {
                 return directCustomer.Id;
             }
@@ -1136,15 +1158,16 @@ public sealed class SyncController : ControllerBase
 
         var preferredOfficeCode = _officeScopeService.ResolveScopeForRentalCreate(dto.OfficeCode, null);
         var preferredTenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, preferredOfficeCode);
-        var normalizedBusinessNumber = (dto.BusinessNumber ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(normalizedBusinessNumber))
         {
             var businessMatches = await _dbContext.Customers.IgnoreQueryFilters()
-                .Where(customer =>
-                    !customer.IsDeleted &&
-                    customer.BusinessNumber == normalizedBusinessNumber)
+                .Where(customer => !customer.IsDeleted)
                 .OrderByDescending(customer => customer.UpdatedAtUtc)
                 .ToListAsync(cancellationToken);
+            businessMatches = businessMatches
+                .Where(customer => NormalizeBusinessNumber(customer.BusinessNumber) == normalizedBusinessNumber)
+                .Where(customer => CustomerMatchesRentalNames(customer, candidateKeys))
+                .ToList();
             var resolvedBusinessMatch = ResolveReadableCustomerReference(
                 businessMatches,
                 preferredOfficeCode,
@@ -1153,14 +1176,23 @@ public sealed class SyncController : ControllerBase
                 return resolvedBusinessMatch.Value;
         }
 
-        var normalizedCustomerName = (dto.CustomerName ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(normalizedCustomerName))
+        var candidateNames = new[]
+            {
+                dto.CustomerName,
+                dto.RealCustomerName,
+                dto.BillToCustomerName
+            }
+            .Select(current => (current ?? string.Empty).Trim())
+            .Where(current => !string.IsNullOrWhiteSpace(current))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (candidateNames.Count == 0)
             return null;
 
         var exactNameMatches = await _dbContext.Customers.IgnoreQueryFilters()
             .Where(customer =>
                 !customer.IsDeleted &&
-                customer.NameOriginal == normalizedCustomerName)
+                candidateNames.Contains(customer.NameOriginal))
             .OrderByDescending(customer => customer.UpdatedAtUtc)
             .ToListAsync(cancellationToken);
         var resolvedExactNameMatch = ResolveReadableCustomerReference(
@@ -1170,14 +1202,18 @@ public sealed class SyncController : ControllerBase
         if (resolvedExactNameMatch.HasValue)
             return resolvedExactNameMatch.Value;
 
-        var normalizedMatchKey = MatchKeyNormalizer.Normalize(normalizedCustomerName);
-        if (string.IsNullOrWhiteSpace(normalizedMatchKey))
+        var normalizedMatchKeys = candidateNames
+            .Select(MatchKeyNormalizer.Normalize)
+            .Where(current => !string.IsNullOrWhiteSpace(current))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (normalizedMatchKeys.Count == 0)
             return null;
 
         var nameKeyMatches = await _dbContext.Customers.IgnoreQueryFilters()
             .Where(customer =>
                 !customer.IsDeleted &&
-                customer.NameMatchKey == normalizedMatchKey)
+                normalizedMatchKeys.Contains(customer.NameMatchKey))
             .OrderByDescending(customer => customer.UpdatedAtUtc)
             .ToListAsync(cancellationToken);
         return ResolveReadableCustomerReference(
@@ -1453,10 +1489,23 @@ public sealed class SyncController : ControllerBase
         {
             dto.CustomerId = await ResolveRentalAssetCustomerReferenceAsync(dto, cancellationToken);
             dto.ItemId = await ResolveRentalAssetItemReferenceAsync(dto, cancellationToken);
+            var linkedCustomer = await GetRentalReferenceCustomerAsync(dto.CustomerId, cancellationToken);
+            if (linkedCustomer is not null)
+            {
+                var resolvedOfficeCode = ResolveRentalCustomerOfficeCode(linkedCustomer.OfficeCode);
+                dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(
+                    dto.TenantCode,
+                    resolvedOfficeCode,
+                    linkedCustomer.TenantCode,
+                    linkedCustomer.OfficeCode);
+                dto.OfficeCode = resolvedOfficeCode;
+                dto.ManagementCompanyCode = resolvedOfficeCode;
+            }
 
+            RentalBillingProfile? billingProfile = null;
             if (dto.BillingProfileId.HasValue && dto.BillingProfileId.Value != Guid.Empty)
             {
-                var billingProfile = await ResolveRentalAssetBillingProfileReferenceAsync(dto, cancellationToken);
+                billingProfile = await ResolveRentalAssetBillingProfileReferenceAsync(dto, cancellationToken);
                 if (billingProfile is null || billingProfile.IsDeleted)
                 {
                     AddClientConflict(dto, nameof(RentalAsset),
@@ -1465,6 +1514,26 @@ public sealed class SyncController : ControllerBase
                 }
 
                 dto.BillingProfileId = billingProfile.Id;
+            }
+            else
+            {
+                billingProfile = await ResolveRentalAssetBillingProfileReferenceByFieldsAsync(dto, cancellationToken);
+                if (billingProfile is not null)
+                    dto.BillingProfileId = billingProfile.Id;
+            }
+
+            if (billingProfile is not null)
+            {
+                if (billingProfile.CustomerId.HasValue && billingProfile.CustomerId.Value != Guid.Empty)
+                    dto.CustomerId = billingProfile.CustomerId.Value;
+
+                dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(
+                    dto.TenantCode,
+                    billingProfile.OfficeCode,
+                    billingProfile.TenantCode,
+                    billingProfile.OfficeCode);
+                dto.OfficeCode = billingProfile.OfficeCode;
+                dto.ManagementCompanyCode = billingProfile.OfficeCode;
             }
 
             valid.Add(dto);
@@ -1493,6 +1562,53 @@ public sealed class SyncController : ControllerBase
                 .FirstOrDefaultAsync(x => x.Id == existingBillingProfileId, cancellationToken);
             if (fromExistingAsset is not null && !fromExistingAsset.IsDeleted)
                 return fromExistingAsset;
+        }
+
+        return null;
+    }
+
+    private async Task<RentalBillingProfile?> ResolveRentalAssetBillingProfileReferenceByFieldsAsync(
+        RentalAssetDto dto,
+        CancellationToken cancellationToken)
+    {
+        if (!dto.CustomerId.HasValue || dto.CustomerId.Value == Guid.Empty)
+            return null;
+
+        var candidates = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .Where(profile => !profile.IsDeleted && profile.CustomerId == dto.CustomerId.Value)
+            .ToListAsync(cancellationToken);
+        if (candidates.Count == 0)
+            return null;
+
+        var normalizedItemKey = RentalCatalogValueNormalizer.NormalizeLooseKey(dto.ItemName);
+        var siteKeys = BuildRentalSiteKeys(dto.InstallLocation, dto.InstallSiteName);
+
+        if (!string.IsNullOrWhiteSpace(normalizedItemKey))
+        {
+            var itemMatches = candidates
+                .Where(profile => ProfileMatchesRentalAssetItem(profile, normalizedItemKey))
+                .ToList();
+
+            if (siteKeys.Count > 0)
+            {
+                var strictMatches = itemMatches
+                    .Where(profile => ProfileMatchesRentalAssetSite(profile, siteKeys))
+                    .ToList();
+                if (strictMatches.Count == 1)
+                    return strictMatches[0];
+            }
+
+            if (itemMatches.Count == 1)
+                return itemMatches[0];
+        }
+
+        if (siteKeys.Count > 0)
+        {
+            var siteMatches = candidates
+                .Where(profile => ProfileMatchesRentalAssetSite(profile, siteKeys))
+                .ToList();
+            if (siteMatches.Count == 1)
+                return siteMatches[0];
         }
 
         return null;
@@ -1603,26 +1719,40 @@ public sealed class SyncController : ControllerBase
         RentalAssetDto dto,
         CancellationToken cancellationToken)
     {
+        var candidateKeys = BuildRentalCustomerKeys(
+            dto.CustomerName,
+            dto.CurrentCustomerName,
+            dto.BillToCustomerName);
         if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
         {
             var directCustomer = await _dbContext.Customers.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(customer => customer.Id == dto.CustomerId.Value, cancellationToken);
             if (directCustomer is not null &&
                 !directCustomer.IsDeleted &&
-                CanReadCustomerForRentalReference(directCustomer))
+                CanReadCustomerForRentalReference(directCustomer) &&
+                CustomerReferenceLooksValid(directCustomer, candidateKeys, null))
             {
                 return directCustomer.Id;
             }
         }
 
-        var normalizedCustomerName = (dto.CustomerName ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(normalizedCustomerName))
+        var candidateNames = new[]
+            {
+                dto.CustomerName,
+                dto.CurrentCustomerName,
+                dto.BillToCustomerName
+            }
+            .Select(current => (current ?? string.Empty).Trim())
+            .Where(current => !string.IsNullOrWhiteSpace(current))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (candidateNames.Count == 0)
             return null;
 
         var preferredOfficeCode = _officeScopeService.ResolveScopeForRentalCreate(dto.OfficeCode, null);
         var preferredTenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, preferredOfficeCode);
         var exactNameMatches = await _dbContext.Customers.IgnoreQueryFilters()
-            .Where(customer => !customer.IsDeleted && customer.NameOriginal == normalizedCustomerName)
+            .Where(customer => !customer.IsDeleted && candidateNames.Contains(customer.NameOriginal))
             .OrderByDescending(customer => customer.UpdatedAtUtc)
             .ToListAsync(cancellationToken);
         var resolvedExactNameMatch = ResolveReadableCustomerReference(
@@ -1632,15 +1762,138 @@ public sealed class SyncController : ControllerBase
         if (resolvedExactNameMatch.HasValue)
             return resolvedExactNameMatch.Value;
 
-        var normalizedMatchKey = MatchKeyNormalizer.Normalize(normalizedCustomerName);
-        if (string.IsNullOrWhiteSpace(normalizedMatchKey))
+        var normalizedMatchKeys = candidateNames
+            .Select(MatchKeyNormalizer.Normalize)
+            .Where(current => !string.IsNullOrWhiteSpace(current))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (normalizedMatchKeys.Count == 0)
             return null;
 
         var nameKeyMatches = await _dbContext.Customers.IgnoreQueryFilters()
-            .Where(customer => !customer.IsDeleted && customer.NameMatchKey == normalizedMatchKey)
+            .Where(customer => !customer.IsDeleted && normalizedMatchKeys.Contains(customer.NameMatchKey))
             .OrderByDescending(customer => customer.UpdatedAtUtc)
             .ToListAsync(cancellationToken);
         return ResolveReadableCustomerReference(nameKeyMatches, preferredOfficeCode, preferredTenantCode);
+    }
+
+    private async Task<Customer?> GetRentalReferenceCustomerAsync(Guid? customerId, CancellationToken cancellationToken)
+    {
+        if (!customerId.HasValue || customerId.Value == Guid.Empty)
+            return null;
+
+        var customer = await _dbContext.Customers.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == customerId.Value, cancellationToken);
+        return customer is not null && !customer.IsDeleted && CanReadCustomerForRentalReference(customer)
+            ? customer
+            : null;
+    }
+
+    private static string ResolveRentalCustomerOfficeCode(string? officeCode)
+        => OfficeCodeCatalog.NormalizeOfficeCodeLoose(officeCode, null, OfficeCodeCatalog.Usenet);
+
+    private static List<string> BuildRentalCustomerKeys(params string?[] values)
+    {
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in values)
+        {
+            foreach (var variant in EnumerateRentalNameVariants(value))
+            {
+                var normalized = RentalCatalogValueNormalizer.NormalizeLooseKey(variant);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    keys.Add(normalized);
+            }
+        }
+
+        return [.. keys];
+    }
+
+    private static IEnumerable<string> EnumerateRentalNameVariants(string? value)
+    {
+        var display = RentalCatalogValueNormalizer.NormalizeDisplayText(value);
+        if (string.IsNullOrWhiteSpace(display))
+            yield break;
+
+        yield return display;
+
+        var openBracket = display.IndexOf('[');
+        var closeBracket = openBracket >= 0 ? display.IndexOf(']', openBracket + 1) : -1;
+        if (openBracket < 0 || closeBracket <= openBracket)
+            yield break;
+
+        var prefix = openBracket == 0
+            ? display[(openBracket + 1)..closeBracket].Trim()
+            : display[..openBracket].Trim();
+        var suffix = openBracket == 0
+            ? display[(closeBracket + 1)..].Trim()
+            : display[(openBracket + 1)..closeBracket].Trim();
+
+        if (string.IsNullOrWhiteSpace(prefix) || string.IsNullOrWhiteSpace(suffix))
+            yield break;
+
+        yield return prefix + suffix;
+        yield return suffix + prefix;
+    }
+
+    private static bool CustomerReferenceLooksValid(
+        Customer customer,
+        IReadOnlyCollection<string> candidateKeys,
+        string? normalizedBusinessNumber)
+    {
+        if (!string.IsNullOrWhiteSpace(normalizedBusinessNumber))
+        {
+            var customerBusinessNumber = NormalizeBusinessNumber(customer.BusinessNumber);
+            if (!string.IsNullOrWhiteSpace(customerBusinessNumber) &&
+                !string.Equals(customerBusinessNumber, normalizedBusinessNumber, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return candidateKeys.Count == 0 || CustomerMatchesRentalNames(customer, candidateKeys);
+    }
+
+    private static bool CustomerMatchesRentalNames(Customer customer, IReadOnlyCollection<string> candidateKeys)
+    {
+        if (candidateKeys.Count == 0)
+            return true;
+
+        var customerKeys = BuildRentalCustomerKeys(customer.NameOriginal);
+        return customerKeys.Any(customerKey =>
+            candidateKeys.Any(candidateKey =>
+                !string.IsNullOrWhiteSpace(customerKey) &&
+                !string.IsNullOrWhiteSpace(candidateKey) &&
+                string.Equals(customerKey, candidateKey, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static string NormalizeBusinessNumber(string? businessNumber)
+        => new string((businessNumber ?? string.Empty).Where(char.IsDigit).ToArray());
+
+    private static HashSet<string> BuildRentalSiteKeys(params string?[] values)
+        => values
+            .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private static bool ProfileMatchesRentalAssetItem(RentalBillingProfile profile, string normalizedItemKey)
+    {
+        var profileItemKey = RentalCatalogValueNormalizer.NormalizeLooseKey(profile.ItemName);
+        if (string.IsNullOrWhiteSpace(profileItemKey) || string.IsNullOrWhiteSpace(normalizedItemKey))
+            return false;
+
+        return string.Equals(profileItemKey, normalizedItemKey, StringComparison.OrdinalIgnoreCase)
+               || profileItemKey.Contains(normalizedItemKey, StringComparison.OrdinalIgnoreCase)
+               || normalizedItemKey.Contains(profileItemKey, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ProfileMatchesRentalAssetSite(RentalBillingProfile profile, IReadOnlyCollection<string> siteKeys)
+    {
+        if (siteKeys.Count == 0)
+            return false;
+
+        var profileSiteKey = RentalCatalogValueNormalizer.NormalizeLooseKey(profile.InstallSiteName);
+        return !string.IsNullOrWhiteSpace(profileSiteKey) &&
+               siteKeys.Contains(profileSiteKey, StringComparer.OrdinalIgnoreCase);
     }
 
     private Guid? ResolveReadableItemReference(
