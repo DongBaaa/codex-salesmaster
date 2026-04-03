@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Shared.Contracts;
@@ -207,11 +208,18 @@ public static partial class DbInitializer
                 .First();
 
             var changed = false;
+            changed |= MergeBillingTemplateIntoCanonical(
+                canonical,
+                canonical,
+                assets.Where(current => current.BillingProfileId == canonical.Id).ToList());
+
             foreach (var duplicate in group.Where(current => current.Id != canonical.Id))
             {
+                var duplicateAssets = assets.Where(current => current.BillingProfileId == duplicate.Id).ToList();
+                changed |= MergeBillingTemplateIntoCanonical(canonical, duplicate, duplicateAssets);
                 changed |= MergeRentalBillingProfileValues(canonical, duplicate);
 
-                foreach (var asset in assets.Where(current => current.BillingProfileId == duplicate.Id))
+                foreach (var asset in duplicateAssets)
                 {
                     asset.BillingProfileId = canonical.Id;
                     TouchTrackedEntity(asset, now);
@@ -238,6 +246,10 @@ public static partial class DbInitializer
                 dbContext.RentalBillingProfiles.Remove(duplicate);
             }
 
+            changed |= RefreshMergedRentalBillingProfile(
+                canonical,
+                assets.Where(current => current.BillingProfileId == canonical.Id).ToList());
+
             var canonicalProfileKey = RentalDuplicateNormalizer.BuildProfileKey(
                 canonical.ManagementCompanyCode,
                 canonical.CustomerId,
@@ -247,8 +259,7 @@ public static partial class DbInitializer
                 canonical.BillingAdvanceMode,
                 canonical.BillingDay,
                 canonical.BillingCycleMonths,
-                canonical.BillingMethod,
-                canonical.PaymentMethod);
+                canonical.BillingMethod);
             if (!string.IsNullOrWhiteSpace(canonicalProfileKey) &&
                 !string.Equals(canonical.ProfileKey, canonicalProfileKey, StringComparison.Ordinal) &&
                 !profiles.Any(current => current.Id != canonical.Id && !groupIds.Contains(current.Id) && !current.IsDeleted && string.Equals(current.ProfileKey, canonicalProfileKey, StringComparison.Ordinal)))
@@ -360,14 +371,12 @@ public static partial class DbInitializer
             current.BillingAdvanceMode,
             current.BillingDay,
             current.BillingCycleMonths,
-            current.BillingMethod,
-            current.PaymentMethod);
+            current.BillingMethod);
 
     private static string BuildRentalAssetDuplicateKey(RentalAsset current)
         => RentalDuplicateNormalizer.BuildRentalAssetDuplicateKey(
             current.CustomerName,
             current.CurrentCustomerName,
-            current.BillToCustomerName,
             current.InstallSiteName,
             current.InstallLocation,
             current.ItemCategoryName,
@@ -391,20 +400,17 @@ public static partial class DbInitializer
 
         changed |= TryAssignString(() => canonical.CustomerName, value => canonical.CustomerName = value, duplicate.CustomerName);
         changed |= TryAssignString(() => canonical.BusinessNumber, value => canonical.BusinessNumber = value, duplicate.BusinessNumber);
-        changed |= TryAssignString(() => canonical.RealCustomerName, value => canonical.RealCustomerName = value, duplicate.RealCustomerName);
-        changed |= TryAssignString(() => canonical.BillToCustomerName, value => canonical.BillToCustomerName = value, duplicate.BillToCustomerName);
         changed |= TryAssignString(() => canonical.InstallSiteName, value => canonical.InstallSiteName = value, duplicate.InstallSiteName);
         changed |= TryAssignString(() => canonical.ManagementCompanyCode, value => canonical.ManagementCompanyCode = value, duplicate.ManagementCompanyCode);
         changed |= TryAssignString(() => canonical.BillingMethod, value => canonical.BillingMethod = value, duplicate.BillingMethod);
-        changed |= TryAssignString(() => canonical.PaymentMethod, value => canonical.PaymentMethod = value, duplicate.PaymentMethod);
         changed |= TryAssignString(() => canonical.BillingStatus, value => canonical.BillingStatus = value, duplicate.BillingStatus);
         changed |= TryAssignString(() => canonical.Email, value => canonical.Email = value, duplicate.Email);
         changed |= TryAssignString(() => canonical.SubmissionDocuments, value => canonical.SubmissionDocuments = value, duplicate.SubmissionDocuments, preferLonger: true);
         changed |= TryAssignString(() => canonical.Notes, value => canonical.Notes = value, duplicate.Notes, preferLonger: true);
         changed |= TryAssignString(() => canonical.OfficeCode, value => canonical.OfficeCode = value, duplicate.OfficeCode);
-        changed |= TryAssignString(() => canonical.FollowUpNote, value => canonical.FollowUpNote = value, duplicate.FollowUpNote, preferLonger: true);
         changed |= TryAssignString(() => canonical.ItemName, value => canonical.ItemName = value, duplicate.ItemName);
         changed |= TryAssignString(() => canonical.TenantCode, value => canonical.TenantCode = value, duplicate.TenantCode);
+        changed |= ClearObsoleteProfileFields(canonical);
 
         if (!canonical.BillingAnchorDate.HasValue && duplicate.BillingAnchorDate.HasValue)
         {
@@ -510,6 +516,63 @@ public static partial class DbInitializer
         return changed;
     }
 
+    private static bool MergeBillingTemplateIntoCanonical(
+        RentalBillingProfile canonical,
+        RentalBillingProfile sourceProfile,
+        IReadOnlyList<RentalAsset> sourceAssets)
+    {
+        var sourceTemplateJson = BuildSupplementalBillingTemplateJson(sourceProfile, sourceAssets);
+        if (string.IsNullOrWhiteSpace(sourceTemplateJson) || string.Equals(sourceTemplateJson, "[]", StringComparison.Ordinal))
+            return false;
+
+        var mergedTemplateJson = RentalDuplicateNormalizer.MergeBillingTemplateJson(canonical.BillingTemplateJson, sourceTemplateJson);
+        if (string.Equals(canonical.BillingTemplateJson ?? string.Empty, mergedTemplateJson, StringComparison.Ordinal))
+            return false;
+
+        canonical.BillingTemplateJson = mergedTemplateJson;
+        return true;
+    }
+
+    private static bool RefreshMergedRentalBillingProfile(
+        RentalBillingProfile canonical,
+        IReadOnlyList<RentalAsset> linkedAssets)
+    {
+        var changed = false;
+        var templateItems = DeserializeBillingTemplateItems(canonical.BillingTemplateJson);
+        if (templateItems.Count == 0)
+            return false;
+
+        var normalizedTemplateJson = SerializeBillingTemplateItems(templateItems);
+        if (!string.Equals(canonical.BillingTemplateJson ?? string.Empty, normalizedTemplateJson, StringComparison.Ordinal))
+        {
+            canonical.BillingTemplateJson = normalizedTemplateJson;
+            changed = true;
+        }
+
+        var monthlyAmount = templateItems.Sum(ResolveTemplateAmount);
+        if (canonical.MonthlyAmount != monthlyAmount)
+        {
+            canonical.MonthlyAmount = monthlyAmount;
+            changed = true;
+        }
+
+        var itemName = BuildMergedProfileItemName(templateItems, canonical.ItemName);
+        if (!string.Equals(canonical.ItemName ?? string.Empty, itemName, StringComparison.Ordinal))
+        {
+            canonical.ItemName = itemName;
+            changed = true;
+        }
+
+        var installSiteName = BuildMergedInstallSiteName(canonical.InstallSiteName, linkedAssets);
+        if (!string.Equals(canonical.InstallSiteName ?? string.Empty, installSiteName, StringComparison.Ordinal))
+        {
+            canonical.InstallSiteName = installSiteName;
+            changed = true;
+        }
+
+        return changed;
+    }
+
     private static bool MergeRentalAssetValues(RentalAsset canonical, RentalAsset duplicate)
     {
         var changed = false;
@@ -535,7 +598,6 @@ public static partial class DbInitializer
         changed |= TryAssignString(() => canonical.ManagementCompanyCode, value => canonical.ManagementCompanyCode = value, duplicate.ManagementCompanyCode);
         changed |= TryAssignString(() => canonical.CurrentLocation, value => canonical.CurrentLocation = value, duplicate.CurrentLocation);
         changed |= TryAssignString(() => canonical.CurrentCustomerName, value => canonical.CurrentCustomerName = value, duplicate.CurrentCustomerName);
-        changed |= TryAssignString(() => canonical.BillToCustomerName, value => canonical.BillToCustomerName = value, duplicate.BillToCustomerName);
         changed |= TryAssignString(() => canonical.InstallSiteName, value => canonical.InstallSiteName = value, duplicate.InstallSiteName);
         changed |= TryAssignString(() => canonical.BillingEligibilityStatus, value => canonical.BillingEligibilityStatus = value, duplicate.BillingEligibilityStatus);
         changed |= TryAssignString(() => canonical.BillingExclusionReason, value => canonical.BillingExclusionReason = value, duplicate.BillingExclusionReason, preferLonger: true);
@@ -553,6 +615,7 @@ public static partial class DbInitializer
         changed |= TryAssignString(() => canonical.AssetStatus, value => canonical.AssetStatus = value, duplicate.AssetStatus);
         changed |= TryAssignString(() => canonical.Notes, value => canonical.Notes = value, duplicate.Notes, preferLonger: true);
         changed |= TryAssignString(() => canonical.TenantCode, value => canonical.TenantCode = value, duplicate.TenantCode);
+        changed |= ClearObsoleteAssetFields(canonical);
 
         if (!canonical.PurchaseDate.HasValue && duplicate.PurchaseDate.HasValue)
         {
@@ -622,19 +685,15 @@ public static partial class DbInitializer
         return CountFilledStrings(
             current.CustomerName,
             current.BusinessNumber,
-            current.RealCustomerName,
-            current.BillToCustomerName,
             current.InstallSiteName,
             current.ItemName,
             current.ManagementCompanyCode,
             current.BillingMethod,
-            current.PaymentMethod,
             current.BillingStatus,
             current.Email,
             current.SubmissionDocuments,
             current.Notes,
             current.OfficeCode,
-            current.FollowUpNote,
             current.TenantCode)
             + (current.CustomerId.HasValue && current.CustomerId.Value != Guid.Empty ? 1 : 0)
             + (current.BillingAnchorDate.HasValue ? 1 : 0)
@@ -657,7 +716,6 @@ public static partial class DbInitializer
             current.ManagementCompanyCode,
             current.CurrentLocation,
             current.CurrentCustomerName,
-            current.BillToCustomerName,
             current.InstallSiteName,
             current.BillingEligibilityStatus,
             current.BillingExclusionReason,
@@ -688,6 +746,161 @@ public static partial class DbInitializer
             + (current.SalePrice > 0m ? 1 : 0)
             + (current.MonthlyFee > 0m ? 1 : 0)
             + (current.ContractMonths > 0 ? 1 : 0);
+    }
+
+    private static bool ClearObsoleteProfileFields(RentalBillingProfile profile)
+        => false;
+
+    private static bool ClearObsoleteAssetFields(RentalAsset asset)
+        => false;
+
+    private static string BuildSupplementalBillingTemplateJson(
+        RentalBillingProfile profile,
+        IReadOnlyList<RentalAsset> linkedAssets)
+    {
+        var templateItems = DeserializeBillingTemplateItems(profile.BillingTemplateJson);
+        var includedAssetIds = linkedAssets
+            .Select(current => current.Id)
+            .Where(current => current != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        if (templateItems.Count == 0)
+        {
+            var fallbackName = linkedAssets
+                .Select(current => RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(current.ItemName))
+                .FirstOrDefault(current => !string.IsNullOrWhiteSpace(current));
+            var displayItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(
+                string.IsNullOrWhiteSpace(profile.ItemName) ? fallbackName : profile.ItemName);
+            if (string.IsNullOrWhiteSpace(displayItemName))
+                displayItemName = "렌탈 임대료";
+
+            var amount = profile.MonthlyAmount > 0m
+                ? profile.MonthlyAmount
+                : linkedAssets.Sum(current => Math.Max(0m, current.MonthlyFee));
+            if (amount <= 0m && includedAssetIds.Count == 0)
+                return "[]";
+
+            templateItems.Add(new BillingTemplateItemSnapshot
+            {
+                ItemId = Guid.Empty,
+                DisplayItemName = displayItemName,
+                BillingLineMode = NormalizeTemplateBillingLineMode(profile.BillingType),
+                Quantity = 1m,
+                UnitPrice = amount,
+                Amount = amount,
+                IncludedAssetIds = includedAssetIds
+            });
+            return SerializeBillingTemplateItems(templateItems);
+        }
+
+        if (includedAssetIds.Count > 0)
+        {
+            var mergedIncludedAssetIds = templateItems
+                .SelectMany(current => current.IncludedAssetIds ?? new List<Guid>())
+                .Concat(includedAssetIds)
+                .Where(current => current != Guid.Empty)
+                .Distinct()
+                .OrderBy(current => current)
+                .ToList();
+
+            if (templateItems.Count == 1)
+            {
+                templateItems[0].IncludedAssetIds = mergedIncludedAssetIds;
+            }
+            else
+            {
+                foreach (var templateItem in templateItems)
+                {
+                    var templateItemAssetIds = (templateItem.IncludedAssetIds ?? new List<Guid>())
+                        .Where(current => current != Guid.Empty)
+                        .Distinct()
+                        .ToList();
+                    if (templateItemAssetIds.Count == 0)
+                        templateItem.IncludedAssetIds = mergedIncludedAssetIds;
+                }
+            }
+        }
+
+        return SerializeBillingTemplateItems(templateItems);
+    }
+
+    private static List<BillingTemplateItemSnapshot> DeserializeBillingTemplateItems(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return [];
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<BillingTemplateItemSnapshot>>(json) ?? [];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static string SerializeBillingTemplateItems(IEnumerable<BillingTemplateItemSnapshot> items)
+        => JsonSerializer.Serialize((items ?? Enumerable.Empty<BillingTemplateItemSnapshot>()).ToList());
+
+    private static decimal ResolveTemplateAmount(BillingTemplateItemSnapshot item)
+        => item.Amount > 0m
+            ? item.Amount
+            : Math.Max(0m, item.Quantity <= 0m ? 1m : item.Quantity) * Math.Max(0m, item.UnitPrice);
+
+    private static string BuildMergedProfileItemName(
+        IReadOnlyList<BillingTemplateItemSnapshot> templateItems,
+        string? fallbackItemName)
+    {
+        if (templateItems.Count == 0)
+            return RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(fallbackItemName);
+
+        var displayNames = templateItems
+            .Select(current => RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(current.DisplayItemName))
+            .Where(current => !string.IsNullOrWhiteSpace(current))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (displayNames.Count == 0)
+            return RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(fallbackItemName);
+
+        return displayNames.Count == 1
+            ? displayNames[0]
+            : $"{displayNames[0]} 외 {displayNames.Count - 1}건";
+    }
+
+    private static string BuildMergedInstallSiteName(
+        string? fallbackInstallSiteName,
+        IReadOnlyList<RentalAsset> linkedAssets)
+    {
+        var siteNames = linkedAssets
+            .Select(current => string.IsNullOrWhiteSpace(current.InstallLocation) ? current.InstallSiteName : current.InstallLocation)
+            .Where(current => !string.IsNullOrWhiteSpace(current))
+            .Select(current => current.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (siteNames.Count == 0)
+            return (fallbackInstallSiteName ?? string.Empty).Trim();
+
+        return siteNames.Count == 1 ? siteNames[0] : "다수";
+    }
+
+    private static string NormalizeTemplateBillingLineMode(string? billingType)
+        => string.Equals((billingType ?? string.Empty).Trim(), "개별", StringComparison.OrdinalIgnoreCase)
+            ? "개별"
+            : "묶음";
+
+    private sealed class BillingTemplateItemSnapshot
+    {
+        public Guid ItemId { get; set; }
+        public string DisplayItemName { get; set; } = string.Empty;
+        public string BillingLineMode { get; set; } = string.Empty;
+        public decimal Quantity { get; set; } = 1m;
+        public decimal UnitPrice { get; set; }
+        public decimal Amount { get; set; }
+        public string Note { get; set; } = string.Empty;
+        public List<Guid> IncludedAssetIds { get; set; } = new();
     }
 
     private static int CountFilledStrings(params string?[] values)

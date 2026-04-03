@@ -32,7 +32,7 @@ public static partial class LocalDbInitializer
     private const string MergeDuplicateCustomerMastersStepKey = "Migration.MergeDuplicateCustomerMasters.v1";
     private const string MergeDuplicateCustomersStepKey = "Migration.MergeDuplicateCustomers.v1";
     private const string MergeBusinessDuplicateCustomersStepKey = "Migration.MergeBusinessDuplicateCustomers.v1";
-    private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.MergeDuplicateRentalBillingProfiles.v2";
+private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.MergeDuplicateRentalBillingProfiles.v3";
     private const string MergeDuplicateRentalAssetsStepKey = "Migration.MergeDuplicateRentalAssets.v2";
     private const string MergeDuplicateCompanyProfilesStepKey = "Migration.MergeDuplicateCompanyProfiles.v1";
     private const string RepairRentalCustomerLinkageStepKey = "Migration.RepairRentalCustomerLinkage.v4";
@@ -397,18 +397,22 @@ public static partial class LocalDbInitializer
         {
             ("ItemId", "TEXT NULL"),
             ("CurrentCustomerName", "TEXT NOT NULL DEFAULT ''"),
-            ("BillToCustomerName", "TEXT NOT NULL DEFAULT ''"),
             ("InstallSiteName", "TEXT NOT NULL DEFAULT ''"),
             ("BillingEligibilityStatus", "TEXT NOT NULL DEFAULT ''"),
-            ("BillingExclusionReason", "TEXT NOT NULL DEFAULT ''")
+            ("BillingExclusionReason", "TEXT NOT NULL DEFAULT ''"),
+            ("LastCustomerName", "TEXT NOT NULL DEFAULT ''"),
+            ("LastInstallLocation", "TEXT NOT NULL DEFAULT ''"),
+            ("LastBillingProfileId", "TEXT NULL"),
+            ("LastBillingProfileDisplay", "TEXT NOT NULL DEFAULT ''"),
+            ("LastAssignmentClearedAtUtc", "TEXT NULL")
         };
         foreach (var (col, def) in rentalAssetCols)
             await TryAddColumnAsync(db, "RentalAssets", col, def);
+        await TryDropColumnAsync(db, "RentalAssets", "BillToCustomerName");
 
         var rentalBillingProfileCols = new (string col, string def)[]
         {
             ("BillingType", "TEXT NOT NULL DEFAULT '묶음'"),
-            ("BillToCustomerName", "TEXT NOT NULL DEFAULT ''"),
             ("InstallSiteName", "TEXT NOT NULL DEFAULT ''"),
             ("BillingAdvanceMode", "TEXT NOT NULL DEFAULT '후불'"),
             ("BillingDayMode", "TEXT NOT NULL DEFAULT '고정일'"),
@@ -421,13 +425,16 @@ public static partial class LocalDbInitializer
             ("SettledAmount", "REAL NOT NULL DEFAULT 0"),
             ("OutstandingAmount", "REAL NOT NULL DEFAULT 0"),
             ("RequiresFollowUp", "INTEGER NOT NULL DEFAULT 0"),
-            ("FollowUpNote", "TEXT NOT NULL DEFAULT ''"),
             ("LastSettledDate", "TEXT NULL"),
             ("BillingTemplateJson", "TEXT NOT NULL DEFAULT '[]'"),
             ("BillingRunsJson", "TEXT NOT NULL DEFAULT '[]'")
         };
         foreach (var (col, def) in rentalBillingProfileCols)
             await TryAddColumnAsync(db, "RentalBillingProfiles", col, def);
+        await TryDropColumnAsync(db, "RentalBillingProfiles", "RealCustomerName");
+        await TryDropColumnAsync(db, "RentalBillingProfiles", "BillToCustomerName");
+        await TryDropColumnAsync(db, "RentalBillingProfiles", "PaymentMethod");
+        await TryDropColumnAsync(db, "RentalBillingProfiles", "FollowUpNote");
 
         var inventoryTransferCols = new (string col, string def)[]
         {
@@ -1909,6 +1916,25 @@ public static partial class LocalDbInitializer
         }
     }
 
+    private static async Task TryDropColumnAsync(LocalDbContext db, string tableName, string columnName)
+    {
+        if (!IsSafeSqlIdentifier(tableName) || !IsSafeSqlIdentifier(columnName))
+            return;
+
+        if (!await HasColumnAsync(db, tableName, columnName))
+            return;
+
+        try
+        {
+            var dropSql = "ALTER TABLE " + QuoteSqlIdentifier(tableName) + " DROP COLUMN " + QuoteSqlIdentifier(columnName) + ";";
+            await db.Database.ExecuteSqlRawAsync(dropSql);
+        }
+        catch
+        {
+            // Ignore partially migrated SQLite versions that do not support DROP COLUMN.
+        }
+    }
+
     private static async Task TryAddColumnAsync(LocalDbContext db, string table, string column, string definition)
     {
         if (!IsSafeSqlIdentifier(table) || !IsSafeSqlIdentifier(column) || string.IsNullOrWhiteSpace(definition))
@@ -1983,6 +2009,7 @@ public static partial class LocalDbInitializer
         await TryNormalizeDateTimeTextColumnAsync(db, "RentalBillingProfiles", "UpdatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "RentalAssets", "CreatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "RentalAssets", "UpdatedAtUtc");
+        await TryNormalizeDateTimeTextColumnAsync(db, "RentalAssets", "LastAssignmentClearedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "RentalBillingLogs", "CreatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "RentalBillingLogs", "UpdatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "InventoryTransfers", "CreatedAtUtc");
@@ -2948,10 +2975,8 @@ public static partial class LocalDbInitializer
                                    "CustomerId" TEXT NULL,
                                    "CustomerName" TEXT NOT NULL DEFAULT '',
                                    "BusinessNumber" TEXT NOT NULL DEFAULT '',
-                                   "RealCustomerName" TEXT NOT NULL DEFAULT '',
                                    "ItemName" TEXT NOT NULL DEFAULT '',
                                    "BillingType" TEXT NOT NULL DEFAULT '묶음',
-                                   "BillToCustomerName" TEXT NOT NULL DEFAULT '',
                                    "InstallSiteName" TEXT NOT NULL DEFAULT '',
                                    "BillingAdvanceMode" TEXT NOT NULL DEFAULT '후불',
                                    "BillingDayMode" TEXT NOT NULL DEFAULT '고정일',
@@ -2960,7 +2985,6 @@ public static partial class LocalDbInitializer
                                    "DocumentLeadDays" INTEGER NOT NULL DEFAULT 0,
                                    "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
                                    "BillingMethod" TEXT NOT NULL DEFAULT '',
-                                   "PaymentMethod" TEXT NOT NULL DEFAULT '',
                                    "BillingStatus" TEXT NOT NULL DEFAULT '',
                                    "Email" TEXT NOT NULL DEFAULT '',
                                    "BillingDay" INTEGER NOT NULL DEFAULT 25,
@@ -3010,10 +3034,14 @@ public static partial class LocalDbInitializer
                                    "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
                                    "CurrentLocation" TEXT NOT NULL DEFAULT '',
                                    "CurrentCustomerName" TEXT NOT NULL DEFAULT '',
-                                   "BillToCustomerName" TEXT NOT NULL DEFAULT '',
                                    "InstallSiteName" TEXT NOT NULL DEFAULT '',
                                    "BillingEligibilityStatus" TEXT NOT NULL DEFAULT '',
                                    "BillingExclusionReason" TEXT NOT NULL DEFAULT '',
+                                   "LastCustomerName" TEXT NOT NULL DEFAULT '',
+                                   "LastInstallLocation" TEXT NOT NULL DEFAULT '',
+                                   "LastBillingProfileId" TEXT NULL,
+                                   "LastBillingProfileDisplay" TEXT NOT NULL DEFAULT '',
+                                   "LastAssignmentClearedAtUtc" TEXT NULL,
                                    "ItemCategoryName" TEXT NOT NULL DEFAULT '',
                                    "Manufacturer" TEXT NOT NULL DEFAULT '',
                                    "ItemName" TEXT NOT NULL DEFAULT '',

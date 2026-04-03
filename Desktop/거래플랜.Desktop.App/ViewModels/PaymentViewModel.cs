@@ -244,7 +244,7 @@ public sealed partial class PaymentViewModel : ObservableObject
         RebuildTransactionKinds(PaymentFlowConstants.TransactionKindRentalReceipt);
         await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
         await ApplySuggestedAmountsCoreAsync(forceResetAmounts: true, Interlocked.Increment(ref _settlementSuggestionVersion));
-        Memo = profile.FollowUpNote ?? string.Empty;
+        Memo = profile.Notes ?? string.Empty;
     }
 
     public Task ConfigureForRentalBillingAsync(LocalRentalBillingProfile profile, LocalCustomer? customer = null)

@@ -50,8 +50,11 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private decimal _editSalePrice;
     [ObservableProperty] private string _editCustomerName = string.Empty;
     [ObservableProperty] private string _editCurrentCustomerName = string.Empty;
-    [ObservableProperty] private string _editBillToCustomerName = string.Empty;
     [ObservableProperty] private string _editInstallLocation = string.Empty;
+    [ObservableProperty] private string _editLastCustomerName = string.Empty;
+    [ObservableProperty] private string _editLastInstallLocation = string.Empty;
+    [ObservableProperty] private string _editLastBillingProfileDisplay = string.Empty;
+    [ObservableProperty] private string _editLastAssignmentClearedAtText = string.Empty;
     [ObservableProperty] private string _editDepositText = string.Empty;
     [ObservableProperty] private decimal _editMonthlyFee;
     [ObservableProperty] private int _editContractMonths;
@@ -83,6 +86,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public bool CanSave => SelectedRow is null || CanEditCurrentSelection;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;
     public bool IsNewAsset => SelectedRow is null;
+    public bool IsNonOperatingAssetStatus => RentalAssetStatusRules.IsNonOperating(EditAssetStatus);
+    public bool CanEditAssignmentFields => !IsNonOperatingAssetStatus;
+    public bool HasLastAssignmentHistory =>
+        !string.IsNullOrWhiteSpace(EditLastCustomerName) ||
+        !string.IsNullOrWhiteSpace(EditLastInstallLocation) ||
+        !string.IsNullOrWhiteSpace(EditLastBillingProfileDisplay) ||
+        !string.IsNullOrWhiteSpace(EditLastAssignmentClearedAtText);
+    public bool ShowLastAssignmentHistory => IsNonOperatingAssetStatus && HasLastAssignmentHistory;
+    public string AssignmentFieldsNotice => IsNonOperatingAssetStatus
+        ? $"'{EditAssetStatus}' 상태에서는 거래처/설치/청구 연결이 필요하지 않습니다. 저장 시 관련 정보가 정리됩니다."
+        : string.Empty;
     public LocalStateService LocalStateService => _local;
     public SessionState SessionState => _session;
 
@@ -142,8 +156,15 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(EditCurrentCustomerName))
             EditCurrentCustomerName = value;
-        if (string.IsNullOrWhiteSpace(EditBillToCustomerName))
-            EditBillToCustomerName = value;
+    }
+
+    partial void OnEditAssetStatusChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsNonOperatingAssetStatus));
+        OnPropertyChanged(nameof(CanEditAssignmentFields));
+        OnPropertyChanged(nameof(ShowLastAssignmentHistory));
+        OnPropertyChanged(nameof(AssignmentFieldsNotice));
+        ApplyAssetStatusUiRules();
     }
 
     [RelayCommand]
@@ -219,7 +240,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             SalePrice = EditSalePrice,
             CustomerName = EditCustomerName,
             CurrentCustomerName = EditCurrentCustomerName,
-            BillToCustomerName = EditBillToCustomerName,
             InstallLocation = EditInstallLocation,
             InstallSiteName = EditInstallLocation,
             DepositText = EditDepositText,
@@ -330,8 +350,11 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         EditSalePrice = 0m;
         EditCustomerName = string.Empty;
         EditCurrentCustomerName = string.Empty;
-        EditBillToCustomerName = string.Empty;
         EditInstallLocation = string.Empty;
+        EditLastCustomerName = string.Empty;
+        EditLastInstallLocation = string.Empty;
+        EditLastBillingProfileDisplay = string.Empty;
+        EditLastAssignmentClearedAtText = string.Empty;
         EditDepositText = string.Empty;
         EditMonthlyFee = 0m;
         EditContractMonths = 0;
@@ -348,6 +371,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         EditContractStartDate = null;
         EditRentalEndDate = null;
         SelectedRow = null;
+        ApplyAssetStatusUiRules();
+        OnPropertyChanged(nameof(HasLastAssignmentHistory));
+        OnPropertyChanged(nameof(ShowLastAssignmentHistory));
         OnPropertyChanged(nameof(IsNewAsset));
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanDeleteSelected));
@@ -424,6 +450,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         if (value is null)
         {
+            EditLastCustomerName = string.Empty;
+            EditLastInstallLocation = string.Empty;
+            EditLastBillingProfileDisplay = string.Empty;
+            EditLastAssignmentClearedAtText = string.Empty;
+            OnPropertyChanged(nameof(HasLastAssignmentHistory));
+            OnPropertyChanged(nameof(ShowLastAssignmentHistory));
             OnPropertyChanged(nameof(IsNewAsset));
             OnPropertyChanged(nameof(CanSave));
             OnPropertyChanged(nameof(CanDeleteSelected));
@@ -451,8 +483,11 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         EditSalePrice = source.SalePrice;
         EditCustomerName = source.CustomerName;
         EditCurrentCustomerName = string.IsNullOrWhiteSpace(source.CurrentCustomerName) ? source.CustomerName : source.CurrentCustomerName;
-        EditBillToCustomerName = string.IsNullOrWhiteSpace(source.BillToCustomerName) ? source.CustomerName : source.BillToCustomerName;
         EditInstallLocation = string.IsNullOrWhiteSpace(source.InstallLocation) ? source.InstallSiteName : source.InstallLocation;
+        EditLastCustomerName = source.LastCustomerName;
+        EditLastInstallLocation = source.LastInstallLocation;
+        EditLastBillingProfileDisplay = source.LastBillingProfileDisplay;
+        EditLastAssignmentClearedAtText = source.LastAssignmentClearedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? string.Empty;
         EditDepositText = source.DepositText;
         EditMonthlyFee = source.MonthlyFee;
         EditContractMonths = source.ContractMonths;
@@ -468,9 +503,32 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         EditInstallDate = ToDateTime(source.InstallDate);
         EditContractStartDate = ToDateTime(source.ContractStartDate);
         EditRentalEndDate = ToDateTime(source.RentalEndDate);
+        ApplyAssetStatusUiRules();
+        OnPropertyChanged(nameof(HasLastAssignmentHistory));
+        OnPropertyChanged(nameof(ShowLastAssignmentHistory));
         OnPropertyChanged(nameof(IsNewAsset));
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanDeleteSelected));
+    }
+
+    private void ApplyAssetStatusUiRules()
+    {
+        if (RentalAssetStatusRules.IsNonOperating(EditAssetStatus))
+        {
+            if (!string.Equals(EditBillingEligibilityStatus, "청구제외", StringComparison.OrdinalIgnoreCase))
+                EditBillingEligibilityStatus = "청구제외";
+
+            if (string.IsNullOrWhiteSpace(EditBillingExclusionReason))
+                EditBillingExclusionReason = RentalAssetStatusRules.BuildAutoExclusionReason(EditAssetStatus);
+            return;
+        }
+
+        if (string.Equals(EditBillingEligibilityStatus, "청구제외", StringComparison.OrdinalIgnoreCase) &&
+            RentalAssetStatusRules.IsAutoGeneratedExclusionReason(EditBillingExclusionReason))
+        {
+            EditBillingEligibilityStatus = "미확인";
+            EditBillingExclusionReason = string.Empty;
+        }
     }
 
     private bool TryBuildDocumentAsset(out LocalRentalAsset asset)

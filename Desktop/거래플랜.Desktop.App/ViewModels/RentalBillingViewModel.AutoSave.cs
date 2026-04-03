@@ -1,4 +1,4 @@
-using System.Collections.Specialized;
+﻿using System.Collections.Specialized;
 using System.ComponentModel;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
@@ -16,15 +16,12 @@ public sealed partial class RentalBillingViewModel
         nameof(EditCustomerId),
         nameof(EditCustomerName),
         nameof(EditBusinessNumber),
-        nameof(EditRealCustomerName),
-        nameof(EditBillToCustomerName),
         nameof(EditInstallLocation),
         nameof(EditItemName),
         nameof(EditBillingType),
         nameof(EditBillingAdvanceMode),
         nameof(EditOfficeCode),
         nameof(EditBillingMethod),
-        nameof(EditPaymentMethod),
         nameof(EditBillingStatus),
         nameof(EditSettlementStatus),
         nameof(EditCompletionStatus),
@@ -39,7 +36,6 @@ public sealed partial class RentalBillingViewModel
         nameof(EditDepositAmount),
         nameof(EditSettledAmount),
         nameof(EditRequiresFollowUp),
-        nameof(EditFollowUpNote),
         nameof(EditSubmissionDocuments),
         nameof(EditNotes),
         nameof(LinkAssetsLater),
@@ -93,8 +89,7 @@ public sealed partial class RentalBillingViewModel
                 EditId == Guid.Empty ? null : EditId,
                 EditCustomerId,
                 EditCustomerName,
-                EditBillToCustomerName,
-                EditInstallLocation,
+                EditOfficeCode,
                 preserveSelection: true,
                 autoIncludeAllCandidates: false);
         }
@@ -263,8 +258,6 @@ public sealed partial class RentalBillingViewModel
             CustomerId = EditCustomerId,
             CustomerName = EditCustomerName,
             BusinessNumber = EditBusinessNumber,
-            RealCustomerName = EditRealCustomerName,
-            BillToCustomerName = EditBillToCustomerName,
             InstallLocation = EditInstallLocation,
             InstallSiteName = EditInstallLocation,
             ItemName = EditItemName,
@@ -272,7 +265,6 @@ public sealed partial class RentalBillingViewModel
             BillingAdvanceMode = EditBillingAdvanceMode,
             OfficeCode = EditOfficeCode,
             BillingMethod = EditBillingMethod,
-            PaymentMethod = EditPaymentMethod,
             BillingStatus = EditBillingStatus,
             SettlementStatus = EditSettlementStatus,
             CompletionStatus = EditCompletionStatus,
@@ -288,7 +280,6 @@ public sealed partial class RentalBillingViewModel
             SettledAmount = EditSettledAmount,
             OutstandingAmount = EditOutstandingAmount,
             RequiresFollowUp = EditRequiresFollowUp,
-            FollowUpNote = EditFollowUpNote,
             SubmissionDocuments = EditSubmissionDocuments,
             Notes = EditNotes,
             LinkAssetsLater = LinkAssetsLater,
@@ -311,8 +302,6 @@ public sealed partial class RentalBillingViewModel
         EditCustomerId = draft.CustomerId;
         EditCustomerName = draft.CustomerName ?? string.Empty;
         EditBusinessNumber = draft.BusinessNumber ?? string.Empty;
-        EditRealCustomerName = draft.RealCustomerName ?? string.Empty;
-        EditBillToCustomerName = draft.BillToCustomerName ?? string.Empty;
         EditInstallLocation = string.IsNullOrWhiteSpace(draft.InstallLocation)
             ? draft.InstallSiteName ?? string.Empty
             : draft.InstallLocation;
@@ -321,7 +310,6 @@ public sealed partial class RentalBillingViewModel
         EditBillingAdvanceMode = string.IsNullOrWhiteSpace(draft.BillingAdvanceMode) ? "후불" : draft.BillingAdvanceMode;
         EditOfficeCode = draft.OfficeCode ?? EditOfficeCode;
         EditBillingMethod = draft.BillingMethod ?? string.Empty;
-        EditPaymentMethod = draft.PaymentMethod ?? string.Empty;
         EditBillingStatus = string.IsNullOrWhiteSpace(draft.BillingStatus) ? "예정" : draft.BillingStatus;
         EditSettlementStatus = string.IsNullOrWhiteSpace(draft.SettlementStatus) ? PaymentFlowConstants.SettlementStatusUnpaid : draft.SettlementStatus;
         EditCompletionStatus = string.IsNullOrWhiteSpace(draft.CompletionStatus) ? PaymentFlowConstants.CompletionPending : draft.CompletionStatus;
@@ -345,7 +333,6 @@ public sealed partial class RentalBillingViewModel
         EditSettledAmount = draft.SettledAmount;
         EditOutstandingAmount = draft.OutstandingAmount;
         EditRequiresFollowUp = draft.RequiresFollowUp;
-        EditFollowUpNote = draft.FollowUpNote ?? string.Empty;
         EditSubmissionDocuments = draft.SubmissionDocuments ?? string.Empty;
         EditNotes = draft.Notes ?? string.Empty;
         LinkAssetsLater = draft.LinkAssetsLater;
@@ -413,14 +400,10 @@ public sealed partial class RentalBillingViewModel
         if (!string.IsNullOrWhiteSpace(EditCustomerName) ||
             EditCustomerId.HasValue ||
             !string.IsNullOrWhiteSpace(EditBusinessNumber) ||
-            !string.IsNullOrWhiteSpace(EditRealCustomerName) ||
-            !string.IsNullOrWhiteSpace(EditBillToCustomerName) ||
             !string.IsNullOrWhiteSpace(EditInstallLocation) ||
             !string.IsNullOrWhiteSpace(EditItemName) ||
             !string.IsNullOrWhiteSpace(EditBillingMethod) ||
-            !string.IsNullOrWhiteSpace(EditPaymentMethod) ||
             !string.IsNullOrWhiteSpace(EditEmail) ||
-            !string.IsNullOrWhiteSpace(EditFollowUpNote) ||
             !string.IsNullOrWhiteSpace(EditSubmissionDocuments) ||
             !string.IsNullOrWhiteSpace(EditNotes))
         {
@@ -473,3 +456,4 @@ public sealed partial class RentalBillingViewModel
                templateItem.IncludedAssetIds.Count > 0;
     }
 }
+

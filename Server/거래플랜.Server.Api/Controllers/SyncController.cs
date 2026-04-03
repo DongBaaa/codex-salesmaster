@@ -1111,8 +1111,6 @@ public sealed class SyncController : ControllerBase
                 dto.ManagementCompanyCode = resolvedOfficeCode;
                 var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
                 dto.CustomerName = normalizedCustomerName;
-                dto.RealCustomerName = normalizedCustomerName;
-                dto.BillToCustomerName = normalizedCustomerName;
             }
 
             if (!string.IsNullOrWhiteSpace(dto.ManagementCompanyCode))
@@ -1139,9 +1137,7 @@ public sealed class SyncController : ControllerBase
         CancellationToken cancellationToken)
     {
         var candidateKeys = BuildRentalCustomerKeys(
-            dto.CustomerName,
-            dto.RealCustomerName,
-            dto.BillToCustomerName);
+            dto.CustomerName);
         var normalizedBusinessNumber = NormalizeBusinessNumber(dto.BusinessNumber);
         if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
         {
@@ -1178,9 +1174,7 @@ public sealed class SyncController : ControllerBase
 
         var candidateNames = new[]
             {
-                dto.CustomerName,
-                dto.RealCustomerName,
-                dto.BillToCustomerName
+                dto.CustomerName
             }
             .Select(current => (current ?? string.Empty).Trim())
             .Where(current => !string.IsNullOrWhiteSpace(current))
@@ -1721,8 +1715,7 @@ public sealed class SyncController : ControllerBase
     {
         var candidateKeys = BuildRentalCustomerKeys(
             dto.CustomerName,
-            dto.CurrentCustomerName,
-            dto.BillToCustomerName);
+            dto.CurrentCustomerName);
         if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
         {
             var directCustomer = await _dbContext.Customers.IgnoreQueryFilters()
@@ -1739,8 +1732,7 @@ public sealed class SyncController : ControllerBase
         var candidateNames = new[]
             {
                 dto.CustomerName,
-                dto.CurrentCustomerName,
-                dto.BillToCustomerName
+                dto.CurrentCustomerName
             }
             .Select(current => (current ?? string.Empty).Trim())
             .Where(current => !string.IsNullOrWhiteSpace(current))

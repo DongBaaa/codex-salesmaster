@@ -219,10 +219,8 @@ public sealed class RentalsViewModel : ObservableObject
         var q = SearchText.Trim();
         return Contains(profile.ProfileKey, q)
                || Contains(profile.CustomerName, q)
-               || Contains(profile.RealCustomerName, q)
                || Contains(profile.ItemName, q)
                || Contains(profile.BillingStatus, q)
-               || Contains(profile.PaymentMethod, q)
                || Contains(profile.AssignedUsername, q)
                || Contains(profile.ManagementCompanyCode, q)
                || Contains(ResolveCompanyName(profile.ManagementCompanyCode, companyMap), q);

@@ -40,8 +40,7 @@ public static class RentalDuplicateNormalizer
         string? billingAdvanceMode,
         int billingDay,
         int billingCycleMonths,
-        string? billingMethod,
-        string? paymentMethod)
+        string? billingMethod)
     {
         var ownerKey = customerId.HasValue && customerId.Value != Guid.Empty
             ? $"CUSTOMER:{customerId.Value:N}"
@@ -49,18 +48,14 @@ public static class RentalDuplicateNormalizer
                 NormalizeProfileKeyPart(businessNumber),
                 NormalizeProfileKeyPart(customerName));
 
-        var billingKey = string.Join('|',
+        return string.Join('|',
+            NormalizeProfileKeyPart(managementCompanyCode),
+            ownerKey,
             NormalizeProfileKeyPart(billingType),
             NormalizeProfileKeyPart(billingAdvanceMode),
             billingDay.ToString(CultureInfo.InvariantCulture),
             billingCycleMonths.ToString(CultureInfo.InvariantCulture),
-            NormalizeProfileKeyPart(billingMethod),
-            NormalizeProfileKeyPart(paymentMethod));
-
-        return string.Join('|',
-            NormalizeProfileKeyPart(managementCompanyCode),
-            ownerKey,
-            billingKey);
+            NormalizeProfileKeyPart(billingMethod));
     }
 
     public static string ExtractImportedManagementId(string? notes)
@@ -72,7 +67,6 @@ public static class RentalDuplicateNormalizer
     public static string BuildRentalAssetDuplicateKey(
         string? customerName,
         string? currentCustomerName,
-        string? billToCustomerName,
         string? installSiteName,
         string? installLocation,
         string? itemCategoryName,
@@ -87,7 +81,6 @@ public static class RentalDuplicateNormalizer
         return string.Join('|',
             NormalizeTextKey(customerName),
             NormalizeTextKey(string.IsNullOrWhiteSpace(currentCustomerName) ? customerName : currentCustomerName),
-            NormalizeTextKey(billToCustomerName),
             NormalizeTextKey(string.IsNullOrWhiteSpace(installSiteName) ? installLocation : installSiteName),
             NormalizeTextKey(itemCategoryName),
             NormalizeTextKey(itemName),
@@ -108,8 +101,7 @@ public static class RentalDuplicateNormalizer
         string? billingAdvanceMode,
         int billingDay,
         int billingCycleMonths,
-        string? billingMethod,
-        string? paymentMethod)
+        string? billingMethod)
         => BuildProfileKey(
             string.IsNullOrWhiteSpace(responsibleOfficeCode) ? managementCompanyCode : responsibleOfficeCode,
             customerId,
@@ -119,8 +111,7 @@ public static class RentalDuplicateNormalizer
             billingAdvanceMode,
             billingDay,
             billingCycleMonths,
-            billingMethod,
-            paymentMethod);
+            billingMethod);
 
     public static string RemapBillingTemplateIncludedAssetIds(
         string? templateJson,

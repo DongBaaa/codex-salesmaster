@@ -29,8 +29,6 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
 
     [ObservableProperty] private Guid? _customerId;
     [ObservableProperty] private string _officeCode = string.Empty;
-    [ObservableProperty] private string _realCustomerName = string.Empty;
-    [ObservableProperty] private string _billToCustomerName = string.Empty;
     [ObservableProperty] private string _installLocation = string.Empty;
 
     [ObservableProperty] private string _billingType = "묶음";
@@ -44,7 +42,6 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     [ObservableProperty] private DateTime _billingStartDate = DateTime.Today;
     [ObservableProperty] private decimal _monthlyAmount;
     [ObservableProperty] private string _billingMethod = string.Empty;
-    [ObservableProperty] private string _paymentMethod = string.Empty;
     [ObservableProperty] private string _submissionDocuments = string.Empty;
     [ObservableProperty] private string _notes = string.Empty;
     [ObservableProperty] private bool _linkAssetsLater;
@@ -151,10 +148,6 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
 
     partial void OnCustomerNameChanged(string value)
     {
-        if (string.IsNullOrWhiteSpace(BillToCustomerName))
-            BillToCustomerName = value;
-        if (string.IsNullOrWhiteSpace(RealCustomerName))
-            RealCustomerName = value;
         if (string.IsNullOrWhiteSpace(InstallLocation))
             InstallLocation = value;
     }
@@ -233,7 +226,6 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             OfficeCode = OfficeOptions.FirstOrDefault()?.Value
                 ?? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
             BillingMethod = "전자세금계산서";
-            PaymentMethod = "계좌이체";
             BillingDayMode = RentalBillingScheduleRules.BillingDayModeFixedDay;
             BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
                 BillingCycleMonths,
@@ -388,7 +380,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             customer.Phone = (Phone ?? string.Empty).Trim();
             customer.Email = (Email ?? string.Empty).Trim();
             customer.Address = (Address ?? string.Empty).Trim();
-            customer.Department = (RealCustomerName ?? string.Empty).Trim();
+            customer.Department = string.Empty;
 
             var customerResult = await _local.UpsertCustomerAsync(customer, _session);
             if (!customerResult.Success)
@@ -422,16 +414,13 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 CustomerId = customer.Id,
                 CustomerName = CustomerName.Trim(),
                 BusinessNumber = (BusinessNumber ?? string.Empty).Trim(),
-                RealCustomerName = string.IsNullOrWhiteSpace(RealCustomerName) ? CustomerName.Trim() : RealCustomerName.Trim(),
-                BillToCustomerName = string.IsNullOrWhiteSpace(BillToCustomerName) ? CustomerName.Trim() : BillToCustomerName.Trim(),
-                InstallSiteName = string.IsNullOrWhiteSpace(InstallLocation) ? (string.IsNullOrWhiteSpace(RealCustomerName) ? CustomerName.Trim() : RealCustomerName.Trim()) : InstallLocation.Trim(),
+                InstallSiteName = (InstallLocation ?? string.Empty).Trim(),
                 BillingType = BillingType,
                 BillingAdvanceMode = BillingAdvanceMode,
                 ManagementCompanyCode = OfficeCode,
                 ResponsibleOfficeCode = OfficeCode,
                 AssignedUsername = string.Empty,
                 BillingMethod = BillingMethod,
-                PaymentMethod = PaymentMethod,
                 BillingStatus = "예정",
                 SettlementStatus = PaymentFlowConstants.SettlementStatusUnpaid,
                 CompletionStatus = PaymentFlowConstants.CompletionPending,
@@ -525,10 +514,8 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                     StatusMessage = "담당지점을 선택하세요.";
                     return false;
                 }
-                if (string.IsNullOrWhiteSpace(BillToCustomerName))
-                    BillToCustomerName = CustomerName.Trim();
                 if (string.IsNullOrWhiteSpace(InstallLocation))
-                    InstallLocation = string.IsNullOrWhiteSpace(RealCustomerName) ? CustomerName.Trim() : RealCustomerName.Trim();
+                    InstallLocation = CustomerName.Trim();
                 return true;
 
             case 2:
@@ -603,8 +590,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             billingProfileId: null,
             customerId: CustomerId,
             customerName: CustomerName,
-            billToCustomerName: BillToCustomerName,
-            installSiteName: InstallLocation,
+            officeCode: OfficeCode,
             _session);
 
         CandidateAssets.Clear();
@@ -618,7 +604,6 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 ItemName = asset.ItemName,
                 MachineNumber = asset.MachineNumber,
                 CurrentCustomerName = string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName,
-                BillToCustomerName = string.IsNullOrWhiteSpace(asset.BillToCustomerName) ? asset.CustomerName : asset.BillToCustomerName,
                 InstallLocation = string.IsNullOrWhiteSpace(asset.InstallSiteName) ? asset.InstallLocation : asset.InstallSiteName,
                 AssetStatus = asset.AssetStatus,
                 BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? "미확인" : asset.BillingEligibilityStatus
@@ -688,8 +673,6 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
             customer.ResponsibleOfficeCode,
             OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet));
-        RealCustomerName = string.IsNullOrWhiteSpace(customer.Department) ? CustomerName : customer.Department.Trim();
-        BillToCustomerName = CustomerName;
         InstallLocation = string.IsNullOrWhiteSpace(customer.Department)
             ? Address
             : customer.Department.Trim();

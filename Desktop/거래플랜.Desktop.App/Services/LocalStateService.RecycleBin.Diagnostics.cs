@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -19,9 +20,15 @@ public sealed partial class LocalStateService
             RecycleBinEntityKind.Transaction => await GetTransactionRecycleBinDependencyInfoAsync(entityId, session, ct),
             RecycleBinEntityKind.CustomerContract => await GetContractRecycleBinDependencyInfoAsync(entityId, session, ct),
             RecycleBinEntityKind.Item => await GetItemRecycleBinDependencyInfoAsync(entityId, session, ct),
+            RecycleBinEntityKind.CompanyProfile => await GetCompanyProfileRecycleBinDependencyInfoAsync(entityId, ct),
+            RecycleBinEntityKind.PriceGradeOption => await GetPriceGradeOptionRecycleBinDependencyInfoAsync(entityId, ct),
+            RecycleBinEntityKind.TradeTypeOption => await GetTradeTypeOptionRecycleBinDependencyInfoAsync(entityId, ct),
+            RecycleBinEntityKind.ItemCategoryOption => await GetItemCategoryOptionRecycleBinDependencyInfoAsync(entityId, ct),
             RecycleBinEntityKind.RentalBillingProfile => await GetRentalBillingProfileRecycleBinDependencyInfoAsync(entityId, session, ct),
             RecycleBinEntityKind.RentalAsset => await GetRentalAssetRecycleBinDependencyInfoAsync(entityId, session, ct),
             RecycleBinEntityKind.RentalBillingLog => await GetRentalBillingLogRecycleBinDependencyInfoAsync(entityId, session, ct),
+            RecycleBinEntityKind.InventoryTransfer => await GetInventoryTransferRecycleBinDependencyInfoAsync(entityId, session, ct),
+            RecycleBinEntityKind.RentalManagementCompany => await GetRentalManagementCompanyRecycleBinDependencyInfoAsync(entityId, session, ct),
             _ => new RecycleBinDependencyInfo
             {
                 CanPurge = false,
@@ -165,10 +172,6 @@ public sealed partial class LocalStateService
             profile.CustomerId = targetCustomerId;
             if (ShouldReplaceDisplayValue(profile.CustomerName, source.NameOriginal))
                 profile.CustomerName = target.NameOriginal;
-            if (ShouldReplaceDisplayValue(profile.RealCustomerName, source.NameOriginal))
-                profile.RealCustomerName = target.NameOriginal;
-            if (ShouldReplaceDisplayValue(profile.BillToCustomerName, source.NameOriginal))
-                profile.BillToCustomerName = target.NameOriginal;
             if (ShouldReplaceDigits(profile.BusinessNumber, source.BusinessNumber))
                 profile.BusinessNumber = target.BusinessNumber;
             MarkRecycleBinMutation(profile, now);
@@ -186,8 +189,6 @@ public sealed partial class LocalStateService
                 asset.CustomerName = target.NameOriginal;
             if (ShouldReplaceDisplayValue(asset.CurrentCustomerName, source.NameOriginal))
                 asset.CurrentCustomerName = target.NameOriginal;
-            if (ShouldReplaceDisplayValue(asset.BillToCustomerName, source.NameOriginal))
-                asset.BillToCustomerName = target.NameOriginal;
             MarkRecycleBinMutation(asset, now);
             movedRentalAssetCount++;
         }
@@ -373,6 +374,97 @@ public sealed partial class LocalStateService
         };
     }
 
+    private async Task<RecycleBinDependencyInfo> GetCompanyProfileRecycleBinDependencyInfoAsync(Guid profileId, CancellationToken ct)
+    {
+        var profile = await _db.CompanyProfiles.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(current => current.Id == profileId, ct);
+        if (profile is null)
+            return new RecycleBinDependencyInfo { CanPurge = false, Summary = "삭제 차단 사유를 확인할 회사설정을 찾을 수 없습니다." };
+
+        var assignedSettingCount = await _db.Settings.AsNoTracking()
+            .CountAsync(setting => setting.Key.StartsWith(CompanyProfileAssignmentPrefix) && setting.Value == profileId.ToString("D"), ct);
+        var defaultOfficeCount = await _db.CompanyProfiles.IgnoreQueryFilters().AsNoTracking()
+            .CountAsync(current => current.Id != profileId && !current.IsDeleted && current.IsActive && string.Equals(current.OfficeCode, profile.OfficeCode, StringComparison.OrdinalIgnoreCase) && current.IsDefaultForOffice, ct);
+
+        var dependencies = new List<RecycleBinDependencyItem>();
+        AppendDependency(dependencies, "사용자 지정", assignedSettingCount, "사용자별 회사설정 연결을 먼저 해제해야 합니다.");
+        AppendDependency(dependencies, "같은 지점 기본 회사설정", defaultOfficeCount, "같은 지점의 다른 기본 회사설정이 있으면 복원 시 기본 상태를 다시 검토해야 합니다.");
+
+        return new RecycleBinDependencyInfo
+        {
+            CanPurge = assignedSettingCount == 0,
+            Summary = assignedSettingCount == 0
+                ? "이 회사설정은 현재 영구삭제 가능합니다."
+                : "사용자별 회사설정 연결이 남아 있어 영구삭제할 수 없습니다.",
+            Dependencies = dependencies
+        };
+    }
+
+    private async Task<RecycleBinDependencyInfo> GetPriceGradeOptionRecycleBinDependencyInfoAsync(Guid optionId, CancellationToken ct)
+    {
+        var option = await _db.PriceGradeOptions.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(current => current.Id == optionId, ct);
+        if (option is null)
+            return new RecycleBinDependencyInfo { CanPurge = false, Summary = "삭제 차단 사유를 확인할 가격등급을 찾을 수 없습니다." };
+
+        var customerCount = await _db.Customers.IgnoreQueryFilters().CountAsync(current => current.PriceGrade == option.Name, ct);
+        var dependencies = new List<RecycleBinDependencyItem>();
+        AppendDependency(dependencies, "연결 거래처", customerCount, "이 가격등급을 사용하는 거래처가 있으면 영구삭제할 수 없습니다.");
+
+        return new RecycleBinDependencyInfo
+        {
+            CanPurge = customerCount == 0,
+            Summary = customerCount == 0
+                ? "이 가격등급은 현재 영구삭제 가능합니다."
+                : "연결 거래처가 남아 있어 영구삭제할 수 없습니다.",
+            Dependencies = dependencies
+        };
+    }
+
+    private async Task<RecycleBinDependencyInfo> GetTradeTypeOptionRecycleBinDependencyInfoAsync(Guid optionId, CancellationToken ct)
+    {
+        var option = await _db.TradeTypeOptions.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(current => current.Id == optionId, ct);
+        if (option is null)
+            return new RecycleBinDependencyInfo { CanPurge = false, Summary = "삭제 차단 사유를 확인할 거래구분을 찾을 수 없습니다." };
+
+        var customerCount = await _db.Customers.IgnoreQueryFilters().CountAsync(current => current.TradeType == option.Name, ct);
+        var dependencies = new List<RecycleBinDependencyItem>();
+        AppendDependency(dependencies, "연결 거래처", customerCount, "이 거래구분을 사용하는 거래처가 있으면 영구삭제할 수 없습니다.");
+
+        return new RecycleBinDependencyInfo
+        {
+            CanPurge = customerCount == 0,
+            Summary = customerCount == 0
+                ? "이 거래구분은 현재 영구삭제 가능합니다."
+                : "연결 거래처가 남아 있어 영구삭제할 수 없습니다.",
+            Dependencies = dependencies
+        };
+    }
+
+    private async Task<RecycleBinDependencyInfo> GetItemCategoryOptionRecycleBinDependencyInfoAsync(Guid optionId, CancellationToken ct)
+    {
+        var option = await _db.ItemCategoryOptions.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(current => current.Id == optionId, ct);
+        if (option is null)
+            return new RecycleBinDependencyInfo { CanPurge = false, Summary = "삭제 차단 사유를 확인할 품목분류를 찾을 수 없습니다." };
+
+        var optionKey = RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name);
+        var itemCount = (await _db.Items.IgnoreQueryFilters().AsNoTracking().ToListAsync(ct))
+            .Count(item => string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(item.CategoryName), optionKey, StringComparison.OrdinalIgnoreCase));
+        var rentalAssetCount = (await _db.RentalAssets.IgnoreQueryFilters().AsNoTracking().ToListAsync(ct))
+            .Count(asset => string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(asset.ItemCategoryName), optionKey, StringComparison.OrdinalIgnoreCase));
+
+        var dependencies = new List<RecycleBinDependencyItem>();
+        AppendDependency(dependencies, "연결 품목", itemCount, "이 품목분류를 사용하는 품목이 있으면 영구삭제할 수 없습니다.");
+        AppendDependency(dependencies, "연결 렌탈 자산", rentalAssetCount, "이 품목분류를 사용하는 렌탈 자산이 있으면 영구삭제할 수 없습니다.");
+
+        return new RecycleBinDependencyInfo
+        {
+            CanPurge = itemCount + rentalAssetCount == 0,
+            Summary = itemCount + rentalAssetCount == 0
+                ? "이 품목분류는 현재 영구삭제 가능합니다."
+                : "연결 품목 또는 렌탈 자산이 남아 있어 영구삭제할 수 없습니다.",
+            Dependencies = dependencies
+        };
+    }
+
     private async Task<RecycleBinDependencyInfo> GetRentalBillingProfileRecycleBinDependencyInfoAsync(Guid profileId, SessionState session, CancellationToken ct)
     {
         var profile = await _db.RentalBillingProfiles
@@ -485,6 +577,69 @@ public sealed partial class LocalStateService
         };
     }
 
+    private async Task<RecycleBinDependencyInfo> GetInventoryTransferRecycleBinDependencyInfoAsync(Guid transferId, SessionState session, CancellationToken ct)
+    {
+        var transfer = await _db.InventoryTransfers
+            .IgnoreQueryFilters()
+            .Include(current => current.Lines)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == transferId, ct);
+        if (transfer is null || !CanAccessInventoryTransferForRecycleBin(transfer, session))
+        {
+            return new RecycleBinDependencyInfo
+            {
+                CanPurge = false,
+                Summary = "삭제 차단 사유를 확인할 재고이동을 찾을 수 없습니다."
+            };
+        }
+
+        var lineCount = transfer.Lines.Count(line => !line.IsDeleted);
+        var receiveEvidence = string.IsNullOrWhiteSpace(transfer.ReceiveEvidencePath) ? 0 : 1;
+        var dependencies = new List<RecycleBinDependencyItem>();
+        AppendDependency(dependencies, "이동 라인", lineCount, "영구삭제 시 재고이동 라인도 함께 제거됩니다.");
+        AppendDependency(dependencies, "수령 증빙", receiveEvidence, "영구삭제 시 수령 증빙 경로도 함께 정리됩니다.");
+
+        return new RecycleBinDependencyInfo
+        {
+            CanPurge = true,
+            Summary = lineCount > 0 || receiveEvidence > 0
+                ? "이 재고이동은 현재 영구삭제 가능합니다. 연결 라인과 증빙도 함께 정리됩니다."
+                : "이 재고이동은 현재 영구삭제 가능합니다.",
+            Dependencies = dependencies
+        };
+    }
+
+    private async Task<RecycleBinDependencyInfo> GetRentalManagementCompanyRecycleBinDependencyInfoAsync(Guid companyId, SessionState session, CancellationToken ct)
+    {
+        var company = await _db.RentalManagementCompanies.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(current => current.Id == companyId, ct);
+        if (company is null || !CanManageRentalSettingsForRecycleBin(session))
+        {
+            return new RecycleBinDependencyInfo
+            {
+                CanPurge = false,
+                Summary = "삭제 차단 사유를 확인할 렌탈 관리업체를 찾을 수 없습니다."
+            };
+        }
+
+        var billingProfileCount = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .CountAsync(current => current.ManagementCompanyCode == company.Code, ct);
+        var rentalAssetCount = await _db.RentalAssets.IgnoreQueryFilters()
+            .CountAsync(current => current.ManagementCompanyCode == company.Code, ct);
+
+        var dependencies = new List<RecycleBinDependencyItem>();
+        AppendDependency(dependencies, "연결 렌탈 청구프로필", billingProfileCount, "이 관리업체를 사용하는 렌탈 청구프로필이 있으면 영구삭제할 수 없습니다.");
+        AppendDependency(dependencies, "연결 렌탈 자산", rentalAssetCount, "이 관리업체를 사용하는 렌탈 자산이 있으면 영구삭제할 수 없습니다.");
+
+        return new RecycleBinDependencyInfo
+        {
+            CanPurge = billingProfileCount + rentalAssetCount == 0,
+            Summary = billingProfileCount + rentalAssetCount == 0
+                ? "이 렌탈 관리업체는 현재 영구삭제 가능합니다."
+                : "연결 렌탈 데이터가 남아 있어 영구삭제할 수 없습니다.",
+            Dependencies = dependencies
+        };
+    }
+
     private static void AppendDependency(ICollection<RecycleBinDependencyItem> items, string label, int count, string detail)
     {
         if (count <= 0)
@@ -526,6 +681,20 @@ public sealed partial class LocalStateService
 
     private static string NormalizeDigits(string? value)
         => string.Concat((value ?? string.Empty).Where(char.IsDigit));
+
+    private static bool CanManageRentalSettingsForRecycleBin(SessionState? session)
+        => session is not null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.RentalSettingsEdit));
+
+    private bool CanAccessInventoryTransferForRecycleBin(LocalInventoryTransfer transfer, SessionState session)
+    {
+        if (HasFullAccess(session))
+            return true;
+
+        var readableOffices = GetReadableOfficeCodes(session);
+        var fromOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.FromWarehouseCode);
+        var toOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.ToWarehouseCode);
+        return readableOffices.Contains(fromOfficeCode) || readableOffices.Contains(toOfficeCode);
+    }
 
     private static bool CanAccessRental(string? officeCode, SessionState session)
     {

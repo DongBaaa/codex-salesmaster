@@ -542,7 +542,6 @@ public sealed partial class RentalStateService
         asset.Manufacturer = RentalCatalogValueNormalizer.NormalizeDisplayText(row.Manufacturer);
         asset.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(row.CustomerName);
         asset.CurrentCustomerName = asset.CustomerName;
-        asset.BillToCustomerName = asset.CustomerName;
         asset.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(row.ItemName);
         asset.MachineNumber = row.MachineNumber;
         var normalizedInstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(row.InstallLocation);
@@ -696,7 +695,17 @@ public sealed partial class RentalStateService
 
             var invertedBracketMatch = Regex.Match(seed, @"^(?<prefix>[^\[\]]+)\[(?<body>[^\[\]]+)\]$");
             if (invertedBracketMatch.Success)
-                yield return $"[{invertedBracketMatch.Groups["prefix"].Value.Trim()}]{invertedBracketMatch.Groups["body"].Value.Trim()}";
+            {
+                var prefix = invertedBracketMatch.Groups["prefix"].Value.Trim();
+                var body = invertedBracketMatch.Groups["body"].Value.Trim();
+                yield return $"[{prefix}]{body}";
+
+                foreach (var reducedPrefix in ExpandInstitutionPrefixes(prefix))
+                {
+                    yield return $"{reducedPrefix}[{body}]";
+                    yield return $"[{reducedPrefix}]{body}";
+                }
+            }
 
             var withoutLeadingTags = Regex.Replace(seed, @"^(?:\[[^\]]+\]|\{[^\}]+\})+", string.Empty).Trim();
             if (!string.Equals(withoutLeadingTags, seed, StringComparison.Ordinal))
@@ -725,6 +734,22 @@ public sealed partial class RentalStateService
             var candidate = RentalCatalogValueNormalizer.NormalizeDisplayText(expanded);
             if (!string.IsNullOrWhiteSpace(candidate) && seen.Add(candidate))
                 yield return candidate;
+        }
+
+        static IEnumerable<string> ExpandInstitutionPrefixes(string prefix)
+        {
+            if (string.IsNullOrWhiteSpace(prefix))
+                yield break;
+
+            foreach (var removablePrefix in new[] { "인천", "서울", "경기", "부산" })
+            {
+                if (!prefix.StartsWith(removablePrefix, StringComparison.CurrentCultureIgnoreCase) || prefix.Length <= removablePrefix.Length)
+                    continue;
+
+                var reduced = prefix[removablePrefix.Length..].Trim();
+                if (!string.IsNullOrWhiteSpace(reduced))
+                    yield return reduced;
+            }
         }
     }
 

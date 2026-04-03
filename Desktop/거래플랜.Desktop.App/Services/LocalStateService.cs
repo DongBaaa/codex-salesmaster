@@ -4166,10 +4166,10 @@ public sealed partial class LocalStateService
     private static string DetermineRentalSettlementStatus(string? billingMethod, decimal settledAmount, decimal billedAmount)
     {
         if (settledAmount <= 0m)
-            return PaymentFlowConstants.GetPendingSettlementStatus(billingMethod, billingMethod);
+            return PaymentFlowConstants.GetPendingSettlementStatus(billingMethod);
         if (settledAmount < billedAmount)
             return PaymentFlowConstants.SettlementStatusPartial;
-        return PaymentFlowConstants.GetDisplaySettlementCompleteStatus(billingMethod, billingMethod);
+            return PaymentFlowConstants.GetDisplaySettlementCompleteStatus(billingMethod);
     }
 
     private bool CanAccessRentalProfile(LocalRentalBillingProfile profile, SessionState session)

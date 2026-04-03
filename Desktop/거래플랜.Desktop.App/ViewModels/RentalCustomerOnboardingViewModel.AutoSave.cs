@@ -24,8 +24,6 @@ public sealed partial class RentalCustomerOnboardingViewModel
         nameof(Address),
         nameof(CustomerId),
         nameof(OfficeCode),
-        nameof(RealCustomerName),
-        nameof(BillToCustomerName),
         nameof(InstallLocation),
         nameof(BillingType),
         nameof(BillingAdvanceMode),
@@ -38,7 +36,6 @@ public sealed partial class RentalCustomerOnboardingViewModel
         nameof(BillingStartDate),
         nameof(MonthlyAmount),
         nameof(BillingMethod),
-        nameof(PaymentMethod),
         nameof(SubmissionDocuments),
         nameof(Notes),
         nameof(LinkAssetsLater)
@@ -216,8 +213,6 @@ public sealed partial class RentalCustomerOnboardingViewModel
             Email = Email,
             Address = Address,
             OfficeCode = OfficeCode,
-            RealCustomerName = RealCustomerName,
-            BillToCustomerName = BillToCustomerName,
             InstallLocation = InstallLocation,
             InstallSiteName = InstallLocation,
             BillingType = BillingType,
@@ -231,7 +226,6 @@ public sealed partial class RentalCustomerOnboardingViewModel
             BillingStartDate = BillingStartDate,
             MonthlyAmount = MonthlyAmount,
             BillingMethod = BillingMethod,
-            PaymentMethod = PaymentMethod,
             SubmissionDocuments = SubmissionDocuments,
             Notes = Notes,
             LinkAssetsLater = LinkAssetsLater,
@@ -251,8 +245,6 @@ public sealed partial class RentalCustomerOnboardingViewModel
         Email = draft.Email ?? string.Empty;
         Address = draft.Address ?? string.Empty;
         OfficeCode = draft.OfficeCode ?? OfficeCode;
-        RealCustomerName = draft.RealCustomerName ?? string.Empty;
-        BillToCustomerName = draft.BillToCustomerName ?? string.Empty;
         InstallLocation = string.IsNullOrWhiteSpace(draft.InstallLocation)
             ? draft.InstallSiteName ?? string.Empty
             : draft.InstallLocation;
@@ -275,7 +267,6 @@ public sealed partial class RentalCustomerOnboardingViewModel
         DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(draft.DocumentLeadDays);
         MonthlyAmount = draft.MonthlyAmount;
         BillingMethod = draft.BillingMethod ?? BillingMethod;
-        PaymentMethod = draft.PaymentMethod ?? PaymentMethod;
         SubmissionDocuments = draft.SubmissionDocuments ?? string.Empty;
         Notes = draft.Notes ?? string.Empty;
         LinkAssetsLater = draft.LinkAssetsLater;
@@ -320,8 +311,6 @@ public sealed partial class RentalCustomerOnboardingViewModel
             !string.IsNullOrWhiteSpace(Email) ||
             !string.IsNullOrWhiteSpace(Address) ||
             CustomerId.HasValue ||
-            !string.IsNullOrWhiteSpace(RealCustomerName) ||
-            !string.IsNullOrWhiteSpace(BillToCustomerName) ||
             !string.IsNullOrWhiteSpace(InstallLocation) ||
             !string.IsNullOrWhiteSpace(SubmissionDocuments) ||
             !string.IsNullOrWhiteSpace(Notes))

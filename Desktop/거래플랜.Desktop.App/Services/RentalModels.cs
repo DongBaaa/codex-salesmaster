@@ -26,7 +26,6 @@ public sealed class RentalAlertItem
     public Guid BillingProfileId { get; set; }
     public string ResponsibleOfficeName { get; set; } = string.Empty;
     public string CustomerName { get; set; } = string.Empty;
-    public string RealCustomerName { get; set; } = string.Empty;
     public string ItemName { get; set; } = string.Empty;
     public decimal MonthlyAmount { get; set; }
     public DateOnly NextBillingDate { get; set; }
@@ -35,9 +34,7 @@ public sealed class RentalAlertItem
     public string AlertReason { get; set; } = string.Empty;
     public int DaysRemaining { get; set; }
     public string Severity { get; set; } = string.Empty;
-    public string Summary => string.IsNullOrWhiteSpace(RealCustomerName)
-        ? CustomerName
-        : $"{CustomerName} / {RealCustomerName}";
+    public string Summary => CustomerName;
 }
 
 public sealed class RentalExpiringAssetItem
@@ -207,8 +204,6 @@ public sealed class RentalBillingEditorDraftModel
     public Guid? CustomerId { get; set; }
     public string CustomerName { get; set; } = string.Empty;
     public string BusinessNumber { get; set; } = string.Empty;
-    public string RealCustomerName { get; set; } = string.Empty;
-    public string BillToCustomerName { get; set; } = string.Empty;
     public string InstallLocation { get; set; } = string.Empty;
     public string InstallSiteName { get; set; } = string.Empty;
     public string ItemName { get; set; } = string.Empty;
@@ -216,7 +211,6 @@ public sealed class RentalBillingEditorDraftModel
     public string BillingAdvanceMode { get; set; } = "후불";
     public string OfficeCode { get; set; } = string.Empty;
     public string BillingMethod { get; set; } = string.Empty;
-    public string PaymentMethod { get; set; } = string.Empty;
     public string BillingStatus { get; set; } = "예정";
     public string SettlementStatus { get; set; } = PaymentFlowConstants.SettlementStatusUnpaid;
     public string CompletionStatus { get; set; } = PaymentFlowConstants.CompletionPending;
@@ -232,7 +226,6 @@ public sealed class RentalBillingEditorDraftModel
     public decimal SettledAmount { get; set; }
     public decimal OutstandingAmount { get; set; }
     public bool RequiresFollowUp { get; set; }
-    public string FollowUpNote { get; set; } = string.Empty;
     public string SubmissionDocuments { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
     public bool LinkAssetsLater { get; set; }
@@ -260,8 +253,6 @@ public sealed class RentalCustomerOnboardingDraftModel
     public string Email { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
     public string OfficeCode { get; set; } = string.Empty;
-    public string RealCustomerName { get; set; } = string.Empty;
-    public string BillToCustomerName { get; set; } = string.Empty;
     public string InstallLocation { get; set; } = string.Empty;
     public string InstallSiteName { get; set; } = string.Empty;
     public string BillingType { get; set; } = "묶음";
@@ -275,7 +266,6 @@ public sealed class RentalCustomerOnboardingDraftModel
     public DateTime BillingStartDate { get; set; } = DateTime.Today;
     public decimal MonthlyAmount { get; set; }
     public string BillingMethod { get; set; } = string.Empty;
-    public string PaymentMethod { get; set; } = string.Empty;
     public string SubmissionDocuments { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
     public bool LinkAssetsLater { get; set; }
@@ -296,13 +286,11 @@ public sealed class RentalBillingViewRow
     public decimal SettledAmount { get; init; }
     public decimal OutstandingAmount { get; init; }
     public bool RequiresFollowUp { get; init; }
-    public string FollowUpNote { get; init; } = string.Empty;
     public DateOnly? LastSettledDate { get; init; }
     public int AssetCount { get; init; }
     public int TemplateItemCount { get; init; }
     public int IncludedAssetCount { get; init; }
     public string BillingType { get; init; } = string.Empty;
-    public string BillToCustomerName { get; init; } = string.Empty;
     public string InstallSiteName { get; init; } = string.Empty;
     public string InstallLocationDisplay { get; init; } = string.Empty;
     public string BillingAdvanceMode { get; init; } = string.Empty;
@@ -328,10 +316,24 @@ public sealed class RentalAssetViewRow
     public string ResponsibleOfficeName { get; init; } = string.Empty;
     public int? DaysRemaining { get; init; }
     public string CurrentCustomerName { get; init; } = string.Empty;
-    public string BillToCustomerName { get; init; } = string.Empty;
     public string InstallLocationDisplay { get; init; } = string.Empty;
     public string BillingEligibilityStatus { get; init; } = string.Empty;
     public bool HasDataIssue { get; init; }
     public bool IsSelected { get; set; }
+}
+
+public static class RentalAssetStatusRules
+{
+    public static bool IsNonOperating(string? assetStatus)
+        => string.Equals(assetStatus, "대기", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(assetStatus, "회수", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(assetStatus, "폐기", StringComparison.OrdinalIgnoreCase);
+
+    public static string BuildAutoExclusionReason(string? assetStatus)
+        => $"자산상태: {(string.IsNullOrWhiteSpace(assetStatus) ? "미확인" : assetStatus.Trim())}";
+
+    public static bool IsAutoGeneratedExclusionReason(string? reason)
+        => !string.IsNullOrWhiteSpace(reason) &&
+           reason.Trim().StartsWith("자산상태:", StringComparison.OrdinalIgnoreCase);
 }
 

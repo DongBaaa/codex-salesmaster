@@ -6,7 +6,6 @@ namespace 거래플랜.Server.Api.Data;
 
 public static partial class DbInitializer
 {
-    private const string NoLinkedAssetFollowUpNote = "연결 자산 없음";
     private const string CanonicalMfcL8900CategoryName = "A4컬러복합기";
     private const string CanonicalMfcL8900ItemName = "MFC-L8900CDW";
     private const string BillingStatusOnHold = "보류";
@@ -51,8 +50,7 @@ public static partial class DbInitializer
             var changed = false;
             var assetCustomerKeys = BuildRentalCustomerKeys(
                 asset.CustomerName,
-                asset.CurrentCustomerName,
-                asset.BillToCustomerName);
+                asset.CurrentCustomerName);
             var normalizedInstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation);
             var normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallSiteName);
             var canonicalInstallLocation = !string.IsNullOrWhiteSpace(normalizedInstallLocation)
@@ -124,11 +122,6 @@ public static partial class DbInitializer
                     changed = true;
                 }
 
-                if (string.IsNullOrWhiteSpace(asset.BillToCustomerName))
-                {
-                    asset.BillToCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
-                    changed = true;
-                }
             }
 
             if (!asset.BillingProfileId.HasValue || asset.BillingProfileId.Value == Guid.Empty)
@@ -202,18 +195,6 @@ public static partial class DbInitializer
                     changed = true;
                 }
 
-                if (!string.Equals(profile.RealCustomerName, normalizedMasterName, StringComparison.Ordinal))
-                {
-                    profile.RealCustomerName = normalizedMasterName;
-                    changed = true;
-                }
-
-                if (!string.Equals(profile.BillToCustomerName, normalizedMasterName, StringComparison.Ordinal))
-                {
-                    profile.BillToCustomerName = normalizedMasterName;
-                    changed = true;
-                }
-
                 var resolvedOfficeCode = ResolveCustomerRentalOfficeCode(linkedCustomer.OfficeCode);
                 if (!string.IsNullOrWhiteSpace(resolvedOfficeCode))
                 {
@@ -251,8 +232,6 @@ public static partial class DbInitializer
             }
 
             if (string.IsNullOrWhiteSpace(normalizedInstallSiteName))
-                normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.RealCustomerName);
-            if (string.IsNullOrWhiteSpace(normalizedInstallSiteName))
                 normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.CustomerName);
 
             if (!string.Equals(profile.InstallSiteName, normalizedInstallSiteName, StringComparison.Ordinal))
@@ -284,12 +263,6 @@ public static partial class DbInitializer
                     changed = true;
                 }
 
-                var followUpNote = AppendFollowUpNote(profile.FollowUpNote, NoLinkedAssetFollowUpNote);
-                if (!string.Equals(profile.FollowUpNote, followUpNote, StringComparison.Ordinal))
-                {
-                    profile.FollowUpNote = followUpNote;
-                    changed = true;
-                }
             }
 
             if (changed)
@@ -363,9 +336,7 @@ public static partial class DbInitializer
         IReadOnlyCollection<Customer> customers)
     {
         var candidateKeys = BuildRentalCustomerKeys(
-            profile.CustomerName,
-            profile.RealCustomerName,
-            profile.BillToCustomerName);
+            profile.CustomerName);
 
         if (CustomerReferenceLooksValid(profile.CustomerId, customerById, candidateKeys))
             return profile.CustomerId;
@@ -398,8 +369,7 @@ public static partial class DbInitializer
     {
         var candidateKeys = BuildRentalCustomerKeys(
             asset.CustomerName,
-            asset.CurrentCustomerName,
-            asset.BillToCustomerName);
+            asset.CurrentCustomerName);
 
         if (linkedProfile is not null &&
             CustomerReferenceLooksValid(linkedProfile.CustomerId, customerById, candidateKeys))
@@ -475,8 +445,7 @@ public static partial class DbInitializer
         customerId = Guid.Empty;
         var candidateKeys = BuildRentalCustomerKeys(
             asset.CustomerName,
-            asset.CurrentCustomerName,
-            asset.BillToCustomerName);
+            asset.CurrentCustomerName);
         return TryResolveRentalCustomerByNames(customers, null, candidateKeys, out customerId);
     }
 
@@ -617,17 +586,4 @@ public static partial class DbInitializer
     private static string ResolveCustomerRentalOfficeCode(string? officeCode)
         => OfficeCodeCatalog.NormalizeOfficeCodeLoose(officeCode, null, OfficeCodeCatalog.Usenet);
 
-    private static string AppendFollowUpNote(string? currentNote, string token)
-    {
-        var trimmedCurrent = (currentNote ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(token))
-            return trimmedCurrent;
-
-        if (trimmedCurrent.Contains(token, StringComparison.OrdinalIgnoreCase))
-            return trimmedCurrent;
-
-        return string.IsNullOrWhiteSpace(trimmedCurrent)
-            ? token
-            : $"{trimmedCurrent} / {token}";
-    }
 }

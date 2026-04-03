@@ -847,6 +847,39 @@ public static partial class DbInitializer
         return false;
     }
 
+    private static async Task TryDropColumnAsync(
+        AppDbContext dbContext,
+        string tableName,
+        string columnName,
+        CancellationToken cancellationToken)
+    {
+        if (!IsSafeSqlIdentifier(tableName) || !IsSafeSqlIdentifier(columnName))
+            return;
+
+        if (!await HasColumnAsync(dbContext, tableName, columnName, cancellationToken))
+            return;
+
+        var quotedTableName = QuoteSqlIdentifier(tableName);
+        var quotedColumnName = QuoteSqlIdentifier(columnName);
+
+        try
+        {
+            if (dbContext.Database.IsSqlite())
+            {
+                var sqliteSql = "ALTER TABLE " + quotedTableName + " DROP COLUMN " + quotedColumnName + ";";
+                await dbContext.Database.ExecuteSqlRawAsync(sqliteSql, cancellationToken);
+                return;
+            }
+
+            var postgresSql = "ALTER TABLE " + quotedTableName + " DROP COLUMN IF EXISTS " + quotedColumnName + ";";
+            await dbContext.Database.ExecuteSqlRawAsync(postgresSql, cancellationToken);
+        }
+        catch
+        {
+            // Ignore partially migrated databases that cannot drop the legacy column.
+        }
+    }
+
     private static async Task EnsureTenantDefinitionsTableAsync(
         AppDbContext dbContext,
         CancellationToken cancellationToken)
@@ -2918,11 +2951,9 @@ public static partial class DbInitializer
                         "CustomerId" TEXT NULL,
                         "CustomerName" TEXT NOT NULL DEFAULT '',
                         "BusinessNumber" TEXT NOT NULL DEFAULT '',
-                        "RealCustomerName" TEXT NOT NULL DEFAULT '',
                         "ItemName" TEXT NOT NULL DEFAULT '',
                         "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
                         "BillingMethod" TEXT NOT NULL DEFAULT '',
-                        "PaymentMethod" TEXT NOT NULL DEFAULT '',
                         "BillingStatus" TEXT NOT NULL DEFAULT '',
                         "Email" TEXT NOT NULL DEFAULT '',
                         "BillingDay" INTEGER NOT NULL DEFAULT 25,
@@ -2945,7 +2976,6 @@ public static partial class DbInitializer
                         "SettledAmount" REAL NOT NULL DEFAULT 0,
                         "OutstandingAmount" REAL NOT NULL DEFAULT 0,
                         "RequiresFollowUp" INTEGER NOT NULL DEFAULT 0,
-                        "FollowUpNote" TEXT NOT NULL DEFAULT '',
                         "LastSettledDate" TEXT NULL,
                         "AssignedUsername" TEXT NOT NULL DEFAULT '',
                         "IsActive" INTEGER NOT NULL DEFAULT 1,
@@ -2969,11 +2999,9 @@ public static partial class DbInitializer
                         "CustomerId" uuid NULL,
                         "CustomerName" text NOT NULL DEFAULT '',
                         "BusinessNumber" text NOT NULL DEFAULT '',
-                        "RealCustomerName" text NOT NULL DEFAULT '',
                         "ItemName" text NOT NULL DEFAULT '',
                         "ManagementCompanyCode" text NOT NULL DEFAULT '',
                         "BillingMethod" text NOT NULL DEFAULT '',
-                        "PaymentMethod" text NOT NULL DEFAULT '',
                         "BillingStatus" text NOT NULL DEFAULT '',
                         "Email" text NOT NULL DEFAULT '',
                         "BillingDay" integer NOT NULL DEFAULT 25,
@@ -2996,7 +3024,6 @@ public static partial class DbInitializer
                         "SettledAmount" numeric(18,2) NOT NULL DEFAULT 0,
                         "OutstandingAmount" numeric(18,2) NOT NULL DEFAULT 0,
                         "RequiresFollowUp" boolean NOT NULL DEFAULT false,
-                        "FollowUpNote" text NOT NULL DEFAULT '',
                         "LastSettledDate" date NULL,
                         "AssignedUsername" text NOT NULL DEFAULT '',
                         "IsActive" boolean NOT NULL DEFAULT true,
@@ -3047,6 +3074,15 @@ public static partial class DbInitializer
                         "ManagementNumber" TEXT NOT NULL DEFAULT '',
                         "ManagementCompanyCode" TEXT NOT NULL DEFAULT '',
                         "CurrentLocation" TEXT NOT NULL DEFAULT '',
+                        "CurrentCustomerName" TEXT NOT NULL DEFAULT '',
+                        "InstallSiteName" TEXT NOT NULL DEFAULT '',
+                        "BillingEligibilityStatus" TEXT NOT NULL DEFAULT '',
+                        "BillingExclusionReason" TEXT NOT NULL DEFAULT '',
+                        "LastCustomerName" TEXT NOT NULL DEFAULT '',
+                        "LastInstallLocation" TEXT NOT NULL DEFAULT '',
+                        "LastBillingProfileId" TEXT NULL,
+                        "LastBillingProfileDisplay" TEXT NOT NULL DEFAULT '',
+                        "LastAssignmentClearedAtUtc" TEXT NULL,
                         "ItemCategoryName" TEXT NOT NULL DEFAULT '',
                         "Manufacturer" TEXT NOT NULL DEFAULT '',
                         "ItemName" TEXT NOT NULL DEFAULT '',
@@ -3094,6 +3130,15 @@ public static partial class DbInitializer
                         "ManagementNumber" text NOT NULL DEFAULT '',
                         "ManagementCompanyCode" text NOT NULL DEFAULT '',
                         "CurrentLocation" text NOT NULL DEFAULT '',
+                        "CurrentCustomerName" text NOT NULL DEFAULT '',
+                        "InstallSiteName" text NOT NULL DEFAULT '',
+                        "BillingEligibilityStatus" text NOT NULL DEFAULT '',
+                        "BillingExclusionReason" text NOT NULL DEFAULT '',
+                        "LastCustomerName" text NOT NULL DEFAULT '',
+                        "LastInstallLocation" text NOT NULL DEFAULT '',
+                        "LastBillingProfileId" uuid NULL,
+                        "LastBillingProfileDisplay" text NOT NULL DEFAULT '',
+                        "LastAssignmentClearedAtUtc" timestamp with time zone NULL,
                         "ItemCategoryName" text NOT NULL DEFAULT '',
                         "Manufacturer" text NOT NULL DEFAULT '',
                         "ItemName" text NOT NULL DEFAULT '',
@@ -3602,7 +3647,6 @@ public static partial class DbInitializer
     {
         await EnsureColumnAsync(dbContext, "Transactions", "LinkedRentalBillingRunId", "TEXT NULL", "uuid NULL", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingType", "TEXT NOT NULL DEFAULT '묶음'", "text NOT NULL DEFAULT '묶음'", cancellationToken);
-        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillToCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "InstallSiteName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingAdvanceMode", "TEXT NOT NULL DEFAULT '후불'", "text NOT NULL DEFAULT '후불'", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingStartDate", "TEXT NULL", "date NULL", cancellationToken);
@@ -3613,10 +3657,19 @@ public static partial class DbInitializer
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingTemplateJson", "TEXT NOT NULL DEFAULT '[]'", "text NOT NULL DEFAULT '[]'", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingRunsJson", "TEXT NOT NULL DEFAULT '[]'", "text NOT NULL DEFAULT '[]'", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalAssets", "CurrentCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
-        await EnsureColumnAsync(dbContext, "RentalAssets", "BillToCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalAssets", "InstallSiteName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalAssets", "BillingEligibilityStatus", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalAssets", "BillingExclusionReason", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "LastCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "LastInstallLocation", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "LastBillingProfileId", "TEXT NULL", "uuid NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "LastBillingProfileDisplay", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "LastAssignmentClearedAtUtc", "TEXT NULL", "timestamp with time zone NULL", cancellationToken);
+        await TryDropColumnAsync(dbContext, "RentalBillingProfiles", "RealCustomerName", cancellationToken);
+        await TryDropColumnAsync(dbContext, "RentalBillingProfiles", "BillToCustomerName", cancellationToken);
+        await TryDropColumnAsync(dbContext, "RentalBillingProfiles", "PaymentMethod", cancellationToken);
+        await TryDropColumnAsync(dbContext, "RentalBillingProfiles", "FollowUpNote", cancellationToken);
+        await TryDropColumnAsync(dbContext, "RentalAssets", "BillToCustomerName", cancellationToken);
     }
 
     private static async Task EnsureNullableTextColumnAsync(

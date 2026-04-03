@@ -476,15 +476,12 @@ public sealed class RentalBillingProfileDto : SyncEntityDto
     public Guid? CustomerId { get; set; }
     public string CustomerName { get; set; } = string.Empty;
     public string BusinessNumber { get; set; } = string.Empty;
-    public string RealCustomerName { get; set; } = string.Empty;
     public string ItemName { get; set; } = string.Empty;
     public string BillingType { get; set; } = "묶음";
-    public string BillToCustomerName { get; set; } = string.Empty;
     public string InstallSiteName { get; set; } = string.Empty;
     public string BillingAdvanceMode { get; set; } = "후불";
     public string ManagementCompanyCode { get; set; } = string.Empty;
     public string BillingMethod { get; set; } = string.Empty;
-    public string PaymentMethod { get; set; } = string.Empty;
     public string BillingStatus { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
     public int BillingDay { get; set; } = 25;
@@ -508,7 +505,6 @@ public sealed class RentalBillingProfileDto : SyncEntityDto
     public decimal SettledAmount { get; set; }
     public decimal OutstandingAmount { get; set; }
     public bool RequiresFollowUp { get; set; }
-    public string FollowUpNote { get; set; } = string.Empty;
     public DateOnly? LastSettledDate { get; set; }
     public string AssignedUsername { get; set; } = string.Empty;
     public string BillingTemplateJson { get; set; } = "[]";
@@ -524,12 +520,16 @@ public sealed class RentalAssetDto : SyncEntityDto
     public Guid? CustomerId { get; set; }
     public Guid? ItemId { get; set; }
     public Guid? BillingProfileId { get; set; }
+    public string LastCustomerName { get; set; } = string.Empty;
+    public string LastInstallLocation { get; set; } = string.Empty;
+    public Guid? LastBillingProfileId { get; set; }
+    public string LastBillingProfileDisplay { get; set; } = string.Empty;
+    public DateTime? LastAssignmentClearedAtUtc { get; set; }
     public string ManagementId { get; set; } = string.Empty;
     public string ManagementNumber { get; set; } = string.Empty;
     public string ManagementCompanyCode { get; set; } = string.Empty;
     public string CurrentLocation { get; set; } = string.Empty;
     public string CurrentCustomerName { get; set; } = string.Empty;
-    public string BillToCustomerName { get; set; } = string.Empty;
     public string InstallSiteName { get; set; } = string.Empty;
     public string BillingEligibilityStatus { get; set; } = string.Empty;
     public string BillingExclusionReason { get; set; } = string.Empty;

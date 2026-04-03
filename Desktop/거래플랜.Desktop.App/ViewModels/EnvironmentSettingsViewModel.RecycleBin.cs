@@ -26,9 +26,15 @@ public sealed partial class EnvironmentSettingsViewModel
     [ObservableProperty] private int _recycleBinCustomerCount;
     [ObservableProperty] private int _recycleBinContractCount;
     [ObservableProperty] private int _recycleBinItemCount;
+    [ObservableProperty] private int _recycleBinCompanyProfileCount;
+    [ObservableProperty] private int _recycleBinPriceGradeOptionCount;
+    [ObservableProperty] private int _recycleBinTradeTypeOptionCount;
+    [ObservableProperty] private int _recycleBinItemCategoryOptionCount;
     [ObservableProperty] private int _recycleBinInvoiceCount;
     [ObservableProperty] private int _recycleBinPaymentCount;
     [ObservableProperty] private int _recycleBinTransactionCount;
+    [ObservableProperty] private int _recycleBinInventoryTransferCount;
+    [ObservableProperty] private int _recycleBinRentalManagementCompanyCount;
     [ObservableProperty] private int _recycleBinRentalBillingProfileCount;
     [ObservableProperty] private int _recycleBinRentalAssetCount;
     [ObservableProperty] private int _recycleBinRentalBillingLogCount;
@@ -73,9 +79,15 @@ public sealed partial class EnvironmentSettingsViewModel
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.Customer.ToString(), DisplayName = "거래처" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.CustomerContract.ToString(), DisplayName = "계약서" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.Item.ToString(), DisplayName = "품목" });
+        RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.CompanyProfile.ToString(), DisplayName = "회사설정" });
+        RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.PriceGradeOption.ToString(), DisplayName = "가격등급" });
+        RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.TradeTypeOption.ToString(), DisplayName = "거래구분" });
+        RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.ItemCategoryOption.ToString(), DisplayName = "품목분류" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.Invoice.ToString(), DisplayName = "전표" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.Payment.ToString(), DisplayName = "수금/지급" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.Transaction.ToString(), DisplayName = "거래내역" });
+        RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.InventoryTransfer.ToString(), DisplayName = "재고이동" });
+        RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.RentalManagementCompany.ToString(), DisplayName = "렌탈 관리업체" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.RentalBillingProfile.ToString(), DisplayName = "렌탈 청구프로필" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.RentalAsset.ToString(), DisplayName = "렌탈 자산" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.RentalBillingLog.ToString(), DisplayName = "렌탈 청구로그" });
@@ -409,16 +421,22 @@ public sealed partial class EnvironmentSettingsViewModel
         RecycleBinCustomerCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.Customer);
         RecycleBinContractCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.CustomerContract);
         RecycleBinItemCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.Item);
+        RecycleBinCompanyProfileCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.CompanyProfile);
+        RecycleBinPriceGradeOptionCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.PriceGradeOption);
+        RecycleBinTradeTypeOptionCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.TradeTypeOption);
+        RecycleBinItemCategoryOptionCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.ItemCategoryOption);
         RecycleBinInvoiceCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.Invoice);
         RecycleBinPaymentCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.Payment);
         RecycleBinTransactionCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.Transaction);
+        RecycleBinInventoryTransferCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.InventoryTransfer);
+        RecycleBinRentalManagementCompanyCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.RentalManagementCompany);
         RecycleBinRentalBillingProfileCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.RentalBillingProfile);
         RecycleBinRentalAssetCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.RentalAsset);
         RecycleBinRentalBillingLogCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.RentalBillingLog);
 
         RecycleBinSummary = RecycleBinTotalCount == 0
             ? "삭제된 항목이 없습니다."
-            : $"거래처 {RecycleBinCustomerCount:N0} · 계약서 {RecycleBinContractCount:N0} · 품목 {RecycleBinItemCount:N0} · 전표 {RecycleBinInvoiceCount:N0} · 수금/지급 {RecycleBinPaymentCount:N0} · 거래내역 {RecycleBinTransactionCount:N0} · 렌탈청구 {RecycleBinRentalBillingProfileCount:N0} · 렌탈자산 {RecycleBinRentalAssetCount:N0} · 렌탈로그 {RecycleBinRentalBillingLogCount:N0}";
+            : $"거래처 {RecycleBinCustomerCount:N0} · 계약서 {RecycleBinContractCount:N0} · 품목 {RecycleBinItemCount:N0} · 회사설정 {RecycleBinCompanyProfileCount:N0} · 가격등급 {RecycleBinPriceGradeOptionCount:N0} · 거래구분 {RecycleBinTradeTypeOptionCount:N0} · 품목분류 {RecycleBinItemCategoryOptionCount:N0} · 전표 {RecycleBinInvoiceCount:N0} · 수금/지급 {RecycleBinPaymentCount:N0} · 거래내역 {RecycleBinTransactionCount:N0} · 재고이동 {RecycleBinInventoryTransferCount:N0} · 렌탈 관리업체 {RecycleBinRentalManagementCompanyCount:N0} · 렌탈청구 {RecycleBinRentalBillingProfileCount:N0} · 렌탈자산 {RecycleBinRentalAssetCount:N0} · 렌탈로그 {RecycleBinRentalBillingLogCount:N0}";
     }
 
     private void RefreshMarkedRecycleBinCount()
@@ -456,8 +474,14 @@ public sealed partial class EnvironmentSettingsViewModel
             RecycleBinEntityKind.Invoice => 4,
             RecycleBinEntityKind.RentalAsset => 5,
             RecycleBinEntityKind.Item => 6,
-            RecycleBinEntityKind.RentalBillingProfile => 7,
-            RecycleBinEntityKind.Customer => 8,
+            RecycleBinEntityKind.InventoryTransfer => 7,
+            RecycleBinEntityKind.PriceGradeOption => 8,
+            RecycleBinEntityKind.TradeTypeOption => 9,
+            RecycleBinEntityKind.ItemCategoryOption => 10,
+            RecycleBinEntityKind.CompanyProfile => 11,
+            RecycleBinEntityKind.RentalManagementCompany => 12,
+            RecycleBinEntityKind.RentalBillingProfile => 13,
+            RecycleBinEntityKind.Customer => 14,
             _ => 99
         };
     }
@@ -615,9 +639,15 @@ public sealed partial class EnvironmentSettingsViewModel
             RecycleBinEntityKind.Customer => "customer",
             RecycleBinEntityKind.CustomerContract => "contract",
             RecycleBinEntityKind.Item => "item",
+            RecycleBinEntityKind.CompanyProfile => "company-profile",
+            RecycleBinEntityKind.PriceGradeOption => "price-grade-option",
+            RecycleBinEntityKind.TradeTypeOption => "trade-type-option",
+            RecycleBinEntityKind.ItemCategoryOption => "item-category-option",
             RecycleBinEntityKind.Invoice => "invoice",
             RecycleBinEntityKind.Payment => "payment",
             RecycleBinEntityKind.Transaction => "transaction",
+            RecycleBinEntityKind.InventoryTransfer => "inventory-transfer",
+            RecycleBinEntityKind.RentalManagementCompany => "rental-management-company",
             RecycleBinEntityKind.RentalBillingProfile => "rental-billing-profile",
             RecycleBinEntityKind.RentalAsset => "rental-asset",
             RecycleBinEntityKind.RentalBillingLog => "rental-billing-log",
@@ -639,9 +669,21 @@ public sealed partial class EnvironmentSettingsViewModel
             "customer" => "customer",
             "contract" => "contract",
             "item" => "item",
+            "companyprofile" => "company-profile",
+            "company-profile" => "company-profile",
+            "pricegradeoption" => "price-grade-option",
+            "price-grade-option" => "price-grade-option",
+            "tradetypeoption" => "trade-type-option",
+            "trade-type-option" => "trade-type-option",
+            "itemcategoryoption" => "item-category-option",
+            "item-category-option" => "item-category-option",
             "invoice" => "invoice",
             "payment" => "payment",
             "transaction" => "transaction",
+            "inventorytransfer" => "inventory-transfer",
+            "inventory-transfer" => "inventory-transfer",
+            "rentalmanagementcompany" => "rental-management-company",
+            "rental-management-company" => "rental-management-company",
             "rentalbillingprofile" => "rental-billing-profile",
             "rental-billing-profile" => "rental-billing-profile",
             "rentalasset" => "rental-asset",

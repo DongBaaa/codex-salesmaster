@@ -23,6 +23,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private Task? _candidateAssetsLoadTask;
     private bool _suppressFilterReload;
     private bool _pendingFilterReload;
+    private bool _suppressCandidateAssetSelectionChanges;
+    private readonly List<RentalBillingAssetOption> _includedAssetPool = new();
+    private readonly List<RentalBillingAssetOption> _candidateAssetPool = new();
     private string _selectedRowBaselineSignature = string.Empty;
 
     [ObservableProperty] private string _searchText = string.Empty;
@@ -39,15 +42,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private Guid? _editCustomerId;
     [ObservableProperty] private string _editCustomerName = string.Empty;
     [ObservableProperty] private string _editBusinessNumber = string.Empty;
-    [ObservableProperty] private string _editRealCustomerName = string.Empty;
-    [ObservableProperty] private string _editBillToCustomerName = string.Empty;
     [ObservableProperty] private string _editInstallLocation = string.Empty;
     [ObservableProperty] private string _editItemName = string.Empty;
     [ObservableProperty] private string _editBillingType = "묶음";
     [ObservableProperty] private string _editBillingAdvanceMode = "후불";
     [ObservableProperty] private string _editOfficeCode = string.Empty;
     [ObservableProperty] private string _editBillingMethod = string.Empty;
-    [ObservableProperty] private string _editPaymentMethod = string.Empty;
     [ObservableProperty] private string _editBillingStatus = "예정";
     [ObservableProperty] private string _editSettlementStatus = PaymentFlowConstants.SettlementStatusUnpaid;
     [ObservableProperty] private string _editCompletionStatus = PaymentFlowConstants.CompletionPending;
@@ -63,7 +63,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private decimal _editSettledAmount;
     [ObservableProperty] private decimal _editOutstandingAmount;
     [ObservableProperty] private bool _editRequiresFollowUp;
-    [ObservableProperty] private string _editFollowUpNote = string.Empty;
     [ObservableProperty] private string _editSubmissionDocuments = string.Empty;
     [ObservableProperty] private string _editNotes = string.Empty;
     [ObservableProperty] private string _templateSummary = string.Empty;
@@ -77,7 +76,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private DateTime? _editLastBilledDate;
     [ObservableProperty] private DateTime? _editLastSettledDate;
     [ObservableProperty] private bool _editIsActive = true;
-    [ObservableProperty] private string _completionNote = string.Empty;
     [ObservableProperty] private string _billingSchedulePreviewText = "청구일 규칙을 설정하면 다음 청구일이 표시됩니다.";
     [ObservableProperty] private string _documentIssuePreviewText = "서류 발송 규칙을 설정하면 예상 발송일이 표시됩니다.";
     [ObservableProperty] private string _applySelectedAssetsHint = "청구서 표시 품목과 후보 장비를 선택하면 연결할 수 있습니다.";
@@ -101,6 +99,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public ObservableCollection<string> DocumentIssueModeOptions { get; } = new();
     public ObservableCollection<RentalBillingViewRow> Rows { get; } = new();
     public ObservableCollection<RentalBillingTemplateEditorItem> TemplateItems { get; } = new();
+    public ObservableCollection<RentalBillingAssetOption> IncludedAssets { get; } = new();
     public ObservableCollection<RentalBillingAssetOption> CandidateAssets { get; } = new();
 
     public bool CanViewAll => _session.HasGlobalDataScope ||
@@ -194,14 +193,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     partial void OnSelectedStatusFilterChanged(string value) => RequestFilterReload();
     partial void OnDueOnlyChanged(bool value) => RequestFilterReload();
     partial void OnReferenceDateChanged(DateOnly value) => RequestFilterReload();
-    partial void OnEditCustomerNameChanged(string value)
-    {
-        if (string.IsNullOrWhiteSpace(EditBillToCustomerName))
-            EditBillToCustomerName = value;
-    }
+    partial void OnEditCustomerNameChanged(string value) { }
     partial void OnEditSettledAmountChanged(decimal value) => EditOutstandingAmount = Math.Max(0m, EditMonthlyAmount - value);
-    partial void OnCompletionNoteChanged(string value) => EditFollowUpNote = value;
-    partial void OnEditFollowUpNoteChanged(string value) => CompletionNote = value;
     partial void OnEditBillingDayChanged(int value) => UpdateTemplateDerivedValues();
     partial void OnEditBillingDayModeChanged(string value)
     {
@@ -250,6 +243,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     partial void OnSelectedTemplateItemChanged(RentalBillingTemplateEditorItem? value)
     {
         SyncAssetSelectionFromTemplate();
+        SyncIncludedAssetsFromTemplate();
         UpdateTemplateDerivedValues();
         RemoveTemplateItemCommand.NotifyCanExecuteChanged();
         ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
@@ -348,15 +342,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             CustomerId = EditCustomerId,
             CustomerName = EditCustomerName,
             BusinessNumber = EditBusinessNumber,
-            RealCustomerName = EditRealCustomerName,
-            BillToCustomerName = EditBillToCustomerName,
             InstallSiteName = EditInstallLocation,
             ItemName = EditItemName,
             BillingType = EditBillingType,
             BillingAdvanceMode = EditBillingAdvanceMode,
             ManagementCompanyCode = officeCode,
             BillingMethod = EditBillingMethod,
-            PaymentMethod = EditPaymentMethod,
             BillingStatus = EditBillingStatus,
             SettlementStatus = EditSettlementStatus,
             CompletionStatus = EditCompletionStatus,
@@ -372,7 +363,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             SettledAmount = EditSettledAmount,
             OutstandingAmount = EditOutstandingAmount,
             RequiresFollowUp = EditRequiresFollowUp,
-            FollowUpNote = EditFollowUpNote,
             SubmissionDocuments = EditSubmissionDocuments,
             Notes = EditNotes,
             ResponsibleOfficeCode = officeCode,
@@ -438,14 +428,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         var targetId = SelectedRow.Source.Id;
-        var note = string.IsNullOrWhiteSpace(CompletionNote) ? EditFollowUpNote : CompletionNote;
-        var result = await _rental.HoldBillingAsync(targetId, note, _session);
+        var result = await _rental.HoldBillingAsync(targetId, string.Empty, _session);
         StatusMessage = result.Message;
         if (!result.Success)
             return;
 
-        EditFollowUpNote = note;
-        CompletionNote = string.Empty;
         await ReloadAsync();
         SelectRow(targetId);
     }
@@ -461,13 +448,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var targetId = SelectedRow.Source.Id;
         var settledAmount = EditSettledAmount > 0m ? EditSettledAmount : (decimal?)null;
-        var note = string.IsNullOrWhiteSpace(CompletionNote) ? EditFollowUpNote : CompletionNote;
-        var result = await _rental.RegisterBillingSettlementAsync(targetId, ReferenceDate, settledAmount, note, _session);
+        var result = await _rental.RegisterBillingSettlementAsync(targetId, ReferenceDate, settledAmount, string.Empty, _session);
         StatusMessage = result.Message;
         if (!result.Success)
             return;
 
-        CompletionNote = string.Empty;
         await ReloadAsync();
         SelectRow(targetId);
     }
@@ -544,13 +529,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             targetId,
             ReferenceDate,
             "완료",
-            CompletionNote,
+            string.Empty,
             _session);
         StatusMessage = result.Message;
         if (!result.Success)
             return;
 
-        CompletionNote = string.Empty;
         await ReloadAsync();
         SelectRow(targetId);
     }
@@ -563,8 +547,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditCustomerId = null;
         EditCustomerName = string.Empty;
         EditBusinessNumber = string.Empty;
-        EditRealCustomerName = string.Empty;
-        EditBillToCustomerName = string.Empty;
         EditInstallLocation = string.Empty;
         EditItemName = string.Empty;
         EditBillingType = "묶음";
@@ -572,7 +554,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditOfficeCode = EditOfficeOptions.FirstOrDefault()?.Value
             ?? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
         EditBillingMethod = string.Empty;
-        EditPaymentMethod = string.Empty;
         EditBillingStatus = "예정";
         EditSettlementStatus = PaymentFlowConstants.SettlementStatusUnpaid;
         EditCompletionStatus = PaymentFlowConstants.CompletionPending;
@@ -584,7 +565,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditSettledAmount = 0m;
         EditOutstandingAmount = 0m;
         EditRequiresFollowUp = false;
-        EditFollowUpNote = string.Empty;
         EditSubmissionDocuments = string.Empty;
         EditNotes = string.Empty;
         EditBillingAnchorDate = null;
@@ -595,11 +575,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditLastBilledDate = null;
         EditLastSettledDate = null;
         EditIsActive = true;
-        CompletionNote = string.Empty;
         TemplateItems.Clear();
         TemplateItems.Add(CreateDefaultTemplateItem());
         SelectedTemplateItem = TemplateItems.FirstOrDefault();
         CandidateAssets.Clear();
+        IncludedAssets.Clear();
         TemplateSummary = "표시품목 1건 / 연결장비 0건";
         AssetCandidateSummary = "후보 장비가 없습니다.";
         LinkAssetsLater = false;
@@ -655,8 +635,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             EditId == Guid.Empty ? null : EditId,
             EditCustomerId,
             EditCustomerName,
-            EditBillToCustomerName,
-            EditInstallLocation,
+            EditOfficeCode,
             preserveSelection: true,
             autoIncludeAllCandidates: false);
     }
@@ -667,10 +646,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (SelectedTemplateItem is null)
             return;
 
+        var mergedAssetIds = SelectedTemplateItem.IncludedAssetIds
+            .Where(assetId => assetId != Guid.Empty)
+            .Concat(CandidateAssets.Where(asset => asset.IsSelected).Select(asset => asset.AssetId))
+            .Distinct()
+            .ToList();
+
         SelectedTemplateItem.IncludedAssetIds.Clear();
-        foreach (var assetId in CandidateAssets.Where(asset => asset.IsSelected).Select(asset => asset.AssetId).Distinct())
+        foreach (var assetId in mergedAssetIds)
             SelectedTemplateItem.IncludedAssetIds.Add(assetId);
 
+        RefreshBillingAssetCollections();
         SelectedTemplateItem.IncludedAssetSummary = BuildIncludedAssetSummary(SelectedTemplateItem.IncludedAssetIds);
         UpdateTemplateDerivedValues();
         ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
@@ -712,10 +698,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditCustomerId = source.CustomerId;
         EditCustomerName = string.IsNullOrWhiteSpace(value.CustomerDisplayName) ? source.CustomerName : value.CustomerDisplayName;
         EditBusinessNumber = source.BusinessNumber;
-        EditRealCustomerName = source.RealCustomerName;
-        EditBillToCustomerName = string.IsNullOrWhiteSpace(source.BillToCustomerName) ? source.CustomerName : source.BillToCustomerName;
         EditInstallLocation = string.IsNullOrWhiteSpace(value.InstallLocationDisplay)
-            ? (string.IsNullOrWhiteSpace(source.InstallSiteName) ? source.RealCustomerName : source.InstallSiteName)
+            ? source.InstallSiteName
             : value.InstallLocationDisplay;
         EditItemName = source.ItemName;
         EditBillingType = string.IsNullOrWhiteSpace(source.BillingType) ? "묶음" : source.BillingType;
@@ -726,7 +710,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 : source.ResponsibleOfficeCode,
             _session.OfficeCode);
         EditBillingMethod = source.BillingMethod;
-        EditPaymentMethod = source.PaymentMethod;
         EditBillingStatus = source.BillingStatus;
         EditSettlementStatus = PaymentFlowConstants.NormalizeSettlementStatus(source.SettlementStatus);
         EditCompletionStatus = PaymentFlowConstants.NormalizeCompletionStatus(source.CompletionStatus);
@@ -750,7 +733,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditSettledAmount = value.SettledAmount;
         EditOutstandingAmount = value.OutstandingAmount;
         EditRequiresFollowUp = source.RequiresFollowUp;
-        EditFollowUpNote = source.FollowUpNote;
         EditSubmissionDocuments = source.SubmissionDocuments;
         EditNotes = source.Notes;
         EditBillingAnchorDate = ToDateTime(source.BillingAnchorDate);
@@ -761,16 +743,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditLastBilledDate = ToDateTime(source.LastBilledDate);
         EditLastSettledDate = ToDateTime(source.LastSettledDate);
         EditIsActive = source.IsActive;
-        CompletionNote = string.IsNullOrWhiteSpace(value.DataIssueSummary)
-            ? source.FollowUpNote
-            : value.DataIssueSummary;
         LoadTemplateItemsFromProfile(source);
         StartCandidateAssetsLoad(
             source.Id,
             EditCustomerId,
             EditCustomerName,
-            EditBillToCustomerName,
-            EditInstallLocation,
+            EditOfficeCode,
             preserveSelection: false,
             autoIncludeAllCandidates: false);
         OnPropertyChanged(nameof(CanSave));
@@ -853,8 +831,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet));
 
         var department = customer.Department?.Trim() ?? string.Empty;
-        EditRealCustomerName = string.IsNullOrWhiteSpace(department) ? EditCustomerName : department;
-        EditBillToCustomerName = EditCustomerName;
         EditInstallLocation = string.IsNullOrWhiteSpace(department)
             ? string.Join(" ", new[] { customer.Address, customer.DetailAddress }.Where(value => !string.IsNullOrWhiteSpace(value)))
             : department;
@@ -863,8 +839,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             EditId == Guid.Empty ? null : EditId,
             EditCustomerId,
             EditCustomerName,
-            EditBillToCustomerName,
-            EditInstallLocation,
+            EditOfficeCode,
             preserveSelection: false,
             autoIncludeAllCandidates: true);
     }
@@ -878,8 +853,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         Guid? billingProfileId,
         Guid? customerId,
         string customerName,
-        string billToCustomerName,
-        string installLocation,
+        string officeCode,
         bool preserveSelection,
         bool autoIncludeAllCandidates = false)
     {
@@ -892,8 +866,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             billingProfileId,
             customerId,
             customerName,
-            billToCustomerName,
-            installLocation,
+            officeCode,
             preserveSelection,
             autoIncludeAllCandidates,
             cts.Token);
@@ -915,73 +888,69 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         Guid? billingProfileId,
         Guid? customerId,
         string customerName,
-        string billToCustomerName,
-        string installLocation,
+        string officeCode,
         bool preserveSelection,
         bool autoIncludeAllCandidates,
         CancellationToken ct = default)
     {
-        var previousSelections = preserveSelection && SelectedTemplateItem is not null
-            ? SelectedTemplateItem.IncludedAssetIds.ToHashSet()
+        var previousSelections = preserveSelection
+            ? CandidateAssets.Where(asset => asset.IsSelected).Select(asset => asset.AssetId).ToHashSet()
             : new HashSet<Guid>();
 
-        var assets = await _rental.GetBillingAssetCandidatesAsync(
+        var explicitIncludedAssetIds = TemplateItems
+            .SelectMany(item => item.IncludedAssetIds)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        var includedAssets = await _rental.GetIncludedBillingAssetsAsync(
+            billingProfileId,
+            explicitIncludedAssetIds,
+            customerId,
+            officeCode,
+            _session,
+            ct);
+
+        var candidateAssets = await _rental.GetBillingAssetCandidatesAsync(
             billingProfileId,
             customerId,
             customerName,
-            billToCustomerName,
-            installLocation,
+            officeCode,
             _session,
             ct);
 
         ct.ThrowIfCancellationRequested();
 
-        var autoAssignedAssetIds = new HashSet<Guid>();
         if (SelectedTemplateItem is not null &&
             !LinkAssetsLater &&
             autoIncludeAllCandidates &&
             !preserveSelection &&
             !SelectedTemplateItem.IncludedAssetIds.Any() &&
-            assets.Count > 0)
+            candidateAssets.Count > 0)
         {
-            foreach (var asset in assets.Select(asset => asset.Id).Distinct())
+            foreach (var assetId in candidateAssets.Select(asset => asset.Id).Distinct())
             {
-                if (!SelectedTemplateItem.IncludedAssetIds.Contains(asset))
-                    SelectedTemplateItem.IncludedAssetIds.Add(asset);
-                autoAssignedAssetIds.Add(asset);
+                if (!SelectedTemplateItem.IncludedAssetIds.Contains(assetId))
+                    SelectedTemplateItem.IncludedAssetIds.Add(assetId);
             }
         }
 
-        CandidateAssets.Clear();
-        foreach (var asset in assets)
-        {
-            var option = new RentalBillingAssetOption
-            {
-                AssetId = asset.Id,
-                ManagementNumber = asset.ManagementNumber,
-                ItemName = asset.ItemName,
-                MachineNumber = asset.MachineNumber,
-                CurrentCustomerName = string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName,
-                BillToCustomerName = string.IsNullOrWhiteSpace(asset.BillToCustomerName) ? asset.CustomerName : asset.BillToCustomerName,
-                InstallLocation = string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
-                AssetStatus = asset.AssetStatus,
-                BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? "미확인" : asset.BillingEligibilityStatus,
-                MonthlyFee = asset.MonthlyFee,
-                IsSelected = autoAssignedAssetIds.Contains(asset.Id) || previousSelections.Contains(asset.Id)
-            };
-            option.PropertyChanged += (_, _) =>
-            {
-                ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
-                OnPropertyChanged(nameof(CanApplySelectedAssets));
-            };
-            CandidateAssets.Add(option);
-        }
+        _includedAssetPool.Clear();
+        _includedAssetPool.AddRange(includedAssets
+            .Select(asset => CreateBillingAssetOption(asset, isSelected: true)));
 
-        AssetCandidateSummary = assets.Count == 0
-            ? "후보 장비가 없습니다."
-            : $"후보 장비 {assets.Count:N0}대";
+        var includedAssetIds = _includedAssetPool
+            .Select(asset => asset.AssetId)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+
+        _candidateAssetPool.Clear();
+        _candidateAssetPool.AddRange(candidateAssets
+            .Where(asset => !includedAssetIds.Contains(asset.Id))
+            .Select(asset => CreateBillingAssetOption(asset)));
+
+        RefreshBillingAssetCollections(previousSelections);
         UpdateTemplateDerivedValues();
-        SyncAssetSelectionFromTemplate();
     }
 
     private void LoadTemplateItemsFromProfile(LocalRentalBillingProfile profile)
@@ -1045,21 +1014,109 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     }
 
     private void SyncAssetSelectionFromTemplate()
+        => RefreshBillingAssetCollections();
+
+    private void SyncIncludedAssetsFromTemplate()
+        => RefreshBillingAssetCollections();
+
+    private void RefreshBillingAssetCollections(ISet<Guid>? candidateSelectionIds = null)
     {
         if (SelectedTemplateItem is null)
         {
-            foreach (var asset in CandidateAssets)
-                asset.IsSelected = false;
+            IncludedAssets.Clear();
+            CandidateAssets.Clear();
+            AssetCandidateSummary = "후보 장비가 없습니다.";
+            ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
+            OnPropertyChanged(nameof(CanApplySelectedAssets));
             return;
         }
 
-        var selectedAssetIds = SelectedTemplateItem.IncludedAssetIds.ToHashSet();
-        foreach (var asset in CandidateAssets)
-            asset.IsSelected = selectedAssetIds.Contains(asset.AssetId);
+        var selectedAssetIds = SelectedTemplateItem.IncludedAssetIds
+            .Where(assetId => assetId != Guid.Empty)
+            .Distinct()
+            .ToHashSet();
+        var assetLookup = _includedAssetPool
+            .Concat(_candidateAssetPool)
+            .GroupBy(asset => asset.AssetId)
+            .ToDictionary(group => group.Key, group => group.First());
+
+        IncludedAssets.Clear();
+        foreach (var assetId in selectedAssetIds)
+        {
+            if (assetLookup.TryGetValue(assetId, out var option))
+                IncludedAssets.Add(CloneBillingAssetOption(option, isSelected: true));
+        }
+
+        var selectedCandidateIds = candidateSelectionIds ?? CandidateAssets
+            .Where(asset => asset.IsSelected)
+            .Select(asset => asset.AssetId)
+            .ToHashSet();
+
+        _suppressCandidateAssetSelectionChanges = true;
+        try
+        {
+            CandidateAssets.Clear();
+            foreach (var option in _candidateAssetPool.Where(asset => !selectedAssetIds.Contains(asset.AssetId)))
+            {
+                var clone = CloneBillingAssetOption(option, isSelected: selectedCandidateIds.Contains(option.AssetId));
+                clone.PropertyChanged += HandleCandidateAssetOptionPropertyChanged;
+                CandidateAssets.Add(clone);
+            }
+        }
+        finally
+        {
+            _suppressCandidateAssetSelectionChanges = false;
+        }
+
+        AssetCandidateSummary = CandidateAssets.Count == 0
+            ? "후보 장비가 없습니다."
+            : $"후보 장비 {CandidateAssets.Count:N0}대";
+        ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(CanApplySelectedAssets));
+    }
+
+    private void HandleCandidateAssetOptionPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (_suppressCandidateAssetSelectionChanges ||
+            sender is not RentalBillingAssetOption ||
+            !string.Equals(e.PropertyName, nameof(RentalBillingAssetOption.IsSelected), StringComparison.Ordinal))
+        {
+            return;
+        }
 
         ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanApplySelectedAssets));
     }
+
+    private static RentalBillingAssetOption CreateBillingAssetOption(LocalRentalAsset asset, bool isSelected = false)
+        => new()
+        {
+            AssetId = asset.Id,
+            ManagementNumber = asset.ManagementNumber,
+            ItemName = asset.ItemName,
+            MachineNumber = asset.MachineNumber,
+            CurrentCustomerName = string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName,
+            InstallLocation = string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
+            AssetStatus = asset.AssetStatus,
+            BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? "미확인" : asset.BillingEligibilityStatus,
+            MonthlyFee = asset.MonthlyFee,
+            IsSelected = isSelected
+        };
+
+    private static RentalBillingAssetOption CloneBillingAssetOption(RentalBillingAssetOption asset, bool isSelected = false)
+        => new()
+        {
+            AssetId = asset.AssetId,
+            ManagementNumber = asset.ManagementNumber,
+            ItemName = asset.ItemName,
+            MachineNumber = asset.MachineNumber,
+            CurrentCustomerName = asset.CurrentCustomerName,
+            InstallLocation = asset.InstallLocation,
+            AssetStatus = asset.AssetStatus,
+            BillingEligibilityStatus = asset.BillingEligibilityStatus,
+            MonthlyFee = asset.MonthlyFee,
+            IsSelected = isSelected
+        };
 
     private List<RentalBillingTemplateItemModel> ToTemplateModels()
         => TemplateItems.Select(item => new RentalBillingTemplateItemModel
@@ -1113,7 +1170,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (ids.Count == 0)
             return LinkAssetsLater ? "장비 나중 연결" : "연결 장비 없음";
 
-        var labels = CandidateAssets
+        var labels = IncludedAssets
+            .Concat(CandidateAssets)
             .Where(asset => ids.Contains(asset.AssetId))
             .Select(asset => string.IsNullOrWhiteSpace(asset.ManagementNumber)
                 ? asset.ItemName
@@ -1200,15 +1258,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             EditCustomerId?.ToString("N") ?? string.Empty,
             NormalizeText(EditCustomerName),
             NormalizeText(EditBusinessNumber),
-            NormalizeText(EditRealCustomerName),
-            NormalizeText(EditBillToCustomerName),
             NormalizeText(EditInstallLocation),
             NormalizeText(EditItemName),
             NormalizeBillingLineModeValue(EditBillingType),
             NormalizeBillingAdvanceModeValue(EditBillingAdvanceMode),
             NormalizeText(EditOfficeCode),
             NormalizeText(EditBillingMethod),
-            NormalizeText(EditPaymentMethod),
             NormalizeText(EditBillingStatus),
             NormalizeText(EditSettlementStatus),
             NormalizeText(EditCompletionStatus),
@@ -1224,7 +1279,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             NormalizeDecimal(EditSettledAmount),
             NormalizeDecimal(EditOutstandingAmount),
             EditRequiresFollowUp ? "Y" : "N",
-            NormalizeText(EditFollowUpNote),
             NormalizeText(EditSubmissionDocuments),
             NormalizeText(EditNotes),
             LinkAssetsLater ? "Y" : "N",

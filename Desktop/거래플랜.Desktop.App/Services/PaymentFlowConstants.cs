@@ -137,9 +137,9 @@ public static class PaymentFlowConstants
             : CompletionPending;
     }
 
-    public static string GetPendingSettlementStatus(string? billingMethod, string? paymentMethod)
+    public static string GetPendingSettlementStatus(string? billingMethod)
     {
-        var method = ((paymentMethod ?? billingMethod) ?? string.Empty).Trim();
+        var method = (billingMethod ?? string.Empty).Trim();
         return method switch
         {
             "카드" => SettlementStatusCardPending,
@@ -148,9 +148,9 @@ public static class PaymentFlowConstants
         };
     }
 
-    public static string GetDisplaySettlementCompleteStatus(string? billingMethod, string? paymentMethod)
+    public static string GetDisplaySettlementCompleteStatus(string? billingMethod)
     {
-        var method = ((paymentMethod ?? billingMethod) ?? string.Empty).Trim();
+        var method = (billingMethod ?? string.Empty).Trim();
         return method switch
         {
             "카드" => SettlementStatusCardApproved,

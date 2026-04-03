@@ -292,7 +292,7 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             if (value is not RentalBillingProfileDto profile)
                 return string.Empty;
 
-            return $"청구일 {profile.BillingDay}일 / 결제 {Normalize(profile.PaymentMethod, "미지정")} / 담당 {Normalize(profile.AssignedUsername, "미지정")}";
+            return $"청구일 {profile.BillingDay}일 / 담당 {Normalize(profile.AssignedUsername, "미지정")}";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)

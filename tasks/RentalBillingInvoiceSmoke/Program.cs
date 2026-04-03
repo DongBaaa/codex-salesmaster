@@ -22,16 +22,16 @@ internal static class Program
         var local = new LocalStateService(db, officeAccess, dispatcher, adminSession);
         var rental = new RentalStateService(db, local);
 
-        var customerId = SeedCustomer(local, adminSession);
         var referenceDate = new DateOnly(2026, 6, 15);
 
+        var groupedCustomerId = SeedCustomer(local, adminSession, "ZZZ-렌탈 청구 자동전표 검증 거래처-묶음", "999-99-90001");
         var groupedProfileId = Guid.NewGuid();
-        SeedGroupedAssets(db, customerId, groupedProfileId, userSession.User?.Username ?? string.Empty);
+        SeedGroupedAssets(db, groupedCustomerId, groupedProfileId, userSession.User?.Username ?? string.Empty);
         var groupedSave = SaveBillingProfile(
             rental,
             adminSession,
             groupedProfileId,
-            customerId,
+            groupedCustomerId,
             customerName: "ZZZ-렌탈 묶음 검증 거래처",
             billingType: "묶음",
             cycleMonths: 3,
@@ -53,13 +53,14 @@ internal static class Program
                 }
             });
 
+        var individualCustomerId = SeedCustomer(local, adminSession, "ZZZ-렌탈 청구 자동전표 검증 거래처-개별", "999-99-90002");
         var individualProfileId = Guid.NewGuid();
-        SeedIndividualAssets(db, customerId, individualProfileId, userSession.User?.Username ?? string.Empty);
+        SeedIndividualAssets(db, individualCustomerId, individualProfileId, userSession.User?.Username ?? string.Empty);
         var individualSave = SaveBillingProfile(
             rental,
             adminSession,
             individualProfileId,
-            customerId,
+            individualCustomerId,
             customerName: "ZZZ-렌탈 개별 검증 거래처",
             billingType: "개별",
             cycleMonths: 3,
@@ -87,7 +88,7 @@ internal static class Program
         var groupedScenario = VerifyGroupedScenario(db, local, rental, userSession, groupedProfileId, referenceDate);
         var individualScenario = VerifyIndividualScenario(db, local, rental, userSession, individualProfileId, referenceDate);
 
-        var januaryBoundaryScenario = VerifyJanuaryBoundaryScenarios(db, rental, adminSession, customerId);
+        var januaryBoundaryScenario = VerifyJanuaryBoundaryScenarios(db, local, rental, adminSession);
         var customerResolutionScenario = VerifyCustomerResolutionFallbackScenario(db, local, rental, adminSession, userSession);
         var singleCandidateAutoLinkScenario = VerifySingleCandidateAutoLinkScenario(db, local, rental, adminSession, userSession);
 
@@ -233,16 +234,17 @@ internal static class Program
 
     private static object VerifyJanuaryBoundaryScenarios(
         LocalDbContext db,
+        LocalStateService local,
         RentalStateService rental,
-        SessionState adminSession,
-        Guid customerId)
+        SessionState adminSession)
     {
+        var quarterEndCustomerId = SeedCustomer(local, adminSession, "ZZZ-분기말 후불 검증 거래처", "999-99-91001");
         var quarterEndProfileId = Guid.NewGuid();
         var quarterEndSave = SaveBillingProfile(
             rental,
             adminSession,
             quarterEndProfileId,
-            customerId,
+            quarterEndCustomerId,
             customerName: "ZZZ-분기말 후불 검증 거래처",
             billingType: "묶음",
             cycleMonths: 3,
@@ -277,12 +279,13 @@ internal static class Program
             arrearsMonths.SequenceEqual(new[] { 1, 2, 3 }),
             $"후불 분기말 3개월 청구는 1월, 2월, 3월이어야 합니다. 실제: {string.Join(", ", arrearsMonths)}");
 
+        var explicitAnchorCustomerId = SeedCustomer(local, adminSession, "ZZZ-연도경계 후불 검증 거래처", "999-99-91002");
         var explicitAnchorProfileId = Guid.NewGuid();
         var explicitAnchorSave = SaveBillingProfile(
             rental,
             adminSession,
             explicitAnchorProfileId,
-            customerId,
+            explicitAnchorCustomerId,
             customerName: "ZZZ-연도경계 후불 검증 거래처",
             billingType: "묶음",
             cycleMonths: 3,
@@ -317,12 +320,13 @@ internal static class Program
             explicitAnchorMonths.SequenceEqual(new[] { 11, 12, 1 }),
             $"기준월 1월인 후불 1월 3개월 청구는 11월, 12월, 1월이어야 합니다. 실제: {string.Join(", ", explicitAnchorMonths)}");
 
+        var advanceCustomerId = SeedCustomer(local, adminSession, "ZZZ-연도경계 선불 검증 거래처", "999-99-91003");
         var advanceProfileId = Guid.NewGuid();
         var advanceSave = SaveBillingProfile(
             rental,
             adminSession,
             advanceProfileId,
-            customerId,
+            advanceCustomerId,
             customerName: "ZZZ-연도경계 선불 검증 거래처",
             billingType: "묶음",
             cycleMonths: 3,
@@ -415,8 +419,6 @@ internal static class Program
             CustomerId = null,
             CustomerName = "[보건환경연구원]대기평가과",
             BusinessNumber = string.Empty,
-            RealCustomerName = "[보건환경연구원]대기평가과",
-            BillToCustomerName = "[보건환경연구원]대기평가과",
             InstallSiteName = "[보건환경연구원]대기평가과",
             BillingType = "묶음",
             BillingAdvanceMode = "후불",
@@ -424,7 +426,6 @@ internal static class Program
             ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
             AssignedUsername = userSession.User?.Username ?? "billing-user",
             BillingMethod = "전자세금계산서",
-            PaymentMethod = "계좌이체",
             BillingStatus = PaymentFlowConstants.BillingStatusPlanned,
             SettlementStatus = PaymentFlowConstants.SettlementStatusPending,
             CompletionStatus = PaymentFlowConstants.CompletionPending,
@@ -452,14 +453,32 @@ internal static class Program
         Ensure(profileSave.Success, profileSave.Message);
 
         var start = rental.StartBillingAsync(profile.Id, new DateOnly(2026, 3, 31), userSession).GetAwaiter().GetResult();
-        Ensure(!start.Success, "후보 장비 연결 검증은 실패해야 합니다.");
-        Ensure(!start.Message.Contains("거래처를 찾을 수 없습니다", StringComparison.Ordinal), $"약칭 거래처 매칭이 실패했습니다. 실제 메시지: {start.Message}");
-        Ensure(start.Message.Contains("후보 장비 2대", StringComparison.Ordinal), $"후보 장비 안내 메시지가 누락되었습니다. 실제 메시지: {start.Message}");
-        Ensure(start.Message.Contains("선택 장비를 현재 품목에 연결", StringComparison.Ordinal), $"후보 장비 연결 안내 문구가 누락되었습니다. 실제 메시지: {start.Message}");
+        Ensure(start.Success, $"약칭 거래처 매칭 기반 자동 연결 청구는 성공해야 합니다. 실제 메시지: {start.Message}");
+        Ensure(start.RelatedEntityId != Guid.Empty, "약칭 거래처 매칭 기반 자동 연결 전표 ID가 반환되지 않았습니다.");
+
+        var invoice = local.GetInvoiceAsync(start.RelatedEntityId).GetAwaiter().GetResult();
+        Ensure(invoice is not null, "약칭 거래처 매칭 기반 자동 연결 전표를 다시 불러오지 못했습니다.");
+        Ensure(invoice!.Lines.Count == 1, $"약칭 거래처 자동 연결 전표 라인 수가 1건이 아닙니다. 실제: {invoice.Lines.Count}건");
+
+        var persistedProfile = db.RentalBillingProfiles.IgnoreQueryFilters().First(current => current.Id == profile.Id);
+        Ensure(persistedProfile.CustomerId == customer.Id, "약칭 거래처 저장 후 CustomerId 가 실제 고객에 연결되지 않았습니다.");
+
+        var persistedItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(persistedProfile.BillingTemplateJson ?? "[]", JsonOptions) ?? new List<RentalBillingTemplateItemModel>();
+        Ensure(persistedItems.Count == 1, "약칭 거래처 자동 연결 후 저장된 청구항목 수가 잘못되었습니다.");
+        Ensure(persistedItems[0].IncludedAssetIds.Count == 2, $"약칭 거래처 자동 연결 후 IncludedAssetIds 수가 2가 아닙니다. 실제: {persistedItems[0].IncludedAssetIds.Count}");
+
+        var linkedAssets = db.RentalAssets.IgnoreQueryFilters()
+            .Where(current => current.BillingProfileId == profile.Id)
+            .OrderBy(current => current.ManagementNumber)
+            .ToList();
+        Ensure(linkedAssets.Count == 2, $"약칭 거래처 자동 연결 후 연결 자산 수가 2가 아닙니다. 실제: {linkedAssets.Count}");
 
         return new
         {
-            start.Message
+            start.Message,
+            start.RelatedEntityId,
+            LinkedAssetCount = linkedAssets.Count,
+            IncludedAssetIds = persistedItems[0].IncludedAssetIds
         };
     }
 
@@ -546,17 +565,17 @@ internal static class Program
         };
     }
 
-    private static Guid SeedCustomer(LocalStateService local, SessionState adminSession)
+    private static Guid SeedCustomer(LocalStateService local, SessionState adminSession, string name, string businessNumber)
     {
         var customer = new LocalCustomer
         {
             Id = Guid.NewGuid(),
-            NameOriginal = "ZZZ-렌탈 청구 자동전표 검증 거래처",
-            NameMatchKey = "ZZZ-렌탈 청구 자동전표 검증 거래처".ToUpperInvariant(),
+            NameOriginal = name,
+            NameMatchKey = name.ToUpperInvariant(),
             ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
             TenantCode = TenantScopeCatalog.UsenetGroup,
             Phone = "032-555-1234",
-            BusinessNumber = "999-99-99999",
+            BusinessNumber = businessNumber,
             TradeType = CustomerTradeTypes.Sales,
             PriceGrade = "매출단가",
             Address = "테스트 주소"
@@ -585,7 +604,6 @@ internal static class Program
                 ItemName = "IMC2010",
                 CustomerName = "[보건환경연구원]대기평가과",
                 CurrentCustomerName = "[보건환경연구원]대기평가과",
-                BillToCustomerName = "[보건환경연구원]대기평가과",
                 InstallSiteName = "[보건환경연구원]대기평가과",
                 InstallLocation = "[보건환경연구원]대기평가과",
                 BillingEligibilityStatus = "청구가능",
@@ -608,7 +626,6 @@ internal static class Program
                 ItemName = "IMC2010",
                 CustomerName = "[보건환경연구원]대기평가과",
                 CurrentCustomerName = "[보건환경연구원]대기평가과",
-                BillToCustomerName = "[보건환경연구원]대기평가과",
                 InstallSiteName = "[보건환경연구원]대기평가과",
                 InstallLocation = "[보건환경연구원]대기평가과",
                 BillingEligibilityStatus = "청구가능",
@@ -638,7 +655,6 @@ internal static class Program
             ItemName = "IMC2010",
             CustomerName = "ZZZ-단일후보 자동연결 거래처",
             CurrentCustomerName = "ZZZ-단일후보 자동연결 거래처",
-            BillToCustomerName = "ZZZ-단일후보 자동연결 거래처",
             InstallSiteName = "단일후보 테스트실",
             InstallLocation = "단일후보 테스트실",
             BillingEligibilityStatus = "청구가능",
@@ -671,7 +687,6 @@ internal static class Program
                 ItemName = "리코 IMC 2000",
                 CustomerName = "ZZZ-렌탈 묶음 검증 거래처",
                 CurrentCustomerName = "ZZZ-렌탈 묶음 검증 거래처",
-                BillToCustomerName = "ZZZ-렌탈 묶음 검증 거래처",
                 InstallSiteName = "묶음 테스트실",
                 InstallLocation = "묶음 테스트실",
                 BillingEligibilityStatus = "청구가능",
@@ -694,7 +709,6 @@ internal static class Program
                 ItemName = "SL-M4070FR",
                 CustomerName = "ZZZ-렌탈 묶음 검증 거래처",
                 CurrentCustomerName = "ZZZ-렌탈 묶음 검증 거래처",
-                BillToCustomerName = "ZZZ-렌탈 묶음 검증 거래처",
                 InstallSiteName = "묶음 테스트실",
                 InstallLocation = "묶음 테스트실",
                 BillingEligibilityStatus = "청구가능",
@@ -717,7 +731,7 @@ internal static class Program
                 AssetKey = "USENET|B-001", ManagementCompanyCode = DomainConstants.OfficeUsenet, ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
                 AssignedUsername = assignedUsername, ManagementNumber = "B-001", ManagementId = "B-001",
                 ItemName = "리코 IMC 2010", CustomerName = "ZZZ-렌탈 개별 검증 거래처", CurrentCustomerName = "ZZZ-렌탈 개별 검증 거래처",
-                BillToCustomerName = "ZZZ-렌탈 개별 검증 거래처", InstallSiteName = "개별 테스트실", InstallLocation = "개별 테스트실",
+                InstallSiteName = "개별 테스트실", InstallLocation = "개별 테스트실",
                 BillingEligibilityStatus = "청구가능", AssetStatus = "임대진행중", MonthlyFee = 240000m,
                 CreatedAtUtc = now, UpdatedAtUtc = now
             },
@@ -727,7 +741,7 @@ internal static class Program
                 AssetKey = "USENET|B-002", ManagementCompanyCode = DomainConstants.OfficeUsenet, ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
                 AssignedUsername = assignedUsername, ManagementNumber = "B-002", ManagementId = "B-002",
                 ItemName = "리코 IMC 2010", CustomerName = "ZZZ-렌탈 개별 검증 거래처", CurrentCustomerName = "ZZZ-렌탈 개별 검증 거래처",
-                BillToCustomerName = "ZZZ-렌탈 개별 검증 거래처", InstallSiteName = "개별 테스트실", InstallLocation = "개별 테스트실",
+                InstallSiteName = "개별 테스트실", InstallLocation = "개별 테스트실",
                 BillingEligibilityStatus = "청구가능", AssetStatus = "임대진행중", MonthlyFee = 240000m,
                 CreatedAtUtc = now, UpdatedAtUtc = now
             },
@@ -737,7 +751,7 @@ internal static class Program
                 AssetKey = "USENET|B-003", ManagementCompanyCode = DomainConstants.OfficeUsenet, ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
                 AssignedUsername = assignedUsername, ManagementNumber = "B-003", ManagementId = "B-003",
                 ItemName = "리코 IMC 2010", CustomerName = "ZZZ-렌탈 개별 검증 거래처", CurrentCustomerName = "ZZZ-렌탈 개별 검증 거래처",
-                BillToCustomerName = "ZZZ-렌탈 개별 검증 거래처", InstallSiteName = "개별 테스트실", InstallLocation = "개별 테스트실",
+                InstallSiteName = "개별 테스트실", InstallLocation = "개별 테스트실",
                 BillingEligibilityStatus = "청구가능", AssetStatus = "임대진행중", MonthlyFee = 240000m,
                 CreatedAtUtc = now, UpdatedAtUtc = now
             },
@@ -747,7 +761,7 @@ internal static class Program
                 AssetKey = "USENET|B-010", ManagementCompanyCode = DomainConstants.OfficeUsenet, ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
                 AssignedUsername = assignedUsername, ManagementNumber = "B-010", ManagementId = "B-010",
                 ItemName = "SL-M2670FN", CustomerName = "ZZZ-렌탈 개별 검증 거래처", CurrentCustomerName = "ZZZ-렌탈 개별 검증 거래처",
-                BillToCustomerName = "ZZZ-렌탈 개별 검증 거래처", InstallSiteName = "개별 테스트실", InstallLocation = "개별 테스트실",
+                InstallSiteName = "개별 테스트실", InstallLocation = "개별 테스트실",
                 BillingEligibilityStatus = "청구가능", AssetStatus = "임대진행중", MonthlyFee = 22000m,
                 CreatedAtUtc = now, UpdatedAtUtc = now
             });
@@ -779,8 +793,6 @@ internal static class Program
             CustomerId = customerId,
             CustomerName = customerName,
             BusinessNumber = "999-99-99999",
-            RealCustomerName = customerName,
-            BillToCustomerName = customerName,
             InstallSiteName = customerName,
             BillingType = billingType,
             BillingAdvanceMode = billingAdvanceMode,
@@ -788,7 +800,6 @@ internal static class Program
             ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
             AssignedUsername = "billing-user",
             BillingMethod = "전자세금계산서",
-            PaymentMethod = "계좌이체",
             BillingStatus = PaymentFlowConstants.BillingStatusPlanned,
             SettlementStatus = PaymentFlowConstants.SettlementStatusPending,
             CompletionStatus = PaymentFlowConstants.CompletionPending,

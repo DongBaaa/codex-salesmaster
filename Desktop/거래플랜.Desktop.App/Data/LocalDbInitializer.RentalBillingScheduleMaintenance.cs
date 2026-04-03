@@ -31,8 +31,6 @@ public static partial class LocalDbInitializer
             var originalLeadDays = profile.DocumentLeadDays;
             var originalCustomerId = profile.CustomerId;
             var originalCustomerName = profile.CustomerName;
-            var originalRealCustomerName = profile.RealCustomerName;
-            var originalBillToCustomerName = profile.BillToCustomerName;
 
             if ((!profile.CustomerId.HasValue || profile.CustomerId.Value == Guid.Empty)
                 && TryResolveBillingProfileCustomer(customers, profile, out var resolvedCustomerId))
@@ -46,8 +44,6 @@ public static partial class LocalDbInitializer
             {
                 var normalizedMasterName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerMasterName);
                 profile.CustomerName = normalizedMasterName;
-                profile.RealCustomerName = normalizedMasterName;
-                profile.BillToCustomerName = normalizedMasterName;
             }
 
             var normalizedCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
@@ -76,9 +72,7 @@ public static partial class LocalDbInitializer
                 || !string.Equals(originalDocumentIssueMode, profile.DocumentIssueMode, StringComparison.Ordinal)
                 || originalLeadDays != profile.DocumentLeadDays
                 || originalCustomerId != profile.CustomerId
-                || !string.Equals(originalCustomerName, profile.CustomerName, StringComparison.Ordinal)
-                || !string.Equals(originalRealCustomerName, profile.RealCustomerName, StringComparison.Ordinal)
-                || !string.Equals(originalBillToCustomerName, profile.BillToCustomerName, StringComparison.Ordinal))
+                || !string.Equals(originalCustomerName, profile.CustomerName, StringComparison.Ordinal))
             {
                 changed = true;
             }
@@ -109,9 +103,7 @@ public static partial class LocalDbInitializer
 
         var candidateNames = new[]
             {
-                profile.CustomerName,
-                profile.RealCustomerName,
-                profile.BillToCustomerName
+                profile.CustomerName
             }
             .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
             .Where(value => !string.IsNullOrWhiteSpace(value))

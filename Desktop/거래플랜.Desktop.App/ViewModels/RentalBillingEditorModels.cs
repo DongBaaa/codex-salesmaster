@@ -28,7 +28,6 @@ public sealed partial class RentalBillingAssetOption : ObservableObject
     [ObservableProperty] private string _itemName = string.Empty;
     [ObservableProperty] private string _machineNumber = string.Empty;
     [ObservableProperty] private string _currentCustomerName = string.Empty;
-    [ObservableProperty] private string _billToCustomerName = string.Empty;
     [ObservableProperty] private string _installLocation = string.Empty;
     [ObservableProperty] private string _assetStatus = string.Empty;
     [ObservableProperty] private string _billingEligibilityStatus = string.Empty;
