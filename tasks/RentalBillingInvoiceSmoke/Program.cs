@@ -416,7 +416,7 @@ internal static class Program
         var profile = new LocalRentalBillingProfile
         {
             Id = Guid.NewGuid(),
-            CustomerId = null,
+            CustomerId = customer.Id,
             CustomerName = "[보건환경연구원]대기평가과",
             BusinessNumber = string.Empty,
             InstallSiteName = "[보건환경연구원]대기평가과",
@@ -453,25 +453,25 @@ internal static class Program
         Ensure(profileSave.Success, profileSave.Message);
 
         var start = rental.StartBillingAsync(profile.Id, new DateOnly(2026, 3, 31), userSession).GetAwaiter().GetResult();
-        Ensure(start.Success, $"약칭 거래처 매칭 기반 자동 연결 청구는 성공해야 합니다. 실제 메시지: {start.Message}");
-        Ensure(start.RelatedEntityId != Guid.Empty, "약칭 거래처 매칭 기반 자동 연결 전표 ID가 반환되지 않았습니다.");
+        Ensure(start.Success, $"강한 키(CustomerId) 기반 자동 연결 청구는 성공해야 합니다. 실제 메시지: {start.Message}");
+        Ensure(start.RelatedEntityId != Guid.Empty, "강한 키(CustomerId) 기반 자동 연결 전표 ID가 반환되지 않았습니다.");
 
         var invoice = local.GetInvoiceAsync(start.RelatedEntityId).GetAwaiter().GetResult();
-        Ensure(invoice is not null, "약칭 거래처 매칭 기반 자동 연결 전표를 다시 불러오지 못했습니다.");
-        Ensure(invoice!.Lines.Count == 1, $"약칭 거래처 자동 연결 전표 라인 수가 1건이 아닙니다. 실제: {invoice.Lines.Count}건");
+        Ensure(invoice is not null, "강한 키(CustomerId) 기반 자동 연결 전표를 다시 불러오지 못했습니다.");
+        Ensure(invoice!.Lines.Count == 1, $"강한 키(CustomerId) 기반 자동 연결 전표 라인 수가 1건이 아닙니다. 실제: {invoice.Lines.Count}건");
 
         var persistedProfile = db.RentalBillingProfiles.IgnoreQueryFilters().First(current => current.Id == profile.Id);
-        Ensure(persistedProfile.CustomerId == customer.Id, "약칭 거래처 저장 후 CustomerId 가 실제 고객에 연결되지 않았습니다.");
+        Ensure(persistedProfile.CustomerId == customer.Id, "강한 키(CustomerId) 기반 저장 후 CustomerId 가 유지되지 않았습니다.");
 
         var persistedItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(persistedProfile.BillingTemplateJson ?? "[]", JsonOptions) ?? new List<RentalBillingTemplateItemModel>();
-        Ensure(persistedItems.Count == 1, "약칭 거래처 자동 연결 후 저장된 청구항목 수가 잘못되었습니다.");
-        Ensure(persistedItems[0].IncludedAssetIds.Count == 2, $"약칭 거래처 자동 연결 후 IncludedAssetIds 수가 2가 아닙니다. 실제: {persistedItems[0].IncludedAssetIds.Count}");
+        Ensure(persistedItems.Count == 1, "강한 키(CustomerId) 기반 자동 연결 후 저장된 청구항목 수가 잘못되었습니다.");
+        Ensure(persistedItems[0].IncludedAssetIds.Count == 2, $"강한 키(CustomerId) 기반 자동 연결 후 IncludedAssetIds 수가 2가 아닙니다. 실제: {persistedItems[0].IncludedAssetIds.Count}");
 
         var linkedAssets = db.RentalAssets.IgnoreQueryFilters()
             .Where(current => current.BillingProfileId == profile.Id)
             .OrderBy(current => current.ManagementNumber)
             .ToList();
-        Ensure(linkedAssets.Count == 2, $"약칭 거래처 자동 연결 후 연결 자산 수가 2가 아닙니다. 실제: {linkedAssets.Count}");
+        Ensure(linkedAssets.Count == 2, $"강한 키(CustomerId) 기반 자동 연결 후 연결 자산 수가 2가 아닙니다. 실제: {linkedAssets.Count}");
 
         return new
         {

@@ -177,6 +177,7 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
             CleanupDeletedInvoiceChainStepKey,
             async () => await CleanupDeletedInvoiceChainAsync(db));
         await db.SaveChangesAsync();
+        await EnsureUniqueDefaultCompanyProfileIndexAsync(db);
         await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_ItemCategoryOptions_Name_Active\" ON \"ItemCategoryOptions\" (\"Name\") WHERE COALESCE(TRIM(\"Name\"), '') <> '' AND COALESCE(\"IsDeleted\", 0) = 0;");
     }
 
@@ -1972,6 +1973,13 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
         {
             // ignore
         }
+    }
+
+    private static async Task EnsureUniqueDefaultCompanyProfileIndexAsync(LocalDbContext db)
+    {
+        await TryCreateIndexAsync(
+            db,
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_CompanyProfiles_DefaultPerOffice_Active\" ON \"CompanyProfiles\" (\"OfficeCode\") WHERE COALESCE(\"IsDefaultForOffice\", 0) = 1 AND COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(\"IsActive\", 1) = 1;");
     }
 
     private static async Task NormalizeLegacyDateTimeColumnsAsync(LocalDbContext db)

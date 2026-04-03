@@ -2391,9 +2391,11 @@ public sealed partial class LocalStateService
     public Task<LocalCompanyProfile?> GetCompanyProfileAsync(SessionState session, CancellationToken ct = default)
         => GetCompanyProfileAsync(session.User?.Username, session.BusinessOfficeCode, ct);
 
+    public Task EnsureCompanyProfilesHealthyAsync(CancellationToken ct = default)
+        => EnsureCompanyProfileDefaultsAsync(ct);
+
     public async Task<List<LocalCompanyProfile>> GetCompanyProfilesAsync(CancellationToken ct = default)
     {
-        await EnsureCompanyProfileDefaultsAsync(ct);
         return await _db.CompanyProfiles
             .AsNoTracking()
             .Where(profile => !profile.IsDeleted && profile.IsActive)
@@ -2660,6 +2662,15 @@ public sealed partial class LocalStateService
 
         using var _ = SuppressSyncDispatch();
         await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.Database.ExecuteSqlRawAsync(
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_CompanyProfiles_DefaultPerOffice_Active\" ON \"CompanyProfiles\" (\"OfficeCode\") WHERE COALESCE(\"IsDefaultForOffice\", 0) = 1 AND COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(\"IsActive\", 1) = 1;");
+        }
+        catch
+        {
+            // ignore
+        }
     }
 
     private static bool ApplyCompanyProfileDefault(

@@ -531,8 +531,11 @@ public sealed partial class LocalStateService
 
         var directProfileCount = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .CountAsync(current => current.Id == asset.BillingProfileId, ct);
-        var templateProfileCount = await _db.RentalBillingProfiles.IgnoreQueryFilters()
-            .CountAsync(current => current.BillingTemplateJson.Contains(assetId.ToString()), ct);
+        var templateProfileCount = (await _db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .ToListAsync(ct))
+            .Count(current => BillingTemplateContainsAssetId(current.BillingTemplateJson, assetId));
 
         var dependencies = new List<RecycleBinDependencyItem>();
         AppendDependency(dependencies, "현재 연결 프로필", directProfileCount, "현재 연결된 렌탈 청구 프로필이 있으면 영구삭제 시 자동으로 연결이 해제됩니다.");

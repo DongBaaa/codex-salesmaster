@@ -1701,10 +1701,7 @@ public sealed partial class LocalStateService
         if (asset is null)
             return OfficeMutationResult.Ok(assetId, "렌탈 자산 서버 영구삭제 상태가 이미 반영되어 있습니다.");
 
-        var profiles = await _db.RentalBillingProfiles
-            .IgnoreQueryFilters()
-            .Where(current => current.BillingTemplateJson.Contains(assetId.ToString()))
-            .ToListAsync(ct);
+        var profiles = await GetBillingProfilesContainingAssetIdAsync(assetId, ct);
         foreach (var profile in profiles)
         {
             var normalizedJson = RemoveIncludedAssetId(profile.BillingTemplateJson, assetId);
@@ -1815,10 +1812,7 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 자산을 영구삭제할 수 없습니다.");
 
         var now = DateTime.UtcNow;
-        var profiles = await _db.RentalBillingProfiles
-            .IgnoreQueryFilters()
-            .Where(current => current.BillingTemplateJson.Contains(assetId.ToString()))
-            .ToListAsync(ct);
+        var profiles = await GetBillingProfilesContainingAssetIdAsync(assetId, ct);
         foreach (var profile in profiles)
         {
             var normalizedJson = RemoveIncludedAssetId(profile.BillingTemplateJson, assetId);
@@ -2195,6 +2189,38 @@ public sealed partial class LocalStateService
         catch
         {
             return templateJson ?? "[]";
+        }
+    }
+
+    private async Task<List<LocalRentalBillingProfile>> GetBillingProfilesContainingAssetIdAsync(
+        Guid assetId,
+        CancellationToken ct)
+    {
+        if (assetId == Guid.Empty)
+            return [];
+
+        var profiles = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .ToListAsync(ct);
+
+        return profiles
+            .Where(profile => BillingTemplateContainsAssetId(profile.BillingTemplateJson, assetId))
+            .ToList();
+    }
+
+    private static bool BillingTemplateContainsAssetId(string? templateJson, Guid assetId)
+    {
+        if (assetId == Guid.Empty || string.IsNullOrWhiteSpace(templateJson))
+            return false;
+
+        try
+        {
+            var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(templateJson) ?? [];
+            return items.Any(item => item.IncludedAssetIds.Any(id => id == assetId));
+        }
+        catch
+        {
+            return false;
         }
     }
 

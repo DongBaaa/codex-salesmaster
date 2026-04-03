@@ -416,13 +416,13 @@ public static partial class DbInitializer
         var now = DateTime.UtcNow;
         foreach (var definition in DefaultCompanyProfiles)
         {
+            var normalizedDefinitionOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(definition.OfficeCode, definition.OfficeCode);
             var current = await dbContext.CompanyProfiles
                 .IgnoreQueryFilters()
                 .OrderByDescending(profile => profile.IsDefaultForOffice)
                 .ThenByDescending(profile => !profile.IsDeleted && profile.IsActive)
                 .ThenByDescending(profile => profile.UpdatedAtUtc)
-                .FirstOrDefaultAsync(profile =>
-                    string.Equals(profile.OfficeCode, definition.OfficeCode, StringComparison.OrdinalIgnoreCase), cancellationToken);
+                .FirstOrDefaultAsync(profile => profile.OfficeCode == normalizedDefinitionOfficeCode, cancellationToken);
 
             if (current is null)
             {
@@ -507,6 +507,16 @@ public static partial class DbInitializer
                     profile.UpdatedAtUtc = now;
                 }
             }
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_CompanyProfiles_DefaultPerOffice_Active\" ON \"CompanyProfiles\" (\"OfficeCode\") WHERE COALESCE(\"IsDefaultForOffice\", false) = true AND COALESCE(\"IsDeleted\", false) = false AND COALESCE(\"IsActive\", true) = true;",
+                cancellationToken);
+        }
+        catch
+        {
         }
     }
 

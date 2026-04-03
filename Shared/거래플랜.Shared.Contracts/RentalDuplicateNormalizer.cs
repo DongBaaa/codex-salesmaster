@@ -75,7 +75,6 @@ public static class RentalDuplicateNormalizer
         string? machineNumber,
         decimal monthlyFee,
         int contractMonths,
-        string? assignedUsername,
         string? assetStatus)
     {
         return string.Join('|',

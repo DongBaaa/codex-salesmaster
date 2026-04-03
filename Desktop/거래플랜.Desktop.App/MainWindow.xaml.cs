@@ -98,6 +98,7 @@ public partial class MainWindow : Window
         if (_isClosingOrClosed)
             return;
 
+        await _local.EnsureCompanyProfilesHealthyAsync();
         _vm.SetInvoiceDefaultDateRange(await ResolveServerTodayAsync());
         await _vm.LoadAsync();
         if (!_session.IsOfflineMode)

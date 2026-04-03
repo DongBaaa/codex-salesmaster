@@ -221,7 +221,7 @@ public sealed class RentalsViewModel : ObservableObject
                || Contains(profile.CustomerName, q)
                || Contains(profile.ItemName, q)
                || Contains(profile.BillingStatus, q)
-               || Contains(profile.AssignedUsername, q)
+               || Contains(profile.ResponsibleOfficeCode, q)
                || Contains(profile.ManagementCompanyCode, q)
                || Contains(ResolveCompanyName(profile.ManagementCompanyCode, companyMap), q);
     }
@@ -241,7 +241,7 @@ public sealed class RentalsViewModel : ObservableObject
                || Contains(asset.AssetStatus, q)
                || Contains(asset.CurrentLocation, q)
                || Contains(asset.InstallLocation, q)
-               || Contains(asset.AssignedUsername, q)
+               || Contains(asset.ResponsibleOfficeCode, q)
                || Contains(asset.ManagementCompanyCode, q)
                || Contains(ResolveCompanyName(asset.ManagementCompanyCode, companyMap), q)
                || (asset.BillingProfileId.HasValue &&
@@ -260,7 +260,7 @@ public sealed class RentalsViewModel : ObservableObject
                || Contains(log.Status, q)
                || Contains(log.Note, q)
                || Contains(log.ProcessedByUsername, q)
-               || Contains(log.AssignedUsername, q)
+               || Contains(log.ResponsibleOfficeCode, q)
                || Contains(profile?.ProfileKey, q)
                || Contains(profile?.CustomerName, q);
     }
@@ -312,7 +312,7 @@ public sealed class RentalBillingLogDisplayRow
 
     public string Subtitle => $"{Normalize(ProfileKey, "프로필 미지정")} · {Normalize(Log.Status, "예정")} · {Log.BilledAmount:N0}원";
 
-    public string Meta => $"예정일 {Log.ScheduledDate:yyyy-MM-dd} / 처리일 {FormatDate(Log.ProcessedDate)} / 담당 {Normalize(Log.AssignedUsername, "미지정")}";
+    public string Meta => $"예정일 {Log.ScheduledDate:yyyy-MM-dd} / 처리일 {FormatDate(Log.ProcessedDate)} / 지점 {Normalize(Log.ResponsibleOfficeCode, "미지정")}";
 
     public string Note => Normalize(Log.Note, "메모 없음");
 

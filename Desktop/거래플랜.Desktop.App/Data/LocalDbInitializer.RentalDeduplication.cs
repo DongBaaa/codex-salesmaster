@@ -177,6 +177,7 @@ public static partial class LocalDbInitializer
         var logCounts = logs.GroupBy(current => current.BillingProfileId).ToDictionary(group => group.Key, group => group.Count());
 
         var groups = profiles
+            .Where(current => current.CustomerId.HasValue && current.CustomerId.Value != Guid.Empty)
             .GroupBy(BuildRentalBillingProfileDuplicateKey, StringComparer.Ordinal)
             .Where(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1)
             .ToList();
@@ -382,7 +383,6 @@ public static partial class LocalDbInitializer
             current.MachineNumber,
             current.MonthlyFee,
             current.ContractMonths,
-            current.AssignedUsername,
             current.AssetStatus);
 
     private static bool MergeRentalBillingProfileValues(LocalRentalBillingProfile canonical, LocalRentalBillingProfile duplicate)

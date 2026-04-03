@@ -1364,10 +1364,11 @@ public sealed class RecycleBinController : ControllerBase
         if (!asset.IsDeleted)
             return (false, "활성 상태 렌탈 자산은 휴지통에서 영구삭제할 수 없습니다.");
 
-        var profiles = await _dbContext.RentalBillingProfiles
-            .IgnoreQueryFilters()
-            .Where(current => current.BillingTemplateJson.Contains(assetId.ToString()))
-            .ToListAsync(cancellationToken);
+        var profiles = (await _dbContext.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .ToListAsync(cancellationToken))
+            .Where(current => BillingTemplateContainsAssetId(current.BillingTemplateJson, assetId))
+            .ToList();
         foreach (var profile in profiles)
         {
             var normalizedJson = RemoveIncludedAssetId(profile.BillingTemplateJson, assetId);
@@ -1581,6 +1582,22 @@ public sealed class RecycleBinController : ControllerBase
         catch
         {
             return templateJson ?? "[]";
+        }
+    }
+
+    private static bool BillingTemplateContainsAssetId(string? templateJson, Guid assetId)
+    {
+        if (assetId == Guid.Empty || string.IsNullOrWhiteSpace(templateJson))
+            return false;
+
+        try
+        {
+            var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(templateJson) ?? [];
+            return items.Any(item => item.IncludedAssetIds.Any(id => id == assetId));
+        }
+        catch
+        {
+            return false;
         }
     }
 

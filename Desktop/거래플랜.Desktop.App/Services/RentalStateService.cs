@@ -1129,11 +1129,7 @@ public sealed partial class RentalStateService
             .Where(asset => !asset.BillingProfileId.HasValue);
 
         if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
-        {
-            query = query.Where(asset =>
-                asset.ResponsibleOfficeCode == normalizedOfficeCode ||
-                asset.ManagementCompanyCode == normalizedOfficeCode);
-        }
+            query = query.Where(asset => asset.ResponsibleOfficeCode == normalizedOfficeCode);
 
         return await query
             .OrderBy(asset => asset.CustomerName)
@@ -1169,16 +1165,10 @@ public sealed partial class RentalStateService
                 assetIds.Contains(asset.Id));
 
         if (hasCustomerId)
-        {
             query = query.Where(asset => asset.CustomerId == resolvedCustomerId);
-        }
 
         if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
-        {
-            query = query.Where(asset =>
-                asset.ResponsibleOfficeCode == normalizedOfficeCode ||
-                asset.ManagementCompanyCode == normalizedOfficeCode);
-        }
+            query = query.Where(asset => asset.ResponsibleOfficeCode == normalizedOfficeCode);
 
         return await query
             .OrderBy(asset => asset.CustomerName)
@@ -3514,17 +3504,7 @@ public sealed partial class RentalStateService
         if (exactMatch.Count == 1)
             return exactMatch[0];
 
-        var suffixMatch = normalizedMatches
-            .Where(customer => normalizedNameKeys.Any(key =>
-                key.Length >= 6 &&
-                (customer.MatchKey.EndsWith(key, StringComparison.OrdinalIgnoreCase) ||
-                 key.EndsWith(customer.MatchKey, StringComparison.OrdinalIgnoreCase))))
-            .Select(customer => customer.Id)
-            .Distinct()
-            .ToList();
-        return suffixMatch.Count == 1
-            ? suffixMatch[0]
-            : null;
+        return null;
     }
 
     private async Task<LocalCustomer?> GetRentalLinkedCustomerAsync(Guid? customerId, CancellationToken ct)
@@ -4160,21 +4140,22 @@ public sealed partial class RentalStateService
 
     private async Task<Guid?> FindMatchingBillingProfileIdAsync(LocalRentalAsset asset, CancellationToken ct)
     {
-        if ((!asset.CustomerId.HasValue || asset.CustomerId.Value == Guid.Empty) &&
-            string.IsNullOrWhiteSpace(asset.CustomerName))
-        return null;
+        if (!asset.CustomerId.HasValue || asset.CustomerId.Value == Guid.Empty)
+            return null;
+
+        var normalizedOfficeCode = NormalizeOfficeCode(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode);
+        var siteKeys = new[] { asset.InstallLocation, asset.InstallSiteName }
+            .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         var profiles = _db.RentalBillingProfiles.AsNoTracking()
-            .Where(profile => !profile.IsDeleted);
+            .Where(profile => !profile.IsDeleted)
+            .Where(profile => profile.CustomerId == asset.CustomerId.Value);
 
-        if (asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
-        {
-            profiles = profiles.Where(profile => profile.CustomerId == asset.CustomerId.Value);
-        }
-        else
-        {
-            profiles = profiles.Where(profile => profile.CustomerName == asset.CustomerName);
-        }
+        if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
+            profiles = profiles.Where(profile => profile.ResponsibleOfficeCode == normalizedOfficeCode);
 
         var candidates = await profiles.ToListAsync(ct);
 
@@ -4182,44 +4163,6 @@ public sealed partial class RentalStateService
             return null;
         if (candidates.Count == 1)
             return candidates[0].Id;
-
-        var normalizedItemKey = RentalCatalogValueNormalizer.NormalizeLooseKey(asset.ItemName);
-        var siteKeys = new[] { asset.InstallLocation, asset.InstallSiteName }
-            .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (!string.IsNullOrWhiteSpace(normalizedItemKey))
-        {
-            var itemMatches = candidates
-                .Where(profile =>
-                {
-                    var profileItemKey = RentalCatalogValueNormalizer.NormalizeLooseKey(profile.ItemName);
-                    return !string.IsNullOrWhiteSpace(profileItemKey) &&
-                           (string.Equals(profileItemKey, normalizedItemKey, StringComparison.OrdinalIgnoreCase) ||
-                            profileItemKey.Contains(normalizedItemKey, StringComparison.OrdinalIgnoreCase) ||
-                            normalizedItemKey.Contains(profileItemKey, StringComparison.OrdinalIgnoreCase));
-                })
-                .ToList();
-
-            if (siteKeys.Count > 0)
-            {
-                var strictMatches = itemMatches
-                    .Where(profile =>
-                    {
-                        var profileSiteKey = RentalCatalogValueNormalizer.NormalizeLooseKey(profile.InstallSiteName);
-                        return !string.IsNullOrWhiteSpace(profileSiteKey) &&
-                               siteKeys.Contains(profileSiteKey, StringComparer.OrdinalIgnoreCase);
-                    })
-                    .ToList();
-                if (strictMatches.Count == 1)
-                    return strictMatches[0].Id;
-            }
-
-            if (itemMatches.Count == 1)
-                return itemMatches[0].Id;
-        }
 
         if (siteKeys.Count > 0)
         {
