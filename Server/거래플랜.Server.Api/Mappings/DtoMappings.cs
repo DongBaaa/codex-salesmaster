@@ -774,7 +774,7 @@ public static class DtoMappings
             LastInstallLocation = entity.LastInstallLocation,
             LastBillingProfileId = entity.LastBillingProfileId,
             LastBillingProfileDisplay = entity.LastBillingProfileDisplay,
-            LastAssignmentClearedAtUtc = entity.LastAssignmentClearedAtUtc,
+            LastAssignmentClearedAtUtc = NormalizeUtc(entity.LastAssignmentClearedAtUtc),
             ManagementId = entity.ManagementId,
             ManagementNumber = entity.ManagementNumber,
             ManagementCompanyCode = entity.ManagementCompanyCode,
@@ -818,7 +818,7 @@ public static class DtoMappings
         entity.LastInstallLocation = dto.LastInstallLocation?.Trim() ?? string.Empty;
         entity.LastBillingProfileId = dto.LastBillingProfileId;
         entity.LastBillingProfileDisplay = dto.LastBillingProfileDisplay?.Trim() ?? string.Empty;
-        entity.LastAssignmentClearedAtUtc = dto.LastAssignmentClearedAtUtc;
+        entity.LastAssignmentClearedAtUtc = NormalizeUtc(dto.LastAssignmentClearedAtUtc);
         entity.ManagementId = dto.ManagementId?.Trim() ?? string.Empty;
         entity.ManagementNumber = dto.ManagementNumber?.Trim() ?? string.Empty;
         entity.ManagementCompanyCode = dto.ManagementCompanyCode?.Trim() ?? string.Empty;
