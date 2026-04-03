@@ -26,7 +26,7 @@ internal static class Program
 
         var groupedCustomerId = SeedCustomer(local, adminSession, "ZZZ-렌탈 청구 자동전표 검증 거래처-묶음", "999-99-90001");
         var groupedProfileId = Guid.NewGuid();
-        SeedGroupedAssets(db, groupedCustomerId, groupedProfileId, userSession.User?.Username ?? string.Empty);
+        SeedGroupedAssets(db, groupedCustomerId, groupedProfileId);
         var groupedSave = SaveBillingProfile(
             rental,
             adminSession,
@@ -55,7 +55,7 @@ internal static class Program
 
         var individualCustomerId = SeedCustomer(local, adminSession, "ZZZ-렌탈 청구 자동전표 검증 거래처-개별", "999-99-90002");
         var individualProfileId = Guid.NewGuid();
-        SeedIndividualAssets(db, individualCustomerId, individualProfileId, userSession.User?.Username ?? string.Empty);
+        SeedIndividualAssets(db, individualCustomerId, individualProfileId);
         var individualSave = SaveBillingProfile(
             rental,
             adminSession,
@@ -411,7 +411,7 @@ internal static class Program
         var customerSave = local.UpsertCustomerAsync(customer, adminSession).GetAwaiter().GetResult();
         Ensure(customerSave.Success, customerSave.Message);
 
-        SeedResolutionCandidateAssets(db, customer.Id, userSession.User?.Username ?? string.Empty);
+        SeedResolutionCandidateAssets(db, customer.Id);
 
         var profile = new LocalRentalBillingProfile
         {
@@ -424,7 +424,6 @@ internal static class Program
             BillingAdvanceMode = "후불",
             ManagementCompanyCode = DomainConstants.OfficeUsenet,
             ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
-            AssignedUsername = userSession.User?.Username ?? "billing-user",
             BillingMethod = "전자세금계산서",
             BillingStatus = PaymentFlowConstants.BillingStatusPlanned,
             SettlementStatus = PaymentFlowConstants.SettlementStatusPending,
@@ -506,7 +505,7 @@ internal static class Program
         var customerSave = local.UpsertCustomerAsync(customer, adminSession).GetAwaiter().GetResult();
         Ensure(customerSave.Success, customerSave.Message);
 
-        var assetId = SeedSingleCandidateAsset(db, customer.Id, userSession.User?.Username ?? string.Empty);
+        var assetId = SeedSingleCandidateAsset(db, customer.Id);
 
         var profileId = Guid.NewGuid();
         var profileSave = SaveBillingProfile(
@@ -586,7 +585,7 @@ internal static class Program
         return result.EntityId;
     }
 
-    private static void SeedResolutionCandidateAssets(LocalDbContext db, Guid customerId, string assignedUsername)
+    private static void SeedResolutionCandidateAssets(LocalDbContext db, Guid customerId)
     {
         var now = DateTime.UtcNow;
         db.RentalAssets.AddRange(
@@ -598,7 +597,6 @@ internal static class Program
                 AssetKey = "USENET|C-001",
                 ManagementCompanyCode = DomainConstants.OfficeUsenet,
                 ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
-                AssignedUsername = assignedUsername,
                 ManagementNumber = "C-001",
                 ManagementId = "C-001",
                 ItemName = "IMC2010",
@@ -620,7 +618,6 @@ internal static class Program
                 AssetKey = "USENET|C-002",
                 ManagementCompanyCode = DomainConstants.OfficeUsenet,
                 ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
-                AssignedUsername = assignedUsername,
                 ManagementNumber = "C-002",
                 ManagementId = "C-002",
                 ItemName = "IMC2010",
@@ -638,7 +635,7 @@ internal static class Program
         db.SaveChanges();
     }
 
-    private static Guid SeedSingleCandidateAsset(LocalDbContext db, Guid customerId, string assignedUsername)
+    private static Guid SeedSingleCandidateAsset(LocalDbContext db, Guid customerId)
     {
         var now = DateTime.UtcNow;
         var asset = new LocalRentalAsset
@@ -649,7 +646,6 @@ internal static class Program
             AssetKey = "USENET|D-001",
             ManagementCompanyCode = DomainConstants.OfficeUsenet,
             ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
-            AssignedUsername = assignedUsername,
             ManagementNumber = "D-001",
             ManagementId = "D-001",
             ItemName = "IMC2010",
@@ -669,7 +665,7 @@ internal static class Program
         return asset.Id;
     }
 
-    private static void SeedGroupedAssets(LocalDbContext db, Guid customerId, Guid billingProfileId, string assignedUsername)
+    private static void SeedGroupedAssets(LocalDbContext db, Guid customerId, Guid billingProfileId)
     {
         var now = DateTime.UtcNow;
         db.RentalAssets.AddRange(
@@ -681,7 +677,6 @@ internal static class Program
                 AssetKey = "USENET|A-001",
                 ManagementCompanyCode = DomainConstants.OfficeUsenet,
                 ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
-                AssignedUsername = assignedUsername,
                 ManagementNumber = "A-001",
                 ManagementId = "A-001",
                 ItemName = "리코 IMC 2000",
@@ -703,7 +698,6 @@ internal static class Program
                 AssetKey = "USENET|A-002",
                 ManagementCompanyCode = DomainConstants.OfficeUsenet,
                 ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
-                AssignedUsername = assignedUsername,
                 ManagementNumber = "A-002",
                 ManagementId = "A-002",
                 ItemName = "SL-M4070FR",
@@ -721,7 +715,7 @@ internal static class Program
         db.SaveChanges();
     }
 
-    private static void SeedIndividualAssets(LocalDbContext db, Guid customerId, Guid billingProfileId, string assignedUsername)
+    private static void SeedIndividualAssets(LocalDbContext db, Guid customerId, Guid billingProfileId)
     {
         var now = DateTime.UtcNow;
         db.RentalAssets.AddRange(
@@ -729,7 +723,7 @@ internal static class Program
             {
                 Id = Guid.NewGuid(), CustomerId = customerId, BillingProfileId = billingProfileId,
                 AssetKey = "USENET|B-001", ManagementCompanyCode = DomainConstants.OfficeUsenet, ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
-                AssignedUsername = assignedUsername, ManagementNumber = "B-001", ManagementId = "B-001",
+                ManagementNumber = "B-001", ManagementId = "B-001",
                 ItemName = "리코 IMC 2010", CustomerName = "ZZZ-렌탈 개별 검증 거래처", CurrentCustomerName = "ZZZ-렌탈 개별 검증 거래처",
                 InstallSiteName = "개별 테스트실", InstallLocation = "개별 테스트실",
                 BillingEligibilityStatus = "청구가능", AssetStatus = "임대진행중", MonthlyFee = 240000m,
@@ -739,7 +733,7 @@ internal static class Program
             {
                 Id = Guid.NewGuid(), CustomerId = customerId, BillingProfileId = billingProfileId,
                 AssetKey = "USENET|B-002", ManagementCompanyCode = DomainConstants.OfficeUsenet, ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
-                AssignedUsername = assignedUsername, ManagementNumber = "B-002", ManagementId = "B-002",
+                ManagementNumber = "B-002", ManagementId = "B-002",
                 ItemName = "리코 IMC 2010", CustomerName = "ZZZ-렌탈 개별 검증 거래처", CurrentCustomerName = "ZZZ-렌탈 개별 검증 거래처",
                 InstallSiteName = "개별 테스트실", InstallLocation = "개별 테스트실",
                 BillingEligibilityStatus = "청구가능", AssetStatus = "임대진행중", MonthlyFee = 240000m,
@@ -749,7 +743,7 @@ internal static class Program
             {
                 Id = Guid.NewGuid(), CustomerId = customerId, BillingProfileId = billingProfileId,
                 AssetKey = "USENET|B-003", ManagementCompanyCode = DomainConstants.OfficeUsenet, ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
-                AssignedUsername = assignedUsername, ManagementNumber = "B-003", ManagementId = "B-003",
+                ManagementNumber = "B-003", ManagementId = "B-003",
                 ItemName = "리코 IMC 2010", CustomerName = "ZZZ-렌탈 개별 검증 거래처", CurrentCustomerName = "ZZZ-렌탈 개별 검증 거래처",
                 InstallSiteName = "개별 테스트실", InstallLocation = "개별 테스트실",
                 BillingEligibilityStatus = "청구가능", AssetStatus = "임대진행중", MonthlyFee = 240000m,
@@ -759,7 +753,7 @@ internal static class Program
             {
                 Id = Guid.NewGuid(), CustomerId = customerId, BillingProfileId = billingProfileId,
                 AssetKey = "USENET|B-010", ManagementCompanyCode = DomainConstants.OfficeUsenet, ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
-                AssignedUsername = assignedUsername, ManagementNumber = "B-010", ManagementId = "B-010",
+                ManagementNumber = "B-010", ManagementId = "B-010",
                 ItemName = "SL-M2670FN", CustomerName = "ZZZ-렌탈 개별 검증 거래처", CurrentCustomerName = "ZZZ-렌탈 개별 검증 거래처",
                 InstallSiteName = "개별 테스트실", InstallLocation = "개별 테스트실",
                 BillingEligibilityStatus = "청구가능", AssetStatus = "임대진행중", MonthlyFee = 22000m,
@@ -798,7 +792,6 @@ internal static class Program
             BillingAdvanceMode = billingAdvanceMode,
             ManagementCompanyCode = DomainConstants.OfficeUsenet,
             ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
-            AssignedUsername = "billing-user",
             BillingMethod = "전자세금계산서",
             BillingStatus = PaymentFlowConstants.BillingStatusPlanned,
             SettlementStatus = PaymentFlowConstants.SettlementStatusPending,

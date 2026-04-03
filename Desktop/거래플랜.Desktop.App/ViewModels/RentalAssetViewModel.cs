@@ -248,7 +248,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             FreeSupplyItems = EditFreeSupplyItems,
             PaidSupplyItems = EditPaidSupplyItems,
             ResponsibleOfficeCode = officeCode,
-            AssignedUsername = string.Empty,
             AssetStatus = EditAssetStatus,
             BillingEligibilityStatus = EditBillingEligibilityStatus,
             BillingExclusionReason = EditBillingExclusionReason,
@@ -579,7 +578,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             FreeSupplyItems = EditFreeSupplyItems,
             PaidSupplyItems = EditPaidSupplyItems,
             ResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(EditOfficeCode, _session.OfficeCode),
-            AssignedUsername = string.Empty,
             AssetStatus = EditAssetStatus,
             Notes = EditNotes
         };

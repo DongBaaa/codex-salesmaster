@@ -442,7 +442,6 @@ public sealed class RentalBillingProfile : TrackedEntity
     public decimal OutstandingAmount { get; set; }
     public bool RequiresFollowUp { get; set; }
     public DateOnly? LastSettledDate { get; set; }
-    public string AssignedUsername { get; set; } = string.Empty;
     public string BillingTemplateJson { get; set; } = "[]";
     public string BillingRunsJson { get; set; } = "[]";
     public bool IsActive { get; set; } = true;
@@ -489,7 +488,6 @@ public sealed class RentalAsset : TrackedEntity
     public DateOnly? RentalEndDate { get; set; }
     public string FreeSupplyItems { get; set; } = string.Empty;
     public string PaidSupplyItems { get; set; } = string.Empty;
-    public string AssignedUsername { get; set; } = string.Empty;
     public string AssetStatus { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
 }
@@ -506,7 +504,6 @@ public sealed class RentalBillingLog : TrackedEntity
     public string Status { get; set; } = "예정";
     public decimal BilledAmount { get; set; }
     public string Note { get; set; } = string.Empty;
-    public string AssignedUsername { get; set; } = string.Empty;
 }
 public sealed class AuditLog
 {

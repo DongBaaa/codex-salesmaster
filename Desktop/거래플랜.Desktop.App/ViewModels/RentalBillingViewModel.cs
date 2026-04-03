@@ -366,7 +366,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             SubmissionDocuments = EditSubmissionDocuments,
             Notes = EditNotes,
             ResponsibleOfficeCode = officeCode,
-            AssignedUsername = string.Empty,
             BillingAnchorDate = ToDateOnly(EditBillingAnchorDate),
             BillingStartDate = ToDateOnly(EditBillingStartDate),
             ContractDate = ToDateOnly(EditContractDate),

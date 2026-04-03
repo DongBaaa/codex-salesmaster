@@ -709,7 +709,6 @@ public static class DtoMappings
             OutstandingAmount = entity.OutstandingAmount,
             RequiresFollowUp = entity.RequiresFollowUp,
             LastSettledDate = entity.LastSettledDate,
-            AssignedUsername = entity.AssignedUsername,
             BillingTemplateJson = entity.BillingTemplateJson,
             BillingRunsJson = entity.BillingRunsJson,
             IsActive = entity.IsActive
@@ -751,7 +750,6 @@ public static class DtoMappings
         entity.OutstandingAmount = dto.OutstandingAmount;
         entity.RequiresFollowUp = dto.RequiresFollowUp;
         entity.LastSettledDate = dto.LastSettledDate;
-        entity.AssignedUsername = dto.AssignedUsername?.Trim() ?? string.Empty;
         entity.BillingTemplateJson = dto.BillingTemplateJson ?? "[]";
         entity.BillingRunsJson = dto.BillingRunsJson ?? "[]";
         entity.IsActive = dto.IsActive;
@@ -811,7 +809,6 @@ public static class DtoMappings
             RentalEndDate = entity.RentalEndDate,
             FreeSupplyItems = entity.FreeSupplyItems,
             PaidSupplyItems = entity.PaidSupplyItems,
-            AssignedUsername = entity.AssignedUsername,
             AssetStatus = entity.AssetStatus,
             Notes = entity.Notes
         };
@@ -855,7 +852,6 @@ public static class DtoMappings
         entity.RentalEndDate = dto.RentalEndDate;
         entity.FreeSupplyItems = dto.FreeSupplyItems?.Trim() ?? string.Empty;
         entity.PaidSupplyItems = dto.PaidSupplyItems?.Trim() ?? string.Empty;
-        entity.AssignedUsername = dto.AssignedUsername?.Trim() ?? string.Empty;
         entity.AssetStatus = dto.AssetStatus?.Trim() ?? string.Empty;
         entity.Notes = dto.Notes?.Trim() ?? string.Empty;
         entity.IsDeleted = dto.IsDeleted;
@@ -885,7 +881,6 @@ public static class DtoMappings
             Status = entity.Status,
             BilledAmount = entity.BilledAmount,
             Note = entity.Note,
-            AssignedUsername = entity.AssignedUsername
         };
 
     public static void Apply(this RentalBillingLog entity, RentalBillingLogDto dto)
@@ -898,7 +893,6 @@ public static class DtoMappings
         entity.Status = dto.Status?.Trim() ?? "예정";
         entity.BilledAmount = dto.BilledAmount;
         entity.Note = dto.Note?.Trim() ?? string.Empty;
-        entity.AssignedUsername = dto.AssignedUsername?.Trim() ?? string.Empty;
         entity.IsDeleted = dto.IsDeleted;
         entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
             dto.TenantCode,

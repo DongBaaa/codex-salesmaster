@@ -534,7 +534,6 @@ public sealed partial class RentalStateService
     {
         asset.ManagementCompanyCode = row.OfficeCode;
         asset.ResponsibleOfficeCode = row.OfficeCode;
-        asset.AssignedUsername = string.Empty;
         asset.ManagementId = row.ManagementId;
         asset.ManagementNumber = row.ManagementNumber;
         asset.CurrentLocation = row.CurrentLocation;

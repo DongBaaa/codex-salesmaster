@@ -2,41 +2,101 @@ using Microsoft.EntityFrameworkCore;
 using System.Globalization;
 using System.Text.Json;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
 
-await using var db = new LocalDbContext();
-
-var items = await db.Items.IgnoreQueryFilters().Where(current => !current.IsDeleted).ToListAsync();
-var companyProfiles = await db.CompanyProfiles.IgnoreQueryFilters().Where(current => !current.IsDeleted).ToListAsync();
-var customers = await db.Customers.IgnoreQueryFilters().Where(current => !current.IsDeleted).ToListAsync();
-var rentalBillingProfiles = await db.RentalBillingProfiles.IgnoreQueryFilters().Where(current => !current.IsDeleted).ToListAsync();
-var rentalAssets = await db.RentalAssets.IgnoreQueryFilters().Where(current => !current.IsDeleted).ToListAsync();
-
-var summary = new
-{
-    GeneratedAtUtc = DateTime.UtcNow,
-    ItemExactDuplicateGroupCount = items
-        .GroupBy(BuildItemDuplicateKey, StringComparer.Ordinal)
-        .Count(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1),
-    CompanyProfileDuplicateGroupCount = companyProfiles
-        .GroupBy(BuildCompanyProfileDuplicateKey, StringComparer.Ordinal)
-        .Count(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1),
-    BusinessCustomerDuplicateGroupCount = customers
-        .GroupBy(BuildBusinessDuplicateCustomerKey, StringComparer.Ordinal)
-        .Count(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1),
-    RentalBillingProfileDuplicateGroupCount = rentalBillingProfiles
-        .GroupBy(BuildRentalBillingProfileDuplicateKey, StringComparer.Ordinal)
-        .Count(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1),
-    RentalAssetDuplicateGroupCount = rentalAssets
-        .GroupBy(BuildRentalAssetDuplicateKey, StringComparer.Ordinal)
-        .Count(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1)
-};
+var summary = await BuildSummaryAsync();
 
 var outputDirectory = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "ManualAudit", "outputs");
 Directory.CreateDirectory(outputDirectory);
 var outputPath = Path.GetFullPath(Path.Combine(outputDirectory, "master-duplicate-audit.json"));
 await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(summary, new JsonSerializerOptions { WriteIndented = true }));
 Console.WriteLine(outputPath);
+
+static async Task<object> BuildSummaryAsync()
+{
+    var generatedAtUtc = DateTime.UtcNow;
+    var dbPath = AppPaths.LocalDbFile;
+    if (!File.Exists(dbPath))
+    {
+        return new
+        {
+            GeneratedAtUtc = generatedAtUtc,
+            Status = "local_db_missing",
+            LocalDbFile = dbPath
+        };
+    }
+
+    var dbInfo = new FileInfo(dbPath);
+    if (dbInfo.Length == 0)
+    {
+        return new
+        {
+            GeneratedAtUtc = generatedAtUtc,
+            Status = "local_db_empty",
+            LocalDbFile = dbPath,
+            SizeBytes = dbInfo.Length
+        };
+    }
+
+    await using var db = new LocalDbContext();
+    if (!await db.Database.CanConnectAsync() || !await HasRequiredTablesAsync(db))
+    {
+        return new
+        {
+            GeneratedAtUtc = generatedAtUtc,
+            Status = "local_db_uninitialized",
+            LocalDbFile = dbPath,
+            SizeBytes = dbInfo.Length
+        };
+    }
+
+    var items = await db.Items.IgnoreQueryFilters().Where(current => !current.IsDeleted).ToListAsync();
+    var companyProfiles = await db.CompanyProfiles.IgnoreQueryFilters().Where(current => !current.IsDeleted).ToListAsync();
+    var customers = await db.Customers.IgnoreQueryFilters().Where(current => !current.IsDeleted).ToListAsync();
+    var rentalBillingProfiles = await db.RentalBillingProfiles.IgnoreQueryFilters().Where(current => !current.IsDeleted).ToListAsync();
+    var rentalAssets = await db.RentalAssets.IgnoreQueryFilters().Where(current => !current.IsDeleted).ToListAsync();
+
+    return new
+    {
+        GeneratedAtUtc = generatedAtUtc,
+        Status = "ok",
+        LocalDbFile = dbPath,
+        SizeBytes = dbInfo.Length,
+        ItemExactDuplicateGroupCount = items
+            .GroupBy(BuildItemDuplicateKey, StringComparer.Ordinal)
+            .Count(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1),
+        CompanyProfileDuplicateGroupCount = companyProfiles
+            .GroupBy(BuildCompanyProfileDuplicateKey, StringComparer.Ordinal)
+            .Count(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1),
+        BusinessCustomerDuplicateGroupCount = customers
+            .GroupBy(BuildBusinessDuplicateCustomerKey, StringComparer.Ordinal)
+            .Count(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1),
+        RentalBillingProfileDuplicateGroupCount = rentalBillingProfiles
+            .GroupBy(BuildRentalBillingProfileDuplicateKey, StringComparer.Ordinal)
+            .Count(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1),
+        RentalAssetDuplicateGroupCount = rentalAssets
+            .GroupBy(BuildRentalAssetDuplicateKey, StringComparer.Ordinal)
+            .Count(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1)
+    };
+}
+
+static async Task<bool> HasRequiredTablesAsync(LocalDbContext db)
+{
+    await using var connection = db.Database.GetDbConnection();
+    if (connection.State != System.Data.ConnectionState.Open)
+        await connection.OpenAsync();
+
+    await using var command = connection.CreateCommand();
+    command.CommandText = """
+                          SELECT COUNT(*)
+                          FROM sqlite_master
+                          WHERE type = 'table'
+                            AND name IN ('Items', 'CompanyProfiles', 'Customers', 'RentalBillingProfiles', 'RentalAssets')
+                          """;
+    var scalar = await command.ExecuteScalarAsync();
+    return Convert.ToInt32(scalar, CultureInfo.InvariantCulture) == 5;
+}
 
 static string BuildCompanyProfileDuplicateKey(LocalCompanyProfile current)
 {

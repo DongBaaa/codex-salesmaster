@@ -558,7 +558,6 @@ public sealed class LocalRentalBillingProfile : LocalSyncEntity
     public bool RequiresFollowUp { get; set; }
     public DateOnly? LastSettledDate { get; set; }
     public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUsenet;
-    public string AssignedUsername { get; set; } = string.Empty;
     public string BillingTemplateJson { get; set; } = "[]";
     public string BillingRunsJson { get; set; } = "[]";
     public bool IsActive { get; set; } = true;
@@ -604,7 +603,6 @@ public sealed class LocalRentalAsset : LocalSyncEntity
     public string FreeSupplyItems { get; set; } = string.Empty;
     public string PaidSupplyItems { get; set; } = string.Empty;
     public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUsenet;
-    public string AssignedUsername { get; set; } = string.Empty;
     public string AssetStatus { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
 }
@@ -620,6 +618,5 @@ public sealed class LocalRentalBillingLog : LocalSyncEntity
     public decimal BilledAmount { get; set; }
     public string Note { get; set; } = string.Empty;
     public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUsenet;
-    public string AssignedUsername { get; set; } = string.Empty;
 }
 

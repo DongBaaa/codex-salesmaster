@@ -80,7 +80,7 @@ public static class RentalDuplicateNormalizer
         return string.Join('|',
             NormalizeTextKey(customerName),
             NormalizeTextKey(string.IsNullOrWhiteSpace(currentCustomerName) ? customerName : currentCustomerName),
-            NormalizeTextKey(string.IsNullOrWhiteSpace(installSiteName) ? installLocation : installSiteName),
+            NormalizeTextKey(string.IsNullOrWhiteSpace(installLocation) ? installSiteName : installLocation),
             NormalizeTextKey(itemCategoryName),
             NormalizeTextKey(itemName),
             NormalizeTextKey(manufacturer),

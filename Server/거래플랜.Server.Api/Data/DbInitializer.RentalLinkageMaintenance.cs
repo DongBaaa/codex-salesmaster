@@ -69,12 +69,6 @@ public static partial class DbInitializer
                 changed = true;
             }
 
-            if (!string.IsNullOrWhiteSpace(asset.AssignedUsername))
-            {
-                asset.AssignedUsername = string.Empty;
-                changed = true;
-            }
-
             if (asset.BillingProfileId.HasValue &&
                 (!activeProfilesById.ContainsKey(asset.BillingProfileId.Value) || asset.BillingProfileId.Value == Guid.Empty))
             {
@@ -212,12 +206,6 @@ public static partial class DbInitializer
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(profile.AssignedUsername))
-            {
-                profile.AssignedUsername = string.Empty;
-                changed = true;
-            }
-
             var normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.InstallSiteName);
             if (string.IsNullOrWhiteSpace(normalizedInstallSiteName) &&
                 activeAssetsByProfileId.TryGetValue(profile.Id, out var linkedAssets))
@@ -278,12 +266,6 @@ public static partial class DbInitializer
             var changed = false;
             if (!activeProfilesByIdAfterRepair.TryGetValue(log.BillingProfileId, out var profile))
             {
-                if (!string.IsNullOrWhiteSpace(log.AssignedUsername))
-                {
-                    log.AssignedUsername = string.Empty;
-                    changed = true;
-                }
-
                 if (changed)
                     TouchTrackedEntity(log, now);
 
@@ -293,12 +275,6 @@ public static partial class DbInitializer
             if (!string.Equals(log.OfficeCode, profile.OfficeCode, StringComparison.OrdinalIgnoreCase))
             {
                 log.OfficeCode = profile.OfficeCode;
-                changed = true;
-            }
-
-            if (!string.IsNullOrWhiteSpace(log.AssignedUsername))
-            {
-                log.AssignedUsername = string.Empty;
                 changed = true;
             }
 

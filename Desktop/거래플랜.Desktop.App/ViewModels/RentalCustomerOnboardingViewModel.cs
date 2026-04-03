@@ -419,7 +419,6 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 BillingAdvanceMode = BillingAdvanceMode,
                 ManagementCompanyCode = OfficeCode,
                 ResponsibleOfficeCode = OfficeCode,
-                AssignedUsername = string.Empty,
                 BillingMethod = BillingMethod,
                 BillingStatus = "예정",
                 SettlementStatus = PaymentFlowConstants.SettlementStatusUnpaid,

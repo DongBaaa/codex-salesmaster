@@ -63,46 +63,54 @@ public sealed partial class RentalStateService
 
     public async Task<int> CleanupLegacyAssignedUsernamesAsync(CancellationToken ct = default)
     {
-        var changed = 0;
+        var hasProfileColumn = await HasLegacyAssignedUsernameColumnAsync("RentalBillingProfiles", ct);
+        var hasAssetColumn = await HasLegacyAssignedUsernameColumnAsync("RentalAssets", ct);
+        var hasLogColumn = await HasLegacyAssignedUsernameColumnAsync("RentalBillingLogs", ct);
+        if (!hasProfileColumn && !hasAssetColumn && !hasLogColumn)
+            return 0;
+
         var now = DateTime.UtcNow;
-
-        foreach (var profile in await _db.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync(ct))
+        var changed = 0;
+        if (hasProfileColumn)
         {
-            if (string.IsNullOrWhiteSpace(profile.AssignedUsername))
-                continue;
-
-            profile.AssignedUsername = string.Empty;
-            profile.UpdatedAtUtc = now;
-            profile.IsDirty = true;
-            changed++;
+            changed += await _db.Database.ExecuteSqlInterpolatedAsync($@"UPDATE ""RentalBillingProfiles""
+SET ""AssignedUsername"" = '', ""UpdatedAtUtc"" = {now}, ""IsDirty"" = 1
+WHERE ""AssignedUsername"" <> '';", ct);
         }
 
-        foreach (var asset in await _db.RentalAssets.IgnoreQueryFilters().ToListAsync(ct))
+        if (hasAssetColumn)
         {
-            if (string.IsNullOrWhiteSpace(asset.AssignedUsername))
-                continue;
-
-            asset.AssignedUsername = string.Empty;
-            asset.UpdatedAtUtc = now;
-            asset.IsDirty = true;
-            changed++;
+            changed += await _db.Database.ExecuteSqlInterpolatedAsync($@"UPDATE ""RentalAssets""
+SET ""AssignedUsername"" = '', ""UpdatedAtUtc"" = {now}, ""IsDirty"" = 1
+WHERE ""AssignedUsername"" <> '';", ct);
         }
 
-        foreach (var log in await _db.RentalBillingLogs.IgnoreQueryFilters().ToListAsync(ct))
+        if (hasLogColumn)
         {
-            if (string.IsNullOrWhiteSpace(log.AssignedUsername))
-                continue;
-
-            log.AssignedUsername = string.Empty;
-            log.UpdatedAtUtc = now;
-            log.IsDirty = true;
-            changed++;
+            changed += await _db.Database.ExecuteSqlInterpolatedAsync($@"UPDATE ""RentalBillingLogs""
+SET ""AssignedUsername"" = '', ""UpdatedAtUtc"" = {now}, ""IsDirty"" = 1
+WHERE ""AssignedUsername"" <> '';", ct);
         }
-
-        if (changed > 0)
-            await _db.SaveChangesAsync(ct);
 
         return changed;
+    }
+
+    private async Task<bool> HasLegacyAssignedUsernameColumnAsync(string tableName, CancellationToken ct)
+    {
+        await using var connection = _db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open)
+            await connection.OpenAsync(ct);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info(\"{tableName}\")";
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            if (string.Equals(reader[1]?.ToString(), "AssignedUsername", StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
     }
 
     public async Task<string> GetAlertDaysTextAsync(CancellationToken ct = default)
@@ -771,7 +779,6 @@ public sealed partial class RentalStateService
         profile.RequiresFollowUp = profile.RequiresFollowUp || profile.OutstandingAmount > 0m;
         profile.ResponsibleOfficeCode = officeCode;
         profile.ManagementCompanyCode = officeCode;
-        profile.AssignedUsername = string.Empty;
         if (!CanAccessRental(profile.ResponsibleOfficeCode, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 저장할 수 없습니다.");
 
@@ -1081,7 +1088,6 @@ public sealed partial class RentalStateService
                 BilledAmount = billedAmount,
                 Note = normalizedNote,
                 ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
-                AssignedUsername = string.Empty,
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now,
                 IsDirty = true
@@ -1096,7 +1102,6 @@ public sealed partial class RentalStateService
             log.BilledAmount = billedAmount;
             log.Note = normalizedNote;
             log.ResponsibleOfficeCode = profile.ResponsibleOfficeCode;
-            log.AssignedUsername = string.Empty;
             log.UpdatedAtUtc = now;
             log.IsDirty = true;
             log.IsDeleted = false;
@@ -1205,7 +1210,6 @@ public sealed partial class RentalStateService
 
             asset.ManagementCompanyCode = officeCode;
             asset.ResponsibleOfficeCode = officeCode;
-            asset.AssignedUsername = string.Empty;
             if (!CanEditAssetScope(officeCode, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 저장할 수 없습니다.");
             asset.ManagementNumber = existing is null
@@ -1467,7 +1471,6 @@ public sealed partial class RentalStateService
                 BilledAmount = billedAmount,
                 Note = (note ?? string.Empty).Trim(),
                 ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
-                AssignedUsername = string.Empty,
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now,
                 IsDirty = true
@@ -1482,7 +1485,6 @@ public sealed partial class RentalStateService
             log.BilledAmount = billedAmount;
             log.Note = (note ?? string.Empty).Trim();
             log.ResponsibleOfficeCode = profile.ResponsibleOfficeCode;
-            log.AssignedUsername = string.Empty;
             log.UpdatedAtUtc = now;
             log.IsDirty = true;
             log.IsDeleted = false;
@@ -1637,7 +1639,6 @@ public sealed partial class RentalStateService
                         profile.RequiresFollowUp = false;
                         profile.LastSettledDate = null;
                     }
-                    profile.AssignedUsername = string.Empty;
                     profile.CustomerId = existing?.CustomerId ?? customerId;
                     profile.IsActive = true;
                     profile.IsDeleted = false;
@@ -1748,7 +1749,6 @@ public sealed partial class RentalStateService
                     BillingProfileId = existing?.BillingProfileId,
                     ManagementId = existing?.ManagementId ?? string.Empty,
                     ManagementNumber = existing?.ManagementNumber ?? string.Empty,
-                    AssignedUsername = string.Empty,
                     CreatedAtUtc = existing?.CreatedAtUtc ?? DateTime.UtcNow,
                     Notes = BuildImportedAssetNotes(existing?.Notes, sourceManagementId, sourceManagementNumber)
                 };

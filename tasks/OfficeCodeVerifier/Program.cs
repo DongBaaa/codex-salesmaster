@@ -213,8 +213,7 @@ static async Task VerifyLocalAsync(string runtimeDir, LocalVerificationResult re
             ItemName = item.NameOriginal,
             ResponsibleOfficeCode = AliasUsenet,
             ManagementCompanyCode = AliasItworld,
-            BillingStatus = AliasBillingStatus,
-            AssignedUsername = "admin"
+            BillingStatus = AliasBillingStatus
         };
         db.RentalBillingProfiles.Add(billingProfile);
 
@@ -229,7 +228,6 @@ static async Task VerifyLocalAsync(string runtimeDir, LocalVerificationResult re
             ItemName = item.NameOriginal,
             ResponsibleOfficeCode = AliasYeonsuOffice,
             ManagementCompanyCode = AliasUsenet,
-            AssignedUsername = "admin",
             AssetStatus = AliasRentalStatus
         });
 
@@ -238,8 +236,7 @@ static async Task VerifyLocalAsync(string runtimeDir, LocalVerificationResult re
             Id = Guid.NewGuid(),
             BillingProfileId = billingProfile.Id,
             BillingYearMonth = "202603",
-            ResponsibleOfficeCode = AliasItworld,
-            AssignedUsername = "admin"
+            ResponsibleOfficeCode = AliasItworld
         });
 
         db.RentalManagementCompanies.AddRange(

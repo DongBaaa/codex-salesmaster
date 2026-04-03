@@ -510,7 +510,6 @@ public sealed class RentalBillingProfileDto : SyncEntityDto
     public decimal OutstandingAmount { get; set; }
     public bool RequiresFollowUp { get; set; }
     public DateOnly? LastSettledDate { get; set; }
-    public string AssignedUsername { get; set; } = string.Empty;
     public string BillingTemplateJson { get; set; } = "[]";
     public string BillingRunsJson { get; set; } = "[]";
     public bool IsActive { get; set; } = true;
@@ -557,7 +556,6 @@ public sealed class RentalAssetDto : SyncEntityDto
     public DateOnly? RentalEndDate { get; set; }
     public string FreeSupplyItems { get; set; } = string.Empty;
     public string PaidSupplyItems { get; set; } = string.Empty;
-    public string AssignedUsername { get; set; } = string.Empty;
     public string AssetStatus { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
 }
@@ -574,7 +572,6 @@ public sealed class RentalBillingLogDto : SyncEntityDto
     public string Status { get; set; } = "예정";
     public decimal BilledAmount { get; set; }
     public string Note { get; set; } = string.Empty;
-    public string AssignedUsername { get; set; } = string.Empty;
 }
 
 public sealed class ItemWarehouseStockDto

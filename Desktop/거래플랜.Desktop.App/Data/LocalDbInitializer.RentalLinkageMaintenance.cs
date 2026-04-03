@@ -66,12 +66,6 @@ public static partial class LocalDbInitializer
                 changed = true;
             }
 
-            if (!string.IsNullOrWhiteSpace(asset.AssignedUsername))
-            {
-                asset.AssignedUsername = string.Empty;
-                changed = true;
-            }
-
             if (asset.BillingProfileId.HasValue &&
                 (!activeProfilesById.ContainsKey(asset.BillingProfileId.Value) || asset.BillingProfileId.Value == Guid.Empty))
             {
@@ -209,12 +203,6 @@ public static partial class LocalDbInitializer
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(profile.AssignedUsername))
-            {
-                profile.AssignedUsername = string.Empty;
-                changed = true;
-            }
-
             var normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.InstallSiteName);
             if (string.IsNullOrWhiteSpace(normalizedInstallSiteName) &&
                 activeAssetsByProfileId.TryGetValue(profile.Id, out var linkedAssets))
@@ -275,12 +263,6 @@ public static partial class LocalDbInitializer
             var changed = false;
             if (!activeProfilesByIdAfterRepair.TryGetValue(log.BillingProfileId, out var profile))
             {
-                if (!string.IsNullOrWhiteSpace(log.AssignedUsername))
-                {
-                    log.AssignedUsername = string.Empty;
-                    changed = true;
-                }
-
                 if (changed)
                     MarkStartupMaintenanceChange(log, now);
 
@@ -290,12 +272,6 @@ public static partial class LocalDbInitializer
             if (!string.Equals(log.ResponsibleOfficeCode, profile.ResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
             {
                 log.ResponsibleOfficeCode = profile.ResponsibleOfficeCode;
-                changed = true;
-            }
-
-            if (!string.IsNullOrWhiteSpace(log.AssignedUsername))
-            {
-                log.AssignedUsername = string.Empty;
                 changed = true;
             }
 
