@@ -65,6 +65,8 @@ public sealed class AppDbContext : DbContext
             .HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<UserAccount>().HasIndex(x => x.Username).IsUnique();
         modelBuilder.Entity<UserAccount>().HasIndex(x => new { x.TenantCode, x.OfficeCode });
+        modelBuilder.Entity<CompanyProfile>().HasIndex(x => new { x.OfficeCode, x.ProfileName });
+        modelBuilder.Entity<CompanyProfile>().HasIndex(x => new { x.OfficeCode, x.IsDefaultForOffice });
         modelBuilder.Entity<TenantDefinition>().HasIndex(x => x.TenantCode).IsUnique();
         modelBuilder.Entity<TenantOfficeDefinition>().HasIndex(x => x.OfficeCode).IsUnique();
         modelBuilder.Entity<TenantOfficeDefinition>().HasIndex(x => new { x.TenantCode, x.OfficeCode }).IsUnique();

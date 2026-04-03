@@ -41,6 +41,8 @@ public sealed class UserPermission
 
 public sealed class CompanyProfile : TrackedEntity
 {
+    public string ProfileName { get; set; } = string.Empty;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public string TradeName { get; set; } = string.Empty;
     public string Representative { get; set; } = string.Empty;
     public string BusinessNumber { get; set; } = string.Empty;
@@ -51,6 +53,8 @@ public sealed class CompanyProfile : TrackedEntity
     public string Email { get; set; } = string.Empty;
     public string BankAccountText { get; set; } = string.Empty;
     public byte[]? StampImage { get; set; }
+    public bool IsDefaultForOffice { get; set; }
+    public bool IsActive { get; set; } = true;
 }
 
 public sealed class TenantDefinition : TrackedEntity

@@ -698,9 +698,10 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
         {
             var current = await db.CompanyProfiles
                 .IgnoreQueryFilters()
-                .FirstOrDefaultAsync(profile =>
-                    profile.OfficeCode == definition.OfficeCode &&
-                    profile.IsDefaultForOffice);
+                .OrderByDescending(profile => profile.IsDefaultForOffice)
+                .ThenByDescending(profile => !profile.IsDeleted && profile.IsActive)
+                .ThenByDescending(profile => profile.UpdatedAtUtc)
+                .FirstOrDefaultAsync(profile => profile.OfficeCode == definition.OfficeCode);
 
             if (current is null)
             {

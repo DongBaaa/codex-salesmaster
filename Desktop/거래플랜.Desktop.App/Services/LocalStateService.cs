@@ -18,6 +18,12 @@ public sealed partial class LocalStateService
     private const string YeonsuOfficeIdSettingKey = "SystemOffice.YeonsuOfficeId";
     private const string CompanyProfileAssignmentPrefix = "CompanyProfile.Assigned.";
     private const long MaxCustomerContractFileSizeBytes = 15 * 1024 * 1024;
+    private static readonly CompanyProfileDefaultDefinition[] RequiredCompanyProfileDefaults =
+    [
+        new("USENET 기본", OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Usenet, "[REDACTED_NAME]", "[REDACTED_BUSINESS_NUMBER]", "[REDACTED_ADDRESS]", "[REDACTED_PHONE]"),
+        new("ITWORLD 기본", OfficeCodeCatalog.Itworld, OfficeCodeCatalog.Itworld, "[REDACTED_NAME]", "[REDACTED_BUSINESS_NUMBER]", "[REDACTED_ADDRESS]", "[REDACTED_PHONE]"),
+        new("YEONSU 기본", OfficeCodeCatalog.Yeonsu, OfficeCodeCatalog.Yeonsu, string.Empty, string.Empty, string.Empty, string.Empty)
+    ];
     private readonly LocalDbContext _db;
     private readonly OfficeAccessService _officeAccess;
     private readonly SyncRequestDispatcher _syncRequestDispatcher;
@@ -31,6 +37,15 @@ public sealed partial class LocalStateService
     {
         WriteIndented = false
     };
+
+    private sealed record CompanyProfileDefaultDefinition(
+        string ProfileName,
+        string OfficeCode,
+        string TradeName,
+        string Representative,
+        string BusinessNumber,
+        string Address,
+        string ContactNumber);
 
     public enum ServerWriteAwaitResult
     {
@@ -2376,14 +2391,17 @@ public sealed partial class LocalStateService
     public Task<LocalCompanyProfile?> GetCompanyProfileAsync(SessionState session, CancellationToken ct = default)
         => GetCompanyProfileAsync(session.User?.Username, session.BusinessOfficeCode, ct);
 
-    public Task<List<LocalCompanyProfile>> GetCompanyProfilesAsync(CancellationToken ct = default)
-        => _db.CompanyProfiles
+    public async Task<List<LocalCompanyProfile>> GetCompanyProfilesAsync(CancellationToken ct = default)
+    {
+        await EnsureCompanyProfileDefaultsAsync(ct);
+        return await _db.CompanyProfiles
             .AsNoTracking()
-            .Where(profile => profile.IsActive)
+            .Where(profile => !profile.IsDeleted && profile.IsActive)
             .OrderBy(profile => profile.OfficeCode)
             .ThenByDescending(profile => profile.IsDefaultForOffice)
             .ThenBy(profile => profile.ProfileName)
             .ToListAsync(ct);
+    }
 
     public async Task<LocalCompanyProfile?> GetCompanyProfileAsync(
         string? username,
@@ -2419,6 +2437,7 @@ public sealed partial class LocalStateService
 
     public async Task SaveCompanyProfileAsync(LocalCompanyProfile profile, CancellationToken ct = default)
     {
+        await EnsureCompanyProfileDefaultsAsync(ct);
         profile.ProfileName = string.IsNullOrWhiteSpace(profile.ProfileName)
             ? (string.IsNullOrWhiteSpace(profile.TradeName) ? "회사설정" : $"{profile.TradeName.Trim()} 설정")
             : profile.ProfileName.Trim();
@@ -2466,6 +2485,7 @@ public sealed partial class LocalStateService
 
     public async Task<LocalMutationResult> DeleteCompanyProfileAsync(Guid profileId, CancellationToken ct = default)
     {
+        await EnsureCompanyProfileDefaultsAsync(ct);
         var profile = await _db.CompanyProfiles
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == profileId, ct);
@@ -2480,16 +2500,249 @@ public sealed partial class LocalStateService
             .Select(setting => setting.Key.Substring(CompanyProfileAssignmentPrefix.Length))
             .ToList();
         if (assignedUsers.Count > 0)
-            return LocalMutationResult.Denied($"해당 회사설정을 사용하는 사용자({string.Join(", ", assignedUsers)})를 먼저 변경하세요.");
+            return LocalMutationResult.Denied($"해당 회사설정을 사용하는 사용자가 있습니다 ({string.Join(", ", assignedUsers)}). 먼저 연결을 변경해주세요.");
+
+        var activeProfiles = await _db.CompanyProfiles
+            .IgnoreQueryFilters()
+            .Where(current => !current.IsDeleted && current.IsActive)
+            .OrderBy(current => current.OfficeCode)
+            .ThenByDescending(current => current.IsDefaultForOffice)
+            .ToListAsync(ct);
+        if (activeProfiles.Count <= 1)
+            return LocalMutationResult.Denied("마지막 활성 회사설정은 삭제할 수 없습니다.");
+
+        var profileOfficeCode = NormalizeOfficeCode(profile.OfficeCode, DomainConstants.OfficeUsenet);
+        var officeProfiles = activeProfiles
+            .Where(current => string.Equals(
+                NormalizeOfficeCode(current.OfficeCode, profileOfficeCode),
+                profileOfficeCode,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (officeProfiles.Count <= 1)
+            return LocalMutationResult.Denied("해당 담당지점의 마지막 회사설정은 삭제할 수 없습니다.");
+
+        if (profile.IsDefaultForOffice)
+        {
+            var replacement = officeProfiles
+                .Where(current => current.Id != profile.Id)
+                .OrderByDescending(current => current.UpdatedAtUtc)
+                .FirstOrDefault();
+            if (replacement is not null)
+            {
+                replacement.IsDefaultForOffice = true;
+                replacement.IsDirty = true;
+                replacement.UpdatedAtUtc = DateTime.UtcNow;
+            }
+        }
 
         profile.IsDeleted = true;
         profile.IsActive = false;
+        profile.IsDefaultForOffice = false;
         profile.IsDirty = true;
         profile.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return LocalMutationResult.Ok(profileId, "회사설정을 삭제했습니다.");
     }
 
+    private async Task EnsureCompanyProfileDefaultsAsync(CancellationToken ct)
+    {
+        var profiles = await _db.CompanyProfiles
+            .IgnoreQueryFilters()
+            .ToListAsync(ct);
+        var activeProfiles = profiles
+            .Where(profile => !profile.IsDeleted && profile.IsActive)
+            .ToList();
+
+        var validProfileIds = activeProfiles
+            .Select(profile => profile.Id)
+            .ToHashSet();
+        var assignmentSettings = await _db.Settings
+            .IgnoreQueryFilters()
+            .Where(setting => setting.Key.StartsWith(CompanyProfileAssignmentPrefix))
+            .ToListAsync(ct);
+        var hasInvalidAssignment = assignmentSettings.Any(setting =>
+            !string.IsNullOrWhiteSpace(setting.Value) &&
+            (!Guid.TryParse(setting.Value, out var profileId) || !validProfileIds.Contains(profileId)));
+
+        var missingDefaults = RequiredCompanyProfileDefaults.Any(definition =>
+            !activeProfiles.Any(profile =>
+                string.Equals(
+                    NormalizeOfficeCode(profile.OfficeCode, definition.OfficeCode),
+                    definition.OfficeCode,
+                    StringComparison.OrdinalIgnoreCase) &&
+                profile.IsDefaultForOffice));
+
+        if (!hasInvalidAssignment && !missingDefaults && activeProfiles.Count > 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        var changed = false;
+        foreach (var definition in RequiredCompanyProfileDefaults)
+        {
+            var current = profiles
+                .Where(profile => string.Equals(
+                    NormalizeOfficeCode(profile.OfficeCode, definition.OfficeCode),
+                    definition.OfficeCode,
+                    StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(profile => profile.IsDefaultForOffice)
+                .ThenByDescending(profile => !profile.IsDeleted && profile.IsActive)
+                .ThenByDescending(profile => profile.UpdatedAtUtc)
+                .FirstOrDefault();
+
+            if (current is null)
+            {
+                var created = new LocalCompanyProfile
+                {
+                    ProfileName = definition.ProfileName,
+                    OfficeCode = definition.OfficeCode,
+                    TradeName = definition.TradeName,
+                    Representative = definition.Representative,
+                    BusinessNumber = definition.BusinessNumber,
+                    BusinessType = string.Empty,
+                    BusinessItem = string.Empty,
+                    Address = definition.Address,
+                    ContactNumber = definition.ContactNumber,
+                    Email = string.Empty,
+                    BankAccountText = string.Empty,
+                    IsDefaultForOffice = true,
+                    IsActive = true,
+                    IsDeleted = false,
+                    IsDirty = false,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                };
+                _db.CompanyProfiles.Add(created);
+                profiles.Add(created);
+                changed = true;
+                continue;
+            }
+
+            changed |= ApplyCompanyProfileDefault(current, definition, now);
+        }
+
+        foreach (var group in profiles
+                     .Where(profile => !profile.IsDeleted && profile.IsActive)
+                     .GroupBy(profile => NormalizeOfficeCode(profile.OfficeCode, DomainConstants.OfficeUsenet), StringComparer.OrdinalIgnoreCase))
+        {
+            var canonical = group
+                .OrderByDescending(profile => profile.IsDefaultForOffice)
+                .ThenByDescending(profile => profile.UpdatedAtUtc)
+                .First();
+
+            foreach (var profile in group)
+            {
+                var shouldBeDefault = profile.Id == canonical.Id;
+                if (profile.IsDefaultForOffice != shouldBeDefault)
+                {
+                    profile.IsDefaultForOffice = shouldBeDefault;
+                    profile.IsDirty = false;
+                    profile.UpdatedAtUtc = now;
+                    changed = true;
+                }
+            }
+        }
+
+        foreach (var setting in assignmentSettings)
+        {
+            if (string.IsNullOrWhiteSpace(setting.Value))
+                continue;
+
+            if (!Guid.TryParse(setting.Value, out var profileId) ||
+                !profiles.Any(profile => profile.Id == profileId && !profile.IsDeleted && profile.IsActive))
+            {
+                setting.Value = string.Empty;
+                changed = true;
+            }
+        }
+
+        if (!changed)
+            return;
+
+        using var _ = SuppressSyncDispatch();
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private static bool ApplyCompanyProfileDefault(
+        LocalCompanyProfile profile,
+        CompanyProfileDefaultDefinition definition,
+        DateTime now)
+    {
+        var changed = false;
+        var normalizedOfficeCode = NormalizeOfficeCode(profile.OfficeCode, definition.OfficeCode);
+        if (!string.Equals(profile.OfficeCode, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
+        {
+            profile.OfficeCode = normalizedOfficeCode;
+            changed = true;
+        }
+
+        var normalizedProfileName = string.IsNullOrWhiteSpace(profile.ProfileName)
+            ? definition.ProfileName
+            : profile.ProfileName.Trim();
+        if (!string.Equals(profile.ProfileName, normalizedProfileName, StringComparison.CurrentCulture))
+        {
+            profile.ProfileName = normalizedProfileName;
+            changed = true;
+        }
+
+        var normalizedTradeName = string.IsNullOrWhiteSpace(profile.TradeName)
+            ? definition.TradeName
+            : profile.TradeName.Trim();
+        if (!string.Equals(profile.TradeName, normalizedTradeName, StringComparison.CurrentCulture))
+        {
+            profile.TradeName = normalizedTradeName;
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.Representative) && !string.IsNullOrWhiteSpace(definition.Representative))
+        {
+            profile.Representative = definition.Representative;
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.BusinessNumber) && !string.IsNullOrWhiteSpace(definition.BusinessNumber))
+        {
+            profile.BusinessNumber = definition.BusinessNumber;
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.Address) && !string.IsNullOrWhiteSpace(definition.Address))
+        {
+            profile.Address = definition.Address;
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.ContactNumber) && !string.IsNullOrWhiteSpace(definition.ContactNumber))
+        {
+            profile.ContactNumber = definition.ContactNumber;
+            changed = true;
+        }
+
+        if (!profile.IsDefaultForOffice)
+        {
+            profile.IsDefaultForOffice = true;
+            changed = true;
+        }
+
+        if (!profile.IsActive)
+        {
+            profile.IsActive = true;
+            changed = true;
+        }
+
+        if (profile.IsDeleted)
+        {
+            profile.IsDeleted = false;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            profile.IsDirty = false;
+            profile.UpdatedAtUtc = now;
+        }
+
+        return changed;
+    }
     public async Task<Guid?> GetAssignedCompanyProfileIdAsync(string? username, CancellationToken ct = default)
     {
         var normalizedUsername = NormalizeUsername(username);

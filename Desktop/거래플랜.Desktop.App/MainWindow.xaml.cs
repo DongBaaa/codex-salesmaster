@@ -741,7 +741,16 @@ public partial class MainWindow : Window
             win.ShowDialog();
 
             if (!vm.BusinessDatabaseChanged)
-                await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+            {
+                try
+                {
+                    await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+                }
+                catch (Exception refreshEx)
+                {
+                    AppLogger.Error("SETTINGS", "환경설정 닫기 후 전표 목록 새로고침 실패", refreshEx);
+                }
+            }
         }
         catch (Exception ex)
         {

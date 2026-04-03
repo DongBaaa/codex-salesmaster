@@ -230,6 +230,7 @@ public static partial class DbInitializer
             return string.Empty;
 
         return string.Join('|',
+            BuildStrictTextKey(current.OfficeCode),
             BuildStrictTextKey(current.BusinessNumber),
             BuildStrictTextKey(current.TradeName),
             BuildStrictTextKey(current.Representative),
@@ -282,6 +283,8 @@ public static partial class DbInitializer
     private static int CountFilledCompanyProfileValues(CompanyProfile current)
     {
         return CountFilledStrings(
+                   current.ProfileName,
+                   current.OfficeCode,
                    current.TradeName,
                    current.Representative,
                    current.BusinessNumber,
@@ -291,7 +294,9 @@ public static partial class DbInitializer
                    current.ContactNumber,
                    current.Email,
                    current.BankAccountText)
-               + (current.StampImage?.Length > 0 ? 1 : 0);
+               + (current.StampImage?.Length > 0 ? 1 : 0)
+               + (current.IsDefaultForOffice ? 1 : 0)
+               + (current.IsActive ? 1 : 0);
     }
 
     private static int CountCustomerReferenceScore(
@@ -343,6 +348,8 @@ public static partial class DbInitializer
     private static bool MergeCompanyProfileValues(CompanyProfile canonical, CompanyProfile duplicate)
     {
         var changed = false;
+        changed |= TryAssignString(() => canonical.ProfileName, value => canonical.ProfileName = value, duplicate.ProfileName, preferLonger: true);
+        changed |= TryAssignString(() => canonical.OfficeCode, value => canonical.OfficeCode = value, duplicate.OfficeCode);
         changed |= TryAssignString(() => canonical.TradeName, value => canonical.TradeName = value, duplicate.TradeName);
         changed |= TryAssignString(() => canonical.Representative, value => canonical.Representative = value, duplicate.Representative);
         changed |= TryAssignString(() => canonical.BusinessNumber, value => canonical.BusinessNumber = value, duplicate.BusinessNumber);
@@ -357,6 +364,18 @@ public static partial class DbInitializer
             duplicate.StampImage is { Length: > 0 })
         {
             canonical.StampImage = duplicate.StampImage;
+            changed = true;
+        }
+
+        if (!canonical.IsDefaultForOffice && duplicate.IsDefaultForOffice)
+        {
+            canonical.IsDefaultForOffice = true;
+            changed = true;
+        }
+
+        if (!canonical.IsActive && duplicate.IsActive)
+        {
+            canonical.IsActive = true;
             changed = true;
         }
 

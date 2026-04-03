@@ -12,6 +12,8 @@ public static class LocalMappings
     public static LocalCompanyProfile ToLocal(CompanyProfileDto dto) => new()
     {
         Id = dto.Id,
+        ProfileName = dto.ProfileName,
+        OfficeCode = dto.OfficeCode,
         TradeName = dto.TradeName,
         Representative = dto.Representative,
         BusinessNumber = dto.BusinessNumber,
@@ -22,6 +24,8 @@ public static class LocalMappings
         Email = dto.Email,
         BankAccountText = dto.BankAccountText,
         StampImage = dto.StampImage,
+        IsDefaultForOffice = dto.IsDefaultForOffice,
+        IsActive = dto.IsActive,
         CreatedAtUtc = dto.CreatedAtUtc,
         UpdatedAtUtc = dto.UpdatedAtUtc,
         Revision = dto.Revision,
@@ -32,6 +36,8 @@ public static class LocalMappings
     public static CompanyProfileDto ToDto(LocalCompanyProfile e) => new()
     {
         Id = e.Id,
+        ProfileName = e.ProfileName,
+        OfficeCode = e.OfficeCode,
         TradeName = e.TradeName,
         Representative = e.Representative,
         BusinessNumber = e.BusinessNumber,
@@ -42,6 +48,8 @@ public static class LocalMappings
         Email = e.Email,
         BankAccountText = e.BankAccountText,
         StampImage = e.StampImage,
+        IsDefaultForOffice = e.IsDefaultForOffice,
+        IsActive = e.IsActive,
         CreatedAtUtc = e.CreatedAtUtc,
         UpdatedAtUtc = e.UpdatedAtUtc,
         Revision = e.Revision,

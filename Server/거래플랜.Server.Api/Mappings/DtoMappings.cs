@@ -27,11 +27,15 @@ public static class DtoMappings
         {
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
+            ProfileName = entity.ProfileName,
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(entity.OfficeCode, OfficeCodeCatalog.Usenet),
             TradeName = entity.TradeName, Representative = entity.Representative,
             BusinessNumber = entity.BusinessNumber, BusinessType = entity.BusinessType,
             BusinessItem = entity.BusinessItem, Address = entity.Address,
             ContactNumber = entity.ContactNumber, Email = entity.Email,
-            BankAccountText = entity.BankAccountText, StampImage = entity.StampImage
+            BankAccountText = entity.BankAccountText, StampImage = entity.StampImage,
+            IsDefaultForOffice = entity.IsDefaultForOffice,
+            IsActive = entity.IsActive
         };
 
     public static TenantDefinitionDto ToDto(this TenantDefinition entity) =>
@@ -91,11 +95,15 @@ public static class DtoMappings
 
     public static void Apply(this CompanyProfile entity, CompanyProfileDto dto)
     {
+        entity.ProfileName = dto.ProfileName?.Trim() ?? string.Empty;
+        entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(dto.OfficeCode, OfficeCodeCatalog.Usenet);
         entity.TradeName = dto.TradeName; entity.Representative = dto.Representative;
         entity.BusinessNumber = dto.BusinessNumber; entity.BusinessType = dto.BusinessType;
         entity.BusinessItem = dto.BusinessItem; entity.Address = dto.Address;
         entity.ContactNumber = dto.ContactNumber; entity.Email = dto.Email;
         entity.BankAccountText = dto.BankAccountText; entity.StampImage = dto.StampImage;
+        entity.IsDefaultForOffice = dto.IsDefaultForOffice;
+        entity.IsActive = dto.IsActive;
         entity.IsDeleted = dto.IsDeleted;
     }
 

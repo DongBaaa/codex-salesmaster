@@ -36,6 +36,12 @@ public static partial class DbInitializer
         (Guid.Parse("4ab67a47-1b4e-4f17-8b3c-761023c2c3e3"), "매입", false, true, 10),
         (Guid.Parse("9c305d74-3dd4-4fff-9679-dbd4dd6fdb49"), "매출/매입", true, true, 20)
     ];
+    private static readonly (string ProfileName, string OfficeCode, string TradeName, string Representative, string BusinessNumber, string Address, string ContactNumber)[] DefaultCompanyProfiles =
+    [
+        ("USENET 기본", OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Usenet, "[REDACTED_NAME]", "[REDACTED_BUSINESS_NUMBER]", "[REDACTED_ADDRESS]", "[REDACTED_PHONE]"),
+        ("ITWORLD 기본", OfficeCodeCatalog.Itworld, OfficeCodeCatalog.Itworld, "[REDACTED_NAME]", "[REDACTED_BUSINESS_NUMBER]", "[REDACTED_ADDRESS]", "[REDACTED_PHONE]"),
+        ("YEONSU 기본", OfficeCodeCatalog.Yeonsu, OfficeCodeCatalog.Yeonsu, string.Empty, string.Empty, string.Empty, string.Empty)
+    ];
 
     public static async Task InitializeAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken = default)
     {
@@ -197,6 +203,7 @@ public static partial class DbInitializer
         await EnsureTenantDefinitionsTableAsync(dbContext, cancellationToken);
         await EnsureTenantOfficeDefinitionsTableAsync(dbContext, cancellationToken);
         await EnsureDataSharingPoliciesTableAsync(dbContext, cancellationToken);
+        await EnsureCompanyProfileScopeColumnsAsync(dbContext, cancellationToken);
         await EnsurePriceGradeOptionsTableAsync(dbContext, cancellationToken);
         await EnsureTradeTypeOptionsTableAsync(dbContext, cancellationToken);
         await EnsureItemCategoryOptionsTableAsync(dbContext, cancellationToken);
@@ -399,20 +406,107 @@ public static partial class DbInitializer
             option.IsActive = false;
         }
 
-        if (!await dbContext.CompanyProfiles.IgnoreQueryFilters().AnyAsync(cancellationToken))
+        await EnsureDefaultCompanyProfilesAsync(dbContext, cancellationToken);
+    }
+
+    private static async Task EnsureDefaultCompanyProfilesAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        foreach (var definition in DefaultCompanyProfiles)
         {
-            dbContext.CompanyProfiles.Add(new CompanyProfile
+            var current = await dbContext.CompanyProfiles
+                .IgnoreQueryFilters()
+                .OrderByDescending(profile => profile.IsDefaultForOffice)
+                .ThenByDescending(profile => !profile.IsDeleted && profile.IsActive)
+                .ThenByDescending(profile => profile.UpdatedAtUtc)
+                .FirstOrDefaultAsync(profile =>
+                    string.Equals(profile.OfficeCode, definition.OfficeCode, StringComparison.OrdinalIgnoreCase), cancellationToken);
+
+            if (current is null)
             {
-                TradeName = "기본 상호",
-                Representative = "대표자",
-                BusinessNumber = string.Empty,
-                BusinessType = string.Empty,
-                BusinessItem = string.Empty,
-                Address = string.Empty,
-                ContactNumber = string.Empty,
-                Email = string.Empty,
-                BankAccountText = "입금용 계좌번호를 입력하세요."
-            });
+                dbContext.CompanyProfiles.Add(new CompanyProfile
+                {
+                    ProfileName = definition.ProfileName,
+                    OfficeCode = definition.OfficeCode,
+                    TradeName = definition.TradeName,
+                    Representative = definition.Representative,
+                    BusinessNumber = definition.BusinessNumber,
+                    BusinessType = string.Empty,
+                    BusinessItem = string.Empty,
+                    Address = definition.Address,
+                    ContactNumber = definition.ContactNumber,
+                    Email = string.Empty,
+                    BankAccountText = "입금용 계좌번호를 입력하세요.",
+                    IsDefaultForOffice = true,
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                });
+                continue;
+            }
+
+            current.ProfileName = string.IsNullOrWhiteSpace(current.ProfileName)
+                ? definition.ProfileName
+                : current.ProfileName.Trim();
+            current.OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(current.OfficeCode, definition.OfficeCode);
+            current.TradeName = string.IsNullOrWhiteSpace(current.TradeName)
+                ? definition.TradeName
+                : current.TradeName.Trim();
+            current.Representative = string.IsNullOrWhiteSpace(current.Representative)
+                ? definition.Representative
+                : current.Representative.Trim();
+            current.BusinessNumber = string.IsNullOrWhiteSpace(current.BusinessNumber)
+                ? definition.BusinessNumber
+                : current.BusinessNumber.Trim();
+            current.BusinessType = current.BusinessType?.Trim() ?? string.Empty;
+            current.BusinessItem = current.BusinessItem?.Trim() ?? string.Empty;
+            current.Address = string.IsNullOrWhiteSpace(current.Address)
+                ? definition.Address
+                : current.Address.Trim();
+            current.ContactNumber = string.IsNullOrWhiteSpace(current.ContactNumber)
+                ? definition.ContactNumber
+                : current.ContactNumber.Trim();
+            current.Email = current.Email?.Trim() ?? string.Empty;
+            current.BankAccountText = string.IsNullOrWhiteSpace(current.BankAccountText)
+                ? "입금용 계좌번호를 입력하세요."
+                : current.BankAccountText;
+            current.IsDefaultForOffice = true;
+            current.IsActive = true;
+            current.IsDeleted = false;
+            current.UpdatedAtUtc = now;
+        }
+
+        var activeProfiles = await dbContext.CompanyProfiles
+            .IgnoreQueryFilters()
+            .Where(profile => !profile.IsDeleted && profile.IsActive)
+            .ToListAsync(cancellationToken);
+        foreach (var group in activeProfiles
+                     .GroupBy(profile => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(profile.OfficeCode, OfficeCodeCatalog.Usenet), StringComparer.OrdinalIgnoreCase))
+        {
+            var canonical = group
+                .OrderByDescending(profile => profile.IsDefaultForOffice)
+                .ThenByDescending(profile => profile.UpdatedAtUtc)
+                .First();
+
+            foreach (var profile in group)
+            {
+                var shouldBeDefault = profile.Id == canonical.Id;
+                if (profile.IsDefaultForOffice != shouldBeDefault)
+                {
+                    profile.IsDefaultForOffice = shouldBeDefault;
+                    profile.UpdatedAtUtc = now;
+                }
+
+                var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(profile.OfficeCode, group.Key);
+                if (!string.Equals(profile.OfficeCode, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                {
+                    profile.OfficeCode = normalizedOfficeCode;
+                    profile.UpdatedAtUtc = now;
+                }
+            }
         }
     }
 
@@ -1829,6 +1923,36 @@ public static partial class DbInitializer
         {
             await dbContext.Database.ExecuteSqlRawAsync(
                 "CREATE INDEX IF NOT EXISTS \"IX_Invoices_TenantCode\" ON \"Invoices\" (\"TenantCode\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task EnsureCompanyProfileScopeColumnsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureColumnAsync(dbContext, "CompanyProfiles", "ProfileName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "CompanyProfiles", "OfficeCode", $"TEXT NOT NULL DEFAULT '{OfficeCodeCatalog.Usenet}'", $"text NOT NULL DEFAULT '{OfficeCodeCatalog.Usenet}'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "CompanyProfiles", "IsDefaultForOffice", "INTEGER NOT NULL DEFAULT 0", "boolean NOT NULL DEFAULT false", cancellationToken);
+        await EnsureColumnAsync(dbContext, "CompanyProfiles", "IsActive", "INTEGER NOT NULL DEFAULT 1", "boolean NOT NULL DEFAULT true", cancellationToken);
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_CompanyProfiles_OfficeCode_ProfileName\" ON \"CompanyProfiles\" (\"OfficeCode\", \"ProfileName\");",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "CREATE INDEX IF NOT EXISTS \"IX_CompanyProfiles_OfficeCode_IsDefaultForOffice\" ON \"CompanyProfiles\" (\"OfficeCode\", \"IsDefaultForOffice\");",
                 cancellationToken);
         }
         catch
