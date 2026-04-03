@@ -3665,11 +3665,13 @@ public static partial class DbInitializer
         await EnsureColumnAsync(dbContext, "RentalAssets", "LastBillingProfileId", "TEXT NULL", "uuid NULL", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalAssets", "LastBillingProfileDisplay", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalAssets", "LastAssignmentClearedAtUtc", "TEXT NULL", "timestamp with time zone NULL", cancellationToken);
-        await TryDropColumnAsync(dbContext, "RentalBillingProfiles", "RealCustomerName", cancellationToken);
-        await TryDropColumnAsync(dbContext, "RentalBillingProfiles", "BillToCustomerName", cancellationToken);
-        await TryDropColumnAsync(dbContext, "RentalBillingProfiles", "PaymentMethod", cancellationToken);
-        await TryDropColumnAsync(dbContext, "RentalBillingProfiles", "FollowUpNote", cancellationToken);
-        await TryDropColumnAsync(dbContext, "RentalAssets", "BillToCustomerName", cancellationToken);
+        // Keep retired columns as empty compatibility columns so stale clients or lingering
+        // server query paths do not fail with missing-column errors during sync.
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "RealCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillToCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "PaymentMethod", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "FollowUpNote", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "BillToCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
     }
 
     private static async Task EnsureNullableTextColumnAsync(

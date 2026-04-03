@@ -408,7 +408,9 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
         };
         foreach (var (col, def) in rentalAssetCols)
             await TryAddColumnAsync(db, "RentalAssets", col, def);
-        await TryDropColumnAsync(db, "RentalAssets", "BillToCustomerName");
+        // Keep retired columns as empty compatibility columns so older deployed binaries
+        // or lingering query paths do not fail with "no such column" during startup/sync.
+        await TryAddColumnAsync(db, "RentalAssets", "BillToCustomerName", "TEXT NOT NULL DEFAULT ''");
 
         var rentalBillingProfileCols = new (string col, string def)[]
         {
@@ -431,10 +433,10 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
         };
         foreach (var (col, def) in rentalBillingProfileCols)
             await TryAddColumnAsync(db, "RentalBillingProfiles", col, def);
-        await TryDropColumnAsync(db, "RentalBillingProfiles", "RealCustomerName");
-        await TryDropColumnAsync(db, "RentalBillingProfiles", "BillToCustomerName");
-        await TryDropColumnAsync(db, "RentalBillingProfiles", "PaymentMethod");
-        await TryDropColumnAsync(db, "RentalBillingProfiles", "FollowUpNote");
+        await TryAddColumnAsync(db, "RentalBillingProfiles", "RealCustomerName", "TEXT NOT NULL DEFAULT ''");
+        await TryAddColumnAsync(db, "RentalBillingProfiles", "BillToCustomerName", "TEXT NOT NULL DEFAULT ''");
+        await TryAddColumnAsync(db, "RentalBillingProfiles", "PaymentMethod", "TEXT NOT NULL DEFAULT ''");
+        await TryAddColumnAsync(db, "RentalBillingProfiles", "FollowUpNote", "TEXT NOT NULL DEFAULT ''");
 
         var inventoryTransferCols = new (string col, string def)[]
         {
