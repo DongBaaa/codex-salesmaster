@@ -1352,7 +1352,7 @@ public sealed class SyncService : IDisposable
 
     private async Task ApplyPullAsync(SyncPullResponse pull, long sinceRev, CancellationToken ct)
     {
-        await UpsertPulledAsync(pull.CompanyProfiles, _db.CompanyProfiles, LocalMappings.ToLocal, ct);
+        await UpsertPulledCompanyProfilesAsync(pull.CompanyProfiles, ct);
         await UpsertPulledUnitsAsync(pull.Units, ct);
         await UpsertPulledAsync(pull.CustomerCategories, _db.CustomerCategories, LocalMappings.ToLocal, ct);
         await UpsertPulledSelectionOptionsAsync(pull.PriceGradeOptions, _db.PriceGradeOptions, LocalMappings.ToLocal, option => option.Name, ct);
@@ -1376,6 +1376,106 @@ public sealed class SyncService : IDisposable
 
         if (pull.LatestRevision > sinceRev)
             await TrySetSettingSafeAsync("LastSyncRevision", pull.LatestRevision.ToString(), ct);
+    }
+
+    private async Task UpsertPulledCompanyProfilesAsync(
+        IReadOnlyList<CompanyProfileDto> dtos,
+        CancellationToken ct)
+    {
+        if (dtos.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        var incomingProfiles = dtos
+            .Select(LocalMappings.ToLocal)
+            .Select(local =>
+            {
+                local.IsDirty = false;
+                local.OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(local.OfficeCode, local.OfficeCode);
+                return local;
+            })
+            .ToList();
+
+        var profiles = await _db.CompanyProfiles.IgnoreQueryFilters().ToListAsync(ct);
+        var assignmentSettings = await _db.Settings
+            .Where(setting => EF.Functions.Like(setting.Key, "CompanyProfile.Assigned.%"))
+            .ToListAsync(ct);
+
+        foreach (var local in incomingProfiles)
+        {
+            var existing = profiles.FirstOrDefault(profile => profile.Id == local.Id);
+            if (existing is null)
+            {
+                if (local.IsDefaultForOffice && !local.IsDeleted && local.IsActive)
+                {
+                    var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(local.OfficeCode, local.OfficeCode);
+                    foreach (var conflict in profiles.Where(profile =>
+                                 profile.Id != local.Id &&
+                                 !profile.IsDeleted &&
+                                 profile.IsActive &&
+                                 profile.IsDefaultForOffice &&
+                                 string.Equals(
+                                     OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(profile.OfficeCode, profile.OfficeCode),
+                                     officeCode,
+                                     StringComparison.OrdinalIgnoreCase)))
+                    {
+                        foreach (var setting in assignmentSettings.Where(setting =>
+                                     string.Equals(setting.Value, conflict.Id.ToString(), StringComparison.OrdinalIgnoreCase)))
+                        {
+                            setting.Value = local.Id.ToString();
+                        }
+
+                        conflict.IsDefaultForOffice = false;
+                        if (string.Equals(conflict.ProfileName?.Trim(), $"{officeCode} 기본", StringComparison.OrdinalIgnoreCase))
+                        {
+                            conflict.IsActive = false;
+                            conflict.IsDeleted = true;
+                        }
+
+                        conflict.IsDirty = false;
+                        conflict.UpdatedAtUtc = now;
+                    }
+                }
+
+                _db.CompanyProfiles.Add(local);
+                profiles.Add(local);
+                continue;
+            }
+
+            if (!existing.IsDirty)
+            {
+                _db.Entry(existing).CurrentValues.SetValues(local);
+                existing.OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(existing.OfficeCode, existing.OfficeCode);
+                existing.IsDirty = false;
+            }
+        }
+
+        foreach (var group in profiles
+                     .Where(profile => !profile.IsDeleted && profile.IsActive)
+                     .GroupBy(
+                         profile => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(profile.OfficeCode, OfficeCodeCatalog.Usenet),
+                         StringComparer.OrdinalIgnoreCase))
+        {
+            var canonicalId = OfficeCodeCatalog.GetDefaultCompanyProfileId(group.Key);
+            var canonical = group.FirstOrDefault(profile => profile.Id == canonicalId)
+                ?? group.OrderByDescending(profile => profile.IsDefaultForOffice)
+                    .ThenByDescending(profile => profile.UpdatedAtUtc)
+                    .ThenBy(profile => profile.Id)
+                    .First();
+
+            foreach (var profile in group)
+            {
+                var shouldBeDefault = profile.Id == canonical.Id;
+                if (profile.IsDefaultForOffice != shouldBeDefault)
+                {
+                    profile.IsDefaultForOffice = shouldBeDefault;
+                    profile.IsDirty = false;
+                    profile.UpdatedAtUtc = now;
+                }
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
     }
 
     private async Task UpsertPulledAsync<TLocal, TDto>(

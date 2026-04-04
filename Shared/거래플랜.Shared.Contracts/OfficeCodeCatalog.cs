@@ -2,6 +2,10 @@
 
 public static class OfficeCodeCatalog
 {
+    public static readonly Guid UsenetDefaultCompanyProfileId = Guid.Parse("b76377a1-6386-469e-9fd4-6c4bea0d9a00");
+    public static readonly Guid ItworldDefaultCompanyProfileId = Guid.Parse("f717ca61-ce49-4cee-b07f-bb2b44be82a5");
+    public static readonly Guid YeonsuDefaultCompanyProfileId = Guid.Parse("ecae0836-37ef-4f27-a35c-77ae46ed9d96");
+
     public const string Shared = "ALL";
     public const string Usenet = "USENET";
     public const string Itworld = "ITWORLD";
@@ -163,6 +167,14 @@ public static class OfficeCodeCatalog
             Itworld => Itworld,
             Yeonsu => Yeonsu,
             _ => Usenet
+        };
+
+    public static Guid GetDefaultCompanyProfileId(string? officeCode)
+        => NormalizeOrDefault(officeCode, Usenet) switch
+        {
+            Itworld => ItworldDefaultCompanyProfileId,
+            Yeonsu => YeonsuDefaultCompanyProfileId,
+            _ => UsenetDefaultCompanyProfileId
         };
 
     public static string GetMainWarehouseCode(string? officeCode)

@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace 거래플랜.Desktop.App.Data;
@@ -647,6 +648,7 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
         {
             new LocalCompanyProfile
             {
+                Id = OfficeCodeCatalog.UsenetDefaultCompanyProfileId,
                 ProfileName = "USENET 기본",
                 OfficeCode = OfficeCodeCatalog.Usenet,
                 TradeName = OfficeCodeCatalog.Usenet,
@@ -663,6 +665,7 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
             },
             new LocalCompanyProfile
             {
+                Id = OfficeCodeCatalog.ItworldDefaultCompanyProfileId,
                 ProfileName = "ITWORLD 기본",
                 OfficeCode = OfficeCodeCatalog.Itworld,
                 TradeName = OfficeCodeCatalog.Itworld,
@@ -679,6 +682,7 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
             },
             new LocalCompanyProfile
             {
+                Id = OfficeCodeCatalog.YeonsuDefaultCompanyProfileId,
                 ProfileName = "YEONSU 기본",
                 OfficeCode = OfficeCodeCatalog.Yeonsu,
                 TradeName = OfficeCodeCatalog.Yeonsu,
@@ -695,19 +699,71 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
             }
         };
 
+        var profiles = await db.CompanyProfiles.IgnoreQueryFilters().ToListAsync();
+        var assignmentSettings = await db.Settings
+            .IgnoreQueryFilters()
+            .Where(setting => setting.Key.StartsWith("CompanyProfile.Assigned."))
+            .ToListAsync();
+
         foreach (var definition in defaults)
         {
-            var current = await db.CompanyProfiles
-                .IgnoreQueryFilters()
+            var current = profiles
+                .FirstOrDefault(profile => profile.Id == definition.Id)
+                ?? profiles
                 .OrderByDescending(profile => profile.IsDefaultForOffice)
                 .ThenByDescending(profile => !profile.IsDeleted && profile.IsActive)
                 .ThenByDescending(profile => profile.UpdatedAtUtc)
-                .FirstOrDefaultAsync(profile => profile.OfficeCode == definition.OfficeCode);
+                .FirstOrDefault(profile => string.Equals(profile.OfficeCode, definition.OfficeCode, StringComparison.OrdinalIgnoreCase));
 
             if (current is null)
             {
                 db.CompanyProfiles.Add(definition);
+                profiles.Add(definition);
                 continue;
+            }
+
+            if (current.Id != definition.Id)
+            {
+                var canonical = new LocalCompanyProfile
+                {
+                    Id = definition.Id,
+                    ProfileName = string.IsNullOrWhiteSpace(current.ProfileName) ? definition.ProfileName : current.ProfileName.Trim(),
+                    OfficeCode = NormalizeRentalOfficeCode(current.OfficeCode, definition.OfficeCode),
+                    TradeName = string.IsNullOrWhiteSpace(current.TradeName) ? definition.TradeName : current.TradeName.Trim(),
+                    Representative = string.IsNullOrWhiteSpace(current.Representative) ? definition.Representative : current.Representative.Trim(),
+                    BusinessNumber = string.IsNullOrWhiteSpace(current.BusinessNumber) ? definition.BusinessNumber : current.BusinessNumber.Trim(),
+                    BusinessType = current.BusinessType?.Trim() ?? string.Empty,
+                    BusinessItem = current.BusinessItem?.Trim() ?? string.Empty,
+                    Address = string.IsNullOrWhiteSpace(current.Address) ? definition.Address : current.Address.Trim(),
+                    ContactNumber = string.IsNullOrWhiteSpace(current.ContactNumber) ? definition.ContactNumber : current.ContactNumber.Trim(),
+                    Email = current.Email?.Trim() ?? string.Empty,
+                    BankAccountText = string.IsNullOrWhiteSpace(current.BankAccountText) ? definition.BankAccountText : current.BankAccountText,
+                    StampImage = current.StampImage,
+                    IsDefaultForOffice = true,
+                    IsActive = true,
+                    IsDeleted = false,
+                    IsDirty = false,
+                    CreatedAtUtc = current.CreatedAtUtc == default ? now : current.CreatedAtUtc,
+                    UpdatedAtUtc = now,
+                    Revision = current.Revision
+                };
+
+                db.CompanyProfiles.Add(canonical);
+                profiles.Add(canonical);
+
+                foreach (var setting in assignmentSettings.Where(setting => string.Equals(setting.Value, current.Id.ToString(), StringComparison.OrdinalIgnoreCase)))
+                    setting.Value = canonical.Id.ToString();
+
+                if (string.Equals(current.ProfileName?.Trim(), definition.ProfileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    current.IsDefaultForOffice = false;
+                    current.IsActive = false;
+                    current.IsDeleted = true;
+                    current.IsDirty = false;
+                    current.UpdatedAtUtc = now;
+                }
+
+                current = canonical;
             }
 
             current.ProfileName = string.IsNullOrWhiteSpace(current.ProfileName)
@@ -730,6 +786,28 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
                 current.ContactNumber = definition.ContactNumber;
             current.IsDirty = false;
             current.UpdatedAtUtc = now;
+        }
+
+        foreach (var group in profiles
+                     .Where(profile => !profile.IsDeleted && profile.IsActive)
+                     .GroupBy(profile => NormalizeRentalOfficeCode(profile.OfficeCode, OfficeCodeCatalog.Usenet), StringComparer.OrdinalIgnoreCase))
+        {
+            var canonicalId = OfficeCodeCatalog.GetDefaultCompanyProfileId(group.Key);
+            var canonical = group.FirstOrDefault(profile => profile.Id == canonicalId)
+                ?? group.OrderByDescending(profile => profile.IsDefaultForOffice)
+                    .ThenByDescending(profile => profile.UpdatedAtUtc)
+                    .First();
+
+            foreach (var profile in group)
+            {
+                var shouldBeDefault = profile.Id == canonical.Id;
+                if (profile.IsDefaultForOffice != shouldBeDefault)
+                {
+                    profile.IsDefaultForOffice = shouldBeDefault;
+                    profile.IsDirty = false;
+                    profile.UpdatedAtUtc = now;
+                }
+            }
         }
     }
 
@@ -1977,9 +2055,59 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
 
     private static async Task EnsureUniqueDefaultCompanyProfileIndexAsync(LocalDbContext db)
     {
+        await DropLegacyCompanyProfileOfficeUniqueIndexesAsync(db);
         await TryCreateIndexAsync(
             db,
             "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_CompanyProfiles_DefaultPerOffice_Active\" ON \"CompanyProfiles\" (\"OfficeCode\") WHERE COALESCE(\"IsDefaultForOffice\", 0) = 1 AND COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(\"IsActive\", 1) = 1;");
+    }
+
+    private static async Task DropLegacyCompanyProfileOfficeUniqueIndexesAsync(LocalDbContext db)
+    {
+        var dropTargets = new List<string>();
+
+        await using var connection = db.Database.GetDbConnection();
+        var shouldClose = connection.State != System.Data.ConnectionState.Open;
+        if (shouldClose)
+            await connection.OpenAsync();
+
+        try
+        {
+            await using var listCommand = connection.CreateCommand();
+            listCommand.CommandText = "PRAGMA index_list(\"CompanyProfiles\")";
+            await using var listReader = await listCommand.ExecuteReaderAsync();
+            while (await listReader.ReadAsync())
+            {
+                var indexName = listReader[1]?.ToString() ?? string.Empty;
+                var isUnique = Convert.ToInt32(listReader[2], CultureInfo.InvariantCulture) == 1;
+                var isPartial = Convert.ToInt32(listReader[4], CultureInfo.InvariantCulture) == 1;
+                if (!isUnique ||
+                    isPartial ||
+                    string.IsNullOrWhiteSpace(indexName) ||
+                    string.Equals(indexName, "UX_CompanyProfiles_DefaultPerOffice_Active", StringComparison.OrdinalIgnoreCase) ||
+                    indexName.StartsWith("sqlite_autoindex_", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                await using var infoCommand = connection.CreateCommand();
+                infoCommand.CommandText = $"PRAGMA index_info(\"{indexName.Replace("\"", "\"\"")}\")";
+                var columns = new List<string>();
+                await using var infoReader = await infoCommand.ExecuteReaderAsync();
+                while (await infoReader.ReadAsync())
+                    columns.Add(infoReader[2]?.ToString() ?? string.Empty);
+
+                if (columns.Count == 1 && string.Equals(columns[0], "OfficeCode", StringComparison.OrdinalIgnoreCase))
+                    dropTargets.Add(indexName);
+            }
+        }
+        finally
+        {
+            if (shouldClose)
+                await connection.CloseAsync();
+        }
+
+        foreach (var indexName in dropTargets.Distinct(StringComparer.OrdinalIgnoreCase))
+            await TryCreateIndexAsync(db, $"DROP INDEX IF EXISTS \"{indexName.Replace("\"", "\"\"")}\";");
     }
 
     private static async Task NormalizeLegacyDateTimeColumnsAsync(LocalDbContext db)

@@ -36,11 +36,11 @@ public static partial class DbInitializer
         (Guid.Parse("4ab67a47-1b4e-4f17-8b3c-761023c2c3e3"), "매입", false, true, 10),
         (Guid.Parse("9c305d74-3dd4-4fff-9679-dbd4dd6fdb49"), "매출/매입", true, true, 20)
     ];
-    private static readonly (string ProfileName, string OfficeCode, string TradeName, string Representative, string BusinessNumber, string Address, string ContactNumber)[] DefaultCompanyProfiles =
+    private static readonly (Guid Id, string ProfileName, string OfficeCode, string TradeName, string Representative, string BusinessNumber, string Address, string ContactNumber)[] DefaultCompanyProfiles =
     [
-        ("USENET 기본", OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Usenet, "[REDACTED_NAME]", "[REDACTED_BUSINESS_NUMBER]", "[REDACTED_ADDRESS]", "[REDACTED_PHONE]"),
-        ("ITWORLD 기본", OfficeCodeCatalog.Itworld, OfficeCodeCatalog.Itworld, "[REDACTED_NAME]", "[REDACTED_BUSINESS_NUMBER]", "[REDACTED_ADDRESS]", "[REDACTED_PHONE]"),
-        ("YEONSU 기본", OfficeCodeCatalog.Yeonsu, OfficeCodeCatalog.Yeonsu, string.Empty, string.Empty, string.Empty, string.Empty)
+        (OfficeCodeCatalog.UsenetDefaultCompanyProfileId, "USENET 기본", OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Usenet, "[REDACTED_NAME]", "[REDACTED_BUSINESS_NUMBER]", "[REDACTED_ADDRESS]", "[REDACTED_PHONE]"),
+        (OfficeCodeCatalog.ItworldDefaultCompanyProfileId, "ITWORLD 기본", OfficeCodeCatalog.Itworld, OfficeCodeCatalog.Itworld, "[REDACTED_NAME]", "[REDACTED_BUSINESS_NUMBER]", "[REDACTED_ADDRESS]", "[REDACTED_PHONE]"),
+        (OfficeCodeCatalog.YeonsuDefaultCompanyProfileId, "YEONSU 기본", OfficeCodeCatalog.Yeonsu, OfficeCodeCatalog.Yeonsu, string.Empty, string.Empty, string.Empty, string.Empty)
     ];
 
     public static async Task InitializeAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken = default)
@@ -414,20 +414,23 @@ public static partial class DbInitializer
         CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
+        var profiles = await dbContext.CompanyProfiles.IgnoreQueryFilters().ToListAsync(cancellationToken);
         foreach (var definition in DefaultCompanyProfiles)
         {
             var normalizedDefinitionOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(definition.OfficeCode, definition.OfficeCode);
-            var current = await dbContext.CompanyProfiles
-                .IgnoreQueryFilters()
+            var current = profiles
+                .FirstOrDefault(profile => profile.Id == definition.Id)
+                ?? profiles
                 .OrderByDescending(profile => profile.IsDefaultForOffice)
                 .ThenByDescending(profile => !profile.IsDeleted && profile.IsActive)
                 .ThenByDescending(profile => profile.UpdatedAtUtc)
-                .FirstOrDefaultAsync(profile => profile.OfficeCode == normalizedDefinitionOfficeCode, cancellationToken);
+                .FirstOrDefault(profile => profile.OfficeCode == normalizedDefinitionOfficeCode);
 
             if (current is null)
             {
-                dbContext.CompanyProfiles.Add(new CompanyProfile
+                var profile = new CompanyProfile
                 {
+                    Id = definition.Id,
                     ProfileName = definition.ProfileName,
                     OfficeCode = definition.OfficeCode,
                     TradeName = definition.TradeName,
@@ -444,8 +447,48 @@ public static partial class DbInitializer
                     IsDeleted = false,
                     CreatedAtUtc = now,
                     UpdatedAtUtc = now
-                });
+                };
+                dbContext.CompanyProfiles.Add(profile);
+                profiles.Add(profile);
                 continue;
+            }
+
+            if (current.Id != definition.Id)
+            {
+                var canonical = new CompanyProfile
+                {
+                    Id = definition.Id,
+                    ProfileName = string.IsNullOrWhiteSpace(current.ProfileName) ? definition.ProfileName : current.ProfileName.Trim(),
+                    OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(current.OfficeCode, definition.OfficeCode),
+                    TradeName = string.IsNullOrWhiteSpace(current.TradeName) ? definition.TradeName : current.TradeName.Trim(),
+                    Representative = string.IsNullOrWhiteSpace(current.Representative) ? definition.Representative : current.Representative.Trim(),
+                    BusinessNumber = string.IsNullOrWhiteSpace(current.BusinessNumber) ? definition.BusinessNumber : current.BusinessNumber.Trim(),
+                    BusinessType = current.BusinessType?.Trim() ?? string.Empty,
+                    BusinessItem = current.BusinessItem?.Trim() ?? string.Empty,
+                    Address = string.IsNullOrWhiteSpace(current.Address) ? definition.Address : current.Address.Trim(),
+                    ContactNumber = string.IsNullOrWhiteSpace(current.ContactNumber) ? definition.ContactNumber : current.ContactNumber.Trim(),
+                    Email = current.Email?.Trim() ?? string.Empty,
+                    BankAccountText = string.IsNullOrWhiteSpace(current.BankAccountText) ? "입금용 계좌번호를 입력하세요." : current.BankAccountText,
+                    StampImage = current.StampImage,
+                    IsDefaultForOffice = true,
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAtUtc = current.CreatedAtUtc == default ? now : current.CreatedAtUtc,
+                    UpdatedAtUtc = now,
+                    Revision = current.Revision
+                };
+                dbContext.CompanyProfiles.Add(canonical);
+                profiles.Add(canonical);
+
+                if (string.Equals(current.ProfileName?.Trim(), definition.ProfileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    current.IsDefaultForOffice = false;
+                    current.IsActive = false;
+                    current.IsDeleted = true;
+                    current.UpdatedAtUtc = now;
+                }
+
+                current = canonical;
             }
 
             current.ProfileName = string.IsNullOrWhiteSpace(current.ProfileName)
@@ -479,17 +522,16 @@ public static partial class DbInitializer
             current.UpdatedAtUtc = now;
         }
 
-        var activeProfiles = await dbContext.CompanyProfiles
-            .IgnoreQueryFilters()
+        var activeProfiles = profiles
             .Where(profile => !profile.IsDeleted && profile.IsActive)
-            .ToListAsync(cancellationToken);
+            .ToList();
         foreach (var group in activeProfiles
                      .GroupBy(profile => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(profile.OfficeCode, OfficeCodeCatalog.Usenet), StringComparer.OrdinalIgnoreCase))
         {
-            var canonical = group
-                .OrderByDescending(profile => profile.IsDefaultForOffice)
-                .ThenByDescending(profile => profile.UpdatedAtUtc)
-                .First();
+            var canonical = group.FirstOrDefault(profile => profile.Id == OfficeCodeCatalog.GetDefaultCompanyProfileId(group.Key))
+                ?? group.OrderByDescending(profile => profile.IsDefaultForOffice)
+                    .ThenByDescending(profile => profile.UpdatedAtUtc)
+                    .First();
 
             foreach (var profile in group)
             {
