@@ -1160,20 +1160,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return Array.Empty<LocalRentalAsset>();
 
         var profileId = billingProfileId.GetValueOrDefault();
-        var resolvedCustomerId = customerId.GetValueOrDefault();
-        var hasCustomerId = customerId.HasValue && customerId.Value != Guid.Empty;
-        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, session.OfficeCode);
         var query = ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
             .Where(asset => !asset.IsDeleted)
             .Where(asset =>
                 (billingProfileId.HasValue && billingProfileId.Value != Guid.Empty && asset.BillingProfileId == profileId) ||
                 assetIds.Contains(asset.Id));
-
-        if (hasCustomerId)
-            query = query.Where(asset => asset.CustomerId == resolvedCustomerId);
-
-        if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
-            query = query.Where(asset => asset.ResponsibleOfficeCode == normalizedOfficeCode);
 
         return await query
             .OrderBy(asset => asset.CustomerName)
@@ -2479,6 +2470,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         ArgumentNullException.ThrowIfNull(profile);
         assets ??= Array.Empty<LocalRentalAsset>();
         var profileBillingType = NormalizeBillingType(profile.BillingType);
+        var legacyIncludedAssetIds = assets
+            .Where(asset => asset.BillingProfileId == profile.Id)
+            .Select(asset => asset.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
 
         List<RentalBillingTemplateItemModel>? parsed = null;
         if (!string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
@@ -2495,11 +2492,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         if (parsed is null || parsed.Count == 0)
         {
-            var legacyIncludedAssetIds = assets
-                .Where(asset => asset.BillingProfileId == profile.Id)
-                .Select(asset => asset.Id)
-                .Distinct()
-                .ToList();
             parsed =
             [
                 new RentalBillingTemplateItemModel
@@ -2542,6 +2534,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 Note = (current.Note ?? string.Empty).Trim(),
                 IncludedAssetIds = includedAssetIds
             });
+        }
+
+        if (legacyIncludedAssetIds.Count > 0 &&
+            normalized.Count == 1 &&
+            normalized.All(item => item.IncludedAssetIds.Count == 0))
+        {
+            normalized[0].IncludedAssetIds = legacyIncludedAssetIds;
         }
 
         if (normalized.Count == 0)

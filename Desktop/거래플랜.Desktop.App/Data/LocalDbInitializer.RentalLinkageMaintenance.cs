@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
@@ -9,6 +10,10 @@ public static partial class LocalDbInitializer
 {
     private const string CanonicalMfcL8900CategoryName = "A4컬러복합기";
     private const string CanonicalMfcL8900ItemName = "MFC-L8900CDW";
+    private static readonly JsonSerializerOptions RentalTemplateJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
 
     private static async Task RepairRentalCustomerLinkageAsync(LocalDbContext db)
     {
@@ -165,6 +170,7 @@ public static partial class LocalDbInitializer
             .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
             .GroupBy(asset => asset.BillingProfileId!.Value)
             .ToDictionary(group => group.Key, group => group.ToList());
+        var rentalStateService = new RentalStateService(db);
 
         foreach (var profile in profiles.Where(profile => !profile.IsDeleted))
         {
@@ -205,9 +211,9 @@ public static partial class LocalDbInitializer
 
             var normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.InstallSiteName);
             if (string.IsNullOrWhiteSpace(normalizedInstallSiteName) &&
-                activeAssetsByProfileId.TryGetValue(profile.Id, out var linkedAssets))
+                activeAssetsByProfileId.TryGetValue(profile.Id, out var profileLinkedAssets))
             {
-                var assetInstallLocations = linkedAssets
+                var assetInstallLocations = profileLinkedAssets
                     .Select(asset => RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation))
                     .Where(value => !string.IsNullOrWhiteSpace(value))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -225,7 +231,15 @@ public static partial class LocalDbInitializer
                 changed = true;
             }
 
-            var hasLinkedAssets = activeAssetsByProfileId.ContainsKey(profile.Id);
+            activeAssetsByProfileId.TryGetValue(profile.Id, out var linkedAssets);
+            var hasLinkedAssets = linkedAssets is not null && linkedAssets.Count > 0;
+            if (hasLinkedAssets &&
+                TryBackfillBillingTemplate(profile, linkedAssets!, rentalStateService, out var backfilledTemplateJson))
+            {
+                profile.BillingTemplateJson = backfilledTemplateJson;
+                changed = true;
+            }
+
             if (!hasLinkedAssets)
             {
                 var normalizedBillingStatus = PaymentFlowConstants.NormalizeBillingStatus(profile.BillingStatus);
@@ -277,6 +291,51 @@ public static partial class LocalDbInitializer
 
             if (changed)
                 MarkStartupMaintenanceChange(log, now);
+        }
+    }
+
+    private static bool TryBackfillBillingTemplate(
+        LocalRentalBillingProfile profile,
+        IReadOnlyList<LocalRentalAsset> linkedAssets,
+        RentalStateService rentalStateService,
+        out string backfilledTemplateJson)
+    {
+        backfilledTemplateJson = profile.BillingTemplateJson ?? string.Empty;
+        if (linkedAssets.Count == 0)
+            return false;
+
+        if (!NeedsBillingTemplateBackfill(profile.BillingTemplateJson))
+            return false;
+
+        var templateItems = rentalStateService.GetBillingTemplateItems(profile, linkedAssets);
+        if (templateItems.Count != 1 || templateItems[0].IncludedAssetIds.Count == 0)
+            return false;
+
+        var serialized = rentalStateService.SerializeBillingTemplateItems(templateItems);
+        if (string.Equals(serialized, profile.BillingTemplateJson ?? string.Empty, StringComparison.Ordinal))
+            return false;
+
+        backfilledTemplateJson = serialized;
+        return true;
+    }
+
+    private static bool NeedsBillingTemplateBackfill(string? billingTemplateJson)
+    {
+        if (string.IsNullOrWhiteSpace(billingTemplateJson))
+            return true;
+
+        try
+        {
+            var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(billingTemplateJson, RentalTemplateJsonOptions);
+            if (items is null || items.Count == 0)
+                return true;
+
+            return items.Count == 1 &&
+                   (items[0].IncludedAssetIds is null || items[0].IncludedAssetIds.Count == 0);
+        }
+        catch
+        {
+            return true;
         }
     }
 

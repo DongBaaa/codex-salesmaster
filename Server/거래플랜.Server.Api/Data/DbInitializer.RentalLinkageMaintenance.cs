@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Shared.Contracts;
@@ -10,6 +11,10 @@ public static partial class DbInitializer
     private const string CanonicalMfcL8900ItemName = "MFC-L8900CDW";
     private const string BillingStatusOnHold = "보류";
     private const string CompletionPending = "미완료";
+    private static readonly JsonSerializerOptions RentalTemplateJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
 
     private static async Task RepairRentalCustomerLinkageAsync(
         AppDbContext dbContext,
@@ -208,9 +213,9 @@ public static partial class DbInitializer
 
             var normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.InstallSiteName);
             if (string.IsNullOrWhiteSpace(normalizedInstallSiteName) &&
-                activeAssetsByProfileId.TryGetValue(profile.Id, out var linkedAssets))
+                activeAssetsByProfileId.TryGetValue(profile.Id, out var profileLinkedAssets))
             {
-                var assetInstallLocations = linkedAssets
+                var assetInstallLocations = profileLinkedAssets
                     .Select(asset => RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation))
                     .Where(value => !string.IsNullOrWhiteSpace(value))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -228,7 +233,15 @@ public static partial class DbInitializer
                 changed = true;
             }
 
-            var hasLinkedAssets = activeAssetsByProfileId.ContainsKey(profile.Id);
+            activeAssetsByProfileId.TryGetValue(profile.Id, out var linkedAssets);
+            var hasLinkedAssets = linkedAssets is not null && linkedAssets.Count > 0;
+            if (hasLinkedAssets &&
+                TryBackfillBillingTemplate(profile, linkedAssets!, out var backfilledTemplateJson))
+            {
+                profile.BillingTemplateJson = backfilledTemplateJson;
+                changed = true;
+            }
+
             if (!hasLinkedAssets)
             {
                 var normalizedBillingStatus = (profile.BillingStatus ?? string.Empty).Trim();
@@ -281,6 +294,100 @@ public static partial class DbInitializer
             if (changed)
                 TouchTrackedEntity(log, now);
         }
+    }
+
+    private static bool TryBackfillBillingTemplate(
+        RentalBillingProfile profile,
+        IReadOnlyList<RentalAsset> linkedAssets,
+        out string backfilledTemplateJson)
+    {
+        backfilledTemplateJson = profile.BillingTemplateJson ?? string.Empty;
+        if (linkedAssets.Count == 0 || !NeedsBillingTemplateBackfill(profile.BillingTemplateJson))
+            return false;
+
+        var includedAssetIds = linkedAssets
+            .Select(asset => asset.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (includedAssetIds.Count == 0)
+            return false;
+
+        List<RentalBillingTemplateBackfillItem>? items = null;
+        if (!string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
+        {
+            try
+            {
+                items = JsonSerializer.Deserialize<List<RentalBillingTemplateBackfillItem>>(profile.BillingTemplateJson, RentalTemplateJsonOptions);
+            }
+            catch
+            {
+                items = null;
+            }
+        }
+
+        if (items is null || items.Count == 0)
+        {
+            items =
+            [
+                new RentalBillingTemplateBackfillItem
+                {
+                    DisplayItemName = string.IsNullOrWhiteSpace(profile.ItemName) ? "렌탈 임대료" : profile.ItemName,
+                    BillingLineMode = string.IsNullOrWhiteSpace(profile.BillingType) ? "묶음" : profile.BillingType,
+                    Quantity = 1m,
+                    UnitPrice = Math.Max(0m, profile.MonthlyAmount),
+                    Amount = Math.Max(0m, profile.MonthlyAmount),
+                    IncludedAssetIds = includedAssetIds
+                }
+            ];
+        }
+        else if (items.Count == 1 && (items[0].IncludedAssetIds is null || items[0].IncludedAssetIds.Count == 0))
+        {
+            items[0].IncludedAssetIds = includedAssetIds;
+        }
+        else
+        {
+            return false;
+        }
+
+        var serialized = JsonSerializer.Serialize(items, RentalTemplateJsonOptions);
+        if (string.Equals(serialized, profile.BillingTemplateJson ?? string.Empty, StringComparison.Ordinal))
+            return false;
+
+        backfilledTemplateJson = serialized;
+        return true;
+    }
+
+    private static bool NeedsBillingTemplateBackfill(string? billingTemplateJson)
+    {
+        if (string.IsNullOrWhiteSpace(billingTemplateJson))
+            return true;
+
+        try
+        {
+            var items = JsonSerializer.Deserialize<List<RentalBillingTemplateBackfillItem>>(billingTemplateJson, RentalTemplateJsonOptions);
+            if (items is null || items.Count == 0)
+                return true;
+
+            return items.Count == 1 &&
+                   (items[0].IncludedAssetIds is null || items[0].IncludedAssetIds.Count == 0);
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private sealed class RentalBillingTemplateBackfillItem
+    {
+        public Guid ItemId { get; set; } = Guid.NewGuid();
+        public string DisplayItemName { get; set; } = string.Empty;
+        public string BillingLineMode { get; set; } = string.Empty;
+        public decimal Quantity { get; set; } = 1m;
+        public decimal UnitPrice { get; set; }
+        public decimal Amount { get; set; }
+        public string Note { get; set; } = string.Empty;
+        public List<Guid> IncludedAssetIds { get; set; } = new();
     }
 
     private static async Task RepairMfcL8900CategoryAsync(

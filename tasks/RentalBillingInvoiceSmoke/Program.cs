@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Services;
+using 거래플랜.Desktop.App.ViewModels;
 using 거래플랜.Shared.Contracts;
 
 internal static class Program
@@ -91,6 +92,7 @@ internal static class Program
         var januaryBoundaryScenario = VerifyJanuaryBoundaryScenarios(db, local, rental, adminSession);
         var customerResolutionScenario = VerifyCustomerResolutionFallbackScenario(db, local, rental, adminSession, userSession);
         var singleCandidateAutoLinkScenario = VerifySingleCandidateAutoLinkScenario(db, local, rental, adminSession, userSession);
+        var legacyLinkedAssetFallbackScenario = VerifyLegacyLinkedAssetFallbackScenario(db, local, rental, adminSession, userSession);
 
         var output = new
         {
@@ -98,7 +100,8 @@ internal static class Program
             Individual = individualScenario,
             JanuaryBoundary = januaryBoundaryScenario,
             CustomerResolutionFallback = customerResolutionScenario,
-            SingleCandidateAutoLink = singleCandidateAutoLinkScenario
+            SingleCandidateAutoLink = singleCandidateAutoLinkScenario,
+            LegacyLinkedAssetFallback = legacyLinkedAssetFallbackScenario
         };
 
         Console.WriteLine(JsonSerializer.Serialize(output, JsonOptions));
@@ -564,6 +567,99 @@ internal static class Program
         };
     }
 
+    private static object VerifyLegacyLinkedAssetFallbackScenario(
+        LocalDbContext db,
+        LocalStateService local,
+        RentalStateService rental,
+        SessionState adminSession,
+        SessionState userSession)
+    {
+        var customer = new LocalCustomer
+        {
+            Id = Guid.NewGuid(),
+            NameOriginal = "ZZZ-기존연결 백필 거래처",
+            NameMatchKey = "ZZZ-기존연결 백필 거래처".ToUpperInvariant(),
+            ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Phone = "032-333-4444",
+            BusinessNumber = "777-77-77777",
+            TradeType = CustomerTradeTypes.Sales,
+            PriceGrade = "매출단가",
+            Address = "테스트 주소"
+        };
+
+        var customerSave = local.UpsertCustomerAsync(customer, adminSession).GetAwaiter().GetResult();
+        Ensure(customerSave.Success, customerSave.Message);
+
+        var profileId = Guid.NewGuid();
+        var assetId = SeedLegacyLinkedAsset(db, profileId, customer.NameOriginal);
+        var now = DateTime.UtcNow;
+        db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+        {
+            Id = profileId,
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            BusinessNumber = customer.BusinessNumber,
+            InstallSiteName = "사무실",
+            ItemName = "IMC2010",
+            BillingType = "묶음",
+            BillingAdvanceMode = "후불",
+            ManagementCompanyCode = DomainConstants.OfficeUsenet,
+            ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
+            BillingMethod = "전자세금계산서",
+            BillingStatus = PaymentFlowConstants.BillingStatusPlanned,
+            SettlementStatus = PaymentFlowConstants.SettlementStatusPending,
+            CompletionStatus = PaymentFlowConstants.CompletionPending,
+            BillingDay = 25,
+            BillingDayMode = RentalBillingScheduleRules.BillingDayModeFixedDay,
+            BillingCycleMonths = 1,
+            BillingAnchorMonth = 1,
+            MonthlyAmount = 150000m,
+            BillingTemplateJson = "[]",
+            ProfileKey = $"legacy|{customer.Id:D}",
+            IsActive = true,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+            IsDirty = false
+        });
+        db.SaveChanges();
+
+        var includedAssets = rental.GetIncludedBillingAssetsAsync(
+                profileId,
+                Array.Empty<Guid>(),
+                customer.Id,
+                DomainConstants.OfficeUsenet,
+                userSession)
+            .GetAwaiter()
+            .GetResult();
+        Ensure(includedAssets.Count == 1, $"기존 연결 장비 백필 후보는 1건이어야 합니다. 실제: {includedAssets.Count}");
+        Ensure(includedAssets[0].Id == assetId, "기존 연결 장비 백필 후보가 잘못 연결되었습니다.");
+
+        var profile = db.RentalBillingProfiles.IgnoreQueryFilters().First(current => current.Id == profileId);
+        var templateItems = rental.GetBillingTemplateItems(profile, includedAssets);
+        Ensure(templateItems.Count == 1, $"기존 연결 장비 백필 템플릿 수가 1건이어야 합니다. 실제: {templateItems.Count}");
+        Ensure(templateItems[0].IncludedAssetIds.Count == 1, $"기존 연결 장비 백필 IncludedAssetIds 수가 1이 아닙니다. 실제: {templateItems[0].IncludedAssetIds.Count}");
+        Ensure(templateItems[0].IncludedAssetIds[0] == assetId, "기존 연결 장비 백필 IncludedAssetIds가 잘못되었습니다.");
+
+        var viewModel = new RentalBillingViewModel(rental, local, userSession);
+        viewModel.LoadAsync().GetAwaiter().GetResult();
+        var row = viewModel.Rows.FirstOrDefault(current => current.Source.Id == profileId);
+        Ensure(row is not null, "기존 연결 장비 백필 프로필을 화면 목록에서 찾지 못했습니다.");
+        viewModel.SelectedRow = row;
+        for (var attempt = 0; attempt < 20 && viewModel.IncludedAssets.Count == 0; attempt++)
+            Task.Delay(100).GetAwaiter().GetResult();
+
+        Ensure(viewModel.IncludedAssets.Count == 1, $"기존 연결 장비 백필 후 화면 내부 포함 장비가 1건이어야 합니다. 실제: {viewModel.IncludedAssets.Count}");
+        Ensure(viewModel.IncludedAssets[0].AssetId == assetId, "기존 연결 장비 백필 후 화면 내부 포함 장비가 잘못 표시되었습니다.");
+
+        return new
+        {
+            IncludedAssetId = assetId,
+            IncludedAssetCount = viewModel.IncludedAssets.Count,
+            TemplateIncludedAssetIds = templateItems[0].IncludedAssetIds
+        };
+    }
+
     private static Guid SeedCustomer(LocalStateService local, SessionState adminSession, string name, string businessNumber)
     {
         var customer = new LocalCustomer
@@ -653,6 +749,36 @@ internal static class Program
             CurrentCustomerName = "ZZZ-단일후보 자동연결 거래처",
             InstallSiteName = "단일후보 테스트실",
             InstallLocation = "단일후보 테스트실",
+            BillingEligibilityStatus = "청구가능",
+            AssetStatus = "임대진행중",
+            MonthlyFee = 150000m,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+
+        db.RentalAssets.Add(asset);
+        db.SaveChanges();
+        return asset.Id;
+    }
+
+    private static Guid SeedLegacyLinkedAsset(LocalDbContext db, Guid billingProfileId, string customerName)
+    {
+        var now = DateTime.UtcNow;
+        var asset = new LocalRentalAsset
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = null,
+            BillingProfileId = billingProfileId,
+            AssetKey = "USENET|LEGACY-001",
+            ManagementCompanyCode = DomainConstants.OfficeUsenet,
+            ResponsibleOfficeCode = DomainConstants.OfficeUsenet,
+            ManagementNumber = "LEGACY-001",
+            ManagementId = "LEGACY-001",
+            ItemName = "IMC2010",
+            CustomerName = customerName,
+            CurrentCustomerName = customerName,
+            InstallSiteName = "사무실",
+            InstallLocation = "사무실",
             BillingEligibilityStatus = "청구가능",
             AssetStatus = "임대진행중",
             MonthlyFee = 150000m,

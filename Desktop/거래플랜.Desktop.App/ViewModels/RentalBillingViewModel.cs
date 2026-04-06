@@ -910,6 +910,23 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             _session,
             ct);
 
+        var hasExplicitIncludedAssets = TemplateItems
+            .SelectMany(item => item.IncludedAssetIds)
+            .Any(id => id != Guid.Empty);
+
+        if (SelectedTemplateItem is not null &&
+            !LinkAssetsLater &&
+            !hasExplicitIncludedAssets &&
+            includedAssets.Count > 0 &&
+            TemplateItems.Count == 1)
+        {
+            foreach (var assetId in includedAssets.Select(asset => asset.Id).Distinct())
+            {
+                if (!SelectedTemplateItem.IncludedAssetIds.Contains(assetId))
+                    SelectedTemplateItem.IncludedAssetIds.Add(assetId);
+            }
+        }
+
         var candidateAssets = await _rental.GetBillingAssetCandidatesAsync(
             billingProfileId,
             customerId,
