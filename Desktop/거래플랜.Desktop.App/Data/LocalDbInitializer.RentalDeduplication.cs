@@ -177,7 +177,7 @@ public static partial class LocalDbInitializer
         var logCounts = logs.GroupBy(current => current.BillingProfileId).ToDictionary(group => group.Key, group => group.Count());
 
         var groups = profiles
-            .Where(current => current.CustomerId.HasValue && current.CustomerId.Value != Guid.Empty)
+            .Where(current => !string.IsNullOrWhiteSpace(current.CustomerName))
             .GroupBy(BuildRentalBillingProfileDuplicateKey, StringComparer.Ordinal)
             .Where(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1)
             .ToList();
@@ -362,8 +362,8 @@ public static partial class LocalDbInitializer
         => RentalDuplicateNormalizer.BuildRentalBillingProfileDuplicateKey(
             current.ManagementCompanyCode,
             current.ResponsibleOfficeCode,
-            current.CustomerId,
-            current.BusinessNumber,
+            null,
+            string.Empty,
             current.CustomerName,
             current.BillingType,
             current.BillingAdvanceMode,

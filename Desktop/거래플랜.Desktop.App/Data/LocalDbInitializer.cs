@@ -34,6 +34,7 @@ public static partial class LocalDbInitializer
     private const string MergeDuplicateCustomersStepKey = "Migration.MergeDuplicateCustomers.v1";
     private const string MergeBusinessDuplicateCustomersStepKey = "Migration.MergeBusinessDuplicateCustomers.v1";
 private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.MergeDuplicateRentalBillingProfiles.v3";
+private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Migration.MergeDuplicateRentalBillingProfiles.PostLinkage.v2";
     private const string MergeDuplicateRentalAssetsStepKey = "Migration.MergeDuplicateRentalAssets.v2";
     private const string MergeDuplicateCompanyProfilesStepKey = "Migration.MergeDuplicateCompanyProfiles.v1";
     private const string RepairRentalCustomerLinkageStepKey = "Migration.RepairRentalCustomerLinkage.v5";
@@ -169,6 +170,10 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
             db,
             RepairRentalCustomerLinkageStepKey,
             async () => await RepairRentalCustomerLinkageAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            MergeDuplicateRentalBillingProfilesPostLinkageStepKey,
+            async () => await MergeDuplicateRentalBillingProfilesAsync(db));
         await RunStartupMaintenanceStepAsync(
             db,
             MergeDuplicateItemsStepKey,

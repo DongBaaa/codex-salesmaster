@@ -639,10 +639,68 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .ToList();
         }
 
+        ApplyBillingRowCustomerDisplayDisambiguation(rows);
+
         return rows
             .OrderBy(row => row.DaysRemaining ?? int.MaxValue)
             .ThenBy(row => row.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+    }
+
+    private static void ApplyBillingRowCustomerDisplayDisambiguation(List<RentalBillingViewRow> rows)
+    {
+        var duplicateGroups = rows
+            .Where(row => !string.IsNullOrWhiteSpace(row.CustomerDisplayName))
+            .GroupBy(row => row.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .ToList();
+
+        foreach (var group in duplicateGroups)
+        {
+            var hasMultipleOffices = group
+                .Select(row => row.ResponsibleOfficeName)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.CurrentCultureIgnoreCase)
+                .Take(2)
+                .Count() > 1;
+            var hasMultipleCycles = group
+                .Select(row => row.Source.BillingCycleMonths)
+                .Distinct()
+                .Take(2)
+                .Count() > 1;
+            var hasMultipleInstallLocations = group
+                .Select(row => row.InstallLocationDisplay)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.CurrentCultureIgnoreCase)
+                .Take(2)
+                .Count() > 1;
+            var hasMultipleItems = group
+                .Select(row => row.Source.ItemName)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.CurrentCultureIgnoreCase)
+                .Take(2)
+                .Count() > 1;
+
+            foreach (var row in group)
+            {
+                var suffixParts = new List<string>();
+                if (hasMultipleOffices && !string.IsNullOrWhiteSpace(row.ResponsibleOfficeName))
+                    suffixParts.Add(row.ResponsibleOfficeName);
+                if (hasMultipleCycles && row.Source.BillingCycleMonths > 0)
+                    suffixParts.Add($"{row.Source.BillingCycleMonths}개월");
+                if (hasMultipleInstallLocations && !string.IsNullOrWhiteSpace(row.InstallLocationDisplay))
+                    suffixParts.Add(row.InstallLocationDisplay);
+                else if (hasMultipleItems && !string.IsNullOrWhiteSpace(row.Source.ItemName))
+                    suffixParts.Add(row.Source.ItemName.Trim());
+                else if (!row.HasPersistedProfile)
+                    suffixParts.Add("미연결");
+
+                if (suffixParts.Count == 0)
+                    continue;
+
+                row.CustomerDisplayName = $"{group.Key} · {string.Join(" / ", suffixParts)}";
+            }
+        }
     }
 
     private IQueryable<LocalRentalAsset> ApplyUnlinkedBillingAssetFilter(

@@ -282,7 +282,7 @@ public sealed class RentalBillingAssetLinkEdit
 public sealed class RentalAssetLinkCandidate
 {
     public LocalRentalAsset Source { get; init; } = new();
-    public string CustomerDisplayName { get; init; } = string.Empty;
+    public string CustomerDisplayName { get; set; } = string.Empty;
     public string ResponsibleOfficeName { get; init; } = string.Empty;
     public Guid? BillingProfileId { get; init; }
     public string CurrentBillingProfileDisplay { get; init; } = string.Empty;
@@ -325,7 +325,7 @@ public sealed class RentalBillingViewRow
     public Guid SelectionId { get; init; }
     public bool HasPersistedProfile { get; init; } = true;
     public LocalRentalBillingProfile Source { get; init; } = new();
-    public string CustomerDisplayName { get; init; } = string.Empty;
+    public string CustomerDisplayName { get; set; } = string.Empty;
     public string ResponsibleOfficeName { get; init; } = string.Empty;
     public DateOnly? NextBillingDate { get; init; }
     public int? DaysRemaining { get; init; }
