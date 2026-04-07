@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="렌탈 기준설정"
-        Height="760"
+        Height="900"
         Width="1180"
         WindowStartupLocation="CenterOwner"
         Background="#151F2E"
@@ -11,6 +11,12 @@
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
+        
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=DataGridCell}, Path=IsSelected}" Value="True">
+                    <Setter Property="Foreground" Value="Black"/>
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
         <Style TargetType="TextBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -147,6 +153,44 @@
                 </Grid>
             </Border>
         </Grid>
+
+        <Border Grid.Row="2" Margin="0,10,0,0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,10">
+                    <StackPanel DockPanel.Dock="Left">
+                        <TextBlock Text="렌탈 거래처명 정리" Foreground="#4FC3F7" FontWeight="Bold"/>
+                        <TextBlock Text="메인 거래처 테이블 기준으로 렌탈 청구프로필/설치자산의 거래처명과 담당지점 연결을 점검합니다." Foreground="#9FB3C8" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
+                        <Button Content="검토 새로고침" Margin="0,0,6,0" Command="{Binding ReloadCustomerLinkCleanupCommand}"/>
+                        <Button Content="메인 거래처명 동기화" Background="#1565C0" BorderBrush="#1565C0" Command="{Binding NormalizeCustomerLinksCommand}" IsEnabled="{Binding CanManage}"/>
+                    </WrapPanel>
+                </DockPanel>
+
+                <TextBlock Grid.Row="1" Text="{Binding CustomerLinkCleanupSummary}" Foreground="#90CAF9" Margin="0,0,0,10"/>
+
+                <DataGrid Grid.Row="2" ItemsSource="{Binding CustomerLinkCleanupRows}" BorderThickness="0" IsReadOnly="True">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="유형" Binding="{Binding EntityType}" Width="90"/>
+                        <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="110"/>
+                        <DataGridTextColumn Header="현재 거래처명" Binding="{Binding CurrentCustomerName}" Width="190"/>
+                        <DataGridTextColumn Header="메인 거래처명" Binding="{Binding MasterCustomerName}" Width="190"/>
+                        <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="150"/>
+                        <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="160"/>
+                        <DataGridTextColumn Header="연결 청구프로필" Binding="{Binding LinkedProfileDisplay}" Width="220"/>
+                        <DataGridTextColumn Header="이슈" Binding="{Binding IssueSummary}" Width="220"/>
+                        <DataGridTextColumn Header="권장 처리" Binding="{Binding SuggestedAction}" Width="190"/>
+                        <DataGridCheckBoxColumn Header="자동" Binding="{Binding CanAutoNormalize}" Width="60"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </Border>
 
         <Border Grid.Row="3" Margin="0,10,0,0" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10">
             <DockPanel LastChildFill="False">

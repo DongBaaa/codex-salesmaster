@@ -1,17 +1,24 @@
-﻿using System.Windows;
+﻿using System.ComponentModel;
+using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 using 거래플랜.Desktop.App.Infrastructure;
+using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
 
 public partial class InventoryWindow : Window
 {
+    private bool _allowCloseWithoutSave;
+    private bool _closeInProgress;
+
     public InventoryWindow(InventoryViewModel vm)
     {
         InitializeComponent();
         DataContext = vm;
         Activated += InventoryWindow_Activated;
+        Closing += Window_Closing;
     }
 
     private void InventoryWindow_Activated(object? sender, EventArgs e)
@@ -59,4 +66,81 @@ public partial class InventoryWindow : Window
             "재고이동 창을 여는 중 오류가 발생했습니다.");
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => DialogWindowCloseHelper.Close(this);
+
+    private async void Window_Closing(object? sender, CancelEventArgs e)
+    {
+        if (DataContext is not InventoryViewModel vm)
+            return;
+
+        try
+        {
+            if (_allowCloseWithoutSave)
+                return;
+
+            if (_closeInProgress)
+            {
+                e.Cancel = true;
+                return;
+            }
+
+            if (!vm.HasMeaningfulDraftContentForClose || !vm.HasPendingChanges)
+                return;
+
+            e.Cancel = true;
+            _closeInProgress = true;
+            var requestDeferredClose = false;
+            var previousCursor = Mouse.OverrideCursor;
+            try
+            {
+                IsEnabled = false;
+                Mouse.OverrideCursor = Cursors.Wait;
+
+                var saved = await vm.TryAutoSaveOnCloseAsync();
+                if (saved)
+                {
+                    _allowCloseWithoutSave = true;
+                    requestDeferredClose = true;
+                }
+                else
+                {
+                    var discard = MessageBox.Show(
+                        $"{vm.StatusMessage}\n\n저장되지 않은 변경사항이 있습니다. 저장 없이 닫을까요?",
+                        "확인",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Warning);
+
+                    if (discard == MessageBoxResult.Yes)
+                    {
+                        _allowCloseWithoutSave = true;
+                        requestDeferredClose = true;
+                    }
+                }
+            }
+            finally
+            {
+                Mouse.OverrideCursor = previousCursor;
+                if (!_allowCloseWithoutSave)
+                    IsEnabled = true;
+                _closeInProgress = false;
+            }
+
+            if (requestDeferredClose)
+                _ = Dispatcher.BeginInvoke(new Action(() => DialogWindowCloseHelper.Close(this)));
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("UI", "재고 창 닫기 처리 실패", ex);
+            e.Cancel = true;
+            IsEnabled = true;
+            Mouse.OverrideCursor = null;
+            _closeInProgress = false;
+
+            MessageBox.Show(
+                this,
+                $"재고 창을 닫는 중 오류가 발생했습니다.{Environment.NewLine}{ex.Message}",
+                "오류",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
 }

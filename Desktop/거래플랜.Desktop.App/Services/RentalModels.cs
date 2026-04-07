@@ -15,10 +15,9 @@ public sealed class RentalBillingFilter
 public sealed class RentalAssetFilter
 {
     public string SearchText { get; set; } = string.Empty;
-    public string ItemCategoryName { get; set; } = string.Empty;
-    public string OfficeCode { get; set; } = string.Empty;
-    public string AssetStatus { get; set; } = string.Empty;
-    public DateOnly ReferenceDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    public List<string> ItemCategoryNames { get; set; } = new();
+    public List<string> OfficeCodes { get; set; } = new();
+    public List<string> AssetStatuses { get; set; } = new();
 }
 
 public sealed class RentalAlertItem
@@ -58,6 +57,32 @@ public sealed class RentalLinkReviewItem
     public string InstallLocation { get; set; } = string.Empty;
     public string ReviewNote { get; set; } = string.Empty;
     public int CandidateCount { get; set; }
+}
+
+public sealed class RentalCustomerLinkCleanupRow
+{
+    public string EntityType { get; set; } = string.Empty;
+    public Guid EntityId { get; set; }
+    public string ResponsibleOfficeName { get; set; } = string.Empty;
+    public string CurrentCustomerName { get; set; } = string.Empty;
+    public string MasterCustomerName { get; set; } = string.Empty;
+    public string BusinessNumber { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
+    public string InstallLocation { get; set; } = string.Empty;
+    public string LinkedProfileDisplay { get; set; } = string.Empty;
+    public string IssueSummary { get; set; } = string.Empty;
+    public string SuggestedAction { get; set; } = string.Empty;
+    public bool CanAutoNormalize { get; set; }
+}
+
+public sealed class RentalCustomerLinkCleanupResult
+{
+    public int ScannedProfileCount { get; set; }
+    public int ScannedAssetCount { get; set; }
+    public int ReviewItemCount { get; set; }
+    public int UpdatedProfileCount { get; set; }
+    public int UpdatedAssetCount { get; set; }
+    public int LinkedCustomerCount { get; set; }
 }
 
 public sealed class RentalDashboardSummary
@@ -239,6 +264,28 @@ public sealed class RentalBillingEditorDraftModel
     public bool IsActive { get; set; } = true;
     public Guid? SelectedTemplateItemId { get; set; }
     public List<RentalBillingTemplateItemModel> TemplateItems { get; set; } = new();
+    public List<RentalBillingAssetLinkEdit> AssetLinkEdits { get; set; } = new();
+}
+
+public sealed class RentalBillingAssetLinkEdit
+{
+    public Guid AssetId { get; set; }
+    public Guid? CustomerId { get; set; }
+    public string CustomerName { get; set; } = string.Empty;
+    public string InstallLocation { get; set; } = string.Empty;
+    public string InstallSiteName { get; set; } = string.Empty;
+    public decimal? MonthlyFee { get; set; }
+    public DateOnly? ContractStartDate { get; set; }
+    public string Notes { get; set; } = string.Empty;
+}
+
+public sealed class RentalAssetLinkCandidate
+{
+    public LocalRentalAsset Source { get; init; } = new();
+    public string CustomerDisplayName { get; init; } = string.Empty;
+    public string ResponsibleOfficeName { get; init; } = string.Empty;
+    public Guid? BillingProfileId { get; init; }
+    public string CurrentBillingProfileDisplay { get; init; } = string.Empty;
 }
 
 public sealed class RentalCustomerOnboardingDraftModel
@@ -275,6 +322,8 @@ public sealed class RentalCustomerOnboardingDraftModel
 
 public sealed class RentalBillingViewRow
 {
+    public Guid SelectionId { get; init; }
+    public bool HasPersistedProfile { get; init; } = true;
     public LocalRentalBillingProfile Source { get; init; } = new();
     public string CustomerDisplayName { get; init; } = string.Empty;
     public string ResponsibleOfficeName { get; init; } = string.Empty;

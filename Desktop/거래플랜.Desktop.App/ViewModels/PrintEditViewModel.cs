@@ -11,6 +11,7 @@ public sealed partial class PrintEditViewModel : ObservableObject
     private readonly IPrintService _printService;
     private readonly Func<InvoicePrintModel, Task> _saveAction;
     private readonly Guid _invoiceId;
+    private string _baselineStateSignature = string.Empty;
 
     public event Action? RequestClose;
 
@@ -57,6 +58,8 @@ public sealed partial class PrintEditViewModel : ObservableObject
     public bool IsPurchaseDocument => string.Equals(VoucherType, 거래플랜.Shared.Contracts.VoucherType.Purchase.ToString(), StringComparison.OrdinalIgnoreCase);
     public string SettlementAmountLabelText => IsPurchaseDocument ? "지불액" : "입금액";
     public string OutstandingAmountLabelText => IsPurchaseDocument ? "미지불" : "미수금";
+    public bool HasPendingChanges => !string.Equals(_baselineStateSignature, BuildStateSignature(BuildModel()), StringComparison.Ordinal);
+    public bool HasMeaningfulDraftContentForClose => HasMeaningfulDraftContent();
 
     public PrintEditViewModel(
         InvoicePrintModel model,
@@ -105,6 +108,7 @@ public sealed partial class PrintEditViewModel : ObservableObject
             Lines.Add(new InvoicePrintLineEditModel { No = 1 });
 
         RefreshPreview();
+        CaptureBaselineState();
     }
 
     partial void OnVoucherTypeChanged(string value)
@@ -160,9 +164,20 @@ public sealed partial class PrintEditViewModel : ObservableObject
 
     [RelayCommand(CanExecute = nameof(CanSave))]
     private async Task SaveAsync()
+        => await SaveCoreAsync(closeAfterSave: true, successMessage: "출력물 편집 내용을 저장했습니다.", showErrorDialog: true);
+
+    public async Task<bool> TryAutoSaveOnCloseAsync()
+    {
+        if (!HasPendingChanges || !HasMeaningfulDraftContentForClose)
+            return true;
+
+        return await SaveCoreAsync(closeAfterSave: false, successMessage: "출력물 편집 내용을 자동 저장했습니다.", showErrorDialog: false);
+    }
+
+    private async Task<bool> SaveCoreAsync(bool closeAfterSave, string successMessage, bool showErrorDialog)
     {
         if (IsSaving)
-            return;
+            return false;
 
         try
         {
@@ -171,17 +186,25 @@ public sealed partial class PrintEditViewModel : ObservableObject
             var model = BuildModel();
             await _saveAction(model);
             WasSaved = true;
-            StatusMessage = "출력물 편집 내용을 저장했습니다.";
-            RequestClose?.Invoke();
+            StatusMessage = successMessage;
+            CaptureBaselineState();
+            if (closeAfterSave)
+                RequestClose?.Invoke();
+            return true;
         }
         catch (Exception ex)
         {
             StatusMessage = $"저장 실패: {ex.Message}";
-            System.Windows.MessageBox.Show(
-                StatusMessage,
-                "오류",
-                System.Windows.MessageBoxButton.OK,
-                System.Windows.MessageBoxImage.Error);
+            if (showErrorDialog)
+            {
+                System.Windows.MessageBox.Show(
+                    StatusMessage,
+                    "오류",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Error);
+            }
+
+            return false;
         }
         finally
         {
@@ -239,6 +262,78 @@ public sealed partial class PrintEditViewModel : ObservableObject
             BalanceAmount = BalanceAmount,
             Lines = lines
         };
+    }
+
+    private bool HasMeaningfulDraftContent()
+    {
+        var model = BuildModel();
+        return !string.IsNullOrWhiteSpace(model.InvoiceNumber)
+               || !string.IsNullOrWhiteSpace(model.SupplierName)
+               || !string.IsNullOrWhiteSpace(model.BuyerName)
+               || !string.IsNullOrWhiteSpace(model.ManagerName)
+               || !string.IsNullOrWhiteSpace(model.Memo)
+               || !string.IsNullOrWhiteSpace(model.FooterText)
+               || !string.IsNullOrWhiteSpace(model.BankAccountText)
+               || model.SupplyAmount != 0m
+               || model.VatAmount != 0m
+               || model.TotalAmount != 0m
+               || model.PaidAmount != 0m
+               || model.BalanceAmount != 0m
+               || model.Lines.Any(line =>
+                   !string.IsNullOrWhiteSpace(line.ItemName)
+                   || !string.IsNullOrWhiteSpace(line.Specification)
+                   || !string.IsNullOrWhiteSpace(line.Unit)
+                   || line.Quantity != 0m
+                   || line.UnitPrice != 0m
+                   || line.Amount != 0m
+                   || !string.IsNullOrWhiteSpace(line.Remark));
+    }
+
+    private void CaptureBaselineState()
+        => _baselineStateSignature = BuildStateSignature(BuildModel());
+
+    private static string BuildStateSignature(InvoicePrintModel model)
+    {
+        var builder = new System.Text.StringBuilder();
+        builder.Append(model.InvoiceId.ToString("D"))
+            .Append('|').Append(model.InvoiceNumber ?? string.Empty)
+            .Append('|').Append(model.InvoiceDate.ToString("yyyy-MM-dd"))
+            .Append('|').Append(model.VoucherType ?? string.Empty)
+            .Append('|').Append(model.SupplierBusinessNumber ?? string.Empty)
+            .Append('|').Append(model.SupplierName ?? string.Empty)
+            .Append('|').Append(model.SupplierRepresentative ?? string.Empty)
+            .Append('|').Append(model.SupplierPhone ?? string.Empty)
+            .Append('|').Append(model.SupplierAddress ?? string.Empty)
+            .Append('|').Append(model.BuyerBusinessNumber ?? string.Empty)
+            .Append('|').Append(model.BuyerName ?? string.Empty)
+            .Append('|').Append(model.BuyerRepresentative ?? string.Empty)
+            .Append('|').Append(model.BuyerPhone ?? string.Empty)
+            .Append('|').Append(model.BuyerAddress ?? string.Empty)
+            .Append('|').Append(model.ManagerName ?? string.Empty)
+            .Append('|').Append(model.Memo ?? string.Empty)
+            .Append('|').Append(model.FooterText ?? string.Empty)
+            .Append('|').Append(model.BankAccountText ?? string.Empty)
+            .Append('|').Append(model.PrintWithDate)
+            .Append('|').Append(model.PrintWithPrice)
+            .Append('|').Append(model.SupplyAmount)
+            .Append('|').Append(model.VatAmount)
+            .Append('|').Append(model.TotalAmount)
+            .Append('|').Append(model.PaidAmount)
+            .Append('|').Append(model.BalanceAmount);
+
+        foreach (var line in model.Lines.OrderBy(line => line.No))
+        {
+            builder.Append('|').Append(line.No)
+                .Append(':').Append(line.ItemName ?? string.Empty)
+                .Append(':').Append(line.Specification ?? string.Empty)
+                .Append(':').Append(line.Unit ?? string.Empty)
+                .Append(':').Append(line.Quantity)
+                .Append(':').Append(line.UnitPrice)
+                .Append(':').Append(line.Amount)
+                .Append(':').Append(line.Remark ?? string.Empty);
+        }
+
+        return builder.ToString();
     }
 }
 

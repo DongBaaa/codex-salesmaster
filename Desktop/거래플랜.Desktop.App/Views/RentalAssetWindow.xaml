@@ -1,6 +1,7 @@
 ﻿<Window x:Class="거래플랜.Desktop.App.Views.RentalAssetWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
         Title="렌탈 자산/설치현황"
         Height="940"
         Width="1640"
@@ -12,6 +13,12 @@
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
+        
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=DataGridCell}, Path=IsSelected}" Value="True">
+                    <Setter Property="Foreground" Value="Black"/>
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
         <Style TargetType="TextBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -26,6 +33,21 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Padding" Value="8,1"/>
             <Setter Property="Height" Value="28"/>
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="FilterToggleButtonStyle" TargetType="{x:Type primitives:ToggleButton}">
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="BorderBrush" Value="#4A6382"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="10,4"/>
+            <Setter Property="MinWidth" Value="150"/>
+            <Setter Property="Height" Value="34"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style TargetType="DatePicker">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -108,17 +130,74 @@
                 <TextBlock Text="검색" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <TextBox Width="240" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0"/>
                 <TextBlock Text="품목분류" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <ComboBox Width="150" ItemsSource="{Binding ItemCategoryFilterOptions}" SelectedItem="{Binding SelectedItemCategoryFilter}" Margin="0,0,12,0"/>
+                <Grid Margin="0,0,12,0">
+                    <primitives:ToggleButton x:Name="ItemCategoryFilterButton" Style="{StaticResource FilterToggleButtonStyle}" IsChecked="{Binding IsItemCategoryFilterPopupOpen}" Content="{Binding SelectedItemCategoryFilterSummary}"/>
+                    <Popup IsOpen="{Binding IsItemCategoryFilterPopupOpen}" PlacementTarget="{Binding ElementName=ItemCategoryFilterButton}" Placement="Bottom" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
+                        <Border Background="#1A2B4A" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10" MinWidth="220">
+                            <StackPanel>
+                                <WrapPanel Margin="0,0,0,8">
+                                    <Button Content="전체 선택" Padding="10,0" MinWidth="82" Height="30" Margin="0,0,6,0" Command="{Binding SelectAllItemCategoryFiltersCommand}"/>
+                                    <Button Content="초기화" Padding="10,0" MinWidth="82" Height="30" Command="{Binding ClearItemCategoryFiltersCommand}"/>
+                                </WrapPanel>
+                                <ScrollViewer MaxHeight="280" VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding ItemCategoryFilterOptions}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Content="{Binding DisplayName}" IsChecked="{Binding IsSelected, Mode=TwoWay}" Margin="4,2"/>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </StackPanel>
+                        </Border>
+                    </Popup>
+                </Grid>
                 <TextBlock Text="담당지점" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <ComboBox Width="150" ItemsSource="{Binding FilterOfficeOptions}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedOfficeFilter}" Margin="0,0,12,0"/>
+                <Grid Margin="0,0,12,0">
+                    <primitives:ToggleButton x:Name="OfficeFilterButton" Style="{StaticResource FilterToggleButtonStyle}" IsChecked="{Binding IsOfficeFilterPopupOpen}" Content="{Binding SelectedOfficeFilterSummary}"/>
+                    <Popup IsOpen="{Binding IsOfficeFilterPopupOpen}" PlacementTarget="{Binding ElementName=OfficeFilterButton}" Placement="Bottom" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
+                        <Border Background="#1A2B4A" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10" MinWidth="220">
+                            <StackPanel>
+                                <WrapPanel Margin="0,0,0,8">
+                                    <Button Content="전체 선택" Padding="10,0" MinWidth="82" Height="30" Margin="0,0,6,0" Command="{Binding SelectAllOfficeFiltersCommand}"/>
+                                    <Button Content="초기화" Padding="10,0" MinWidth="82" Height="30" Command="{Binding ClearOfficeFiltersCommand}"/>
+                                </WrapPanel>
+                                <ScrollViewer MaxHeight="280" VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding OfficeFilterOptions}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Content="{Binding DisplayName}" IsChecked="{Binding IsSelected, Mode=TwoWay}" Margin="4,2"/>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </StackPanel>
+                        </Border>
+                    </Popup>
+                </Grid>
                 <TextBlock Text="상태" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <ComboBox Width="130" ItemsSource="{Binding AssetStatusOptions}" SelectedItem="{Binding SelectedStatusFilter}" Margin="0,0,12,0"/>
-                <TextBlock Text="기준일" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <DatePicker Width="170" SelectedDate="{Binding ReferenceDate, Converter={StaticResource DateOnlyConverter}}" SelectedDateFormat="Short">
-                    <DatePicker.Resources>
-                        <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
-                    </DatePicker.Resources>
-                </DatePicker>
+                <Grid Margin="0,0,12,0">
+                    <primitives:ToggleButton x:Name="StatusFilterButton" Style="{StaticResource FilterToggleButtonStyle}" IsChecked="{Binding IsStatusFilterPopupOpen}" Content="{Binding SelectedStatusFilterSummary}"/>
+                    <Popup IsOpen="{Binding IsStatusFilterPopupOpen}" PlacementTarget="{Binding ElementName=StatusFilterButton}" Placement="Bottom" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
+                        <Border Background="#1A2B4A" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10" MinWidth="220">
+                            <StackPanel>
+                                <WrapPanel Margin="0,0,0,8">
+                                    <Button Content="전체 선택" Padding="10,0" MinWidth="82" Height="30" Margin="0,0,6,0" Command="{Binding SelectAllStatusFiltersCommand}"/>
+                                    <Button Content="초기화" Padding="10,0" MinWidth="82" Height="30" Command="{Binding ClearStatusFiltersCommand}"/>
+                                </WrapPanel>
+                                <ScrollViewer MaxHeight="280" VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding StatusFilterOptions}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Content="{Binding DisplayName}" IsChecked="{Binding IsSelected, Mode=TwoWay}" Margin="4,2"/>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </StackPanel>
+                        </Border>
+                    </Popup>
+                </Grid>
             </WrapPanel>
         </Border>
 
@@ -147,7 +226,7 @@
                         <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocationDisplay}" Width="170"/>
                         <DataGridTextColumn Header="품목분류" Binding="{Binding Source.ItemCategoryName}" Width="120"/>
                         <DataGridTextColumn Header="품명" Binding="{Binding Source.ItemName}" Width="150"/>
-                        <DataGridTextColumn Header="기계번호" Binding="{Binding Source.MachineNumber}" Width="140"/>
+                        <DataGridTextColumn Header="시리얼번호" Binding="{Binding Source.MachineNumber}" Width="140"/>
                         <DataGridTextColumn Header="상태" Binding="{Binding Source.AssetStatus}" Width="90"/>
                         <DataGridTextColumn Header="청구상태" Binding="{Binding BillingEligibilityStatus}" Width="100"/>
                         <DataGridTextColumn Header="월요금" Binding="{Binding Source.MonthlyFee, StringFormat=N0}" Width="100"/>
@@ -279,7 +358,7 @@
                             <TextBox Grid.Column="0" Text="{Binding EditItemName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
                             <Button Grid.Column="1" Content="조회" MinWidth="72" Padding="10,0" Click="ItemLookupButton_Click"/>
                         </Grid>
-                        <TextBlock Grid.Row="9" Grid.Column="3" Text="기계번호" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                        <TextBlock Grid.Row="9" Grid.Column="3" Text="시리얼번호" VerticalAlignment="Center" Margin="0,0,10,8"/>
                         <TextBox Grid.Row="9" Grid.Column="4" Text="{Binding EditMachineNumber, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
 
                         <TextBlock Grid.Row="10" Grid.Column="0" Text="매입처" VerticalAlignment="Center" Margin="0,0,10,8"/>

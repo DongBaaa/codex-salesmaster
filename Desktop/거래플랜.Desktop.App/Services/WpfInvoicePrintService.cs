@@ -861,11 +861,27 @@ public sealed class WpfInvoicePrintService : IPrintService
             Background = background ?? (isHeader ? HeaderFill : Brushes.White),
             Padding = new Thickness(3, isHeader ? 1 : 2, 3, isHeader ? 1 : 2),
             Child = autoShrink
-                ? new Viewbox
+                ? new Grid
                 {
-                    Stretch = Stretch.Uniform,
-                    StretchDirection = StretchDirection.DownOnly,
-                    Child = textBlock
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    ClipToBounds = true,
+                    Children =
+                    {
+                        new Viewbox
+                        {
+                            Stretch = Stretch.Uniform,
+                            StretchDirection = StretchDirection.DownOnly,
+                            HorizontalAlignment = alignment switch
+                            {
+                                TextAlignment.Center => HorizontalAlignment.Center,
+                                TextAlignment.Right => HorizontalAlignment.Right,
+                                _ => HorizontalAlignment.Left
+                            },
+                            VerticalAlignment = VerticalAlignment.Center,
+                            Child = textBlock
+                        }
+                    }
                 }
                 : textBlock
         };

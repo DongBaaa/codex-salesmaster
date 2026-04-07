@@ -143,6 +143,9 @@ public partial class RentalBillingWindow : Window
     private void CustomerLookupButton_Click(object sender, RoutedEventArgs e)
         => UiTaskHelper.Run(this, OpenCustomerLookupAsync, "UI", "렌탈 청구 거래처 조회", "거래처 조회 중 오류가 발생했습니다.");
 
+    private void OpenAssetLinkDialogButton_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(this, OpenAssetLinkDialogAsync, "UI", "렌탈 자산 연결", "렌탈 자산 연결창을 여는 중 오류가 발생했습니다.");
+
     private async Task OpenCustomerLookupAsync()
     {
         if (DataContext is not RentalBillingViewModel viewModel)
@@ -164,5 +167,37 @@ public partial class RentalBillingWindow : Window
 
         if (dialog.ShowDialog() == true && dialog.SelectedRow?.Tag is LocalCustomer customer)
             viewModel.ApplySelectedCustomer(customer);
+    }
+
+    private async Task OpenAssetLinkDialogAsync()
+    {
+        if (DataContext is not RentalBillingViewModel viewModel)
+            return;
+
+        if (string.IsNullOrWhiteSpace(viewModel.EditCustomerName))
+        {
+            MessageBox.Show("먼저 거래처를 선택하거나 입력하세요.", "렌탈 자산 연결", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dialogViewModel = new RentalAssetLinkDialogViewModel(
+            viewModel.RentalStateService,
+            viewModel.SessionState,
+            viewModel.SelectedRow?.HasPersistedProfile == true ? viewModel.SelectedRow.Source.Id : null,
+            viewModel.EditCustomerId,
+            viewModel.EditCustomerName,
+            viewModel.EditOfficeCode,
+            viewModel.EditInstallLocation);
+        await dialogViewModel.LoadAsync();
+
+        var dialog = new RentalAssetLinkDialog(dialogViewModel)
+        {
+            Owner = this
+        };
+
+        if (dialog.ShowDialog() != true)
+            return;
+
+        viewModel.ApplyAssetLinkSelections(dialogViewModel.GetSelectedAssets());
     }
 }

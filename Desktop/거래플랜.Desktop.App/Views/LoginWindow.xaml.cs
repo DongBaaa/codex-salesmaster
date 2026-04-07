@@ -12,6 +12,7 @@ public partial class LoginWindow : Window
     public LoginWindow(LoginViewModel vm)
     {
         InitializeComponent();
+        Title = AppRuntimeInfo.WithTestLabel(Title);
         _vm = vm;
         DataContext = vm;
         vm.LoginSucceeded += () =>

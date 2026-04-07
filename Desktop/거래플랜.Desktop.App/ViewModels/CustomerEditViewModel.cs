@@ -25,6 +25,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
 
     private readonly LocalStateService _local;
     private readonly SessionState _session;
+    private string _baselineStateSignature = string.Empty;
 
     public event Action? SavedAndNew;
     public event Action? SavedAndClose;
@@ -69,6 +70,8 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     private string _statusMessage = string.Empty;
 
     public bool HasStatus => !string.IsNullOrEmpty(StatusMessage);
+    public bool HasPendingChanges => !string.Equals(_baselineStateSignature, BuildStateSignature(), StringComparison.Ordinal);
+    public bool HasMeaningfulDraftContentForClose => HasMeaningfulDraftContent();
 
     public ObservableCollection<LocalCustomerCategory> Categories { get; } = new();
     public ObservableCollection<string> OfficeCodes { get; } = new();
@@ -84,6 +87,8 @@ public sealed partial class CustomerEditViewModel : ObservableObject
 
         foreach (var contractType in DefaultContractTypes)
             ContractTypes.Add(contractType);
+
+        CaptureBaselineState();
     }
 
     public async Task LoadAsync(LocalCustomer? customer = null)
@@ -145,6 +150,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             SelectedContract = null;
             Contracts.Clear();
             ResetContractEntry(makePrimary: true);
+            CaptureBaselineState();
             return;
         }
 
@@ -185,6 +191,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         }
 
         await LoadContractsAsync(CustomerId);
+        CaptureBaselineState();
     }
 
     [RelayCommand]
@@ -340,6 +347,20 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     }
 
     private async Task<bool> DoSaveAsync()
+        => await DoSaveAsync(waitForServerWrite: true, successMessage: "거래처를 저장했습니다.");
+
+    public async Task<bool> TryAutoSaveOnCloseAsync()
+    {
+        if (!HasPendingChanges || !HasMeaningfulDraftContentForClose)
+            return true;
+
+        if (!ValidateBeforeSave())
+            return false;
+
+        return await DoSaveAsync(waitForServerWrite: false, successMessage: "거래처를 자동 저장했습니다.");
+    }
+
+    private async Task<bool> DoSaveAsync(bool waitForServerWrite, string successMessage)
     {
         var normalizedName = Name.Trim();
 
@@ -372,9 +393,18 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         if (_session.HasAdministrativePrivileges)
         {
             await _local.UpsertCustomerAsync(customer);
-            var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
-            StatusMessage = LocalStateService.ComposeServerWriteStatusMessage("거래처를 저장했습니다.", serverWriteResult);
+            if (waitForServerWrite)
+            {
+                var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+                StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(successMessage, serverWriteResult);
+            }
+            else
+            {
+                StatusMessage = successMessage;
+            }
+
             IsNew = false;
+            CaptureBaselineState();
             return true;
         }
 
@@ -382,10 +412,20 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         StatusMessage = result.Message;
         if (result.Success)
         {
-            var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
-            StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
+            if (waitForServerWrite)
+            {
+                var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+                StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(successMessage, serverWriteResult);
+            }
+            else
+            {
+                StatusMessage = successMessage;
+            }
+
             IsNew = false;
+            CaptureBaselineState();
         }
+
         return result.Success;
     }
 
@@ -414,4 +454,69 @@ public sealed partial class CustomerEditViewModel : ObservableObject
 
     private static string NormalizeOfficeCode(string? officeCode)
     => OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, DomainConstants.OfficeUsenet);
+
+    private bool HasMeaningfulDraftContent()
+        => !string.IsNullOrWhiteSpace(Name)
+           || !string.IsNullOrWhiteSpace(Phone)
+           || !string.IsNullOrWhiteSpace(MobilePhone)
+           || !string.IsNullOrWhiteSpace(FaxNumber)
+           || !string.IsNullOrWhiteSpace(Representative)
+           || !string.IsNullOrWhiteSpace(Department)
+           || !string.IsNullOrWhiteSpace(ContactPerson)
+           || !string.IsNullOrWhiteSpace(BusinessNumber)
+           || !string.IsNullOrWhiteSpace(BusinessType)
+           || !string.IsNullOrWhiteSpace(BusinessItem)
+           || !string.IsNullOrWhiteSpace(Address)
+           || !string.IsNullOrWhiteSpace(DetailAddress)
+           || !string.IsNullOrWhiteSpace(Recipient)
+           || !string.IsNullOrWhiteSpace(Email)
+           || !string.IsNullOrWhiteSpace(HomePage)
+           || !string.IsNullOrWhiteSpace(Notes)
+           || CategoryId.HasValue
+           || !string.Equals(PriceGrade, "매출단가", StringComparison.Ordinal)
+           || !string.Equals(NormalizeOfficeCode(ResponsibleOfficeCode), DomainConstants.OfficeUsenet, StringComparison.OrdinalIgnoreCase)
+           || !string.Equals(CustomerTradeTypes.Normalize(TradeType), CustomerTradeTypes.Sales, StringComparison.Ordinal)
+           || Contracts.Count > 0;
+
+    private void CaptureBaselineState()
+        => _baselineStateSignature = BuildStateSignature();
+
+    private string BuildStateSignature()
+    {
+        var builder = new System.Text.StringBuilder();
+        builder.Append(CustomerId.ToString("D"))
+            .Append('|').Append(Name ?? string.Empty)
+            .Append('|').Append(CategoryId?.ToString("D") ?? string.Empty)
+            .Append('|').Append(Phone ?? string.Empty)
+            .Append('|').Append(MobilePhone ?? string.Empty)
+            .Append('|').Append(FaxNumber ?? string.Empty)
+            .Append('|').Append(Representative ?? string.Empty)
+            .Append('|').Append(Department ?? string.Empty)
+            .Append('|').Append(ContactPerson ?? string.Empty)
+            .Append('|').Append(BusinessNumber ?? string.Empty)
+            .Append('|').Append(BusinessType ?? string.Empty)
+            .Append('|').Append(BusinessItem ?? string.Empty)
+            .Append('|').Append(Address ?? string.Empty)
+            .Append('|').Append(DetailAddress ?? string.Empty)
+            .Append('|').Append(Recipient ?? string.Empty)
+            .Append('|').Append(Email ?? string.Empty)
+            .Append('|').Append(HomePage ?? string.Empty)
+            .Append('|').Append(PriceGrade ?? string.Empty)
+            .Append('|').Append(NormalizeOfficeCode(ResponsibleOfficeCode))
+            .Append('|').Append(CustomerTradeTypes.Normalize(TradeType))
+            .Append('|').Append(Notes ?? string.Empty)
+            .Append('|').Append(IsNew);
+
+        foreach (var contract in Contracts.OrderBy(contract => contract.Id))
+        {
+            builder.Append('|').Append(contract.Id.ToString("D"))
+                .Append(':').Append(contract.FileName ?? string.Empty)
+                .Append(':').Append(contract.ContractType ?? string.Empty)
+                .Append(':').Append(contract.SignedDate?.ToString("yyyy-MM-dd") ?? string.Empty)
+                .Append(':').Append(contract.ExpireDate?.ToString("yyyy-MM-dd") ?? string.Empty)
+                .Append(':').Append(contract.IsPrimary);
+        }
+
+        return builder.ToString();
+    }
 }

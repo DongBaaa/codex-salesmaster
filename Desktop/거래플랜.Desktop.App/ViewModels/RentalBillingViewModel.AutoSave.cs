@@ -292,7 +292,8 @@ public sealed partial class RentalBillingViewModel
             LastSettledDate = EditLastSettledDate,
             IsActive = EditIsActive,
             SelectedTemplateItemId = SelectedTemplateItem?.ItemId,
-            TemplateItems = ToTemplateModels()
+            TemplateItems = ToTemplateModels(),
+            AssetLinkEdits = BuildPendingAssetLinkEdits().ToList()
         };
 
     private void ApplyBillingEditorDraft(RentalBillingEditorDraftModel draft)
@@ -344,6 +345,24 @@ public sealed partial class RentalBillingViewModel
         EditLastBilledDate = draft.LastBilledDate;
         EditLastSettledDate = draft.LastSettledDate;
         EditIsActive = draft.IsActive;
+        _pendingAssetLinkEdits.Clear();
+        foreach (var assetLinkEdit in draft.AssetLinkEdits ?? Enumerable.Empty<RentalBillingAssetLinkEdit>())
+        {
+            if (assetLinkEdit.AssetId == Guid.Empty)
+                continue;
+
+            _pendingAssetLinkEdits[assetLinkEdit.AssetId] = new RentalBillingAssetLinkEdit
+            {
+                AssetId = assetLinkEdit.AssetId,
+                CustomerId = assetLinkEdit.CustomerId,
+                CustomerName = assetLinkEdit.CustomerName,
+                InstallLocation = assetLinkEdit.InstallLocation,
+                InstallSiteName = assetLinkEdit.InstallSiteName,
+                MonthlyFee = assetLinkEdit.MonthlyFee,
+                ContractStartDate = assetLinkEdit.ContractStartDate,
+                Notes = assetLinkEdit.Notes
+            };
+        }
 
         TemplateItems.Clear();
         foreach (var item in draft.TemplateItems)
@@ -439,6 +458,9 @@ public sealed partial class RentalBillingViewModel
             return true;
 
         if (EditBillingStartDate.HasValue && EditBillingStartDate.Value.Date != DateTime.Today.Date)
+            return true;
+
+        if (BuildPendingAssetLinkEdits().Count > 0)
             return true;
 
         if (TemplateItems.Count != 1)

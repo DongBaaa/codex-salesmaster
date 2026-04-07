@@ -46,6 +46,7 @@ public partial class MainWindow : Window
                       SyncDiagnosticsService diagnostics)
     {
         InitializeComponent();
+        Title = AppRuntimeInfo.WithTestLabel(Title);
         _vm = vm;
         _local = local;
         _rental = rental;
@@ -77,6 +78,12 @@ public partial class MainWindow : Window
         _isClosingOrClosed = true;
         _centralRevisionPollTimer?.Stop();
     }
+
+    public LocalStateService LocalStateService => _local;
+    public RentalStateService RentalStateService => _rental;
+    public RentalDocumentService RentalDocumentService => _rentalDocuments;
+    public IPrintService InvoicePrintService => _invoicePrintService;
+    public SessionState SessionState => _session;
 
     public void EndShutdownProtection()
     {
@@ -549,7 +556,7 @@ public partial class MainWindow : Window
     }
 
     private void YeonsuDeliveryButton_Click(object sender, RoutedEventArgs e)
-        => RunUiAsync(OpenYeonsuDeliveryWindowAsync, "연수구 납품 창 열기");
+        => RunUiAsync(OpenYeonsuDeliveryWindowAsync, "매입/매출내역 창 열기");
 
     private void EnvironmentSettingsButton_Click(object sender, RoutedEventArgs e)
         => RunUiAsync(() => OpenEnvironmentSettingsWindowAsync(), "환경설정 창 열기");

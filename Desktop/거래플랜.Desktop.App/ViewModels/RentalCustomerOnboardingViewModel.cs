@@ -590,6 +590,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             customerId: CustomerId,
             customerName: CustomerName,
             officeCode: OfficeCode,
+            includeOfficePoolAssets: false,
             _session);
 
         CandidateAssets.Clear();

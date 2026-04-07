@@ -221,6 +221,9 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
         OnPropertyChanged(nameof(IsYeonsuDeliverySelected));
     }
 
+    partial void OnCustomerSearchTextChanged(string value)
+        => SearchCustomer();
+
     partial void OnSelectedScopeOptionChanged(string value)
     {
         IsAllCustomers = string.Equals(value, "전체업체집계", StringComparison.OrdinalIgnoreCase);

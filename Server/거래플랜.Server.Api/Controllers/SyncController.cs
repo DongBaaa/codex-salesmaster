@@ -166,8 +166,7 @@ public sealed class SyncController : ControllerBase
 
         await UpsertEntitiesAsync(request.CompanyProfiles ?? [], _dbContext.CompanyProfiles,
             (e, d) => e.Apply(d), d => new CompanyProfile { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        await UpsertEntitiesAsync(DeduplicatePulledUnits(request.Units ?? []), _dbContext.Units,
-            (e, d) => e.Apply(d), d => new Unit { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+        await UpsertUnitsAsync(request.Units ?? [], result, cancellationToken);
         await UpsertEntitiesAsync(request.CustomerCategories ?? [], _dbContext.CustomerCategories,
             (e, d) => e.Apply(d), d => new CustomerCategory { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
         await UpsertPriceGradeOptionsAsync(request.PriceGradeOptions ?? [], result, cancellationToken);
@@ -352,6 +351,57 @@ public sealed class SyncController : ControllerBase
             nameof(ItemCategoryOption),
             result,
             cancellationToken);
+    }
+
+    private async Task UpsertUnitsAsync(
+        IEnumerable<UnitDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var dedupedPayload = DeduplicatePulledUnits(payload.ToList());
+        var existingUnits = await _dbContext.Units.IgnoreQueryFilters().ToListAsync(cancellationToken);
+
+        foreach (var dto in dedupedPayload)
+        {
+            var normalizedName = UnitCatalogNormalizer.Normalize(dto.Name);
+            if (string.IsNullOrWhiteSpace(normalizedName))
+            {
+                AddClientConflict(dto, nameof(Unit), "Unit name is required.", result);
+                continue;
+            }
+
+            var entity = existingUnits.FirstOrDefault(current => current.Id == dto.Id)
+                ?? existingUnits
+                    .Where(current =>
+                        string.Equals(
+                            UnitCatalogNormalizer.Normalize(current.Name),
+                            normalizedName,
+                            StringComparison.Ordinal))
+                    .OrderByDescending(current => current.UpdatedAtUtc)
+                    .ThenByDescending(current => current.Revision)
+                    .FirstOrDefault();
+
+            if (entity is null)
+            {
+                var newEntity = new Unit { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
+                newEntity.Apply(dto);
+                newEntity.Name = normalizedName;
+                _dbContext.Units.Add(newEntity);
+                existingUnits.Add(newEntity);
+                result.AcceptedCount++;
+                continue;
+            }
+
+            if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
+            {
+                AddServerConflict(dto, entity, nameof(Unit), "Server version is newer.", result);
+                continue;
+            }
+
+            entity.Apply(dto);
+            entity.Name = normalizedName;
+            result.AcceptedCount++;
+        }
     }
 
     private async Task UpsertSelectionOptionEntitiesAsync<TEntity, TDto>(

@@ -14,6 +14,12 @@
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
+        
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=DataGridCell}, Path=IsSelected}" Value="True">
+                    <Setter Property="Foreground" Value="Black"/>
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
         <Style TargetType="TextBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -67,6 +73,14 @@
             <Setter Property="Padding" Value="7,2"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#90CAF9"/>
+                    <Setter Property="Foreground" Value="Black"/>
+                    <Setter Property="BorderBrush" Value="#5EAEEB"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
         <Style x:Key="CustomerGridTextStyle" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
             <Setter Property="VerticalAlignment" Value="Center"/>
@@ -98,7 +112,7 @@
                            FontSize="22"
                            FontWeight="Bold"
                            Foreground="#4FC3F7"/>
-                <TextBlock Text="거래처 등록, 수정, 담당지점 변경과 계약서 만료 현황을 관리합니다."
+                <TextBlock Text="거래처 등록, 수정, 담당지점 변경 즉시저장과 계약서 만료 현황을 관리합니다."
                            Foreground="#9FB3C8"
                            Margin="0,4,0,0"/>
             </StackPanel>
@@ -198,10 +212,11 @@
                                Fill="#3E5875"
                                Margin="4,0,10,0"
                                VerticalAlignment="Center"/>
-                    <Button Content="담당지점 저장"
+                    <Button Content="미저장 변경 저장"
                             Background="#1B5E20"
                             BorderBrush="#1B5E20"
                             Margin="0,0,6,0"
+                            ToolTip="담당지점 변경은 즉시 저장됩니다. 저장 실패로 남은 변경만 다시 저장합니다."
                             Command="{Binding SaveOfficeChangesCommand}"/>
                     <Button Content="새로고침"
                             Margin="0,0,6,0"
@@ -321,6 +336,7 @@
                             <DataTemplate>
                                 <ComboBox ItemsSource="{Binding DataContext.OfficeCodes, RelativeSource={RelativeSource AncestorType=DataGrid}}"
                                           SelectedItem="{Binding ResponsibleOfficeCode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                          SelectionChanged="ResponsibleOfficeComboBox_SelectionChanged"
                                           Height="28"
                                           MinHeight="28"
                                           Padding="6,2"

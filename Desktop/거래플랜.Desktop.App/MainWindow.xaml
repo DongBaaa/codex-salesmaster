@@ -148,7 +148,7 @@
                     </Button>
                     <Rectangle Width="1" Height="20" Fill="#3E5875" Margin="4,0,10,0" VerticalAlignment="Center"/>
                     <!-- 집계/설정 그룹 -->
-                    <Button Content="납품내역" Background="#5E35B1" Margin="0,0,6,0" Click="YeonsuDeliveryButton_Click"/>
+                    <Button Content="매입/매출내역" Background="#5E35B1" Margin="0,0,6,0" Click="YeonsuDeliveryButton_Click"/>
                     <Button Content="자료집계" Background="#6A1B9A" Margin="0,0,6,0" Click="PeriodLedgerButton_Click"/>
                     <Button x:Name="RentalManagementButton" Content="렌탈 관리" Background="#1565C0" Margin="0,0,6,0" Click="RentalManagementButton_Click">
                         <Button.ContextMenu>

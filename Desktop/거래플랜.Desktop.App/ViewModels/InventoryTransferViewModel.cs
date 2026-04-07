@@ -13,12 +13,15 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
 {
     private readonly LocalStateService _local;
     private readonly SessionState _session;
+    private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
     private readonly Dictionary<(Guid ItemId, string WarehouseCode), decimal> _warehouseStocks = new();
     private readonly Dictionary<string, string> _warehouseNames = new(StringComparer.OrdinalIgnoreCase);
     private List<LocalItem> _allItems = new();
     private bool _suppressTransferSelectionChanged;
+    private bool _suppressLineSelectionChanged;
     private bool _isInventoryRefreshInProgress;
     private int _openTransferVersion;
+    private string _baselineStateSignature = string.Empty;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSavedTransfer))]
@@ -102,6 +105,8 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     public bool CanAddLine => !IsFinalTransferStatus && SelectedInputItem is not null && InputQty > 0m;
     public bool CanUpdateLine => !IsFinalTransferStatus && SelectedLine is not null && CanAddLine;
     public bool CanDeleteLine => !IsFinalTransferStatus && SelectedLine is not null;
+    public bool HasPendingChanges => !string.Equals(_baselineStateSignature, BuildEditStateSignature(CaptureEditSnapshot()), StringComparison.Ordinal);
+    public bool HasMeaningfulDraftContentForClose => HasMeaningfulDraftContent(CaptureEditSnapshot());
     public string TransferNumberDisplay => string.IsNullOrWhiteSpace(TransferNumber) ? "(저장 시 자동생성)" : TransferNumber;
     public string TransferRouteText => $"{ResolveWarehouseName(FromWarehouseCode)} → {ResolveWarehouseName(ToWarehouseCode)}";
     public string AvailableStockText => SelectedInputItem is null
@@ -128,6 +133,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         _local = local;
         _session = session;
         _local.InventoryStateChanged += HandleInventoryStateChanged;
+        ResetEditBaseline();
     }
 
     public async Task LoadAsync(LocalInventoryTransfer? transfer = null)
@@ -274,8 +280,11 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void NewTransfer()
+    private async Task NewTransfer()
     {
+        if (!await TryAutoSaveCurrentEditAsync(refreshAfterSave: true))
+            return;
+
         StartNewTransfer();
     }
 
@@ -363,58 +372,12 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveTransferAsync()
     {
-        if (IsFinalTransferStatus)
-        {
-            StatusMessage = "수령확정 또는 반려된 문서는 수정할 수 없습니다.";
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(FromWarehouseCode) || string.IsNullOrWhiteSpace(ToWarehouseCode))
-        {
-            StatusMessage = "출발창고와 도착창고를 모두 선택하세요.";
-            return;
-        }
-
-        if (string.Equals(FromWarehouseCode, ToWarehouseCode, StringComparison.OrdinalIgnoreCase))
-        {
-            StatusMessage = "출발창고와 도착창고는 서로 달라야 합니다.";
-            return;
-        }
-
-        if (Lines.Count == 0)
-        {
-            StatusMessage = "이동 품목을 1개 이상 입력하세요.";
-            return;
-        }
-
-        IsBusy = true;
-        try
-        {
-            var transferId = TransferId == Guid.Empty ? Guid.NewGuid() : TransferId;
-            var transfer = new LocalInventoryTransfer
-            {
-                Id = transferId,
-                TransferNumber = TransferNumber,
-                TransferDate = TransferDate,
-                FromWarehouseCode = FromWarehouseCode,
-                ToWarehouseCode = ToWarehouseCode,
-                Memo = Memo?.Trim() ?? string.Empty,
-                Lines = Lines.Select(line => line.ToLocal(transferId)).ToList()
-            };
-
-            var result = await _local.SaveInventoryTransferAsync(transfer, _session);
-            StatusMessage = result.Message;
-            if (!result.Success)
-                return;
-
-            await RefreshWarehouseStocksAsync();
-            await RefreshTransfersAsync(result.EntityId);
-            await OpenTransferAsync(result.EntityId);
-        }
-        finally
-        {
-            IsBusy = false;
-        }
+        var snapshot = CaptureEditSnapshot();
+        await SaveSnapshotAsync(
+            snapshot,
+            requestedSelectionId: snapshot.TransferId == Guid.Empty ? null : snapshot.TransferId,
+            refreshAfterSave: true,
+            successMessage: snapshot.TransferId == Guid.Empty ? "재고이동을 저장했습니다." : "재고이동을 수정했습니다.");
     }
 
     [RelayCommand]
@@ -557,8 +520,26 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             });
     }
 
+    partial void OnSelectedTransferChanging(LocalInventoryTransfer? oldValue, LocalInventoryTransfer? newValue)
+    {
+        if (_suppressTransferSelectionChanged || ReferenceEquals(oldValue, newValue))
+            return;
+
+        if (!TryCaptureAutoSaveSnapshot(out var snapshot))
+            return;
+
+        UiTaskHelper.Forget(
+            HandleSelectionAutoSaveAsync(snapshot, oldValue, newValue),
+            "TRANSFER",
+            "재고이동 선택 변경 자동저장",
+            ex => StatusMessage = $"재고이동 자동저장 중 오류가 발생했습니다. {ex.Message}");
+    }
+
     partial void OnSelectedLineChanged(InventoryTransferLineEditModel? value)
     {
+        if (_suppressLineSelectionChanged)
+            return;
+
         if (value is null)
         {
             OnPropertyChanged(nameof(CanUpdateLine));
@@ -631,39 +612,13 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
 
     private void ApplyTransferToEditor(LocalInventoryTransfer transfer)
     {
-        TransferId = transfer.Id;
-        TransferNumber = transfer.TransferNumber ?? string.Empty;
-        TransferDate = transfer.TransferDate;
-        FromWarehouseCode = transfer.FromWarehouseCode ?? string.Empty;
-        ToWarehouseCode = transfer.ToWarehouseCode ?? string.Empty;
-        Memo = transfer.Memo ?? string.Empty;
-        TransferStatus = string.IsNullOrWhiteSpace(transfer.TransferStatus) ? "수령대기" : transfer.TransferStatus;
-        ReceiveMemo = transfer.ReceiveMemo ?? string.Empty;
-        RejectReason = transfer.RejectReason ?? string.Empty;
-
-        Lines.Clear();
-        foreach (var line in transfer.Lines.Where(current => !current.IsDeleted))
-            Lines.Add(InventoryTransferLineEditModel.FromLocal(line));
-
-        SelectedLine = null;
-        ResetLineEditor(clearSelection: true);
+        ApplySnapshot(CreateSnapshotFromTransfer(transfer), resetBaseline: true);
         StatusMessage = $"재고이동 {TransferNumberDisplay} 문서를 불러왔습니다.";
     }
 
     private void StartNewTransfer()
     {
-        TransferId = Guid.Empty;
-        TransferNumber = string.Empty;
-        TransferDate = DateOnly.FromDateTime(DateTime.Today);
-        FromWarehouseCode = DetermineDefaultFromWarehouseCode();
-        ToWarehouseCode = DetermineDefaultToWarehouseCode(FromWarehouseCode);
-        Memo = string.Empty;
-        TransferStatus = "수령대기";
-        ReceiveMemo = string.Empty;
-        RejectReason = string.Empty;
-        Lines.Clear();
-        SelectedLine = null;
-        ResetLineEditor(clearSelection: true);
+        ApplySnapshot(CreateNewTransferSnapshot(), resetBaseline: true);
         SetSelectedTransfer(null);
         StatusMessage = "새 내부 재고이동 문서를 작성하세요.";
     }
@@ -761,5 +716,551 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             var value when string.Equals(value, DomainConstants.WarehouseYeonsuMain, StringComparison.OrdinalIgnoreCase) => DomainConstants.OfficeYeonsu,
             _ => DomainConstants.OfficeUsenet
         };
+    }
+
+    public async Task<bool> TryAutoSaveOnCloseAsync()
+        => await TryAutoSaveCurrentEditAsync(refreshAfterSave: false);
+
+    private async Task<bool> HandleSelectionAutoSaveAsync(
+        InventoryTransferEditSnapshot snapshot,
+        LocalInventoryTransfer? previousSelection,
+        LocalInventoryTransfer? requestedSelection)
+    {
+        var saved = await SaveSnapshotAsync(
+            snapshot,
+            requestedSelectionId: requestedSelection?.Id,
+            refreshAfterSave: true,
+            successMessage: "재고이동 문서를 자동 저장했습니다.");
+
+        if (saved)
+            return true;
+
+        RestoreEditSnapshot(previousSelection, snapshot);
+        StatusMessage = string.IsNullOrWhiteSpace(StatusMessage)
+            ? "자동저장에 실패해 기존 편집 내용을 유지했습니다."
+            : $"{StatusMessage} 기존 편집 내용은 유지했습니다.";
+        return false;
+    }
+
+    private async Task<bool> TryAutoSaveCurrentEditAsync(bool refreshAfterSave)
+    {
+        if (!TryCaptureAutoSaveSnapshot(out var snapshot))
+            return true;
+
+        return await SaveSnapshotAsync(
+            snapshot,
+            requestedSelectionId: SelectedTransfer?.Id,
+            refreshAfterSave: refreshAfterSave,
+            successMessage: "재고이동 문서를 자동 저장했습니다.");
+    }
+
+    private bool TryCaptureAutoSaveSnapshot(out InventoryTransferEditSnapshot snapshot)
+    {
+        snapshot = CaptureEditSnapshot();
+        return HasPendingChanges && HasMeaningfulDraftContent(snapshot);
+    }
+
+    private async Task<bool> SaveSnapshotAsync(
+        InventoryTransferEditSnapshot snapshot,
+        Guid? requestedSelectionId,
+        bool refreshAfterSave,
+        string successMessage)
+    {
+        await _autoSaveGate.WaitAsync();
+        try
+        {
+            if (!TryBuildTransferForSave(snapshot, out var transfer, out var validationMessage))
+            {
+                StatusMessage = validationMessage;
+                return false;
+            }
+
+            IsBusy = true;
+            try
+            {
+                var result = await _local.SaveInventoryTransferAsync(transfer, _session);
+                StatusMessage = result.Message;
+                if (!result.Success)
+                    return false;
+
+                if (refreshAfterSave)
+                {
+                    await RefreshWarehouseStocksAsync();
+                    await RefreshTransfersAsync();
+                    var reopenId = requestedSelectionId.HasValue && requestedSelectionId.Value != Guid.Empty
+                        ? requestedSelectionId.Value
+                        : result.EntityId;
+                    await OpenTransferAsync(reopenId);
+                }
+
+                StatusMessage = successMessage;
+                return true;
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
+        finally
+        {
+            _autoSaveGate.Release();
+        }
+    }
+
+    private bool TryBuildTransferForSave(
+        InventoryTransferEditSnapshot snapshot,
+        out LocalInventoryTransfer transfer,
+        out string validationMessage)
+    {
+        transfer = new LocalInventoryTransfer();
+        validationMessage = string.Empty;
+
+        if (IsFinalTransferStatusText(snapshot.TransferStatus))
+        {
+            validationMessage = "수령확정 또는 반려된 문서는 수정할 수 없습니다.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(snapshot.FromWarehouseCode) || string.IsNullOrWhiteSpace(snapshot.ToWarehouseCode))
+        {
+            validationMessage = "출발창고와 도착창고를 모두 선택하세요.";
+            return false;
+        }
+
+        if (string.Equals(snapshot.FromWarehouseCode, snapshot.ToWarehouseCode, StringComparison.OrdinalIgnoreCase))
+        {
+            validationMessage = "출발창고와 도착창고는 서로 달라야 합니다.";
+            return false;
+        }
+
+        var materializedLines = snapshot.Lines
+            .Select(CloneLineSnapshot)
+            .ToList();
+
+        var selectedLineIndex = snapshot.SelectedLineId.HasValue
+            ? materializedLines.FindIndex(line => line.Id == snapshot.SelectedLineId.Value)
+            : -1;
+        var referenceLine = selectedLineIndex >= 0 ? materializedLines[selectedLineIndex] : null;
+        var draftState = EvaluateLineDraft(snapshot, referenceLine, out var draftLine, out validationMessage);
+        switch (draftState)
+        {
+            case LineDraftState.Invalid:
+                return false;
+            case LineDraftState.Valid when draftLine is not null && selectedLineIndex >= 0:
+                materializedLines[selectedLineIndex] = draftLine;
+                break;
+            case LineDraftState.Valid when draftLine is not null:
+                materializedLines.Add(draftLine);
+                break;
+        }
+
+        var validLines = materializedLines
+            .Where(line => line.ItemId.HasValue
+                           && !string.IsNullOrWhiteSpace(line.ItemName)
+                           && line.Quantity > 0m)
+            .ToList();
+
+        if (validLines.Count == 0)
+        {
+            validationMessage = "이동 품목을 1개 이상 입력하세요.";
+            return false;
+        }
+
+        var transferId = snapshot.TransferId == Guid.Empty ? Guid.NewGuid() : snapshot.TransferId;
+        transfer = new LocalInventoryTransfer
+        {
+            Id = transferId,
+            TransferNumber = snapshot.TransferNumber,
+            TransferDate = snapshot.TransferDate,
+            FromWarehouseCode = snapshot.FromWarehouseCode,
+            ToWarehouseCode = snapshot.ToWarehouseCode,
+            Memo = snapshot.Memo.Trim(),
+            TransferStatus = snapshot.TransferStatus,
+            ReceiveMemo = snapshot.ReceiveMemo.Trim(),
+            RejectReason = snapshot.RejectReason.Trim(),
+            Lines = validLines.Select(line => line.ToLocal(transferId)).ToList()
+        };
+        return true;
+    }
+
+    private void RestoreEditSnapshot(LocalInventoryTransfer? previousSelection, InventoryTransferEditSnapshot snapshot)
+    {
+        Interlocked.Increment(ref _openTransferVersion);
+        SetSelectedTransfer(previousSelection?.Id);
+        ApplySnapshot(snapshot, resetBaseline: false);
+    }
+
+    private InventoryTransferEditSnapshot CaptureEditSnapshot()
+        => new(
+            TransferId,
+            TransferNumber,
+            TransferDate,
+            FromWarehouseCode,
+            ToWarehouseCode,
+            Memo,
+            TransferStatus,
+            ReceiveMemo,
+            RejectReason,
+            Lines.Select(static line => InventoryTransferLineSnapshot.FromEditModel(line)).ToList(),
+            SelectedLine?.Id,
+            SelectedInputItem?.Id,
+            InputItemName,
+            InputSpec,
+            InputUnit,
+            InputQty,
+            InputRemark,
+            InputReceivedQty,
+            InputReceiptRemark);
+
+    private InventoryTransferEditSnapshot CreateSnapshotFromTransfer(LocalInventoryTransfer transfer)
+        => new(
+            transfer.Id,
+            transfer.TransferNumber ?? string.Empty,
+            transfer.TransferDate,
+            transfer.FromWarehouseCode ?? string.Empty,
+            transfer.ToWarehouseCode ?? string.Empty,
+            transfer.Memo ?? string.Empty,
+            string.IsNullOrWhiteSpace(transfer.TransferStatus) ? "수령대기" : transfer.TransferStatus,
+            transfer.ReceiveMemo ?? string.Empty,
+            transfer.RejectReason ?? string.Empty,
+            transfer.Lines
+                .Where(current => !current.IsDeleted)
+                .Select(InventoryTransferLineSnapshot.FromLocal)
+                .ToList(),
+            null,
+            null,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            1m,
+            string.Empty,
+            1m,
+            string.Empty);
+
+    private InventoryTransferEditSnapshot CreateNewTransferSnapshot()
+    {
+        var fromWarehouseCode = DetermineDefaultFromWarehouseCode();
+        return new InventoryTransferEditSnapshot(
+            Guid.Empty,
+            string.Empty,
+            DateOnly.FromDateTime(DateTime.Today),
+            fromWarehouseCode,
+            DetermineDefaultToWarehouseCode(fromWarehouseCode),
+            string.Empty,
+            "수령대기",
+            string.Empty,
+            string.Empty,
+            [],
+            null,
+            null,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            1m,
+            string.Empty,
+            1m,
+            string.Empty);
+    }
+
+    private void ApplySnapshot(InventoryTransferEditSnapshot snapshot, bool resetBaseline)
+    {
+        _suppressLineSelectionChanged = true;
+        try
+        {
+            TransferId = snapshot.TransferId;
+            TransferNumber = snapshot.TransferNumber;
+            TransferDate = snapshot.TransferDate;
+            FromWarehouseCode = snapshot.FromWarehouseCode;
+            ToWarehouseCode = snapshot.ToWarehouseCode;
+            Memo = snapshot.Memo;
+            TransferStatus = snapshot.TransferStatus;
+            ReceiveMemo = snapshot.ReceiveMemo;
+            RejectReason = snapshot.RejectReason;
+
+            Lines.Clear();
+            foreach (var line in snapshot.Lines.Select(line => line.ToEditModel()))
+                Lines.Add(line);
+
+            SelectedLine = snapshot.SelectedLineId.HasValue
+                ? Lines.FirstOrDefault(line => line.Id == snapshot.SelectedLineId.Value)
+                : null;
+            SelectedInputItem = snapshot.SelectedInputItemId.HasValue
+                ? _allItems.FirstOrDefault(item => item.Id == snapshot.SelectedInputItemId.Value)
+                : null;
+            InputItemName = snapshot.InputItemName;
+            InputSpec = snapshot.InputSpec;
+            InputUnit = snapshot.InputUnit;
+            InputQty = snapshot.InputQty;
+            InputRemark = snapshot.InputRemark;
+            InputReceivedQty = snapshot.InputReceivedQty;
+            InputReceiptRemark = snapshot.InputReceiptRemark;
+        }
+        finally
+        {
+            _suppressLineSelectionChanged = false;
+        }
+
+        UpdateAvailableStock();
+        OnPropertyChanged(nameof(CanAddLine));
+        OnPropertyChanged(nameof(CanUpdateLine));
+        OnPropertyChanged(nameof(CanDeleteLine));
+        OnPropertyChanged(nameof(AvailableStockText));
+
+        if (resetBaseline)
+            ResetEditBaseline();
+    }
+
+    private void ResetEditBaseline()
+        => _baselineStateSignature = BuildEditStateSignature(CaptureEditSnapshot());
+
+    private string BuildEditStateSignature(InventoryTransferEditSnapshot snapshot)
+    {
+        var builder = new System.Text.StringBuilder();
+        builder.Append(snapshot.TransferId.ToString("D"))
+            .Append('|').Append(snapshot.TransferNumber ?? string.Empty)
+            .Append('|').Append(snapshot.TransferDate.ToString("yyyy-MM-dd"))
+            .Append('|').Append(snapshot.FromWarehouseCode ?? string.Empty)
+            .Append('|').Append(snapshot.ToWarehouseCode ?? string.Empty)
+            .Append('|').Append(snapshot.Memo ?? string.Empty)
+            .Append('|').Append(snapshot.TransferStatus ?? string.Empty)
+            .Append('|').Append(snapshot.ReceiveMemo ?? string.Empty)
+            .Append('|').Append(snapshot.RejectReason ?? string.Empty);
+
+        var materializedLines = snapshot.Lines
+            .Select(CloneLineSnapshot)
+            .ToList();
+        var selectedLineIndex = snapshot.SelectedLineId.HasValue
+            ? materializedLines.FindIndex(line => line.Id == snapshot.SelectedLineId.Value)
+            : -1;
+        var referenceLine = selectedLineIndex >= 0 ? materializedLines[selectedLineIndex] : null;
+        var draftState = EvaluateLineDraft(snapshot, referenceLine, out var draftLine, out _);
+        if (draftState == LineDraftState.Valid && draftLine is not null)
+        {
+            if (selectedLineIndex >= 0)
+                materializedLines[selectedLineIndex] = draftLine;
+            else
+                materializedLines.Add(draftLine);
+        }
+
+        foreach (var line in materializedLines)
+        {
+            builder.Append('|').Append(line.Id.ToString("D"))
+                .Append(':').Append(line.ItemId?.ToString("D") ?? string.Empty)
+                .Append(':').Append(line.ItemName ?? string.Empty)
+                .Append(':').Append(line.Specification ?? string.Empty)
+                .Append(':').Append(line.Unit ?? string.Empty)
+                .Append(':').Append(line.Quantity)
+                .Append(':').Append(line.ReceivedQuantity)
+                .Append(':').Append(line.Remark ?? string.Empty)
+                .Append(':').Append(line.ReceiptRemark ?? string.Empty);
+        }
+
+        if (draftState == LineDraftState.Invalid)
+        {
+            builder.Append("|draft-invalid:")
+                .Append(snapshot.SelectedLineId?.ToString("D") ?? string.Empty)
+                .Append(':').Append(snapshot.SelectedInputItemId?.ToString("D") ?? string.Empty)
+                .Append(':').Append(snapshot.InputItemName ?? string.Empty)
+                .Append(':').Append(snapshot.InputSpec ?? string.Empty)
+                .Append(':').Append(snapshot.InputUnit ?? string.Empty)
+                .Append(':').Append(snapshot.InputQty)
+                .Append(':').Append(snapshot.InputReceivedQty)
+                .Append(':').Append(snapshot.InputRemark ?? string.Empty)
+                .Append(':').Append(snapshot.InputReceiptRemark ?? string.Empty);
+        }
+
+        return builder.ToString();
+    }
+
+    private bool HasMeaningfulDraftContent(InventoryTransferEditSnapshot snapshot)
+    {
+        var empty = CreateNewTransferSnapshot();
+        return !string.Equals(snapshot.TransferNumber, empty.TransferNumber, StringComparison.Ordinal)
+               || snapshot.TransferDate != empty.TransferDate
+               || !string.Equals(snapshot.FromWarehouseCode, empty.FromWarehouseCode, StringComparison.OrdinalIgnoreCase)
+               || !string.Equals(snapshot.ToWarehouseCode, empty.ToWarehouseCode, StringComparison.OrdinalIgnoreCase)
+               || !string.IsNullOrWhiteSpace(snapshot.Memo)
+               || !string.IsNullOrWhiteSpace(snapshot.ReceiveMemo)
+               || !string.IsNullOrWhiteSpace(snapshot.RejectReason)
+               || snapshot.Lines.Count > 0
+               || HasAnyMeaningfulLineEditorInput(snapshot);
+    }
+
+    private static InventoryTransferLineSnapshot CloneLineSnapshot(InventoryTransferLineSnapshot line)
+        => new(
+            line.Id,
+            line.ItemId,
+            line.ItemName,
+            line.Specification,
+            line.Unit,
+            line.Quantity,
+            line.ReceivedQuantity,
+            line.Remark,
+            line.ReceiptRemark);
+
+    private static bool IsFinalTransferStatusText(string? status)
+        => string.Equals(status, "수령확정", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(status, "반려", StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasAnyMeaningfulLineEditorInput(InventoryTransferEditSnapshot snapshot)
+        => snapshot.SelectedInputItemId.HasValue
+           || !string.IsNullOrWhiteSpace(snapshot.InputItemName)
+           || !string.IsNullOrWhiteSpace(snapshot.InputSpec)
+           || !string.IsNullOrWhiteSpace(snapshot.InputUnit)
+           || !string.IsNullOrWhiteSpace(snapshot.InputRemark)
+           || !string.IsNullOrWhiteSpace(snapshot.InputReceiptRemark)
+           || snapshot.InputQty != 1m
+           || snapshot.InputReceivedQty != 1m;
+
+    private static LineDraftState EvaluateLineDraft(
+        InventoryTransferEditSnapshot snapshot,
+        InventoryTransferLineSnapshot? referenceLine,
+        out InventoryTransferLineSnapshot? draftLine,
+        out string validationMessage)
+    {
+        draftLine = null;
+        validationMessage = string.Empty;
+
+        var hasMeaningfulInput = HasAnyMeaningfulLineEditorInput(snapshot);
+        if (referenceLine is null && !hasMeaningfulInput)
+            return LineDraftState.None;
+
+        var resolvedItemId = snapshot.SelectedInputItemId ?? referenceLine?.ItemId;
+        var normalizedQuantity = snapshot.InputQty;
+        var normalizedReceivedQuantity = snapshot.InputReceivedQty <= 0m
+            ? normalizedQuantity
+            : snapshot.InputReceivedQty;
+
+        draftLine = new InventoryTransferLineSnapshot(
+            referenceLine?.Id ?? Guid.NewGuid(),
+            resolvedItemId,
+            snapshot.InputItemName.Trim(),
+            snapshot.InputSpec.Trim(),
+            snapshot.InputUnit.Trim(),
+            normalizedQuantity,
+            normalizedReceivedQuantity,
+            snapshot.InputRemark.Trim(),
+            snapshot.InputReceiptRemark.Trim());
+
+        if (referenceLine is not null && draftLine.Equals(referenceLine))
+            return LineDraftState.None;
+
+        if (!hasMeaningfulInput && referenceLine is null)
+            return LineDraftState.None;
+
+        if (!draftLine.ItemId.HasValue)
+        {
+            validationMessage = "목록에서 이동 품목을 선택하세요.";
+            return LineDraftState.Invalid;
+        }
+
+        if (string.IsNullOrWhiteSpace(draftLine.ItemName))
+        {
+            validationMessage = "이동 품목명을 입력하세요.";
+            return LineDraftState.Invalid;
+        }
+
+        if (draftLine.Quantity <= 0m)
+        {
+            validationMessage = "이동 수량은 0보다 커야 합니다.";
+            return LineDraftState.Invalid;
+        }
+
+        return LineDraftState.Valid;
+    }
+
+    private enum LineDraftState
+    {
+        None,
+        Valid,
+        Invalid
+    }
+
+    private sealed record InventoryTransferEditSnapshot(
+        Guid TransferId,
+        string TransferNumber,
+        DateOnly TransferDate,
+        string FromWarehouseCode,
+        string ToWarehouseCode,
+        string Memo,
+        string TransferStatus,
+        string ReceiveMemo,
+        string RejectReason,
+        IReadOnlyList<InventoryTransferLineSnapshot> Lines,
+        Guid? SelectedLineId,
+        Guid? SelectedInputItemId,
+        string InputItemName,
+        string InputSpec,
+        string InputUnit,
+        decimal InputQty,
+        string InputRemark,
+        decimal InputReceivedQty,
+        string InputReceiptRemark);
+
+    private sealed record InventoryTransferLineSnapshot(
+        Guid Id,
+        Guid? ItemId,
+        string ItemName,
+        string Specification,
+        string Unit,
+        decimal Quantity,
+        decimal ReceivedQuantity,
+        string Remark,
+        string ReceiptRemark)
+    {
+        public static InventoryTransferLineSnapshot FromEditModel(InventoryTransferLineEditModel line)
+            => new(
+                line.Id,
+                line.ItemId,
+                line.ItemName ?? string.Empty,
+                line.Specification ?? string.Empty,
+                line.Unit ?? string.Empty,
+                line.Quantity,
+                line.ReceivedQuantity,
+                line.Remark ?? string.Empty,
+                line.ReceiptRemark ?? string.Empty);
+
+        public static InventoryTransferLineSnapshot FromLocal(LocalInventoryTransferLine line)
+            => new(
+                line.Id,
+                line.ItemId,
+                line.ItemNameOriginal ?? string.Empty,
+                line.SpecificationOriginal ?? string.Empty,
+                line.Unit ?? string.Empty,
+                line.Quantity,
+                line.ReceivedQuantity ?? line.Quantity,
+                line.Remark ?? string.Empty,
+                line.ReceiptRemark ?? string.Empty);
+
+        public InventoryTransferLineEditModel ToEditModel()
+            => new()
+            {
+                Id = Id,
+                ItemId = ItemId,
+                ItemName = ItemName,
+                Specification = Specification,
+                Unit = Unit,
+                Quantity = Quantity,
+                ReceivedQuantity = ReceivedQuantity,
+                Remark = Remark,
+                ReceiptRemark = ReceiptRemark
+            };
+
+        public LocalInventoryTransferLine ToLocal(Guid transferId)
+            => new()
+            {
+                Id = Id == Guid.Empty ? Guid.NewGuid() : Id,
+                TransferId = transferId,
+                ItemId = ItemId,
+                ItemNameOriginal = ItemName ?? string.Empty,
+                SpecificationOriginal = Specification ?? string.Empty,
+                Unit = Unit ?? string.Empty,
+                Quantity = Quantity,
+                ReceivedQuantity = ReceivedQuantity,
+                QuantityDifference = ReceivedQuantity - Quantity,
+                Remark = Remark ?? string.Empty,
+                ReceiptRemark = ReceiptRemark ?? string.Empty,
+                IsDeleted = false
+            };
     }
 }

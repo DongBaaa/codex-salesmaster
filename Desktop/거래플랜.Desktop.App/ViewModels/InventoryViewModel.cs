@@ -14,12 +14,15 @@ public sealed partial class InventoryViewModel : ObservableObject
     private readonly LocalStateService _local;
     private readonly SessionState _session;
     private readonly UiDebouncer _filterDebouncer = new();
+    private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
     private readonly Dictionary<Guid, Dictionary<string, decimal>> _itemOfficeQuantities = new();
     private readonly Dictionary<string, string> _warehouseOfficeCodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _warehouseDisplayNames = new(StringComparer.OrdinalIgnoreCase);
     private List<LocalItem> _allItems = new();
     private bool _isInventoryRefreshInProgress;
+    private bool _suppressSelectionAutoSave;
     private int _selectedItemMovementLoadVersion;
+    private string _baselineStateSignature = string.Empty;
 
     public ObservableCollection<InventoryItemRow> FilteredItems { get; } = new();
     public ObservableCollection<InventoryMovementRow> SelectedItemMovements { get; } = new();
@@ -84,6 +87,8 @@ public sealed partial class InventoryViewModel : ObservableObject
     public decimal AssetValue => EditSelectedOfficeStock * EditPurchasePrice;
     public decimal ShortageStock => EditSelectedOfficeStock < EditSafetyStock ? EditSafetyStock - EditSelectedOfficeStock : 0;
     public bool IsInventoryTrackedItem => ItemOperationalPolicy.SupportsInventory(EditTrackingType);
+    public bool HasPendingChanges => !string.Equals(_baselineStateSignature, BuildEditStateSignature(CaptureEditSnapshot()), StringComparison.Ordinal);
+    public bool HasMeaningfulDraftContentForClose => HasMeaningfulDraftContent(CaptureEditSnapshot());
     public string TrackingTypeGuideText => EditTrackingType switch
     {
         ItemTrackingTypes.Asset => "자산: 렌탈 자산/설치현황에서 개별 장비로 관리하고 재고 수량은 반영하지 않습니다.",
@@ -99,6 +104,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         _session = session;
         _selectedOfficeCode = ResolveDefaultOfficeCode(session);
         _local.InventoryStateChanged += HandleInventoryStateChanged;
+        ResetEditBaseline();
     }
 
     public async Task LoadAsync()
@@ -130,7 +136,7 @@ public sealed partial class InventoryViewModel : ObservableObject
             SelectedItem = FilteredItems.FirstOrDefault(row => row.Id == selectedItemId.Value);
 
         if (selectedItemId.HasValue && SelectedItem is null)
-            NewItem();
+            ResetForNewItem();
 
         if (SelectedItem is null && string.IsNullOrWhiteSpace(EditCategoryName))
             EditCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
@@ -189,6 +195,21 @@ public sealed partial class InventoryViewModel : ObservableObject
 
     partial void OnSearchTextChanged(string value) => _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(300), ApplyFilter);
     partial void OnSelectedTrackingTypeFilterChanged(string value) => _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(200), ApplyFilter);
+
+    partial void OnSelectedItemChanging(InventoryItemRow? oldValue, InventoryItemRow? newValue)
+    {
+        if (_suppressSelectionAutoSave || ReferenceEquals(oldValue, newValue))
+            return;
+
+        if (!TryCaptureAutoSaveSnapshot(out var snapshot))
+            return;
+
+        UiTaskHelper.Forget(
+            HandleSelectionAutoSaveAsync(snapshot, oldValue, newValue),
+            "INVENTORY",
+            "품목 선택 변경 자동저장",
+            ex => StatusMessage = $"품목 자동저장 중 오류가 발생했습니다. {ex.Message}");
+    }
 
     partial void OnSelectedItemChanged(InventoryItemRow? value)
     {
@@ -279,74 +300,29 @@ public sealed partial class InventoryViewModel : ObservableObject
     partial void OnYeonsuTotalQuantityChanged(decimal value) => OnPropertyChanged(nameof(YeonsuTabText));
 
     [RelayCommand]
-    private void NewItem()
+    private async Task NewItem()
     {
-        IsNew = true;
-        SelectedItem = null;
-        ClearDetailForm();
-        StatusMessage = "신규 품목 정보를 입력하세요.";
+        if (!await TryAutoSaveCurrentEditAsync(waitForServerWrite: false, refreshAfterSave: true))
+            return;
+
+        ResetForNewItem("신규 품목 정보를 입력하세요.");
     }
 
     [RelayCommand]
     private async Task SaveItemAsync()
     {
-        if (!_session.HasAdministrativePrivileges)
+        var snapshot = CaptureEditSnapshot();
+        if (!await SaveSnapshotAsync(
+                snapshot,
+                preserveSelectionItemId: snapshot.EditId,
+                waitForServerWrite: true,
+                refreshAfterSave: true,
+                successMessage: "품목 정보를 저장했습니다. 재고 수량은 지점별 계산값으로 유지됩니다.",
+                permissionDeniedMessage: "현재 계정은 품목을 저장할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 저장을 요청하세요."))
         {
-            StatusMessage = "현재 계정은 품목을 저장할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 저장을 요청하세요.";
             return;
         }
 
-        if (!await ValidateBeforeSaveAsync())
-            return;
-
-        var normalizedName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(EditName);
-        var normalizedSpec = RentalCatalogValueNormalizer.NormalizeDisplayText(EditSpec);
-
-        var item = new LocalItem
-        {
-            Id = EditId,
-            NameOriginal = normalizedName,
-            NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName),
-            CategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(EditCategoryName),
-            ItemKind = ItemKinds.Normalize(EditItemKind),
-            TrackingType = ItemTrackingTypes.Normalize(EditTrackingType),
-            SpecificationOriginal = normalizedSpec,
-            SpecificationMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedSpec),
-            Unit = EditUnit,
-            BoxQuantity = EditBoxQty,
-            StorageLocation = EditStorageLocation,
-            CurrentStock = EditTotalStock,
-            SafetyStock = EditSafetyStock,
-            PurchasePrice = EditPurchasePrice,
-            SalePrice = EditSalePrice,
-            RetailPrice = EditRetailPrice,
-            PriceGradeA = EditPriceA,
-            PriceGradeB = EditPriceB,
-            PriceGradeC = EditPriceC,
-            LastPurchaseDate = EditLastPurchaseDate,
-            LastSaleDate = EditLastSaleDate,
-            SimpleMemo = EditSimpleMemo,
-            IsSale = !string.Equals(ItemTrackingTypes.Normalize(EditTrackingType), ItemTrackingTypes.Asset, StringComparison.Ordinal),
-            IsRental = string.Equals(ItemTrackingTypes.Normalize(EditTrackingType), ItemTrackingTypes.Asset, StringComparison.Ordinal),
-        };
-
-        try
-        {
-            await _local.UpsertItemAsync(item, SelectedOfficeCode);
-        }
-        catch (InvalidOperationException ex)
-        {
-            StatusMessage = ex.Message;
-            return;
-        }
-
-        await LoadAsync();
-        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
-
-        SelectedItem = FilteredItems.FirstOrDefault(row => row.Id == EditId);
-        StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(
-            "품목 정보를 저장했습니다. 재고 수량은 지점별 계산값으로 유지됩니다.",
-            serverWriteResult);
         IsNew = false;
     }
 
@@ -364,9 +340,121 @@ public sealed partial class InventoryViewModel : ObservableObject
 
         await _local.DeleteItemAsync(SelectedItem.Id);
         await LoadAsync();
-        NewItem();
+        ResetForNewItem();
         var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
         StatusMessage = LocalStateService.ComposeServerWriteStatusMessage("품목을 삭제했습니다.", serverWriteResult);
+    }
+
+    public async Task<bool> TryAutoSaveOnCloseAsync()
+        => await TryAutoSaveCurrentEditAsync(waitForServerWrite: false, refreshAfterSave: false);
+
+    private async Task<bool> HandleSelectionAutoSaveAsync(
+        InventoryEditSnapshot snapshot,
+        InventoryItemRow? previousSelection,
+        InventoryItemRow? requestedSelection)
+    {
+        var saved = await SaveSnapshotAsync(
+            snapshot,
+            preserveSelectionItemId: requestedSelection?.Id,
+            waitForServerWrite: false,
+            refreshAfterSave: true,
+            successMessage: "품목 정보를 자동 저장했습니다.",
+            permissionDeniedMessage: "현재 계정은 품목을 자동 저장할 권한이 없습니다.");
+
+        if (saved)
+            return true;
+
+        RestoreEditSnapshot(previousSelection, snapshot);
+        StatusMessage = string.IsNullOrWhiteSpace(StatusMessage)
+            ? "자동저장에 실패해 기존 편집 내용을 유지했습니다."
+            : $"{StatusMessage} 기존 편집 내용은 유지했습니다.";
+        return false;
+    }
+
+    private async Task<bool> TryAutoSaveCurrentEditAsync(bool waitForServerWrite, bool refreshAfterSave)
+    {
+        if (!TryCaptureAutoSaveSnapshot(out var snapshot))
+            return true;
+
+        return await SaveSnapshotAsync(
+            snapshot,
+            preserveSelectionItemId: SelectedItem?.Id,
+            waitForServerWrite: waitForServerWrite,
+            refreshAfterSave: refreshAfterSave,
+            successMessage: "품목 정보를 자동 저장했습니다.",
+            permissionDeniedMessage: "현재 계정은 품목을 자동 저장할 권한이 없습니다.");
+    }
+
+    private bool TryCaptureAutoSaveSnapshot(out InventoryEditSnapshot snapshot)
+    {
+        snapshot = CaptureEditSnapshot();
+        return _session.HasAdministrativePrivileges
+               && HasPendingChanges
+               && HasMeaningfulDraftContent(snapshot);
+    }
+
+    private async Task<bool> SaveSnapshotAsync(
+        InventoryEditSnapshot snapshot,
+        Guid? preserveSelectionItemId,
+        bool waitForServerWrite,
+        bool refreshAfterSave,
+        string successMessage,
+        string permissionDeniedMessage)
+    {
+        await _autoSaveGate.WaitAsync();
+        try
+        {
+            if (!_session.HasAdministrativePrivileges)
+            {
+                StatusMessage = permissionDeniedMessage;
+                return false;
+            }
+
+            if (!await ValidateBeforeSaveAsync(snapshot))
+                return false;
+
+            try
+            {
+                await _local.UpsertItemAsync(BuildItem(snapshot), snapshot.PreferredOfficeCode);
+            }
+            catch (InvalidOperationException ex)
+            {
+                StatusMessage = ex.Message;
+                return false;
+            }
+
+            if (refreshAfterSave)
+            {
+                var selectionIdBeforeRefresh = preserveSelectionItemId ?? SelectedItem?.Id;
+                _suppressSelectionAutoSave = true;
+                try
+                {
+                    await RefreshInventoryScreenAsync(reloadCategories: false);
+                    if (selectionIdBeforeRefresh.HasValue)
+                        SelectedItem = FilteredItems.FirstOrDefault(row => row.Id == selectionIdBeforeRefresh.Value);
+                }
+                finally
+                {
+                    _suppressSelectionAutoSave = false;
+                }
+            }
+
+            if (waitForServerWrite)
+            {
+                var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+                StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(successMessage, serverWriteResult);
+            }
+            else
+            {
+                StatusMessage = successMessage;
+            }
+
+            return true;
+        }
+        finally
+        {
+            _autoSaveGate.Release();
+        }
     }
 
     private async Task LoadInventoryStateAsync()
@@ -528,6 +616,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         OnPropertyChanged(nameof(BoxCurrentStock));
         OnPropertyChanged(nameof(AssetValue));
         OnPropertyChanged(nameof(ShortageStock));
+        ResetEditBaseline();
     }
 
     private void ClearDetailForm()
@@ -563,6 +652,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         OnPropertyChanged(nameof(BoxCurrentStock));
         OnPropertyChanged(nameof(AssetValue));
         OnPropertyChanged(nameof(ShortageStock));
+        ResetEditBaseline();
     }
 
     private void RequestLoadSelectedItemMovements(Guid itemId)
@@ -621,32 +711,32 @@ public sealed partial class InventoryViewModel : ObservableObject
     private bool IsCurrentSelectedItemMovementLoad(int version)
         => version == Volatile.Read(ref _selectedItemMovementLoadVersion);
 
-    private async Task<bool> ValidateBeforeSaveAsync()
+    private async Task<bool> ValidateBeforeSaveAsync(InventoryEditSnapshot snapshot)
     {
-        if (string.IsNullOrWhiteSpace(EditName))
+        if (string.IsNullOrWhiteSpace(snapshot.EditName))
         {
             StatusMessage = "품명을 입력하세요.";
             return false;
         }
 
-        if (EditSafetyStock < 0 || EditBoxQty < 0 ||
-            EditPurchasePrice < 0 || EditSalePrice < 0 || EditRetailPrice < 0 ||
-            EditPriceA < 0 || EditPriceB < 0 || EditPriceC < 0)
+        if (snapshot.EditSafetyStock < 0 || snapshot.EditBoxQty < 0 ||
+            snapshot.EditPurchasePrice < 0 || snapshot.EditSalePrice < 0 || snapshot.EditRetailPrice < 0 ||
+            snapshot.EditPriceA < 0 || snapshot.EditPriceB < 0 || snapshot.EditPriceC < 0)
         {
             StatusMessage = "재고 기준값과 단가 값은 0 이상으로 입력하세요.";
             return false;
         }
 
-        var normalizedName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(EditName);
-        var normalizedSpec = RentalCatalogValueNormalizer.NormalizeDisplayText(EditSpec);
+        var normalizedName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(snapshot.EditName);
+        var normalizedSpec = RentalCatalogValueNormalizer.NormalizeDisplayText(snapshot.EditSpec);
         var normalizedNameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName);
         var normalizedSpecKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedSpec);
-        var normalizedTrackingType = ItemTrackingTypes.Normalize(EditTrackingType);
+        var normalizedTrackingType = ItemTrackingTypes.Normalize(snapshot.EditTrackingType);
         var allItems = await _local.GetItemsAsync();
         var duplicated = normalizedTrackingType == ItemTrackingTypes.Asset
             ? false
             : allItems.Any(item =>
-                item.Id != EditId &&
+                item.Id != snapshot.EditId &&
                 string.Equals(
                     ItemTrackingTypes.Normalize(item.TrackingType),
                     normalizedTrackingType,
@@ -734,4 +824,244 @@ public sealed partial class InventoryViewModel : ObservableObject
             _ => string.IsNullOrWhiteSpace(movementType) ? "-" : movementType
         };
     }
+
+    private void ResetForNewItem(string? statusMessage = null)
+    {
+        _suppressSelectionAutoSave = true;
+        try
+        {
+            if (SelectedItem is not null)
+                SelectedItem = null;
+            else
+                ClearDetailForm();
+        }
+        finally
+        {
+            _suppressSelectionAutoSave = false;
+        }
+
+        SelectedItemMovements.Clear();
+        if (!string.IsNullOrWhiteSpace(statusMessage))
+            StatusMessage = statusMessage;
+    }
+
+    private void SelectItemWithoutAutoSave(Guid itemId)
+    {
+        _suppressSelectionAutoSave = true;
+        try
+        {
+            SelectedItem = FilteredItems.FirstOrDefault(row => row.Id == itemId);
+        }
+        finally
+        {
+            _suppressSelectionAutoSave = false;
+        }
+    }
+
+    private void RestoreEditSnapshot(InventoryItemRow? previousSelection, InventoryEditSnapshot snapshot)
+    {
+        _suppressSelectionAutoSave = true;
+        try
+        {
+            SelectedItem = previousSelection;
+        }
+        finally
+        {
+            _suppressSelectionAutoSave = false;
+        }
+
+        ApplySnapshot(snapshot, resetBaseline: false);
+        if (previousSelection is null)
+            SelectedItemMovements.Clear();
+    }
+
+    private void ApplySnapshot(InventoryEditSnapshot snapshot, bool resetBaseline)
+    {
+        IsNew = snapshot.IsNew;
+        EditId = snapshot.EditId;
+        EditName = snapshot.EditName;
+        EditCategoryName = snapshot.EditCategoryName;
+        EditItemKind = snapshot.EditItemKind;
+        EditTrackingType = snapshot.EditTrackingType;
+        EditSpec = snapshot.EditSpec;
+        EditUnit = snapshot.EditUnit;
+        EditBoxQty = snapshot.EditBoxQty;
+        EditStorageLocation = snapshot.EditStorageLocation;
+        EditUsenetStock = snapshot.EditUsenetStock;
+        EditItworldStock = snapshot.EditItworldStock;
+        EditYeonsuStock = snapshot.EditYeonsuStock;
+        EditSelectedOfficeStock = snapshot.EditSelectedOfficeStock;
+        EditTotalStock = snapshot.EditTotalStock;
+        EditSafetyStock = snapshot.EditSafetyStock;
+        EditPurchasePrice = snapshot.EditPurchasePrice;
+        EditSalePrice = snapshot.EditSalePrice;
+        EditRetailPrice = snapshot.EditRetailPrice;
+        EditPriceA = snapshot.EditPriceA;
+        EditPriceB = snapshot.EditPriceB;
+        EditPriceC = snapshot.EditPriceC;
+        EditLastPurchaseDate = snapshot.EditLastPurchaseDate;
+        EditLastSaleDate = snapshot.EditLastSaleDate;
+        EditSimpleMemo = snapshot.EditSimpleMemo;
+        EditIsSale = snapshot.EditIsSale;
+        EditIsRental = snapshot.EditIsRental;
+
+        OnPropertyChanged(nameof(IsInventoryTrackedItem));
+        OnPropertyChanged(nameof(TrackingTypeGuideText));
+        OnPropertyChanged(nameof(BoxCurrentStock));
+        OnPropertyChanged(nameof(AssetValue));
+        OnPropertyChanged(nameof(ShortageStock));
+
+        if (resetBaseline)
+            ResetEditBaseline();
+    }
+
+    private InventoryEditSnapshot CaptureEditSnapshot()
+        => new(
+            EditId,
+            EditName,
+            EditCategoryName,
+            EditItemKind,
+            EditTrackingType,
+            EditSpec,
+            EditUnit,
+            EditBoxQty,
+            EditStorageLocation,
+            EditUsenetStock,
+            EditItworldStock,
+            EditYeonsuStock,
+            EditSelectedOfficeStock,
+            EditTotalStock,
+            EditSafetyStock,
+            EditPurchasePrice,
+            EditSalePrice,
+            EditRetailPrice,
+            EditPriceA,
+            EditPriceB,
+            EditPriceC,
+            EditLastPurchaseDate,
+            EditLastSaleDate,
+            EditSimpleMemo,
+            EditIsSale,
+            EditIsRental,
+            SelectedOfficeCode,
+            IsNew);
+
+    private static bool HasMeaningfulDraftContent(InventoryEditSnapshot snapshot)
+        => !string.IsNullOrWhiteSpace(snapshot.EditName)
+           || !string.IsNullOrWhiteSpace(snapshot.EditCategoryName)
+           || !string.IsNullOrWhiteSpace(snapshot.EditSpec)
+           || !string.IsNullOrWhiteSpace(snapshot.EditUnit)
+           || !string.IsNullOrWhiteSpace(snapshot.EditStorageLocation)
+           || !string.IsNullOrWhiteSpace(snapshot.EditSimpleMemo)
+           || snapshot.EditBoxQty != 0m
+           || snapshot.EditSafetyStock != 0m
+           || snapshot.EditPurchasePrice != 0m
+           || snapshot.EditSalePrice != 0m
+           || snapshot.EditRetailPrice != 0m
+           || snapshot.EditPriceA != 0m
+           || snapshot.EditPriceB != 0m
+           || snapshot.EditPriceC != 0m
+           || snapshot.EditLastPurchaseDate.HasValue
+           || snapshot.EditLastSaleDate.HasValue;
+
+    private LocalItem BuildItem(InventoryEditSnapshot snapshot)
+    {
+        var normalizedName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(snapshot.EditName);
+        var normalizedSpec = RentalCatalogValueNormalizer.NormalizeDisplayText(snapshot.EditSpec);
+        var normalizedTrackingType = ItemTrackingTypes.Normalize(snapshot.EditTrackingType);
+
+        return new LocalItem
+        {
+            Id = snapshot.EditId,
+            NameOriginal = normalizedName,
+            NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName),
+            CategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(snapshot.EditCategoryName),
+            ItemKind = ItemKinds.Normalize(snapshot.EditItemKind),
+            TrackingType = normalizedTrackingType,
+            SpecificationOriginal = normalizedSpec,
+            SpecificationMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedSpec),
+            Unit = snapshot.EditUnit,
+            BoxQuantity = snapshot.EditBoxQty,
+            StorageLocation = snapshot.EditStorageLocation,
+            CurrentStock = snapshot.EditTotalStock,
+            SafetyStock = snapshot.EditSafetyStock,
+            PurchasePrice = snapshot.EditPurchasePrice,
+            SalePrice = snapshot.EditSalePrice,
+            RetailPrice = snapshot.EditRetailPrice,
+            PriceGradeA = snapshot.EditPriceA,
+            PriceGradeB = snapshot.EditPriceB,
+            PriceGradeC = snapshot.EditPriceC,
+            LastPurchaseDate = snapshot.EditLastPurchaseDate,
+            LastSaleDate = snapshot.EditLastSaleDate,
+            SimpleMemo = snapshot.EditSimpleMemo,
+            IsSale = !string.Equals(normalizedTrackingType, ItemTrackingTypes.Asset, StringComparison.Ordinal),
+            IsRental = string.Equals(normalizedTrackingType, ItemTrackingTypes.Asset, StringComparison.Ordinal)
+        };
+    }
+
+    private void ResetEditBaseline()
+        => _baselineStateSignature = BuildEditStateSignature(CaptureEditSnapshot());
+
+    private static string BuildEditStateSignature(InventoryEditSnapshot snapshot)
+    {
+        var builder = new System.Text.StringBuilder();
+        builder.Append(snapshot.EditId.ToString("D"))
+            .Append('|').Append(snapshot.EditName ?? string.Empty)
+            .Append('|').Append(snapshot.EditCategoryName ?? string.Empty)
+            .Append('|').Append(snapshot.EditItemKind ?? string.Empty)
+            .Append('|').Append(snapshot.EditTrackingType ?? string.Empty)
+            .Append('|').Append(snapshot.EditSpec ?? string.Empty)
+            .Append('|').Append(snapshot.EditUnit ?? string.Empty)
+            .Append('|').Append(snapshot.EditBoxQty)
+            .Append('|').Append(snapshot.EditStorageLocation ?? string.Empty)
+            .Append('|').Append(snapshot.EditUsenetStock)
+            .Append('|').Append(snapshot.EditItworldStock)
+            .Append('|').Append(snapshot.EditYeonsuStock)
+            .Append('|').Append(snapshot.EditSelectedOfficeStock)
+            .Append('|').Append(snapshot.EditTotalStock)
+            .Append('|').Append(snapshot.EditSafetyStock)
+            .Append('|').Append(snapshot.EditPurchasePrice)
+            .Append('|').Append(snapshot.EditSalePrice)
+            .Append('|').Append(snapshot.EditRetailPrice)
+            .Append('|').Append(snapshot.EditPriceA)
+            .Append('|').Append(snapshot.EditPriceB)
+            .Append('|').Append(snapshot.EditPriceC)
+            .Append('|').Append(snapshot.EditLastPurchaseDate?.ToString("yyyy-MM-dd") ?? string.Empty)
+            .Append('|').Append(snapshot.EditLastSaleDate?.ToString("yyyy-MM-dd") ?? string.Empty)
+            .Append('|').Append(snapshot.EditSimpleMemo ?? string.Empty)
+            .Append('|').Append(snapshot.EditIsSale)
+            .Append('|').Append(snapshot.EditIsRental)
+            .Append('|').Append(snapshot.IsNew);
+        return builder.ToString();
+    }
+
+    private sealed record InventoryEditSnapshot(
+        Guid EditId,
+        string EditName,
+        string EditCategoryName,
+        string EditItemKind,
+        string EditTrackingType,
+        string EditSpec,
+        string EditUnit,
+        decimal EditBoxQty,
+        string EditStorageLocation,
+        decimal EditUsenetStock,
+        decimal EditItworldStock,
+        decimal EditYeonsuStock,
+        decimal EditSelectedOfficeStock,
+        decimal EditTotalStock,
+        decimal EditSafetyStock,
+        decimal EditPurchasePrice,
+        decimal EditSalePrice,
+        decimal EditRetailPrice,
+        decimal EditPriceA,
+        decimal EditPriceB,
+        decimal EditPriceC,
+        DateOnly? EditLastPurchaseDate,
+        DateOnly? EditLastSaleDate,
+        string EditSimpleMemo,
+        bool EditIsSale,
+        bool EditIsRental,
+        string PreferredOfficeCode,
+        bool IsNew);
 }

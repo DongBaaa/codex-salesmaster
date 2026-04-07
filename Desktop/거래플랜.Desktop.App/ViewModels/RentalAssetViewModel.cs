@@ -2,6 +2,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Documents;
+using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Data;
@@ -22,14 +23,16 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private readonly IPrintService _printService;
     private readonly SessionState _session;
     private readonly UiDebouncer _searchDebouncer = new();
+    private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
     private bool _suppressFilterReload;
+    private bool _suppressSelectionAutoSave;
     private bool _pendingFilterReload;
+    private string _baselineStateSignature = string.Empty;
 
     [ObservableProperty] private string _searchText = string.Empty;
-    [ObservableProperty] private DisplayOption? _selectedOfficeFilter;
-    [ObservableProperty] private string _selectedItemCategoryFilter = AllOption;
-    [ObservableProperty] private string _selectedStatusFilter = AllOption;
-    [ObservableProperty] private DateOnly _referenceDate = DateOnly.FromDateTime(DateTime.Today);
+    [ObservableProperty] private bool _isOfficeFilterPopupOpen;
+    [ObservableProperty] private bool _isItemCategoryFilterPopupOpen;
+    [ObservableProperty] private bool _isStatusFilterPopupOpen;
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _statusMessage = "렌탈 자산을 불러오는 중입니다.";
     [ObservableProperty] private RentalAssetViewRow? _selectedRow;
@@ -71,9 +74,10 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private DateTime? _editContractStartDate;
     [ObservableProperty] private DateTime? _editRentalEndDate;
 
-    public ObservableCollection<DisplayOption> FilterOfficeOptions { get; } = new();
+    public ObservableCollection<SelectableFilterOption> OfficeFilterOptions { get; } = new();
     public ObservableCollection<DisplayOption> EditOfficeOptions { get; } = new();
-    public ObservableCollection<string> ItemCategoryFilterOptions { get; } = new();
+    public ObservableCollection<SelectableFilterOption> ItemCategoryFilterOptions { get; } = new();
+    public ObservableCollection<SelectableFilterOption> StatusFilterOptions { get; } = new();
     public ObservableCollection<string> AssetStatusOptions { get; } = new();
     public ObservableCollection<string> EditableAssetStatusOptions { get; } = new();
     public ObservableCollection<string> BillingEligibilityStatusOptions { get; } = new();
@@ -94,6 +98,11 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         !string.IsNullOrWhiteSpace(EditLastBillingProfileDisplay) ||
         !string.IsNullOrWhiteSpace(EditLastAssignmentClearedAtText);
     public bool ShowLastAssignmentHistory => IsNonOperatingAssetStatus && HasLastAssignmentHistory;
+    public bool HasPendingChanges => !string.Equals(_baselineStateSignature, BuildEditStateSignature(CaptureEditSnapshot()), StringComparison.Ordinal);
+    public bool HasMeaningfulDraftContentForClose => HasMeaningfulDraftContent(CaptureEditSnapshot());
+    public string SelectedOfficeFilterSummary => BuildFilterSummary(OfficeFilterOptions, "담당지점");
+    public string SelectedItemCategoryFilterSummary => BuildFilterSummary(ItemCategoryFilterOptions, "품목분류");
+    public string SelectedStatusFilterSummary => BuildFilterSummary(StatusFilterOptions, "상태");
     public string AssignmentFieldsNotice => IsNonOperatingAssetStatus
         ? $"'{EditAssetStatus}' 상태에서는 거래처/설치/청구 연결이 필요하지 않습니다. 저장 시 관련 정보가 정리됩니다."
         : string.Empty;
@@ -132,11 +141,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         AssetStatusOptions.Add("설치처 불명");
 
         foreach (var status in AssetStatusOptions.Where(status => status != AllOption))
+        {
             EditableAssetStatusOptions.Add(status);
+            var option = new SelectableFilterOption(status, status);
+            option.PropertyChanged += HandleFilterOptionPropertyChanged;
+            StatusFilterOptions.Add(option);
+        }
 
         BillingEligibilityStatusOptions.Add("청구대상");
         BillingEligibilityStatusOptions.Add("청구제외");
         BillingEligibilityStatusOptions.Add("미확인");
+        ResetEditBaseline();
     }
 
     public async Task LoadAsync()
@@ -144,14 +159,48 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         await ReloadFiltersAsync();
         await ReloadItemCategoryOptionsAsync();
         await ReloadAsync();
-        NewAsset();
+        ResetForNewAsset();
+    }
+
+    public async Task ApplyInitialCustomerFilterAsync(LocalCustomer customer)
+    {
+        ArgumentNullException.ThrowIfNull(customer);
+
+        var normalizedCustomerName = (customer.NameOriginal ?? string.Empty).Trim();
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(customer.ResponsibleOfficeCode, _session.OfficeCode);
+
+        _suppressFilterReload = true;
+        try
+        {
+            SearchText = normalizedCustomerName;
+            if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
+                SetSelectedFilterValues(OfficeFilterOptions, [normalizedOfficeCode]);
+        }
+        finally
+        {
+            _suppressFilterReload = false;
+        }
+
+        await ReloadAsync();
     }
 
     partial void OnSearchTextChanged(string value) => RequestFilterReload();
-    partial void OnSelectedOfficeFilterChanged(DisplayOption? value) => RequestFilterReload();
-    partial void OnSelectedItemCategoryFilterChanged(string value) => RequestFilterReload();
-    partial void OnSelectedStatusFilterChanged(string value) => RequestFilterReload();
-    partial void OnReferenceDateChanged(DateOnly value) => RequestFilterReload();
+
+    partial void OnSelectedRowChanging(RentalAssetViewRow? oldValue, RentalAssetViewRow? newValue)
+    {
+        if (_suppressSelectionAutoSave || ReferenceEquals(oldValue, newValue))
+            return;
+
+        if (!TryCaptureAutoSaveSnapshot(out var snapshot))
+            return;
+
+        UiTaskHelper.Forget(
+            HandleSelectionAutoSaveAsync(snapshot, oldValue, newValue),
+            "RENTAL",
+            "렌탈 자산 선택 변경 자동저장",
+            ex => StatusMessage = $"렌탈 자산 자동저장 중 오류가 발생했습니다. {ex.Message}");
+    }
+
     partial void OnEditCustomerNameChanged(string value)
     {
         if (string.IsNullOrWhiteSpace(EditCurrentCustomerName))
@@ -186,10 +235,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 var rows = await _rental.GetAssetRowsAsync(new RentalAssetFilter
                 {
                     SearchText = SearchText,
-                    ItemCategoryName = SelectedItemCategoryFilter == AllOption ? string.Empty : SelectedItemCategoryFilter,
-                    OfficeCode = SelectedOfficeFilter?.Value == AllOption ? string.Empty : SelectedOfficeFilter?.Value ?? string.Empty,
-                    AssetStatus = SelectedStatusFilter == AllOption ? string.Empty : SelectedStatusFilter,
-                    ReferenceDate = ReferenceDate
+                    ItemCategoryNames = GetSelectedFilterValues(ItemCategoryFilterOptions),
+                    OfficeCodes = GetSelectedFilterValues(OfficeFilterOptions),
+                    AssetStatuses = GetSelectedFilterValues(StatusFilterOptions)
                 }, _session);
 
                 Rows.Clear();
@@ -200,7 +248,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 {
                     SelectedRow = Rows.FirstOrDefault(row => row.Source.Id == selectedRowId.Value);
                     if (SelectedRow is null)
-                        NewAsset();
+                        ResetForNewAsset();
                 }
 
                 StatusMessage = rows.Count == 0
@@ -218,55 +266,13 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveAsync()
     {
-        var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
-            EditOfficeCode,
-            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet));
-
-        var entity = new LocalRentalAsset
-        {
-            Id = EditId,
-            CustomerId = EditCustomerId,
-            ItemId = EditItemId,
-            ManagementId = EditManagementId,
-            ManagementNumber = EditManagementNumber,
-            ManagementCompanyCode = officeCode,
-            CurrentLocation = EditCurrentLocation,
-            ItemCategoryName = EditItemCategoryName,
-            Manufacturer = EditManufacturer,
-            ItemName = EditItemName,
-            MachineNumber = EditMachineNumber,
-            PurchaseVendor = EditPurchaseVendor,
-            PurchasePrice = EditPurchasePrice,
-            SalePrice = EditSalePrice,
-            CustomerName = EditCustomerName,
-            CurrentCustomerName = EditCurrentCustomerName,
-            InstallLocation = EditInstallLocation,
-            InstallSiteName = EditInstallLocation,
-            DepositText = EditDepositText,
-            MonthlyFee = EditMonthlyFee,
-            ContractMonths = EditContractMonths,
-            FreeSupplyItems = EditFreeSupplyItems,
-            PaidSupplyItems = EditPaidSupplyItems,
-            ResponsibleOfficeCode = officeCode,
-            AssetStatus = EditAssetStatus,
-            BillingEligibilityStatus = EditBillingEligibilityStatus,
-            BillingExclusionReason = EditBillingExclusionReason,
-            Notes = EditNotes,
-            PurchaseDate = ToDateOnly(EditPurchaseDate),
-            DisposalDate = ToDateOnly(EditDisposalDate),
-            ContractDate = ToDateOnly(EditContractDate),
-            InstallDate = ToDateOnly(EditInstallDate),
-            ContractStartDate = ToDateOnly(EditContractStartDate),
-            RentalEndDate = ToDateOnly(EditRentalEndDate)
-        };
-
-        var result = await _rental.SaveAssetAsync(entity, _session);
-        StatusMessage = result.Message;
-        if (!result.Success)
-            return;
-
-        await ReloadAsync();
-        SelectRow(result.EntityId);
+        var snapshot = CaptureEditSnapshot();
+        await SaveSnapshotAsync(
+            snapshot,
+            preserveSelectionRowId: snapshot.EditId,
+            refreshAfterSave: true,
+            successMessage: "렌탈 자산을 저장했습니다.",
+            permissionDeniedMessage: "현재 선택한 렌탈 자산을 저장할 권한이 없습니다.");
     }
 
     [RelayCommand]
@@ -284,7 +290,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             return;
 
         await ReloadAsync();
-        NewAsset();
+        ResetForNewAsset();
     }
 
     [RelayCommand]
@@ -322,7 +328,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
 
         await ReloadAsync();
-        NewAsset();
+        ResetForNewAsset();
 
         StatusMessage = failureMessages.Count == 0
             ? $"선택한 렌탈 자산 {successCount:N0}건을 삭제했습니다."
@@ -330,52 +336,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void NewAsset()
+    private async Task NewAsset()
     {
-        EditId = Guid.NewGuid();
-        EditCustomerId = null;
-        EditItemId = null;
-        EditManagementId = string.Empty;
-        EditManagementNumber = string.Empty;
-        EditOfficeCode = EditOfficeOptions.FirstOrDefault()?.Value
-            ?? _rental.GetDefaultAssetOfficeCode(_session);
-        EditCurrentLocation = string.Empty;
-        EditItemCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
-        EditManufacturer = string.Empty;
-        EditItemName = string.Empty;
-        EditMachineNumber = string.Empty;
-        EditPurchaseVendor = string.Empty;
-        EditPurchasePrice = 0m;
-        EditSalePrice = 0m;
-        EditCustomerName = string.Empty;
-        EditCurrentCustomerName = string.Empty;
-        EditInstallLocation = string.Empty;
-        EditLastCustomerName = string.Empty;
-        EditLastInstallLocation = string.Empty;
-        EditLastBillingProfileDisplay = string.Empty;
-        EditLastAssignmentClearedAtText = string.Empty;
-        EditDepositText = string.Empty;
-        EditMonthlyFee = 0m;
-        EditContractMonths = 0;
-        EditFreeSupplyItems = string.Empty;
-        EditPaidSupplyItems = string.Empty;
-        EditAssetStatus = "임대진행중";
-        EditBillingEligibilityStatus = "미확인";
-        EditBillingExclusionReason = string.Empty;
-        EditNotes = string.Empty;
-        EditPurchaseDate = null;
-        EditDisposalDate = null;
-        EditContractDate = null;
-        EditInstallDate = null;
-        EditContractStartDate = null;
-        EditRentalEndDate = null;
-        SelectedRow = null;
-        ApplyAssetStatusUiRules();
-        OnPropertyChanged(nameof(HasLastAssignmentHistory));
-        OnPropertyChanged(nameof(ShowLastAssignmentHistory));
-        OnPropertyChanged(nameof(IsNewAsset));
-        OnPropertyChanged(nameof(CanSave));
-        OnPropertyChanged(nameof(CanDeleteSelected));
+        if (!await TryAutoSaveCurrentEditAsync(refreshAfterSave: true))
+            return;
+
+        ResetForNewAsset("신규 렌탈 자산 정보를 입력하세요.");
     }
 
     [RelayCommand]
@@ -508,6 +474,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         OnPropertyChanged(nameof(IsNewAsset));
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanDeleteSelected));
+        ResetEditBaseline();
     }
 
     private void ApplyAssetStatusUiRules()
@@ -733,26 +700,26 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         var offices = await _local.GetOfficesAsync();
         var readableOfficeCodes = _rental.GetReadableAssetOfficeCodes(_session);
-        var currentFilterValue = SelectedOfficeFilter?.Value;
+        var currentFilterValues = GetSelectedFilterValues(OfficeFilterOptions);
         var currentEditOfficeCode = EditOfficeCode;
 
         _suppressFilterReload = true;
         try
         {
-            FilterOfficeOptions.Clear();
-            FilterOfficeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
+            ResetSelectableFilterOptions(
+                OfficeFilterOptions,
+                offices
+                    .Where(office => readableOfficeCodes.Contains(office.Code))
+                    .OrderBy(office => office.Name, StringComparer.CurrentCultureIgnoreCase)
+                    .Select(office => new SelectableFilterOption(office.Code, office.Name)),
+                currentFilterValues);
+
             EditOfficeOptions.Clear();
 
             foreach (var office in offices
                          .Where(office => readableOfficeCodes.Contains(office.Code))
                          .OrderBy(office => office.Name, StringComparer.CurrentCultureIgnoreCase))
             {
-                var option = new DisplayOption
-                {
-                    Value = office.Code,
-                    DisplayName = office.Name
-                };
-                FilterOfficeOptions.Add(option);
                 EditOfficeOptions.Add(new DisplayOption
                 {
                     Value = office.Code,
@@ -769,21 +736,14 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                     Value = fallbackOfficeCode,
                     DisplayName = fallbackDisplayName
                 });
-                FilterOfficeOptions.Add(new DisplayOption
-                {
-                    Value = fallbackOfficeCode,
-                    DisplayName = fallbackDisplayName
-                });
+                if (OfficeFilterOptions.All(option => !string.Equals(option.Value, fallbackOfficeCode, StringComparison.OrdinalIgnoreCase)))
+                    OfficeFilterOptions.Add(CreateFilterOption(fallbackOfficeCode, fallbackDisplayName, currentFilterValues));
             }
-
-            SelectedOfficeFilter = FilterOfficeOptions.FirstOrDefault(option =>
-                                       string.Equals(option.Value, currentFilterValue, StringComparison.OrdinalIgnoreCase))
-                                   ?? FilterOfficeOptions.FirstOrDefault(option => option.Value == AllOption)
-                                   ?? FilterOfficeOptions.FirstOrDefault();
 
             EditOfficeCode = EditOfficeOptions.FirstOrDefault(option =>
                                string.Equals(option.Value, currentEditOfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
                            ?? EditOfficeOptions.First().Value;
+            OnPropertyChanged(nameof(SelectedOfficeFilterSummary));
 
         }
         finally
@@ -797,26 +757,25 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private async Task ReloadItemCategoryOptionsAsync()
     {
-        var currentFilterValue = SelectedItemCategoryFilter;
+        var currentFilterValues = GetSelectedFilterValues(ItemCategoryFilterOptions);
         var currentValue = EditItemCategoryName;
         _suppressFilterReload = true;
         try
         {
-            ItemCategoryFilterOptions.Clear();
-            ItemCategoryFilterOptions.Add(AllOption);
-
             ItemCategoryOptions.Clear();
+            var filterOptions = new List<SelectableFilterOption>();
             foreach (var option in await _local.GetItemCategoryOptionsAsync())
             {
                 ItemCategoryOptions.Add(option);
-                if (!string.IsNullOrWhiteSpace(option.Name) && !ItemCategoryFilterOptions.Contains(option.Name))
-                    ItemCategoryFilterOptions.Add(option.Name);
+                if (!string.IsNullOrWhiteSpace(option.Name) &&
+                    filterOptions.All(current => !string.Equals(current.Value, option.Name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    filterOptions.Add(new SelectableFilterOption(option.Name, option.Name));
+                }
             }
 
-            if (!ItemCategoryFilterOptions.Contains(currentFilterValue))
-                currentFilterValue = AllOption;
-
-            SelectedItemCategoryFilter = currentFilterValue;
+            ResetSelectableFilterOptions(ItemCategoryFilterOptions, filterOptions, currentFilterValues);
+            OnPropertyChanged(nameof(SelectedItemCategoryFilterSummary));
 
             if (!string.IsNullOrWhiteSpace(currentValue))
             {
@@ -841,6 +800,136 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private void SelectRow(Guid entityId)
     {
         SelectedRow = Rows.FirstOrDefault(row => row.Source.Id == entityId);
+    }
+
+    [RelayCommand]
+    private void SelectAllOfficeFilters() => SetAllFilterSelections(OfficeFilterOptions, true);
+
+    [RelayCommand]
+    private void ClearOfficeFilters() => SetAllFilterSelections(OfficeFilterOptions, false);
+
+    [RelayCommand]
+    private void SelectAllItemCategoryFilters() => SetAllFilterSelections(ItemCategoryFilterOptions, true);
+
+    [RelayCommand]
+    private void ClearItemCategoryFilters() => SetAllFilterSelections(ItemCategoryFilterOptions, false);
+
+    [RelayCommand]
+    private void SelectAllStatusFilters() => SetAllFilterSelections(StatusFilterOptions, true);
+
+    [RelayCommand]
+    private void ClearStatusFilters() => SetAllFilterSelections(StatusFilterOptions, false);
+
+    private void HandleFilterOptionPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!string.Equals(e.PropertyName, nameof(SelectableFilterOption.IsSelected), StringComparison.Ordinal))
+            return;
+
+        OnPropertyChanged(nameof(SelectedOfficeFilterSummary));
+        OnPropertyChanged(nameof(SelectedItemCategoryFilterSummary));
+        OnPropertyChanged(nameof(SelectedStatusFilterSummary));
+        RequestFilterReload();
+    }
+
+    private void ResetSelectableFilterOptions(
+        ObservableCollection<SelectableFilterOption> target,
+        IEnumerable<SelectableFilterOption> source,
+        IReadOnlyCollection<string>? selectedValues = null)
+    {
+        foreach (var option in target)
+            option.PropertyChanged -= HandleFilterOptionPropertyChanged;
+
+        var normalizedSelectedValues = (selectedValues ?? Array.Empty<string>())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        target.Clear();
+        foreach (var option in source)
+        {
+            var next = new SelectableFilterOption(
+                option.Value,
+                option.DisplayName,
+                normalizedSelectedValues.Count == 0 || normalizedSelectedValues.Contains(option.Value));
+            next.PropertyChanged += HandleFilterOptionPropertyChanged;
+            target.Add(next);
+        }
+    }
+
+    private static SelectableFilterOption CreateFilterOption(
+        string value,
+        string displayName,
+        IReadOnlyCollection<string>? selectedValues = null)
+    {
+        var isSelected = selectedValues is null ||
+                         selectedValues.Count == 0 ||
+                         selectedValues.Contains(value, StringComparer.OrdinalIgnoreCase);
+        return new SelectableFilterOption(value, displayName, isSelected);
+    }
+
+    private static List<string> GetSelectedFilterValues(IEnumerable<SelectableFilterOption> options)
+        => options
+            .Where(option => option.IsSelected)
+            .Select(option => option.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private void SetSelectedFilterValues(ObservableCollection<SelectableFilterOption> options, IReadOnlyCollection<string> selectedValues)
+    {
+        _suppressFilterReload = true;
+        try
+        {
+            var normalizedValues = selectedValues
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var option in options)
+                option.IsSelected = normalizedValues.Count == 0 || normalizedValues.Contains(option.Value);
+        }
+        finally
+        {
+            _suppressFilterReload = false;
+        }
+
+        OnPropertyChanged(nameof(SelectedOfficeFilterSummary));
+        OnPropertyChanged(nameof(SelectedItemCategoryFilterSummary));
+        OnPropertyChanged(nameof(SelectedStatusFilterSummary));
+    }
+
+    private void SetAllFilterSelections(ObservableCollection<SelectableFilterOption> options, bool isSelected)
+    {
+        _suppressFilterReload = true;
+        try
+        {
+            foreach (var option in options)
+                option.IsSelected = isSelected;
+        }
+        finally
+        {
+            _suppressFilterReload = false;
+        }
+
+        OnPropertyChanged(nameof(SelectedOfficeFilterSummary));
+        OnPropertyChanged(nameof(SelectedItemCategoryFilterSummary));
+        OnPropertyChanged(nameof(SelectedStatusFilterSummary));
+        RequestFilterReload();
+    }
+
+    private static string BuildFilterSummary(IEnumerable<SelectableFilterOption> options, string fallbackLabel)
+    {
+        var list = options.ToList();
+        if (list.Count == 0)
+            return $"{fallbackLabel} 전체";
+
+        var selected = list.Where(option => option.IsSelected).ToList();
+        if (selected.Count == 0 || selected.Count == list.Count)
+            return $"{fallbackLabel} 전체";
+
+        if (selected.Count == 1)
+            return selected[0].DisplayName;
+
+        return $"{fallbackLabel} {selected.Count}개";
     }
 
     private void RequestFilterReload()
@@ -875,4 +964,413 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private static string Coalesce(params string?[] values)
         => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "문서";
+
+    public async Task<bool> TryAutoSaveOnCloseAsync()
+        => await TryAutoSaveCurrentEditAsync(refreshAfterSave: false);
+
+    private async Task<bool> HandleSelectionAutoSaveAsync(
+        RentalAssetEditSnapshot snapshot,
+        RentalAssetViewRow? previousSelection,
+        RentalAssetViewRow? requestedSelection)
+    {
+        var saved = await SaveSnapshotAsync(
+            snapshot,
+            preserveSelectionRowId: requestedSelection?.Source.Id,
+            refreshAfterSave: true,
+            successMessage: "렌탈 자산을 자동 저장했습니다.",
+            permissionDeniedMessage: "현재 선택한 렌탈 자산을 자동 저장할 권한이 없습니다.");
+
+        if (saved)
+            return true;
+
+        RestoreEditSnapshot(previousSelection, snapshot);
+        StatusMessage = string.IsNullOrWhiteSpace(StatusMessage)
+            ? "자동저장에 실패해 기존 편집 내용을 유지했습니다."
+            : $"{StatusMessage} 기존 편집 내용은 유지했습니다.";
+        return false;
+    }
+
+    private async Task<bool> TryAutoSaveCurrentEditAsync(bool refreshAfterSave)
+    {
+        if (!TryCaptureAutoSaveSnapshot(out var snapshot))
+            return true;
+
+        return await SaveSnapshotAsync(
+            snapshot,
+            preserveSelectionRowId: SelectedRow?.Source.Id,
+            refreshAfterSave: refreshAfterSave,
+            successMessage: "렌탈 자산을 자동 저장했습니다.",
+            permissionDeniedMessage: "현재 선택한 렌탈 자산을 자동 저장할 권한이 없습니다.");
+    }
+
+    private bool TryCaptureAutoSaveSnapshot(out RentalAssetEditSnapshot snapshot)
+    {
+        snapshot = CaptureEditSnapshot();
+        return HasPendingChanges
+               && HasMeaningfulDraftContent(snapshot)
+               && CanSave;
+    }
+
+    private async Task<bool> SaveSnapshotAsync(
+        RentalAssetEditSnapshot snapshot,
+        Guid? preserveSelectionRowId,
+        bool refreshAfterSave,
+        string successMessage,
+        string permissionDeniedMessage)
+    {
+        await _autoSaveGate.WaitAsync();
+        try
+        {
+            if (!CanSave)
+            {
+                StatusMessage = permissionDeniedMessage;
+                return false;
+            }
+
+            var result = await _rental.SaveAssetAsync(BuildAsset(snapshot), _session);
+            StatusMessage = result.Message;
+            if (!result.Success)
+                return false;
+
+            if (refreshAfterSave)
+            {
+                var selectionIdBeforeRefresh = preserveSelectionRowId ?? SelectedRow?.Source.Id;
+                _suppressSelectionAutoSave = true;
+                try
+                {
+                    await ReloadAsync();
+                    if (selectionIdBeforeRefresh.HasValue)
+                        SelectedRow = Rows.FirstOrDefault(row => row.Source.Id == selectionIdBeforeRefresh.Value);
+                }
+                finally
+                {
+                    _suppressSelectionAutoSave = false;
+                }
+            }
+
+            StatusMessage = successMessage;
+            return true;
+        }
+        finally
+        {
+            _autoSaveGate.Release();
+        }
+    }
+
+    private void ResetForNewAsset(string? statusMessage = null)
+    {
+        SelectRowWithoutAutoSave(null);
+        ApplySnapshot(CreateEmptySnapshot(), resetBaseline: true);
+        if (!string.IsNullOrWhiteSpace(statusMessage))
+            StatusMessage = statusMessage;
+    }
+
+    private void SelectRowWithoutAutoSave(Guid? rowId)
+    {
+        _suppressSelectionAutoSave = true;
+        try
+        {
+            SelectedRow = rowId.HasValue
+                ? Rows.FirstOrDefault(row => row.Source.Id == rowId.Value)
+                : null;
+        }
+        finally
+        {
+            _suppressSelectionAutoSave = false;
+        }
+    }
+
+    private void RestoreEditSnapshot(RentalAssetViewRow? previousSelection, RentalAssetEditSnapshot snapshot)
+    {
+        SelectRowWithoutAutoSave(previousSelection?.Source.Id);
+        ApplySnapshot(snapshot, resetBaseline: false);
+    }
+
+    private RentalAssetEditSnapshot CaptureEditSnapshot()
+        => new(
+            EditId,
+            EditCustomerId,
+            EditItemId,
+            EditManagementId,
+            EditManagementNumber,
+            EditOfficeCode,
+            EditCurrentLocation,
+            EditItemCategoryName,
+            EditManufacturer,
+            EditItemName,
+            EditMachineNumber,
+            EditPurchaseVendor,
+            EditPurchasePrice,
+            EditSalePrice,
+            EditCustomerName,
+            EditCurrentCustomerName,
+            EditInstallLocation,
+            EditLastCustomerName,
+            EditLastInstallLocation,
+            EditLastBillingProfileDisplay,
+            EditLastAssignmentClearedAtText,
+            EditDepositText,
+            EditMonthlyFee,
+            EditContractMonths,
+            EditFreeSupplyItems,
+            EditPaidSupplyItems,
+            EditAssetStatus,
+            EditBillingEligibilityStatus,
+            EditBillingExclusionReason,
+            EditNotes,
+            EditPurchaseDate,
+            EditDisposalDate,
+            EditContractDate,
+            EditInstallDate,
+            EditContractStartDate,
+            EditRentalEndDate,
+            IsNewAsset);
+
+    private void ApplySnapshot(RentalAssetEditSnapshot snapshot, bool resetBaseline)
+    {
+        EditId = snapshot.EditId;
+        EditCustomerId = snapshot.EditCustomerId;
+        EditItemId = snapshot.EditItemId;
+        EditManagementId = snapshot.EditManagementId;
+        EditManagementNumber = snapshot.EditManagementNumber;
+        EditOfficeCode = snapshot.EditOfficeCode;
+        EditCurrentLocation = snapshot.EditCurrentLocation;
+        EditItemCategoryName = snapshot.EditItemCategoryName;
+        EditManufacturer = snapshot.EditManufacturer;
+        EditItemName = snapshot.EditItemName;
+        EditMachineNumber = snapshot.EditMachineNumber;
+        EditPurchaseVendor = snapshot.EditPurchaseVendor;
+        EditPurchasePrice = snapshot.EditPurchasePrice;
+        EditSalePrice = snapshot.EditSalePrice;
+        EditCustomerName = snapshot.EditCustomerName;
+        EditCurrentCustomerName = snapshot.EditCurrentCustomerName;
+        EditInstallLocation = snapshot.EditInstallLocation;
+        EditLastCustomerName = snapshot.EditLastCustomerName;
+        EditLastInstallLocation = snapshot.EditLastInstallLocation;
+        EditLastBillingProfileDisplay = snapshot.EditLastBillingProfileDisplay;
+        EditLastAssignmentClearedAtText = snapshot.EditLastAssignmentClearedAtText;
+        EditDepositText = snapshot.EditDepositText;
+        EditMonthlyFee = snapshot.EditMonthlyFee;
+        EditContractMonths = snapshot.EditContractMonths;
+        EditFreeSupplyItems = snapshot.EditFreeSupplyItems;
+        EditPaidSupplyItems = snapshot.EditPaidSupplyItems;
+        EditAssetStatus = snapshot.EditAssetStatus;
+        EditBillingEligibilityStatus = snapshot.EditBillingEligibilityStatus;
+        EditBillingExclusionReason = snapshot.EditBillingExclusionReason;
+        EditNotes = snapshot.EditNotes;
+        EditPurchaseDate = snapshot.EditPurchaseDate;
+        EditDisposalDate = snapshot.EditDisposalDate;
+        EditContractDate = snapshot.EditContractDate;
+        EditInstallDate = snapshot.EditInstallDate;
+        EditContractStartDate = snapshot.EditContractStartDate;
+        EditRentalEndDate = snapshot.EditRentalEndDate;
+
+        ApplyAssetStatusUiRules();
+        OnPropertyChanged(nameof(IsNewAsset));
+        OnPropertyChanged(nameof(CanSave));
+        OnPropertyChanged(nameof(CanDeleteSelected));
+        OnPropertyChanged(nameof(HasLastAssignmentHistory));
+        OnPropertyChanged(nameof(ShowLastAssignmentHistory));
+        OnPropertyChanged(nameof(IsNonOperatingAssetStatus));
+        OnPropertyChanged(nameof(CanEditAssignmentFields));
+        OnPropertyChanged(nameof(AssignmentFieldsNotice));
+
+        if (resetBaseline)
+            ResetEditBaseline();
+    }
+
+    private RentalAssetEditSnapshot CreateEmptySnapshot()
+        => new(
+            EditId: Guid.NewGuid(),
+            EditCustomerId: null,
+            EditItemId: null,
+            EditManagementId: string.Empty,
+            EditManagementNumber: string.Empty,
+            EditOfficeCode: EditOfficeOptions.FirstOrDefault()?.Value ?? _rental.GetDefaultAssetOfficeCode(_session),
+            EditCurrentLocation: string.Empty,
+            EditItemCategoryName: ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty,
+            EditManufacturer: string.Empty,
+            EditItemName: string.Empty,
+            EditMachineNumber: string.Empty,
+            EditPurchaseVendor: string.Empty,
+            EditPurchasePrice: 0m,
+            EditSalePrice: 0m,
+            EditCustomerName: string.Empty,
+            EditCurrentCustomerName: string.Empty,
+            EditInstallLocation: string.Empty,
+            EditLastCustomerName: string.Empty,
+            EditLastInstallLocation: string.Empty,
+            EditLastBillingProfileDisplay: string.Empty,
+            EditLastAssignmentClearedAtText: string.Empty,
+            EditDepositText: string.Empty,
+            EditMonthlyFee: 0m,
+            EditContractMonths: 0,
+            EditFreeSupplyItems: string.Empty,
+            EditPaidSupplyItems: string.Empty,
+            EditAssetStatus: "임대진행중",
+            EditBillingEligibilityStatus: "미확인",
+            EditBillingExclusionReason: string.Empty,
+            EditNotes: string.Empty,
+            EditPurchaseDate: null,
+            EditDisposalDate: null,
+            EditContractDate: null,
+            EditInstallDate: null,
+            EditContractStartDate: null,
+            EditRentalEndDate: null,
+            IsNewAsset: true);
+
+    private LocalRentalAsset BuildAsset(RentalAssetEditSnapshot snapshot)
+    {
+        var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            snapshot.EditOfficeCode,
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet));
+
+        return new LocalRentalAsset
+        {
+            Id = snapshot.EditId,
+            CustomerId = snapshot.EditCustomerId,
+            ItemId = snapshot.EditItemId,
+            ManagementId = snapshot.EditManagementId,
+            ManagementNumber = snapshot.EditManagementNumber,
+            ManagementCompanyCode = officeCode,
+            CurrentLocation = snapshot.EditCurrentLocation,
+            ItemCategoryName = snapshot.EditItemCategoryName,
+            Manufacturer = snapshot.EditManufacturer,
+            ItemName = snapshot.EditItemName,
+            MachineNumber = snapshot.EditMachineNumber,
+            PurchaseVendor = snapshot.EditPurchaseVendor,
+            PurchasePrice = snapshot.EditPurchasePrice,
+            SalePrice = snapshot.EditSalePrice,
+            CustomerName = snapshot.EditCustomerName,
+            CurrentCustomerName = snapshot.EditCurrentCustomerName,
+            InstallLocation = snapshot.EditInstallLocation,
+            InstallSiteName = snapshot.EditInstallLocation,
+            DepositText = snapshot.EditDepositText,
+            MonthlyFee = snapshot.EditMonthlyFee,
+            ContractMonths = snapshot.EditContractMonths,
+            FreeSupplyItems = snapshot.EditFreeSupplyItems,
+            PaidSupplyItems = snapshot.EditPaidSupplyItems,
+            ResponsibleOfficeCode = officeCode,
+            AssetStatus = snapshot.EditAssetStatus,
+            BillingEligibilityStatus = snapshot.EditBillingEligibilityStatus,
+            BillingExclusionReason = snapshot.EditBillingExclusionReason,
+            Notes = snapshot.EditNotes,
+            PurchaseDate = ToDateOnly(snapshot.EditPurchaseDate),
+            DisposalDate = ToDateOnly(snapshot.EditDisposalDate),
+            ContractDate = ToDateOnly(snapshot.EditContractDate),
+            InstallDate = ToDateOnly(snapshot.EditInstallDate),
+            ContractStartDate = ToDateOnly(snapshot.EditContractStartDate),
+            RentalEndDate = ToDateOnly(snapshot.EditRentalEndDate)
+        };
+    }
+
+    private void ResetEditBaseline()
+        => _baselineStateSignature = BuildEditStateSignature(CaptureEditSnapshot());
+
+    private static bool HasMeaningfulDraftContent(RentalAssetEditSnapshot snapshot)
+        => !string.IsNullOrWhiteSpace(snapshot.EditCustomerName)
+           || !string.IsNullOrWhiteSpace(snapshot.EditItemName)
+           || !string.IsNullOrWhiteSpace(snapshot.EditInstallLocation)
+           || !string.IsNullOrWhiteSpace(snapshot.EditCurrentLocation)
+           || !string.IsNullOrWhiteSpace(snapshot.EditManagementNumber)
+           || !string.IsNullOrWhiteSpace(snapshot.EditManagementId)
+           || !string.IsNullOrWhiteSpace(snapshot.EditManufacturer)
+           || !string.IsNullOrWhiteSpace(snapshot.EditMachineNumber)
+           || !string.IsNullOrWhiteSpace(snapshot.EditPurchaseVendor)
+           || !string.IsNullOrWhiteSpace(snapshot.EditDepositText)
+           || !string.IsNullOrWhiteSpace(snapshot.EditNotes)
+           || !string.IsNullOrWhiteSpace(snapshot.EditFreeSupplyItems)
+           || !string.IsNullOrWhiteSpace(snapshot.EditPaidSupplyItems)
+           || snapshot.EditPurchasePrice != 0m
+           || snapshot.EditSalePrice != 0m
+           || snapshot.EditMonthlyFee != 0m
+           || snapshot.EditContractMonths != 0
+           || snapshot.EditPurchaseDate.HasValue
+           || snapshot.EditDisposalDate.HasValue
+           || snapshot.EditContractDate.HasValue
+           || snapshot.EditInstallDate.HasValue
+           || snapshot.EditContractStartDate.HasValue
+           || snapshot.EditRentalEndDate.HasValue;
+
+    private static string BuildEditStateSignature(RentalAssetEditSnapshot snapshot)
+    {
+        var builder = new System.Text.StringBuilder();
+        builder.Append(snapshot.EditId.ToString("D"))
+            .Append('|').Append(snapshot.EditCustomerId?.ToString("D") ?? string.Empty)
+            .Append('|').Append(snapshot.EditItemId?.ToString("D") ?? string.Empty)
+            .Append('|').Append(snapshot.EditManagementId ?? string.Empty)
+            .Append('|').Append(snapshot.EditManagementNumber ?? string.Empty)
+            .Append('|').Append(snapshot.EditOfficeCode ?? string.Empty)
+            .Append('|').Append(snapshot.EditCurrentLocation ?? string.Empty)
+            .Append('|').Append(snapshot.EditItemCategoryName ?? string.Empty)
+            .Append('|').Append(snapshot.EditManufacturer ?? string.Empty)
+            .Append('|').Append(snapshot.EditItemName ?? string.Empty)
+            .Append('|').Append(snapshot.EditMachineNumber ?? string.Empty)
+            .Append('|').Append(snapshot.EditPurchaseVendor ?? string.Empty)
+            .Append('|').Append(snapshot.EditPurchasePrice)
+            .Append('|').Append(snapshot.EditSalePrice)
+            .Append('|').Append(snapshot.EditCustomerName ?? string.Empty)
+            .Append('|').Append(snapshot.EditCurrentCustomerName ?? string.Empty)
+            .Append('|').Append(snapshot.EditInstallLocation ?? string.Empty)
+            .Append('|').Append(snapshot.EditLastCustomerName ?? string.Empty)
+            .Append('|').Append(snapshot.EditLastInstallLocation ?? string.Empty)
+            .Append('|').Append(snapshot.EditLastBillingProfileDisplay ?? string.Empty)
+            .Append('|').Append(snapshot.EditLastAssignmentClearedAtText ?? string.Empty)
+            .Append('|').Append(snapshot.EditDepositText ?? string.Empty)
+            .Append('|').Append(snapshot.EditMonthlyFee)
+            .Append('|').Append(snapshot.EditContractMonths)
+            .Append('|').Append(snapshot.EditFreeSupplyItems ?? string.Empty)
+            .Append('|').Append(snapshot.EditPaidSupplyItems ?? string.Empty)
+            .Append('|').Append(snapshot.EditAssetStatus ?? string.Empty)
+            .Append('|').Append(snapshot.EditBillingEligibilityStatus ?? string.Empty)
+            .Append('|').Append(snapshot.EditBillingExclusionReason ?? string.Empty)
+            .Append('|').Append(snapshot.EditNotes ?? string.Empty)
+            .Append('|').Append(snapshot.EditPurchaseDate?.ToString("yyyy-MM-dd") ?? string.Empty)
+            .Append('|').Append(snapshot.EditDisposalDate?.ToString("yyyy-MM-dd") ?? string.Empty)
+            .Append('|').Append(snapshot.EditContractDate?.ToString("yyyy-MM-dd") ?? string.Empty)
+            .Append('|').Append(snapshot.EditInstallDate?.ToString("yyyy-MM-dd") ?? string.Empty)
+            .Append('|').Append(snapshot.EditContractStartDate?.ToString("yyyy-MM-dd") ?? string.Empty)
+            .Append('|').Append(snapshot.EditRentalEndDate?.ToString("yyyy-MM-dd") ?? string.Empty)
+            .Append('|').Append(snapshot.IsNewAsset);
+        return builder.ToString();
+    }
+
+    private sealed record RentalAssetEditSnapshot(
+        Guid EditId,
+        Guid? EditCustomerId,
+        Guid? EditItemId,
+        string EditManagementId,
+        string EditManagementNumber,
+        string EditOfficeCode,
+        string EditCurrentLocation,
+        string EditItemCategoryName,
+        string EditManufacturer,
+        string EditItemName,
+        string EditMachineNumber,
+        string EditPurchaseVendor,
+        decimal EditPurchasePrice,
+        decimal EditSalePrice,
+        string EditCustomerName,
+        string EditCurrentCustomerName,
+        string EditInstallLocation,
+        string EditLastCustomerName,
+        string EditLastInstallLocation,
+        string EditLastBillingProfileDisplay,
+        string EditLastAssignmentClearedAtText,
+        string EditDepositText,
+        decimal EditMonthlyFee,
+        int EditContractMonths,
+        string EditFreeSupplyItems,
+        string EditPaidSupplyItems,
+        string EditAssetStatus,
+        string EditBillingEligibilityStatus,
+        string EditBillingExclusionReason,
+        string EditNotes,
+        DateTime? EditPurchaseDate,
+        DateTime? EditDisposalDate,
+        DateTime? EditContractDate,
+        DateTime? EditInstallDate,
+        DateTime? EditContractStartDate,
+        DateTime? EditRentalEndDate,
+        bool IsNewAsset);
 }

@@ -48,32 +48,11 @@ WHERE ""AssignedUsername"" <> '';", cancellationToken);
         return changed;
     }
 
-    private static async Task<bool> HasLegacyAssignedUsernameColumnAsync(
+    private static Task<bool> HasLegacyAssignedUsernameColumnAsync(
         AppDbContext dbContext,
         string tableName,
         CancellationToken cancellationToken)
     {
-        var connection = dbContext.Database.GetDbConnection();
-        var shouldClose = connection.State != System.Data.ConnectionState.Open;
-        if (shouldClose)
-            await connection.OpenAsync(cancellationToken);
-
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-                              SELECT EXISTS (
-                                  SELECT 1
-                                  FROM information_schema.columns
-                                  WHERE table_schema = current_schema()
-                                    AND table_name = @tableName
-                                    AND column_name = 'AssignedUsername')
-                              """;
-        var parameter = command.CreateParameter();
-        parameter.ParameterName = "@tableName";
-        parameter.Value = tableName;
-        command.Parameters.Add(parameter);
-        var scalar = await command.ExecuteScalarAsync(cancellationToken);
-        if (shouldClose)
-            await connection.CloseAsync();
-        return scalar is true || (scalar is bool boolValue && boolValue);
+        return HasColumnAsync(dbContext, tableName, "AssignedUsername", cancellationToken);
     }
 }

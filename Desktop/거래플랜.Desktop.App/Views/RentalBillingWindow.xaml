@@ -11,6 +11,12 @@
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
+        
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=DataGridCell}, Path=IsSelected}" Value="True">
+                    <Setter Property="Foreground" Value="Black"/>
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
         <Style TargetType="TextBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -87,13 +93,13 @@
             <DockPanel>
                 <StackPanel DockPanel.Dock="Left">
                     <TextBlock Text="렌탈 청구관리" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
-                    <TextBlock Text="청구서 표시 품목과 실제 포함 장비를 분리 관리하고, 회차별 청구 검증까지 한 화면에서 처리합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                    <TextBlock Text="청구서 표시 품목과 실제 포함 장비를 분리 관리하고, 저장 시 선택 장비의 설치 거래처/청구 연결도 함께 반영합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
                 </StackPanel>
                 <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
                     <Button Content="새로고침" Margin="0,0,6,6" Command="{Binding ReloadCommand}"/>
                     <Button Content="신규 렌탈 거래처 등록" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,6,6" Click="NewRentalCustomerButton_Click"/>
                     <Button Content="신규 설정" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,6,6" Command="{Binding NewProfileCommand}"/>
-                    <Button Content="저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,6,6" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}"/>
+                    <Button Content="저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,6,6" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}" ToolTip="미연결 설치처를 선택한 뒤 저장하면 청구 프로필이 생성됩니다."/>
                     <Button Content="청구시작" Background="#2E7D32" BorderBrush="#2E7D32" Margin="0,0,6,6" Click="StartBillingButton_Click" IsEnabled="{Binding CanStartBillingSelected}"/>
                     <Button Content="보류" Background="#F9A825" BorderBrush="#F9A825" Margin="0,0,6,6" Command="{Binding HoldBillingCommand}" IsEnabled="{Binding CanHoldSelected}"/>
                     <Button Content="수금등록" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,6" Click="RegisterSettlementButton_Click" IsEnabled="{Binding CanRegisterSettlementSelected}"/>
@@ -301,17 +307,15 @@
                             <StackPanel>
                                 <TextBlock Text="청구항목 요약" Foreground="#4FC3F7" FontWeight="Bold"/>
                                 <TextBlock Text="{Binding TemplateSummary}" Margin="0,6,0,0"/>
-                                <TextBlock Text="{Binding AssetCandidateSummary}" Foreground="#9FB3C8" Margin="0,4,0,0"/>
                                 <TextBlock Text="{Binding BillingSchedulePreviewText}" Foreground="#B3E5FC" Margin="0,4,0,0" TextWrapping="Wrap"/>
                                 <TextBlock Text="{Binding DocumentIssuePreviewText}" Foreground="#B3E5FC" Margin="0,4,0,0" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
 
                         <WrapPanel Margin="0,0,0,8">
-                            <Button Content="후보 장비 새로고침" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,8,0" Command="{Binding RefreshCandidateAssetsCommand}"/>
                             <Button Content="표시 품목 추가" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,8,0" Command="{Binding AddTemplateItemCommand}"/>
                             <Button Content="선택 품목 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveTemplateItemCommand}"/>
-                            <Button Content="선택 장비를 현재 품목에 연결" Background="#00897B" BorderBrush="#00897B" Command="{Binding ApplySelectedAssetsToTemplateCommand}" IsEnabled="{Binding CanApplySelectedAssets}"/>
+                            <Button Content="새 장비연결" Background="#6A1B9A" BorderBrush="#6A1B9A" Click="OpenAssetLinkDialogButton_Click"/>
                         </WrapPanel>
                         <TextBlock Text="{Binding ApplySelectedAssetsHint}" Foreground="#90CAF9" Margin="0,0,0,8" TextWrapping="Wrap"/>
 
@@ -338,21 +342,7 @@
                         <Expander Header="내부 포함 장비" IsExpanded="False" Margin="0,0,0,10">
                             <DataGrid ItemsSource="{Binding IncludedAssets}" Height="210">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="관리번호" Binding="{Binding ManagementNumber}" Width="100"/>
-                                    <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="120"/>
-                                    <DataGridTextColumn Header="현재 거래처" Binding="{Binding CurrentCustomerName}" Width="160"/>
-                                    <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="160"/>
-                                    <DataGridTextColumn Header="상태" Binding="{Binding AssetStatus}" Width="76"/>
-                                    <DataGridTextColumn Header="청구상태" Binding="{Binding BillingEligibilityStatus}" Width="90"/>
-                                </DataGrid.Columns>
-                            </DataGrid>
-                        </Expander>
-
-                        <Expander Header="후보 장비 목록" IsExpanded="False">
-                            <DataGrid ItemsSource="{Binding CandidateAssets}" Height="210">
-                                <DataGrid.Columns>
-                                    <DataGridCheckBoxColumn Header="선택" Binding="{Binding IsSelected, Mode=TwoWay}" Width="54"/>
-                                    <DataGridTextColumn Header="관리번호" Binding="{Binding ManagementNumber}" Width="100"/>
+                                    <DataGridTextColumn Header="시리얼번호" Binding="{Binding MachineNumber}" Width="120"/>
                                     <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="120"/>
                                     <DataGridTextColumn Header="현재 거래처" Binding="{Binding CurrentCustomerName}" Width="160"/>
                                     <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="160"/>

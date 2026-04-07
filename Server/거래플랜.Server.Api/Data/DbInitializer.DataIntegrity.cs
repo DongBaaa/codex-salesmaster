@@ -15,6 +15,12 @@ public static partial class DbInitializer
             .ThenBy(current => current.Name)
             .ToListAsync(cancellationToken);
 
+        var trackedUnits = dbContext.Units.Local
+            .Where(current => units.All(existing => existing.Id != current.Id))
+            .ToList();
+        if (trackedUnits.Count > 0)
+            units.AddRange(trackedUnits);
+
         foreach (var canonicalName in UnitCatalogNormalizer.CanonicalDefaults)
         {
             if (units.Any(current => !current.IsDeleted && current.IsActive && string.Equals(UnitCatalogNormalizer.Normalize(current.Name), canonicalName, StringComparison.Ordinal)))

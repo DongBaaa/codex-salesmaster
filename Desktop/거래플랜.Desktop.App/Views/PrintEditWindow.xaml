@@ -23,6 +23,12 @@
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+        
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=DataGridCell}, Path=IsSelected}" Value="True">
+                    <Setter Property="Foreground" Value="Black"/>
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
         <Style TargetType="DatePicker">
             <Setter Property="Background" Value="#D9E6F5"/>

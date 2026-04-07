@@ -254,6 +254,29 @@ public sealed partial class LocalStateService
                 ct);
     }
 
+    public async Task<Dictionary<Guid, LocalItem>> GetItemMapAsync(
+        IEnumerable<Guid> itemIds,
+        CancellationToken ct = default)
+    {
+        var ids = itemIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0)
+            return new Dictionary<Guid, LocalItem>();
+
+        return await _db.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => ids.Contains(item.Id))
+            .ToDictionaryAsync(
+                item => item.Id,
+                item => item,
+                EqualityComparer<Guid>.Default,
+                ct);
+    }
+
     public Task<LocalCustomer?> GetCustomerAsync(Guid customerId, CancellationToken ct = default)
         => _db.Customers
             .IgnoreQueryFilters()
@@ -1961,6 +1984,53 @@ public sealed partial class LocalStateService
             : NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeYeonsu);
 
         return GetYeonsuDeliveryInvoicesAsync(from, to, customerId, warehouseCode, officeCode, ct);
+    }
+
+    public async Task<List<LocalInvoice>> GetSalesPurchaseLedgerInvoicesAsync(
+        DateOnly? from = null,
+        DateOnly? to = null,
+        Guid? customerId = null,
+        string? warehouseCode = null,
+        string? responsibleOfficeCode = null,
+        CancellationToken ct = default)
+    {
+        var officeFilterText = (responsibleOfficeCode ?? string.Empty).Trim();
+        var normalizedOfficeCode = string.IsNullOrWhiteSpace(officeFilterText)
+            ? string.Empty
+            : NormalizeOfficeCode(officeFilterText, DomainConstants.OfficeYeonsu);
+
+        var query = _db.Invoices
+            .Include(invoice => invoice.Lines.Where(line => !line.IsDeleted))
+            .Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
+            .AsNoTracking()
+            .Where(invoice => !invoice.IsDeleted &&
+                              invoice.IsLatestVersion &&
+                              invoice.IsConfirmed &&
+                              (invoice.VoucherType == VoucherType.Sales ||
+                               invoice.VoucherType == VoucherType.Purchase ||
+                               invoice.VoucherType == VoucherType.Procurement));
+
+        if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
+            query = query.Where(invoice => invoice.ResponsibleOfficeCode == normalizedOfficeCode);
+
+        if (from.HasValue)
+            query = query.Where(invoice => invoice.InvoiceDate >= from.Value);
+
+        if (to.HasValue)
+            query = query.Where(invoice => invoice.InvoiceDate <= to.Value);
+
+        if (customerId.HasValue)
+            query = query.Where(invoice => invoice.CustomerId == customerId.Value);
+
+        var normalizedWarehouseCode = (warehouseCode ?? string.Empty).Trim().ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(normalizedWarehouseCode))
+            query = query.Where(invoice => invoice.SourceWarehouseCode == normalizedWarehouseCode);
+
+        return await query
+            .OrderByDescending(invoice => invoice.InvoiceDate)
+            .ThenByDescending(invoice => invoice.LastSavedAtUtc)
+            .ThenByDescending(invoice => invoice.UpdatedAtUtc)
+            .ToListAsync(ct);
     }
 
     public async Task<LocalInvoice?> GetInvoiceAsync(Guid id, CancellationToken ct = default)
@@ -4765,11 +4835,11 @@ public sealed partial class LocalStateService
         entity.LastStatusChangedAtUtc = existing?.LastStatusChangedAtUtc ?? now;
         entity.ReceivedByUsername = existing?.ReceivedByUsername ?? string.Empty;
         entity.ReceivedAtUtc = existing?.ReceivedAtUtc;
-        entity.ReceiveMemo = existing?.ReceiveMemo ?? string.Empty;
+        entity.ReceiveMemo = transfer.ReceiveMemo?.Trim() ?? string.Empty;
         entity.ReceiveEvidencePath = existing?.ReceiveEvidencePath ?? string.Empty;
         entity.RejectedByUsername = existing?.RejectedByUsername ?? string.Empty;
         entity.RejectedAtUtc = existing?.RejectedAtUtc;
-        entity.RejectReason = existing?.RejectReason ?? string.Empty;
+        entity.RejectReason = transfer.RejectReason?.Trim() ?? string.Empty;
 
         if (existing is null)
         {
@@ -5044,6 +5114,25 @@ public sealed partial class LocalStateService
             .Where(allocation => allocation.SalesInvoiceId == salesInvoiceId)
             .OrderBy(allocation => allocation.CreatedAtUtc)
             .ToListAsync(ct);
+
+    public async Task<List<LocalCostAllocation>> GetCostAllocationsForInvoicesAsync(
+        IEnumerable<Guid> salesInvoiceIds,
+        CancellationToken ct = default)
+    {
+        var ids = salesInvoiceIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0)
+            return new List<LocalCostAllocation>();
+
+        return await _db.CostAllocations
+            .AsNoTracking()
+            .Where(allocation => ids.Contains(allocation.SalesInvoiceId))
+            .OrderBy(allocation => allocation.CreatedAtUtc)
+            .ToListAsync(ct);
+    }
 
     public Task<List<LocalAuditLog>> GetAuditLogsAsync(string entityName, string entityId, CancellationToken ct = default)
         => _db.AuditLogs

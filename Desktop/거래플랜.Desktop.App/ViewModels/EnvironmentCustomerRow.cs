@@ -64,6 +64,13 @@ public sealed partial class EnvironmentCustomerRow : ObservableObject
         OnPropertyChanged(nameof(IsModified));
     }
 
+    public void RestoreSavedOfficeCode()
+    {
+        ResponsibleOfficeCode = _savedOfficeCode;
+        Source.ResponsibleOfficeCode = _savedOfficeCode;
+        OnPropertyChanged(nameof(IsModified));
+    }
+
     private static string NormalizeOfficeCode(string? officeCode)
     {
         if (string.IsNullOrWhiteSpace(officeCode))

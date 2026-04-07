@@ -59,6 +59,22 @@ public partial class CustomerManagementWindow : Window
         UiTaskHelper.Run(this, OpenSelectedCustomerEditorAsync, "UI", "거래처 상세 더블클릭 열기", "거래처 상세를 여는 중 오류가 발생했습니다.");
     }
 
+    private void ResponsibleOfficeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox comboBox || !comboBox.IsLoaded)
+            return;
+
+        if (comboBox.DataContext is not EnvironmentCustomerRow row || !row.IsModified)
+            return;
+
+        UiTaskHelper.Run(
+            this,
+            () => _vm.SaveOfficeChangeAsync(row),
+            "UI",
+            "거래처 담당지점 즉시 저장",
+            "담당지점을 저장하는 중 오류가 발생했습니다.");
+    }
+
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
         DialogWindowCloseHelper.Close(this);

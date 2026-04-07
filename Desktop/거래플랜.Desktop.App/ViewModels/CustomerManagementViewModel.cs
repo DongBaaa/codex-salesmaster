@@ -20,6 +20,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
     private readonly LocalStateService _local;
     private readonly SessionState _session;
     private readonly UiDebouncer _filterDebouncer = new();
+    private readonly SemaphoreSlim _officeSaveLock = new(1, 1);
     private readonly List<EnvironmentCustomerRow> _allRows = new();
     private Dictionary<Guid, string> _categoryNames = new();
     private Dictionary<Guid, CustomerContractSummaryItem> _contractSummaryMap = new();
@@ -95,21 +96,54 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveOfficeChangesAsync()
     {
-        if (IsBusy)
-            return;
-
-        var changed = _allRows.Where(row => row.IsModified).ToList();
+        var changed = _allRows
+            .Where(row => row.IsModified)
+            .DistinctBy(row => row.Id)
+            .ToList();
         if (changed.Count == 0)
         {
             StatusMessage = "변경한 담당지점이 없습니다.";
             return;
         }
 
-        IsBusy = true;
+        await SaveOfficeChangesCoreAsync(changed, false);
+    }
+
+    public Task SaveOfficeChangeAsync(EnvironmentCustomerRow row)
+    {
+        if (row is null)
+            return Task.CompletedTask;
+
+        return SaveOfficeChangesCoreAsync([row], true);
+    }
+
+    private async Task SaveOfficeChangesCoreAsync(
+        IReadOnlyList<EnvironmentCustomerRow> rows,
+        bool immediate)
+    {
+        var targets = rows
+            .Where(row => row is not null)
+            .DistinctBy(row => row.Id)
+            .ToList();
+        if (targets.Count == 0)
+            return;
+
+        await _officeSaveLock.WaitAsync();
         try
         {
+            var pending = targets.Where(row => row.IsModified).ToList();
+            if (pending.Count == 0)
+            {
+                if (!immediate)
+                    StatusMessage = "변경한 담당지점이 없습니다.";
+                return;
+            }
+
+            IsBusy = true;
             var grantedTemporaryAccess = false;
-            foreach (var row in changed)
+            var savedCount = 0;
+
+            foreach (var row in pending)
             {
                 row.ApplyToSource();
 
@@ -122,6 +156,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
                     var result = await _local.UpsertCustomerAsync(row.Source, _session);
                     if (!result.Success)
                     {
+                        row.RestoreSavedOfficeCode();
                         StatusMessage = result.Message;
                         return;
                     }
@@ -130,22 +165,31 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
                 }
 
                 row.AcceptChanges();
+                savedCount++;
             }
 
             ReloadOfficeFilters();
-            var baseStatusMessage = _session.HasAdministrativePrivileges
-                ? $"담당지점 변경 {changed.Count:N0}건을 저장했습니다."
-                : grantedTemporaryAccess
-                    ? "거래처를 저장했습니다. USENET 거래처는 당일만 계속 작업할 수 있습니다."
-                    : $"담당지점 변경 {changed.Count:N0}건을 저장했습니다.";
+            ApplyFilter();
+
+            var baseStatusMessage = immediate
+                ? _session.HasAdministrativePrivileges
+                    ? $"거래처 '{pending[0].NameOriginal}' 담당지점을 바로 저장했습니다."
+                    : grantedTemporaryAccess
+                        ? "거래처 담당지점을 저장했습니다. USENET 거래처는 당일만 계속 작업할 수 있습니다."
+                        : $"거래처 '{pending[0].NameOriginal}' 담당지점을 바로 저장했습니다."
+                : _session.HasAdministrativePrivileges
+                    ? $"담당지점 변경 {savedCount:N0}건을 저장했습니다."
+                    : grantedTemporaryAccess
+                        ? "거래처를 저장했습니다. USENET 거래처는 당일만 계속 작업할 수 있습니다."
+                        : $"담당지점 변경 {savedCount:N0}건을 저장했습니다.";
 
             var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
             StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(baseStatusMessage, serverWriteResult);
-            ApplyFilter();
         }
         finally
         {
             IsBusy = false;
+            _officeSaveLock.Release();
         }
     }
 

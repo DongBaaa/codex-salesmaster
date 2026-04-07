@@ -24,13 +24,33 @@ public sealed partial class RentalBillingTemplateEditorItem : ObservableObject
 public sealed partial class RentalBillingAssetOption : ObservableObject
 {
     [ObservableProperty] private Guid _assetId;
+    [ObservableProperty] private Guid? _customerId;
+    [ObservableProperty] private Guid? _billingProfileId;
     [ObservableProperty] private string _managementNumber = string.Empty;
     [ObservableProperty] private string _itemName = string.Empty;
     [ObservableProperty] private string _machineNumber = string.Empty;
     [ObservableProperty] private string _currentCustomerName = string.Empty;
+    [ObservableProperty] private string _targetCustomerName = string.Empty;
     [ObservableProperty] private string _installLocation = string.Empty;
     [ObservableProperty] private string _assetStatus = string.Empty;
     [ObservableProperty] private string _billingEligibilityStatus = string.Empty;
+    [ObservableProperty] private string _currentBillingProfileDisplay = string.Empty;
+    [ObservableProperty] private string _responsibleOfficeName = string.Empty;
+    [ObservableProperty] private string _notes = string.Empty;
     [ObservableProperty] private decimal _monthlyFee;
+    [ObservableProperty] private DateTime? _contractStartDate;
+    [ObservableProperty] private DateTime? _purchaseDate;
+    [ObservableProperty] private DateTime? _installDate;
+    [ObservableProperty] private bool _isLinkedToCurrentProfile;
+    [ObservableProperty] private bool _isLinkedToAnotherProfile;
     [ObservableProperty] private bool _isSelected;
+
+    public string PurchaseDateDisplay => PurchaseDate?.ToString("yyyy-MM-dd") ?? string.Empty;
+    public string InstallDateDisplay => InstallDate?.ToString("yyyy-MM-dd") ?? string.Empty;
+
+    partial void OnPurchaseDateChanged(DateTime? value)
+        => OnPropertyChanged(nameof(PurchaseDateDisplay));
+
+    partial void OnInstallDateChanged(DateTime? value)
+        => OnPropertyChanged(nameof(InstallDateDisplay));
 }

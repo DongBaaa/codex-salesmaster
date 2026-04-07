@@ -14,6 +14,12 @@
             <Setter Property="Foreground" Value="#E0E0E0"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+        
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=DataGridCell}, Path=IsSelected}" Value="True">
+                    <Setter Property="Foreground" Value="Black"/>
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
         <Style TargetType="TextBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -111,13 +117,16 @@
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0"
                            Text="기본 거래처 정보와 계약서 PDF를 함께 관리할 수 있습니다."
                            Foreground="#90CAF9" FontSize="11" VerticalAlignment="Center"/>
                 <Button Grid.Column="1" Content="연속입력 (F6)" Background="#00695C"
                         Margin="0,0,8,0" Command="{Binding SaveAndNewCommand}"/>
-                <Button Grid.Column="2" Content="저장" Background="#0D47A1" Padding="20,6"
+                <Button Grid.Column="2" Content="임대 자산 보기" Background="#6A1B9A"
+                        Margin="0,0,8,0" Click="OpenRentalAssetsButton_Click"/>
+                <Button Grid.Column="3" Content="저장" Background="#0D47A1" Padding="20,6"
                         Command="{Binding SaveCommand}"/>
             </Grid>
         </Border>
