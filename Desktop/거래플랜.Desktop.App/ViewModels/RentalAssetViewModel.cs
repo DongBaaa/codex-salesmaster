@@ -386,6 +386,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
 
         var customer = await ResolveDocumentCustomerAsync(asset);
+        var preferredCustomerContractDate = customer?.Id is Guid customerId && customerId != Guid.Empty
+            ? (await _local.GetPreferredCustomerContractAsync(customerId, _session))?.SignedDate
+            : null;
         var officeOptions = EditOfficeOptions
             .Select(option => new DisplayOption
             {
@@ -395,7 +398,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             .ToList();
         var companyProfiles = await _local.GetCompanyProfilesAsync();
 
-        var contractModel = _documents.CreateContractDocumentModel(asset, customer, company);
+        var contractModel = _documents.CreateContractDocumentModel(asset, customer, company, preferredCustomerContractDate);
         var editorViewModel = new RentalContractEditorViewModel(
             contractModel,
             _documents,

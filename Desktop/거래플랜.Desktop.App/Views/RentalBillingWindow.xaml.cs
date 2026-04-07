@@ -1,9 +1,15 @@
-﻿using System.ComponentModel;
+﻿using System.Collections.Generic;
+using System.ComponentModel;
 using System.Windows;
+using System.Linq;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
+using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -12,6 +18,8 @@ public partial class RentalBillingWindow : Window
 {
     private bool _allowClose;
     private bool _closeInProgress;
+    private bool _customerEditorOpenInProgress;
+    private readonly HashSet<CustomerEditWindow> _trackedCustomerEditorWindows = new();
 
     public RentalBillingWindow(RentalBillingViewModel viewModel)
     {
@@ -146,6 +154,36 @@ public partial class RentalBillingWindow : Window
     private void OpenAssetLinkDialogButton_Click(object sender, RoutedEventArgs e)
         => UiTaskHelper.Run(this, OpenAssetLinkDialogAsync, "UI", "렌탈 자산 연결", "렌탈 자산 연결창을 여는 중 오류가 발생했습니다.");
 
+    private void BillingRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source)
+            return;
+
+        if (FindAncestor<DataGridColumnHeader>(source) is not null ||
+            FindAncestor<ScrollBar>(source) is not null ||
+            FindAncestor<CheckBox>(source) is not null ||
+            FindAncestor<Button>(source) is not null ||
+            FindAncestor<ComboBox>(source) is not null)
+        {
+            return;
+        }
+
+        if (FindAncestor<DataGridRow>(source) is not DataGridRow dataGridRow ||
+            dataGridRow.Item is not RentalBillingViewRow row ||
+            DataContext is not RentalBillingViewModel viewModel)
+        {
+            return;
+        }
+
+        viewModel.SelectedRow = row;
+        UiTaskHelper.Run(
+            this,
+            () => OpenCustomerEditorForSelectedRowAsync(row),
+            "UI",
+            "렌탈 청구 거래처 열기",
+            "거래처 등록/수정 창을 여는 중 오류가 발생했습니다.");
+    }
+
     private async Task OpenCustomerLookupAsync()
     {
         if (DataContext is not RentalBillingViewModel viewModel)
@@ -199,5 +237,108 @@ public partial class RentalBillingWindow : Window
             return;
 
         viewModel.ApplyAssetLinkSelections(dialogViewModel.GetSelectedAssets());
+    }
+
+    private async Task OpenCustomerEditorForSelectedRowAsync(RentalBillingViewRow row)
+    {
+        if (_customerEditorOpenInProgress)
+            return;
+
+        var customerId = row.Source.CustomerId.GetValueOrDefault();
+        if (customerId == Guid.Empty)
+        {
+            MessageBox.Show(
+                this,
+                "연결된 거래처 식별값이 없어 거래처 등록/수정 창을 열 수 없습니다.",
+                "렌탈 청구 거래처 열기",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var existingWindow = Application.Current?.Windows
+            .OfType<CustomerEditWindow>()
+            .FirstOrDefault(window => window.DataContext is CustomerEditViewModel vm && vm.CustomerId == customerId);
+        if (existingWindow is not null)
+        {
+            AttachCustomerEditorClosedRefresh(existingWindow, row);
+            if (existingWindow.WindowState == WindowState.Minimized)
+                existingWindow.WindowState = WindowState.Normal;
+
+            existingWindow.Activate();
+            existingWindow.Focus();
+            return;
+        }
+
+        _customerEditorOpenInProgress = true;
+        try
+        {
+            if (DataContext is not RentalBillingViewModel viewModel)
+                return;
+
+            var customer = await viewModel.LocalStateService.GetCustomerAsync(customerId, viewModel.SessionState);
+            if (customer is null)
+            {
+                MessageBox.Show(
+                    this,
+                    "해당 거래처를 찾을 수 없거나 현재 권한으로 열 수 없습니다.",
+                    "렌탈 청구 거래처 열기",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            var customerVm = new CustomerEditViewModel(viewModel.LocalStateService, viewModel.SessionState);
+            await customerVm.LoadAsync(customer);
+            var customerWindow = new CustomerEditWindow(customerVm)
+            {
+                Owner = this
+            };
+            customerWindow.ShowDialog();
+            await viewModel.RefreshSelectedCustomerContextAsync();
+            await viewModel.ReloadCommand.ExecuteAsync(null);
+            viewModel.SelectedRow = viewModel.Rows.FirstOrDefault(current => current.SelectionId == row.SelectionId)
+                                    ?? viewModel.Rows.FirstOrDefault(current => current.Source.Id == row.Source.Id);
+        }
+        finally
+        {
+            _customerEditorOpenInProgress = false;
+        }
+    }
+
+    private void AttachCustomerEditorClosedRefresh(CustomerEditWindow customerWindow, RentalBillingViewRow row)
+    {
+        if (!_trackedCustomerEditorWindows.Add(customerWindow))
+            return;
+
+        void HandleClosed(object? sender, EventArgs args)
+        {
+            customerWindow.Closed -= HandleClosed;
+            _trackedCustomerEditorWindows.Remove(customerWindow);
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(async () =>
+            {
+                if (DataContext is not RentalBillingViewModel viewModel)
+                    return;
+
+                await viewModel.RefreshSelectedCustomerContextAsync();
+                await viewModel.ReloadCommand.ExecuteAsync(null);
+                viewModel.SelectedRow = viewModel.Rows.FirstOrDefault(current => current.SelectionId == row.SelectionId)
+                                        ?? viewModel.Rows.FirstOrDefault(current => current.Source.Id == row.Source.Id);
+            }));
+        }
+        customerWindow.Closed += HandleClosed;
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T typed)
+                return typed;
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
     }
 }

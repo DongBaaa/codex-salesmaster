@@ -77,6 +77,8 @@ public sealed partial class RentalCustomerOnboardingViewModel
 
         if (CurrentStepIndex >= 3 || TemplateItems.Any(item => item.IncludedAssetIds.Count > 0))
             await LoadCandidateAssetsAsync();
+        else
+            ScheduleContractDateRefresh(preserveCurrentValue: true);
 
         StatusMessage = "자동저장된 신규 렌탈 거래처 등록 내역을 불러왔습니다.";
         return true;
@@ -253,16 +255,17 @@ public sealed partial class RentalCustomerOnboardingViewModel
         BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(draft.BillingDayMode);
         BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(draft.BillingDay);
         BillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(draft.BillingCycleMonths);
-        BillingStartDate = draft.BillingStartDate == default ? DateTime.Today : draft.BillingStartDate;
+        BillingStartDate = draft.BillingStartDate;
+        var billingReferenceDate = ToDateOnly(BillingStartDate) ?? DateOnly.FromDateTime(DateTime.Today);
         BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
             BillingCycleMonths,
             draft.BillingAnchorMonth,
-            DateOnly.FromDateTime(BillingStartDate),
-            DateOnly.FromDateTime(BillingStartDate),
+            ToDateOnly(BillingStartDate),
+            ToDateOnly(BillingStartDate),
             null,
             null,
             null,
-            DateOnly.FromDateTime(BillingStartDate));
+            billingReferenceDate);
         DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(draft.DocumentIssueMode);
         DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(draft.DocumentLeadDays);
         MonthlyAmount = draft.MonthlyAmount;
@@ -326,7 +329,7 @@ public sealed partial class RentalCustomerOnboardingViewModel
             BillingAnchorMonth != 3 ||
             !string.Equals(DocumentIssueMode, RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate, StringComparison.Ordinal) ||
             DocumentLeadDays != 0 ||
-            BillingStartDate.Date != DateTime.Today.Date)
+            BillingStartDate.HasValue)
         {
             return true;
         }

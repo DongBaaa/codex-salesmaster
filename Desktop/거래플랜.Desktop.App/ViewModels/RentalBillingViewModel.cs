@@ -20,10 +20,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private readonly SessionState _session;
     private readonly UiDebouncer _searchDebouncer = new();
     private CancellationTokenSource? _candidateAssetsLoadCts;
+    private CancellationTokenSource? _contractDateRefreshCts;
     private Task? _candidateAssetsLoadTask;
     private bool _suppressFilterReload;
     private bool _pendingFilterReload;
     private bool _suppressCandidateAssetSelectionChanges;
+    private bool _suppressContractDateSynchronization;
     private readonly List<RentalBillingAssetOption> _includedAssetPool = new();
     private readonly List<RentalBillingAssetOption> _candidateAssetPool = new();
     private readonly Dictionary<Guid, RentalBillingAssetLinkEdit> _pendingAssetLinkEdits = new();
@@ -117,6 +119,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public bool CanApplySelectedAssets => SelectedTemplateItem is not null && CandidateAssets.Any(asset => asset.IsSelected);
     public bool IsFixedBillingDayMode => string.Equals(EditBillingDayMode, RentalBillingScheduleRules.BillingDayModeFixedDay, StringComparison.Ordinal);
     public bool IsDocumentLeadDaysVisible => string.Equals(EditDocumentIssueMode, RentalBillingScheduleRules.DocumentIssueModeDaysBeforeDueDate, StringComparison.Ordinal);
+    public bool IsContractDateMissing => !EditContractDate.HasValue;
+    public bool ShouldShowContractDateWarning => IsContractDateMissing && (EditCustomerId.HasValue || !string.IsNullOrWhiteSpace(EditCustomerName) || SelectedRow is not null);
+    public string ContractDateWarningMessage => "계약 체결일을 확인할 수 없습니다. 저장은 가능하지만 청구 기준 검토가 필요합니다.";
     public LocalStateService LocalStateService => _local;
     public RentalStateService RentalStateService => _rental;
     public SessionState SessionState => _session;
@@ -197,7 +202,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     partial void OnSelectedStatusFilterChanged(string value) => RequestFilterReload();
     partial void OnDueOnlyChanged(bool value) => RequestFilterReload();
     partial void OnReferenceDateChanged(DateOnly value) => RequestFilterReload();
-    partial void OnEditCustomerNameChanged(string value) { }
+    partial void OnEditCustomerNameChanged(string value) => OnPropertyChanged(nameof(ShouldShowContractDateWarning));
+    partial void OnEditCustomerIdChanged(Guid? value) => OnPropertyChanged(nameof(ShouldShowContractDateWarning));
     partial void OnEditSettledAmountChanged(decimal value) => EditOutstandingAmount = Math.Max(0m, EditMonthlyAmount - value);
     partial void OnEditBillingDayChanged(int value) => UpdateTemplateDerivedValues();
     partial void OnEditBillingDayModeChanged(string value)
@@ -212,10 +218,35 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         UpdateTemplateDerivedValues();
     }
     partial void OnEditDocumentLeadDaysChanged(int value) => UpdateTemplateDerivedValues();
-    partial void OnEditBillingStartDateChanged(DateTime? value) => UpdateTemplateDerivedValues();
+    partial void OnEditBillingStartDateChanged(DateTime? value)
+    {
+        if (_suppressContractDateSynchronization)
+            return;
+
+        UpdateTemplateDerivedValues();
+    }
     partial void OnEditBillingAdvanceModeChanged(string value) => UpdateTemplateDerivedValues();
     partial void OnEditContractStartDateChanged(DateTime? value) => UpdateTemplateDerivedValues();
-    partial void OnEditContractDateChanged(DateTime? value) => UpdateTemplateDerivedValues();
+    partial void OnEditContractDateChanged(DateTime? value)
+    {
+        if (!_suppressContractDateSynchronization)
+        {
+            _suppressContractDateSynchronization = true;
+            try
+            {
+                EditBillingStartDate = value;
+            }
+            finally
+            {
+                _suppressContractDateSynchronization = false;
+            }
+        }
+
+        OnPropertyChanged(nameof(IsContractDateMissing));
+        OnPropertyChanged(nameof(ShouldShowContractDateWarning));
+        OnPropertyChanged(nameof(ContractDateWarningMessage));
+        UpdateTemplateDerivedValues();
+    }
     partial void OnEditLastBilledDateChanged(DateTime? value) => UpdateTemplateDerivedValues();
     partial void OnEditBillingCycleMonthsChanged(int value)
     {
@@ -228,7 +259,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             ToDateOnly(EditContractStartDate),
             ToDateOnly(EditContractDate),
             ToDateOnly(EditLastBilledDate),
-            DateOnly.FromDateTime(DateTime.Today));
+            GetBillingReferenceDate());
         UpdateTemplateDerivedValues();
     }
     partial void OnEditBillingTypeChanged(string value)
@@ -337,11 +368,22 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
+        await RefreshContractDateFromSourcesAsync(preserveExistingValue: true);
         UpdateTemplateDerivedValues();
+
+        if (!EditContractDate.HasValue)
+        {
+            MessageBox.Show(
+                "계약 체결일을 확인할 수 없습니다. 저장은 가능하지만 청구 기준 검토가 필요합니다.",
+                "렌탈 청구 저장",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
 
         var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
             EditOfficeCode,
             OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet));
+        var contractDate = ToDateOnly(EditContractDate);
 
         var entity = new LocalRentalBillingProfile
         {
@@ -374,8 +416,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             Notes = EditNotes,
             ResponsibleOfficeCode = officeCode,
             BillingAnchorDate = ToDateOnly(EditBillingAnchorDate),
-            BillingStartDate = ToDateOnly(EditBillingStartDate),
-            ContractDate = ToDateOnly(EditContractDate),
+            BillingStartDate = contractDate,
+            ContractDate = contractDate,
             ContractStartDate = ToDateOnly(EditContractStartDate),
             ContractEndDate = ToDateOnly(EditContractEndDate),
             LastBilledDate = ToDateOnly(EditLastBilledDate),
@@ -619,8 +661,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditSubmissionDocuments = string.Empty;
         EditNotes = string.Empty;
         EditBillingAnchorDate = null;
-        EditBillingStartDate = DateTime.Today;
-        EditContractDate = null;
+        SetContractReferenceDates(null);
         EditContractStartDate = null;
         EditContractEndDate = null;
         EditLastBilledDate = null;
@@ -634,10 +675,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         TemplateSummary = "표시품목 1건 / 연결장비 0건";
         AssetCandidateSummary = "후보 장비가 없습니다.";
         LinkAssetsLater = false;
+        _contractDateRefreshCts?.Cancel();
         SelectedRow = null;
         InvoiceToOpenAfterClose = null;
         _selectedRowBaselineSignature = string.Empty;
         UpdateTemplateDerivedValues();
+        OnPropertyChanged(nameof(IsContractDateMissing));
+        OnPropertyChanged(nameof(ShouldShowContractDateWarning));
+        OnPropertyChanged(nameof(ContractDateWarningMessage));
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanStartBillingSelected));
         OnPropertyChanged(nameof(CanHoldSelected));
@@ -762,6 +807,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         SelectedTemplateItem.IncludedAssetSummary = BuildIncludedAssetSummary(SelectedTemplateItem.IncludedAssetIds);
         UpdateTemplateDerivedValues();
         ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
+        ScheduleContractDateRefresh();
         StatusMessage = $"장비 {selectedAssets.Count:N0}대를 현재 거래처 청구에 연결하도록 반영했습니다. 저장하면 설치현황도 함께 갱신됩니다.";
     }
 
@@ -824,6 +870,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (value is null)
         {
+            _contractDateRefreshCts?.Cancel();
+            OnPropertyChanged(nameof(IsContractDateMissing));
+            OnPropertyChanged(nameof(ShouldShowContractDateWarning));
+            OnPropertyChanged(nameof(ContractDateWarningMessage));
             OnPropertyChanged(nameof(CanSave));
             OnPropertyChanged(nameof(CanStartBillingSelected));
             OnPropertyChanged(nameof(CanHoldSelected));
@@ -876,8 +926,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditSubmissionDocuments = source.SubmissionDocuments;
         EditNotes = source.Notes;
         EditBillingAnchorDate = ToDateTime(source.BillingAnchorDate);
-        EditBillingStartDate = ToDateTime(source.BillingStartDate);
-        EditContractDate = ToDateTime(source.ContractDate);
+        SetContractReferenceDates(ToDateTime(source.ContractDate ?? source.BillingStartDate));
         EditContractStartDate = ToDateTime(source.ContractStartDate);
         EditContractEndDate = ToDateTime(source.ContractEndDate);
         EditLastBilledDate = ToDateTime(source.LastBilledDate);
@@ -891,8 +940,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             EditOfficeCode,
             preserveSelection: false,
             autoIncludeAllCandidates: false);
+        ScheduleContractDateRefresh(updateSelectedRowBaselineIfUnchanged: true);
         if (!value.HasPersistedProfile)
             StatusMessage = "청구 프로필이 없는 설치처입니다. 내용을 확인한 뒤 저장하면 청구 프로필이 생성됩니다.";
+        OnPropertyChanged(nameof(IsContractDateMissing));
+        OnPropertyChanged(nameof(ShouldShowContractDateWarning));
+        OnPropertyChanged(nameof(ContractDateWarningMessage));
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanStartBillingSelected));
         OnPropertyChanged(nameof(CanHoldSelected));
@@ -993,11 +1046,157 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             EditOfficeCode,
             preserveSelection: false,
             autoIncludeAllCandidates: true);
+        ScheduleContractDateRefresh();
+        OnPropertyChanged(nameof(ShouldShowContractDateWarning));
+    }
+
+    public async Task RefreshSelectedCustomerContextAsync()
+    {
+        if (!EditCustomerId.HasValue || EditCustomerId.Value == Guid.Empty)
+        {
+            await RefreshContractDateFromSourcesAsync(preserveExistingValue: false);
+            return;
+        }
+
+        var customer = await _local.GetCustomerAsync(EditCustomerId.Value, _session);
+        if (customer is not null)
+        {
+            EditCustomerName = customer.NameOriginal?.Trim() ?? string.Empty;
+            EditBusinessNumber = customer.BusinessNumber?.Trim() ?? string.Empty;
+            EditEmail = customer.Email?.Trim() ?? string.Empty;
+            EditOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                customer.ResponsibleOfficeCode,
+                OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet));
+
+            var department = customer.Department?.Trim() ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(department))
+                EditInstallLocation = department;
+        }
+
+        await RefreshContractDateFromSourcesAsync(preserveExistingValue: false);
     }
 
     private void SelectRow(Guid entityId)
     {
         SelectedRow = Rows.FirstOrDefault(row => row.Source.Id == entityId);
+    }
+
+    private void ScheduleContractDateRefresh(bool preserveCurrentValue = false, bool updateSelectedRowBaselineIfUnchanged = false)
+    {
+        _contractDateRefreshCts?.Cancel();
+        _contractDateRefreshCts?.Dispose();
+
+        var cts = new CancellationTokenSource();
+        _contractDateRefreshCts = cts;
+        var baselineSelectionId = updateSelectedRowBaselineIfUnchanged ? SelectedRow?.SelectionId : null;
+        var baselineSignature = updateSelectedRowBaselineIfUnchanged ? BuildCurrentEditorSignature() : null;
+        UiTaskHelper.Forget(
+            RefreshContractDateFromSourcesAsync(
+                preserveCurrentValue,
+                updateSelectedRowBaselineIfUnchanged,
+                baselineSelectionId,
+                baselineSignature,
+                cts.Token),
+            "RENTAL",
+            "렌탈 계약 체결일 조회",
+            ex =>
+            {
+                if (ex is OperationCanceledException)
+                    return;
+
+                StatusMessage = $"계약 체결일 정보를 불러오지 못했습니다. {ex.Message}";
+            });
+    }
+
+    private async Task RefreshContractDateFromSourcesAsync(
+        bool preserveExistingValue,
+        bool updateSelectedRowBaselineIfUnchanged = false,
+        Guid? baselineSelectionId = null,
+        string? baselineSignature = null,
+        CancellationToken ct = default)
+    {
+        if (preserveExistingValue && EditContractDate.HasValue)
+            return;
+
+        var contractDate = await ResolveContractDateFromSourcesAsync(ct);
+        ct.ThrowIfCancellationRequested();
+        var shouldRefreshSelectedRowBaseline = updateSelectedRowBaselineIfUnchanged &&
+                                              baselineSelectionId.HasValue &&
+                                              SelectedRow?.SelectionId == baselineSelectionId.Value &&
+                                              string.Equals(baselineSignature, BuildCurrentEditorSignature(), StringComparison.Ordinal);
+        SetContractReferenceDates(ToDateTime(contractDate));
+        if (shouldRefreshSelectedRowBaseline)
+            _selectedRowBaselineSignature = BuildCurrentEditorSignature();
+    }
+
+    private async Task<DateOnly?> ResolveContractDateFromSourcesAsync(CancellationToken ct = default)
+    {
+        if (EditCustomerId.HasValue && EditCustomerId.Value != Guid.Empty)
+        {
+            var preferredContract = await _local.GetPreferredCustomerContractAsync(EditCustomerId.Value, _session, ct);
+            if (preferredContract?.SignedDate is DateOnly signedDate)
+                return signedDate;
+        }
+
+        return await ResolveContractDateFromLinkedA3ColorAssetsAsync(ct);
+    }
+
+    private async Task<DateOnly?> ResolveContractDateFromLinkedA3ColorAssetsAsync(CancellationToken ct = default)
+    {
+        var linkedAssetIds = TemplateItems
+            .SelectMany(item => item.IncludedAssetIds)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        if (linkedAssetIds.Count == 0)
+            return null;
+
+        var linkedAssets = await _rental.GetIncludedBillingAssetsAsync(
+            null,
+            linkedAssetIds,
+            EditCustomerId,
+            EditOfficeCode,
+            _session,
+            ct);
+
+        var earliestInstallDate = linkedAssets
+            .Where(IsA3ColorMultiFunctionAsset)
+            .Select(asset => asset.InstallDate)
+            .Where(installDate => installDate.HasValue)
+            .Select(installDate => installDate!.Value)
+            .OrderBy(installDate => installDate)
+            .FirstOrDefault();
+
+        return earliestInstallDate == default ? null : earliestInstallDate;
+    }
+
+    private static bool IsA3ColorMultiFunctionAsset(LocalRentalAsset asset)
+        => RentalAssetCategoryRules.IsA3ColorMultiFunctionAsset(asset);
+
+    private DateOnly GetBillingReferenceDate()
+        => ToDateOnly(EditContractDate)
+           ?? ToDateOnly(EditBillingStartDate)
+           ?? ToDateOnly(EditContractStartDate)
+           ?? DateOnly.FromDateTime(DateTime.Today);
+
+    private void SetContractReferenceDates(DateTime? value)
+    {
+        _suppressContractDateSynchronization = true;
+        try
+        {
+            EditContractDate = value?.Date;
+            EditBillingStartDate = value?.Date;
+        }
+        finally
+        {
+            _suppressContractDateSynchronization = false;
+        }
+
+        OnPropertyChanged(nameof(IsContractDateMissing));
+        OnPropertyChanged(nameof(ShouldShowContractDateWarning));
+        OnPropertyChanged(nameof(ContractDateWarningMessage));
+        UpdateTemplateDerivedValues();
     }
 
     private void StartCandidateAssetsLoad(
@@ -1477,7 +1676,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private string BuildBillingSchedulePreview()
     {
-        var referenceDate = ToDateOnly(EditBillingStartDate) ?? DateOnly.FromDateTime(DateTime.Today);
+        if (!EditContractDate.HasValue)
+            return "계약 체결일을 확인하면 다음 청구일이 표시됩니다.";
+
+        var referenceDate = GetBillingReferenceDate();
         var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(EditBillingCycleMonths);
         var anchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
             cycleMonths,
@@ -1507,7 +1709,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private string BuildDocumentIssuePreview()
     {
-        var referenceDate = ToDateOnly(EditBillingStartDate) ?? DateOnly.FromDateTime(DateTime.Today);
+        if (!EditContractDate.HasValue)
+            return "계약 체결일을 확인하면 예상 발송일이 표시됩니다.";
+
+        var referenceDate = GetBillingReferenceDate();
         var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(EditBillingCycleMonths);
         var anchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
             cycleMonths,

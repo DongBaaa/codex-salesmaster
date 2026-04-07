@@ -7,6 +7,7 @@
         WindowStartupLocation="CenterOwner"
         Background="#151F2E">
     <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility"/>
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
@@ -242,8 +243,15 @@
                                     <ColumnDefinition Width="150"/>
                                     <ColumnDefinition Width="220"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="청구 시작일" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                                <DatePicker Grid.Column="1" SelectedDate="{Binding BillingStartDate}" Margin="0,0,0,8"/>
+                                <TextBlock Grid.Column="0" Text="계약 체결일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <StackPanel Grid.Column="1" Margin="0,0,0,8">
+                                    <DatePicker SelectedDate="{Binding BillingStartDate}"/>
+                                    <TextBlock Text="{Binding ContractDateWarningMessage}"
+                                               Foreground="#FFCC80"
+                                               Margin="0,4,0,0"
+                                               TextWrapping="Wrap"
+                                               Visibility="{Binding ShouldShowContractDateWarning, Converter={StaticResource BoolToVisibility}}"/>
+                                </StackPanel>
                                 <TextBlock Grid.Column="3" Text="기준 월임대료" VerticalAlignment="Center" Margin="0,0,10,8"/>
                                 <TextBox Grid.Column="4" Text="{Binding MonthlyAmount, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
                             </Grid>
@@ -389,6 +397,7 @@
                                 <StackPanel>
                                     <TextBlock Text="렌탈 / 청구 정보" Foreground="#4FC3F7" FontWeight="Bold"/>
                                     <TextBlock Text="{Binding InstallLocation, StringFormat=설치위치: {0}}" Margin="0,6,0,0"/>
+                                    <TextBlock Text="{Binding BillingStartDate, StringFormat=계약 체결일: {0:yyyy-MM-dd}}" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding BillingCycleMonths, StringFormat=청구주기: {0}개월}" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding BillingPreviewPeriod, StringFormat=청구 대상 기간: {0}}" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding ExpectedBillingAmountText, StringFormat=예상 청구 금액: {0}}" Margin="0,4,0,0"/>

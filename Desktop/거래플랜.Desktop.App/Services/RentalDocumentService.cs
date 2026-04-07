@@ -174,15 +174,21 @@ public sealed class RentalDocumentService
     public RentalContractDocumentModel CreateContractDocumentModel(
         LocalRentalAsset asset,
         LocalCustomer? customer,
-        LocalCompanyProfile companyProfile)
+        LocalCompanyProfile companyProfile,
+        DateOnly? preferredCustomerContractDate = null)
     {
         ArgumentNullException.ThrowIfNull(asset);
         ArgumentNullException.ThrowIfNull(companyProfile);
 
         var tenantName = Coalesce(customer?.NameOriginal, asset.CustomerName, "거래처 미지정");
         var companyName = Coalesce(companyProfile.TradeName, ResolveOfficeName(companyProfile.OfficeCode, companyProfile), "관리업체");
-        var contractDate = asset.ContractDate ?? asset.ContractStartDate ?? asset.InstallDate ?? DateOnly.FromDateTime(DateTime.Today);
-        var startDate = asset.ContractStartDate ?? asset.InstallDate ?? asset.ContractDate ?? DateOnly.FromDateTime(DateTime.Today);
+        var contractDates = RentalContractDateRules.Resolve(
+            preferredCustomerContractDate,
+            asset.ContractDate,
+            asset.ContractStartDate,
+            asset.InstallDate);
+        var contractDate = contractDates.ContractDate;
+        var startDate = contractDates.ContractStartDate;
         var endDate = asset.RentalEndDate;
 
         var model = new RentalContractDocumentModel

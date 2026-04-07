@@ -8,6 +8,7 @@
         Background="#151F2E"
         KeyDown="Window_KeyDown">
     <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility"/>
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
@@ -24,13 +25,59 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Padding" Value="8,4"/>
             <Setter Property="Height" Value="34"/>
+            <Setter Property="CaretBrush" Value="Black"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Style.Triggers>
+                <Trigger Property="IsReadOnly" Value="True">
+                    <Setter Property="Foreground" Value="Black"/>
+                    <Setter Property="Background" Value="#C7D7EA"/>
+                    <Setter Property="Opacity" Value="1"/>
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Foreground" Value="Black"/>
+                    <Setter Property="Background" Value="#C7D7EA"/>
+                    <Setter Property="Opacity" Value="1"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="RentalBillingComboBoxItemStyle" TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="TextElement.Foreground" Value="Black"/>
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Style.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                    <Setter Property="Foreground" Value="Black"/>
+                    <Setter Property="TextElement.Foreground" Value="Black"/>
+                    <Setter Property="Background" Value="#90CAF9"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Foreground" Value="Black"/>
+                    <Setter Property="TextElement.Foreground" Value="Black"/>
+                    <Setter Property="Background" Value="#64B5F6"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="TextElement.Foreground" Value="Black"/>
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Padding" Value="8,1"/>
             <Setter Property="Height" Value="28"/>
+            <Setter Property="ItemContainerStyle" Value="{StaticResource RentalBillingComboBoxItemStyle}"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Foreground" Value="Black"/>
+                    <Setter Property="TextElement.Foreground" Value="Black"/>
+                    <Setter Property="Background" Value="#C7D7EA"/>
+                    <Setter Property="Opacity" Value="1"/>
+                </Trigger>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                    <Setter Property="Foreground" Value="Black"/>
+                    <Setter Property="TextElement.Foreground" Value="Black"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
         <Style TargetType="DatePicker">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -39,6 +86,13 @@
             <Setter Property="Height" Value="28"/>
             <Setter Property="Padding" Value="8,1"/>
             <Setter Property="SelectedDateFormat" Value="Short"/>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Foreground" Value="Black"/>
+                    <Setter Property="Background" Value="#C7D7EA"/>
+                    <Setter Property="Opacity" Value="1"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -46,8 +100,48 @@
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Height" Value="28"/>
             <Setter Property="Padding" Value="8,0,10,0"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Style.Triggers>
+                <Trigger Property="IsReadOnly" Value="True">
+                    <Setter Property="Foreground" Value="Black"/>
+                    <Setter Property="Background" Value="#C7D7EA"/>
+                    <Setter Property="Opacity" Value="1"/>
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Foreground" Value="Black"/>
+                    <Setter Property="Background" Value="#C7D7EA"/>
+                    <Setter Property="Opacity" Value="1"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
         <Style x:Key="RentalDatePickerButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}"/>
+        <Style x:Key="BillingDetailLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="Margin" Value="0,0,4,6"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="BillingAnchorMonthLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource BillingDetailLabelStyle}">
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Padding" Value="8,0"/>
+        </Style>
+        <Style x:Key="BillingAnchorMonthComboBoxStyle" TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="TextElement.Foreground" Value="Black"/>
+            <Setter Property="Background" Value="#D9E6F5"/>
+            <Setter Property="Opacity" Value="1"/>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Foreground" Value="Black"/>
+                    <Setter Property="TextElement.Foreground" Value="Black"/>
+                    <Setter Property="Background" Value="#C7D7EA"/>
+                    <Setter Property="Opacity" Value="1"/>
+                </Trigger>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                    <Setter Property="Foreground" Value="Black"/>
+                    <Setter Property="TextElement.Foreground" Value="Black"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
         <Style TargetType="Button">
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="1"/>
@@ -181,7 +275,7 @@
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
-                <DataGrid ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}" BorderThickness="0" IsReadOnly="False">
+                <DataGrid ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}" BorderThickness="0" IsReadOnly="False" MouseDoubleClick="BillingRowsDataGrid_MouseDoubleClick">
                     <DataGrid.Columns>
                         <DataGridTemplateColumn Width="46">
                             <DataGridTemplateColumn.HeaderTemplate>
@@ -193,7 +287,9 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                                        <DataGridTextColumn Header="거래처명" Binding="{Binding CustomerDisplayName}" Width="250" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="거래처명" Binding="{Binding CustomerDisplayName}" Width="220" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="청구주기" Binding="{Binding BillingCycleDisplay}" Width="88" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocationDisplay}" Width="170" IsReadOnly="True"/>
                         <DataGridTextColumn Header="예정일" Binding="{Binding NextBillingDate}" Width="100" IsReadOnly="True"/>
                         <DataGridTextColumn Header="청구기간" Binding="{Binding CurrentBillingPeriodLabel}" Width="120" IsReadOnly="True"/>
                         <DataGridTextColumn Header="상태" Binding="{Binding DisplayStatus}" Width="88" IsReadOnly="True"/>
@@ -204,7 +300,6 @@
                         <DataGridTextColumn Header="회차금액" Binding="{Binding CurrentBilledAmount, StringFormat=N0}" Width="110" IsReadOnly="True"/>
                         <DataGridTextColumn Header="미수금" Binding="{Binding OutstandingAmount, StringFormat=N0}" Width="100" IsReadOnly="True"/>
                         <DataGridTextColumn Header="이상" Binding="{Binding DataIssueSummary}" Width="170" IsReadOnly="True"/>
-                        <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocationDisplay}" Width="170" IsReadOnly="True"/>
                         <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="110" IsReadOnly="True"/>
                     </DataGrid.Columns>
                 </DataGrid>
@@ -216,11 +311,17 @@
                         <TextBlock Text="렌탈 청구 상세" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
 
                         <Grid>
+                            <Grid.Resources>
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource BillingDetailLabelStyle}"/>
+                                <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}"/>
+                                <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}"/>
+                                <Style TargetType="DatePicker" BasedOn="{StaticResource {x:Type DatePicker}}"/>
+                            </Grid.Resources>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="140"/>
+                                <ColumnDefinition Width="104"/>
                                 <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="16"/>
-                                <ColumnDefinition Width="140"/>
+                                <ColumnDefinition Width="6"/>
+                                <ColumnDefinition Width="104"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
@@ -236,64 +337,71 @@
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
-                            <TextBlock Grid.Row="0" Grid.Column="0" Text="거래처명" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <Grid Grid.Row="0" Grid.Column="1" Margin="0,0,0,8">
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="거래처명"/>
+                            <Grid Grid.Row="0" Grid.Column="1" Margin="0,0,0,6">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBox Grid.Column="0" Text="{Binding EditCustomerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
+                                <TextBox Grid.Column="0" Text="{Binding EditCustomerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,6,0"/>
                                 <Button Grid.Column="1" Content="조회" MinWidth="72" Padding="10,0" Click="CustomerLookupButton_Click"/>
                             </Grid>
-                            <TextBlock Grid.Row="0" Grid.Column="3" Text="상태" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <TextBox Grid.Row="0" Grid.Column="4" Text="{Binding EditBillingStatus, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3" Text="상태"/>
+                            <TextBox Grid.Row="0" Grid.Column="4" Text="{Binding EditBillingStatus, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
 
-                            <TextBlock Grid.Row="1" Grid.Column="0" Text="설치위치" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditInstallLocation, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="1" Grid.Column="3" Text="사업자번호" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <TextBox Grid.Row="1" Grid.Column="4" Text="{Binding EditBusinessNumber, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="설치위치"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditInstallLocation, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="1" Grid.Column="3" Text="사업자번호"/>
+                            <TextBox Grid.Row="1" Grid.Column="4" Text="{Binding EditBusinessNumber, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
 
-                            <TextBlock Grid.Row="2" Grid.Column="0" Text="담당지점" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding EditOfficeOptions}" DisplayMemberPath="DisplayName" SelectedValuePath="Value" SelectedValue="{Binding EditOfficeCode}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="2" Grid.Column="3" Text="이메일" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <TextBox Grid.Row="2" Grid.Column="4" Text="{Binding EditEmail, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="담당지점"/>
+                            <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding EditOfficeOptions}" DisplayMemberPath="DisplayName" SelectedValuePath="Value" SelectedValue="{Binding EditOfficeCode}" Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="2" Grid.Column="3" Text="이메일"/>
+                            <TextBox Grid.Row="2" Grid.Column="4" Text="{Binding EditEmail, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
 
-                            <TextBlock Grid.Row="3" Grid.Column="0" Text="청구유형" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding BillingTypeOptions}" SelectedItem="{Binding EditBillingType}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="3" Grid.Column="3" Text="선불/후불" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <ComboBox Grid.Row="3" Grid.Column="4" ItemsSource="{Binding BillingAdvanceModeOptions}" SelectedItem="{Binding EditBillingAdvanceMode}" Margin="0,0,0,8"/>
+                            <TextBlock Grid.Row="3" Grid.Column="0" Text="청구유형"/>
+                            <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding BillingTypeOptions}" SelectedItem="{Binding EditBillingType}" Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="3" Grid.Column="3" Text="선불/후불"/>
+                            <ComboBox Grid.Row="3" Grid.Column="4" ItemsSource="{Binding BillingAdvanceModeOptions}" SelectedItem="{Binding EditBillingAdvanceMode}" Margin="0,0,0,6"/>
 
-                            <TextBlock Grid.Row="4" Grid.Column="0" Text="청구일 유형" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <ComboBox Grid.Row="4" Grid.Column="1" ItemsSource="{Binding BillingDayModeOptions}" SelectedItem="{Binding EditBillingDayMode}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="4" Grid.Column="3" Text="청구일" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <TextBox Grid.Row="4" Grid.Column="4" Text="{Binding EditBillingDay, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsFixedBillingDayMode}" Margin="0,0,0,8"/>
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="청구일 유형"/>
+                            <ComboBox Grid.Row="4" Grid.Column="1" ItemsSource="{Binding BillingDayModeOptions}" SelectedItem="{Binding EditBillingDayMode}" Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="4" Grid.Column="3" Text="청구일"/>
+                            <TextBox Grid.Row="4" Grid.Column="4" Text="{Binding EditBillingDay, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsFixedBillingDayMode}" Margin="0,0,0,6"/>
 
-                            <TextBlock Grid.Row="5" Grid.Column="0" Text="주기(개월)" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding EditBillingCycleMonths, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="5" Grid.Column="3" Text="청구 기준월" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <ComboBox Grid.Row="5" Grid.Column="4" ItemsSource="{Binding BillingAnchorMonthOptions}" SelectedItem="{Binding EditBillingAnchorMonth}" Margin="0,0,0,8"/>
+                            <TextBlock Grid.Row="5" Grid.Column="0" Text="청구 주기(개월)"/>
+                            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding EditBillingCycleMonths, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="5" Grid.Column="3" Text="청구 기준월"/>
+                            <ComboBox Grid.Row="5" Grid.Column="4" Style="{StaticResource BillingAnchorMonthComboBoxStyle}" ItemsSource="{Binding BillingAnchorMonthOptions}" SelectedItem="{Binding EditBillingAnchorMonth}" Margin="0,0,0,6"/>
 
-                            <TextBlock Grid.Row="6" Grid.Column="0" Text="회차기준일" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <DatePicker Grid.Row="6" Grid.Column="1" SelectedDate="{Binding EditBillingStartDate}" SelectedDateFormat="Short" Margin="0,0,0,8">
-                                <DatePicker.Resources>
-                                    <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
-                                </DatePicker.Resources>
-                            </DatePicker>
-                            <TextBlock Grid.Row="6" Grid.Column="3" Text="월 기준금액" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <TextBox Grid.Row="6" Grid.Column="4" Text="{Binding EditMonthlyAmount, StringFormat=N0}" IsReadOnly="True" Background="#24364F" BorderBrush="#324A69" Margin="0,0,0,8"/>
+                            <TextBlock Grid.Row="6" Grid.Column="0" Text="계약 체결일"/>
+                            <StackPanel Grid.Row="6" Grid.Column="1" Margin="0,0,0,6">
+                                <DatePicker SelectedDate="{Binding EditContractDate}" SelectedDateFormat="Short">
+                                    <DatePicker.Resources>
+                                        <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
+                                    </DatePicker.Resources>
+                                </DatePicker>
+                                <TextBlock Text="{Binding ContractDateWarningMessage}"
+                                           Foreground="#FFCC80"
+                                           Margin="0,4,0,0"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding ShouldShowContractDateWarning, Converter={StaticResource BoolToVisibility}}"/>
+                            </StackPanel>
+                            <TextBlock Grid.Row="6" Grid.Column="3" Text="월 기준금액"/>
+                            <TextBox Grid.Row="6" Grid.Column="4" Text="{Binding EditMonthlyAmount, StringFormat=N0}" IsReadOnly="True" Margin="0,0,0,6"/>
 
-                            <TextBlock Grid.Row="7" Grid.Column="0" Text="서류 발송 규칙" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <ComboBox Grid.Row="7" Grid.Column="1" ItemsSource="{Binding DocumentIssueModeOptions}" SelectedItem="{Binding EditDocumentIssueMode}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="7" Grid.Column="3" Text="선행일수" VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <TextBox Grid.Row="7" Grid.Column="4" Text="{Binding EditDocumentLeadDays, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsDocumentLeadDaysVisible}" Margin="0,0,0,8"/>
+                            <TextBlock Grid.Row="7" Grid.Column="0" Text="서류 발송 규칙"/>
+                            <ComboBox Grid.Row="7" Grid.Column="1" ItemsSource="{Binding DocumentIssueModeOptions}" SelectedItem="{Binding EditDocumentIssueMode}" Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="7" Grid.Column="3" Text="선행일수"/>
+                            <TextBox Grid.Row="7" Grid.Column="4" Text="{Binding EditDocumentLeadDays, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsDocumentLeadDaysVisible}" Margin="0,0,0,6"/>
 
-                            <TextBlock Grid.Row="8" Grid.Column="0" Text="청구방식" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <ComboBox Grid.Row="8" Grid.Column="1" ItemsSource="{Binding BillingMethodOptions}" SelectedItem="{Binding EditBillingMethod}" Margin="0,0,0,0"/>
-                            <TextBlock Grid.Row="8" Grid.Column="3" Text="제출서류" VerticalAlignment="Top" Margin="0,0,10,0"/>
-                            <TextBox Grid.Row="8" Grid.Column="4" Text="{Binding EditSubmissionDocuments, UpdateSourceTrigger=PropertyChanged}" Height="66" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+                            <TextBlock Grid.Row="8" Grid.Column="0" Text="청구방식" Margin="0,0,4,6"/>
+                            <ComboBox Grid.Row="8" Grid.Column="1" ItemsSource="{Binding BillingMethodOptions}" SelectedItem="{Binding EditBillingMethod}" Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="8" Grid.Column="3" Text="제출서류" VerticalAlignment="Top" Margin="0,0,4,6"/>
+                            <TextBox Grid.Row="8" Grid.Column="4" Text="{Binding EditSubmissionDocuments, UpdateSourceTrigger=PropertyChanged}" Height="66" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Margin="0,0,0,6"/>
 
-                            <TextBlock Grid.Row="9" Grid.Column="0" Text="메모" VerticalAlignment="Top" Margin="0,10,10,0"/>
-                            <TextBox Grid.Row="9" Grid.Column="1" Grid.ColumnSpan="4" Text="{Binding EditNotes, UpdateSourceTrigger=PropertyChanged}" Height="66" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Margin="0,10,0,0"/>
+                            <TextBlock Grid.Row="9" Grid.Column="0" Text="메모" VerticalAlignment="Top" Margin="0,2,4,0"/>
+                            <TextBox Grid.Row="9" Grid.Column="1" Grid.ColumnSpan="4" Text="{Binding EditNotes, UpdateSourceTrigger=PropertyChanged}" Height="66" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Margin="0,2,0,0"/>
                         </Grid>
 
                         <WrapPanel Margin="0,10,0,10">

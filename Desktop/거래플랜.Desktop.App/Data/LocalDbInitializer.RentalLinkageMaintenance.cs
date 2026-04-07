@@ -1,5 +1,4 @@
 using System.Linq;
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
@@ -10,11 +9,6 @@ public static partial class LocalDbInitializer
 {
     private const string CanonicalMfcL8900CategoryName = "A4컬러복합기";
     private const string CanonicalMfcL8900ItemName = "MFC-L8900CDW";
-    private static readonly JsonSerializerOptions RentalTemplateJsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true
-    };
-
     private static async Task RepairRentalCustomerLinkageAsync(LocalDbContext db)
     {
         var now = DateTime.UtcNow;
@@ -46,6 +40,10 @@ public static partial class LocalDbInitializer
         var activeProfilesById = profiles
             .Where(profile => !profile.IsDeleted)
             .ToDictionary(profile => profile.Id);
+        var activeProfileAssetCounts = assets
+            .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
+            .GroupBy(asset => asset.BillingProfileId!.Value)
+            .ToDictionary(group => group.Key, group => group.Count());
 
         foreach (var asset in assets.Where(asset => !asset.IsDeleted))
         {
@@ -90,6 +88,7 @@ public static partial class LocalDbInitializer
             if (asset.CustomerId.HasValue &&
                 customerById.TryGetValue(asset.CustomerId.Value, out var linkedCustomer))
             {
+                var normalizedMasterName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
                 var resolvedOfficeCode = ResolveCustomerRentalOfficeCode(linkedCustomer.ResponsibleOfficeCode);
                 if (!string.IsNullOrWhiteSpace(resolvedOfficeCode))
                 {
@@ -106,15 +105,15 @@ public static partial class LocalDbInitializer
                     }
                 }
 
-                if (string.IsNullOrWhiteSpace(asset.CustomerName))
+                if (!string.Equals(asset.CustomerName, normalizedMasterName, StringComparison.Ordinal))
                 {
-                    asset.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
+                    asset.CustomerName = normalizedMasterName;
                     changed = true;
                 }
 
-                if (string.IsNullOrWhiteSpace(asset.CurrentCustomerName))
+                if (!string.Equals(asset.CurrentCustomerName, normalizedMasterName, StringComparison.Ordinal))
                 {
-                    asset.CurrentCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
+                    asset.CurrentCustomerName = normalizedMasterName;
                     changed = true;
                 }
 
@@ -122,10 +121,11 @@ public static partial class LocalDbInitializer
 
             if (!asset.BillingProfileId.HasValue || asset.BillingProfileId.Value == Guid.Empty)
             {
-                var resolvedBillingProfileId = ResolveAssetBillingProfileId(asset, profiles);
+                var resolvedBillingProfileId = ResolveAssetBillingProfileId(asset, profiles, activeProfileAssetCounts);
                 if (resolvedBillingProfileId.HasValue && resolvedBillingProfileId.Value != Guid.Empty)
                 {
                     asset.BillingProfileId = resolvedBillingProfileId.Value;
+                    RegisterProfileAssetLink(activeProfileAssetCounts, resolvedBillingProfileId.Value);
                     changed = true;
                     activeProfilesById.TryGetValue(resolvedBillingProfileId.Value, out linkedProfile);
                 }
@@ -157,6 +157,25 @@ public static partial class LocalDbInitializer
                     if (!string.Equals(asset.ManagementCompanyCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
                         asset.ManagementCompanyCode = resolvedOfficeCode;
+                        changed = true;
+                    }
+                }
+            }
+
+            if (linkedProfile is not null)
+            {
+                var normalizedProfileCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedProfile.CustomerName);
+                if (!string.IsNullOrWhiteSpace(normalizedProfileCustomerName))
+                {
+                    if (!string.Equals(asset.CustomerName, normalizedProfileCustomerName, StringComparison.Ordinal))
+                    {
+                        asset.CustomerName = normalizedProfileCustomerName;
+                        changed = true;
+                    }
+
+                    if (!string.Equals(asset.CurrentCustomerName, normalizedProfileCustomerName, StringComparison.Ordinal))
+                    {
+                        asset.CurrentCustomerName = normalizedProfileCustomerName;
                         changed = true;
                     }
                 }
@@ -304,39 +323,36 @@ public static partial class LocalDbInitializer
         if (linkedAssets.Count == 0)
             return false;
 
-        if (!NeedsBillingTemplateBackfill(profile.BillingTemplateJson))
-            return false;
-
         var templateItems = rentalStateService.GetBillingTemplateItems(profile, linkedAssets);
-        if (templateItems.Count != 1 || templateItems[0].IncludedAssetIds.Count == 0)
+        if (templateItems.Count != 1)
             return false;
 
+        var linkedAssetIds = linkedAssets
+            .Select(asset => asset.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToList();
+        if (linkedAssetIds.Count == 0)
+            return false;
+
+        var templateItem = templateItems[0];
+        var currentIncludedAssetIds = (templateItem.IncludedAssetIds ?? [])
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToList();
+
+        if (linkedAssetIds.SequenceEqual(currentIncludedAssetIds))
+            return false;
+
+        templateItem.IncludedAssetIds = linkedAssetIds;
         var serialized = rentalStateService.SerializeBillingTemplateItems(templateItems);
         if (string.Equals(serialized, profile.BillingTemplateJson ?? string.Empty, StringComparison.Ordinal))
             return false;
 
         backfilledTemplateJson = serialized;
         return true;
-    }
-
-    private static bool NeedsBillingTemplateBackfill(string? billingTemplateJson)
-    {
-        if (string.IsNullOrWhiteSpace(billingTemplateJson))
-            return true;
-
-        try
-        {
-            var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(billingTemplateJson, RentalTemplateJsonOptions);
-            if (items is null || items.Count == 0)
-                return true;
-
-            return items.Count == 1 &&
-                   (items[0].IncludedAssetIds is null || items[0].IncludedAssetIds.Count == 0);
-        }
-        catch
-        {
-            return true;
-        }
     }
 
     private static async Task RepairMfcL8900CategoryAsync(LocalDbContext db, DateTime now)
@@ -424,16 +440,22 @@ public static partial class LocalDbInitializer
 
     private static Guid? ResolveAssetBillingProfileId(
         LocalRentalAsset asset,
-        IReadOnlyCollection<LocalRentalBillingProfile> profiles)
+        IReadOnlyCollection<LocalRentalBillingProfile> profiles,
+        IReadOnlyDictionary<Guid, int> activeProfileAssetCounts)
     {
-        if (!asset.CustomerId.HasValue || asset.CustomerId.Value == Guid.Empty)
-            return null;
-
+        var assetCustomerKeys = BuildRentalCustomerKeys(
+            asset.CustomerName,
+            asset.CurrentCustomerName);
         var customerProfiles = profiles
-            .Where(profile => !profile.IsDeleted && profile.CustomerId == asset.CustomerId)
+            .Where(profile => !profile.IsDeleted)
+            .Where(profile => ProfileMatchesAssetCustomer(profile, asset.CustomerId, assetCustomerKeys))
             .ToList();
         if (customerProfiles.Count == 0)
             return null;
+
+        var officeScopedProfiles = FilterProfilesByAssetOffice(customerProfiles, asset);
+        if (officeScopedProfiles.Count > 0)
+            customerProfiles = officeScopedProfiles;
         if (customerProfiles.Count == 1)
             return customerProfiles[0].Id;
 
@@ -468,7 +490,138 @@ public static partial class LocalDbInitializer
                 return siteMatches[0].Id;
         }
 
-        return null;
+        return SelectPreferredBillingProfile(customerProfiles, activeProfileAssetCounts, siteKeys);
+    }
+
+    private static List<LocalRentalBillingProfile> FilterProfilesByAssetOffice(
+        IReadOnlyCollection<LocalRentalBillingProfile> profiles,
+        LocalRentalAsset asset)
+    {
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeLoose(
+            string.IsNullOrWhiteSpace(asset.ResponsibleOfficeCode)
+                ? asset.ManagementCompanyCode
+                : asset.ResponsibleOfficeCode,
+            null,
+            string.Empty);
+        if (string.IsNullOrWhiteSpace(normalizedOfficeCode))
+            return [];
+
+        return profiles
+            .Where(profile =>
+                string.Equals(
+                    OfficeCodeCatalog.NormalizeOfficeCodeLoose(
+                        string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
+                            ? profile.ManagementCompanyCode
+                            : profile.ResponsibleOfficeCode,
+                        null,
+                        string.Empty),
+                    normalizedOfficeCode,
+                    StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private static bool ProfileMatchesAssetCustomer(
+        LocalRentalBillingProfile profile,
+        Guid? assetCustomerId,
+        IReadOnlyCollection<string> assetCustomerKeys)
+    {
+        if (assetCustomerId.HasValue &&
+            assetCustomerId.Value != Guid.Empty &&
+            profile.CustomerId == assetCustomerId)
+        {
+            return true;
+        }
+
+        return ProfileMatchesRentalNames(profile, assetCustomerKeys);
+    }
+
+    private static bool ProfileMatchesRentalNames(
+        LocalRentalBillingProfile profile,
+        IReadOnlyCollection<string> candidateKeys)
+    {
+        if (candidateKeys.Count == 0)
+            return false;
+
+        var profileKeys = BuildRentalCustomerKeys(profile.CustomerName);
+        return profileKeys.Any(profileKey =>
+            candidateKeys.Any(candidateKey =>
+                !string.IsNullOrWhiteSpace(profileKey) &&
+                !string.IsNullOrWhiteSpace(candidateKey) &&
+                string.Equals(profileKey, candidateKey, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static Guid? SelectPreferredBillingProfile(
+        IReadOnlyList<LocalRentalBillingProfile> profiles,
+        IReadOnlyDictionary<Guid, int> activeProfileAssetCounts,
+        IReadOnlyCollection<string> siteKeys)
+    {
+        if (profiles.Count == 0)
+            return null;
+        if (profiles.Count == 1)
+            return profiles[0].Id;
+
+        var rankedProfiles = profiles
+            .Select(profile => new
+            {
+                Profile = profile,
+                SiteMatch = siteKeys.Count > 0 && ProfileMatchesAssetSite(profile, siteKeys) ? 1 : 0,
+                LinkedAssetCount = activeProfileAssetCounts.TryGetValue(profile.Id, out var count) ? count : 0,
+                HasInstallSite = string.IsNullOrWhiteSpace(RentalCatalogValueNormalizer.NormalizeDisplayText(profile.InstallSiteName)) ? 0 : 1
+            })
+            .OrderByDescending(entry => entry.SiteMatch)
+            .ThenByDescending(entry => entry.LinkedAssetCount)
+            .ThenByDescending(entry => entry.HasInstallSite)
+            .ThenBy(entry => entry.Profile.InstallSiteName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(entry => entry.Profile.Id)
+            .ToList();
+
+        var best = rankedProfiles[0];
+        var bestCount = rankedProfiles.Count(entry =>
+            entry.SiteMatch == best.SiteMatch &&
+            entry.LinkedAssetCount == best.LinkedAssetCount &&
+            entry.HasInstallSite == best.HasInstallSite);
+
+        if (bestCount > 1)
+        {
+            var duplicateEquivalentProfiles = profiles
+                .Select(profile => new
+                {
+                    Profile = profile,
+                    SiteKey = RentalCatalogValueNormalizer.NormalizeLooseKey(profile.InstallSiteName),
+                    CycleMonths = profile.BillingCycleMonths,
+                    OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeLoose(
+                        string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
+                            ? profile.ManagementCompanyCode
+                            : profile.ResponsibleOfficeCode,
+                        null,
+                        string.Empty)
+                })
+                .ToList();
+
+            if (duplicateEquivalentProfiles
+                .Select(entry => $"{entry.SiteKey}|{entry.CycleMonths}|{entry.OfficeCode}")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count() == 1)
+            {
+                return duplicateEquivalentProfiles
+                    .OrderByDescending(entry => activeProfileAssetCounts.TryGetValue(entry.Profile.Id, out var count) ? count : 0)
+                    .ThenBy(entry => entry.Profile.Id)
+                    .Select(entry => (Guid?)entry.Profile.Id)
+                    .FirstOrDefault();
+            }
+        }
+
+        return bestCount == 1 ? best.Profile.Id : null;
+    }
+
+    private static void RegisterProfileAssetLink(IDictionary<Guid, int> activeProfileAssetCounts, Guid profileId)
+    {
+        if (profileId == Guid.Empty)
+            return;
+
+        activeProfileAssetCounts[profileId] = activeProfileAssetCounts.TryGetValue(profileId, out var currentCount)
+            ? currentCount + 1
+            : 1;
     }
 
     private static bool TryResolveAssetCustomer(

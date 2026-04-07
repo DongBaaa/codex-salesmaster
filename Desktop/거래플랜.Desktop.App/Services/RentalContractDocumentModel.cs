@@ -19,8 +19,8 @@ public sealed class RentalContractDocumentModel
     public string DepositText { get; set; } = string.Empty;
     public decimal MonthlyFee { get; set; }
     public string InstallLocation { get; set; } = string.Empty;
-    public DateOnly ContractDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
-    public DateOnly ContractStartDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    public DateOnly? ContractDate { get; set; }
+    public DateOnly? ContractStartDate { get; set; }
     public DateOnly? ContractEndDate { get; set; }
     public string IntroText { get; set; } = string.Empty;
     public List<RentalContractClauseModel> Clauses { get; } = new();

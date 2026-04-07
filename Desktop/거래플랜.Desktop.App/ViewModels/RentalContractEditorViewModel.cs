@@ -39,8 +39,8 @@ public sealed partial class RentalContractEditorViewModel : ObservableObject
     [ObservableProperty] private string _depositText = string.Empty;
     [ObservableProperty] private decimal _monthlyFee;
     [ObservableProperty] private string _installLocation = string.Empty;
-    [ObservableProperty] private DateTime _contractDate = DateTime.Today;
-    [ObservableProperty] private DateTime _contractStartDate = DateTime.Today;
+    [ObservableProperty] private DateTime? _contractDate;
+    [ObservableProperty] private DateTime? _contractStartDate;
     [ObservableProperty] private DateTime? _contractEndDate;
     [ObservableProperty] private string _introText = string.Empty;
     [ObservableProperty] private string _closingLine1 = string.Empty;
@@ -145,8 +145,8 @@ public sealed partial class RentalContractEditorViewModel : ObservableObject
             DepositText = DepositText?.Trim() ?? string.Empty,
             MonthlyFee = MonthlyFee,
             InstallLocation = InstallLocation?.Trim() ?? string.Empty,
-            ContractDate = DateOnly.FromDateTime(ContractDate == default ? DateTime.Today : ContractDate),
-            ContractStartDate = DateOnly.FromDateTime(ContractStartDate == default ? DateTime.Today : ContractStartDate),
+            ContractDate = ContractDate.HasValue ? DateOnly.FromDateTime(ContractDate.Value) : null,
+            ContractStartDate = ContractStartDate.HasValue ? DateOnly.FromDateTime(ContractStartDate.Value) : null,
             ContractEndDate = ContractEndDate.HasValue ? DateOnly.FromDateTime(ContractEndDate.Value) : null,
             IntroText = IntroText?.Trim() ?? string.Empty,
             ClosingLine1 = ClosingLine1?.Trim() ?? string.Empty,
@@ -189,8 +189,8 @@ public sealed partial class RentalContractEditorViewModel : ObservableObject
         DepositText = model.DepositText;
         MonthlyFee = model.MonthlyFee;
         InstallLocation = model.InstallLocation;
-        ContractDate = model.ContractDate.ToDateTime(TimeOnly.MinValue);
-        ContractStartDate = model.ContractStartDate.ToDateTime(TimeOnly.MinValue);
+        ContractDate = model.ContractDate?.ToDateTime(TimeOnly.MinValue);
+        ContractStartDate = model.ContractStartDate?.ToDateTime(TimeOnly.MinValue);
         ContractEndDate = model.ContractEndDate?.ToDateTime(TimeOnly.MinValue);
         IntroText = model.IntroText;
         ClosingLine1 = model.ClosingLine1;

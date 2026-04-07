@@ -53,16 +53,20 @@ public static class RentalBillingScheduleRules
             return billingAnchorMonth.Value;
 
         cycleMonths = NormalizeCycleMonths(cycleMonths);
-        if (cycleMonths == 3)
-            return 3;
-
         var fallback = billingAnchorDate
                        ?? billingStartDate
                        ?? contractStartDate
                        ?? contractDate
-                       ?? lastBilledDate
-                       ?? referenceDate;
-        return Math.Clamp(fallback.Month, 1, 12);
+                       ?? lastBilledDate;
+        if (fallback.HasValue)
+            return Math.Clamp(fallback.Value.Month, 1, 12);
+
+        return cycleMonths switch
+        {
+            1 => Math.Clamp(referenceDate.Month, 1, 12),
+            3 => 3,
+            _ => 1
+        };
     }
 
     public static DateOnly BuildBillingDate(int year, int month, int billingDay, string? billingDayMode)

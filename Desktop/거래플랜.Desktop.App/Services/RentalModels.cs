@@ -310,7 +310,7 @@ public sealed class RentalCustomerOnboardingDraftModel
     public int BillingAnchorMonth { get; set; } = 3;
     public string DocumentIssueMode { get; set; } = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate;
     public int DocumentLeadDays { get; set; }
-    public DateTime BillingStartDate { get; set; } = DateTime.Today;
+    public DateTime? BillingStartDate { get; set; }
     public decimal MonthlyAmount { get; set; }
     public string BillingMethod { get; set; } = string.Empty;
     public string SubmissionDocuments { get; set; } = string.Empty;
@@ -326,6 +326,7 @@ public sealed class RentalBillingViewRow
     public bool HasPersistedProfile { get; init; } = true;
     public LocalRentalBillingProfile Source { get; init; } = new();
     public string CustomerDisplayName { get; set; } = string.Empty;
+    public string BillingCycleDisplay { get; init; } = string.Empty;
     public string ResponsibleOfficeName { get; init; } = string.Empty;
     public DateOnly? NextBillingDate { get; init; }
     public int? DaysRemaining { get; init; }
@@ -386,3 +387,53 @@ public static class RentalAssetStatusRules
            reason.Trim().StartsWith("자산상태:", StringComparison.OrdinalIgnoreCase);
 }
 
+public static class RentalAssetCategoryRules
+{
+    public static bool IsA3ColorMultiFunctionAsset(LocalRentalAsset? asset)
+    {
+        if (asset is null)
+            return false;
+
+        return IsA3ColorMultiFunctionAsset(asset.ItemCategoryName, asset.ItemName);
+    }
+
+    public static bool IsA3ColorMultiFunctionAsset(string? itemCategoryName, string? itemName)
+    {
+        var normalizedCategory = RentalCatalogValueNormalizer.NormalizeLooseKey(itemCategoryName);
+        if (normalizedCategory is "a3컬러복합기" or "a3칼라복합기" or "a3컬러mfp")
+            return true;
+
+        var normalizedName = RentalCatalogValueNormalizer.NormalizeLooseKey(itemName);
+        if (string.IsNullOrWhiteSpace(normalizedName) || !normalizedName.Contains("a3", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return normalizedName.Contains("컬러복합기", StringComparison.OrdinalIgnoreCase) ||
+               normalizedName.Contains("칼라복합기", StringComparison.OrdinalIgnoreCase) ||
+               normalizedName.Contains("컬러mfp", StringComparison.OrdinalIgnoreCase) ||
+               normalizedName.Contains("컬러복사기", StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+public static class RentalContractDateRules
+{
+    public static RentalContractDateResolution Resolve(
+        DateOnly? preferredCustomerContractDate,
+        DateOnly? assetContractDate,
+        DateOnly? assetContractStartDate,
+        DateOnly? assetInstallDate)
+    {
+        var contractDate = preferredCustomerContractDate
+                           ?? assetContractDate
+                           ?? assetContractStartDate
+                           ?? assetInstallDate;
+        var contractStartDate = assetContractStartDate
+                                ?? assetInstallDate
+                                ?? contractDate;
+
+        return new RentalContractDateResolution(contractDate, contractStartDate);
+    }
+}
+
+public readonly record struct RentalContractDateResolution(
+    DateOnly? ContractDate,
+    DateOnly? ContractStartDate);

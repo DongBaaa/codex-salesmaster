@@ -576,6 +576,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 HasPersistedProfile = true,
                 Source = profile,
                 CustomerDisplayName = customerDisplayName,
+                BillingCycleDisplay = profile.BillingCycleMonths > 0 ? $"{profile.BillingCycleMonths}개월" : string.Empty,
                 ResponsibleOfficeName = ResolveOfficeDisplayName(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode, offices),
                 NextBillingDate = nextBillingDate,
                 DaysRemaining = daysRemaining,
@@ -639,68 +640,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .ToList();
         }
 
-        ApplyBillingRowCustomerDisplayDisambiguation(rows);
-
         return rows
             .OrderBy(row => row.DaysRemaining ?? int.MaxValue)
             .ThenBy(row => row.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
-    }
-
-    private static void ApplyBillingRowCustomerDisplayDisambiguation(List<RentalBillingViewRow> rows)
-    {
-        var duplicateGroups = rows
-            .Where(row => !string.IsNullOrWhiteSpace(row.CustomerDisplayName))
-            .GroupBy(row => row.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
-            .Where(group => group.Count() > 1)
-            .ToList();
-
-        foreach (var group in duplicateGroups)
-        {
-            var hasMultipleOffices = group
-                .Select(row => row.ResponsibleOfficeName)
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Distinct(StringComparer.CurrentCultureIgnoreCase)
-                .Take(2)
-                .Count() > 1;
-            var hasMultipleCycles = group
-                .Select(row => row.Source.BillingCycleMonths)
-                .Distinct()
-                .Take(2)
-                .Count() > 1;
-            var hasMultipleInstallLocations = group
-                .Select(row => row.InstallLocationDisplay)
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Distinct(StringComparer.CurrentCultureIgnoreCase)
-                .Take(2)
-                .Count() > 1;
-            var hasMultipleItems = group
-                .Select(row => row.Source.ItemName)
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Distinct(StringComparer.CurrentCultureIgnoreCase)
-                .Take(2)
-                .Count() > 1;
-
-            foreach (var row in group)
-            {
-                var suffixParts = new List<string>();
-                if (hasMultipleOffices && !string.IsNullOrWhiteSpace(row.ResponsibleOfficeName))
-                    suffixParts.Add(row.ResponsibleOfficeName);
-                if (hasMultipleCycles && row.Source.BillingCycleMonths > 0)
-                    suffixParts.Add($"{row.Source.BillingCycleMonths}개월");
-                if (hasMultipleInstallLocations && !string.IsNullOrWhiteSpace(row.InstallLocationDisplay))
-                    suffixParts.Add(row.InstallLocationDisplay);
-                else if (hasMultipleItems && !string.IsNullOrWhiteSpace(row.Source.ItemName))
-                    suffixParts.Add(row.Source.ItemName.Trim());
-                else if (!row.HasPersistedProfile)
-                    suffixParts.Add("미연결");
-
-                if (suffixParts.Count == 0)
-                    continue;
-
-                row.CustomerDisplayName = $"{group.Key} · {string.Join(" / ", suffixParts)}";
-            }
-        }
     }
 
     private IQueryable<LocalRentalAsset> ApplyUnlinkedBillingAssetFilter(
@@ -759,7 +702,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
             ? asset.InstallSiteName
             : asset.InstallLocation;
         var monthlyAmount = Math.Max(0m, asset.MonthlyFee);
-        var billingStartDate = asset.ContractStartDate ?? asset.InstallDate ?? asset.ContractDate ?? referenceDate;
+        var contractDates = RentalContractDateRules.Resolve(
+            null,
+            asset.ContractDate,
+            asset.ContractStartDate,
+            asset.InstallDate);
+        var billingStartDate = contractDates.ContractDate
+                               ?? contractDates.ContractStartDate
+                               ?? referenceDate;
         var templateItems = new List<RentalBillingTemplateItemModel>
         {
             new()
@@ -797,8 +747,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             MonthlyAmount = monthlyAmount,
             BillingAnchorDate = billingStartDate,
             BillingStartDate = billingStartDate,
-            ContractDate = asset.ContractDate,
-            ContractStartDate = asset.ContractStartDate,
+            ContractDate = contractDates.ContractDate,
+            ContractStartDate = contractDates.ContractStartDate,
             ContractEndDate = asset.RentalEndDate,
             Notes = asset.Notes ?? string.Empty,
             BillingTemplateJson = SerializeBillingTemplateItems(templateItems),
@@ -815,6 +765,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             HasPersistedProfile = false,
             Source = syntheticProfile,
             CustomerDisplayName = customerDisplayName,
+            BillingCycleDisplay = syntheticProfile.BillingCycleMonths > 0 ? $"{syntheticProfile.BillingCycleMonths}개월" : string.Empty,
             ResponsibleOfficeName = ResolveOfficeDisplayName(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, offices),
             NextBillingDate = null,
             DaysRemaining = null,
@@ -3779,6 +3730,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
                 if (edit?.MonthlyFee is decimal monthlyFee)
                     asset.MonthlyFee = Math.Max(0m, monthlyFee);
+                if (profile.ContractDate.HasValue)
+                    asset.ContractDate = profile.ContractDate;
                 if (edit?.ContractStartDate.HasValue == true)
                     asset.ContractStartDate = edit.ContractStartDate;
                 if (edit is not null)
