@@ -357,7 +357,7 @@ if ($DryRun) {
         "- 브랜치: $branch",
         "- 반영 전 커밋: $beforeCommit",
         '- 실행 결과: DryRun 완료',
-        "- NAS 반영 예정: $([bool](-not $SkipNas))",
+        "- NAS 메인(live/stable) 반영 예정: $([bool](-not $SkipNas))",
         "- Git 반영 예정: $([bool](-not $SkipGit))",
         "- Git push 예정: $([bool](-not $SkipGit -and -not $SkipPush))"
     ) -join [Environment]::NewLine
@@ -370,7 +370,7 @@ if ($DryRun) {
         Write-Info "- Git 반영 대상 수: $($trackedEntries.Count + $untrackedResolution.Allowed.Count)"
     }
     if (-not $SkipNas) {
-        Write-Info '- NAS 반영 스크립트가 실행될 준비가 되어 있습니다.'
+        Write-Info '- NAS 메인(live/stable) 반영 스크립트가 실행될 준비가 되어 있습니다.'
     }
     Write-Info "- 로그 폴더: $sessionRoot"
     exit 0
@@ -413,7 +413,7 @@ if (-not $SkipNas) {
     Write-Info '데스크톱 설치 패키지를 생성합니다.'
     Invoke-PowerShellFile -FilePath $buildInstallerScript -Arguments @('-ProjectRoot', $ProjectRoot)
 
-    Write-Info '업데이트 자산을 생성합니다.'
+    Write-Info '메인(live) 업데이트 자산(stable 채널)을 생성합니다.'
     Invoke-PowerShellFile -FilePath $updateAssetsScript -Arguments @('-ProjectRoot', $ProjectRoot, '-Channel', 'stable')
 
     $nasArgs = @('-ProjectRoot', $ProjectRoot, '-MirrorToLive')
@@ -439,7 +439,7 @@ if (-not $SkipNas) {
         $nasArgs += @('-NasRemoteOpsPath', $NasRemoteOpsPath)
     }
 
-    Write-Info 'NAS 반영을 진행합니다.'
+    Write-Info '메인(live) stable 배포본의 NAS 반영을 진행합니다.'
     Invoke-PowerShellFile -FilePath $nasPublishScript -Arguments $nasArgs
 }
 
@@ -451,7 +451,7 @@ $finalSummary = @(
     "- 브랜치: $branch",
     "- 반영 전 커밋: $beforeCommit",
     "- 반영 후 커밋: $afterCommit",
-    "- NAS 반영 수행: $([bool](-not $SkipNas))",
+    "- NAS 메인(live/stable) 반영 수행: $([bool](-not $SkipNas))",
     "- Git 반영 수행: $([bool](-not $SkipGit))",
     "- Git push 수행: $([bool](-not $SkipGit -and -not $SkipPush))"
 ) -join [Environment]::NewLine
