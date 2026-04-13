@@ -27,8 +27,8 @@
     <AssemblyTitle>거래플랜</AssemblyTitle>
     <Product>거래플랜</Product>
     <ApplicationIcon>..\..\AppIcons\tradeplan-windows.ico</ApplicationIcon>
-    <Version>1.1.109</Version>
-    <FileVersion>1.1.109.0</FileVersion>
+    <Version>1.1.129</Version>
+    <FileVersion>1.1.129.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -41,9 +41,16 @@
     <Page Remove="Views\Backup\**\*.xaml" />
     <None Include="Views\Backup\**\*.xaml" />
   </ItemGroup>
+
+  <Target Name="ClearStaleWpfTempArtifacts"
+          BeforeTargets="GenerateTemporaryTargetAssembly;MarkupCompilePass1"
+          Condition="'$(MSBuildProjectFile)' == '거래플랜.Desktop.App.csproj'">
+    <ItemGroup>
+      <StaleWpfTempArtifacts Include="$(IntermediateOutputPath)*_wpftmp*" />
+      <StaleWpfTempArtifacts Include="$(IntermediateOutputPath)**\*_wpftmp*" />
+    </ItemGroup>
+
+    <Delete Files="@(StaleWpfTempArtifacts)"
+            ContinueOnError="WarnAndContinue" />
+  </Target>
 </Project>
-
-
-
-
-
