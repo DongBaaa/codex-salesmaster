@@ -274,8 +274,9 @@ foreach ($path in @($ChecklistPath, $ChangedFilesPath)) {
 $buildInstallerScript = Join-Path $ProjectRoot 'tools\release\Build-GeoraePlanDesktopInstaller.ps1'
 $updateAssetsScript = Join-Path $ProjectRoot 'tools\release\Publish-GeoraePlanUpdateAssets.ps1'
 $nasPublishScript = Join-Path $ProjectRoot 'tools\nas\Publish-GeoraeplanNasRelease.ps1'
+$liveReadinessScript = Join-Path $scriptRoot 'Invoke-LiveReleaseReadinessCheck.ps1'
 if (-not $SkipNas) {
-    foreach ($path in @($buildInstallerScript, $updateAssetsScript, $nasPublishScript)) {
+    foreach ($path in @($buildInstallerScript, $updateAssetsScript, $nasPublishScript, $liveReadinessScript)) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "배포 스크립트를 찾지 못했습니다: $path"
         }
@@ -295,6 +296,8 @@ if (-not $SkipGit -and -not (Test-ChecklistChecked -Content $checklistContent -L
 
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $sessionRoot = Join-Path $LogRoot ("deploy-" + $timestamp)
+$livePreflightReport = Join-Path $sessionRoot 'live-preflight.md'
+$livePostflightReport = Join-Path $sessionRoot 'live-postflight.md'
 New-Item -ItemType Directory -Force -Path $sessionRoot | Out-Null
 Copy-Item -LiteralPath $ChecklistPath -Destination (Join-Path $sessionRoot '검증 체크리스트.md') -Force
 Copy-Item -LiteralPath $ChangedFilesPath -Destination (Join-Path $sessionRoot '최근 수정 파일.md') -Force
@@ -349,6 +352,15 @@ if ($untrackedResolution.Blocked.Count -gt 0) {
 
 Write-Utf8File -Path (Join-Path $sessionRoot '반영 로그.md') -Content ($summaryBuilder.ToString().TrimEnd())
 
+if (-not $SkipNas) {
+    Write-Info 'live 반영 사전 점검을 실행합니다.'
+    Invoke-PowerShellFile -FilePath $liveReadinessScript -Arguments @(
+        '-ProjectRoot', $ProjectRoot,
+        '-Mode', 'Pre',
+        '-Channel', 'stable',
+        '-OutputPath', $livePreflightReport)
+}
+
 if ($DryRun) {
     $dryRunSummary = @(
         '# 검증완료 반영 결과',
@@ -359,7 +371,8 @@ if ($DryRun) {
         '- 실행 결과: DryRun 완료',
         "- NAS 메인(live/stable) 반영 예정: $([bool](-not $SkipNas))",
         "- Git 반영 예정: $([bool](-not $SkipGit))",
-        "- Git push 예정: $([bool](-not $SkipGit -and -not $SkipPush))"
+        "- Git push 예정: $([bool](-not $SkipGit -and -not $SkipPush))",
+        "- live 사전 점검 리포트: $(if ($SkipNas) { '-' } else { $livePreflightReport })"
     ) -join [Environment]::NewLine
     Write-Utf8File -Path (Join-Path $sessionRoot '반영 결과.md') -Content $dryRunSummary
 
@@ -373,6 +386,9 @@ if ($DryRun) {
         Write-Info '- NAS 메인(live/stable) 반영 스크립트가 실행될 준비가 되어 있습니다.'
     }
     Write-Info "- 로그 폴더: $sessionRoot"
+    if (-not $SkipNas) {
+        Write-Info "- live 사전 점검 리포트: $livePreflightReport"
+    }
     exit 0
 }
 
@@ -441,6 +457,13 @@ if (-not $SkipNas) {
 
     Write-Info '메인(live) stable 배포본의 NAS 반영을 진행합니다.'
     Invoke-PowerShellFile -FilePath $nasPublishScript -Arguments $nasArgs
+
+    Write-Info 'live 반영 사후 점검을 실행합니다.'
+    Invoke-PowerShellFile -FilePath $liveReadinessScript -Arguments @(
+        '-ProjectRoot', $ProjectRoot,
+        '-Mode', 'Post',
+        '-Channel', 'stable',
+        '-OutputPath', $livePostflightReport)
 }
 
 $afterCommit = Get-CurrentCommit -ProjectRoot $ProjectRoot
@@ -453,13 +476,19 @@ $finalSummary = @(
     "- 반영 후 커밋: $afterCommit",
     "- NAS 메인(live/stable) 반영 수행: $([bool](-not $SkipNas))",
     "- Git 반영 수행: $([bool](-not $SkipGit))",
-    "- Git push 수행: $([bool](-not $SkipGit -and -not $SkipPush))"
+    "- Git push 수행: $([bool](-not $SkipGit -and -not $SkipPush))",
+    "- live 사전 점검 리포트: $(if ($SkipNas) { '-' } else { $livePreflightReport })",
+    "- live 사후 점검 리포트: $(if ($SkipNas) { '-' } else { $livePostflightReport })"
 ) -join [Environment]::NewLine
 Write-Utf8File -Path (Join-Path $sessionRoot '반영 결과.md') -Content $finalSummary
 
 Write-Host '검증완료 반영이 끝났습니다.' -ForegroundColor Green
 Write-Host "- 로그 폴더: $sessionRoot" -ForegroundColor Green
 Write-Host "- 현재 커밋: $afterCommit" -ForegroundColor Green
+if (-not $SkipNas) {
+    Write-Host "- live 사전 점검 리포트: $livePreflightReport" -ForegroundColor Green
+    Write-Host "- live 사후 점검 리포트: $livePostflightReport" -ForegroundColor Green
+}
 
 
 

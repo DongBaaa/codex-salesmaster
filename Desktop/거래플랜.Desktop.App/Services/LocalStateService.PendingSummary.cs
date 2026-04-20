@@ -4,40 +4,6 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
-public sealed record PendingSyncBucket(
-    string ScopeKey,
-    string ScopeDisplayName,
-    string EntityDisplayName,
-    int Count);
-
-public sealed record PendingSyncSummary(
-    int TotalCount,
-    IReadOnlyList<PendingSyncBucket> Buckets)
-{
-    public PendingSyncBucket? PrimaryBucket => Buckets
-        .OrderByDescending(bucket => bucket.Count)
-        .ThenBy(bucket => bucket.ScopeDisplayName, StringComparer.Ordinal)
-        .ThenBy(bucket => bucket.EntityDisplayName, StringComparer.Ordinal)
-        .FirstOrDefault();
-
-    public string BuildWaitingMessage(string? prefix = null)
-    {
-        if (TotalCount <= 0)
-            return string.IsNullOrWhiteSpace(prefix) ? string.Empty : prefix.Trim();
-
-        var primary = PrimaryBucket;
-        var waitingMessage = primary is null
-            ? $"서버 반영 대기 데이터 {TotalCount:N0}건이 남아 있습니다."
-            : TotalCount == primary.Count
-                ? $"{primary.ScopeDisplayName} {primary.EntityDisplayName} {primary.Count:N0}건이 서버 반영 대기 중입니다."
-                : $"{primary.ScopeDisplayName} {primary.EntityDisplayName} {primary.Count:N0}건 포함 총 {TotalCount:N0}건이 서버 반영 대기 중입니다.";
-
-        return string.IsNullOrWhiteSpace(prefix)
-            ? waitingMessage
-            : $"{prefix.Trim()} {waitingMessage}".Trim();
-    }
-}
-
 public sealed partial class LocalStateService
 {
     private sealed record DirtyScopeRow(string? OfficeCode, string? TenantCode);
@@ -227,6 +193,121 @@ public sealed partial class LocalStateService
         return summary.BuildWaitingMessage(prefix);
     }
 
+    public async Task<PendingSyncBlockingReason?> GetPendingSyncBlockingReasonAsync(
+        SessionState session,
+        string scopeKey,
+        CancellationToken ct = default)
+    {
+        if (session is null || !session.IsLoggedIn || string.IsNullOrWhiteSpace(scopeKey))
+            return null;
+
+        var summary = await GetPendingSyncSummaryAsync(ct);
+        var scopedBuckets = summary.Buckets
+            .Where(bucket => string.Equals(bucket.ScopeKey, scopeKey, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (scopedBuckets.Count == 0)
+            return null;
+
+        var representativeBucket = scopedBuckets
+            .OrderByDescending(bucket => bucket.Count)
+            .ThenBy(bucket => bucket.EntityDisplayName, StringComparer.Ordinal)
+            .First();
+        var pendingCount = scopedBuckets.Sum(bucket => bucket.Count);
+        return await BuildPendingSyncBlockingReasonAsync(session, representativeBucket, pendingCount, ct);
+    }
+
+    public async Task<PendingSyncBlockingReason?> GetPrimaryPendingSyncBlockingReasonAsync(
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return null;
+
+        var summary = await GetPendingSyncSummaryAsync(ct);
+        var primary = summary.PrimaryBucket;
+        if (summary.TotalCount <= 0 || primary is null)
+            return null;
+
+        return await BuildPendingSyncBlockingReasonAsync(session, primary, primary.Count, ct);
+    }
+
+    private async Task<PendingSyncBlockingReason?> BuildPendingSyncBlockingReasonAsync(
+        SessionState session,
+        PendingSyncBucket bucket,
+        int pendingCount,
+        CancellationToken ct)
+    {
+        if (string.Equals(bucket.ScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
+        {
+            var sharedMessage = session.HasAdministrativePrivileges
+                ? "원인: 공용 마스터 변경이 아직 서버 반영 대기 중입니다. 동기화를 다시 실행하거나 동기화 진단에서 남은 항목을 확인하세요."
+                : "원인: 남은 변경은 공용 마스터 범위입니다. 관리자 전체 범위 세션으로 로그인한 뒤 다시 동기화해야 합니다.";
+            return new PendingSyncBlockingReason(
+                bucket.ScopeKey,
+                bucket.ScopeDisplayName,
+                bucket.EntityDisplayName,
+                pendingCount,
+                sharedMessage,
+                string.Empty,
+                session.HasAdministrativePrivileges,
+                session.HasAdministrativePrivileges);
+        }
+
+        var currentOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, string.Empty);
+        var currentTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
+        var requiredOfficeCode = ResolveRequiredOfficeCode(bucket.ScopeKey);
+        var isCurrentScope = IsCurrentPendingScope(bucket.ScopeKey, currentOfficeCode, currentTenantCode);
+
+        var hasStoredCredential = isCurrentScope;
+        if (!hasStoredCredential && !string.IsNullOrWhiteSpace(requiredOfficeCode))
+        {
+            hasStoredCredential = (await GetStoredSyncCredentialsAsync(ct))
+                .Any(credential => string.Equals(
+                    OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(credential.OfficeCode, credential.OfficeCode),
+                    requiredOfficeCode,
+                    StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!isCurrentScope && !hasStoredCredential)
+        {
+            var targetCredentialDisplayName = ResolveCredentialDisplayName(requiredOfficeCode, bucket.ScopeDisplayName);
+            return new PendingSyncBlockingReason(
+                bucket.ScopeKey,
+                bucket.ScopeDisplayName,
+                bucket.EntityDisplayName,
+                pendingCount,
+                $"원인: 저장된 {targetCredentialDisplayName} 동기화 계정이 없어 해당 범위 변경을 자동 업로드하지 못했습니다. 환경설정 > 동기화에서 {targetCredentialDisplayName} 계정을 저장한 뒤 다시 시도하세요.",
+                requiredOfficeCode,
+                false,
+                false);
+        }
+
+        if (!isCurrentScope && hasStoredCredential)
+        {
+            var currentScopeDisplay = $"{OfficeCodeCatalog.GetOfficeDisplayName(currentOfficeCode)} / {TenantScopeCatalog.GetTenantDisplayName(currentTenantCode)}";
+            var targetCredentialDisplayName = ResolveCredentialDisplayName(requiredOfficeCode, bucket.ScopeDisplayName);
+            return new PendingSyncBlockingReason(
+                bucket.ScopeKey,
+                bucket.ScopeDisplayName,
+                bucket.EntityDisplayName,
+                pendingCount,
+                $"원인: 남은 변경은 {bucket.ScopeDisplayName} 범위입니다. 현재 로그인({currentScopeDisplay})과 다른 범위라 저장된 {targetCredentialDisplayName} 계정으로 추가 동기화가 필요합니다.",
+                requiredOfficeCode,
+                true,
+                false);
+        }
+
+        return new PendingSyncBlockingReason(
+            bucket.ScopeKey,
+            bucket.ScopeDisplayName,
+            bucket.EntityDisplayName,
+            pendingCount,
+            $"원인: {bucket.ScopeDisplayName} 범위 변경이 아직 서버 반영 대기 중입니다. 동기화를 다시 실행하거나 동기화 진단에서 남은 항목을 확인하세요.",
+            requiredOfficeCode,
+            hasStoredCredential,
+            true);
+    }
+
     private static void AppendSharedBucket(ICollection<PendingSyncBucket> buckets, int count, string entityDisplayName)
     {
         if (count <= 0)
@@ -277,5 +358,48 @@ public sealed partial class LocalStateService
         }
 
         return ("SHARED", "공용");
+    }
+
+    private static string ResolveRequiredOfficeCode(string scopeKey)
+    {
+        if (scopeKey.StartsWith("OFFICE:", StringComparison.OrdinalIgnoreCase))
+            return OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(scopeKey[7..], string.Empty);
+
+        if (scopeKey.StartsWith("TENANT:", StringComparison.OrdinalIgnoreCase))
+        {
+            var tenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(scopeKey[7..], string.Empty);
+            return OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                TenantScopeCatalog.GetOfficeCodesForTenant(tenantCode).FirstOrDefault(),
+                string.Empty);
+        }
+
+        return string.Empty;
+    }
+
+    private static bool IsCurrentPendingScope(string scopeKey, string currentOfficeCode, string currentTenantCode)
+    {
+        if (scopeKey.StartsWith("OFFICE:", StringComparison.OrdinalIgnoreCase))
+        {
+            var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(scopeKey[7..], string.Empty);
+            return !string.IsNullOrWhiteSpace(officeCode) &&
+                   string.Equals(officeCode, currentOfficeCode, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (scopeKey.StartsWith("TENANT:", StringComparison.OrdinalIgnoreCase))
+        {
+            var tenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(scopeKey[7..], string.Empty);
+            return !string.IsNullOrWhiteSpace(tenantCode) &&
+                   string.Equals(tenantCode, currentTenantCode, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
+    }
+
+    private static string ResolveCredentialDisplayName(string requiredOfficeCode, string fallbackScopeDisplayName)
+    {
+        if (string.IsNullOrWhiteSpace(requiredOfficeCode))
+            return fallbackScopeDisplayName;
+
+        return OfficeCodeCatalog.GetOfficeDisplayName(requiredOfficeCode);
     }
 }

@@ -403,43 +403,118 @@ public sealed partial class LegacyDataMigrationService
         };
     }
 
-    private static Dictionary<string, LocalCustomer> BuildCustomerLookup(IEnumerable<LocalCustomer> customers)
+    private static Dictionary<string, LocalCustomer?> BuildCustomerLookup(IEnumerable<LocalCustomer> customers)
     {
-        var lookup = new Dictionary<string, LocalCustomer>(StringComparer.Ordinal);
+        var lookup = new Dictionary<string, LocalCustomer?>(StringComparer.Ordinal);
         foreach (var customer in customers.Where(customer => !customer.IsDeleted))
             RegisterCustomerLookup(lookup, customer);
 
         return lookup;
     }
 
-    private static void RegisterCustomerLookup(IDictionary<string, LocalCustomer> lookup, LocalCustomer customer)
+    private static void RegisterCustomerLookup(IDictionary<string, LocalCustomer?> lookup, LocalCustomer customer)
     {
-        foreach (var key in EnumerateCustomerKeys(customer))
+        foreach (var key in EnumerateCustomerExactKeys(customer))
             lookup[key] = customer;
+
+        foreach (var key in EnumerateCustomerFallbackKeys(customer).Distinct(StringComparer.Ordinal))
+        {
+            if (!lookup.TryGetValue(key, out var existing))
+            {
+                lookup[key] = customer;
+                continue;
+            }
+
+            if (existing is not null && existing.Id != customer.Id)
+                lookup[key] = null;
+        }
     }
 
     private static LocalCustomer? FindMatchingCustomer(
-        IReadOnlyDictionary<string, LocalCustomer> lookup,
+        IReadOnlyDictionary<string, LocalCustomer?> lookup,
         LocalCustomer source)
     {
-        foreach (var key in EnumerateCustomerKeys(source))
+        foreach (var key in EnumerateCustomerExactKeys(source))
         {
-            if (lookup.TryGetValue(key, out var customer))
+            if (lookup.TryGetValue(key, out var customer) && customer is not null)
+                return customer;
+        }
+
+        foreach (var key in EnumerateCustomerFallbackKeys(source).Distinct(StringComparer.Ordinal))
+        {
+            if (lookup.TryGetValue(key, out var customer) && customer is not null)
                 return customer;
         }
 
         return null;
     }
 
-    private static IEnumerable<string> EnumerateCustomerKeys(LocalCustomer customer)
+    private static IEnumerable<string> EnumerateCustomerExactKeys(LocalCustomer customer)
     {
         var businessNumber = NormalizeBusinessNumber(customer.BusinessNumber);
-        if (!string.IsNullOrWhiteSpace(businessNumber))
-            yield return $"BIZ:{businessNumber}";
-
         var nameKey = NormalizeKey(customer.NameOriginal);
+        var locationKey = BuildCustomerLocationKey(customer);
+
+        if (!string.IsNullOrWhiteSpace(businessNumber) &&
+            !string.IsNullOrWhiteSpace(nameKey) &&
+            !string.IsNullOrWhiteSpace(locationKey))
+        {
+            yield return $"BIZ_NAME_LOC:{businessNumber}|{nameKey}|{locationKey}";
+        }
+
+        if (string.IsNullOrWhiteSpace(businessNumber) &&
+            !string.IsNullOrWhiteSpace(nameKey) &&
+            !string.IsNullOrWhiteSpace(locationKey))
+        {
+            yield return $"NAME_LOC:{nameKey}|{locationKey}";
+        }
+    }
+
+    private static IEnumerable<string> EnumerateCustomerFallbackKeys(LocalCustomer customer)
+    {
+        var businessNumber = NormalizeBusinessNumber(customer.BusinessNumber);
+        var nameKey = NormalizeKey(customer.NameOriginal);
+        var locationKey = BuildCustomerLocationKey(customer);
+
+        if (!string.IsNullOrWhiteSpace(businessNumber) && !string.IsNullOrWhiteSpace(nameKey))
+            yield return $"BIZ_NAME:{businessNumber}|{nameKey}";
+
+        if (!string.IsNullOrWhiteSpace(businessNumber) && string.IsNullOrWhiteSpace(nameKey) && !string.IsNullOrWhiteSpace(locationKey))
+            yield return $"BIZ_LOC:{businessNumber}|{locationKey}";
+
         if (!string.IsNullOrWhiteSpace(nameKey))
             yield return $"NAME:{nameKey}";
+
+        if (!string.IsNullOrWhiteSpace(businessNumber) && string.IsNullOrWhiteSpace(nameKey))
+            yield return $"BIZ:{businessNumber}";
+    }
+
+    private static string BuildCustomerLocationKey(LocalCustomer customer)
+    {
+        var branchOffice = TryExtractCustomerNoteValue(customer.Notes, "종사업장");
+        var fullAddress = NormalizeKey($"{customer.Address} {customer.DetailAddress}");
+        var branchOfficeKey = NormalizeKey(branchOffice);
+
+        if (string.IsNullOrWhiteSpace(branchOfficeKey) && string.IsNullOrWhiteSpace(fullAddress))
+            return string.Empty;
+
+        return $"{branchOfficeKey}|{fullAddress}";
+    }
+
+    private static string TryExtractCustomerNoteValue(string? notes, string label)
+    {
+        if (string.IsNullOrWhiteSpace(notes) || string.IsNullOrWhiteSpace(label))
+            return string.Empty;
+
+        foreach (var line in notes
+                     .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                     .Select(current => current.Trim()))
+        {
+            if (line.StartsWith(label + ":", StringComparison.OrdinalIgnoreCase))
+                return line[(label.Length + 1)..].Trim();
+        }
+
+        return string.Empty;
     }
 
     private static string NormalizeBusinessNumber(string? value)

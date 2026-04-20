@@ -1,10 +1,49 @@
 ﻿using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Reflection;
+using System.Text.Json;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
+
+public sealed class DesktopAppRuntimeSelfCheckResult
+{
+    public bool HasBlockingIssue { get; init; }
+    public IReadOnlyList<string> BlockingMessages { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> WarningMessages { get; init; } = Array.Empty<string>();
+    public int CleanedArtifactCount { get; init; }
+
+    public string BuildUserMessage()
+    {
+        var lines = new List<string>();
+        if (BlockingMessages.Count > 0)
+            lines.AddRange(BlockingMessages);
+
+        if (WarningMessages.Count > 0)
+            lines.AddRange(WarningMessages);
+
+        if (CleanedArtifactCount > 0)
+            lines.Add($"이전 업데이트 잔여 파일 {CleanedArtifactCount:N0}건을 정리했습니다.");
+
+        return string.Join(Environment.NewLine, lines.Where(line => !string.IsNullOrWhiteSpace(line)));
+    }
+
+    public string BuildLogMessage()
+    {
+        var parts = new List<string>();
+        if (BlockingMessages.Count > 0)
+            parts.Add("차단: " + string.Join(" / ", BlockingMessages));
+        if (WarningMessages.Count > 0)
+            parts.Add("경고: " + string.Join(" / ", WarningMessages));
+        if (CleanedArtifactCount > 0)
+            parts.Add($"잔여 파일 정리 {CleanedArtifactCount:N0}건");
+
+        return string.Join(" | ", parts.Where(part => !string.IsNullOrWhiteSpace(part)));
+    }
+}
 
 public sealed class DesktopAppUpdateService
 {
@@ -13,6 +52,22 @@ public sealed class DesktopAppUpdateService
     private const string CanonicalInstallFolderName = "tradeplan";
     private const string CanonicalExecutableName = "거래플랜.exe";
     private static readonly TimeSpan UpdateArtifactRetention = TimeSpan.FromDays(3);
+    private static readonly TimeSpan InstallResidueRetention = TimeSpan.FromDays(14);
+    private static readonly string[] StartupRequiredRelativePaths =
+    [
+        "appsettings.json"
+    ];
+    private static readonly string[] LiveOnlyRequiredRelativePaths =
+    [
+        Path.Combine("Updater", "거래플랜.Updater.exe")
+    ];
+    private static readonly string[] InstallResiduePatterns =
+    [
+        "*.old",
+        "*.bak",
+        "*.deleteme",
+        "*.rollback"
+    ];
 
     private readonly ErpApiClient _api;
 
@@ -41,13 +96,86 @@ public sealed class DesktopAppUpdateService
         return NormalizeVersionText(Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "1.0.0");
     }
 
-    public async Task<DesktopAppUpdateCheckResult> CheckForUpdatesAsync(string channel = "stable", CancellationToken ct = default)
+    public static bool TryRelaunchCanonicalInstallIfNeeded(out string? message)
+    {
+        message = null;
+
+        if (AppRuntimeInfo.IsTestRuntime)
+            return false;
+
+        var currentProcessPath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(currentProcessPath) || !File.Exists(currentProcessPath))
+            return false;
+
+        if (IsUpdaterStagingPath(currentProcessPath))
+            return false;
+
+        var canonicalExePath = GetCanonicalLaunchExePath();
+        if (!File.Exists(canonicalExePath))
+            return false;
+
+        if (PathsEqual(currentProcessPath, canonicalExePath))
+            return false;
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = canonicalExePath,
+            Arguments = BuildForwardedArguments(),
+            UseShellExecute = true,
+            WorkingDirectory = Path.GetDirectoryName(canonicalExePath) ?? AppContext.BaseDirectory
+        });
+
+        message = $"정식 설치 경로({canonicalExePath})로 다시 실행합니다.";
+        return true;
+    }
+
+    public static string GetDefaultChannel()
+        => AppRuntimeInfo.IsTestRuntime ? "test" : "stable";
+
+    public static DesktopAppRuntimeSelfCheckResult RunStartupSelfCheck()
+    {
+        var installRoot = AppContext.BaseDirectory;
+        var cleanedArtifactCount = TryCleanupStaleInstallArtifacts(installRoot);
+        var blockingMessages = new List<string>();
+        var warningMessages = new List<string>();
+
+        foreach (var relativePath in StartupRequiredRelativePaths)
+        {
+            var fullPath = Path.Combine(installRoot, relativePath);
+            if (!File.Exists(fullPath))
+                blockingMessages.Add($"필수 설치 파일이 누락되었습니다: {relativePath}");
+        }
+
+        if (!AppRuntimeInfo.IsTestRuntime)
+        {
+            foreach (var relativePath in LiveOnlyRequiredRelativePaths)
+            {
+                var fullPath = Path.Combine(installRoot, relativePath);
+                if (!File.Exists(fullPath))
+                    blockingMessages.Add($"업데이트 도우미 파일이 누락되었습니다: {relativePath}");
+            }
+        }
+
+        if (IsUpdaterStagingPath(installRoot))
+            warningMessages.Add("업데이트 임시 실행 경로에서 시작되었습니다. 정식 설치 경로로 재실행이 권장됩니다.");
+
+        return new DesktopAppRuntimeSelfCheckResult
+        {
+            HasBlockingIssue = blockingMessages.Count > 0,
+            BlockingMessages = blockingMessages,
+            WarningMessages = warningMessages,
+            CleanedArtifactCount = cleanedArtifactCount
+        };
+    }
+
+    public async Task<DesktopAppUpdateCheckResult> CheckForUpdatesAsync(string? channel = null, CancellationToken ct = default)
     {
         var currentVersion = GetCurrentVersion();
+        var resolvedChannel = string.IsNullOrWhiteSpace(channel) ? GetDefaultChannel() : channel.Trim();
 
         try
         {
-            var manifest = await _api.GetUpdateManifestAsync(channel, ct);
+            var manifest = await _api.GetUpdateManifestAsync(resolvedChannel, ct);
             var package = manifest?.Desktop;
             if (package is null || string.IsNullOrWhiteSpace(package.Version))
             {
@@ -60,17 +188,28 @@ public sealed class DesktopAppUpdateService
             }
 
             var latestVersion = NormalizeVersionText(package.Version);
+            var minimumSupportedVersion = ResolveMinimumSupportedVersion(package, latestVersion);
             var isUpdateAvailable = CompareVersions(latestVersion, currentVersion) > 0;
+            var isBelowMinimumSupportedVersion =
+                !string.IsNullOrWhiteSpace(minimumSupportedVersion) &&
+                CompareVersions(currentVersion, minimumSupportedVersion) < 0;
+            var requiresImmediateUpdate = isBelowMinimumSupportedVersion || (isUpdateAvailable && package.Mandatory);
 
             return new DesktopAppUpdateCheckResult
             {
                 CurrentVersion = currentVersion,
                 LatestVersion = latestVersion,
+                MinimumSupportedVersion = minimumSupportedVersion,
                 IsUpdateAvailable = isUpdateAvailable,
+                IsBelowMinimumSupportedVersion = isBelowMinimumSupportedVersion,
                 Package = package,
-                Message = isUpdateAvailable
-                    ? $"새 PC 버전 {latestVersion}이 준비되어 있습니다."
-                    : $"현재 버전({currentVersion})이 최신입니다."
+                Message = isBelowMinimumSupportedVersion
+                    ? $"현재 버전({currentVersion})은 서버 최소 허용 버전({minimumSupportedVersion})보다 낮아 업데이트가 필요합니다."
+                    : requiresImmediateUpdate
+                        ? $"필수 PC 버전 {latestVersion}이 준비되어 있습니다."
+                        : isUpdateAvailable
+                            ? $"새 PC 버전 {latestVersion}이 준비되어 있습니다."
+                            : $"현재 버전({currentVersion})이 최신입니다."
             };
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
@@ -104,6 +243,7 @@ public sealed class DesktopAppUpdateService
             throw new FileNotFoundException("거래플랜.Updater.exe를 찾지 못했습니다. 현재 설치본에는 내부 업데이트 도우미가 없어 1회 수동 재설치가 필요할 수 있습니다.");
 
         var stagedUpdaterPath = StageUpdaterForExecution(updaterPath);
+        var requestMetadataPath = CreateUpdaterRequestMetadataFile(stagedUpdaterPath, packageUri);
 
         var currentProcess = Process.GetCurrentProcess();
         if (string.IsNullOrWhiteSpace(Environment.ProcessPath ?? currentProcess.MainModule?.FileName))
@@ -114,7 +254,7 @@ public sealed class DesktopAppUpdateService
         EnsureSufficientDiskSpace(package.FileSize, installRoot);
         TryCleanupStaleUpdateArtifacts();
 
-        var arguments = string.Join(" ", new[]
+        var argumentParts = new List<string>
         {
             "--package-url",
             QuoteArgument(packageUri.ToString()),
@@ -134,7 +274,15 @@ public sealed class DesktopAppUpdateService
             QuoteArgument(package.FileName ?? string.Empty),
             "--notes",
             QuoteArgument(package.Notes ?? string.Empty)
-        });
+        };
+
+        if (!string.IsNullOrWhiteSpace(requestMetadataPath))
+        {
+            argumentParts.Add("--request-metadata-path");
+            argumentParts.Add(QuoteArgument(requestMetadataPath));
+        }
+
+        var arguments = string.Join(" ", argumentParts);
 
         Process.Start(new ProcessStartInfo
         {
@@ -157,7 +305,7 @@ public sealed class DesktopAppUpdateService
         return candidates.FirstOrDefault(File.Exists);
     }
 
-    private static string GetCanonicalInstallRoot()
+    public static string GetCanonicalInstallRoot()
     {
         var programFilesRoot = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
         if (string.IsNullOrWhiteSpace(programFilesRoot))
@@ -169,7 +317,7 @@ public sealed class DesktopAppUpdateService
         return Path.Combine(programFilesRoot, CanonicalInstallFolderName);
     }
 
-    private static string GetCanonicalLaunchExePath()
+    public static string GetCanonicalLaunchExePath()
         => Path.Combine(GetCanonicalInstallRoot(), CanonicalExecutableName);
 
     private static string StageUpdaterForExecution(string updaterPath)
@@ -193,6 +341,36 @@ public sealed class DesktopAppUpdateService
         }
 
         return Path.Combine(stagingRoot, Path.GetFileName(updaterPath));
+    }
+
+    private string? CreateUpdaterRequestMetadataFile(string stagedUpdaterPath, Uri packageUri)
+    {
+        var headers = _api.GetUpdateDownloadHeaders(packageUri);
+        if (headers.Count == 0)
+            return null;
+
+        var updaterDirectory = Path.GetDirectoryName(stagedUpdaterPath);
+        if (string.IsNullOrWhiteSpace(updaterDirectory) || !Directory.Exists(updaterDirectory))
+            return null;
+
+        var metadataPath = Path.Combine(updaterDirectory, "request-metadata.json");
+        var payload = JsonSerializer.Serialize(new UpdaterRequestMetadata
+        {
+            Headers = headers.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
+        });
+
+        File.WriteAllText(metadataPath, payload);
+
+        try
+        {
+            File.SetAttributes(metadataPath, FileAttributes.Hidden | FileAttributes.Temporary);
+        }
+        catch
+        {
+            // 속성 지정 실패가 업데이트 자체를 막지 않도록 무시
+        }
+
+        return metadataPath;
     }
 
     private static void CopyDirectory(string sourceDirectory, string destinationDirectory)
@@ -235,6 +413,14 @@ public sealed class DesktopAppUpdateService
         return leftVersion.CompareTo(rightVersion);
     }
 
+    private static string ResolveMinimumSupportedVersion(AppUpdatePackageDto package, string latestVersion)
+    {
+        if (!string.IsNullOrWhiteSpace(package.MinimumSupportedVersion))
+            return NormalizeVersionText(package.MinimumSupportedVersion);
+
+        return package.Mandatory ? latestVersion : string.Empty;
+    }
+
     private static string NormalizeVersionText(string raw)
     {
         var normalized = (raw ?? string.Empty).Trim();
@@ -246,6 +432,35 @@ public sealed class DesktopAppUpdateService
             normalized = normalized[..plusIndex];
 
         return string.IsNullOrWhiteSpace(normalized) ? "1.0.0" : normalized;
+    }
+
+    private static string BuildForwardedArguments()
+    {
+        var args = Environment.GetCommandLineArgs().Skip(1);
+        return string.Join(" ", args.Select(QuoteArgument));
+    }
+
+    private static bool IsUpdaterStagingPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        return path.IndexOf($"{Path.DirectorySeparatorChar}GeoraePlan{Path.DirectorySeparatorChar}updater-run{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) >= 0
+               || path.IndexOf($"{Path.AltDirectorySeparatorChar}GeoraePlan{Path.AltDirectorySeparatorChar}updater-run{Path.AltDirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        try
+        {
+            var leftFull = Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var rightFull = Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return string.Equals(leftFull, rightFull, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private static string QuoteArgument(string value)
@@ -331,5 +546,56 @@ public sealed class DesktopAppUpdateService
                 // 업데이트 캐시 정리 실패가 실제 업데이트 동작을 막지 않도록 무시
             }
         }
+    }
+
+    private sealed class UpdaterRequestMetadata
+    {
+        public Dictionary<string, string> Headers { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static int TryCleanupStaleInstallArtifacts(string installRoot)
+    {
+        if (string.IsNullOrWhiteSpace(installRoot) || !Directory.Exists(installRoot))
+            return 0;
+
+        var cleanedCount = 0;
+        foreach (var rootPath in new[]
+                 {
+                     installRoot,
+                     Path.Combine(installRoot, "Updater")
+                 }.Where(Directory.Exists))
+        {
+            cleanedCount += TryCleanupInstallFiles(rootPath);
+        }
+
+        return cleanedCount;
+    }
+
+    private static int TryCleanupInstallFiles(string rootPath)
+    {
+        var cutoffUtc = DateTime.UtcNow - InstallResidueRetention;
+        var deletedCount = 0;
+
+        foreach (var pattern in InstallResiduePatterns)
+        {
+            foreach (var file in Directory.EnumerateFiles(rootPath, pattern, SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    var info = new FileInfo(file);
+                    if (info.LastWriteTimeUtc > cutoffUtc)
+                        continue;
+
+                    info.Delete();
+                    deletedCount++;
+                }
+                catch
+                {
+                    // 설치 잔여 파일 정리 실패는 앱 기동을 막지 않음
+                }
+            }
+        }
+
+        return deletedCount;
     }
 }

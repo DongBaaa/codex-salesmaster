@@ -146,24 +146,17 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
             foreach (var row in pending)
             {
                 row.ApplyToSource();
-
-                if (_session.HasAdministrativePrivileges)
+                var result = await _local.UpsertCustomerAsync(row.Source, _session);
+                if (!result.Success)
                 {
-                    await _local.UpsertCustomerAsync(row.Source);
-                }
-                else
-                {
-                    var result = await _local.UpsertCustomerAsync(row.Source, _session);
-                    if (!result.Success)
-                    {
-                        row.RestoreSavedOfficeCode();
-                        StatusMessage = result.Message;
-                        return;
-                    }
-
-                    grantedTemporaryAccess |= result.GrantedTemporaryAccess;
+                    row.RestoreSavedOfficeCode();
+                    StatusMessage = result.ConcurrencyConflict
+                        ? $"{result.Message} 담당지점 선택은 이전 값으로 되돌렸습니다."
+                        : result.Message;
+                    return;
                 }
 
+                grantedTemporaryAccess |= result.GrantedTemporaryAccess;
                 row.AcceptChanges();
                 savedCount++;
             }
@@ -203,8 +196,11 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
     {
         OfficeCodes.Clear();
         var offices = await _local.GetOfficesAsync();
+        var readableOfficeCodes = _local.GetReadableOfficeCodesForSession(_session)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var officeCode in offices
                      .Select(office => office.Code)
+                     .Where(code => readableOfficeCodes.Contains(code))
                      .Where(code => !string.IsNullOrWhiteSpace(code))
                      .Distinct(StringComparer.OrdinalIgnoreCase)
                      .OrderBy(code => code, StringComparer.OrdinalIgnoreCase))
@@ -214,9 +210,13 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
 
         if (OfficeCodes.Count == 0)
         {
-            OfficeCodes.Add(DomainConstants.OfficeUsenet);
-            OfficeCodes.Add(DomainConstants.OfficeItworld);
-            OfficeCodes.Add(DomainConstants.OfficeYeonsu);
+            foreach (var officeCode in _local.GetReadableOfficeCodesForSession(_session))
+                OfficeCodes.Add(officeCode);
+        }
+
+        if (OfficeCodes.Count == 0)
+        {
+            OfficeCodes.Add(OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet));
         }
 
         var orderedOfficeCodes = OfficeCodes

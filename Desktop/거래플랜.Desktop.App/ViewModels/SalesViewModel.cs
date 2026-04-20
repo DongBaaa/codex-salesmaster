@@ -225,6 +225,7 @@ public sealed partial class SalesViewModel : ObservableObject
                 line.PropertyChanged += Line_PropertyChanged;
         }
 
+        RenumberLines();
         RecalcTotals();
     }
 
@@ -235,8 +236,8 @@ public sealed partial class SalesViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
-        _allCustomers = await _local.GetCustomersAsync(_session);
-        _allItems = await _local.GetItemsAsync();
+        _allCustomers = await _local.GetCustomersForOperationalSelectionAsync(_session);
+        _allItems = await _local.GetItemsAsync(_session);
         await LoadMasterOptionsAsync();
         await LoadOfficeWarehouseAsync();
         RefreshItemSearch();
@@ -267,13 +268,25 @@ public sealed partial class SalesViewModel : ObservableObject
 
     private async Task LoadOfficeWarehouseAsync()
     {
+        var writableOfficeCodes = _local.GetWritableOfficeCodesForSession(_session)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var writableWarehouseCodes = writableOfficeCodes
+            .Select(OfficeCodeCatalog.GetMainWarehouseCode)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         Offices.Clear();
         foreach (var office in await _local.GetOfficesAsync())
-            Offices.Add(office);
+        {
+            if (writableOfficeCodes.Contains(office.Code))
+                Offices.Add(office);
+        }
 
         Warehouses.Clear();
         foreach (var warehouse in await _local.GetWarehousesAsync())
-            Warehouses.Add(warehouse);
+        {
+            if (writableWarehouseCodes.Contains(warehouse.Code))
+                Warehouses.Add(warehouse);
+        }
     }
 
     private void InitializeOfficeAndWarehouseDefaults()
@@ -406,13 +419,13 @@ public sealed partial class SalesViewModel : ObservableObject
 
     public async Task ReloadCustomersAsync()
     {
-        _allCustomers = await _local.GetCustomersAsync(_session);
+        _allCustomers = await _local.GetCustomersForOperationalSelectionAsync(_session);
         await LoadMasterOptionsAsync();
     }
 
     public async Task ReloadItemsAsync()
     {
-        _allItems = await _local.GetItemsAsync();
+        _allItems = await _local.GetItemsAsync(_session);
         RefreshItemSearch();
     }
 
@@ -535,6 +548,81 @@ public sealed partial class SalesViewModel : ObservableObject
         RecalcInputAmount();
     }
 
+    private LocalItem? FindItemById(Guid? itemId)
+    {
+        if (!itemId.HasValue || itemId.Value == Guid.Empty)
+            return null;
+
+        return _allItems.FirstOrDefault(item => item.Id == itemId.Value);
+    }
+
+    private LocalItem? TryResolveLinkedItemFromInput(string? itemName, string? specification, string? materialNumber)
+    {
+        var normalizedName = (itemName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedName))
+            return null;
+
+        var normalizedSpecification = (specification ?? string.Empty).Trim();
+        var normalizedMaterialNumber = (materialNumber ?? string.Empty).Trim();
+        var lookupItems = GetInvoiceLookupItems().ToList();
+
+        if (!string.IsNullOrWhiteSpace(normalizedMaterialNumber))
+        {
+            var materialMatches = lookupItems
+                .Where(item => string.Equals(item.MaterialNumber?.Trim(), normalizedMaterialNumber, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (materialMatches.Count == 1)
+                return materialMatches[0];
+        }
+
+        var exactMatches = lookupItems
+            .Where(item => string.Equals(item.NameOriginal?.Trim(), normalizedName, StringComparison.OrdinalIgnoreCase)
+                           && string.Equals(item.SpecificationOriginal?.Trim(), normalizedSpecification, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (exactMatches.Count == 1)
+            return exactMatches[0];
+
+        if (string.IsNullOrWhiteSpace(normalizedSpecification))
+        {
+            var nameOnlyMatches = lookupItems
+                .Where(item => string.Equals(item.NameOriginal?.Trim(), normalizedName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (nameOnlyMatches.Count == 1)
+                return nameOnlyMatches[0];
+        }
+
+        return null;
+    }
+
+    private bool TryResolveLineItemForSave(
+        InvoiceLineEditModel line,
+        LocalItem? selectedInputItem,
+        out LocalItem? resolvedItem,
+        out bool keepExistingLink,
+        out string? validationMessage)
+    {
+        var previousItem = FindItemById(line.ItemId);
+        keepExistingLink = selectedInputItem is null &&
+            line.ItemId.HasValue &&
+            line.ItemId.Value != Guid.Empty &&
+            string.Equals(line.ItemName, InputItemName, StringComparison.Ordinal) &&
+            string.Equals(line.Specification, InputSpec, StringComparison.Ordinal) &&
+            string.Equals(line.MaterialNumber, InputMaterialNo, StringComparison.Ordinal);
+
+        resolvedItem = selectedInputItem
+            ?? (keepExistingLink ? previousItem : null)
+            ?? TryResolveLinkedItemFromInput(InputItemName, InputSpec, InputMaterialNo);
+
+        if (line.ItemId.HasValue && line.ItemId.Value != Guid.Empty && resolvedItem is null && !keepExistingLink)
+        {
+            validationMessage = "재고 연동 품목은 품목 검색에서 실제 품목을 다시 선택해야 수정 내용이 재고에 반영됩니다.";
+            return false;
+        }
+
+        validationMessage = null;
+        return true;
+    }
+
     // ?? ?쇱씤 ?낅젰 ?????????????????????????????????????????????????????????
     partial void OnInputQtyChanged(decimal value) => RecalcInputAmount();
     partial void OnInputUnitPriceChanged(decimal value) => RecalcInputAmount();
@@ -646,12 +734,13 @@ public sealed partial class SalesViewModel : ObservableObject
     private void AddLine()
     {
         if (string.IsNullOrWhiteSpace(InputItemName)) return;
+        var resolvedItem = SelectedInputItem ?? TryResolveLinkedItemFromInput(InputItemName, InputSpec, InputMaterialNo);
         var line = new InvoiceLineEditModel
         {
-            ItemId = SelectedInputItem?.Id,
-            ItemTrackingType = SelectedInputItem is null
+            ItemId = resolvedItem?.Id,
+            ItemTrackingType = resolvedItem is null
                 ? ItemTrackingTypes.NonStock
-                : ItemTrackingTypes.Normalize(SelectedInputItem.TrackingType),
+                : ItemTrackingTypes.Normalize(resolvedItem.TrackingType),
             ItemName = InputItemName,
             Specification = InputSpec,
             Unit = InputUnit,
@@ -671,18 +760,27 @@ public sealed partial class SalesViewModel : ObservableObject
     private void UpdateLine()
     {
         if (SelectedLine is null || string.IsNullOrWhiteSpace(InputItemName)) return;
-        var shouldKeepExistingItemLink = SelectedInputItem is null &&
-            string.Equals(SelectedLine.ItemName, InputItemName, StringComparison.Ordinal) &&
-            string.Equals(SelectedLine.Specification, InputSpec, StringComparison.Ordinal);
+        if (!TryResolveLineItemForSave(SelectedLine, SelectedInputItem, out var resolvedItem, out var keepExistingLink, out var validationMessage))
+        {
+            StatusMessage = validationMessage ?? string.Empty;
+            System.Windows.MessageBox.Show(
+                validationMessage ?? "재고 연동 품목을 확인하세요.",
+                "품목 확인",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Warning);
+            return;
+        }
 
-        SelectedLine.ItemId = SelectedInputItem?.Id ?? (shouldKeepExistingItemLink ? SelectedLine.ItemId : null);
-        SelectedLine.ItemTrackingType = SelectedInputItem is not null
-            ? ItemTrackingTypes.Normalize(SelectedInputItem.TrackingType)
-            : shouldKeepExistingItemLink
-                ? ItemTrackingTypes.Normalize(
-                    SelectedLine.ItemTrackingType,
-                    SelectedLine.ItemId.HasValue ? ItemTrackingTypes.Stock : ItemTrackingTypes.NonStock)
-                : ItemTrackingTypes.NonStock;
+        SelectedLine.ItemId = keepExistingLink
+            ? SelectedLine.ItemId
+            : resolvedItem?.Id;
+        SelectedLine.ItemTrackingType = keepExistingLink
+            ? ItemTrackingTypes.Normalize(
+                SelectedLine.ItemTrackingType,
+                SelectedLine.ItemId.HasValue ? ItemTrackingTypes.Stock : ItemTrackingTypes.NonStock)
+            : resolvedItem is null
+                ? ItemTrackingTypes.NonStock
+                : ItemTrackingTypes.Normalize(resolvedItem.TrackingType);
         SelectedLine.ItemName = InputItemName;
         SelectedLine.Specification = InputSpec;
         SelectedLine.Unit = InputUnit;
@@ -691,6 +789,7 @@ public sealed partial class SalesViewModel : ObservableObject
         SelectedLine.LineAmount = InputLineAmount;
         SelectedLine.Remark = InputRemark;
         SelectedLine.SerialNumber = InputSerialNumber;
+        SelectedLine.MaterialNumber = InputMaterialNo;
         RecalcTotals();
         ClearLineInput();
         SelectedLine = null;
@@ -1143,26 +1242,12 @@ public sealed partial class SalesViewModel : ObservableObject
         }
 
         var customer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId)
-            ?? await _local.GetCustomerAsync(inv.CustomerId);
+            ?? await _local.GetCustomerForOperationalSelectionAsync(inv.CustomerId, _session);
         if (customer is not null) SetCustomer(customer, ignoreTradeType: true);
 
         Lines.Clear();
         foreach (var line in inv.Lines.Where(l => !l.IsDeleted))
-        {
-            Lines.Add(new InvoiceLineEditModel
-            {
-                Id = line.Id,
-                ItemId = line.ItemId,
-                ItemName = line.ItemNameOriginal,
-                Specification = line.SpecificationOriginal,
-                Unit = line.Unit,
-                Quantity = line.Quantity,
-                UnitPrice = line.UnitPrice,
-                Remark = line.Remark,
-                SerialNumber = line.SerialNumber,
-                MaterialNumber = line.MaterialNumber
-            });
-        }
+            Lines.Add(InvoiceLineEditModel.FromLocal(line));
         RecalcTotals();
         await LoadInvoiceVersionsAsync(inv, Interlocked.Increment(ref _invoiceVersionLoadVersion));
         StatusMessage = VoucherType switch
@@ -1213,7 +1298,10 @@ public sealed partial class SalesViewModel : ObservableObject
             }
 
             var model = await LoadOrCreateInvoicePrintModelAsync(invoice, customer, company);
-            var editorViewModel = new PrintEditViewModel(model, _invoicePrintService, SaveInvoicePrintModelAsync);
+            var editorViewModel = new PrintEditViewModel(
+                model,
+                SaveInvoicePrintModelAsync,
+                (editedModel, selectedDocument) => BuildPrintEditPreviewDocument(invoice, customer, company, editedModel, selectedDocument));
             var editorWindow = new PrintEditWindow(editorViewModel)
             {
                 Owner = GetActiveWindow()
@@ -1575,7 +1663,7 @@ public sealed partial class SalesViewModel : ObservableObject
         LocalCompanyProfile company)
     {
         var documents = new List<System.Windows.Documents.FixedDocument>();
-        InvoicePrintModel? statementPrintModel = null;
+        InvoicePrintModel? outputPrintModel = null;
         var orderedAttachmentNames = codes
             .Select(AttachmentDocumentCatalog.GetDisplayName)
             .ToList();
@@ -1585,20 +1673,23 @@ public sealed partial class SalesViewModel : ObservableObject
             switch (code)
             {
                 case AttachmentDocumentCatalog.Statement:
-                    statementPrintModel ??= await LoadOrCreateInvoicePrintModelAsync(invoice, customer, company);
-                    statementPrintModel.PrintWithDate = PrintWithDate;
-                    statementPrintModel.PrintWithPrice = PrintWithPrice;
-                    documents.Add(_invoicePrintService.BuildFixedDocument(statementPrintModel));
+                    outputPrintModel ??= await LoadOrCreateInvoicePrintModelAsync(invoice, customer, company);
+                    outputPrintModel.PrintWithDate = PrintWithDate;
+                    outputPrintModel.PrintWithPrice = PrintWithPrice;
+                    documents.Add(_invoicePrintService.BuildFixedDocument(outputPrintModel));
                     break;
                 case AttachmentDocumentCatalog.Estimate:
-                    documents.Add(SupplementDocumentBuilder.BuildEstimateDocument(invoice, customer, company));
+                    outputPrintModel ??= await LoadOrCreateInvoicePrintModelAsync(invoice, customer, company);
+                    documents.Add(SupplementDocumentBuilder.BuildEstimateDocument(invoice, customer, company, outputPrintModel));
                     break;
                 case AttachmentDocumentCatalog.PaymentClaim:
+                    outputPrintModel ??= await LoadOrCreateInvoicePrintModelAsync(invoice, customer, company);
                     documents.Add(SupplementDocumentBuilder.BuildPaymentClaimDocument(
                         invoice,
                         customer,
                         company,
-                        orderedAttachmentNames));
+                        orderedAttachmentNames,
+                        outputPrintModel));
                     break;
                 default:
                     // Non-core attachments are metadata only (printed in payment-claim attachment list).
@@ -1608,6 +1699,44 @@ public sealed partial class SalesViewModel : ObservableObject
         }
 
         return documents;
+    }
+
+    private System.Windows.Documents.FixedDocument BuildPrintEditPreviewDocument(
+        LocalInvoice invoice,
+        LocalCustomer customer,
+        LocalCompanyProfile company,
+        InvoicePrintModel model,
+        string selectedDocument)
+    {
+        return selectedDocument switch
+        {
+            PrintEditViewModel.PreviewDocumentEstimate
+                => SupplementDocumentBuilder.BuildEstimateDocument(invoice, customer, company, model),
+            PrintEditViewModel.PreviewDocumentPaymentClaim
+                => SupplementDocumentBuilder.BuildPaymentClaimDocument(
+                    invoice,
+                    customer,
+                    company,
+                    BuildPrintEditPreviewAttachmentNames(),
+                    model),
+            _ => _invoicePrintService.BuildFixedDocument(model)
+        };
+    }
+
+    private static IReadOnlyList<string> BuildPrintEditPreviewAttachmentNames()
+    {
+        return
+        [
+            AttachmentDocumentCatalog.GetDisplayName(AttachmentDocumentCatalog.Statement),
+            AttachmentDocumentCatalog.GetDisplayName(AttachmentDocumentCatalog.Estimate),
+            AttachmentDocumentCatalog.GetDisplayName(AttachmentDocumentCatalog.PaymentClaim)
+        ];
+    }
+
+    private void RenumberLines()
+    {
+        for (var i = 0; i < Lines.Count; i++)
+            Lines[i].RowNo = i + 1;
     }
 
     private List<AttachmentSelectionState> BuildDefaultAttachmentSelections()

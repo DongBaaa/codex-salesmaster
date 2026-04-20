@@ -56,8 +56,11 @@ public static partial class DbInitializer
         var fileStorage = scope.ServiceProvider.GetRequiredService<ICentralFileStorage>();
 
         await EnsureBusinessDatabaseSchemaAsync(dbContext, cancellationToken);
+        await EnsureOperationalRuntimeSchemaAsync(dbContext, cancellationToken);
         await BackfillCustomerScopeFieldsAsync(dbContext, cancellationToken);
+        await BackfillOperationalOfficeOwnershipAsync(dbContext, cancellationToken);
         await BackfillCustomerMasterScopeFieldsAsync(dbContext, cancellationToken);
+        await BackfillItemScopeFieldsAsync(dbContext, cancellationToken);
 
         var dedicatedBusinessConnections = connectionResolver.GetDedicatedBusinessConnections();
         foreach (var connectionInfo in dedicatedBusinessConnections)
@@ -65,8 +68,11 @@ public static partial class DbInitializer
             await EnsureDedicatedBusinessDatabaseExistsAsync(connectionInfo, logger, cancellationToken);
             await using var tenantDbContext = CreateDbContext(connectionInfo, revisionClock);
             await EnsureBusinessDatabaseSchemaAsync(tenantDbContext, cancellationToken);
+            await EnsureOperationalRuntimeSchemaAsync(tenantDbContext, cancellationToken);
             await BackfillCustomerScopeFieldsAsync(tenantDbContext, cancellationToken);
+            await BackfillOperationalOfficeOwnershipAsync(tenantDbContext, cancellationToken);
             await BackfillCustomerMasterScopeFieldsAsync(tenantDbContext, cancellationToken);
+            await BackfillItemScopeFieldsAsync(tenantDbContext, cancellationToken);
         }
 
         var maxRevision = await GetMaxRevisionAsync(dbContext, cancellationToken);
@@ -126,6 +132,8 @@ public static partial class DbInitializer
             logger.LogInformation("Seed user creation is disabled by configuration.");
         }
 
+        await EnsureOperationalPermissionDefaultsAsync(dbContext, cancellationToken);
+
         await EnsureReferenceDataAsync(dbContext, cancellationToken);
         await NormalizeCustomerClassificationIntegrityAsync(dbContext, cancellationToken);
         await NormalizeUnitCatalogAsync(dbContext, cancellationToken);
@@ -145,6 +153,8 @@ public static partial class DbInitializer
         await CleanupDeletedInvoiceChainAsync(dbContext, cancellationToken);
         await MigrateStoredFilesToCentralStorageAsync(dbContext, fileStorage, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await new RentalAssignmentHistoryService(dbContext).RefreshAsync(cancellationToken);
+        await new InventoryLedgerService(dbContext).RebuildAsync(cancellationToken);
         await EnsureUnitsUniqueIndexAsync(dbContext, cancellationToken);
 
         foreach (var connectionInfo in dedicatedBusinessConnections)
@@ -170,6 +180,8 @@ public static partial class DbInitializer
             await CleanupDeletedInvoiceChainAsync(tenantDbContext, cancellationToken);
             await MigrateStoredFilesToCentralStorageAsync(tenantDbContext, fileStorage, cancellationToken);
             await tenantDbContext.SaveChangesAsync(cancellationToken);
+            await new RentalAssignmentHistoryService(tenantDbContext).RefreshAsync(cancellationToken);
+            await new InventoryLedgerService(tenantDbContext).RebuildAsync(cancellationToken);
             await EnsureUnitsUniqueIndexAsync(tenantDbContext, cancellationToken);
             logger.LogInformation("Dedicated business database initialized for tenant {TenantCode}.", connectionInfo.TenantCode);
         }
@@ -213,6 +225,7 @@ public static partial class DbInitializer
         await EnsureCustomerMasterTenantCodeColumnAsync(dbContext, cancellationToken);
         await EnsureCustomerOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureCustomerTenantCodeColumnAsync(dbContext, cancellationToken);
+        await EnsureOperationalResponsibleOfficeColumnsAsync(dbContext, cancellationToken);
         await EnsureItemOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureItemTenantCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceOfficeCodeColumnAsync(dbContext, cancellationToken);
@@ -229,7 +242,14 @@ public static partial class DbInitializer
         AppDbContext dbContext,
         CancellationToken cancellationToken)
     {
-        var customers = await dbContext.Customers.IgnoreQueryFilters().ToListAsync(cancellationToken);
+        var customers = await dbContext.Customers.IgnoreQueryFilters()
+            .Select(customer => new
+            {
+                customer.Id,
+                customer.OfficeCode,
+                customer.TenantCode
+            })
+            .ToListAsync(cancellationToken);
         if (customers.Count == 0)
             return;
 
@@ -245,15 +265,18 @@ public static partial class DbInitializer
                 TenantScopeCatalog.UsenetGroup,
                 desiredOfficeCode);
 
-            if (!string.Equals(customer.OfficeCode, desiredOfficeCode, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(customer.OfficeCode, desiredOfficeCode, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(customer.TenantCode, desiredTenantCode, StringComparison.OrdinalIgnoreCase))
             {
-                customer.OfficeCode = desiredOfficeCode;
-                changed = true;
-            }
-
-            if (!string.Equals(customer.TenantCode, desiredTenantCode, StringComparison.OrdinalIgnoreCase))
-            {
-                customer.TenantCode = desiredTenantCode;
+                var stub = new Customer
+                {
+                    Id = customer.Id,
+                    OfficeCode = desiredOfficeCode,
+                    TenantCode = desiredTenantCode
+                };
+                dbContext.Attach(stub);
+                dbContext.Entry(stub).Property(entity => entity.OfficeCode).IsModified = true;
+                dbContext.Entry(stub).Property(entity => entity.TenantCode).IsModified = true;
                 changed = true;
             }
         }
@@ -340,11 +363,12 @@ public static partial class DbInitializer
         if (!await dbContext.Units.IgnoreQueryFilters().AnyAsync(cancellationToken))
         {
             dbContext.Units.AddRange(
-                new Unit { Name = "EA", IsActive = true },
-                new Unit { Name = "SET", IsActive = true },
-                new Unit { Name = "대", IsActive = true },
-                new Unit { Name = "개", IsActive = true },
-                new Unit { Name = "박스", IsActive = true });
+                UnitCatalogNormalizer.CanonicalDefinitions.Select(definition => new Unit
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    IsActive = true
+                }));
         }
 
         foreach (var definition in DefaultPriceGradeOptions)
@@ -1454,22 +1478,12 @@ public static partial class DbInitializer
             note: "연수구에서 등록/수정한 데이터는 유즈넷 상급권한 계정에서 조회할 수 있습니다.",
             cancellationToken);
 
-        await UpsertDataSharingPolicyAsync(
+        await EnsureDataSharingPolicyInactiveAsync(
             dbContext,
             sourceTenantCode: TenantScopeCatalog.UsenetGroup,
             sourceOfficeCode: OfficeCodeCatalog.Usenet,
             targetTenantCode: TenantScopeCatalog.UsenetGroup,
             targetOfficeCode: OfficeCodeCatalog.Yeonsu,
-            shareCustomers: true,
-            shareItems: true,
-            shareInvoices: true,
-            sharePayments: true,
-            shareContracts: true,
-            shareReports: true,
-            shareRentals: true,
-            shareDeliveries: true,
-            allowTargetWrite: false,
-            note: "유즈넷에서 등록/수정한 데이터는 연수구 계정에서도 조회할 수 있습니다.",
             cancellationToken);
     }
 
@@ -2355,32 +2369,46 @@ public static partial class DbInitializer
         {
         }
 
-        var invoices = await dbContext.Invoices
+        var invoiceSnapshots = await dbContext.Invoices
             .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Select(invoice => new
+            {
+                invoice.Id,
+                invoice.VersionGroupId,
+                invoice.VersionNumber,
+                invoice.IsLatestVersion,
+                invoice.UpdatedAtUtc
+            })
             .ToListAsync(cancellationToken);
-        if (invoices.Count == 0)
+        if (invoiceSnapshots.Count == 0)
             return;
 
+        var trackedInvoices = new Dictionary<Guid, Invoice>();
         var changed = false;
-        foreach (var invoice in invoices)
+        foreach (var invoice in invoiceSnapshots)
         {
             var desiredGroupId = invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
             var desiredVersion = invoice.VersionNumber <= 0 ? 1 : invoice.VersionNumber;
 
             if (invoice.VersionGroupId != desiredGroupId)
             {
-                invoice.VersionGroupId = desiredGroupId;
+                var entity = GetOrAttachInvoiceStub(invoice.Id);
+                entity.VersionGroupId = desiredGroupId;
+                dbContext.Entry(entity).Property(current => current.VersionGroupId).IsModified = true;
                 changed = true;
             }
 
             if (invoice.VersionNumber != desiredVersion)
             {
-                invoice.VersionNumber = desiredVersion;
+                var entity = GetOrAttachInvoiceStub(invoice.Id);
+                entity.VersionNumber = desiredVersion;
+                dbContext.Entry(entity).Property(current => current.VersionNumber).IsModified = true;
                 changed = true;
             }
         }
 
-        foreach (var group in invoices.GroupBy(current => current.VersionGroupId == Guid.Empty ? current.Id : current.VersionGroupId))
+        foreach (var group in invoiceSnapshots.GroupBy(current => current.VersionGroupId == Guid.Empty ? current.Id : current.VersionGroupId))
         {
             var latest = group
                 .OrderByDescending(current => current.VersionNumber <= 0 ? 1 : current.VersionNumber)
@@ -2393,7 +2421,9 @@ public static partial class DbInitializer
                 var shouldBeLatest = invoice.Id == latest.Id;
                 if (invoice.IsLatestVersion != shouldBeLatest)
                 {
-                    invoice.IsLatestVersion = shouldBeLatest;
+                    var entity = GetOrAttachInvoiceStub(invoice.Id);
+                    entity.IsLatestVersion = shouldBeLatest;
+                    dbContext.Entry(entity).Property(current => current.IsLatestVersion).IsModified = true;
                     changed = true;
                 }
             }
@@ -2401,6 +2431,17 @@ public static partial class DbInitializer
 
         if (changed)
             await dbContext.SaveChangesAsync(cancellationToken);
+
+        Invoice GetOrAttachInvoiceStub(Guid id)
+        {
+            if (trackedInvoices.TryGetValue(id, out var tracked))
+                return tracked;
+
+            tracked = new Invoice { Id = id };
+            dbContext.Attach(tracked);
+            trackedInvoices[id] = tracked;
+            return tracked;
+        }
     }
 
     private static async Task EnsureRecycleBinPurgeRecordsTableAsync(
@@ -3443,6 +3484,14 @@ public static partial class DbInitializer
         PermissionNames.AmountViewPurchase,
         PermissionNames.SettingsEdit,
         PermissionNames.DataBackupRestore,
+        PermissionNames.CustomerEdit,
+        PermissionNames.ItemEdit,
+        PermissionNames.InvoiceEdit,
+        PermissionNames.PaymentEdit,
+        PermissionNames.InventoryReset,
+        PermissionNames.RentalProfileEdit,
+        PermissionNames.RentalAssetEdit,
+        PermissionNames.DeliveryEdit,
         PermissionNames.RentalViewAll,
         PermissionNames.RentalEditAll,
         PermissionNames.DeliveryViewAll,
@@ -3575,6 +3624,40 @@ public static partial class DbInitializer
         entity.AllowTargetWrite = allowTargetWrite;
         entity.Note = note?.Trim() ?? string.Empty;
         entity.IsActive = true;
+        entity.IsDeleted = false;
+        entity.UpdatedAtUtc = DateTime.UtcNow;
+    }
+
+    private static async Task EnsureDataSharingPolicyInactiveAsync(
+        AppDbContext dbContext,
+        string sourceTenantCode,
+        string sourceOfficeCode,
+        string targetTenantCode,
+        string targetOfficeCode,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSourceOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(sourceOfficeCode);
+        var normalizedTargetOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(targetOfficeCode);
+        var normalizedSourceTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(sourceTenantCode, normalizedSourceOffice);
+        var normalizedTargetTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(targetTenantCode, normalizedTargetOffice);
+
+        var entity = dbContext.DataSharingPolicies.Local.FirstOrDefault(current =>
+                         string.Equals(current.SourceTenantCode, normalizedSourceTenant, StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(current.SourceOfficeCode, normalizedSourceOffice, StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(current.TargetTenantCode, normalizedTargetTenant, StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(current.TargetOfficeCode, normalizedTargetOffice, StringComparison.OrdinalIgnoreCase))
+                     ?? await dbContext.DataSharingPolicies.IgnoreQueryFilters()
+                         .FirstOrDefaultAsync(current =>
+                                 current.SourceTenantCode == normalizedSourceTenant &&
+                                 current.SourceOfficeCode == normalizedSourceOffice &&
+                                 current.TargetTenantCode == normalizedTargetTenant &&
+                                 current.TargetOfficeCode == normalizedTargetOffice,
+                             cancellationToken);
+
+        if (entity is null)
+            return;
+
+        entity.IsActive = false;
         entity.IsDeleted = false;
         entity.UpdatedAtUtc = DateTime.UtcNow;
     }

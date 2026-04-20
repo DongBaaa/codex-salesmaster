@@ -6,18 +6,6 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
-public sealed record StoredSyncCredential(
-    string OfficeCode,
-    string TenantCode,
-    string Username,
-    string Password,
-    DateTime SavedAtUtc);
-
-public sealed record DirtyOfficeSummary(
-    string OfficeCode,
-    string TenantCode,
-    int Count);
-
 public sealed partial class LocalStateService
 {
     private const string SyncOfficeCredentialPrefix = "Sync.OfficeCredential.";
@@ -72,13 +60,13 @@ public sealed partial class LocalStateService
         await SetSettingAsync(GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialSavedAtSuffix), string.Empty, ct);
     }
 
-    public async Task ClearInvalidOfficeSyncCredentialsAsync(CancellationToken ct = default)
+    public async Task<int> ClearInvalidOfficeSyncCredentialsAsync(CancellationToken ct = default)
     {
         var settings = await _db.Settings
             .Where(setting => setting.Key.StartsWith(SyncOfficeCredentialPrefix))
             .ToListAsync(ct);
         if (settings.Count == 0)
-            return;
+            return 0;
 
         var grouped = new Dictionary<string, Dictionary<string, LocalSetting>>(StringComparer.OrdinalIgnoreCase);
         foreach (var setting in settings)
@@ -96,6 +84,7 @@ public sealed partial class LocalStateService
         }
 
         var mutated = false;
+        var clearedOfficeCount = 0;
         foreach (var (officeCode, bucket) in grouped)
         {
             var normalizedOfficeCode = NormalizeOfficeCode(officeCode, string.Empty);
@@ -110,15 +99,22 @@ public sealed partial class LocalStateService
             if (isValidOfficeCode && !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password))
                 continue;
 
+            var bucketMutated = false;
             foreach (var setting in bucket.Values)
             {
                 setting.Value = string.Empty;
                 mutated = true;
+                bucketMutated = true;
             }
+
+            if (bucketMutated)
+                clearedOfficeCount++;
         }
 
         if (mutated)
             await _db.SaveChangesAsync(ct);
+
+        return clearedOfficeCount;
     }
 
     public async Task<IReadOnlyList<StoredSyncCredential>> GetStoredSyncCredentialsAsync(CancellationToken ct = default)
@@ -234,42 +230,42 @@ public sealed partial class LocalStateService
 
         foreach (var invoice in await _db.Invoices.IgnoreQueryFilters()
                      .Where(entity => entity.IsDirty)
-                     .Select(entity => new { OfficeCode = entity.ResponsibleOfficeCode })
+                     .Select(entity => new { OfficeCode = entity.ResponsibleOfficeCode, entity.TenantCode })
                      .ToListAsync(ct))
         {
-            AddCount(invoice.OfficeCode, null);
+            AddCount(invoice.OfficeCode, invoice.TenantCode);
         }
 
         foreach (var payment in await _db.Payments.IgnoreQueryFilters()
                      .Where(entity => entity.IsDirty)
                      .Join(
-                         _db.Invoices.IgnoreQueryFilters(),
-                         payment => payment.InvoiceId,
-                         invoice => invoice.Id,
-                         (payment, invoice) => new { OfficeCode = invoice.ResponsibleOfficeCode })
+                          _db.Invoices.IgnoreQueryFilters(),
+                          payment => payment.InvoiceId,
+                          invoice => invoice.Id,
+                          (payment, invoice) => new { OfficeCode = invoice.ResponsibleOfficeCode, invoice.TenantCode })
                      .ToListAsync(ct))
         {
-            AddCount(payment.OfficeCode, null);
+            AddCount(payment.OfficeCode, payment.TenantCode);
         }
 
         foreach (var transaction in await _db.Transactions.IgnoreQueryFilters()
                      .Where(entity => entity.IsDirty)
-                     .Select(entity => new { OfficeCode = entity.ResponsibleOfficeCode })
+                     .Select(entity => new { OfficeCode = entity.ResponsibleOfficeCode, entity.TenantCode })
                      .ToListAsync(ct))
         {
-            AddCount(transaction.OfficeCode, null);
+            AddCount(transaction.OfficeCode, transaction.TenantCode);
         }
 
         foreach (var attachment in await _db.TransactionAttachments.IgnoreQueryFilters()
                      .Where(entity => entity.IsDirty)
                      .Join(
-                         _db.Transactions.IgnoreQueryFilters(),
-                         attachment => attachment.TransactionId,
-                         transaction => transaction.Id,
-                         (attachment, transaction) => new { OfficeCode = transaction.ResponsibleOfficeCode })
+                          _db.Transactions.IgnoreQueryFilters(),
+                          attachment => attachment.TransactionId,
+                          transaction => transaction.Id,
+                          (attachment, transaction) => new { OfficeCode = transaction.ResponsibleOfficeCode, transaction.TenantCode })
                      .ToListAsync(ct))
         {
-            AddCount(attachment.OfficeCode, null);
+            AddCount(attachment.OfficeCode, attachment.TenantCode);
         }
 
         foreach (var transfer in await _db.InventoryTransfers.IgnoreQueryFilters()
@@ -283,26 +279,26 @@ public sealed partial class LocalStateService
 
         foreach (var profile in await _db.RentalBillingProfiles.IgnoreQueryFilters()
                      .Where(entity => entity.IsDirty)
-                     .Select(entity => new { OfficeCode = entity.ResponsibleOfficeCode })
+                     .Select(entity => new { OfficeCode = entity.ResponsibleOfficeCode, entity.TenantCode })
                      .ToListAsync(ct))
         {
-            AddCount(profile.OfficeCode, null);
+            AddCount(profile.OfficeCode, profile.TenantCode);
         }
 
         foreach (var asset in await _db.RentalAssets.IgnoreQueryFilters()
                      .Where(entity => entity.IsDirty)
-                     .Select(entity => new { OfficeCode = entity.ResponsibleOfficeCode })
+                     .Select(entity => new { OfficeCode = entity.ResponsibleOfficeCode, entity.TenantCode })
                      .ToListAsync(ct))
         {
-            AddCount(asset.OfficeCode, null);
+            AddCount(asset.OfficeCode, asset.TenantCode);
         }
 
         foreach (var log in await _db.RentalBillingLogs.IgnoreQueryFilters()
                      .Where(entity => entity.IsDirty)
-                     .Select(entity => new { OfficeCode = entity.ResponsibleOfficeCode })
+                     .Select(entity => new { OfficeCode = entity.ResponsibleOfficeCode, entity.TenantCode })
                      .ToListAsync(ct))
         {
-            AddCount(log.OfficeCode, null);
+            AddCount(log.OfficeCode, log.TenantCode);
         }
 
         foreach (var profile in await _db.CompanyProfiles.IgnoreQueryFilters()

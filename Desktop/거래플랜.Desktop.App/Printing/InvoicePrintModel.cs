@@ -22,6 +22,9 @@ public sealed class InvoicePrintModel
     public string ManagerName { get; set; } = string.Empty;
     public string Memo { get; set; } = string.Empty;
     public string DocumentTitle { get; set; } = string.Empty;
+    public string EstimateOrganization { get; set; } = string.Empty;
+    public string EstimateValidityText { get; set; } = string.Empty;
+    public string EstimateRemarks { get; set; } = string.Empty;
     public string FooterText { get; set; } = string.Empty;
     public string BankAccountText { get; set; } = string.Empty;
     public byte[]? SupplierStampImage { get; set; }

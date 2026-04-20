@@ -6,6 +6,8 @@ namespace 거래플랜.Server.Api.Data;
 
 public static partial class DbInitializer
 {
+    private const string AutoCreatedRentalItemMemo = "렌탈 자산/설치현황 자동 동기화 생성";
+
     private static async Task MergeDuplicateCompanyProfilesAsync(
         AppDbContext dbContext,
         CancellationToken cancellationToken)
@@ -265,7 +267,9 @@ public static partial class DbInitializer
             BuildStrictTextKey(current.InstallLocation),
             BuildDateKey(current.RentalStartDate),
             BuildDateKey(current.RentalEndDate),
-            BuildStrictTextKey(current.Notes));
+            string.Equals(current.SimpleMemo, AutoCreatedRentalItemMemo, StringComparison.Ordinal)
+                ? string.Empty
+                : BuildStrictTextKey(current.Notes));
 
     private static string BuildBusinessDuplicateCustomerKey(Customer current)
     {
@@ -276,7 +280,8 @@ public static partial class DbInitializer
             BuildStrictTextKey(current.TenantCode),
             BuildStrictTextKey(current.NameOriginal),
             BuildStrictTextKey(current.BusinessNumber),
-            BuildStrictTextKey(current.OfficeCode),
+            BuildBusinessCustomerLocationKey(current),
+            BuildStrictTextKey(current.ResponsibleOfficeCode),
             BuildStrictTextKey(current.TradeType));
     }
 
@@ -482,6 +487,27 @@ public static partial class DbInitializer
             return string.Empty;
 
         return string.Concat(value.Trim().ToUpperInvariant().Where(current => !char.IsWhiteSpace(current)));
+    }
+
+    private static string BuildBusinessCustomerLocationKey(Customer current)
+        => string.Join('|',
+            BuildStrictTextKey(TryExtractCustomerNoteValue(current.Notes, "종사업장")),
+            BuildStrictTextKey(NormalizeComparableText(current.Address)));
+
+    private static string TryExtractCustomerNoteValue(string? notes, string label)
+    {
+        if (string.IsNullOrWhiteSpace(notes) || string.IsNullOrWhiteSpace(label))
+            return string.Empty;
+
+        foreach (var line in notes
+                     .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                     .Select(current => current.Trim()))
+        {
+            if (line.StartsWith(label + ":", StringComparison.OrdinalIgnoreCase))
+                return line[(label.Length + 1)..].Trim();
+        }
+
+        return string.Empty;
     }
 
     private static string BuildDecimalKey(decimal value)

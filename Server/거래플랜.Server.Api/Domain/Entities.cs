@@ -149,6 +149,7 @@ public sealed class Customer : TrackedEntity
     public CustomerMaster? CustomerMaster { get; set; }
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
     public Guid? CategoryId { get; set; }
@@ -224,6 +225,7 @@ public sealed class Invoice : TrackedEntity
     public Customer? Customer { get; set; }
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
     public Guid? LinkedRentalBillingProfileId { get; set; }
@@ -233,6 +235,7 @@ public sealed class Invoice : TrackedEntity
     public Guid? PreviousVersionId { get; set; }
     public bool IsLatestVersion { get; set; } = true;
     public VoucherType VoucherType { get; set; }
+    public string SourceWarehouseCode { get; set; } = OfficeCodeCatalog.UsenetMainWarehouse;
     public DateOnly InvoiceDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public decimal TotalAmount { get; set; }
     public decimal SupplyAmount { get; set; }
@@ -305,6 +308,7 @@ public sealed class TransactionRecord : TrackedEntity
     public Customer? Customer { get; set; }
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public DateOnly TransactionDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public string TransactionKind { get; set; } = string.Empty;
     public Guid? LinkedInvoiceId { get; set; }
@@ -408,6 +412,7 @@ public sealed class RentalBillingProfile : TrackedEntity
 {
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public string ProfileKey { get; set; } = string.Empty;
     public Guid? CustomerId { get; set; }
     public string CustomerName { get; set; } = string.Empty;
@@ -451,6 +456,7 @@ public sealed class RentalAsset : TrackedEntity
 {
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public string AssetKey { get; set; } = string.Empty;
     public Guid? CustomerId { get; set; }
     public Guid? ItemId { get; set; }
@@ -496,6 +502,7 @@ public sealed class RentalBillingLog : TrackedEntity
 {
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public Guid BillingProfileId { get; set; }
     public string BillingYearMonth { get; set; } = string.Empty;
     public DateOnly ScheduledDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
@@ -529,6 +536,9 @@ public sealed class ConflictLog
     public string ServerJson { get; set; } = string.Empty;
     public string Reason { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public string Status { get; set; } = "Open";
+    public DateTime? ResolvedAtUtc { get; set; }
+    public string ResolutionNote { get; set; } = string.Empty;
 }
 
 public sealed class RecycleBinPurgeRecord : TrackedEntity

@@ -1,8 +1,9 @@
-using 거래플랜.Server.Api.Data;
+﻿using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
+using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -19,17 +20,20 @@ public sealed class InvoicesController : ControllerBase
     private readonly ICurrentUserContext _currentUserContext;
     private readonly IInvoiceNumberService _invoiceNumberService;
     private readonly OfficeScopeService _officeScopeService;
+    private readonly InventoryLedgerService _inventoryLedgerService;
 
     public InvoicesController(
         AppDbContext dbContext,
         ICurrentUserContext currentUserContext,
         IInvoiceNumberService invoiceNumberService,
-        OfficeScopeService officeScopeService)
+        OfficeScopeService officeScopeService,
+        InventoryLedgerService inventoryLedgerService)
     {
         _dbContext = dbContext;
         _currentUserContext = currentUserContext;
         _invoiceNumberService = invoiceNumberService;
         _officeScopeService = officeScopeService;
+        _inventoryLedgerService = inventoryLedgerService;
     }
 
     [HttpGet]
@@ -72,10 +76,10 @@ public sealed class InvoicesController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Policy = "AdminOrGod")]
+    [Authorize(Policy = PermissionNames.InvoiceEdit)]
     public async Task<ActionResult<InvoiceDto>> Create([FromBody] InvoiceDto dto, CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditInvoices())
             return Forbid();
 
         var customer = await _dbContext.Customers
@@ -83,11 +87,21 @@ public sealed class InvoicesController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
         if (customer is null)
             return BadRequest("Referenced customer was not found.");
-        if (!_officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
+        if (!_officeScopeService.CanReadOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode))
             return Forbid();
 
-        dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, customer.TenantCode, customer.OfficeCode);
-        dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, customer.OfficeCode);
+        dto.ResponsibleOfficeCode = _officeScopeService.ResolveInvoiceResponsibleScopeForCreate(
+            dto.ResponsibleOfficeCode,
+            customer.ResponsibleOfficeCode);
+        dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+            dto.OfficeCode,
+            dto.ResponsibleOfficeCode,
+            customer.OfficeCode);
+        dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
+            dto.TenantCode,
+            dto.OfficeCode,
+            customer.TenantCode,
+            customer.OfficeCode);
         var entity = new Invoice { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         entity.Apply(dto);
         if (string.IsNullOrWhiteSpace(entity.InvoiceNumber))
@@ -95,83 +109,116 @@ public sealed class InvoicesController : ControllerBase
             entity.InvoiceNumber = await _invoiceNumberService.GenerateAsync(entity.CustomerId, entity.InvoiceDate, cancellationToken);
         }
 
-        foreach (var line in dto.Lines)
-        {
-            entity.Lines.Add(new InvoiceLine
-            {
-                Id = line.Id == Guid.Empty ? Guid.NewGuid() : line.Id,
-                InvoiceId = entity.Id, ItemId = line.ItemId,
-                ItemNameOriginal = line.ItemNameOriginal, SpecificationOriginal = line.SpecificationOriginal,
-                Unit = line.Unit, Quantity = line.Quantity, UnitPrice = line.UnitPrice,
-                LineAmount = line.LineAmount == 0 ? line.Quantity * line.UnitPrice : line.LineAmount,
-                Remark = line.Remark,
-                ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType)
-            });
-        }
+        ApplyInvoiceLines(entity, dto.Lines);
 
         _dbContext.Invoices.Add(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await _inventoryLedgerService.RebuildAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
 
     [HttpPut("{id:guid}")]
-    [Authorize(Policy = "AdminOrGod")]
+    [Authorize(Policy = PermissionNames.InvoiceEdit)]
     public async Task<ActionResult<InvoiceDto>> Update(Guid id, [FromBody] InvoiceDto dto, CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditInvoices())
             return Forbid();
 
         var entity = await _dbContext.Invoices.Include(x => x.Customer).Include(x => x.Lines)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOfficeForInvoices(entity.OfficeCode, entity.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForInvoices(entity.ResponsibleOfficeCode, entity.TenantCode))
             return Forbid();
+        if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Invoice)) is { } conflict)
+            return conflict;
 
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
         if (customer is null)
             return BadRequest("Referenced customer was not found.");
-        if (!_officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
+        if (!_officeScopeService.CanReadOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode))
             return Forbid();
 
-        dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, entity.TenantCode, entity.OfficeCode);
-        dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, entity.OfficeCode);
+        dto.ResponsibleOfficeCode = _officeScopeService.ResolveInvoiceResponsibleScopeForCreate(
+            dto.ResponsibleOfficeCode,
+            customer.ResponsibleOfficeCode);
+        dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+            dto.OfficeCode,
+            dto.ResponsibleOfficeCode,
+            customer.OfficeCode);
+        dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
+            dto.TenantCode,
+            dto.OfficeCode,
+            customer.TenantCode,
+            customer.OfficeCode);
         entity.Apply(dto);
         _dbContext.InvoiceLines.RemoveRange(entity.Lines);
         entity.Lines.Clear();
-        foreach (var line in dto.Lines)
-        {
-            entity.Lines.Add(new InvoiceLine
-            {
-                Id = line.Id == Guid.Empty ? Guid.NewGuid() : line.Id,
-                InvoiceId = entity.Id, ItemId = line.ItemId,
-                ItemNameOriginal = line.ItemNameOriginal, SpecificationOriginal = line.SpecificationOriginal,
-                Unit = line.Unit, Quantity = line.Quantity, UnitPrice = line.UnitPrice,
-                LineAmount = line.LineAmount == 0 ? line.Quantity * line.UnitPrice : line.LineAmount,
-                Remark = line.Remark,
-                ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType)
-            });
-        }
+        ApplyInvoiceLines(entity, dto.Lines);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await _inventoryLedgerService.RebuildAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
 
     [HttpDelete("{id:guid}")]
-    [Authorize(Policy = "AdminOrGod")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+    [Authorize(Policy = PermissionNames.InvoiceEdit)]
+    public async Task<IActionResult> Delete(Guid id, [FromQuery] long? expectedRevision, CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditInvoices())
             return Forbid();
 
         var entity = await _dbContext.Invoices.Include(x => x.Customer).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOfficeForInvoices(entity.OfficeCode, entity.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForInvoices(entity.ResponsibleOfficeCode, entity.TenantCode))
             return Forbid();
+        if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Invoice)) is { } conflict)
+            return conflict;
 
         entity.IsDeleted = true;
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await _inventoryLedgerService.RebuildAsync(cancellationToken);
         return NoContent();
     }
+
+    private static void ApplyInvoiceLines(Invoice invoice, IEnumerable<InvoiceLineDto>? lines)
+    {
+        foreach (var line in lines ?? [])
+        {
+            if (line.IsDeleted)
+                continue;
+
+            invoice.Lines.Add(CreateInvoiceLine(invoice.Id, line, line.Id == Guid.Empty ? Guid.NewGuid() : line.Id));
+        }
+    }
+
+    private static InvoiceLine CreateInvoiceLine(Guid invoiceId, InvoiceLineDto line, Guid resolvedId)
+    {
+        var entity = new InvoiceLine();
+        ApplyInvoiceLine(entity, invoiceId, line, resolvedId);
+        return entity;
+    }
+
+    private static void ApplyInvoiceLine(InvoiceLine entity, Guid invoiceId, InvoiceLineDto line, Guid resolvedId)
+    {
+        entity.Id = resolvedId;
+        entity.InvoiceId = invoiceId;
+        entity.ItemId = line.ItemId;
+        entity.ItemNameOriginal = line.ItemNameOriginal;
+        entity.SpecificationOriginal = line.SpecificationOriginal;
+        entity.Unit = line.Unit;
+        entity.Quantity = line.Quantity;
+        entity.UnitPrice = line.UnitPrice;
+        entity.LineAmount = line.LineAmount == 0 ? line.Quantity * line.UnitPrice : line.LineAmount;
+        entity.Remark = line.Remark;
+        entity.SerialNumber = line.SerialNumber;
+        entity.MaterialNumber = line.MaterialNumber;
+        entity.InstallLocation = line.InstallLocation;
+        entity.RentalStartDate = line.RentalStartDate;
+        entity.RentalEndDate = line.RentalEndDate;
+        entity.ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType);
+        entity.IsDeleted = line.IsDeleted;
+    }
 }
+

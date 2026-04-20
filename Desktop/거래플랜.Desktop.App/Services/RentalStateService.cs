@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using ExcelDataReader;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Shared.Contracts;
 
@@ -40,18 +41,85 @@ public sealed partial class RentalStateService
         ["연수구"] = DomainConstants.OfficeYeonsu,
         ["YEONSU"] = DomainConstants.OfficeYeonsu
     };
+    private static readonly IReadOnlyDictionary<string, string[]> RentalOfficeQueryAliasMap = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+    {
+        [DomainConstants.OfficeUsenet] = [string.Empty, DomainConstants.OfficeUsenet, "UZNET", "유즈넷"],
+        [DomainConstants.OfficeItworld] = [DomainConstants.OfficeItworld, "아이티월드"],
+        [DomainConstants.OfficeYeonsu] = [DomainConstants.OfficeYeonsu, "연수구", "연수구 사무실"]
+    };
+    private static readonly IReadOnlyDictionary<string, string[]> WorkbookCustomerAliasMap = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["[검사소]서인천"] = ["[한국교통안전공단]서인천검사소"],
+        ["[검사소]인천"] = ["[한국교통안전공단]서인천검사소"],
+        ["[검사소]부천"] = ["[한국교통안전공단]부천검사소"],
+        ["[연수구]세무과"] = ["연수구청[세무1과]"],
+        ["[연수구]송도행정과"] = ["연수구청[송도행정과]"],
+        ["[연수구]자치행정과"] = ["연수구청[자치행정과]"],
+        ["[연수구]노인장애인과"] = ["연수구청[노인장애인과]"],
+        ["[연수구]사회보장과"] = ["연수구청[사회보장과]"],
+        ["[연수구]출산보육과"] = ["연수구청[출산보육과]"],
+        ["[연수구]복지정책과"] = ["연수구청[복지정책과]"],
+        ["[연수구]토지정보과"] = ["연수구청[토지정보과]"],
+        ["[연수구]문화관광과"] = ["연수구청[문화관광과]"],
+        ["[연수구]민원여권과"] = ["연수구청[민원여권과]"],
+        ["[연수구]송도도시관리과"] = ["연수구청[송도도시관리과]"],
+        ["[연수구]송도생활지원과"] = ["연수구청[송도생활지원과]"],
+        ["[연수구]송도국제도시도서관"] = ["연수구립도서관[송도국제도시도서관]"],
+        ["[연수구]청학도서관"] = ["연수구립도서관[청학도서관]"],
+        ["[연수구]연수2동행정복지센터"] = ["연수구청[연수2동행정복지센터]"],
+        ["[연수구]여성아동과"] = ["연수구청[여성아동과]"],
+        ["[연수구]주택과"] = ["연수구청[주택과]"],
+        ["[연수구]청소행정과"] = ["연수구청[청소행정과]"],
+        ["[연수구]홍보소통실"] = ["연수구청[홍보소통실]"],
+        ["[보건환경연구원]총무과"] = ["인천보건환경연구원[총무과]"],
+        ["[보건환경연구원]식품분석과"] = ["인천보건환경연구원[식품분석과]"],
+        ["[보건환경연구원]대기평가과"] = ["인천보건환경연구원[대기평가과]"],
+        ["[보건환경연구원]산업환경과"] = ["인천보건환경연구원[산업환경과]"],
+        ["[보건환경연구원]삼산동농산물검사소"] = ["인천보건환경연구원[삼산동농산물검사소]"],
+        ["[보건환경연구원]신종감염병과"] = ["인천보건환경연구원[신종감염병과]"],
+        ["[보건환경연구원]해양조사과"] = ["인천보건환경연구원[해양조사과]"],
+        ["[보건환경연구원]환경조사과"] = ["인천보건환경연구원[환경조사과]"],
+        ["[종합건설본부]토목부"] = ["종합건설본부 토목부[도로건설4팀]"],
+        ["[상수도사업소]중부수도사업소"] = ["상수도사업본부 중부수도사업소"],
+        ["[상수도사업소]수도시설관리소"] = ["상수도사업본부 수도시설관리소", "유즈넷-[상수도]수도시설관리소"],
+        ["[상수도사업소]맑은물연구소"] = ["상수도사업본부 맑은물연구소", "유즈넷-[상수도]맑은물연구소"],
+        ["[미추홀구]시설관리공단-견인차량보관소"] = ["미추홀구 시설관리공단"],
+        ["[미추홀구]시설관리공단-국민체육센터"] = ["미추홀구시설관리공단[국민체육센터]"],
+        ["대한미용사회"] = ["사)대한미용사회 인천미추홀구지회"],
+        ["[경제청]미디어문화과-기자실"] = ["[경제청]미디어문화과"],
+        ["[미추홀구]안전총괄과-CCTV"] = ["[미추홀구]안전총괄과-CCTV관제센터"],
+        ["[연수구]노인복지관"] = ["연수노인복지관", "유즈넷-[연수구]노인복지관"],
+        ["[연수구]보건소-건강증진과"] = ["연수구청[건강증진과]"],
+        ["[연수구]장애인체육회"] = ["인천광역시 연수구장애인체육회"],
+        ["DWL관세사무소"] = ["DWL 관세사무소"],
+        ["나인정보기술"] = ["(주)나인정보기술"],
+        ["㈜대우로지스틱스 인천지사"] = ["(주)대우로지스틱스인천지사"],
+        ["㈜유와이에스오션"] = ["(주)유와이에스오션"],
+        ["㈜코세스"] = ["(주)코세스"],
+        ["명성다이케스팅"] = ["명성다이캐스팅"],
+        ["[보건환경연구원]기후대기과"] = ["인천보건환경연구원[기후대기과]"],
+        ["[보건환경연구원]약품분석과"] = ["인천보건환경연구원[약품분석과]"],
+        ["[보건환경연구원]질병조사과"] = ["인천보건환경연구원[질병조사과]"]
+    };
     private readonly LocalDbContext _db;
     private readonly LocalStateService? _local;
+    private readonly IServiceProvider? _serviceProvider;
 
     public RentalStateService(LocalDbContext db)
-        : this(db, null)
+        : this(db, null, null)
     {
     }
 
     public RentalStateService(LocalDbContext db, LocalStateService? local)
+        : this(db, local, null)
+    {
+    }
+
+    public RentalStateService(LocalDbContext db, LocalStateService? local, IServiceProvider? serviceProvider)
     {
         _db = db;
         _local = local;
+        _serviceProvider = serviceProvider;
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
     }
 
@@ -171,11 +239,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
     public async Task ClearOnboardingDraftAsync(SessionState session, CancellationToken ct = default)
         => await RemoveSettingAsync(BuildDraftSettingKey(OnboardingDraftSettingPrefix, session), ct);
 
+    private async Task EnsureAdministrativeBusinessCachesAsync(SessionState session, CancellationToken ct)
+    {
+        if (!CanAdministrativelyViewAllRental(session) || _serviceProvider is null)
+            return;
+
+        var syncService = _serviceProvider.GetService<SyncService>();
+        if (syncService is null)
+            return;
+
+        await syncService.EnsureAdministrativeBusinessCachesAsync(ct);
+    }
+
     public async Task<RentalDashboardSummary> GetDashboardSummaryAsync(
         SessionState session,
         DateOnly referenceDate,
         CancellationToken ct = default)
     {
+        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+
         var alertDays = await GetAlertDayValuesAsync(ct);
         var alertWindow = alertDays.Count == 0 ? 7 : alertDays.Max();
 
@@ -187,10 +269,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Where(asset => asset.AssetStatus != "폐기")
             .ToListAsync(ct);
         var customerQuery = _db.Customers.AsNoTracking().Where(customer => !customer.IsDeleted);
-        if (!CanViewAllRental(session))
+        var currentTenantCode = ResolveCurrentRentalTenantCode(session);
+        if (CanAdministrativelyViewAllRental(session))
+        {
+            // 전체 범위 admin만 로컬 캐시에 남아 있는 타 tenant 데이터까지 조회할 수 있다.
+        }
+        else if (CanViewAllRental(session))
+        {
+            customerQuery = customerQuery.Where(customer => customer.TenantCode == currentTenantCode);
+        }
+        else
         {
             var readableOfficeCodes = GetReadableOfficeCodes(session);
-            customerQuery = customerQuery.Where(customer => readableOfficeCodes.Contains(customer.ResponsibleOfficeCode));
+            customerQuery = customerQuery.Where(customer =>
+                customer.TenantCode == currentTenantCode &&
+                readableOfficeCodes.Contains(customer.ResponsibleOfficeCode));
         }
 
         var customers = await customerQuery.ToListAsync(ct);
@@ -467,6 +560,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SessionState session,
         CancellationToken ct = default)
     {
+        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+
         var offices = await GetOfficeMapAsync(ct);
         var includeUnlinkedAssets = !filter.DueOnly && ShouldIncludeUnlinkedBillingAssets(filter.Status);
         var billingAssets = await ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
@@ -575,6 +670,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 SelectionId = profile.Id,
                 HasPersistedProfile = true,
                 Source = profile,
+                GroupedSourceCount = 1,
+                GroupedPersistedProfileCount = 1,
+                GroupedUnlinkedAssetCount = 0,
+                GroupedSelectionIds = new List<Guid> { profile.Id },
+                GroupedPersistedProfileIds = new List<Guid> { profile.Id },
                 CustomerDisplayName = customerDisplayName,
                 BillingCycleDisplay = profile.BillingCycleMonths > 0 ? $"{profile.BillingCycleMonths}개월" : string.Empty,
                 ResponsibleOfficeName = ResolveOfficeDisplayName(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode, offices),
@@ -632,6 +732,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 offices,
                 filter.ReferenceDate)));
         }
+
+        rows = GroupBillingRowsByCustomer(rows);
 
         if (filter.DueOnly)
         {
@@ -764,6 +866,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             SelectionId = asset.Id,
             HasPersistedProfile = false,
             Source = syntheticProfile,
+            GroupedSourceCount = 1,
+            GroupedPersistedProfileCount = 0,
+            GroupedUnlinkedAssetCount = 1,
+            GroupedSelectionIds = asset.Id == Guid.Empty ? new List<Guid>() : new List<Guid> { asset.Id },
+            GroupedPersistedProfileIds = new List<Guid>(),
             CustomerDisplayName = customerDisplayName,
             BillingCycleDisplay = syntheticProfile.BillingCycleMonths > 0 ? $"{syntheticProfile.BillingCycleMonths}개월" : string.Empty,
             ResponsibleOfficeName = ResolveOfficeDisplayName(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, offices),
@@ -798,6 +905,286 @@ WHERE ""AssignedUsername"" <> '';", ct);
             DataIssueSummary = dataIssues.Count == 0 ? string.Empty : string.Join(" / ", dataIssues)
         };
     }
+
+    private List<RentalBillingViewRow> GroupBillingRowsByCustomer(IReadOnlyList<RentalBillingViewRow> rows)
+    {
+        if (rows.Count <= 1)
+            return rows.ToList();
+
+        var groupedRows = new List<RentalBillingViewRow>(rows.Count);
+        foreach (var group in rows.GroupBy(BuildBillingCustomerGroupKey))
+        {
+            var orderedRows = group
+                .OrderByDescending(row => row.HasPersistedProfile)
+                .ThenBy(row => row.SelectionId)
+                .ToList();
+
+            if (orderedRows.Count <= 1 || orderedRows.All(row => !row.HasPersistedProfile))
+            {
+                groupedRows.AddRange(orderedRows);
+                continue;
+            }
+
+            groupedRows.Add(CreateGroupedBillingViewRow(orderedRows));
+        }
+
+        return groupedRows;
+    }
+
+    private string BuildBillingCustomerGroupKey(RentalBillingViewRow row)
+    {
+        var officeCode = NormalizeOfficeCode(row.Source.ResponsibleOfficeCode, row.Source.ManagementCompanyCode);
+        if (string.IsNullOrWhiteSpace(officeCode))
+            officeCode = DomainConstants.OfficeUsenet;
+
+        string customerKey;
+        if (row.Source.CustomerId.HasValue && row.Source.CustomerId.Value != Guid.Empty)
+        {
+            customerKey = $"ID:{row.Source.CustomerId.Value:D}";
+        }
+        else
+        {
+            var businessNumber = NormalizeDigitsOnly(row.Source.BusinessNumber);
+            if (!string.IsNullOrWhiteSpace(businessNumber))
+            {
+                customerKey = $"BIZ:{businessNumber}";
+            }
+            else
+            {
+                var displayName = RentalCatalogValueNormalizer.NormalizeLooseKey(
+                    string.IsNullOrWhiteSpace(row.CustomerDisplayName)
+                        ? row.Source.CustomerName
+                        : row.CustomerDisplayName);
+                customerKey = string.IsNullOrWhiteSpace(displayName)
+                    ? $"ROW:{row.SelectionId:D}"
+                    : $"NAME:{displayName}";
+            }
+        }
+
+        return $"{NormalizeProfileKeyPart(officeCode)}|{customerKey}";
+    }
+
+    private RentalBillingViewRow CreateGroupedBillingViewRow(IReadOnlyList<RentalBillingViewRow> rows)
+    {
+        var representative = rows
+            .OrderByDescending(row => row.HasPersistedProfile)
+            .ThenBy(row => row.SelectionId)
+            .First();
+        var distinctCycles = rows
+            .Select(row => row.BillingCycleDisplay?.Trim() ?? string.Empty)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var distinctBillingTypes = rows
+            .Select(row => row.BillingType?.Trim() ?? string.Empty)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var distinctAdvanceModes = rows
+            .Select(row => row.BillingAdvanceMode?.Trim() ?? string.Empty)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var distinctRunStatuses = rows
+            .Select(row => row.CurrentBillingRunStatus?.Trim() ?? string.Empty)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var distinctPeriodLabels = rows
+            .Select(row => row.CurrentBillingPeriodLabel?.Trim() ?? string.Empty)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var distinctSettlementStatuses = rows
+            .Select(row => row.SettlementStatus?.Trim() ?? string.Empty)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var distinctDisplayStatuses = rows
+            .Select(row => row.DisplayStatus?.Trim() ?? string.Empty)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var groupedSelectionIds = rows
+            .SelectMany(row => row.GroupedSelectionIds.Count == 0
+                ? (IEnumerable<Guid>)new[] { row.SelectionId }
+                : row.GroupedSelectionIds)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        var groupedPersistedProfileIds = rows
+            .SelectMany(row => row.GroupedPersistedProfileIds)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        var groupedPersistedProfileCount = groupedPersistedProfileIds.Count;
+        var groupedUnlinkedAssetCount = rows.Sum(row => row.GroupedUnlinkedAssetCount);
+        var groupedSourceCount = rows.Sum(row => Math.Max(1, row.GroupedSourceCount));
+        var installLocationDisplay = BuildGroupedInstallLocationDisplay(rows);
+        var nextBillingDate = rows
+            .Where(row => row.NextBillingDate.HasValue)
+            .Select(row => (DateOnly?)row.NextBillingDate!.Value)
+            .OrderBy(date => date)
+            .FirstOrDefault();
+        var documentIssueDate = rows
+            .Where(row => row.DocumentIssueDate.HasValue)
+            .Select(row => (DateOnly?)row.DocumentIssueDate!.Value)
+            .OrderBy(date => date)
+            .FirstOrDefault();
+        var alertDate = rows
+            .Where(row => row.AlertDate.HasValue)
+            .Select(row => (DateOnly?)row.AlertDate!.Value)
+            .OrderBy(date => date)
+            .FirstOrDefault();
+        var lastSettledDate = rows
+            .Where(row => row.LastSettledDate.HasValue)
+            .Select(row => (DateOnly?)row.LastSettledDate!.Value)
+            .OrderByDescending(date => date)
+            .FirstOrDefault();
+        var daysRemaining = rows
+            .Where(row => row.DaysRemaining.HasValue)
+            .Select(row => (int?)row.DaysRemaining!.Value)
+            .OrderBy(value => value)
+            .FirstOrDefault();
+        var aggregateSummary = BuildGroupedBillingAggregateSummary(groupedPersistedProfileCount, groupedUnlinkedAssetCount);
+        var dataIssues = rows
+            .SelectMany(ExtractBillingDataIssueTokens)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (groupedPersistedProfileCount > 1)
+            dataIssues.Add($"청구프로필 {groupedPersistedProfileCount:N0}건 묶음 표시");
+        if (groupedUnlinkedAssetCount > 0)
+            dataIssues.Add($"미연결 자산 {groupedUnlinkedAssetCount:N0}건 포함");
+        if (distinctCycles.Count > 1)
+            dataIssues.Add("청구주기 상이");
+        dataIssues = dataIssues
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        return new RentalBillingViewRow
+        {
+            SelectionId = representative.SelectionId,
+            HasPersistedProfile = groupedPersistedProfileCount > 0,
+            Source = representative.Source,
+            GroupedSourceCount = groupedSourceCount,
+            GroupedPersistedProfileCount = groupedPersistedProfileCount,
+            GroupedUnlinkedAssetCount = groupedUnlinkedAssetCount,
+            GroupedSelectionIds = groupedSelectionIds,
+            GroupedPersistedProfileIds = groupedPersistedProfileIds,
+            AggregateSummary = aggregateSummary,
+            CustomerDisplayName = representative.CustomerDisplayName,
+            BillingCycleDisplay = distinctCycles.Count <= 1 ? distinctCycles.FirstOrDefault() ?? string.Empty : $"다중({distinctCycles.Count:N0})",
+            ResponsibleOfficeName = representative.ResponsibleOfficeName,
+            NextBillingDate = nextBillingDate,
+            DaysRemaining = daysRemaining,
+            DisplayStatus = BuildGroupedBillingDisplayStatus(distinctDisplayStatuses, groupedPersistedProfileCount, groupedUnlinkedAssetCount),
+            SettlementStatus = BuildGroupedSettlementStatus(distinctSettlementStatuses, groupedPersistedProfileCount, groupedUnlinkedAssetCount),
+            CompletionStatus = rows.All(row => string.Equals(row.CompletionStatus, PaymentFlowConstants.CompletionDone, StringComparison.OrdinalIgnoreCase))
+                ? PaymentFlowConstants.CompletionDone
+                : PaymentFlowConstants.CompletionPending,
+            SettledAmount = rows.Sum(row => row.SettledAmount),
+            OutstandingAmount = rows.Sum(row => row.OutstandingAmount),
+            RequiresFollowUp = rows.Any(row => row.RequiresFollowUp),
+            LastSettledDate = lastSettledDate,
+            AssetCount = rows.Sum(row => row.AssetCount),
+            TemplateItemCount = rows.Sum(row => row.TemplateItemCount),
+            IncludedAssetCount = rows.Sum(row => row.IncludedAssetCount),
+            BillingType = distinctBillingTypes.Count <= 1 ? distinctBillingTypes.FirstOrDefault() ?? representative.BillingType : "혼합",
+            InstallSiteName = representative.InstallSiteName,
+            InstallLocationDisplay = installLocationDisplay,
+            BillingAdvanceMode = distinctAdvanceModes.Count <= 1 ? distinctAdvanceModes.FirstOrDefault() ?? representative.BillingAdvanceMode : "복합",
+            BillingDayMode = representative.BillingDayMode,
+            BillingAnchorMonth = representative.BillingAnchorMonth,
+            DocumentIssueMode = representative.DocumentIssueMode,
+            DocumentLeadDays = representative.DocumentLeadDays,
+            DocumentIssueDate = documentIssueDate,
+            AlertDate = alertDate,
+            AlertReason = groupedPersistedProfileCount > 1
+                ? "복수 청구 프로필 묶음"
+                : groupedUnlinkedAssetCount > 0
+                    ? "미연결 자산 포함"
+                    : representative.AlertReason,
+            CurrentBillingRunId = groupedPersistedProfileCount == 1 && groupedUnlinkedAssetCount == 0 ? representative.CurrentBillingRunId : null,
+            CurrentBillingPeriodLabel = distinctPeriodLabels.Count <= 1
+                ? distinctPeriodLabels.FirstOrDefault() ?? string.Empty
+                : "복수 프로필",
+            CurrentBillingRunStatus = distinctRunStatuses.Count <= 1
+                ? distinctRunStatuses.FirstOrDefault() ?? representative.CurrentBillingRunStatus
+                : "요약",
+            CurrentBilledAmount = rows.Sum(row => row.CurrentBilledAmount),
+            HasDataIssue = rows.Any(row => row.HasDataIssue) || groupedSourceCount > 1,
+            DataIssueSummary = dataIssues.Count == 0 ? aggregateSummary : string.Join(" / ", dataIssues)
+        };
+    }
+
+    private static string BuildGroupedInstallLocationDisplay(IReadOnlyList<RentalBillingViewRow> rows)
+    {
+        var locations = rows
+            .Select(row => string.IsNullOrWhiteSpace(row.InstallLocationDisplay) ? row.InstallSiteName : row.InstallLocationDisplay)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        if (locations.Count == 0)
+            return string.Empty;
+        if (locations.Count == 1)
+            return locations[0];
+
+        return $"{locations[0]} 외 {locations.Count - 1}곳";
+    }
+
+    private static string BuildGroupedBillingAggregateSummary(int groupedPersistedProfileCount, int groupedUnlinkedAssetCount)
+    {
+        var parts = new List<string>();
+        if (groupedPersistedProfileCount > 0)
+            parts.Add($"청구프로필 {groupedPersistedProfileCount:N0}건");
+        if (groupedUnlinkedAssetCount > 0)
+            parts.Add($"미연결 자산 {groupedUnlinkedAssetCount:N0}건");
+
+        return parts.Count == 0 ? string.Empty : string.Join(" + ", parts);
+    }
+
+    private static IEnumerable<string> ExtractBillingDataIssueTokens(RentalBillingViewRow row)
+        => string.IsNullOrWhiteSpace(row.DataIssueSummary)
+            ? Array.Empty<string>()
+            : row.DataIssueSummary
+                .Split('/', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Select(value => value.Trim());
+
+    private static string BuildGroupedBillingDisplayStatus(
+        IReadOnlyCollection<string> distinctDisplayStatuses,
+        int groupedPersistedProfileCount,
+        int groupedUnlinkedAssetCount)
+    {
+        if (groupedUnlinkedAssetCount > 0 && groupedPersistedProfileCount > 0)
+            return "미연결 포함";
+        if (distinctDisplayStatuses.Count == 1)
+            return distinctDisplayStatuses.First();
+        if (distinctDisplayStatuses.Contains("미수", StringComparer.CurrentCultureIgnoreCase))
+            return "미수";
+        if (distinctDisplayStatuses.Contains("청구중", StringComparer.CurrentCultureIgnoreCase))
+            return "청구중";
+        return "복합";
+    }
+
+    private static string BuildGroupedSettlementStatus(
+        IReadOnlyCollection<string> distinctSettlementStatuses,
+        int groupedPersistedProfileCount,
+        int groupedUnlinkedAssetCount)
+    {
+        if (groupedUnlinkedAssetCount > 0 && groupedPersistedProfileCount > 0)
+            return "혼합";
+        if (distinctSettlementStatuses.Count == 1)
+            return distinctSettlementStatuses.First();
+        return "다중";
+    }
+
+    private static string NormalizeDigitsOnly(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : new string(value.Where(char.IsDigit).ToArray());
 
     private static string ResolveBillingProfileCustomerDisplayName(
         LocalRentalBillingProfile profile,
@@ -841,9 +1228,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SessionState session,
         CancellationToken ct = default)
     {
+        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+
         var offices = await GetOfficeMapAsync(ct);
         var referenceDate = DateOnly.FromDateTime(DateTime.Today);
-        var query = ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session);
+        var query = ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session);
 
         if (!string.IsNullOrWhiteSpace(filter.SearchText))
         {
@@ -915,7 +1304,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         ArgumentNullException.ThrowIfNull(anchorAsset);
 
-        var query = ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session);
+        var query = ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session);
         var officeCode = NormalizeOfficeCode(anchorAsset.ResponsibleOfficeCode, anchorAsset.ManagementCompanyCode);
         if (!string.IsNullOrWhiteSpace(officeCode))
         {
@@ -1136,22 +1525,19 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Denied("같은 청구 프로필이 이미 존재합니다.");
 
         var now = DateTime.UtcNow;
+        if (!LocalEntityConcurrencyGuard.TryPrepareForSave(profile, existing, "렌탈 청구", now, out var conflictMessage))
+            return LocalMutationResult.Conflict(conflictMessage);
+
         if (existing is null)
         {
             var deterministicProfileId = SyncIdentityGenerator.CreateRentalBillingProfileId(profile.ProfileKey);
             profile.Id = profile.Id == Guid.Empty
                 ? (deterministicProfileId == Guid.Empty ? Guid.NewGuid() : deterministicProfileId)
                 : profile.Id;
-            profile.CreatedAtUtc = now;
-            profile.UpdatedAtUtc = now;
-            profile.IsDirty = true;
             _db.RentalBillingProfiles.Add(profile);
         }
         else
         {
-            profile.CreatedAtUtc = existing.CreatedAtUtc;
-            profile.UpdatedAtUtc = now;
-            profile.IsDirty = true;
             _db.Entry(existing).CurrentValues.SetValues(profile);
         }
 
@@ -1160,7 +1546,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return LocalMutationResult.Ok(profile.Id, "렌탈 청구 프로필을 저장했습니다.");
     }
 
-    public async Task<LocalMutationResult> DeleteBillingProfileAsync(Guid profileId, SessionState session, CancellationToken ct = default)
+    public async Task<LocalMutationResult> DeleteBillingProfileAsync(
+        Guid profileId,
+        SessionState session,
+        long? expectedRevision = null,
+        CancellationToken ct = default)
     {
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == profileId, ct);
@@ -1173,6 +1563,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 삭제할 수 없습니다.");
 
+        if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
+            return LocalMutationResult.Conflict(conflictMessage);
+
         profile.IsDeleted = true;
         profile.IsDirty = true;
         profile.UpdatedAtUtc = DateTime.UtcNow;
@@ -1184,7 +1577,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         Guid billingProfileId,
         DateOnly referenceDate,
         SessionState session,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        long? expectedRevision = null)
     {
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
@@ -1196,6 +1590,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     : profile.ResponsibleOfficeCode,
                 session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 시작할 수 없습니다.");
+        if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
+            return LocalMutationResult.Conflict(conflictMessage);
         if (_local is null)
             return LocalMutationResult.Denied("렌탈 청구 전표 저장 서비스를 사용할 수 없습니다.");
         NormalizeBillingSchedule(profile, referenceDate);
@@ -1287,7 +1683,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         Guid billingProfileId,
         string note,
         SessionState session,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        long? expectedRevision = null)
     {
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
@@ -1299,6 +1696,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     : profile.ResponsibleOfficeCode,
                 session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 보류할 수 없습니다.");
+        if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
+            return LocalMutationResult.Conflict(conflictMessage);
 
         profile.BillingStatus = PaymentFlowConstants.BillingStatusOnHold;
         profile.CompletionStatus = PaymentFlowConstants.CompletionPending;
@@ -1323,7 +1722,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         decimal? settledAmount,
         string note,
         SessionState session,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        long? expectedRevision = null)
     {
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
@@ -1335,6 +1735,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     : profile.ResponsibleOfficeCode,
                 session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구의 수금을 등록할 수 없습니다.");
+        if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
+            return LocalMutationResult.Conflict(conflictMessage);
 
         NormalizeBillingSchedule(profile, referenceDate);
         var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
@@ -1424,6 +1826,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SessionState session,
         CancellationToken ct = default)
     {
+        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+
         var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, session.OfficeCode);
         var resolvedCustomerId = customerId;
         if ((!resolvedCustomerId.HasValue || resolvedCustomerId.Value == Guid.Empty) &&
@@ -1493,6 +1897,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SessionState session,
         CancellationToken ct = default)
     {
+        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+
         var assetIds = (includedAssetIds ?? Enumerable.Empty<Guid>())
             .Where(id => id != Guid.Empty)
             .Distinct()
@@ -1529,6 +1935,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SessionState session,
         CancellationToken ct = default)
     {
+        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+
         var resolvedCustomerId = customerId;
         if ((!resolvedCustomerId.HasValue || resolvedCustomerId.Value == Guid.Empty) &&
             !string.IsNullOrWhiteSpace(customerName))
@@ -1598,7 +2006,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
     public async Task<LocalMutationResult> SaveAssetAsync(
         LocalRentalAsset asset,
         SessionState session,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool allowWorkbookNameVariants = true,
+        bool allowCategoryRecovery = false)
     {
         if (asset is null)
             throw new ArgumentNullException(nameof(asset));
@@ -1625,16 +2035,23 @@ WHERE ""AssignedUsername"" <> '';", ct);
             asset.ResponsibleOfficeCode = officeCode;
             if (!CanEditAssetScope(officeCode, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 저장할 수 없습니다.");
-            asset.ManagementNumber = existing is null
-                ? string.Empty
-                : (asset.ManagementNumber ?? existing.ManagementNumber ?? string.Empty).Trim();
-            asset.ManagementId = existing is null
-                ? string.Empty
-                : (asset.ManagementId ?? existing.ManagementId ?? string.Empty).Trim();
+            asset.ManagementNumber = string.IsNullOrWhiteSpace(asset.ManagementNumber)
+                ? (existing?.ManagementNumber ?? string.Empty).Trim()
+                : asset.ManagementNumber.Trim();
+            asset.ManagementId = string.IsNullOrWhiteSpace(asset.ManagementId)
+                ? (existing?.ManagementId ?? string.Empty).Trim()
+                : asset.ManagementId.Trim();
             asset.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CustomerName);
             asset.CurrentCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName);
             asset.CurrentLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CurrentLocation);
-            asset.InstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation);
+            asset.InstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
+                asset.InstallSiteName,
+                asset.CurrentCustomerName,
+                asset.CustomerName,
+                existing?.InstallSiteName,
+                existing?.CurrentCustomerName,
+                existing?.CustomerName,
+                asset.InstallLocation));
             asset.ItemCategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(asset.ItemCategoryName);
             asset.Manufacturer = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.Manufacturer);
             asset.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName);
@@ -1655,7 +2072,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 ct);
             try
             {
-                await EnrichAssetReferencesAsync(asset, ct);
+                await EnrichAssetReferencesAsync(
+                    asset,
+                    ct,
+                    allowCategoryRecovery: allowCategoryRecovery,
+                    allowWorkbookNameVariants: allowWorkbookNameVariants);
             }
             catch (InvalidOperationException ex)
             {
@@ -1701,19 +2122,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 return LocalMutationResult.Denied("같은 렌탈 자산이 이미 존재합니다.");
 
             var now = DateTime.UtcNow;
+            if (!LocalEntityConcurrencyGuard.TryPrepareForSave(asset, existing, "렌탈 자산", now, out var conflictMessage))
+                return LocalMutationResult.Conflict(conflictMessage);
+
             if (existing is null)
             {
                 asset.Id = asset.Id == Guid.Empty ? Guid.NewGuid() : asset.Id;
-                asset.CreatedAtUtc = now;
-                asset.UpdatedAtUtc = now;
-                asset.IsDirty = true;
                 _db.RentalAssets.Add(asset);
             }
             else
             {
-                asset.CreatedAtUtc = existing.CreatedAtUtc;
-                asset.UpdatedAtUtc = now;
-                asset.IsDirty = true;
                 _db.Entry(existing).CurrentValues.SetValues(asset);
             }
 
@@ -1726,14 +2144,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
     }
 
-    public async Task<LocalMutationResult> DeleteAssetAsync(Guid assetId, SessionState session, CancellationToken ct = default)
+    public async Task<LocalMutationResult> DeleteAssetAsync(
+        Guid assetId,
+        SessionState session,
+        long? expectedRevision = null,
+        CancellationToken ct = default)
     {
         var asset = await _db.RentalAssets.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == assetId, ct);
         if (asset is null)
             return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
-            if (!CanEditAssetScope(asset.ResponsibleOfficeCode, session))
-                return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 삭제할 수 없습니다.");
+        if (!CanEditAssetScope(asset.ResponsibleOfficeCode, session))
+            return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 삭제할 수 없습니다.");
+
+        if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(asset, expectedRevision, "렌탈 자산", out var conflictMessage))
+            return LocalMutationResult.Conflict(conflictMessage);
 
         asset.IsDeleted = true;
         asset.IsDirty = true;
@@ -1843,7 +2268,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         string status,
         string note,
         SessionState session,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        long? expectedRevision = null)
     {
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
@@ -1855,6 +2281,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     : profile.ResponsibleOfficeCode,
                 session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 처리할 수 없습니다.");
+        if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
+            return LocalMutationResult.Conflict(conflictMessage);
 
         NormalizeBillingSchedule(profile, referenceDate);
         if (!IsBillingMonth(profile, referenceDate))
@@ -2166,9 +2594,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     ManagementId = existing?.ManagementId ?? string.Empty,
                     ManagementNumber = existing?.ManagementNumber ?? string.Empty,
                     CreatedAtUtc = existing?.CreatedAtUtc ?? DateTime.UtcNow,
-                    Notes = BuildImportedAssetNotes(existing?.Notes, sourceManagementId, sourceManagementNumber)
+                    Notes = BuildImportedAssetNotes(existing?.Notes, sourceManagementId, sourceManagementNumber, row, headerMap)
                 };
 
+                asset.ManagementNumber = !string.IsNullOrWhiteSpace(sourceManagementNumber)
+                    ? sourceManagementNumber.Trim()
+                    : (existing?.ManagementNumber ?? string.Empty).Trim();
                 asset.ManagementCompanyCode = officeCode;
                 asset.ResponsibleOfficeCode = officeCode;
                 asset.CurrentLocation = currentLocation;
@@ -2182,6 +2613,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 asset.PurchasePrice = ParseDecimalValue(GetCellValue(row, headerMap, "매입가"));
                 asset.SalePrice = ParseDecimalValue(GetCellValue(row, headerMap, "판매가"));
                 asset.CustomerName = customerName.Trim();
+                asset.CurrentCustomerName = asset.CustomerName;
+                asset.InstallSiteName = asset.CustomerName;
                 asset.InstallLocation = installLocation.Trim();
                 asset.DepositText = GetCellString(row, headerMap, "보증금").Trim();
                 asset.MonthlyFee = ParseDecimalValue(GetCellValue(row, headerMap, "렌탈요금"));
@@ -2193,8 +2626,19 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 asset.FreeSupplyItems = GetCellString(row, headerMap, "무상품목").Trim();
                 asset.PaidSupplyItems = GetCellString(row, headerMap, "유상품목").Trim();
                 asset.AssetStatus = assetStatus;
+                asset.CustomerId = await ResolveCustomerIdAsync(
+                    asset.CustomerName,
+                    null,
+                    ct,
+                    allowWorkbookNameVariants: false,
+                    preferredOfficeCode: officeCode);
 
-                var saveResult = await SaveAssetAsync(asset, session, ct);
+                var saveResult = await SaveAssetAsync(
+                    asset,
+                    session,
+                    ct,
+                    allowWorkbookNameVariants: false,
+                    allowCategoryRecovery: true);
                 if (!saveResult.Success)
                     throw new InvalidOperationException(saveResult.Message);
 
@@ -2263,11 +2707,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 asset.InstallLocation.Contains(keyword));
         }
 
-        var officeCodes = NormalizeFilterValues(filter.OfficeCodes);
+        var officeCodes = NormalizeFilterValues(filter.OfficeCodes)
+            .Select(code => NormalizeOfficeCode(code, code))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Select(code => code.Trim().ToUpperInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         if (officeCodes.Count > 0)
             query = query.Where(asset =>
-                officeCodes.Contains(asset.ResponsibleOfficeCode) ||
-                officeCodes.Contains(asset.ManagementCompanyCode));
+                officeCodes.Contains(
+                    ((asset.ResponsibleOfficeCode ?? string.Empty).Trim() == string.Empty
+                        ? (asset.ManagementCompanyCode ?? string.Empty)
+                        : asset.ResponsibleOfficeCode!)
+                    .Trim()
+                    .ToUpper()));
 
         var itemCategoryNames = NormalizeFilterValues(filter.ItemCategoryNames);
         if (itemCategoryNames.Count > 0)
@@ -2291,43 +2744,61 @@ WHERE ""AssignedUsername"" <> '';", ct);
         IQueryable<LocalRentalBillingProfile> query,
         SessionState session)
     {
-        if (CanViewAllRental(session))
+        if (CanAdministrativelyViewAllRental(session))
             return query;
 
-        if (CanViewTenantRental(session))
-        {
-            var readableOfficeCodes = GetReadableOfficeCodes(session);
-            return query.Where(profile => readableOfficeCodes.Contains(profile.ResponsibleOfficeCode));
-        }
+        var currentTenantCode = ResolveCurrentRentalTenantCode(session);
+        if (CanViewAllRental(session))
+            return query.Where(profile => profile.TenantCode == currentTenantCode);
 
-        var officeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
+        var readableOfficeAliases = BuildReadableRentalOfficeQueryAliases(session);
         return query.Where(profile =>
-            profile.ResponsibleOfficeCode == officeCode ||
-            profile.ManagementCompanyCode == officeCode);
+            profile.TenantCode == currentTenantCode &&
+            (
+                readableOfficeAliases.Contains(((profile.ResponsibleOfficeCode ?? string.Empty).Trim().ToUpper())) ||
+                readableOfficeAliases.Contains(((profile.ManagementCompanyCode ?? string.Empty).Trim().ToUpper()))
+            ));
     }
 
     private IQueryable<LocalRentalAsset> ApplyAssetScope(
         IQueryable<LocalRentalAsset> query,
         SessionState session)
     {
-        if (CanViewAllAssetScope(session))
+        if (CanAdministrativelyViewAllRental(session))
             return query;
 
-        var officeCode = GetDefaultAssetOfficeCode(session);
+        var currentTenantCode = ResolveCurrentRentalTenantCode(session);
+        if (CanViewAllRental(session))
+            return query.Where(asset => asset.TenantCode == currentTenantCode);
+
+        var readableOfficeAliases = BuildReadableRentalOfficeQueryAliases(session);
         return query.Where(asset =>
-            asset.ResponsibleOfficeCode == officeCode ||
-            asset.ManagementCompanyCode == officeCode);
+            asset.TenantCode == currentTenantCode &&
+            (
+                readableOfficeAliases.Contains(((asset.ResponsibleOfficeCode ?? string.Empty).Trim().ToUpper())) ||
+                readableOfficeAliases.Contains(((asset.ManagementCompanyCode ?? string.Empty).Trim().ToUpper()))
+            ));
+    }
+
+    private IQueryable<LocalRentalAsset> ApplySharedAssetViewScope(
+        IQueryable<LocalRentalAsset> query,
+        SessionState session)
+    {
+        if (CanAdministrativelyViewAllRental(session))
+            return query;
+
+        var readableOfficeAliases = BuildReadableAssetOfficeQueryAliases(session);
+        return query.Where(asset =>
+            readableOfficeAliases.Contains(((asset.ResponsibleOfficeCode ?? string.Empty).Trim().ToUpper())) ||
+            readableOfficeAliases.Contains(((asset.ManagementCompanyCode ?? string.Empty).Trim().ToUpper())));
     }
 
     private bool CanAccessRental(string? officeCode, SessionState session)
     {
-        if (CanEditAllRental(session))
+        if (CanAdministrativelyViewAllRental(session))
             return true;
 
-        if (CanViewTenantRental(session))
-            return GetReadableOfficeCodes(session).Contains(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet));
-
-        return string.Equals(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet), NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet), StringComparison.OrdinalIgnoreCase);
+        return GetReadableRentalOfficeCodes(session).Contains(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet));
     }
 
     private bool CanViewAllRental(SessionState? session)
@@ -2336,6 +2807,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             session.HasGlobalDataScope ||
             session.HasAssignedPermission(AppPermissionNames.RentalViewAll) ||
             session.HasAssignedPermission(AppPermissionNames.RentalEditAll));
+
+    private static bool CanAdministrativelyViewAllRental(SessionState? session)
+        => session is not null &&
+           session.IsLoggedIn &&
+           (session.HasAdministrativePrivileges || session.HasGlobalDataScope);
 
     private static bool CanViewTenantRental(SessionState? session)
         => session is not null &&
@@ -2349,14 +2825,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             session.HasPermission(AppPermissionNames.RentalEditAll));
 
     public bool CanViewAllAssetScope(SessionState? session)
-        => session is not null && session.IsLoggedIn && (
-            session.IsAdmin ||
-            session.HasAssignedPermission(AppPermissionNames.RentalViewAll) ||
-            session.HasAssignedPermission(AppPermissionNames.RentalEditAll));
+        => session is not null && session.IsLoggedIn;
 
     public bool CanManageAllAssetScope(SessionState? session)
         => session is not null && session.IsLoggedIn && (
-            session.IsAdmin ||
+            session.HasAdministrativePrivileges ||
             session.HasPermission(AppPermissionNames.RentalEditAll));
 
     public HashSet<string> GetReadableAssetOfficeCodes(SessionState? session)
@@ -2364,17 +2837,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (session is null || !session.IsLoggedIn)
             return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        if (CanViewAllAssetScope(session))
-        {
-            return OfficeCodeCatalog.All
-                .Select(code => NormalizeOfficeCode(code, DomainConstants.OfficeUsenet))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        }
+        return OfficeCodeCatalog.All
+            .Select(officeCode => NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet))
+            .Where(officeCode => !string.IsNullOrWhiteSpace(officeCode))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
 
-        return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            GetDefaultAssetOfficeCode(session)
-        };
+    public HashSet<string> GetWritableAssetOfficeCodes(SessionState? session)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        return GetWritableRentalOfficeCodes(session);
     }
 
     public string GetDefaultAssetOfficeCode(SessionState session)
@@ -2385,31 +2859,76 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (session is null || !session.IsLoggedIn)
             return false;
 
-        if (CanManageAllAssetScope(session))
+        if (session.HasGlobalDataScope)
             return true;
 
         var normalizedOfficeCode = NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet);
-        var defaultOfficeCode = GetDefaultAssetOfficeCode(session);
-        return string.Equals(normalizedOfficeCode, defaultOfficeCode, StringComparison.OrdinalIgnoreCase);
+        return GetWritableRentalOfficeCodes(session).Contains(normalizedOfficeCode);
     }
 
-    private static HashSet<string> GetReadableOfficeCodes(SessionState session)
+    private List<string> BuildReadableRentalOfficeQueryAliases(SessionState session)
     {
-        if (session.HasGlobalDataScope)
-            return OfficeCodeCatalog.All.ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        if (string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        var aliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var officeCode in GetReadableRentalOfficeCodes(session))
         {
-            return TenantScopeCatalog.GetOfficeCodesForTenant(session.TenantCode)
-                .Select(code => NormalizeOfficeCode(code, DomainConstants.OfficeUsenet))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (RentalOfficeQueryAliasMap.TryGetValue(officeCode, out var officeAliases))
+            {
+                foreach (var alias in officeAliases)
+                    aliases.Add((alias ?? string.Empty).Trim().ToUpperInvariant());
+                continue;
+            }
+
+            aliases.Add((officeCode ?? string.Empty).Trim().ToUpperInvariant());
         }
 
-        return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet)
-        };
+        return aliases.ToList();
     }
+
+    private List<string> BuildReadableAssetOfficeQueryAliases(SessionState session)
+    {
+        var aliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var officeCode in GetReadableAssetOfficeCodes(session))
+        {
+            if (RentalOfficeQueryAliasMap.TryGetValue(officeCode, out var officeAliases))
+            {
+                foreach (var alias in officeAliases)
+                    aliases.Add((alias ?? string.Empty).Trim().ToUpperInvariant());
+                continue;
+            }
+
+            aliases.Add((officeCode ?? string.Empty).Trim().ToUpperInvariant());
+        }
+
+        return aliases.ToList();
+    }
+
+    private HashSet<string> GetReadableRentalOfficeCodes(SessionState session)
+        => TenantScopeCatalog.ResolveScopedOfficeCodes(
+            session.OfficeCode,
+            session.TenantCode,
+            session.ScopeType,
+            hasGlobalScope: CanAdministrativelyViewAllRental(session),
+            hasTenantScope: CanViewAllRental(session));
+
+    private static string ResolveCurrentRentalTenantCode(SessionState session)
+        => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            session.TenantCode,
+            session.OfficeCode);
+
+    private HashSet<string> GetWritableRentalOfficeCodes(SessionState session)
+        => TenantScopeCatalog.ResolveScopedOfficeCodes(
+            session.OfficeCode,
+            session.TenantCode,
+            session.ScopeType,
+            hasGlobalScope: session.HasGlobalDataScope,
+            hasTenantScope: CanEditAllRental(session));
+
+    private static HashSet<string> GetReadableOfficeCodes(SessionState session)
+        => TenantScopeCatalog.ResolveScopedOfficeCodes(
+            session.OfficeCode,
+            session.TenantCode,
+            session.ScopeType,
+            hasGlobalScope: session.HasGlobalDataScope);
 
     private bool CanEditRentalSettings(SessionState? session)
         => session is not null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.RentalSettingsEdit));
@@ -2682,7 +3201,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
     }
 
-    private static string BuildImportedAssetNotes(string? existingNotes, string? sourceManagementId, string? sourceManagementNumber)
+    private static string BuildImportedAssetNotes(
+        string? existingNotes,
+        string? sourceManagementId,
+        string? sourceManagementNumber,
+        DataRow? row,
+        IReadOnlyDictionary<string, int>? headerMap)
     {
         var lines = new List<string>();
         AddDistinctNoteLines(lines, existingNotes);
@@ -2692,7 +3216,34 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!string.IsNullOrWhiteSpace(sourceManagementNumber))
             AddDistinctNoteLine(lines, $"원본 관리번호: {sourceManagementNumber.Trim()}");
 
+        if (row is not null && headerMap is not null)
+        {
+            AppendWorkbookNoteLine(lines, row, headerMap, "K제한", "K제한", "K 제한");
+            AppendWorkbookNoteLine(lines, row, headerMap, "C제한", "C제한", "C 제한");
+            AppendWorkbookNoteLine(lines, row, headerMap, "K추가", "K추가", "K 추가");
+            AppendWorkbookNoteLine(lines, row, headerMap, "C추가", "C추가", "C 추가");
+            AppendWorkbookNoteLine(lines, row, headerMap, "기타사항", "기타사항", "비고");
+            AppendWorkbookNoteLine(lines, row, headerMap, "회수1", "회수1");
+            AppendWorkbookNoteLine(lines, row, headerMap, "렌탈1", "렌탈1");
+            AppendWorkbookNoteLine(lines, row, headerMap, "회수2", "회수2");
+            AppendWorkbookNoteLine(lines, row, headerMap, "렌탈2", "렌탈2");
+            AppendWorkbookNoteLine(lines, row, headerMap, "회수3", "회수3");
+            AppendWorkbookNoteLine(lines, row, headerMap, "렌탈3", "렌탈3");
+        }
+
         return string.Join(Environment.NewLine, lines);
+    }
+
+    private static void AppendWorkbookNoteLine(
+        ICollection<string> lines,
+        DataRow row,
+        IReadOnlyDictionary<string, int> headerMap,
+        string label,
+        params string[] headers)
+    {
+        var value = GetCellString(row, headerMap, headers);
+        if (!string.IsNullOrWhiteSpace(value))
+            AddDistinctNoteLine(lines, $"{label}: {value.Trim()}");
     }
 
     private static void AddDistinctNoteLines(ICollection<string> lines, string? source)
@@ -2721,11 +3272,99 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (string.IsNullOrWhiteSpace(normalizedValue) || string.IsNullOrWhiteSpace(notes))
             return false;
 
-        var expectedLine = $"{label}: {normalizedValue}";
-        return notes
-            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
-            .Select(line => line.Trim())
-            .Any(line => string.Equals(line, expectedLine, StringComparison.OrdinalIgnoreCase));
+        var extractedValue = ExtractImportedSourceValue(notes, label);
+        return string.Equals(extractedValue, normalizedValue, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ExtractImportedSourceValue(string? notes, string label)
+    {
+        if (string.IsNullOrWhiteSpace(notes) || string.IsNullOrWhiteSpace(label))
+            return string.Empty;
+
+        var normalizedNotes = notes
+            .Replace('\r', ' ')
+            .Replace('\n', ' ');
+        var labelIndex = normalizedNotes.IndexOf(label, StringComparison.OrdinalIgnoreCase);
+        if (labelIndex < 0)
+            return string.Empty;
+
+        var colonIndex = normalizedNotes.IndexOf(':', labelIndex);
+        if (colonIndex < 0)
+            return string.Empty;
+
+        var tail = normalizedNotes[(colonIndex + 1)..].Trim();
+        if (string.IsNullOrWhiteSpace(tail))
+            return string.Empty;
+
+        if (label.Contains("관리번호", StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (var token in tail.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (LooksLikeImportedManagementNumber(token))
+                    return token;
+            }
+
+            return string.Empty;
+        }
+
+        if (label.Contains("관리ID", StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (var token in tail.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var normalizedToken = token.Trim();
+                if (normalizedToken.All(char.IsDigit))
+                    return normalizedToken;
+            }
+
+            return string.Empty;
+        }
+
+        return tail.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? string.Empty;
+    }
+
+    private static bool LooksLikeImportedManagementNumber(string token)
+        => !string.IsNullOrWhiteSpace(token) &&
+           token.Length == 8 &&
+           token[4] == '-' &&
+           token[..4].All(char.IsDigit) &&
+           token[5..].All(char.IsDigit);
+
+    private static IEnumerable<string> BuildStrictCustomerNameCandidates(string? customerName)
+    {
+        var normalizedName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerName);
+        if (string.IsNullOrWhiteSpace(normalizedName))
+            yield break;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var candidate in EnumerateStrictCustomerNameCandidates(normalizedName))
+        {
+            var normalizedCandidate = RentalCatalogValueNormalizer.NormalizeDisplayText(candidate);
+            if (!string.IsNullOrWhiteSpace(normalizedCandidate) && seen.Add(normalizedCandidate))
+                yield return normalizedCandidate;
+        }
+    }
+
+    private static IEnumerable<string> EnumerateStrictCustomerNameCandidates(string normalizedName)
+    {
+        yield return normalizedName;
+
+        var normalizedBracketCandidate = normalizedName
+            .Replace('｛', '[')
+            .Replace('｝', ']')
+            .Replace('{', '[')
+            .Replace('}', ']')
+            .Trim();
+        if (!string.Equals(normalizedBracketCandidate, normalizedName, StringComparison.Ordinal))
+            yield return normalizedBracketCandidate;
+
+        if (!WorkbookCustomerAliasMap.TryGetValue(normalizedName, out var aliases))
+            yield break;
+
+        foreach (var alias in aliases)
+        {
+            if (!string.IsNullOrWhiteSpace(alias))
+                yield return alias.Trim();
+        }
     }
 
     private async Task<List<int>> GetAlertDayValuesAsync(CancellationToken ct)
@@ -3724,9 +4363,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 }
 
                 asset.InstallLocation = normalizedAssetInstallLocation;
-                asset.InstallSiteName = string.IsNullOrWhiteSpace(normalizedAssetInstallLocation)
-                    ? normalizedInstallSiteName
-                    : normalizedAssetInstallLocation;
+                asset.InstallSiteName = string.IsNullOrWhiteSpace(normalizedProfileCustomerName)
+                    ? RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
+                        asset.InstallSiteName,
+                        normalizedInstallSiteName,
+                        normalizedAssetInstallLocation))
+                    : normalizedProfileCustomerName;
 
                 if (edit?.MonthlyFee is decimal monthlyFee)
                     asset.MonthlyFee = Math.Max(0m, monthlyFee);
@@ -3958,20 +4600,49 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private static string ResolveDefaultOfficeName(string officeCode)
         => OfficeCodeCatalog.GetOfficeDisplayName(officeCode);
 
-    private async Task<Guid?> ResolveCustomerIdAsync(string? customerName, string? businessNumber, CancellationToken ct)
+    private async Task<Guid?> ResolveCustomerIdAsync(
+        string? customerName,
+        string? businessNumber,
+        CancellationToken ct,
+        bool allowWorkbookNameVariants = true,
+        string? preferredOfficeCode = null)
     {
         var normalizedName = (customerName ?? string.Empty).Trim();
         var normalizedBusinessNumber = (businessNumber ?? string.Empty).Trim();
-        var nameCandidates = BuildWorkbookCustomerNameCandidates(normalizedName).ToList();
+        var normalizedPreferredOfficeCode = ResolveCustomerRentalOfficeCode(preferredOfficeCode);
+        var nameCandidates = (allowWorkbookNameVariants
+                ? BuildWorkbookCustomerNameCandidates(normalizedName)
+                : BuildStrictCustomerNameCandidates(normalizedName))
+            .ToList();
 
         if (!string.IsNullOrWhiteSpace(normalizedBusinessNumber))
         {
             var businessMatches = await _db.Customers.AsNoTracking()
                 .Where(customer => customer.BusinessNumber == normalizedBusinessNumber)
-                .Select(customer => new { customer.Id, customer.NameOriginal, customer.NameMatchKey, customer.UpdatedAtUtc })
+                .Select(customer => new { customer.Id, customer.NameOriginal, customer.NameMatchKey, customer.UpdatedAtUtc, customer.ResponsibleOfficeCode, customer.OfficeCode })
                 .ToListAsync(ct);
-            if (businessMatches.Count == 1)
+            if (businessMatches.Count == 1 &&
+                MatchesPreferredCustomerOffice(
+                    businessMatches[0],
+                    normalizedPreferredOfficeCode,
+                    customer => customer.OfficeCode,
+                    customer => customer.ResponsibleOfficeCode))
+            {
                 return businessMatches[0].Id;
+            }
+
+            if (!string.IsNullOrWhiteSpace(normalizedPreferredOfficeCode) && businessMatches.Count > 1)
+            {
+                var officeBusinessMatches = PreferCustomerMatchesByOffice(
+                    businessMatches,
+                    normalizedPreferredOfficeCode,
+                    customer => customer.OfficeCode,
+                    customer => customer.ResponsibleOfficeCode);
+                if (officeBusinessMatches.Count == 1)
+                    return officeBusinessMatches[0].Id;
+                if (officeBusinessMatches.Count > 1)
+                    businessMatches = officeBusinessMatches;
+            }
 
             if (businessMatches.Count > 1 && nameCandidates.Count > 0)
             {
@@ -4010,12 +4681,36 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var directMatches = await _db.Customers.AsNoTracking()
             .Where(customer => nameCandidates.Contains(customer.NameOriginal))
+            .Select(customer => new { customer.Id, customer.UpdatedAtUtc, customer.ResponsibleOfficeCode, customer.OfficeCode })
             .OrderByDescending(customer => customer.UpdatedAtUtc)
-            .Select(customer => customer.Id)
-            .Distinct()
             .ToListAsync(ct);
-        if (directMatches.Count == 1)
-            return directMatches[0];
+        var directMatchIds = directMatches.Select(customer => customer.Id).Distinct().ToList();
+        if (directMatchIds.Count == 1)
+        {
+            var directMatch = directMatches.FirstOrDefault(customer => customer.Id == directMatchIds[0]);
+            if (directMatch is not null &&
+                MatchesPreferredCustomerOffice(
+                    directMatch,
+                    normalizedPreferredOfficeCode,
+                    customer => customer.OfficeCode,
+                    customer => customer.ResponsibleOfficeCode))
+            {
+                return directMatchIds[0];
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(normalizedPreferredOfficeCode) && directMatches.Count > 1)
+        {
+            var officeDirectMatchIds = PreferCustomerMatchesByOffice(
+                    directMatches,
+                    normalizedPreferredOfficeCode,
+                    customer => customer.OfficeCode,
+                    customer => customer.ResponsibleOfficeCode)
+                .Select(customer => customer.Id)
+                .Distinct()
+                .ToList();
+            if (officeDirectMatchIds.Count == 1)
+                return officeDirectMatchIds[0];
+        }
 
         var normalizedNameKeys = nameCandidates
             .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
@@ -4027,7 +4722,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var keyMatches = await _db.Customers.AsNoTracking()
             .Where(customer => customer.NameMatchKey != string.Empty)
-            .Select(customer => new { customer.Id, customer.NameMatchKey, customer.NameOriginal, customer.UpdatedAtUtc })
+            .Select(customer => new { customer.Id, customer.NameMatchKey, customer.NameOriginal, customer.UpdatedAtUtc, customer.ResponsibleOfficeCode, customer.OfficeCode })
             .ToListAsync(ct);
 
         var normalizedMatches = keyMatches
@@ -4036,6 +4731,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 customer.Id,
                 customer.NameOriginal,
                 customer.UpdatedAtUtc,
+                customer.ResponsibleOfficeCode,
+                customer.OfficeCode,
                 MatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(
                     string.IsNullOrWhiteSpace(customer.NameMatchKey) ? customer.NameOriginal : customer.NameMatchKey)
             })
@@ -4048,9 +4745,80 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Distinct()
             .ToList();
         if (exactMatch.Count == 1)
-            return exactMatch[0];
+        {
+            var exactCustomer = normalizedMatches.FirstOrDefault(customer => customer.Id == exactMatch[0]);
+            if (exactCustomer is not null &&
+                MatchesPreferredCustomerOffice(
+                    exactCustomer,
+                    normalizedPreferredOfficeCode,
+                    customer => customer.OfficeCode,
+                    customer => customer.ResponsibleOfficeCode))
+            {
+                return exactMatch[0];
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(normalizedPreferredOfficeCode) && exactMatch.Count > 1)
+        {
+            var officeExactMatches = PreferCustomerMatchesByOffice(
+                    normalizedMatches
+                        .Where(customer => normalizedNameKeys.Any(key => string.Equals(customer.MatchKey, key, StringComparison.OrdinalIgnoreCase))),
+                    normalizedPreferredOfficeCode,
+                    customer => customer.OfficeCode,
+                    customer => customer.ResponsibleOfficeCode)
+                .Select(customer => customer.Id)
+                .Distinct()
+                .ToList();
+            if (officeExactMatches.Count == 1)
+                return officeExactMatches[0];
+        }
 
         return null;
+    }
+
+    private static List<T> PreferCustomerMatchesByOffice<T>(
+        IEnumerable<T> matches,
+        string? preferredOfficeCode,
+        Func<T, string?> officeCodeSelector,
+        Func<T, string?> responsibleOfficeCodeSelector)
+    {
+        var result = matches.ToList();
+        if (result.Count <= 1 || string.IsNullOrWhiteSpace(preferredOfficeCode))
+            return result;
+
+        var normalizedPreferredOfficeCode = NormalizeOfficeCode(preferredOfficeCode, preferredOfficeCode);
+        var exactOfficeMatches = result
+            .Where(customer => string.Equals(
+                NormalizeOfficeCode(officeCodeSelector(customer), responsibleOfficeCodeSelector(customer)),
+                normalizedPreferredOfficeCode,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (exactOfficeMatches.Count > 0)
+            return exactOfficeMatches;
+
+        var responsibleOfficeMatches = result
+            .Where(customer => string.Equals(
+                ResolveCustomerRentalOfficeCode(responsibleOfficeCodeSelector(customer)),
+                normalizedPreferredOfficeCode,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return responsibleOfficeMatches.Count > 0
+            ? responsibleOfficeMatches
+            : result;
+    }
+
+    private static bool MatchesPreferredCustomerOffice<T>(
+        T customer,
+        string? preferredOfficeCode,
+        Func<T, string?> officeCodeSelector,
+        Func<T, string?> responsibleOfficeCodeSelector)
+    {
+        if (string.IsNullOrWhiteSpace(preferredOfficeCode))
+            return true;
+
+        return string.Equals(
+            NormalizeOfficeCode(officeCodeSelector(customer), responsibleOfficeCodeSelector(customer)),
+            NormalizeOfficeCode(preferredOfficeCode, preferredOfficeCode),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<LocalCustomer?> GetRentalLinkedCustomerAsync(Guid? customerId, CancellationToken ct)
@@ -4069,7 +4837,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         RentalCatalogRepairResult? repairResult = null,
         List<LocalItem>? activeItems = null,
         bool allowCategoryRecovery = false,
-        bool allowDerivedAssetBackfill = true)
+        bool allowDerivedAssetBackfill = true,
+        bool allowWorkbookNameVariants = true)
     {
         asset.ItemCategoryName = await EnsureRentalItemCategoryOptionAsync(asset.ItemCategoryName, repairResult, ct, allowCategoryRecovery);
 
@@ -4082,7 +4851,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         if (customer is null)
-            asset.CustomerId = await ResolveCustomerIdAsync(asset.CustomerName, null, ct);
+            asset.CustomerId = await ResolveCustomerIdAsync(asset.CustomerName, null, ct, allowWorkbookNameVariants);
 
         if (asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
         {

@@ -58,11 +58,15 @@ public static class SupplementDocumentBuilder
         19.4, 19.4, 19.4, 19.4, 19.4, 19.4, 14, 19.4
     ];
 
-    public static FixedDocument BuildEstimateDocument(LocalInvoice invoice, LocalCustomer customer, LocalCompanyProfile company)
+    public static FixedDocument BuildEstimateDocument(
+        LocalInvoice invoice,
+        LocalCustomer customer,
+        LocalCompanyProfile company,
+        InvoicePrintModel? printModel = null)
     {
-        var lines = invoice.Lines.Where(l => !l.IsDeleted).ToList();
+        var lines = ResolveEstimateLines(invoice, printModel);
         if (lines.Count == 0)
-            lines.Add(new LocalInvoiceLine());
+            lines.Add(new EstimatePrintLine());
 
         var pageCount = Math.Max(1, (int)Math.Ceiling(lines.Count / (double)EstimateRowsPerPage));
         var document = new FixedDocument();
@@ -75,7 +79,7 @@ public static class SupplementDocumentBuilder
                 .Take(EstimateRowsPerPage)
                 .ToList();
 
-            var page = BuildEstimatePage(invoice, customer, company, pageLines, pageIndex + 1, pageCount, pageIndex == pageCount - 1);
+            var page = BuildEstimatePage(invoice, customer, company, printModel, pageLines, pageIndex + 1, pageCount, pageIndex == pageCount - 1);
             var pageContent = new PageContent();
             ((IAddChild)pageContent).AddChild(page);
             document.Pages.Add(pageContent);
@@ -88,14 +92,17 @@ public static class SupplementDocumentBuilder
         LocalInvoice invoice,
         LocalCustomer customer,
         LocalCompanyProfile company,
-        IReadOnlyList<LocalInvoiceLine> lines,
+        InvoicePrintModel? printModel,
+        IReadOnlyList<EstimatePrintLine> lines,
         int pageNumber,
         int totalPages,
         bool isFinalPage)
     {
         var grid = CreateSheetGrid(EstimateColUnits, EstimateRowUnits, SheetWidth, EstimateSheetHeight);
-        var (supplyAmount, vatAmount, totalAmount) = ResolveTotals(invoice);
-        var receiver = ResolveReceiver(customer);
+        var (supplyAmount, vatAmount, totalAmount) = ResolveTotals(invoice, printModel);
+        var receiver = ResolveReceiver(customer, printModel);
+        var estimateValidity = printModel?.EstimateValidityText ?? string.Empty;
+        var estimateRemarks = printModel?.EstimateRemarks ?? string.Empty;
         var title = totalPages > 1 ? $"견     적     서 ({pageNumber}/{totalPages})" : "견     적     서";
 
         AddMergedCell(grid, 1, 1, 1, 19, title,
@@ -106,15 +113,15 @@ public static class SupplementDocumentBuilder
         AddLabelCell(grid, 2, 9, 6, 9, "공\n\n급\n\n자", fontSize: 14, background: BandFillBrush);
 
         AddLabelCell(grid, 2, 10, 2, 11, "등록번호");
-        AddMergedCell(grid, 2, 12, 2, 19, SpaceBusinessNumber(company.BusinessNumber), fontSize: 15);
+        AddMergedCell(grid, 2, 12, 2, 19, SpaceBusinessNumber(Safe(printModel?.SupplierBusinessNumber, company.BusinessNumber)), fontSize: 15);
 
         AddLabelCell(grid, 3, 10, 3, 11, "상호명");
-        AddMergedCell(grid, 3, 12, 3, 14, Safe(company.TradeName, "기본 상호"));
+        AddMergedCell(grid, 3, 12, 3, 14, Safe(printModel?.SupplierName, Safe(company.TradeName, "기본 상호")));
         AddLabelCell(grid, 3, 15, 3, 16, "대   표");
-        AddMergedCell(grid, 3, 17, 3, 19, Safe(company.Representative, "대표자"));
+        AddMergedCell(grid, 3, 17, 3, 19, Safe(printModel?.SupplierRepresentative, Safe(company.Representative, "대표자")));
 
         AddLabelCell(grid, 4, 10, 4, 11, "주   소");
-        AddMergedCell(grid, 4, 12, 4, 19, FormatAddressForDocument(company.Address), fontSize: 10.8, padding: new Thickness(6, 3, 6, 3), wrap: true);
+        AddMergedCell(grid, 4, 12, 4, 19, FormatAddressForDocument(Safe(printModel?.SupplierAddress, company.Address)), fontSize: 10.8, padding: new Thickness(6, 3, 6, 3), wrap: true);
 
         AddLabelCell(grid, 5, 10, 5, 11, "업   태");
         AddMergedCell(grid, 5, 12, 5, 14, Safe(company.BusinessType));
@@ -122,17 +129,15 @@ public static class SupplementDocumentBuilder
         AddMergedCell(grid, 5, 17, 5, 19, Safe(company.BusinessItem));
 
         AddLabelCell(grid, 6, 10, 6, 11, "연락처");
-        AddMergedCell(grid, 6, 12, 6, 14, Safe(company.ContactNumber));
+        AddMergedCell(grid, 6, 12, 6, 14, Safe(printModel?.SupplierPhone, company.ContactNumber));
         AddLabelCell(grid, 6, 15, 6, 16, "팩   스");
         AddMergedCell(grid, 6, 17, 6, 19, Safe(customer.FaxNumber));
 
         AddLabelCell(grid, 7, 1, 7, 6, "견적금액 (공급가액+세액)", fontSize: 13);
         AddMergedCell(grid, 7, 7, 7, 19, BuildAmountLabel(totalAmount), fontSize: 13, foreground: TitleBrush);
 
-        AddLabelCell(grid, 9, 1, 9, 3, "견적명");
-        AddMergedCell(grid, 9, 4, 9, 19, Safe(invoice.Memo, "품목 견적"), wrap: true);
-        AddLabelCell(grid, 10, 1, 10, 3, "견적유효기간");
-        AddMergedCell(grid, 10, 4, 10, 19, $"{invoice.InvoiceDate:yyyy-MM-dd} ~ {invoice.InvoiceDate.AddDays(30):yyyy-MM-dd}");
+        AddLabelCell(grid, 9, 1, 9, 3, "견적기간");
+        AddMergedCell(grid, 9, 4, 9, 19, estimateValidity);
 
         AddTableHeaderCell(grid, 12, 1, 12, 1, "NO");
         AddTableHeaderCell(grid, 12, 2, 12, 5, "품명");
@@ -149,8 +154,8 @@ public static class SupplementDocumentBuilder
             var line = i < lines.Count ? lines[i] : null;
 
             AddMergedCell(grid, row, 1, row, 1, line is null ? string.Empty : (((pageNumber - 1) * EstimateRowsPerPage) + i + 1).ToString(CultureInfo.InvariantCulture), align: TextAlignment.Center);
-            AddMergedCell(grid, row, 2, row, 5, line?.ItemNameOriginal ?? string.Empty, fontSize: 10.3, wrap: false, autoShrink: true);
-            AddMergedCell(grid, row, 6, row, 9, line?.SpecificationOriginal ?? string.Empty, fontSize: 10.3, wrap: false, autoShrink: true);
+            AddMergedCell(grid, row, 2, row, 5, line?.ItemName ?? string.Empty, fontSize: 10.3, wrap: false, autoShrink: true);
+            AddMergedCell(grid, row, 6, row, 9, line?.Specification ?? string.Empty, fontSize: 10.3, wrap: false, autoShrink: true);
             AddMergedCell(grid, row, 10, row, 10, line?.Unit ?? string.Empty, align: TextAlignment.Center, wrap: false);
             AddMergedCell(grid, row, 11, row, 11, line is null ? string.Empty : $"{line.Quantity:N0}", align: TextAlignment.Right, wrap: false);
             AddMergedCell(grid, row, 12, row, 13, line is null ? string.Empty : $"{line.UnitPrice:N0}", align: TextAlignment.Right, wrap: false);
@@ -169,7 +174,7 @@ public static class SupplementDocumentBuilder
         AddMergedCell(grid, 27, 17, 27, 19, isFinalPage ? "." : string.Empty);
 
         AddLabelCell(grid, 29, 1, 29, 3, isFinalPage ? "특이사항" : "안내");
-        AddMergedCell(grid, 29, 4, 29, 19, isFinalPage ? string.Empty : "다음 페이지에 견적 내역이 계속됩니다.", wrap: false);
+        AddMergedCell(grid, 29, 4, 29, 19, isFinalPage ? estimateRemarks : "다음 페이지에 견적 내역이 계속됩니다.", wrap: false);
 
         AddStampOverlay(grid, company.StampImage, 3, 18, 4, 19);
         AddSectionRule(grid, 2, true);
@@ -177,7 +182,7 @@ public static class SupplementDocumentBuilder
         AddSectionRule(grid, 12, true);
         AddSectionRule(grid, 29, true);
         AddSectionRule(grid, 35, true);
-        AddFooterRow(grid, 35, company);
+        AddFooterRow(grid, 35, company, includePaymentMethod: false);
         return BuildCenteredSinglePage(grid);
     }
 
@@ -185,11 +190,12 @@ public static class SupplementDocumentBuilder
         LocalInvoice invoice,
         LocalCustomer customer,
         LocalCompanyProfile company,
-        IReadOnlyList<string>? attachmentDisplayNames = null)
+        IReadOnlyList<string>? attachmentDisplayNames = null,
+        InvoicePrintModel? printModel = null)
     {
         var grid = CreateSheetGrid(ClaimColUnits, ClaimRowUnits, SheetWidth, ClaimSheetHeight);
-        var (supplyAmount, vatAmount, totalAmount) = ResolveTotals(invoice);
-        var receiver = ResolveReceiver(customer);
+        var (supplyAmount, vatAmount, totalAmount) = ResolveTotals(invoice, printModel);
+        var receiver = ResolveReceiver(customer, printModel);
         var attachmentText = BuildAttachmentListText(attachmentDisplayNames);
         var attachmentLineCount = attachmentText
             .Split([Environment.NewLine], StringSplitOptions.RemoveEmptyEntries)
@@ -205,15 +211,15 @@ public static class SupplementDocumentBuilder
         AddLabelCell(grid, 2, 9, 6, 9, "공\n\n급\n\n자", fontSize: 14, background: BandFillBrush);
 
         AddLabelCell(grid, 2, 10, 2, 11, "등록번호");
-        AddMergedCell(grid, 2, 12, 2, 19, SpaceBusinessNumber(company.BusinessNumber), fontSize: 15);
+        AddMergedCell(grid, 2, 12, 2, 19, SpaceBusinessNumber(Safe(printModel?.SupplierBusinessNumber, company.BusinessNumber)), fontSize: 15);
 
         AddLabelCell(grid, 3, 10, 3, 11, "상호명");
-        AddMergedCell(grid, 3, 12, 3, 14, Safe(company.TradeName, "기본 상호"));
+        AddMergedCell(grid, 3, 12, 3, 14, Safe(printModel?.SupplierName, Safe(company.TradeName, "기본 상호")));
         AddLabelCell(grid, 3, 15, 3, 16, "대   표");
-        AddMergedCell(grid, 3, 17, 3, 19, Safe(company.Representative, "대표자"));
+        AddMergedCell(grid, 3, 17, 3, 19, Safe(printModel?.SupplierRepresentative, Safe(company.Representative, "대표자")));
 
         AddLabelCell(grid, 4, 10, 4, 11, "주   소");
-        AddMergedCell(grid, 4, 12, 4, 19, FormatAddressForDocument(company.Address), fontSize: 10.8, padding: new Thickness(6, 3, 6, 3), wrap: true);
+        AddMergedCell(grid, 4, 12, 4, 19, FormatAddressForDocument(Safe(printModel?.SupplierAddress, company.Address)), fontSize: 10.8, padding: new Thickness(6, 3, 6, 3), wrap: true);
 
         AddLabelCell(grid, 5, 10, 5, 11, "업   태");
         AddMergedCell(grid, 5, 12, 5, 14, Safe(company.BusinessType));
@@ -221,7 +227,7 @@ public static class SupplementDocumentBuilder
         AddMergedCell(grid, 5, 17, 5, 19, Safe(company.BusinessItem));
 
         AddLabelCell(grid, 6, 10, 6, 11, "연락처");
-        AddMergedCell(grid, 6, 12, 6, 14, Safe(company.ContactNumber));
+        AddMergedCell(grid, 6, 12, 6, 14, Safe(printModel?.SupplierPhone, company.ContactNumber));
         AddLabelCell(grid, 6, 15, 6, 16, "팩   스");
         AddMergedCell(grid, 6, 17, 6, 19, Safe(customer.FaxNumber));
 
@@ -229,7 +235,7 @@ public static class SupplementDocumentBuilder
         AddMergedCell(grid, 7, 7, 7, 19, BuildAmountLabel(totalAmount), fontSize: 13, foreground: TitleBrush);
 
         AddLabelCell(grid, 9, 1, 9, 3, "용역명");
-        AddMergedCell(grid, 9, 4, 9, 19, Safe(invoice.Memo, "납품 대금"), wrap: true);
+        AddMergedCell(grid, 9, 4, 9, 19, Safe(printModel?.Memo, Safe(invoice.Memo, "납품 대금")), wrap: true);
 
         AddMergedCell(grid, 12, 1, 12, 19, "위 금액을 청구하오니 지급하여 주시기 바랍니다.", fontSize: 14);
 
@@ -240,7 +246,7 @@ public static class SupplementDocumentBuilder
         AddTableHeaderCell(grid, 15, 14, 15, 16, "세액");
         AddTableHeaderCell(grid, 15, 17, 15, 19, "합계금액");
 
-        var (bankName, accountNo, depositor) = ParseBankAccount(company);
+        var (bankName, accountNo, depositor) = ParseBankAccount(company, printModel);
         AddMergedCell(grid, 16, 1, 16, 3, bankName);
         AddMergedCell(grid, 16, 4, 16, 7, accountNo);
         AddMergedCell(grid, 16, 8, 16, 10, depositor);
@@ -493,19 +499,25 @@ public static class SupplementDocumentBuilder
         return new Size(A4Width, A4Height);
     }
 
-    private static void AddFooterRow(Grid grid, int row, LocalCompanyProfile company)
+    private static void AddFooterRow(Grid grid, int row, LocalCompanyProfile company, bool includePaymentMethod = true)
     {
         AddLabelCell(grid, row, 1, row, 2, "담당자");
         AddMergedCell(grid, row, 3, row, 5, Safe(company.Representative, "대표자"));
         AddLabelCell(grid, row, 6, row, 7, "연락처");
         AddMergedCell(grid, row, 8, row, 10, Safe(company.ContactNumber));
-        AddLabelCell(grid, row, 11, row, 13, "결재방법");
-        AddMergedCell(grid, row, 14, row, 14, "□", align: TextAlignment.Center);
-        AddMergedCell(grid, row, 15, row, 15, "현금", align: TextAlignment.Center);
-        AddMergedCell(grid, row, 16, row, 16, "□", align: TextAlignment.Center);
-        AddMergedCell(grid, row, 17, row, 17, "카드", align: TextAlignment.Center);
-        AddMergedCell(grid, row, 18, row, 18, "□", align: TextAlignment.Center);
-        AddMergedCell(grid, row, 19, row, 19, "기타", align: TextAlignment.Center);
+        if (includePaymentMethod)
+        {
+            AddLabelCell(grid, row, 11, row, 13, "결재방법");
+            AddMergedCell(grid, row, 14, row, 14, "□", align: TextAlignment.Center);
+            AddMergedCell(grid, row, 15, row, 15, "현금", align: TextAlignment.Center);
+            AddMergedCell(grid, row, 16, row, 16, "□", align: TextAlignment.Center);
+            AddMergedCell(grid, row, 17, row, 17, "카드", align: TextAlignment.Center);
+            AddMergedCell(grid, row, 18, row, 18, "□", align: TextAlignment.Center);
+            AddMergedCell(grid, row, 19, row, 19, "기타", align: TextAlignment.Center);
+            return;
+        }
+
+        AddMergedCell(grid, row, 11, row, 19, string.Empty);
     }
 
     private static void AddLabelCell(
@@ -758,8 +770,25 @@ public static class SupplementDocumentBuilder
         }
     }
 
-    private static (decimal SupplyAmount, decimal VatAmount, decimal TotalAmount) ResolveTotals(LocalInvoice invoice)
+    private static (decimal SupplyAmount, decimal VatAmount, decimal TotalAmount) ResolveTotals(LocalInvoice invoice, InvoicePrintModel? printModel = null)
     {
+        if (printModel is not null)
+        {
+            var modelTotal = printModel.TotalAmount > 0
+                ? printModel.TotalAmount
+                : printModel.Lines.Sum(line => line.Amount);
+            if (modelTotal > 0)
+            {
+                var modelSupply = printModel.SupplyAmount > 0
+                    ? printModel.SupplyAmount
+                    : Math.Round(modelTotal / 1.1m, 0, MidpointRounding.AwayFromZero);
+                var modelVat = printModel.VatAmount > 0
+                    ? printModel.VatAmount
+                    : modelTotal - modelSupply;
+                return (modelSupply, modelVat, modelTotal);
+            }
+        }
+
         var linesTotal = invoice.Lines.Where(l => !l.IsDeleted).Sum(l => l.LineAmount);
         var total = invoice.TotalAmount > 0 ? invoice.TotalAmount : linesTotal;
         if (total <= 0)
@@ -775,13 +804,63 @@ public static class SupplementDocumentBuilder
         return (supply, vat, total);
     }
 
+    private static List<EstimatePrintLine> ResolveEstimateLines(LocalInvoice invoice, InvoicePrintModel? printModel)
+    {
+        if (printModel?.Lines is { Count: > 0 })
+        {
+            return printModel.Lines
+                .OrderBy(line => line.No)
+                .Select(line => new EstimatePrintLine
+                {
+                    No = line.No,
+                    ItemName = line.ItemName ?? string.Empty,
+                    Specification = line.Specification ?? string.Empty,
+                    Unit = line.Unit ?? string.Empty,
+                    Quantity = line.Quantity,
+                    UnitPrice = line.UnitPrice,
+                    LineAmount = line.Amount,
+                    Remark = line.Remark ?? string.Empty
+                })
+                .ToList();
+        }
+
+        return invoice.Lines
+            .Where(l => !l.IsDeleted)
+            .Select((line, index) => new EstimatePrintLine
+            {
+                No = index + 1,
+                ItemName = line.ItemNameOriginal ?? string.Empty,
+                Specification = line.SpecificationOriginal ?? string.Empty,
+                Unit = line.Unit ?? string.Empty,
+                Quantity = line.Quantity,
+                UnitPrice = line.UnitPrice,
+                LineAmount = line.LineAmount,
+                Remark = line.Remark ?? string.Empty
+            })
+            .ToList();
+    }
+
+    private sealed class EstimatePrintLine
+    {
+        public int No { get; init; }
+        public string ItemName { get; init; } = string.Empty;
+        public string Specification { get; init; } = string.Empty;
+        public string Unit { get; init; } = string.Empty;
+        public decimal Quantity { get; init; }
+        public decimal UnitPrice { get; init; }
+        public decimal LineAmount { get; init; }
+        public string Remark { get; init; } = string.Empty;
+    }
+
     private static string BuildAmountLabel(decimal amount)
     {
         return $"일금 {amount:N0} 원정   ( ₩{amount:N0} )";
     }
 
-    private static string ResolveReceiver(LocalCustomer customer)
+    private static string ResolveReceiver(LocalCustomer customer, InvoicePrintModel? printModel = null)
     {
+        if (!string.IsNullOrWhiteSpace(printModel?.BuyerName))
+            return printModel.BuyerName.Trim();
         if (!string.IsNullOrWhiteSpace(customer.Recipient))
             return customer.Recipient.Trim();
         if (!string.IsNullOrWhiteSpace(customer.NameOriginal))
@@ -801,9 +880,11 @@ public static class SupplementDocumentBuilder
         return string.Join(" ", businessNumber.Trim().ToCharArray());
     }
 
-    private static (string BankName, string AccountNo, string Depositor) ParseBankAccount(LocalCompanyProfile company)
+    private static (string BankName, string AccountNo, string Depositor) ParseBankAccount(LocalCompanyProfile company, InvoicePrintModel? printModel = null)
     {
-        var raw = company.BankAccountText ?? string.Empty;
+        var raw = !string.IsNullOrWhiteSpace(printModel?.BankAccountText)
+            ? printModel.BankAccountText
+            : company.BankAccountText ?? string.Empty;
         var bankName = string.Empty;
         var accountNo = string.Empty;
 
@@ -823,9 +904,13 @@ public static class SupplementDocumentBuilder
         if (string.IsNullOrWhiteSpace(accountNo))
             accountNo = "입금은행/계좌번호를 입력하세요";
 
-        var depositor = !string.IsNullOrWhiteSpace(company.Representative)
-            ? company.Representative
-            : company.TradeName;
+        var depositor = !string.IsNullOrWhiteSpace(printModel?.SupplierRepresentative)
+            ? printModel.SupplierRepresentative
+            : !string.IsNullOrWhiteSpace(company.Representative)
+                ? company.Representative
+                : !string.IsNullOrWhiteSpace(printModel?.SupplierName)
+                    ? printModel.SupplierName
+                    : company.TradeName;
         if (string.IsNullOrWhiteSpace(depositor))
             depositor = "대표자";
 

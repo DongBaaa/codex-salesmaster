@@ -1,10 +1,14 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ProjectRoot,
     [string]$SigningConfigPath,
     [string]$Channel = 'stable',
     [switch]$DeployToNas,
     [switch]$NoRestore,
+    [string]$DesktopMinimumSupportedVersion,
+    [string]$AndroidMinimumSupportedVersion,
+    [switch]$MandatoryDesktop,
+    [switch]$MandatoryAndroid,
     [switch]$AllowLegacyLiveMirror,
     [switch]$AllowScheduledApplyTrigger,
     [string]$NasSshHost,
@@ -26,6 +30,7 @@ function Resolve-DotnetCommand {
 
     $candidates = @(
         $env:DOTNET_EXE,
+        'D:\.dotnet-sdk\dotnet.exe',
         'C:\Users\beene\AppData\Local\GeoraePlan.Android\dotnet8\dotnet.exe',
         'C:\Program Files\dotnet\dotnet.exe'
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
@@ -134,7 +139,26 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $updateAssetsScript = Join-Path $ProjectRoot 'tools\release\Publish-GeoraePlanUpdateAssets.ps1'
-& powershell -NoProfile -ExecutionPolicy Bypass -File $updateAssetsScript -ProjectRoot $ProjectRoot -Channel $Channel
+$updateArgs = @(
+    '-NoProfile'
+    '-ExecutionPolicy', 'Bypass'
+    '-File', $updateAssetsScript
+    '-ProjectRoot', $ProjectRoot
+    '-Channel', $Channel
+)
+if (-not [string]::IsNullOrWhiteSpace($DesktopMinimumSupportedVersion)) {
+    $updateArgs += @('-DesktopMinimumSupportedVersion', $DesktopMinimumSupportedVersion)
+}
+if (-not [string]::IsNullOrWhiteSpace($AndroidMinimumSupportedVersion)) {
+    $updateArgs += @('-AndroidMinimumSupportedVersion', $AndroidMinimumSupportedVersion)
+}
+if ($MandatoryDesktop) {
+    $updateArgs += '-MandatoryDesktop'
+}
+if ($MandatoryAndroid) {
+    $updateArgs += '-MandatoryAndroid'
+}
+& powershell @updateArgs
 if ($LASTEXITCODE -ne 0) {
     throw 'update assets publish failed.'
 }

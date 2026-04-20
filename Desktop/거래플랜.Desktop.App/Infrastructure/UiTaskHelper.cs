@@ -29,15 +29,7 @@ internal static class UiTaskHelper
             var task = operation();
             Forget(task, category, operationName, ex =>
             {
-                if (!string.IsNullOrWhiteSpace(userMessage))
-                {
-                    MessageBox.Show(
-                        owner ?? Application.Current?.MainWindow,
-                        $"{userMessage}{Environment.NewLine}{ex.Message}",
-                        "오류",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Error);
-                }
+                ShowUserError(owner, ex, userMessage);
 
                 onError?.Invoke(ex);
             }, () => ActiveOperations.TryRemove(operationKey, out _));
@@ -47,15 +39,7 @@ internal static class UiTaskHelper
             ActiveOperations.TryRemove(operationKey, out _);
             AppLogger.Error(category, $"{operationName} 실패", ex);
 
-            if (!string.IsNullOrWhiteSpace(userMessage))
-            {
-                MessageBox.Show(
-                    owner ?? Application.Current?.MainWindow,
-                    $"{userMessage}{Environment.NewLine}{ex.Message}",
-                    "오류",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error);
-            }
+            ShowUserError(owner, ex, userMessage);
 
             onError?.Invoke(ex);
         }
@@ -119,4 +103,26 @@ internal static class UiTaskHelper
 
     private static string BuildOperationKey(Window? owner, string category, string operationName)
         => $"{owner?.GetHashCode().ToString() ?? "app"}:{category}:{operationName}";
+
+    private static void ShowUserError(Window? owner, Exception exception, string? userMessage)
+    {
+        var isConflict = exception is ExpectedRevisionConflictException;
+        var title = isConflict ? "동시 수정 충돌" : "오류";
+        var icon = isConflict ? MessageBoxImage.Warning : MessageBoxImage.Error;
+        var message = isConflict
+            ? exception.Message
+            : string.IsNullOrWhiteSpace(userMessage)
+                ? exception.Message
+                : $"{userMessage}{Environment.NewLine}{exception.Message}";
+
+        if (string.IsNullOrWhiteSpace(message))
+            return;
+
+        MessageBox.Show(
+            owner ?? Application.Current?.MainWindow,
+            message,
+            title,
+            MessageBoxButton.OK,
+            icon);
+    }
 }

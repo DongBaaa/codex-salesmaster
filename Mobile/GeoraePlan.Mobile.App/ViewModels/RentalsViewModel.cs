@@ -222,6 +222,7 @@ public sealed class RentalsViewModel : ObservableObject
                || Contains(profile.ItemName, q)
                || Contains(profile.BillingStatus, q)
                || Contains(profile.ResponsibleOfficeCode, q)
+               || Contains(profile.OfficeCode, q)
                || Contains(profile.ManagementCompanyCode, q)
                || Contains(ResolveCompanyName(profile.ManagementCompanyCode, companyMap), q);
     }
@@ -242,6 +243,7 @@ public sealed class RentalsViewModel : ObservableObject
                || Contains(asset.CurrentLocation, q)
                || Contains(asset.InstallLocation, q)
                || Contains(asset.ResponsibleOfficeCode, q)
+               || Contains(asset.OfficeCode, q)
                || Contains(asset.ManagementCompanyCode, q)
                || Contains(ResolveCompanyName(asset.ManagementCompanyCode, companyMap), q)
                || (asset.BillingProfileId.HasValue &&
@@ -261,6 +263,7 @@ public sealed class RentalsViewModel : ObservableObject
                || Contains(log.Note, q)
                || Contains(log.ProcessedByUsername, q)
                || Contains(log.ResponsibleOfficeCode, q)
+               || Contains(log.OfficeCode, q)
                || Contains(profile?.ProfileKey, q)
                || Contains(profile?.CustomerName, q);
     }
@@ -312,7 +315,7 @@ public sealed class RentalBillingLogDisplayRow
 
     public string Subtitle => $"{Normalize(ProfileKey, "프로필 미지정")} · {Normalize(Log.Status, "예정")} · {Log.BilledAmount:N0}원";
 
-    public string Meta => $"예정일 {Log.ScheduledDate:yyyy-MM-dd} / 처리일 {FormatDate(Log.ProcessedDate)} / 지점 {Normalize(Log.ResponsibleOfficeCode, "미지정")}";
+    public string Meta => $"예정일 {Log.ScheduledDate:yyyy-MM-dd} / 처리일 {FormatDate(Log.ProcessedDate)} / 지점 {ResolveOffice(Log.ResponsibleOfficeCode, Log.OfficeCode)}";
 
     public string Note => Normalize(Log.Note, "메모 없음");
 
@@ -326,6 +329,11 @@ public sealed class RentalBillingLogDisplayRow
 
     private static string Normalize(string? value, string fallback)
         => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+
+    private static string ResolveOffice(string? responsibleOfficeCode, string? ownerOfficeCode)
+        => !string.IsNullOrWhiteSpace(responsibleOfficeCode)
+            ? responsibleOfficeCode.Trim()
+            : Normalize(ownerOfficeCode, "미지정");
 
     private static string FormatDate(DateOnly? value)
         => value.HasValue ? value.Value.ToString("yyyy-MM-dd") : "미처리";

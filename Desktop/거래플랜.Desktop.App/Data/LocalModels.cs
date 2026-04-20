@@ -94,6 +94,7 @@ public sealed class LocalCustomer : LocalSyncEntity
 {
     public Guid? CustomerMasterId { get; set; }
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = string.Empty;
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
     public Guid? CategoryId { get; set; }
@@ -132,6 +133,8 @@ public sealed class LocalCustomerContract : LocalSyncEntity
     public string UploadedByUsername { get; set; } = string.Empty;
     public DateTime UploadedAtUtc { get; set; } = DateTime.UtcNow;
     public byte[] FileContent { get; set; } = [];
+    public bool HasAttachedPdf => FileSize > 0 && FileContent is { Length: > 0 };
+    public string FileRegistrationStatus => HasAttachedPdf ? "파일등록" : "초안";
 }
 
 public sealed class LocalItem : LocalSyncEntity
@@ -172,6 +175,8 @@ public sealed class LocalItem : LocalSyncEntity
 public sealed class LocalInvoice : LocalSyncEntity
 {
     public Guid CustomerId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = string.Empty;
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
     public VoucherType VoucherType { get; set; }
@@ -461,6 +466,8 @@ public sealed class LocalAuditLog
 public sealed class LocalTransaction : LocalSyncEntity
 {
     public Guid CustomerId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = string.Empty;
     public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUsenet;
     public DateOnly TransactionDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public string TransactionKind { get; set; } = PaymentFlowConstants.TransactionKindReceipt;
@@ -523,6 +530,8 @@ public sealed class LocalRentalManagementCompany : LocalSyncEntity
 
 public sealed class LocalRentalBillingProfile : LocalSyncEntity
 {
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = string.Empty;
     public string ProfileKey { get; set; } = string.Empty;
     public Guid? CustomerId { get; set; }
     public string CustomerName { get; set; } = string.Empty;
@@ -565,6 +574,8 @@ public sealed class LocalRentalBillingProfile : LocalSyncEntity
 
 public sealed class LocalRentalAsset : LocalSyncEntity
 {
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = string.Empty;
     public string AssetKey { get; set; } = string.Empty;
     public Guid? CustomerId { get; set; }
     public Guid? ItemId { get; set; }
@@ -610,6 +621,8 @@ public sealed class LocalRentalAsset : LocalSyncEntity
 public sealed class LocalRentalBillingLog : LocalSyncEntity
 {
     public Guid BillingProfileId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = string.Empty;
     public string BillingYearMonth { get; set; } = string.Empty;
     public DateOnly ScheduledDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public DateOnly? ProcessedDate { get; set; }

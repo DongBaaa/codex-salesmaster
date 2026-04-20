@@ -15,6 +15,12 @@ timestamp() {
   printf '[%s] task start\n' "$(timestamp)"
 
   set +e
+  /bin/bash "$OPS_DIR/ensure-georaeplan-running.sh"
+  ensure_rc=$?
+  set -e
+  printf '[%s] ensure-running exit=%s\n' "$(timestamp)" "$ensure_rc"
+
+  set +e
   /bin/bash "$OPS_DIR/auto-apply-release.sh"
   apply_rc=$?
   set -e
@@ -26,7 +32,10 @@ timestamp() {
   set -e
   printf '[%s] routine-check exit=%s\n' "$(timestamp)" "$routine_rc"
 
-  final_rc=$apply_rc
+  final_rc=$ensure_rc
+  if [[ $final_rc -eq 0 && $apply_rc -ne 0 ]]; then
+    final_rc=$apply_rc
+  fi
   if [[ $final_rc -eq 0 && $routine_rc -ne 0 ]]; then
     final_rc=$routine_rc
   fi

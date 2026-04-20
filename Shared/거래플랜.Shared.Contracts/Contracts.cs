@@ -129,6 +129,7 @@ public sealed class UserAccountDto : SyncEntityDto
 
 public sealed class UpdateUserPermissionsRequest
 {
+    public long ExpectedRevision { get; set; }
     public List<string> Permissions { get; set; } = new();
 }
 
@@ -146,6 +147,7 @@ public sealed class CreateUserRequest
 
 public sealed class UpdateUserRequest
 {
+    public long ExpectedRevision { get; set; }
     public string Username { get; set; } = string.Empty;
     public string Role { get; set; } = string.Empty;
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
@@ -157,6 +159,7 @@ public sealed class UpdateUserRequest
 
 public sealed class UpdateUserPasswordRequest
 {
+    public long ExpectedRevision { get; set; }
     public string Password { get; set; } = string.Empty;
 }
 
@@ -167,6 +170,9 @@ public abstract class SyncEntityDto
     public DateTime CreatedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; }
     public long Revision { get; set; }
+    public long ExpectedRevision { get; set; }
+    public string MutationId { get; set; } = string.Empty;
+    public DateTime? MutationCreatedAtUtc { get; set; }
 }
 
 public sealed class CompanyProfileDto : SyncEntityDto
@@ -240,6 +246,7 @@ public sealed class CustomerDto : SyncEntityDto
     public Guid? CustomerMasterId { get; set; }
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public string NameOriginal { get; set; } = string.Empty;
     public string NameMatchKey { get; set; } = string.Empty;
     public Guid? CategoryId { get; set; }
@@ -310,6 +317,7 @@ public sealed class InvoiceDto : SyncEntityDto
     public string CustomerName { get; set; } = string.Empty;
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
     public Guid? LinkedRentalBillingProfileId { get; set; }
@@ -319,6 +327,7 @@ public sealed class InvoiceDto : SyncEntityDto
     public Guid? PreviousVersionId { get; set; }
     public bool IsLatestVersion { get; set; } = true;
     public VoucherType VoucherType { get; set; }
+    public string SourceWarehouseCode { get; set; } = string.Empty;
     public DateOnly InvoiceDate { get; set; }
     public decimal TotalAmount { get; set; }
     public decimal SupplyAmount { get; set; }
@@ -377,6 +386,7 @@ public sealed class TransactionDto : SyncEntityDto
     public Guid CustomerId { get; set; }
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public DateOnly TransactionDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public string TransactionKind { get; set; } = string.Empty;
     public Guid? LinkedInvoiceId { get; set; }
@@ -476,6 +486,7 @@ public sealed class RentalBillingProfileDto : SyncEntityDto
 {
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public string ProfileKey { get; set; } = string.Empty;
     public Guid? CustomerId { get; set; }
     public string CustomerName { get; set; } = string.Empty;
@@ -519,6 +530,7 @@ public sealed class RentalAssetDto : SyncEntityDto
 {
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public string AssetKey { get; set; } = string.Empty;
     public Guid? CustomerId { get; set; }
     public Guid? ItemId { get; set; }
@@ -564,6 +576,7 @@ public sealed class RentalBillingLogDto : SyncEntityDto
 {
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public Guid BillingProfileId { get; set; }
     public string BillingYearMonth { get; set; } = string.Empty;
     public DateOnly ScheduledDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
@@ -624,6 +637,9 @@ public sealed class ConflictLogDto
     public string ServerJson { get; set; } = string.Empty;
     public string Reason { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; }
+    public string Status { get; set; } = "Open";
+    public DateTime? ResolvedAtUtc { get; set; }
+    public string ResolutionNote { get; set; } = string.Empty;
 }
 
 public sealed class SyncPullResponse
@@ -682,16 +698,110 @@ public sealed class SyncPushResult
 {
     public int AcceptedCount { get; set; }
     public int ConflictCount { get; set; }
+    public int DuplicateMutationCount { get; set; }
     public long CurrentServerRevision { get; set; }
     public List<ConflictLogDto> Conflicts { get; set; } = new();
+    public List<SyncNoticeDto> Notices { get; set; } = new();
     /// <summary>Key = local invoice Id, Value = assigned server InvoiceNumber.</summary>
     public Dictionary<Guid, string> AssignedInvoiceNumbers { get; set; } = new();
+}
+
+public sealed class SyncNoticeDto
+{
+    public string EntityName { get; set; } = string.Empty;
+    public string EntityId { get; set; } = string.Empty;
+    public string Code { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
 }
 
 public sealed class SyncStatusDto
 {
     public long CurrentServerRevision { get; set; }
     public DateTime ServerUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class EditSessionHeartbeatRequest
+{
+    public Guid EditSessionId { get; set; }
+    public Guid AppSessionId { get; set; }
+    public string ScreenName { get; set; } = string.Empty;
+    public string EntityType { get; set; } = string.Empty;
+    public string EntityId { get; set; } = string.Empty;
+    public string EntityDisplayName { get; set; } = string.Empty;
+    public string MachineName { get; set; } = string.Empty;
+}
+
+public sealed class EditSessionReleaseRequest
+{
+    public Guid EditSessionId { get; set; }
+}
+
+public sealed class EditSessionParticipantDto
+{
+    public Guid EditSessionId { get; set; }
+    public Guid AppSessionId { get; set; }
+    public string Username { get; set; } = string.Empty;
+    public string OfficeCode { get; set; } = string.Empty;
+    public string TenantCode { get; set; } = string.Empty;
+    public string ScreenName { get; set; } = string.Empty;
+    public string EntityType { get; set; } = string.Empty;
+    public string EntityId { get; set; } = string.Empty;
+    public string EntityDisplayName { get; set; } = string.Empty;
+    public string MachineName { get; set; } = string.Empty;
+    public DateTime OpenedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime LastHeartbeatUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class EditSessionHeartbeatResponse
+{
+    public DateTime ServerUtc { get; set; } = DateTime.UtcNow;
+    public List<EditSessionParticipantDto> OtherEditors { get; set; } = new();
+}
+
+public sealed class EditSessionLookupResponse
+{
+    public DateTime ServerUtc { get; set; } = DateTime.UtcNow;
+    public List<EditSessionParticipantDto> ActiveEditors { get; set; } = new();
+}
+
+public sealed class IntegrityIssueDto
+{
+    public string Code { get; set; } = string.Empty;
+    public string Severity { get; set; } = "Info";
+    public int Count { get; set; }
+    public string Message { get; set; } = string.Empty;
+}
+
+public sealed class IntegrityReportDto
+{
+    public DateTime GeneratedAtUtc { get; set; } = DateTime.UtcNow;
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public int IssueCount { get; set; }
+    public List<IntegrityIssueDto> Issues { get; set; } = new();
+}
+
+public sealed class IntegrityIssueDetailRowDto
+{
+    public string EntityType { get; set; } = string.Empty;
+    public string EntityIdText { get; set; } = string.Empty;
+    public string PrimaryText { get; set; } = string.Empty;
+    public string SecondaryText { get; set; } = string.Empty;
+    public string ReferenceText { get; set; } = string.Empty;
+    public string ScopeText { get; set; } = string.Empty;
+    public string DetailText { get; set; } = string.Empty;
+}
+
+public sealed class IntegrityIssueDetailResultDto
+{
+    public DateTime GeneratedAtUtc { get; set; } = DateTime.UtcNow;
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string Code { get; set; } = string.Empty;
+    public string Severity { get; set; } = "Info";
+    public string Message { get; set; } = string.Empty;
+    public int DetailCount { get; set; }
+    public List<IntegrityIssueDetailRowDto> Rows { get; set; } = new();
 }
 
 public sealed class RecycleBinEntryDto
@@ -703,12 +813,14 @@ public sealed class RecycleBinEntryDto
     public string Subtitle { get; set; } = string.Empty;
     public string Detail { get; set; } = string.Empty;
     public DateTime DeletedAtUtc { get; set; }
+    public long Revision { get; set; }
 }
 
 public sealed class RecycleBinMutationTargetDto
 {
     public Guid EntityId { get; set; }
     public string Kind { get; set; } = string.Empty;
+    public long ExpectedRevision { get; set; }
 }
 
 public sealed class RecycleBinMutationRequest
@@ -780,6 +892,7 @@ public sealed class DataSharingPolicyDto : SyncEntityDto
 
 public sealed class UpsertDataSharingPolicyRequest
 {
+    public long ExpectedRevision { get; set; }
     public string SourceTenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string SourceOfficeCode { get; set; } = OfficeCodeCatalog.Yeonsu;
     public string TargetTenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
@@ -804,8 +917,33 @@ public sealed class TenantConfigurationSnapshotDto
     public List<DataSharingPolicyDto> SharingPolicies { get; set; } = new();
 }
 
+public sealed class ScopeMatrixAreaDto
+{
+    public string AreaCode { get; set; } = string.Empty;
+    public string AreaDisplayName { get; set; } = string.Empty;
+    public List<string> ReadableOfficeCodes { get; set; } = new();
+    public List<string> WritableOfficeCodes { get; set; } = new();
+    public string Note { get; set; } = string.Empty;
+    public string ReadableOfficeCodesText => ReadableOfficeCodes.Count == 0 ? "-" : string.Join(", ", ReadableOfficeCodes);
+    public string WritableOfficeCodesText => WritableOfficeCodes.Count == 0 ? "-" : string.Join(", ", WritableOfficeCodes);
+}
+
+public sealed class ScopeMatrixSnapshotDto
+{
+    public DateTime GeneratedAtUtc { get; set; } = DateTime.UtcNow;
+    public string Username { get; set; } = string.Empty;
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
+    public string ScopeType { get; set; } = TenantScopeCatalog.ScopeOfficeOnly;
+    public bool IsAdmin { get; set; }
+    public bool HasAdministrativeWriteAccess { get; set; }
+    public bool HasGlobalDataScope { get; set; }
+    public List<ScopeMatrixAreaDto> Areas { get; set; } = new();
+}
+
 public sealed class UpdateTenantDefinitionRequest
 {
+    public long ExpectedRevision { get; set; }
     public string DisplayName { get; set; } = string.Empty;
     public string StorageMode { get; set; } = TenantScopeCatalog.StorageSharedDatabase;
     public string Description { get; set; } = string.Empty;
@@ -814,6 +952,7 @@ public sealed class UpdateTenantDefinitionRequest
 
 public sealed class UpdateTenantOfficeDefinitionRequest
 {
+    public long ExpectedRevision { get; set; }
     public string DisplayName { get; set; } = string.Empty;
     public bool IsHeadOffice { get; set; }
     public bool IsActive { get; set; } = true;
@@ -832,6 +971,7 @@ public sealed class AppUpdatePackageDto
     public string Platform { get; set; } = string.Empty;
     public string Version { get; set; } = string.Empty;
     public bool Mandatory { get; set; }
+    public string MinimumSupportedVersion { get; set; } = string.Empty;
     public string PackageUrl { get; set; } = string.Empty;
     public string FileName { get; set; } = string.Empty;
     public string Sha256 { get; set; } = string.Empty;

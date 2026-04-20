@@ -12,6 +12,7 @@
         KeyDown="Window_KeyDown">
     <Window.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVisibility"/>
+        <conv:DecimalToStringConverter x:Key="DecimalToString"/>
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="#E0E0E0"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
@@ -148,6 +149,11 @@
                             Content="삭제"
                             Background="#B71C1C"
                             Command="{Binding DeleteItemCommand}"/>
+                    <Button Style="{StaticResource ToolbarButtonStyle}"
+                            Content="선택재고초기화"
+                            Background="#E65100"
+                            Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}"
+                            Click="ResetInventoryButton_Click"/>
                     <Button Style="{StaticResource ToolbarButtonStyle}"
                             Content="재고이동"
                             Background="#6A1B9A"
@@ -480,13 +486,13 @@
 
                                                 <Label Grid.Row="0" Grid.Column="0" Content="매입단가"/>
                                                 <TextBox Grid.Row="0" Grid.Column="1"
-                                                         Text="{Binding EditPurchasePrice, UpdateSourceTrigger=PropertyChanged}"/>
+                                                         Text="{Binding EditPurchasePrice, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"/>
                                                 <Label Grid.Row="1" Grid.Column="0" Content="매출단가"/>
                                                 <TextBox Grid.Row="1" Grid.Column="1"
-                                                         Text="{Binding EditSalePrice, UpdateSourceTrigger=PropertyChanged}"/>
+                                                         Text="{Binding EditSalePrice, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"/>
                                                 <Label Grid.Row="2" Grid.Column="0" Content="소매단가"/>
                                                 <TextBox Grid.Row="2" Grid.Column="1"
-                                                         Text="{Binding EditRetailPrice, UpdateSourceTrigger=PropertyChanged}"/>
+                                                         Text="{Binding EditRetailPrice, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"/>
                                             </Grid>
                                         </StackPanel>
                                     </Border>
@@ -524,13 +530,13 @@
                                                 </Border>
                                                 <Label Grid.Row="2" Grid.Column="0" Content="A단가"/>
                                                 <TextBox Grid.Row="2" Grid.Column="1"
-                                                         Text="{Binding EditPriceA, UpdateSourceTrigger=PropertyChanged}"/>
+                                                         Text="{Binding EditPriceA, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"/>
                                                 <Label Grid.Row="3" Grid.Column="0" Content="B단가"/>
                                                 <TextBox Grid.Row="3" Grid.Column="1"
-                                                         Text="{Binding EditPriceB, UpdateSourceTrigger=PropertyChanged}"/>
+                                                         Text="{Binding EditPriceB, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"/>
                                                 <Label Grid.Row="4" Grid.Column="0" Content="C단가"/>
                                                 <TextBox Grid.Row="4" Grid.Column="1"
-                                                         Text="{Binding EditPriceC, UpdateSourceTrigger=PropertyChanged}"/>
+                                                         Text="{Binding EditPriceC, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"/>
                                             </Grid>
                                         </StackPanel>
                                     </Border>

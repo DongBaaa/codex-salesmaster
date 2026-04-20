@@ -425,6 +425,74 @@ public sealed partial class LegacyDataMigrationService
         return result;
     }
 
+    public async Task<ItemWorkbookImportResult> ImportItemWorkbookAsync(
+        string itemExcelPath,
+        string preferredOfficeCode,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(itemExcelPath) || !File.Exists(itemExcelPath))
+            throw new FileNotFoundException("품목 엑셀 파일을 찾을 수 없습니다.", itemExcelPath);
+
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(preferredOfficeCode, DomainConstants.OfficeItworld);
+        var itemRows = await Task.Run(() => ReadItemsFromWorkbook(itemExcelPath), ct);
+        var result = new ItemWorkbookImportResult
+        {
+            SourcePath = itemExcelPath,
+            PreferredOfficeCode = normalizedOfficeCode,
+            TotalCount = itemRows.Count
+        };
+
+        using var suppressSync = _local.SuppressSyncDispatch();
+        var existingItems = await _local.GetItemsAsync(ct);
+        var itemLookup = BuildItemLookup(existingItems);
+
+        foreach (var row in itemRows)
+        {
+            if (string.IsNullOrWhiteSpace(row.Name))
+            {
+                result.FailureCount++;
+                result.Messages.Add("품목명 누락 행은 가져오지 않았습니다.");
+                continue;
+            }
+
+            var source = BuildImportedItem(row);
+            var target = FindMatchingItem(itemLookup, source);
+            var isNew = target is null;
+            if (isNew)
+                target = CreateNewItemShell(source);
+            ArgumentNullException.ThrowIfNull(target);
+
+            if (!string.IsNullOrWhiteSpace(source.CategoryName))
+                source.CategoryName = await _local.EnsureItemCategoryOptionForImportAsync(source.CategoryName, ct);
+
+            var changed = MergeItem(target, source, preferIncoming: true);
+            var stockChanged = !existingItems.Any(item => item.Id == target.Id) ||
+                               await _local.GetOfficeStockQuantityAsync(target.Id, normalizedOfficeCode, ct) != row.CurrentStock;
+
+            if (isNew)
+            {
+                await _local.UpsertItemAsync(target, normalizedOfficeCode, ct);
+                RegisterItemLookup(itemLookup, target);
+                existingItems.Add(target);
+                result.CreatedCount++;
+            }
+            else if (changed)
+            {
+                await _local.UpsertItemAsync(target, normalizedOfficeCode, ct);
+                RegisterItemLookup(itemLookup, target);
+                result.UpdatedCount++;
+            }
+
+            if (stockChanged)
+            {
+                await _local.SetItemOfficeStockAsync(target.Id, row.CurrentStock, normalizedOfficeCode, ct);
+                result.StockAdjustedCount++;
+            }
+        }
+
+        return result;
+    }
+
     private static void EnsureParentDirectory(string path){
         var parent = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(parent))
@@ -829,7 +897,7 @@ ORDER BY JAEPUMNAME
             var row = new ImportedItemRow
             {
                 Category = ReadString(ws, rowIndex, headerMap, "품목분류"),
-                Name = ReadString(ws, rowIndex, headerMap, "상품/제품명"),
+                Name = ReadString(ws, rowIndex, headerMap, "상품/제품명", "품  목  명", "품목명"),
                 Specification = ReadString(ws, rowIndex, headerMap, "규   격"),
                 Barcode = ReadString(ws, rowIndex, headerMap, "품목바코드"),
                 CurrentStock = ReadDecimal(ws, rowIndex, headerMap, "현재재고"),
@@ -837,6 +905,7 @@ ORDER BY JAEPUMNAME
                 SafetyStock = ReadDecimal(ws, rowIndex, headerMap, "안전재고"),
                 MainSupplier = ReadString(ws, rowIndex, headerMap, "주매입처"),
                 Color = ReadString(ws, rowIndex, headerMap, "색상"),
+                MaterialNumber = ReadString(ws, rowIndex, headerMap, "자재번호"),
                 PurchasePrice = ReadDecimal(ws, rowIndex, headerMap, "매입단가"),
                 SalePrice = ReadDecimal(ws, rowIndex, headerMap, "매출단가"),
                 RetailPrice = ReadDecimal(ws, rowIndex, headerMap, "소매단가"),
@@ -844,7 +913,14 @@ ORDER BY JAEPUMNAME
                 PriceB = ReadDecimal(ws, rowIndex, headerMap, "B_단가적용"),
                 PriceC = ReadDecimal(ws, rowIndex, headerMap, "C_단가적용"),
                 Unit = ReadString(ws, rowIndex, headerMap, "단위"),
-                RegisterDate = ReadDate(ws, rowIndex, headerMap, "등록일자")
+                StorageLocation = ReadString(ws, rowIndex, headerMap, "보관위치"),
+                RegisterDate = ReadDate(ws, rowIndex, headerMap, "등록일자"),
+                InventoryAssetText = ReadString(ws, rowIndex, headerMap, "재고자산"),
+                Memo = ReadString(ws, rowIndex, headerMap, "메모"),
+                BoxQuantity = ReadDecimal(ws, rowIndex, headerMap, "기본Box수량"),
+                BoxCurrentStock = ReadDecimal(ws, rowIndex, headerMap, "Box현재고"),
+                LastSaleDate = ReadDate(ws, rowIndex, headerMap, "마지막판매일자"),
+                LastPurchaseDate = ReadDate(ws, rowIndex, headerMap, "마지막구매일자")
             };
 
             if (!string.IsNullOrWhiteSpace(row.Name))
@@ -997,6 +1073,8 @@ ORDER BY JAEPUMNAME
         target.SpecificationOriginal = row.Specification.Trim();
         target.SpecificationMatchKey = target.SpecificationOriginal.ToUpperInvariant();
         target.CategoryName = row.Category.Trim();
+        target.ItemKind = ItemKinds.Product;
+        target.TrackingType = ItemTrackingTypes.Stock;
         target.Unit = row.Unit.Trim();
         target.CurrentStock = row.CurrentStock;
         target.SafetyStock = row.SafetyStock;
@@ -1006,16 +1084,28 @@ ORDER BY JAEPUMNAME
         target.PriceGradeA = row.PriceA;
         target.PriceGradeB = row.PriceB;
         target.PriceGradeC = row.PriceC;
-        target.MaterialNumber = row.Barcode.Trim();
+        target.MaterialNumber = row.MaterialNumber.Trim();
+        target.StorageLocation = row.StorageLocation.Trim();
+        target.BoxQuantity = row.BoxQuantity;
+        target.LastPurchaseDate = row.LastPurchaseDate;
+        target.LastSaleDate = row.LastSaleDate;
+        target.SimpleMemo = row.Memo.Trim();
+        target.IsRental = false;
         target.IsSale = true;
 
         var notes = new List<string>();
+        if (!string.IsNullOrWhiteSpace(row.Barcode))
+            notes.Add($"품목바코드: {row.Barcode.Trim()}");
         if (!string.IsNullOrWhiteSpace(row.MainSupplier))
             notes.Add($"주매입처: {row.MainSupplier.Trim()}");
         if (!string.IsNullOrWhiteSpace(row.Color))
             notes.Add($"색상: {row.Color.Trim()}");
         if (row.LowStock != 0)
             notes.Add($"부족재고: {row.LowStock:N0}");
+        if (!string.IsNullOrWhiteSpace(row.InventoryAssetText))
+            notes.Add($"재고자산: {row.InventoryAssetText.Trim()}");
+        if (row.BoxCurrentStock != 0)
+            notes.Add($"Box현재고: {row.BoxCurrentStock:N0}");
         if (row.RegisterDate.HasValue)
             notes.Add($"등록일자: {row.RegisterDate:yyyy-MM-dd}");
 
@@ -1120,6 +1210,7 @@ ORDER BY JAEPUMNAME
         public string Name { get; init; } = string.Empty;
         public string Specification { get; init; } = string.Empty;
         public string Barcode { get; init; } = string.Empty;
+        public string MaterialNumber { get; init; } = string.Empty;
         public decimal CurrentStock { get; init; }
         public decimal LowStock { get; init; }
         public decimal SafetyStock { get; init; }
@@ -1132,7 +1223,14 @@ ORDER BY JAEPUMNAME
         public decimal PriceB { get; init; }
         public decimal PriceC { get; init; }
         public string Unit { get; init; } = string.Empty;
+        public string StorageLocation { get; init; } = string.Empty;
         public DateOnly? RegisterDate { get; init; }
+        public string InventoryAssetText { get; init; } = string.Empty;
+        public string Memo { get; init; } = string.Empty;
+        public decimal BoxQuantity { get; init; }
+        public decimal BoxCurrentStock { get; init; }
+        public DateOnly? LastSaleDate { get; init; }
+        public DateOnly? LastPurchaseDate { get; init; }
     }
 }
 
@@ -1149,6 +1247,18 @@ public sealed class CustomerWorkbookImportResult
     public int TotalCount { get; set; }
     public int CreatedCount { get; set; }
     public int DuplicateCount { get; set; }
+    public int FailureCount { get; set; }
+    public List<string> Messages { get; } = new();
+}
+
+public sealed class ItemWorkbookImportResult
+{
+    public string SourcePath { get; init; } = string.Empty;
+    public string PreferredOfficeCode { get; init; } = DomainConstants.OfficeItworld;
+    public int TotalCount { get; set; }
+    public int CreatedCount { get; set; }
+    public int UpdatedCount { get; set; }
+    public int StockAdjustedCount { get; set; }
     public int FailureCount { get; set; }
     public List<string> Messages { get; } = new();
 }

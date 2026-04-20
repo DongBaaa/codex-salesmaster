@@ -51,6 +51,19 @@ public static partial class LocalDbInitializer
             var assetCustomerKeys = BuildRentalCustomerKeys(
                 asset.CustomerName,
                 asset.CurrentCustomerName);
+            var preferredResponsibleOfficeCode = ResolveRentalOperationalOfficeCode(
+                asset.ResponsibleOfficeCode,
+                asset.OfficeCode,
+                asset.ManagementCompanyCode);
+            var preferredOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+                asset.OfficeCode,
+                preferredResponsibleOfficeCode,
+                asset.ManagementCompanyCode,
+                DomainConstants.OfficeUsenet);
+            var preferredTenantCode = NormalizeOperationalTenantCode(
+                asset.TenantCode,
+                preferredOwnerOfficeCode,
+                preferredResponsibleOfficeCode);
             var normalizedInstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation);
             var normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallSiteName);
             var canonicalInstallLocation = !string.IsNullOrWhiteSpace(normalizedInstallLocation)
@@ -69,14 +82,39 @@ public static partial class LocalDbInitializer
                 changed = true;
             }
 
+            var importedManagementNumber = ExtractImportedAssetNoteValue(asset.Notes, "원본 관리번호");
+            if (!string.IsNullOrWhiteSpace(importedManagementNumber) &&
+                !string.Equals(asset.ManagementNumber, importedManagementNumber, StringComparison.OrdinalIgnoreCase) &&
+                !assets.Any(other =>
+                    other.Id != asset.Id &&
+                    string.Equals((other.ManagementNumber ?? string.Empty).Trim(), importedManagementNumber, StringComparison.OrdinalIgnoreCase)))
+            {
+                asset.ManagementNumber = importedManagementNumber;
+                changed = true;
+            }
+
             if (asset.BillingProfileId.HasValue &&
                 (!activeProfilesById.ContainsKey(asset.BillingProfileId.Value) || asset.BillingProfileId.Value == Guid.Empty))
             {
+                UnregisterProfileAssetLink(activeProfileAssetCounts, asset.BillingProfileId.Value);
                 asset.BillingProfileId = null;
                 changed = true;
             }
 
             activeProfilesById.TryGetValue(asset.BillingProfileId ?? Guid.Empty, out var linkedProfile);
+            if (linkedProfile is not null &&
+                !ProfileMatchesAssetScope(
+                    linkedProfile,
+                    preferredTenantCode,
+                    preferredResponsibleOfficeCode,
+                    asset.CustomerId,
+                    assetCustomerKeys))
+            {
+                UnregisterProfileAssetLink(activeProfileAssetCounts, linkedProfile.Id);
+                asset.BillingProfileId = null;
+                linkedProfile = null;
+                changed = true;
+            }
 
             var resolvedCustomerId = ResolveAssetCustomerId(asset, linkedProfile, customerById, customers);
             if (asset.CustomerId != resolvedCustomerId)
@@ -89,18 +127,28 @@ public static partial class LocalDbInitializer
                 customerById.TryGetValue(asset.CustomerId.Value, out var linkedCustomer))
             {
                 var normalizedMasterName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
-                var resolvedOfficeCode = ResolveCustomerRentalOfficeCode(linkedCustomer.ResponsibleOfficeCode);
-                if (!string.IsNullOrWhiteSpace(resolvedOfficeCode))
+                var resolvedResponsibleOfficeCode = ResolveCustomerRentalOfficeCode(linkedCustomer.ResponsibleOfficeCode);
+                var resolvedOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+                    linkedCustomer.OfficeCode,
+                    resolvedResponsibleOfficeCode,
+                    linkedCustomer.OfficeCode);
+                if (!string.IsNullOrWhiteSpace(resolvedResponsibleOfficeCode))
                 {
-                    if (!string.Equals(asset.ResponsibleOfficeCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(asset.ResponsibleOfficeCode, resolvedResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
-                        asset.ResponsibleOfficeCode = resolvedOfficeCode;
+                        asset.ResponsibleOfficeCode = resolvedResponsibleOfficeCode;
                         changed = true;
                     }
 
-                    if (!string.Equals(asset.ManagementCompanyCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(asset.OfficeCode, resolvedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
-                        asset.ManagementCompanyCode = resolvedOfficeCode;
+                        asset.OfficeCode = resolvedOwnerOfficeCode;
+                        changed = true;
+                    }
+
+                    if (!string.Equals(asset.ManagementCompanyCode, resolvedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    {
+                        asset.ManagementCompanyCode = resolvedOwnerOfficeCode;
                         changed = true;
                     }
                 }
@@ -134,7 +182,12 @@ public static partial class LocalDbInitializer
             if (linkedProfile is not null &&
                 linkedProfile.CustomerId.HasValue &&
                 linkedProfile.CustomerId.Value != Guid.Empty &&
-                CustomerReferenceLooksValid(linkedProfile.CustomerId, customerById, assetCustomerKeys) &&
+                CustomerReferenceLooksValid(
+                    linkedProfile.CustomerId,
+                    customerById,
+                    assetCustomerKeys,
+                    preferredTenantCode,
+                    preferredResponsibleOfficeCode) &&
                 asset.CustomerId != linkedProfile.CustomerId)
             {
                 asset.CustomerId = linkedProfile.CustomerId;
@@ -142,21 +195,36 @@ public static partial class LocalDbInitializer
             }
 
             if (linkedProfile is not null &&
-                CustomerReferenceLooksValid(linkedProfile.CustomerId, customerById, assetCustomerKeys) &&
+                CustomerReferenceLooksValid(
+                    linkedProfile.CustomerId,
+                    customerById,
+                    assetCustomerKeys,
+                    preferredTenantCode,
+                    preferredResponsibleOfficeCode) &&
                 customerById.TryGetValue(linkedProfile.CustomerId ?? Guid.Empty, out var profileCustomer))
             {
-                var resolvedOfficeCode = ResolveCustomerRentalOfficeCode(profileCustomer.ResponsibleOfficeCode);
-                if (!string.IsNullOrWhiteSpace(resolvedOfficeCode))
+                var resolvedResponsibleOfficeCode = ResolveCustomerRentalOfficeCode(profileCustomer.ResponsibleOfficeCode);
+                var resolvedOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+                    profileCustomer.OfficeCode,
+                    resolvedResponsibleOfficeCode,
+                    profileCustomer.OfficeCode);
+                if (!string.IsNullOrWhiteSpace(resolvedResponsibleOfficeCode))
                 {
-                    if (!string.Equals(asset.ResponsibleOfficeCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(asset.ResponsibleOfficeCode, resolvedResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
-                        asset.ResponsibleOfficeCode = resolvedOfficeCode;
+                        asset.ResponsibleOfficeCode = resolvedResponsibleOfficeCode;
                         changed = true;
                     }
 
-                    if (!string.Equals(asset.ManagementCompanyCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(asset.OfficeCode, resolvedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
-                        asset.ManagementCompanyCode = resolvedOfficeCode;
+                        asset.OfficeCode = resolvedOwnerOfficeCode;
+                        changed = true;
+                    }
+
+                    if (!string.Equals(asset.ManagementCompanyCode, resolvedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    {
+                        asset.ManagementCompanyCode = resolvedOwnerOfficeCode;
                         changed = true;
                     }
                 }
@@ -211,18 +279,28 @@ public static partial class LocalDbInitializer
                     changed = true;
                 }
 
-                var resolvedOfficeCode = ResolveCustomerRentalOfficeCode(linkedCustomer.ResponsibleOfficeCode);
-                if (!string.IsNullOrWhiteSpace(resolvedOfficeCode))
+                var resolvedResponsibleOfficeCode = ResolveCustomerRentalOfficeCode(linkedCustomer.ResponsibleOfficeCode);
+                var resolvedOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+                    linkedCustomer.OfficeCode,
+                    resolvedResponsibleOfficeCode,
+                    linkedCustomer.OfficeCode);
+                if (!string.IsNullOrWhiteSpace(resolvedResponsibleOfficeCode))
                 {
-                    if (!string.Equals(profile.ResponsibleOfficeCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(profile.ResponsibleOfficeCode, resolvedResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
-                        profile.ResponsibleOfficeCode = resolvedOfficeCode;
+                        profile.ResponsibleOfficeCode = resolvedResponsibleOfficeCode;
                         changed = true;
                     }
 
-                    if (!string.Equals(profile.ManagementCompanyCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(profile.OfficeCode, resolvedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
-                        profile.ManagementCompanyCode = resolvedOfficeCode;
+                        profile.OfficeCode = resolvedOwnerOfficeCode;
+                        changed = true;
+                    }
+
+                    if (!string.Equals(profile.ManagementCompanyCode, resolvedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    {
+                        profile.ManagementCompanyCode = resolvedOwnerOfficeCode;
                         changed = true;
                     }
                 }
@@ -308,6 +386,12 @@ public static partial class LocalDbInitializer
                 changed = true;
             }
 
+            if (!string.Equals(log.OfficeCode, profile.OfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                log.OfficeCode = profile.OfficeCode;
+                changed = true;
+            }
+
             if (changed)
                 MarkStartupMaintenanceChange(log, now);
         }
@@ -387,14 +471,37 @@ public static partial class LocalDbInitializer
     {
         var candidateKeys = BuildRentalCustomerKeys(
             profile.CustomerName);
+        var preferredResponsibleOfficeCode = ResolveRentalOperationalOfficeCode(
+            profile.ResponsibleOfficeCode,
+            profile.OfficeCode,
+            profile.ManagementCompanyCode);
+        var preferredOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+            profile.OfficeCode,
+            preferredResponsibleOfficeCode,
+            profile.ManagementCompanyCode,
+            DomainConstants.OfficeUsenet);
+        var preferredTenantCode = NormalizeOperationalTenantCode(
+            profile.TenantCode,
+            preferredOwnerOfficeCode,
+            preferredResponsibleOfficeCode);
 
-        if (CustomerReferenceLooksValid(profile.CustomerId, customerById, candidateKeys))
+        if (CustomerReferenceLooksValid(
+                profile.CustomerId,
+                customerById,
+                candidateKeys,
+                preferredTenantCode,
+                preferredResponsibleOfficeCode))
             return profile.CustomerId;
 
         var linkedAssetCustomerIds = assets
             .Where(asset => !asset.IsDeleted && asset.BillingProfileId == profile.Id)
             .Select(asset => asset.CustomerId)
-            .Where(customerId => CustomerReferenceLooksValid(customerId, customerById, candidateKeys))
+            .Where(customerId => CustomerReferenceLooksValid(
+                customerId,
+                customerById,
+                candidateKeys,
+                preferredTenantCode,
+                preferredResponsibleOfficeCode))
             .Select(customerId => customerId!.Value)
             .Distinct()
             .ToList();
@@ -405,8 +512,15 @@ public static partial class LocalDbInitializer
                    customers,
                    profile.BusinessNumber,
                    candidateKeys,
+                   preferredTenantCode,
+                   preferredResponsibleOfficeCode,
                    out var resolvedCustomerId)
-               || TryResolveBillingProfileCustomer(customers, profile, out resolvedCustomerId)
+               || TryResolveBillingProfileCustomer(
+                   customers,
+                   profile,
+                   preferredTenantCode,
+                   preferredResponsibleOfficeCode,
+                   out resolvedCustomerId)
             ? resolvedCustomerId
             : null;
     }
@@ -420,20 +534,50 @@ public static partial class LocalDbInitializer
         var candidateKeys = BuildRentalCustomerKeys(
             asset.CustomerName,
             asset.CurrentCustomerName);
+        var preferredResponsibleOfficeCode = ResolveRentalOperationalOfficeCode(
+            asset.ResponsibleOfficeCode,
+            asset.OfficeCode,
+            asset.ManagementCompanyCode);
+        var preferredOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+            asset.OfficeCode,
+            preferredResponsibleOfficeCode,
+            asset.ManagementCompanyCode,
+            DomainConstants.OfficeUsenet);
+        var preferredTenantCode = NormalizeOperationalTenantCode(
+            asset.TenantCode,
+            preferredOwnerOfficeCode,
+            preferredResponsibleOfficeCode);
 
         if (linkedProfile is not null &&
-            CustomerReferenceLooksValid(linkedProfile.CustomerId, customerById, candidateKeys))
+            CustomerReferenceLooksValid(
+                linkedProfile.CustomerId,
+                customerById,
+                candidateKeys,
+                preferredTenantCode,
+                preferredResponsibleOfficeCode))
             return linkedProfile.CustomerId;
 
-        if (CustomerReferenceLooksValid(asset.CustomerId, customerById, candidateKeys))
+        if (CustomerReferenceLooksValid(
+                asset.CustomerId,
+                customerById,
+                candidateKeys,
+                preferredTenantCode,
+                preferredResponsibleOfficeCode))
             return asset.CustomerId;
 
         return TryResolveRentalCustomerByNames(
             customers,
             null,
             candidateKeys,
+            preferredTenantCode,
+            preferredResponsibleOfficeCode,
             out var resolvedCustomerId)
-            || TryResolveAssetCustomer(customers, asset, out resolvedCustomerId)
+            || TryResolveAssetCustomer(
+                customers,
+                asset,
+                preferredTenantCode,
+                preferredResponsibleOfficeCode,
+                out resolvedCustomerId)
             ? resolvedCustomerId
             : null;
     }
@@ -497,24 +641,34 @@ public static partial class LocalDbInitializer
         IReadOnlyCollection<LocalRentalBillingProfile> profiles,
         LocalRentalAsset asset)
     {
-        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeLoose(
+        var normalizedOfficeCode = ResolveRentalOperationalOfficeCode(
             string.IsNullOrWhiteSpace(asset.ResponsibleOfficeCode)
                 ? asset.ManagementCompanyCode
                 : asset.ResponsibleOfficeCode,
-            null,
-            string.Empty);
+            asset.OfficeCode,
+            asset.ManagementCompanyCode);
+        var normalizedTenantCode = NormalizeOperationalTenantCode(
+            asset.TenantCode,
+            ResolveOperationalOwnerOfficeCode(asset.OfficeCode, normalizedOfficeCode, asset.ManagementCompanyCode, DomainConstants.OfficeUsenet),
+            normalizedOfficeCode);
         if (string.IsNullOrWhiteSpace(normalizedOfficeCode))
             return [];
+
+        var exactScopeMatches = profiles
+            .Where(profile => ProfileMatchesAssetScope(profile, normalizedTenantCode, normalizedOfficeCode, asset.CustomerId, []))
+            .ToList();
+        if (exactScopeMatches.Count > 0)
+            return exactScopeMatches;
 
         return profiles
             .Where(profile =>
                 string.Equals(
-                    OfficeCodeCatalog.NormalizeOfficeCodeLoose(
+                    ResolveRentalOperationalOfficeCode(
                         string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
                             ? profile.ManagementCompanyCode
                             : profile.ResponsibleOfficeCode,
-                        null,
-                        string.Empty),
+                        profile.OfficeCode,
+                        profile.ManagementCompanyCode),
                     normalizedOfficeCode,
                     StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -624,16 +778,41 @@ public static partial class LocalDbInitializer
             : 1;
     }
 
+    private static void UnregisterProfileAssetLink(IDictionary<Guid, int> activeProfileAssetCounts, Guid profileId)
+    {
+        if (profileId == Guid.Empty)
+            return;
+
+        if (!activeProfileAssetCounts.TryGetValue(profileId, out var currentCount))
+            return;
+
+        if (currentCount <= 1)
+        {
+            activeProfileAssetCounts.Remove(profileId);
+            return;
+        }
+
+        activeProfileAssetCounts[profileId] = currentCount - 1;
+    }
+
     private static bool TryResolveAssetCustomer(
         IReadOnlyCollection<LocalCustomer> customers,
         LocalRentalAsset asset,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode,
         out Guid customerId)
     {
         customerId = Guid.Empty;
         var candidateKeys = BuildRentalCustomerKeys(
             asset.CustomerName,
             asset.CurrentCustomerName);
-        return TryResolveRentalCustomerByNames(customers, null, candidateKeys, out customerId);
+        return TryResolveRentalCustomerByNames(
+            customers,
+            null,
+            candidateKeys,
+            preferredTenantCode,
+            preferredResponsibleOfficeCode,
+            out customerId);
     }
 
     private static HashSet<string> BuildRentalSiteKeys(params string?[] values)
@@ -689,12 +868,17 @@ public static partial class LocalDbInitializer
         IReadOnlyCollection<LocalCustomer> customers,
         string? businessNumber,
         IReadOnlyCollection<string> candidateKeys,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode,
         out Guid customerId)
     {
         customerId = Guid.Empty;
         var normalizedBusinessNumber = NormalizeBusinessNumber(businessNumber);
 
-        var scopedCustomers = customers.AsEnumerable();
+        var scopedCustomers = FilterCustomersByOperationalScope(
+            customers,
+            preferredTenantCode,
+            preferredResponsibleOfficeCode);
         if (!string.IsNullOrWhiteSpace(normalizedBusinessNumber))
         {
             var businessMatches = scopedCustomers
@@ -727,8 +911,11 @@ public static partial class LocalDbInitializer
     private static bool CustomerReferenceLooksValid(
         Guid? customerId,
         IReadOnlyDictionary<Guid, LocalCustomer> customerById,
-        IReadOnlyCollection<string> candidateKeys)
+        IReadOnlyCollection<string> candidateKeys,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode)
         => HasValidCustomerId(customerId, customerById) &&
+           MatchesOperationalCustomerScope(customerById[customerId!.Value], preferredTenantCode, preferredResponsibleOfficeCode) &&
            (candidateKeys.Count == 0 || CustomerMatchesRentalNames(customerById[customerId!.Value], candidateKeys));
 
     private static bool CustomerMatchesRentalNames(LocalCustomer customer, IReadOnlyCollection<string> candidateKeys)
@@ -765,10 +952,112 @@ public static partial class LocalDbInitializer
                siteKeys.Contains(profileSiteKey, StringComparer.OrdinalIgnoreCase);
     }
 
+    private static IEnumerable<LocalCustomer> FilterCustomersByOperationalScope(
+        IReadOnlyCollection<LocalCustomer> customers,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode)
+    {
+        var exactScopeMatches = customers
+            .Where(customer => MatchesOperationalCustomerScope(customer, preferredTenantCode, preferredResponsibleOfficeCode))
+            .ToList();
+        if (exactScopeMatches.Count > 0)
+            return exactScopeMatches;
+
+        if (!string.IsNullOrWhiteSpace(preferredTenantCode))
+        {
+            var tenantMatches = customers
+                .Where(customer =>
+                    string.Equals(
+                        NormalizeOperationalTenantCode(customer.TenantCode, customer.OfficeCode, customer.ResponsibleOfficeCode),
+                        preferredTenantCode,
+                        StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (tenantMatches.Count > 0)
+                return tenantMatches;
+        }
+
+        return customers;
+    }
+
+    private static bool MatchesOperationalCustomerScope(
+        LocalCustomer customer,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode)
+    {
+        var customerTenantCode = NormalizeOperationalTenantCode(customer.TenantCode, customer.OfficeCode, customer.ResponsibleOfficeCode);
+        if (!string.IsNullOrWhiteSpace(preferredTenantCode) &&
+            !string.Equals(customerTenantCode, preferredTenantCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(preferredResponsibleOfficeCode))
+            return true;
+
+        var customerResponsibleOfficeCode = ResolveRentalOperationalOfficeCode(
+            customer.ResponsibleOfficeCode,
+            customer.OfficeCode);
+        return string.Equals(customerResponsibleOfficeCode, preferredResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ProfileMatchesAssetScope(
+        LocalRentalBillingProfile profile,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode,
+        Guid? assetCustomerId,
+        IReadOnlyCollection<string> assetCustomerKeys)
+        => MatchesOperationalTenantAndOfficeScope(profile.TenantCode, profile.OfficeCode, profile.ResponsibleOfficeCode, preferredTenantCode, preferredResponsibleOfficeCode) &&
+           ProfileMatchesAssetCustomer(profile, assetCustomerId, assetCustomerKeys);
+
+    private static bool MatchesOperationalTenantAndOfficeScope(
+        string? tenantCode,
+        string? ownerOfficeCode,
+        string? responsibleOfficeCode,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode)
+    {
+        var normalizedOfficeCode = ResolveRentalOperationalOfficeCode(responsibleOfficeCode, ownerOfficeCode);
+        var normalizedTenantCode = NormalizeOperationalTenantCode(tenantCode, ownerOfficeCode, normalizedOfficeCode);
+
+        return (string.IsNullOrWhiteSpace(preferredTenantCode) ||
+                string.Equals(normalizedTenantCode, preferredTenantCode, StringComparison.OrdinalIgnoreCase)) &&
+               (string.IsNullOrWhiteSpace(preferredResponsibleOfficeCode) ||
+                string.Equals(normalizedOfficeCode, preferredResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase));
+    }
+
     private static bool HasValidCustomerId(Guid? customerId, IReadOnlyDictionary<Guid, LocalCustomer> customerById)
         => customerId.HasValue &&
            customerId.Value != Guid.Empty &&
            customerById.ContainsKey(customerId.Value);
+
+    private static string ResolveRentalOperationalOfficeCode(params string?[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (OfficeCodeCatalog.TryNormalize(candidate, out var normalizedOfficeCode))
+                return normalizedOfficeCode;
+        }
+
+        return DomainConstants.OfficeUsenet;
+    }
+
+    private static bool TryResolveBillingProfileCustomer(
+        IReadOnlyCollection<LocalCustomer> customers,
+        LocalRentalBillingProfile profile,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode,
+        out Guid customerId)
+    {
+        customerId = Guid.Empty;
+        var candidateKeys = BuildRentalCustomerKeys(profile.CustomerName);
+        return TryResolveRentalCustomerByNames(
+            customers,
+            profile.BusinessNumber,
+            candidateKeys,
+            preferredTenantCode,
+            preferredResponsibleOfficeCode,
+            out customerId);
+    }
 
     private static string ResolveCustomerRentalOfficeCode(string? responsibleOfficeCode)
         => OfficeCodeCatalog.NormalizeOfficeCodeLoose(responsibleOfficeCode, null, DomainConstants.DefaultOfficeUsenet);
@@ -778,4 +1067,45 @@ public static partial class LocalDbInitializer
         entity.UpdatedAtUtc = updatedAtUtc;
         entity.IsDirty = true;
     }
+
+    private static string ExtractImportedAssetNoteValue(string? notes, string label)
+    {
+        if (string.IsNullOrWhiteSpace(notes) || string.IsNullOrWhiteSpace(label))
+            return string.Empty;
+
+        var normalizedNotes = notes
+            .Replace('\r', ' ')
+            .Replace('\n', ' ');
+        var labelIndex = normalizedNotes.IndexOf(label, StringComparison.OrdinalIgnoreCase);
+        if (labelIndex < 0)
+            return string.Empty;
+
+        var colonIndex = normalizedNotes.IndexOf(':', labelIndex);
+        if (colonIndex < 0)
+            return string.Empty;
+
+        var tail = normalizedNotes[(colonIndex + 1)..].Trim();
+        if (string.IsNullOrWhiteSpace(tail))
+            return string.Empty;
+
+        if (label.Contains("관리번호", StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (var token in tail.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (LooksLikeManagementNumber(token))
+                    return token;
+            }
+
+            return string.Empty;
+        }
+
+        return tail.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? string.Empty;
+    }
+
+    private static bool LooksLikeManagementNumber(string token)
+        => !string.IsNullOrWhiteSpace(token) &&
+           token.Length == 8 &&
+           token[4] == '-' &&
+           token[..4].All(char.IsDigit) &&
+           token[5..].All(char.IsDigit);
 }

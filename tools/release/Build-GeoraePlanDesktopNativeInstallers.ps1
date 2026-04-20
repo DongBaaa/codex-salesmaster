@@ -19,6 +19,7 @@ function Resolve-DotnetCommand {
 
     $candidates = @(
         $env:DOTNET_EXE,
+        'D:\.dotnet-sdk\dotnet.exe',
         'C:\Users\beene\AppData\Local\GeoraePlan.Android\dotnet8\dotnet.exe',
         'C:\Program Files\dotnet\dotnet.exe'
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }

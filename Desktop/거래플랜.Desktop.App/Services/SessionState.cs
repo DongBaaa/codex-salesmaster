@@ -1,4 +1,5 @@
 ﻿using System.Linq;
+using System.Text.Json;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -23,8 +24,7 @@ public sealed class SessionState
     public Guid SessionId { get; private set; } = Guid.NewGuid();
     public bool IsLoggedIn => User is not null;
     public bool IsAdmin => DomainConstants.IsAdminRole(User?.Role);
-    public bool IsGodMode =>
-        string.Equals(OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(OfficeCode, DomainConstants.OfficeUsenet), DomainConstants.OfficeUsenet, StringComparison.OrdinalIgnoreCase);
+    public bool IsGodMode => TryReadBooleanTokenClaim("god");
     public bool HasAdministrativePrivileges => IsAdmin || IsGodMode;
     public bool HasGlobalDataScope =>
         HasAdministrativePrivileges && string.Equals(ScopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase);
@@ -173,6 +173,51 @@ public sealed class SessionState
 
         if (raiseChanged && changed)
             BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private bool TryReadBooleanTokenClaim(string claimName)
+    {
+        if (string.IsNullOrWhiteSpace(Token) || string.IsNullOrWhiteSpace(claimName))
+            return false;
+
+        var segments = Token.Split('.');
+        if (segments.Length < 2)
+            return false;
+
+        try
+        {
+            var payload = segments[1]
+                .Replace('-', '+')
+                .Replace('_', '/');
+
+            switch (payload.Length % 4)
+            {
+                case 2:
+                    payload += "==";
+                    break;
+                case 3:
+                    payload += "=";
+                    break;
+            }
+
+            var bytes = Convert.FromBase64String(payload);
+            using var document = JsonDocument.Parse(bytes);
+            if (!document.RootElement.TryGetProperty(claimName, out var property))
+                return false;
+
+            return property.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.String => bool.TryParse(property.GetString(), out var value) && value,
+                JsonValueKind.Number => property.TryGetInt32(out var numeric) && numeric != 0,
+                _ => false
+            };
+        }
+        catch
+        {
+            return false;
+        }
     }
 }
 

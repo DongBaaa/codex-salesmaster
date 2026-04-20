@@ -22,6 +22,7 @@ public sealed class LocalDbContext : DbContext
     public DbSet<LocalRecentSelection> RecentSelections => Set<LocalRecentSelection>();
     public DbSet<LocalAttachmentSelection> AttachmentSelections => Set<LocalAttachmentSelection>();
     public DbSet<LocalSyncDiagnosticEvent> SyncDiagnosticEvents => Set<LocalSyncDiagnosticEvent>();
+    public DbSet<LocalSyncOutboxEntry> SyncOutboxEntries => Set<LocalSyncOutboxEntry>();
     public DbSet<LocalTransaction> Transactions => Set<LocalTransaction>();
     public DbSet<LocalTransactionAttachment> TransactionAttachments => Set<LocalTransactionAttachment>();
     public DbSet<LocalOffice> Offices => Set<LocalOffice>();
@@ -129,6 +130,14 @@ public sealed class LocalDbContext : DbContext
             .HasIndex(s => s.CustomerKey);
         model.Entity<LocalSyncDiagnosticEvent>()
             .HasIndex(e => e.LastOccurredAtUtc);
+        model.Entity<LocalSyncOutboxEntry>().HasKey(entry => entry.Id);
+        model.Entity<LocalSyncOutboxEntry>()
+            .HasIndex(entry => entry.MutationId)
+            .IsUnique();
+        model.Entity<LocalSyncOutboxEntry>()
+            .HasIndex(entry => new { entry.Status, entry.PreparedAtUtc });
+        model.Entity<LocalSyncOutboxEntry>()
+            .HasIndex(entry => new { entry.TenantCode, entry.OfficeCode, entry.ResponsibleOfficeCode, entry.Status, entry.PreparedAtUtc });
         model.Entity<LocalSyncDiagnosticEvent>()
             .HasIndex(e => new { e.Status, e.LastOccurredAtUtc });
         model.Entity<LocalSyncDiagnosticEvent>()
@@ -150,6 +159,10 @@ public sealed class LocalDbContext : DbContext
             .HasIndex(profile => new { profile.OfficeCode, profile.ProfileName });
         model.Entity<LocalCompanyProfile>()
             .HasIndex(profile => new { profile.OfficeCode, profile.IsDefaultForOffice });
+        model.Entity<LocalCustomer>()
+            .HasIndex(customer => customer.OfficeCode);
+        model.Entity<LocalCustomer>()
+            .HasIndex(customer => customer.ResponsibleOfficeCode);
         model.Entity<LocalItem>()
             .HasIndex(item => new { item.TenantCode, item.OfficeCode });
 
@@ -174,6 +187,8 @@ public sealed class LocalDbContext : DbContext
             .HasIndex(i => i.SourceWarehouseCode);
         model.Entity<LocalInvoice>()
             .HasIndex(i => i.ResponsibleOfficeCode);
+        model.Entity<LocalInvoice>()
+            .HasIndex(i => i.OfficeCode);
 
         model.Entity<LocalInvoiceLineSerial>()
             .HasIndex(s => new { s.InvoiceId, s.InvoiceLineId });
@@ -201,12 +216,24 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalRentalBillingProfile>()
             .HasIndex(profile => profile.ProfileKey)
             .IsUnique();
+        model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => profile.OfficeCode);
+        model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => profile.ResponsibleOfficeCode);
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => asset.AssetKey)
             .IsUnique();
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => asset.OfficeCode);
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => asset.ResponsibleOfficeCode);
         model.Entity<LocalRentalBillingLog>()
             .HasIndex(log => new { log.BillingProfileId, log.BillingYearMonth })
             .IsUnique();
+        model.Entity<LocalRentalBillingLog>()
+            .HasIndex(log => log.OfficeCode);
+        model.Entity<LocalRentalBillingLog>()
+            .HasIndex(log => log.ResponsibleOfficeCode);
         model.Entity<LocalAuditLog>()
             .HasIndex(a => new { a.EntityName, a.EntityId, a.CreatedAtUtc });
         model.Entity<LocalInventoryTransfer>()
@@ -226,6 +253,7 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalTransaction>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalTransaction>().HasIndex(e => e.CustomerId);
         model.Entity<LocalTransaction>().HasIndex(e => e.TransactionDate);
+        model.Entity<LocalTransaction>().HasIndex(e => e.OfficeCode);
         model.Entity<LocalTransaction>().HasIndex(e => e.ResponsibleOfficeCode);
         model.Entity<LocalTransactionAttachment>().HasIndex(e => e.Revision);
     }

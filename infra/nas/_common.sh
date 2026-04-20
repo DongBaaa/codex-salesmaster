@@ -30,6 +30,7 @@ STATE_DIR="${STATE_DIR:-$OPS_DIR/state}"
 CURRENT_RELEASE_FILE="${CURRENT_RELEASE_FILE:-$STATE_DIR/current-release.txt}"
 PREVIOUS_RELEASE_FILE="${PREVIOUS_RELEASE_FILE:-$STATE_DIR/previous-release.txt}"
 API_HOST_PORT="${API_HOST_PORT:-18082}"
+HEALTH_CHECK_RETRIES="${HEALTH_CHECK_RETRIES:-150}"
 POSTGRES_DB="${POSTGRES_DB:-georaeplan}"
 POSTGRES_USER="${POSTGRES_USER:-georaeplan}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
@@ -84,15 +85,15 @@ mirror_dir() {
 }
 
 wait_for_health() {
-  local retries="${1:-45}"
+  local retries="${1:-$HEALTH_CHECK_RETRIES}"
   local url="http://127.0.0.1:${API_HOST_PORT}/healthz"
 
   for ((i = 1; i <= retries; i++)); do
-    if command -v curl >/dev/null 2>&1 && curl -fsS "$url" >/dev/null; then
+    if command -v curl >/dev/null 2>&1 && curl -fsS "$url" >/dev/null 2>&1; then
       return 0
     fi
 
-    if command -v wget >/dev/null 2>&1 && wget -qO- "$url" >/dev/null; then
+    if command -v wget >/dev/null 2>&1 && wget -qO- "$url" >/dev/null 2>&1; then
       return 0
     fi
 

@@ -1,12 +1,15 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
+using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
+using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+
 
 namespace 거래플랜.Server.Api.Controllers;
 
@@ -88,7 +91,7 @@ public sealed class PaymentsController : ControllerBase
             .ThenInclude(payment => payment!.Invoice)
             .ThenInclude(invoice => invoice!.Customer)
             .FirstOrDefaultAsync(x => x.Id == attachmentId, cancellationToken);
-        if (attachment is not null && !_officeScopeService.CanReadOfficeForPayments(attachment.Payment?.Invoice?.OfficeCode, attachment.Payment?.Invoice?.TenantCode))
+        if (attachment is not null && !_officeScopeService.CanReadOfficeForPayments(attachment.Payment?.Invoice?.ResponsibleOfficeCode, attachment.Payment?.Invoice?.TenantCode))
             attachment = null;
         if (attachment is null)
             return NotFound();
@@ -106,7 +109,7 @@ public sealed class PaymentsController : ControllerBase
     }
 
     [HttpPost("{paymentId:guid}/attachments")]
-    [Authorize(Policy = "AdminOrGod")]
+    [Authorize(Policy = PermissionNames.PaymentEdit)]
     [RequestSizeLimit(20 * 1024 * 1024)]
     public async Task<ActionResult<PaymentAttachmentDto>> UploadAttachment(
         Guid paymentId,
@@ -115,14 +118,14 @@ public sealed class PaymentsController : ControllerBase
         [FromForm] string? description,
         CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditPayments())
             return Forbid();
 
         var payment = await _dbContext.Payments
             .Include(x => x.Invoice)
             .ThenInclude(invoice => invoice!.Customer)
             .FirstOrDefaultAsync(x => x.Id == paymentId, cancellationToken);
-        if (payment is not null && !_officeScopeService.CanWriteOfficeForPayments(payment.Invoice?.OfficeCode, payment.Invoice?.TenantCode))
+        if (payment is not null && !_officeScopeService.CanWriteOfficeForPayments(payment.Invoice?.ResponsibleOfficeCode, payment.Invoice?.TenantCode))
             return Forbid();
         if (payment is null)
             return NotFound();
@@ -213,10 +216,10 @@ public sealed class PaymentsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Policy = "AdminOrGod")]
+    [Authorize(Policy = PermissionNames.PaymentEdit)]
     public async Task<ActionResult<PaymentDto>> Create([FromBody] PaymentDto dto, CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditPayments())
             return Forbid();
 
         var invoice = await _dbContext.Invoices
@@ -225,7 +228,7 @@ public sealed class PaymentsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == dto.InvoiceId, cancellationToken);
         if (invoice is null)
             return BadRequest("Referenced invoice was not found.");
-        if (!_officeScopeService.CanWriteOfficeForPayments(invoice.OfficeCode, invoice.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode))
             return Forbid();
 
         var entity = new Payment { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
@@ -241,10 +244,10 @@ public sealed class PaymentsController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
-    [Authorize(Policy = "AdminOrGod")]
+    [Authorize(Policy = PermissionNames.PaymentEdit)]
     public async Task<ActionResult<PaymentDto>> Update(Guid id, [FromBody] PaymentDto dto, CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditPayments())
             return Forbid();
 
         var entity = await _dbContext.Payments
@@ -254,8 +257,10 @@ public sealed class PaymentsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null)
             return NotFound();
-        if (entity.Invoice is null || !_officeScopeService.CanWriteOfficeForPayments(entity.Invoice.OfficeCode, entity.Invoice.TenantCode))
+        if (entity.Invoice is null || !_officeScopeService.CanWriteOfficeForPayments(entity.Invoice.ResponsibleOfficeCode, entity.Invoice.TenantCode))
             return Forbid();
+        if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Payment)) is { } conflict)
+            return conflict;
 
         entity.Apply(dto);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -263,10 +268,10 @@ public sealed class PaymentsController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
-    [Authorize(Policy = "AdminOrGod")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+    [Authorize(Policy = PermissionNames.PaymentEdit)]
+    public async Task<IActionResult> Delete(Guid id, [FromQuery] long? expectedRevision, CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditPayments())
             return Forbid();
 
         var entity = await _dbContext.Payments
@@ -275,8 +280,10 @@ public sealed class PaymentsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null)
             return NotFound();
-        if (entity.Invoice is null || !_officeScopeService.CanWriteOfficeForPayments(entity.Invoice.OfficeCode, entity.Invoice.TenantCode))
+        if (entity.Invoice is null || !_officeScopeService.CanWriteOfficeForPayments(entity.Invoice.ResponsibleOfficeCode, entity.Invoice.TenantCode))
             return Forbid();
+        if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Payment)) is { } conflict)
+            return conflict;
 
         entity.IsDeleted = true;
         var attachments = await _dbContext.PaymentAttachments
@@ -291,4 +298,7 @@ public sealed class PaymentsController : ControllerBase
     }
 
 }
+
+
+
 

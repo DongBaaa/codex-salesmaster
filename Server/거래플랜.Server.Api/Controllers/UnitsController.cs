@@ -1,6 +1,7 @@
 ﻿using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
+using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -35,16 +36,20 @@ public sealed class UnitsController : ControllerBase
     {
         var entity = await _dbContext.Units.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
+        if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Unit)) is { } conflict)
+            return conflict;
         entity.Apply(dto);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
 
     [HttpDelete("{id:guid}")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+    public async Task<IActionResult> Delete(Guid id, [FromQuery] long? expectedRevision, CancellationToken cancellationToken)
     {
         var entity = await _dbContext.Units.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
+        if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Unit)) is { } conflict)
+            return conflict;
         entity.IsDeleted = true;
         await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();

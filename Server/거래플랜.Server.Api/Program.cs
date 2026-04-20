@@ -92,6 +92,8 @@ builder.Services.AddDbContext<AppDbContext>((serviceProvider, options) =>
 
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
 builder.Services.AddScoped<OfficeScopeService>();
+builder.Services.AddScoped<InventoryLedgerService>();
+builder.Services.AddScoped<RentalAssignmentHistoryService>();
 builder.Services.AddScoped<IJwtTokenFactory, JwtTokenFactory>();
 builder.Services.AddScoped<IInvoiceNumberService, InvoiceNumberService>();
 builder.Services.AddSingleton<RevisionClock>();
@@ -127,9 +129,19 @@ builder.Services.AddAuthorization(options =>
     AddPermissionPolicy(options, PermissionNames.AmountViewPurchase);
     AddPermissionPolicy(options, PermissionNames.SettingsEdit);
     AddPermissionPolicy(options, PermissionNames.DataBackupRestore);
+    AddPermissionPolicy(options, PermissionNames.CustomerEdit);
+    AddPermissionPolicy(options, PermissionNames.ItemEdit);
+    AddPermissionPolicy(options, PermissionNames.InvoiceEdit);
+    AddPermissionPolicy(options, PermissionNames.PaymentEdit);
+    AddPermissionPolicy(options, PermissionNames.InventoryReset);
+    AddPermissionPolicy(options, PermissionNames.RentalProfileEdit);
+    AddPermissionPolicy(options, PermissionNames.RentalAssetEdit);
+    AddPermissionPolicy(options, PermissionNames.DeliveryEdit);
     AddPermissionPolicy(options, PermissionNames.RentalViewAll);
     AddPermissionPolicy(options, PermissionNames.RentalEditAll);
     AddPermissionPolicy(options, PermissionNames.DeliveryViewAll);
+    AddPermissionPolicy(options, PermissionNames.RentalSettingsEdit);
+    AddPermissionPolicy(options, PermissionNames.RentalImport);
 });
 
 builder.Services.AddControllers().AddJsonOptions(options =>
@@ -341,11 +353,7 @@ static void AddPermissionPolicy(AuthorizationOptions options, string permission)
 }
 
 static bool IsGodUser(System.Security.Claims.ClaimsPrincipal user)
-    => user.Claims.Any(claim => claim.Type == "god" && string.Equals(claim.Value, "true", StringComparison.OrdinalIgnoreCase))
-       || string.Equals(
-           OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(user.FindFirst("office")?.Value),
-           OfficeCodeCatalog.Usenet,
-           StringComparison.OrdinalIgnoreCase);
+    => user.Claims.Any(claim => claim.Type == "god" && string.Equals(claim.Value, "true", StringComparison.OrdinalIgnoreCase));
 
 static string ResolveRateLimitKey(HttpContext context, string path)
 {

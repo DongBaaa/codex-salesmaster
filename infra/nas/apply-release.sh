@@ -25,6 +25,16 @@ if ! compgen -G "$release_dir/*.Server.Api.dll" >/dev/null; then
   exit 1
 fi
 
+if [[ ! -f "$release_dir/appsettings.json" ]]; then
+  echo "release directory is missing appsettings.json: $release_dir" >&2
+  exit 1
+fi
+
+if ! compgen -G "$release_dir/*.runtimeconfig.json" >/dev/null; then
+  echo "release directory is missing runtimeconfig.json: $release_dir" >&2
+  exit 1
+fi
+
 ensure_state_dir
 mkdir -p "$APP_LIVE_PATH"
 
@@ -40,13 +50,13 @@ mirror_dir "$release_dir" "$APP_LIVE_PATH"
 compose up -d postgres
 compose up -d --force-recreate api
 
-if ! wait_for_health 45; then
+if ! wait_for_health "$HEALTH_CHECK_RETRIES"; then
   if [[ -n "$previous_release_id" && -d "$RELEASES_PATH/$previous_release_id" ]]; then
     echo "health check failed; rolling back to $previous_release_id" >&2
     mirror_dir "$RELEASES_PATH/$previous_release_id" "$APP_LIVE_PATH"
     compose up -d postgres
     compose up -d --force-recreate api
-    if wait_for_health 30; then
+    if wait_for_health "$HEALTH_CHECK_RETRIES"; then
       printf '%s\n' "$previous_release_id" > "$CURRENT_RELEASE_FILE"
       echo "rollback_release_done release=$previous_release_id"
     else

@@ -12,6 +12,7 @@ namespace 거래플랜.Desktop.App.Views;
 public partial class SalesWindow : Window
 {
     private readonly SalesViewModel _vm;
+    private readonly EntityEditSessionMonitor? _editSessionMonitor;
     private bool _allowCloseWithoutSave;
     private bool _closeInProgress;
 
@@ -20,6 +21,18 @@ public partial class SalesWindow : Window
         InitializeComponent();
         _vm = vm;
         DataContext = vm;
+        Loaded += (_, _) => _editSessionMonitor?.Start();
+        Closed += (_, _) => _editSessionMonitor?.Dispose();
+
+        _editSessionMonitor = EntityEditSessionMonitor.TryCreate(
+            this,
+            "판매/구매 전표",
+            () => new EditSessionSubject(
+                "Invoice",
+                vm.InvoiceId.ToString("D"),
+                string.IsNullOrWhiteSpace(vm.CustomerName)
+                    ? "전표 편집"
+                    : $"{vm.CustomerName} 전표"));
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
@@ -305,7 +318,7 @@ public partial class SalesWindow : Window
         var matches = _vm.FindItemsForQuickInput(keyword);
         if (matches.Count == 0)
         {
-            _vm.StatusMessage = "입력한 품명과 일치하는 상품이 없습니다.";
+            PromptRegisterMissingItem(keyword);
             return;
         }
 
@@ -325,6 +338,12 @@ public partial class SalesWindow : Window
         var items = _vm.FindItemsForQuickInput(keyword);
         if (items.Count == 0)
         {
+            if (!string.IsNullOrWhiteSpace(keyword))
+            {
+                PromptRegisterMissingItem(keyword);
+                return;
+            }
+
             items = _vm.GetAllItems();
         }
 
@@ -336,6 +355,59 @@ public partial class SalesWindow : Window
         if (_vm.SelectedInputItem is null) return;
         _vm.ApplyInputItem(_vm.SelectedInputItem);
         _vm.StatusMessage = "상품 정보를 입력칸으로 반영했습니다.";
+    }
+
+    private void PromptRegisterMissingItem(string keyword)
+    {
+        if (string.IsNullOrWhiteSpace(keyword))
+        {
+            _vm.StatusMessage = "입력한 품명과 일치하는 상품이 없습니다.";
+            return;
+        }
+
+        var result = MessageBox.Show(
+            $"[{keyword}]\n해당 품목이 존재하지않습니다. 품목을 추가하시겠습니까?",
+            "품목 등록",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        if (result != MessageBoxResult.Yes)
+        {
+            _vm.StatusMessage = "입력한 품명과 일치하는 상품이 없습니다.";
+            return;
+        }
+
+        UiTaskHelper.Run(
+            this,
+            () => OpenInventoryWindowForMissingItemAsync(keyword),
+            "UI",
+            "품목 신규 등록",
+            "품목/재고 설정 창을 여는 중 오류가 발생했습니다.");
+    }
+
+    private async Task OpenInventoryWindowForMissingItemAsync(string keyword)
+    {
+        var inventoryVm = new InventoryViewModel(_vm.LocalStateService, _vm.SessionState);
+        await inventoryVm.LoadAsync();
+        inventoryVm.PrepareNewItemRegistration(keyword, $"[{keyword}] 신규 품목 정보를 입력하세요.");
+
+        var inventoryWindow = new InventoryWindow(inventoryVm)
+        {
+            Owner = this
+        };
+
+        inventoryWindow.ShowDialog();
+
+        await _vm.ReloadItemsAsync();
+        var matches = _vm.FindItemsForQuickInput(keyword);
+        if (matches.Count == 1)
+        {
+            _vm.ApplyInputItem(matches[0]);
+            _vm.StatusMessage = $"[{keyword}] 품목을 등록한 뒤 입력칸에 반영했습니다.";
+            return;
+        }
+
+        _vm.StatusMessage = $"[{keyword}] 품목 등록 창을 확인했습니다. 필요하면 다시 검색하거나 선택하세요.";
     }
 
     private void ShowItemLookup(IReadOnlyList<LocalItem> items, string title)

@@ -108,7 +108,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0">
                     <TextBlock Text="환경설정" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
-                    <TextBlock Text="회사 정보, 담당지점, 사용자 계정, 휴지통 복원과 버전 업데이트를 관리합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                    <TextBlock Text="회사 정보, 사용자 계정, 휴지통 복원과 버전 업데이트를 관리합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
                 </StackPanel>
                 <Button Grid.Column="1"
                         Content="닫기(F12)"
@@ -252,50 +252,93 @@
                         </Grid>
 
                         <Border Background="#102039" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="16" Margin="0,16,0,0">
-                            <StackPanel>
-                                <TextBlock Text="외부 레거시 데이터 추출/가져오기" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1.15*"/>
+                                    <ColumnDefinition Width="16"/>
+                                    <ColumnDefinition Width="0.85*"/>
+                                </Grid.ColumnDefinitions>
 
-                                <Grid Margin="0,0,0,8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="120"/>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="원본 DB(FDB)" VerticalAlignment="Center"/>
-                                    <TextBox Grid.Column="1" Text="{Binding LegacySourceDbPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
-                                    <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacySourceDbPathCommand}"/>
-                                </Grid>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="백업/이전 데이터 관리" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                    <TextBlock Text="자동 레거시 병합은 사용하지 않습니다. 현재 로컬 DB 백업을 직접 만들고, 필요할 때만 이전 레거시 판매관리 데이터를 수동으로 가져오세요."
+                                               Foreground="#9FB3C8"
+                                               Margin="0,8,0,12"
+                                               TextWrapping="Wrap"/>
 
-                                <Grid Margin="0,0,0,8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="120"/>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="거래처 엑셀" VerticalAlignment="Center"/>
-                                    <TextBox Grid.Column="1" Text="{Binding LegacyCustomerExcelPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
-                                    <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacyCustomerExcelPathCommand}"/>
-                                </Grid>
+                                    <Border Background="#1A2B4A" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6">
+                                        <DockPanel>
+                                            <Border DockPanel.Dock="Top" Background="#15253F" CornerRadius="6,6,0,0" Padding="12">
+                                                <WrapPanel>
+                                                    <Button Content="현재 DB 백업" Background="#455A64" Command="{Binding CreateBackupSnapshotCommand}" Margin="0,0,8,0" IsEnabled="{Binding CanManageBackupData}"/>
+                                                    <Button Content="목록 새로고침" Background="#37474F" Command="{Binding ReloadBackupSnapshotsCommand}" Margin="0,0,8,0"/>
+                                                    <Button Content="백업 폴더 열기" Background="#546E7A" Command="{Binding OpenBackupFolderCommand}" Margin="0,0,8,0" IsEnabled="{Binding CanManageBackupData}"/>
+                                                    <Button Content="선택 백업 복원 예약" Background="#8E24AA" Command="{Binding ScheduleSelectedBackupRestoreCommand}" IsEnabled="{Binding CanManageBackupData}"/>
+                                                </WrapPanel>
+                                            </Border>
+                                            <DataGrid ItemsSource="{Binding BackupSnapshots}"
+                                                      SelectedItem="{Binding SelectedBackupSnapshot}"
+                                                      IsReadOnly="True"
+                                                      BorderThickness="0"
+                                                      MinHeight="220">
+                                                <DataGrid.Columns>
+                                                    <DataGridTextColumn Header="백업명" Binding="{Binding DisplayName}" Width="*"/>
+                                                    <DataGridTextColumn Header="파일명" Binding="{Binding FileName}" Width="180"/>
+                                                    <DataGridTextColumn Header="생성시각" Binding="{Binding CreatedAtText}" Width="150"/>
+                                                    <DataGridTextColumn Header="크기" Binding="{Binding SizeText}" Width="90"/>
+                                                </DataGrid.Columns>
+                                            </DataGrid>
+                                        </DockPanel>
+                                    </Border>
 
-                                <Grid Margin="0,0,0,8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="120"/>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="제품 엑셀" VerticalAlignment="Center"/>
-                                    <TextBox Grid.Column="1" Text="{Binding LegacyItemExcelPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
-                                    <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacyItemExcelPathCommand}"/>
-                                </Grid>
+                                    <TextBlock Text="{Binding BackupDataStatus}" Foreground="#90CAF9" Margin="0,10,0,0" TextWrapping="Wrap"/>
+                                </StackPanel>
 
-                                <WrapPanel Margin="0,4,0,0">
-                                    <Button Content="1) 원본 DB → 엑셀 추출" Background="#00796B" Command="{Binding ExportLegacyDataCommand}" Margin="0,0,8,0"/>
-                                    <Button Content="2) 엑셀 → 거래플랜 DB 반영" Background="#1565C0" Command="{Binding ImportLegacyExcelDataCommand}" Margin="0,0,8,0"/>
-                                    <Button Content="추출 + 반영 한번에" Background="#6D4C41" Command="{Binding ExportAndImportLegacyDataCommand}"/>
-                                </WrapPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="이전 레거시 판매관리 수동 가져오기" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
 
-                                <TextBlock Text="{Binding LegacyMigrationStatus}" Foreground="#90CAF9" Margin="0,10,0,0" TextWrapping="Wrap"/>
-                            </StackPanel>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="원본 DB(FDB)" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Column="1" Text="{Binding LegacySourceDbPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
+                                        <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacySourceDbPathCommand}"/>
+                                    </Grid>
+
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="거래처 엑셀" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Column="1" Text="{Binding LegacyCustomerExcelPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
+                                        <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacyCustomerExcelPathCommand}"/>
+                                    </Grid>
+
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="품목 엑셀" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Column="1" Text="{Binding LegacyItemExcelPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
+                                        <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacyItemExcelPathCommand}"/>
+                                    </Grid>
+
+                                    <WrapPanel Margin="0,4,0,0">
+                                        <Button Content="1) 원본 DB → 엑셀 추출" Background="#00796B" Command="{Binding ExportLegacyDataCommand}" Margin="0,0,8,0"/>
+                                        <Button Content="2) 엑셀 → 거래플랜 반영" Background="#1565C0" Command="{Binding ImportLegacyExcelDataCommand}" Margin="0,0,8,0"/>
+                                        <Button Content="추출 + 반영 한번에" Background="#6D4C41" Command="{Binding ExportAndImportLegacyDataCommand}"/>
+                                    </WrapPanel>
+
+                                    <TextBlock Text="{Binding LegacyMigrationStatus}" Foreground="#90CAF9" Margin="0,10,0,0" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Grid>
                         </Border>
                     </StackPanel>
                 </ScrollViewer>
@@ -488,80 +531,6 @@
                 </ScrollViewer>
             </TabItem>
 
-            <TabItem Header="담당지점 관리">
-                <Grid Margin="10">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="10"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="2*"/>
-                        <ColumnDefinition Width="12"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-
-                    <Border Grid.Row="0"
-                            Grid.ColumnSpan="3"
-                            Background="#102039"
-                            BorderBrush="#2E4060"
-                            BorderThickness="1"
-                            CornerRadius="6"
-                            Padding="12">
-                        <StackPanel>
-                            <TextBlock Text="담당지점 안내"
-                                       Foreground="#4FC3F7"
-                                       FontWeight="Bold"/>
-                            <TextBlock Text="이 화면은 자유롭게 담당지점을 추가/삭제하는 마스터 관리 화면이 아니라, 시스템 기준 담당지점(USENET, ITWORLD, YEONSU)을 확인하는 용도입니다."
-                                       Foreground="#9FB3C8"
-                                       Margin="0,6,0,0"
-                                       TextWrapping="Wrap"/>
-                        </StackPanel>
-                    </Border>
-
-                    <Border Grid.Row="2" Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
-                        <DockPanel>
-                            <Border DockPanel.Dock="Top" Background="#102039" Padding="12" CornerRadius="6,6,0,0">
-                                <DockPanel>
-                                    <TextBlock Text="시스템 기본 3개 담당지점만 유지됩니다."
-                                               Foreground="#9FB3C8"
-                                               VerticalAlignment="Center"/>
-                                    <Button DockPanel.Dock="Right"
-                                            Content="새로고침"
-                                            Background="#455A64"
-                                            Command="{Binding ReloadOfficesCommand}"/>
-                                </DockPanel>
-                            </Border>
-                            <DataGrid ItemsSource="{Binding Offices}"
-                                      SelectedItem="{Binding SelectedOffice}"
-                                      IsReadOnly="True"
-                                      BorderThickness="0">
-                                <DataGrid.Columns>
-                                    <DataGridTextColumn Header="코드" Binding="{Binding Code}" Width="140"/>
-                                    <DataGridTextColumn Header="이름" Binding="{Binding Name}" Width="*"/>
-                                    <DataGridCheckBoxColumn Header="기본지점" Binding="{Binding IsHeadOffice}" Width="90"/>
-                                </DataGrid.Columns>
-                            </DataGrid>
-                        </DockPanel>
-                    </Border>
-
-                    <Border Grid.Row="2" Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14">
-                        <StackPanel>
-                            <TextBlock Text="담당지점 편집" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
-                            <TextBlock Text="담당지점 코드는 서버/로컬 공통 canonical 값(USENET, ITWORLD, YEONSU)으로 고정됩니다." Foreground="#9FB3C8" Margin="0,8,0,12" TextWrapping="Wrap"/>
-
-                            <Label Content="담당지점 코드"/>
-                            <TextBox Text="{Binding OfficeCode, UpdateSourceTrigger=PropertyChanged}"
-                                     IsEnabled="{Binding CanEditOfficeCode}"
-                                     Margin="0,0,0,10"/>
-
-                            <Label Content="담당지점 이름"/>
-                            <TextBox Text="{Binding OfficeName, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding CanEditOfficeName}" Margin="0,0,0,10"/>
-                        </StackPanel>
-                    </Border>
-                </Grid>
-            </TabItem>
-
             <TabItem Header="업체 / 데이터 권한">
                 <ScrollViewer Margin="10" VerticalScrollBarVisibility="Auto">
                     <StackPanel>
@@ -635,6 +604,53 @@
                                             Command="{Binding LoadSelectedBusinessDatabaseCommand}"
                                             IsEnabled="{Binding CanLoadSelectedBusinessDatabase}"/>
                                 </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#1A2B4A"
+                                CornerRadius="6"
+                                BorderBrush="#2E4060"
+                                BorderThickness="1"
+                                Padding="16"
+                                Margin="0,14,0,0">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="현재 계정 범위 진단" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                        <TextBlock Text="{Binding CurrentScopeMatrixHint}"
+                                                   Foreground="#9FB3C8"
+                                                   Margin="0,8,0,0"
+                                                   TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" HorizontalAlignment="Right">
+                                        <TextBlock Text="{Binding CurrentScopeMatrixGeneratedAtText, StringFormat=갱신: {0}}"
+                                                   Foreground="#90CAF9"
+                                                   FontSize="11"
+                                                   HorizontalAlignment="Right"/>
+                                        <TextBlock Text="{Binding CurrentScopeMatrixSummary}"
+                                                   Foreground="#EAF2FF"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,6,0,0"
+                                                   HorizontalAlignment="Right"/>
+                                    </StackPanel>
+                                </Grid>
+
+                                <DataGrid ItemsSource="{Binding CurrentScopeMatrixAreas}"
+                                          IsReadOnly="True"
+                                          Margin="0,14,0,0"
+                                          Height="220"
+                                          BorderThickness="0">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="영역" Binding="{Binding AreaDisplayName}" Width="120"/>
+                                        <DataGridTextColumn Header="조회 가능 지점" Binding="{Binding ReadableOfficeCodesText}" Width="220"/>
+                                        <DataGridTextColumn Header="쓰기 가능 지점" Binding="{Binding WritableOfficeCodesText}" Width="220"/>
+                                        <DataGridTextColumn Header="비고" Binding="{Binding Note}" Width="*"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
                             </StackPanel>
                         </Border>
 
@@ -1025,8 +1041,8 @@
                             </Grid.ColumnDefinitions>
 
                             <StackPanel Grid.Column="0">
-                                <TextBlock Text="동기화 / 동기화 진단 / 백업" Foreground="#4FC3F7" FontWeight="Bold" FontSize="18"/>
-                                <TextBlock Text="동기화 관련 기능을 한 곳에서 실행하고 현재 업체 DB와 미동기화 현황을 함께 확인합니다."
+                                <TextBlock Text="동기화 / 진단 / 무결성 / 백업" Foreground="#4FC3F7" FontWeight="Bold" FontSize="18"/>
+                                <TextBlock Text="동기화, 서버/로컬 무결성, sync outbox 재시도와 백업 기능을 한 곳에서 관리합니다."
                                            Foreground="#9FB3C8"
                                            Margin="0,8,0,0"
                                            TextWrapping="Wrap"/>
@@ -1037,10 +1053,14 @@
                                         Background="#37474F"
                                         Margin="0,0,8,0"
                                         Command="{Binding RunSyncCommand}"/>
-                                <Button Content="동기화 진단"
+                                <Button Content="동기화 진단·무결성"
                                         Background="#5D4037"
                                         Margin="0,0,8,0"
                                         Command="{Binding OpenSyncDiagnosticsCommand}"/>
+                                <Button Content="전체 재동기화"
+                                        Background="#0277BD"
+                                        Margin="0,0,8,0"
+                                        Command="{Binding RunFullResyncCommand}"/>
                                 <Button Content="백업"
                                         Background="#455A64"
                                         Command="{Binding RunBackupCommand}"/>
@@ -1200,6 +1220,19 @@
                                         <TextBlock Text="{Binding SyncScopeStatusSummaryText}" Foreground="#9FB3C8" Margin="0,6,0,0" TextWrapping="Wrap"/>
                                     </StackPanel>
                                 </Border>
+                                <WrapPanel DockPanel.Dock="Top" Margin="12,10,12,0">
+                                    <Button Content="선택 범위 계정 저장"
+                                            Background="#1565C0"
+                                            Margin="0,0,8,0"
+                                            Command="{Binding SaveSelectedSyncScopeCredentialCommand}"/>
+                                    <Button Content="선택 범위 동기화"
+                                            Background="#00897B"
+                                            Margin="0,0,8,0"
+                                            Command="{Binding RunSelectedSyncScopeSyncCommand}"/>
+                                    <Button Content="남은 dirty 보기"
+                                            Background="#546E7A"
+                                            Command="{Binding ViewSelectedSyncScopePendingCommand}"/>
+                                </WrapPanel>
                                 <DataGrid ItemsSource="{Binding SyncScopeStatuses}"
                                           SelectedItem="{Binding SelectedSyncScopeStatus}"
                                           IsReadOnly="True"
@@ -1528,3 +1561,4 @@
         </Border>
     </Grid>
 </Window>
+

@@ -14,6 +14,7 @@ namespace 거래플랜.Desktop.App.Views;
 public partial class CustomerEditWindow : Window
 {
     private readonly CustomerEditViewModel _vm;
+    private readonly EntityEditSessionMonitor? _editSessionMonitor;
     private bool _allowCloseWithoutSave;
     private bool _closeInProgress;
 
@@ -23,12 +24,22 @@ public partial class CustomerEditWindow : Window
         _vm = vm;
         DataContext = vm;
         Closing += Window_Closing;
+        Loaded += (_, _) => _editSessionMonitor?.Start();
+        Closed += (_, _) => _editSessionMonitor?.Dispose();
 
         vm.SavedAndClose += HandleSavedAndClose;
         vm.SavedAndNew += () =>
         {
             // 저장 후 폼 초기화 완료 — 창은 유지
         };
+
+        _editSessionMonitor = EntityEditSessionMonitor.TryCreate(
+            this,
+            "거래처 등록/수정",
+            () => new EditSessionSubject(
+                "Customer",
+                vm.CustomerId.ToString("D"),
+                string.IsNullOrWhiteSpace(vm.Name) ? "신규 거래처" : vm.Name));
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)

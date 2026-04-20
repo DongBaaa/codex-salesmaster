@@ -1,6 +1,7 @@
 ﻿using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Security;
+using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -38,6 +39,8 @@ public sealed class CompanyProfileController : ControllerBase
         }
         else
         {
+            if (OptimisticConcurrencyGuard.Check(this, profile, dto, nameof(Domain.CompanyProfile)) is { } conflict)
+                return conflict;
             profile.Apply(dto);
         }
 

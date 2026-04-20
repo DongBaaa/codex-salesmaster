@@ -1,17 +1,26 @@
 ﻿using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
+using System.Windows.Documents;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Printing;
-using 거래플랜.Desktop.App.Services;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
-public sealed partial class PrintEditViewModel : ObservableObject
+public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
 {
-    private readonly IPrintService _printService;
     private readonly Func<InvoicePrintModel, Task> _saveAction;
+    private readonly Func<InvoicePrintModel, string, FixedDocument> _previewBuilder;
+    private readonly UiDebouncer _previewDebouncer = new();
     private readonly Guid _invoiceId;
     private string _baselineStateSignature = string.Empty;
+    private bool _isInitializing;
+
+    public const string PreviewDocumentStatement = "거래명세서";
+    public const string PreviewDocumentEstimate = "견적서";
+    public const string PreviewDocumentPaymentClaim = "대금청구서";
 
     public event Action? RequestClose;
 
@@ -33,6 +42,9 @@ public sealed partial class PrintEditViewModel : ObservableObject
 
     [ObservableProperty] private string _managerName = string.Empty;
     [ObservableProperty] private string _memo = string.Empty;
+    [ObservableProperty] private string _estimateOrganization = string.Empty;
+    [ObservableProperty] private string _estimateValidityText = string.Empty;
+    [ObservableProperty] private string _estimateRemarks = string.Empty;
     [ObservableProperty] private string _footerText = string.Empty;
     [ObservableProperty] private string _bankAccountText = string.Empty;
 
@@ -46,6 +58,15 @@ public sealed partial class PrintEditViewModel : ObservableObject
     [ObservableProperty] private decimal _balanceAmount;
 
     [ObservableProperty] private System.Windows.Documents.FixedDocument? _previewDocument;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsStatementPreviewSelected))]
+    [NotifyPropertyChangedFor(nameof(IsEstimatePreviewSelected))]
+    [NotifyPropertyChangedFor(nameof(IsPaymentClaimPreviewSelected))]
+    [NotifyPropertyChangedFor(nameof(ShowLineEditor))]
+    [NotifyPropertyChangedFor(nameof(PreviewDocumentGuideText))]
+    [NotifyPropertyChangedFor(nameof(AmountSectionTitleText))]
+    [NotifyPropertyChangedFor(nameof(LineEditorTitleText))]
+    private string _selectedPreviewDocument = PreviewDocumentStatement;
     [ObservableProperty] private string _statusMessage = string.Empty;
     [ObservableProperty] private bool _wasSaved;
     [ObservableProperty]
@@ -55,6 +76,33 @@ public sealed partial class PrintEditViewModel : ObservableObject
     [ObservableProperty] private InvoicePrintLineEditModel? _selectedLine;
 
     public ObservableCollection<InvoicePrintLineEditModel> Lines { get; } = new();
+    public IReadOnlyList<string> PreviewDocumentOptions { get; } =
+    [
+        PreviewDocumentStatement,
+        PreviewDocumentEstimate,
+        PreviewDocumentPaymentClaim
+    ];
+    public bool IsStatementPreviewSelected => string.Equals(SelectedPreviewDocument, PreviewDocumentStatement, StringComparison.Ordinal);
+    public bool IsEstimatePreviewSelected => string.Equals(SelectedPreviewDocument, PreviewDocumentEstimate, StringComparison.Ordinal);
+    public bool IsPaymentClaimPreviewSelected => string.Equals(SelectedPreviewDocument, PreviewDocumentPaymentClaim, StringComparison.Ordinal);
+    public bool ShowLineEditor => !IsPaymentClaimPreviewSelected;
+    public string PreviewDocumentGuideText => SelectedPreviewDocument switch
+    {
+        PreviewDocumentEstimate => "견적서에 보이는 견적기간·특이사항·품목을 바로 편집합니다.",
+        PreviewDocumentPaymentClaim => "대금청구서에 보이는 용역명과 계좌정보를 바로 편집합니다.",
+        _ => "거래명세서에 보이는 메모·입금안내·하단문구·품목을 바로 편집합니다."
+    };
+    public string AmountSectionTitleText => SelectedPreviewDocument switch
+    {
+        PreviewDocumentEstimate => "견적 금액 정보",
+        PreviewDocumentPaymentClaim => "청구 금액 정보",
+        _ => "거래명세 금액 정보"
+    };
+    public string LineEditorTitleText => SelectedPreviewDocument switch
+    {
+        PreviewDocumentEstimate => "견적 품목 편집",
+        _ => "거래명세 품목 편집"
+    };
     public bool IsPurchaseDocument => string.Equals(VoucherType, 거래플랜.Shared.Contracts.VoucherType.Purchase.ToString(), StringComparison.OrdinalIgnoreCase);
     public string SettlementAmountLabelText => IsPurchaseDocument ? "지불액" : "입금액";
     public string OutstandingAmountLabelText => IsPurchaseDocument ? "미지불" : "미수금";
@@ -63,16 +111,19 @@ public sealed partial class PrintEditViewModel : ObservableObject
 
     public PrintEditViewModel(
         InvoicePrintModel model,
-        IPrintService printService,
-        Func<InvoicePrintModel, Task> saveAction)
+        Func<InvoicePrintModel, Task> saveAction,
+        Func<InvoicePrintModel, string, FixedDocument> previewBuilder)
     {
         ArgumentNullException.ThrowIfNull(model);
-        ArgumentNullException.ThrowIfNull(printService);
         ArgumentNullException.ThrowIfNull(saveAction);
+        ArgumentNullException.ThrowIfNull(previewBuilder);
 
-        _printService = printService;
         _saveAction = saveAction;
+        _previewBuilder = previewBuilder;
         _invoiceId = model.InvoiceId;
+        _isInitializing = true;
+        Lines.CollectionChanged += Lines_CollectionChanged;
+        PropertyChanged += PrintEditViewModel_PropertyChanged;
 
         InvoiceNumber = model.InvoiceNumber ?? string.Empty;
         InvoiceDate = model.InvoiceDate.ToDateTime(TimeOnly.MinValue);
@@ -89,6 +140,9 @@ public sealed partial class PrintEditViewModel : ObservableObject
         BuyerAddress = model.BuyerAddress ?? string.Empty;
         ManagerName = model.ManagerName ?? string.Empty;
         Memo = model.Memo ?? string.Empty;
+        EstimateOrganization = model.EstimateOrganization ?? string.Empty;
+        EstimateValidityText = model.EstimateValidityText ?? string.Empty;
+        EstimateRemarks = model.EstimateRemarks ?? string.Empty;
         FooterText = model.FooterText ?? string.Empty;
         BankAccountText = model.BankAccountText ?? string.Empty;
         PrintWithDate = model.PrintWithDate;
@@ -107,7 +161,8 @@ public sealed partial class PrintEditViewModel : ObservableObject
         if (Lines.Count == 0)
             Lines.Add(new InvoicePrintLineEditModel { No = 1 });
 
-        RefreshPreview();
+        _isInitializing = false;
+        RefreshPreviewCore(showErrorDialog: false, announceSuccess: false);
         CaptureBaselineState();
     }
 
@@ -141,20 +196,27 @@ public sealed partial class PrintEditViewModel : ObservableObject
 
     [RelayCommand]
     private void RefreshPreview()
+        => RefreshPreviewCore(showErrorDialog: true, announceSuccess: true);
+
+    private void RefreshPreviewCore(bool showErrorDialog, bool announceSuccess)
     {
         try
         {
-            PreviewDocument = _printService.BuildFixedDocument(BuildModel());
-            StatusMessage = "미리보기를 갱신했습니다.";
+            PreviewDocument = _previewBuilder(BuildModel(), NormalizePreviewDocument(SelectedPreviewDocument));
+            if (announceSuccess)
+                StatusMessage = "미리보기를 갱신했습니다.";
         }
         catch (Exception ex)
         {
             StatusMessage = $"미리보기 생성 실패: {ex.Message}";
-            System.Windows.MessageBox.Show(
-                StatusMessage,
-                "오류",
-                System.Windows.MessageBoxButton.OK,
-                System.Windows.MessageBoxImage.Error);
+            if (showErrorDialog)
+            {
+                System.Windows.MessageBox.Show(
+                    StatusMessage,
+                    "오류",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Error);
+            }
         }
     }
 
@@ -251,6 +313,9 @@ public sealed partial class PrintEditViewModel : ObservableObject
             BuyerAddress = BuyerAddress?.Trim() ?? string.Empty,
             ManagerName = ManagerName?.Trim() ?? string.Empty,
             Memo = Memo?.Trim() ?? string.Empty,
+            EstimateOrganization = EstimateOrganization?.Trim() ?? string.Empty,
+            EstimateValidityText = EstimateValidityText?.Trim() ?? string.Empty,
+            EstimateRemarks = EstimateRemarks?.Trim() ?? string.Empty,
             FooterText = FooterText?.Trim() ?? string.Empty,
             BankAccountText = BankAccountText?.Trim() ?? string.Empty,
             PrintWithDate = PrintWithDate,
@@ -272,6 +337,9 @@ public sealed partial class PrintEditViewModel : ObservableObject
                || !string.IsNullOrWhiteSpace(model.BuyerName)
                || !string.IsNullOrWhiteSpace(model.ManagerName)
                || !string.IsNullOrWhiteSpace(model.Memo)
+               || !string.IsNullOrWhiteSpace(model.EstimateOrganization)
+               || !string.IsNullOrWhiteSpace(model.EstimateValidityText)
+               || !string.IsNullOrWhiteSpace(model.EstimateRemarks)
                || !string.IsNullOrWhiteSpace(model.FooterText)
                || !string.IsNullOrWhiteSpace(model.BankAccountText)
                || model.SupplyAmount != 0m
@@ -311,6 +379,9 @@ public sealed partial class PrintEditViewModel : ObservableObject
             .Append('|').Append(model.BuyerAddress ?? string.Empty)
             .Append('|').Append(model.ManagerName ?? string.Empty)
             .Append('|').Append(model.Memo ?? string.Empty)
+            .Append('|').Append(model.EstimateOrganization ?? string.Empty)
+            .Append('|').Append(model.EstimateValidityText ?? string.Empty)
+            .Append('|').Append(model.EstimateRemarks ?? string.Empty)
             .Append('|').Append(model.FooterText ?? string.Empty)
             .Append('|').Append(model.BankAccountText ?? string.Empty)
             .Append('|').Append(model.PrintWithDate)
@@ -334,6 +405,87 @@ public sealed partial class PrintEditViewModel : ObservableObject
         }
 
         return builder.ToString();
+    }
+
+    private void Lines_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.OldItems is not null)
+        {
+            foreach (InvoicePrintLineEditModel line in e.OldItems)
+                line.PropertyChanged -= Line_PropertyChanged;
+        }
+
+        if (e.NewItems is not null)
+        {
+            foreach (InvoicePrintLineEditModel line in e.NewItems)
+                line.PropertyChanged += Line_PropertyChanged;
+        }
+
+        QueuePreviewRefresh();
+    }
+
+    private void Line_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        => QueuePreviewRefresh();
+
+    private void PrintEditViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!ShouldQueuePreviewRefresh(e.PropertyName))
+            return;
+
+        QueuePreviewRefresh();
+    }
+
+    private bool ShouldQueuePreviewRefresh(string? propertyName)
+    {
+        if (_isInitializing || IsSaving)
+            return false;
+
+        return propertyName switch
+        {
+            nameof(PreviewDocument) => false,
+            nameof(StatusMessage) => false,
+            nameof(WasSaved) => false,
+            nameof(IsSaving) => false,
+            nameof(SelectedLine) => false,
+            nameof(IsPurchaseDocument) => false,
+            nameof(SettlementAmountLabelText) => false,
+            nameof(OutstandingAmountLabelText) => false,
+            nameof(IsStatementPreviewSelected) => false,
+            nameof(IsEstimatePreviewSelected) => false,
+            nameof(IsPaymentClaimPreviewSelected) => false,
+            nameof(ShowLineEditor) => false,
+            nameof(PreviewDocumentGuideText) => false,
+            nameof(AmountSectionTitleText) => false,
+            nameof(LineEditorTitleText) => false,
+            _ => true
+        };
+    }
+
+    private void QueuePreviewRefresh()
+    {
+        if (_isInitializing)
+            return;
+
+        _previewDebouncer.Debounce(
+            TimeSpan.FromMilliseconds(180),
+            () => RefreshPreviewCore(showErrorDialog: false, announceSuccess: false));
+    }
+
+    private static string NormalizePreviewDocument(string? documentName)
+        => documentName switch
+        {
+            PreviewDocumentEstimate => PreviewDocumentEstimate,
+            PreviewDocumentPaymentClaim => PreviewDocumentPaymentClaim,
+            _ => PreviewDocumentStatement
+        };
+
+    public void Dispose()
+    {
+        PropertyChanged -= PrintEditViewModel_PropertyChanged;
+        Lines.CollectionChanged -= Lines_CollectionChanged;
+        foreach (var line in Lines)
+            line.PropertyChanged -= Line_PropertyChanged;
+        _previewDebouncer.Dispose();
     }
 }
 

@@ -27,22 +27,24 @@ public static partial class LocalDbInitializer
     private const string NormalizeItemCategoryOptionDuplicatesStepKey = "Migration.NormalizeItemCategoryOptionDuplicates.v1";
     private const string CleanupLegacyRentalStartupDirtyItemsStepKey = "Migration.CleanupLegacyRentalStartupDirtyItems.v1";
     private const string NormalizeUnitCatalogStepKey = "Migration.NormalizeUnitCatalog.v2";
-    private const string NormalizeInventoryTransferIntegrityStepKey = "Migration.NormalizeInventoryTransferIntegrity.v1";
+    private const string NormalizeInventoryTransferIntegrityStepKey = "Migration.NormalizeInventoryTransferIntegrity.v2";
     private const string PurgeDeletedInventoryTransferDataStepKey = "Migration.PurgeDeletedInventoryTransferData.v1";
     private const string RepairDeletedCustomerRentalProfileLinksStepKey = "Migration.RepairDeletedCustomerRentalProfileLinks.v1";
     private const string MergeDuplicateCustomerMastersStepKey = "Migration.MergeDuplicateCustomerMasters.v1";
     private const string MergeDuplicateCustomersStepKey = "Migration.MergeDuplicateCustomers.v1";
     private const string MergeBusinessDuplicateCustomersStepKey = "Migration.MergeBusinessDuplicateCustomers.v1";
-private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.MergeDuplicateRentalBillingProfiles.v3";
-private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Migration.MergeDuplicateRentalBillingProfiles.PostLinkage.v2";
+private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.MergeDuplicateRentalBillingProfiles.v4";
+private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Migration.MergeDuplicateRentalBillingProfiles.PostLinkage.v3";
     private const string MergeDuplicateRentalAssetsStepKey = "Migration.MergeDuplicateRentalAssets.v2";
     private const string MergeDuplicateCompanyProfilesStepKey = "Migration.MergeDuplicateCompanyProfiles.v1";
-    private const string RepairRentalCustomerLinkageStepKey = "Migration.RepairRentalCustomerLinkage.v7";
-    private const string MergeDuplicateItemsStepKey = "Migration.MergeDuplicateItems.v1";
+    private const string RepairRentalCustomerLinkageStepKey = "Migration.RepairRentalCustomerLinkage.v8";
+    private const string NormalizeCaseVariantItemIdsStepKey = "Migration.NormalizeCaseVariantItemIds.v1";
+    private const string MergeDuplicateItemsStepKey = "Migration.MergeDuplicateItems.v3";
     private const string NormalizeRentalBillingScheduleRulesStepKey = "Migration.NormalizeRentalBillingScheduleRules.v2";
     private const string CleanupDeletedInvoiceChainStepKey = "Migration.CleanupDeletedInvoiceChain.v1";
     private const string BackfillItemScopeFieldsStepKey = "Migration.BackfillItemScopeFields.v1";
     private const string BackfillItemOperationalFieldsStepKey = "Migration.BackfillItemOperationalFields.v1";
+    private const string BackfillOperationalOwnerOfficeFieldsStepKey = "Migration.BackfillOperationalOwnerOfficeFields.v1";
     private const string BackfillInvoiceLineTrackingTypesStepKey = "Migration.BackfillInvoiceLineTrackingTypes.v1";
     private const string NormalizeRentalOfficeDataStepKey = "Migration.NormalizeRentalOfficeData.v1";
     private const string NormalizeRentalAssetOfficeOwnershipStepKey = "Migration.NormalizeRentalAssetOfficeOwnership.v1";
@@ -61,6 +63,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
     {
         await db.Database.EnsureCreatedAsync();
         await MigrateColumnsAsync(db);
+        await EnsureSyncOutboxTableAsync(db);
 
         if (!db.CustomerCategories.Any())
         {
@@ -109,19 +112,14 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             async () => await NormalizeSelectionOptionSystemDefaultsAsync(db));
         await SeedOfficeAndWarehouseAsync(db);
         await SeedCompanyProfilesAsync(db);
+        await NormalizeCompanyProfilesAsync(db);
         await RunStartupMaintenanceStepAsync(
             db,
             NormalizeCompanyProfileAssignmentSettingsStepKey,
             async () => await NormalizeCompanyProfileAssignmentSettingsAsync(db));
         await SeedRentalDefaultsAsync(db);
-        await RunStartupMaintenanceStepAsync(
-            db,
-            NormalizeRentalOfficeDataStepKey,
-            async () => await NormalizeRentalOfficeDataAsync(db));
-        await RunStartupMaintenanceStepAsync(
-            db,
-            NormalizeRentalAssetOfficeOwnershipStepKey,
-            async () => await NormalizeRentalAssetOfficeOwnershipAsync(db));
+        await NormalizeRentalOfficeDataAsync(db);
+        await NormalizeRentalAssetOfficeOwnershipAsync(db);
         await RunStartupMaintenanceStepAsync(
             db,
             DropLegacyRentalAssignedUsernameIndexesStepKey,
@@ -174,6 +172,10 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             db,
             MergeDuplicateRentalBillingProfilesPostLinkageStepKey,
             async () => await MergeDuplicateRentalBillingProfilesAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeCaseVariantItemIdsStepKey,
+            async () => await NormalizeCaseVariantItemIdsAsync(db));
         await RunStartupMaintenanceStepAsync(
             db,
             MergeDuplicateItemsStepKey,
@@ -262,6 +264,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         var customerCols = new (string col, string def)[]
         {
             ("TenantCode", $"TEXT NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}'"),
+            ("OfficeCode", "TEXT NOT NULL DEFAULT ''"),
             ("DetailAddress", "TEXT NOT NULL DEFAULT ''"),
             ("MobilePhone", "TEXT NOT NULL DEFAULT ''"),
             ("FaxNumber", "TEXT NOT NULL DEFAULT ''"),
@@ -303,6 +306,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
 
         var transactionCols = new (string col, string def)[]
         {
+            ("TenantCode", $"TEXT NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}'"),
+            ("OfficeCode", "TEXT NOT NULL DEFAULT ''"),
             ("ResponsibleOfficeCode", "TEXT NOT NULL DEFAULT 'USENET'"),
             ("TransactionKind", "TEXT NOT NULL DEFAULT '일반수금'"),
             ("LinkedInvoiceId", "TEXT NULL"),
@@ -362,6 +367,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
 
         var invoiceCols = new (string col, string def)[]
         {
+            ("TenantCode", $"TEXT NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}'"),
+            ("OfficeCode", "TEXT NOT NULL DEFAULT ''"),
             ("ResponsibleOfficeCode", "TEXT NOT NULL DEFAULT 'USENET'"),
             ("SourceWarehouseCode", "TEXT NOT NULL DEFAULT 'USENET_MAIN'"),
             ("DeliveryGroupId", "TEXT NULL"),
@@ -402,6 +409,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
 
         var rentalAssetCols = new (string col, string def)[]
         {
+            ("TenantCode", $"TEXT NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}'"),
+            ("OfficeCode", "TEXT NOT NULL DEFAULT ''"),
             ("ItemId", "TEXT NULL"),
             ("CurrentCustomerName", "TEXT NOT NULL DEFAULT ''"),
             ("InstallSiteName", "TEXT NOT NULL DEFAULT ''"),
@@ -421,6 +430,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
 
         var rentalBillingProfileCols = new (string col, string def)[]
         {
+            ("TenantCode", $"TEXT NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}'"),
+            ("OfficeCode", "TEXT NOT NULL DEFAULT ''"),
+            ("ResponsibleOfficeCode", "TEXT NOT NULL DEFAULT 'USENET'"),
             ("BillingType", "TEXT NOT NULL DEFAULT '묶음'"),
             ("InstallSiteName", "TEXT NOT NULL DEFAULT ''"),
             ("BillingAdvanceMode", "TEXT NOT NULL DEFAULT '후불'"),
@@ -444,6 +456,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryAddColumnAsync(db, "RentalBillingProfiles", "BillToCustomerName", "TEXT NOT NULL DEFAULT ''");
         await TryAddColumnAsync(db, "RentalBillingProfiles", "PaymentMethod", "TEXT NOT NULL DEFAULT ''");
         await TryAddColumnAsync(db, "RentalBillingProfiles", "FollowUpNote", "TEXT NOT NULL DEFAULT ''");
+        await TryAddColumnAsync(db, "RentalBillingLogs", "TenantCode", $"TEXT NOT NULL DEFAULT '{TenantScopeCatalog.UsenetGroup}'");
+        await TryAddColumnAsync(db, "RentalBillingLogs", "OfficeCode", "TEXT NOT NULL DEFAULT ''");
+        await TryAddColumnAsync(db, "RentalBillingLogs", "ResponsibleOfficeCode", "TEXT NOT NULL DEFAULT 'USENET'");
 
         var inventoryTransferCols = new (string col, string def)[]
         {
@@ -479,10 +494,20 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_LinkedRentalBillingProfileId\" ON \"Invoices\" (\"LinkedRentalBillingProfileId\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_LinkedRentalBillingRunId\" ON \"Invoices\" (\"LinkedRentalBillingRunId\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_SourceWarehouseCode\" ON \"Invoices\" (\"SourceWarehouseCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Customers_OfficeCode\" ON \"Customers\" (\"OfficeCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Customers_ResponsibleOfficeCode\" ON \"Customers\" (\"ResponsibleOfficeCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_OfficeCode\" ON \"Invoices\" (\"OfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_ResponsibleOfficeCode\" ON \"Invoices\" (\"ResponsibleOfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CompanyProfiles_OfficeCode_ProfileName\" ON \"CompanyProfiles\" (\"OfficeCode\", \"ProfileName\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CompanyProfiles_OfficeCode_IsDefaultForOffice\" ON \"CompanyProfiles\" (\"OfficeCode\", \"IsDefaultForOffice\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Transactions_OfficeCode\" ON \"Transactions\" (\"OfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Transactions_ResponsibleOfficeCode\" ON \"Transactions\" (\"ResponsibleOfficeCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_OfficeCode\" ON \"RentalBillingProfiles\" (\"OfficeCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_ResponsibleOfficeCode\" ON \"RentalBillingProfiles\" (\"ResponsibleOfficeCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_OfficeCode\" ON \"RentalAssets\" (\"OfficeCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_ResponsibleOfficeCode\" ON \"RentalAssets\" (\"ResponsibleOfficeCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingLogs_OfficeCode\" ON \"RentalBillingLogs\" (\"OfficeCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingLogs_ResponsibleOfficeCode\" ON \"RentalBillingLogs\" (\"ResponsibleOfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId\" ON \"CustomerContracts\" (\"CustomerId\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId_IsPrimary\" ON \"CustomerContracts\" (\"CustomerId\", \"IsPrimary\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionId\" ON \"TransactionAttachments\" (\"TransactionId\");");
@@ -517,10 +542,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             db,
             BackfillCustomerMasterScopeFieldsStepKey,
             async () => await BackfillCustomerMasterScopeFieldsAsync(db));
-        await RunStartupMaintenanceStepAsync(
-            db,
-            BackfillItemScopeFieldsStepKey,
-            async () => await BackfillItemScopeFieldsAsync(db));
+        await BackfillOperationalOfficeOwnershipAsync(db);
+        await BackfillItemScopeFieldsAsync(db);
         await RunStartupMaintenanceStepAsync(
             db,
             BackfillItemOperationalFieldsStepKey,
@@ -609,18 +632,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
 
         await db.SaveChangesAsync();
 
-        await RunStartupMaintenanceStepAsync(
-            db,
-            NormalizeLegacyOfficeCodesStepKey,
-            async () => await NormalizeLegacyOfficeCodesAsync(db));
-        await RunStartupMaintenanceStepAsync(
-            db,
-            NormalizeOfficeReferenceDataStepKey,
-            async () => await NormalizeOfficeReferenceDataAsync(db));
-        await RunStartupMaintenanceStepAsync(
-            db,
-            NormalizeWarehouseDataStepKey,
-            async () => await NormalizeWarehouseDataAsync(db));
+        await NormalizeLegacyOfficeCodesAsync(db);
+        await NormalizeOfficeReferenceDataAsync(db);
+        await NormalizeWarehouseDataAsync(db);
         await db.SaveChangesAsync();
 
         var offices = await db.Offices.AsNoTracking().Where(office => !office.IsDeleted).ToListAsync();
@@ -1103,16 +1117,6 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
     {
         var now = DateTime.UtcNow;
 
-        foreach (var profile in await db.CompanyProfiles.IgnoreQueryFilters().ToListAsync())
-        {
-            var canonicalOfficeCode = ResolveCanonicalOfficeCode(profile.OfficeCode, profile.ProfileName);
-            if (!string.Equals(profile.OfficeCode, canonicalOfficeCode, StringComparison.OrdinalIgnoreCase))
-            {
-                profile.OfficeCode = canonicalOfficeCode;
-                PreserveDirtyStateForStartupMaintenance(profile, now);
-            }
-        }
-
         foreach (var customer in await db.Customers.IgnoreQueryFilters().ToListAsync())
         {
             var canonicalOfficeCode = ResolveCanonicalOfficeCode(customer.ResponsibleOfficeCode, null);
@@ -1483,18 +1487,33 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         var billingProfiles = await db.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync();
         foreach (var profile in billingProfiles)
         {
-            var officeCode = NormalizeRentalOfficeCode(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode);
+            var responsibleOfficeCode = NormalizeOperationalResponsibleOfficeCode(
+                profile.ResponsibleOfficeCode,
+                profile.OfficeCode,
+                profile.ManagementCompanyCode,
+                DomainConstants.OfficeUsenet);
+            var ownerOfficeCode = ResolveOperationalOwnerOfficeCode(
+                profile.OfficeCode,
+                responsibleOfficeCode,
+                profile.ManagementCompanyCode,
+                DomainConstants.OfficeUsenet);
             var changed = false;
 
-            if (!string.Equals(profile.ResponsibleOfficeCode, officeCode, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(profile.ResponsibleOfficeCode, responsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
             {
-                profile.ResponsibleOfficeCode = officeCode;
+                profile.ResponsibleOfficeCode = responsibleOfficeCode;
                 changed = true;
             }
 
-            if (!string.Equals(profile.ManagementCompanyCode, officeCode, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(profile.OfficeCode, ownerOfficeCode, StringComparison.OrdinalIgnoreCase))
             {
-                profile.ManagementCompanyCode = officeCode;
+                profile.OfficeCode = ownerOfficeCode;
+                changed = true;
+            }
+
+            if (!string.Equals(profile.ManagementCompanyCode, ownerOfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                profile.ManagementCompanyCode = ownerOfficeCode;
                 changed = true;
             }
 
@@ -1507,18 +1526,33 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         var assets = await db.RentalAssets.IgnoreQueryFilters().ToListAsync();
         foreach (var asset in assets)
         {
-            var officeCode = NormalizeRentalOfficeCode(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode);
+            var responsibleOfficeCode = NormalizeOperationalResponsibleOfficeCode(
+                asset.ResponsibleOfficeCode,
+                asset.OfficeCode,
+                asset.ManagementCompanyCode,
+                DomainConstants.OfficeUsenet);
+            var ownerOfficeCode = ResolveOperationalOwnerOfficeCode(
+                asset.OfficeCode,
+                responsibleOfficeCode,
+                asset.ManagementCompanyCode,
+                DomainConstants.OfficeUsenet);
             var changed = false;
 
-            if (!string.Equals(asset.ResponsibleOfficeCode, officeCode, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(asset.ResponsibleOfficeCode, responsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
             {
-                asset.ResponsibleOfficeCode = officeCode;
+                asset.ResponsibleOfficeCode = responsibleOfficeCode;
                 changed = true;
             }
 
-            if (!string.Equals(asset.ManagementCompanyCode, officeCode, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(asset.OfficeCode, ownerOfficeCode, StringComparison.OrdinalIgnoreCase))
             {
-                asset.ManagementCompanyCode = officeCode;
+                asset.OfficeCode = ownerOfficeCode;
+                changed = true;
+            }
+
+            if (!string.Equals(asset.ManagementCompanyCode, ownerOfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                asset.ManagementCompanyCode = ownerOfficeCode;
                 changed = true;
             }
 
@@ -1543,12 +1577,30 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         var billingLogs = await db.RentalBillingLogs.IgnoreQueryFilters().ToListAsync();
         foreach (var log in billingLogs)
         {
-            var officeCode = NormalizeRentalOfficeCode(log.ResponsibleOfficeCode, string.Empty);
-            if (string.Equals(log.ResponsibleOfficeCode, officeCode, StringComparison.OrdinalIgnoreCase))
-                continue;
+            var responsibleOfficeCode = NormalizeOperationalResponsibleOfficeCode(
+                log.ResponsibleOfficeCode,
+                log.OfficeCode,
+                DomainConstants.OfficeUsenet);
+            var ownerOfficeCode = ResolveOperationalOwnerOfficeCode(
+                log.OfficeCode,
+                responsibleOfficeCode,
+                DomainConstants.OfficeUsenet);
+            var changed = false;
 
-            log.ResponsibleOfficeCode = officeCode;
-            PreserveDirtyStateForStartupMaintenance(log, DateTime.UtcNow);
+            if (!string.Equals(log.ResponsibleOfficeCode, responsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                log.ResponsibleOfficeCode = responsibleOfficeCode;
+                changed = true;
+            }
+
+            if (!string.Equals(log.OfficeCode, ownerOfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                log.OfficeCode = ownerOfficeCode;
+                changed = true;
+            }
+
+            if (changed)
+                PreserveDirtyStateForStartupMaintenance(log, DateTime.UtcNow);
         }
     }
 
@@ -1644,12 +1696,14 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         var items = await db.Items.IgnoreQueryFilters().ToListAsync();
         if (items.Count == 0)
             return;
+        var now = DateTime.UtcNow;
 
         var rentalOfficeMap = (await db.RentalAssets.IgnoreQueryFilters()
                 .Where(asset => !asset.IsDeleted && asset.ItemId.HasValue)
                 .Select(asset => new
                 {
                     ItemId = asset.ItemId!.Value,
+                    asset.OfficeCode,
                     asset.ResponsibleOfficeCode,
                     asset.ManagementCompanyCode
                 })
@@ -1657,7 +1711,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             .Select(asset => new
             {
                 asset.ItemId,
-                OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeLoose(
+                OfficeCode = ResolveOperationalOwnerOfficeCode(
+                    asset.OfficeCode,
                     asset.ResponsibleOfficeCode,
                     asset.ManagementCompanyCode,
                     DomainConstants.OfficeUsenet)
@@ -1670,8 +1725,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 group => group.Key,
                 group => group
                     .Select(entry => entry.OfficeCode)
-                    .FirstOrDefault(code => !string.IsNullOrWhiteSpace(code))
-                    ?? DomainConstants.OfficeUsenet);
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList());
 
         var warehouseOfficeMap = await db.ItemWarehouseStocks
             .AsNoTracking()
@@ -1699,13 +1755,17 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 select new
                 {
                     ItemId = line.ItemId!.Value,
+                    invoice.OfficeCode,
                     invoice.ResponsibleOfficeCode
                 })
             .ToListAsync())
             .Select(entry => new
             {
                 entry.ItemId,
-                OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entry.ResponsibleOfficeCode, OfficeCodeCatalog.Shared)
+                OfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(
+                    entry.OfficeCode,
+                    entry.ResponsibleOfficeCode,
+                    OfficeCodeCatalog.Shared)
             })
             .ToList();
 
@@ -1722,57 +1782,36 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         var changed = false;
         foreach (var item in items)
         {
-            var desiredOfficeCode = ResolveDesiredItemOfficeCode(item, rentalOfficeLookup, warehouseOfficeLookup, invoiceOfficeLookup);
-            var desiredTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            var scopeInference = ItemScopeInference.Analyze(
+                item.OfficeCode,
                 item.TenantCode,
-                desiredOfficeCode,
-                TenantScopeCatalog.UsenetGroup,
-                desiredOfficeCode);
+                rentalOfficeLookup.TryGetValue(item.Id, out var rentalOfficeCodes) ? rentalOfficeCodes : [],
+                warehouseOfficeLookup.TryGetValue(item.Id, out var warehouseOfficeCodes) ? warehouseOfficeCodes : [],
+                invoiceOfficeLookup.TryGetValue(item.Id, out var invoiceOfficeCodes) ? invoiceOfficeCodes : []);
 
-            if (!string.Equals(item.OfficeCode, desiredOfficeCode, StringComparison.OrdinalIgnoreCase))
+            var entityChanged = false;
+
+            if (!string.Equals(item.OfficeCode, scopeInference.DesiredOfficeCode, StringComparison.OrdinalIgnoreCase))
             {
-                item.OfficeCode = desiredOfficeCode;
-                changed = true;
+                item.OfficeCode = scopeInference.DesiredOfficeCode;
+                entityChanged = true;
             }
 
-            if (!string.Equals(item.TenantCode, desiredTenantCode, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(item.TenantCode, scopeInference.DesiredTenantCode, StringComparison.OrdinalIgnoreCase))
             {
-                item.TenantCode = desiredTenantCode;
-                changed = true;
+                item.TenantCode = scopeInference.DesiredTenantCode;
+                entityChanged = true;
             }
+
+            if (!entityChanged)
+                continue;
+
+            PreserveDirtyStateForStartupMaintenance(item, now);
+            changed = true;
         }
 
         if (changed)
             await db.SaveChangesAsync();
-    }
-
-    private static string ResolveDesiredItemOfficeCode(
-        LocalItem item,
-        IReadOnlyDictionary<Guid, string> rentalOfficeLookup,
-        IReadOnlyDictionary<Guid, List<string>> warehouseOfficeLookup,
-        IReadOnlyDictionary<Guid, List<string>> invoiceOfficeLookup)
-    {
-        if (rentalOfficeLookup.TryGetValue(item.Id, out var rentalOfficeCode) &&
-            !string.IsNullOrWhiteSpace(rentalOfficeCode))
-        {
-            return OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(rentalOfficeCode, DomainConstants.OfficeUsenet);
-        }
-
-        if (warehouseOfficeLookup.TryGetValue(item.Id, out var warehouseOffices) && warehouseOffices.Count > 0)
-        {
-            return warehouseOffices.Count == 1
-                ? OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(warehouseOffices[0], OfficeCodeCatalog.Shared)
-                : OfficeCodeCatalog.Shared;
-        }
-
-        if (invoiceOfficeLookup.TryGetValue(item.Id, out var invoiceOffices) && invoiceOffices.Count > 0)
-        {
-            return invoiceOffices.Count == 1
-                ? OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(invoiceOffices[0], OfficeCodeCatalog.Shared)
-                : OfficeCodeCatalog.Shared;
-        }
-
-        return OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared);
     }
 
     private static string ResolveOfficeCodeFromWarehouseCode(string? warehouseCode)

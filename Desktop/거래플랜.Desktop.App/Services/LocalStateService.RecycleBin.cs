@@ -30,15 +30,20 @@ public sealed partial class LocalStateService
             Title = customer.NameOriginal,
             Subtitle = JoinSegments(customer.BusinessNumber, customer.Phone),
             Detail = JoinSegments(customer.Address, customer.ContactPerson, customer.Notes),
-            DeletedAtUtc = customer.UpdatedAtUtc
+            DeletedAtUtc = customer.UpdatedAtUtc,
+            Revision = customer.Revision
         }));
 
-        var deletedItems = await _db.Items
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(item => item.IsDeleted)
+        var deletedItems = (await ApplyItemScope(
+                _db.Items
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(item => item.IsDeleted),
+                session)
             .OrderByDescending(item => item.UpdatedAtUtc)
-            .ToListAsync(ct);
+            .ToListAsync(ct))
+            .Where(item => CanWriteItemScope(item, session))
+            .ToList();
 
         entries.AddRange(deletedItems.Select(item => new RecycleBinEntry
         {
@@ -50,76 +55,84 @@ public sealed partial class LocalStateService
                 item.CurrentStock != 0m ? $"현재고 {item.CurrentStock:N0}" : null,
                 item.SalePrice != 0m ? $"매출단가 {item.SalePrice:N0}원" : null,
                 item.Notes),
-            DeletedAtUtc = item.UpdatedAtUtc
+            DeletedAtUtc = item.UpdatedAtUtc,
+            Revision = item.Revision
         }));
 
-        var deletedCompanyProfiles = await _db.CompanyProfiles
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(profile => profile.IsDeleted)
-            .OrderByDescending(profile => profile.UpdatedAtUtc)
-            .ToListAsync(ct);
-
-        entries.AddRange(deletedCompanyProfiles.Select(profile => new RecycleBinEntry
+        if (CanManageSharedRecycleBin(session))
         {
-            EntityId = profile.Id,
-            Kind = RecycleBinEntityKind.CompanyProfile,
-            Title = string.IsNullOrWhiteSpace(profile.TradeName) ? "(회사설정)" : profile.TradeName,
-            Subtitle = JoinSegments(profile.ProfileName, profile.OfficeCode, profile.BusinessNumber),
-            Detail = JoinSegments(profile.Representative, profile.ContactNumber, profile.Email),
-            DeletedAtUtc = profile.UpdatedAtUtc
-        }));
+            var deletedCompanyProfiles = await _db.CompanyProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(profile => profile.IsDeleted)
+                .OrderByDescending(profile => profile.UpdatedAtUtc)
+                .ToListAsync(ct);
 
-        var deletedPriceGradeOptions = await _db.PriceGradeOptions
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(option => option.IsDeleted)
-            .OrderByDescending(option => option.UpdatedAtUtc)
-            .ToListAsync(ct);
+            entries.AddRange(deletedCompanyProfiles.Select(profile => new RecycleBinEntry
+            {
+                EntityId = profile.Id,
+                Kind = RecycleBinEntityKind.CompanyProfile,
+                Title = string.IsNullOrWhiteSpace(profile.TradeName) ? "(회사설정)" : profile.TradeName,
+                Subtitle = JoinSegments(profile.ProfileName, profile.OfficeCode, profile.BusinessNumber),
+                Detail = JoinSegments(profile.Representative, profile.ContactNumber, profile.Email),
+                DeletedAtUtc = profile.UpdatedAtUtc,
+                Revision = profile.Revision
+            }));
 
-        entries.AddRange(deletedPriceGradeOptions.Select(option => new RecycleBinEntry
-        {
-            EntityId = option.Id,
-            Kind = RecycleBinEntityKind.PriceGradeOption,
-            Title = option.Name,
-            Subtitle = JoinSegments(option.PriceSourceDisplay, option.IsSystemDefault ? "기본 가격등급" : null),
-            Detail = option.SortOrder != 0 ? $"정렬순서 {option.SortOrder}" : string.Empty,
-            DeletedAtUtc = option.UpdatedAtUtc
-        }));
+            var deletedPriceGradeOptions = await _db.PriceGradeOptions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(option => option.IsDeleted)
+                .OrderByDescending(option => option.UpdatedAtUtc)
+                .ToListAsync(ct);
 
-        var deletedTradeTypeOptions = await _db.TradeTypeOptions
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(option => option.IsDeleted)
-            .OrderByDescending(option => option.UpdatedAtUtc)
-            .ToListAsync(ct);
+            entries.AddRange(deletedPriceGradeOptions.Select(option => new RecycleBinEntry
+            {
+                EntityId = option.Id,
+                Kind = RecycleBinEntityKind.PriceGradeOption,
+                Title = option.Name,
+                Subtitle = JoinSegments(option.PriceSourceDisplay, option.IsSystemDefault ? "기본 가격등급" : null),
+                Detail = option.SortOrder != 0 ? $"정렬순서 {option.SortOrder}" : string.Empty,
+                DeletedAtUtc = option.UpdatedAtUtc,
+                Revision = option.Revision
+            }));
 
-        entries.AddRange(deletedTradeTypeOptions.Select(option => new RecycleBinEntry
-        {
-            EntityId = option.Id,
-            Kind = RecycleBinEntityKind.TradeTypeOption,
-            Title = option.Name,
-            Subtitle = JoinSegments(option.AllowsSales ? "매출" : null, option.AllowsPurchase ? "매입" : null),
-            Detail = option.IsSystemDefault ? "기본 거래구분" : string.Empty,
-            DeletedAtUtc = option.UpdatedAtUtc
-        }));
+            var deletedTradeTypeOptions = await _db.TradeTypeOptions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(option => option.IsDeleted)
+                .OrderByDescending(option => option.UpdatedAtUtc)
+                .ToListAsync(ct);
 
-        var deletedItemCategoryOptions = await _db.ItemCategoryOptions
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(option => option.IsDeleted)
-            .OrderByDescending(option => option.UpdatedAtUtc)
-            .ToListAsync(ct);
+            entries.AddRange(deletedTradeTypeOptions.Select(option => new RecycleBinEntry
+            {
+                EntityId = option.Id,
+                Kind = RecycleBinEntityKind.TradeTypeOption,
+                Title = option.Name,
+                Subtitle = JoinSegments(option.AllowsSales ? "매출" : null, option.AllowsPurchase ? "매입" : null),
+                Detail = option.IsSystemDefault ? "기본 거래구분" : string.Empty,
+                DeletedAtUtc = option.UpdatedAtUtc,
+                Revision = option.Revision
+            }));
 
-        entries.AddRange(deletedItemCategoryOptions.Select(option => new RecycleBinEntry
-        {
-            EntityId = option.Id,
-            Kind = RecycleBinEntityKind.ItemCategoryOption,
-            Title = option.Name,
-            Subtitle = option.IsSystemDefault ? "기본 품목분류" : string.Empty,
-            Detail = option.SortOrder != 0 ? $"정렬순서 {option.SortOrder}" : string.Empty,
-            DeletedAtUtc = option.UpdatedAtUtc
-        }));
+            var deletedItemCategoryOptions = await _db.ItemCategoryOptions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(option => option.IsDeleted)
+                .OrderByDescending(option => option.UpdatedAtUtc)
+                .ToListAsync(ct);
+
+            entries.AddRange(deletedItemCategoryOptions.Select(option => new RecycleBinEntry
+            {
+                EntityId = option.Id,
+                Kind = RecycleBinEntityKind.ItemCategoryOption,
+                Title = option.Name,
+                Subtitle = option.IsSystemDefault ? "기본 품목분류" : string.Empty,
+                Detail = option.SortOrder != 0 ? $"정렬순서 {option.SortOrder}" : string.Empty,
+                DeletedAtUtc = option.UpdatedAtUtc,
+                Revision = option.Revision
+            }));
+        }
 
         var deletedInvoices = await ApplyInvoiceScope(
                 _db.Invoices
@@ -159,7 +172,8 @@ public sealed partial class LocalStateService
                     $"{invoice.TotalAmount:N0}원",
                     group.Count() > 1 ? $"버전 {group.Count():N0}건" : null,
                     string.IsNullOrWhiteSpace(invoice.Memo) ? null : invoice.Memo),
-                DeletedAtUtc = group.Max(current => current.UpdatedAtUtc)
+                DeletedAtUtc = group.Max(current => current.UpdatedAtUtc),
+                Revision = invoice.Revision
             });
         }
 
@@ -201,7 +215,8 @@ public sealed partial class LocalStateService
                     contract.ExpireDate.HasValue ? $"만료일 {contract.ExpireDate:yyyy-MM-dd}" : null,
                     contract.FileSize > 0 ? $"{contract.FileSize / 1024m:N0} KB" : null,
                     contract.Description),
-                DeletedAtUtc = contract.UpdatedAtUtc
+                DeletedAtUtc = contract.UpdatedAtUtc,
+            Revision = contract.Revision
             });
         }
 
@@ -250,7 +265,8 @@ public sealed partial class LocalStateService
                 Title = $"{customerName} · {payment.Amount:N0}원",
                 Subtitle = JoinSegments($"전표 {displayNumber}", payment.PaymentDate.ToString("yyyy-MM-dd")),
                 Detail = string.IsNullOrWhiteSpace(payment.Note) ? "삭제된 수금/지급 기록" : payment.Note,
-                DeletedAtUtc = payment.UpdatedAtUtc
+                DeletedAtUtc = payment.UpdatedAtUtc,
+            Revision = payment.Revision
             });
         }
 
@@ -283,7 +299,8 @@ public sealed partial class LocalStateService
                 Title = $"{customerName} · {GetTransactionKindLabel(transaction.TransactionKind)}",
                 Subtitle = JoinSegments(transaction.TransactionDate.ToString("yyyy-MM-dd"), totalAmount > 0m ? $"{totalAmount:N0}원" : null),
                 Detail = JoinSegments(transaction.Note, transaction.Memo),
-                DeletedAtUtc = transaction.UpdatedAtUtc
+                DeletedAtUtc = transaction.UpdatedAtUtc,
+            Revision = transaction.Revision
             };
         }));
 
@@ -306,7 +323,8 @@ public sealed partial class LocalStateService
                 Detail = JoinSegments(
                     transfer.Lines.Count > 0 ? $"품목 {transfer.Lines.Count:N0}건" : null,
                     string.IsNullOrWhiteSpace(transfer.Memo) ? null : transfer.Memo),
-                DeletedAtUtc = transfer.UpdatedAtUtc
+                DeletedAtUtc = transfer.UpdatedAtUtc,
+            Revision = transfer.Revision
             }));
 
         var deletedManagementCompanies = await _db.RentalManagementCompanies
@@ -325,7 +343,8 @@ public sealed partial class LocalStateService
                 Title = string.IsNullOrWhiteSpace(company.Name) ? company.Code : company.Name,
                 Subtitle = company.Code,
                 Detail = company.IsSystemDefault ? "기본 렌탈 관리업체" : string.Empty,
-                DeletedAtUtc = company.UpdatedAtUtc
+                DeletedAtUtc = company.UpdatedAtUtc,
+            Revision = company.Revision
             }));
 
         var deletedRentalProfiles = await _db.RentalBillingProfiles
@@ -347,7 +366,8 @@ public sealed partial class LocalStateService
                     string.IsNullOrWhiteSpace(profile.BusinessNumber) ? null : $"사업자번호 {profile.BusinessNumber}",
                     string.IsNullOrWhiteSpace(profile.BillingType) ? null : $"청구유형 {profile.BillingType}",
                     profile.MonthlyAmount > 0m ? $"월기준금액 {profile.MonthlyAmount:N0}원" : null),
-                DeletedAtUtc = profile.UpdatedAtUtc
+                DeletedAtUtc = profile.UpdatedAtUtc,
+            Revision = profile.Revision
             }));
 
         var deletedRentalAssets = await _db.RentalAssets
@@ -371,7 +391,8 @@ public sealed partial class LocalStateService
                     string.IsNullOrWhiteSpace(asset.MachineNumber) ? null : $"기계번호 {asset.MachineNumber}",
                     string.IsNullOrWhiteSpace(asset.AssetStatus) ? null : $"상태 {asset.AssetStatus}",
                     asset.MonthlyFee > 0m ? $"월요금 {asset.MonthlyFee:N0}원" : null),
-                DeletedAtUtc = asset.UpdatedAtUtc
+                DeletedAtUtc = asset.UpdatedAtUtc,
+            Revision = asset.Revision
             }));
 
         var deletedRentalLogs = await _db.RentalBillingLogs
@@ -416,7 +437,8 @@ public sealed partial class LocalStateService
                     Detail = JoinSegments(
                         log.BilledAmount > 0m ? $"청구금액 {log.BilledAmount:N0}원" : null,
                         string.IsNullOrWhiteSpace(log.Note) ? null : log.Note),
-                    DeletedAtUtc = log.UpdatedAtUtc
+                    DeletedAtUtc = log.UpdatedAtUtc,
+            Revision = log.Revision
                 };
             }));
 
@@ -1067,6 +1089,8 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == itemId, ct);
         if (item is null)
             return OfficeMutationResult.Missing("복원할 품목을 찾을 수 없습니다.");
+        if (!CanWriteItemScope(item, session))
+            return OfficeMutationResult.Denied("권한이 없어 해당 품목을 복원할 수 없습니다.");
         if (!item.IsDeleted)
             return OfficeMutationResult.Ok(itemId, "이미 활성 상태인 품목입니다.");
 
@@ -1093,6 +1117,8 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == itemId, ct);
         if (item is null)
             return OfficeMutationResult.Missing("영구삭제할 품목을 찾을 수 없습니다.");
+        if (!CanWriteItemScope(item, session))
+            return OfficeMutationResult.Denied("권한이 없어 해당 품목을 영구삭제할 수 없습니다.");
         if (!item.IsDeleted)
             return OfficeMutationResult.Denied("활성 상태 품목은 휴지통에서 영구삭제할 수 없습니다.");
 
@@ -2336,17 +2362,21 @@ public sealed partial class LocalStateService
 
     private static string GetTransactionKindLabel(string? transactionKind)
     {
-        return PaymentFlowConstants.NormalizeTransactionKind(transactionKind) switch
+        var trimmed = (transactionKind ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return "거래내역";
+
+        return trimmed switch
         {
-            var kind when kind == PaymentFlowConstants.TransactionKindReceipt => "일반수금",
-            var kind when kind == PaymentFlowConstants.TransactionKindPayment => "일반지급",
-            var kind when kind == PaymentFlowConstants.TransactionKindAdvanceDeposit => "선수금입금",
-            var kind when kind == PaymentFlowConstants.TransactionKindAdvanceRefund => "선수금환불",
-            var kind when kind == PaymentFlowConstants.TransactionKindAdvanceApply => "선수금차감",
-            var kind when kind == PaymentFlowConstants.TransactionKindInvoiceReceipt => "전표수금",
-            var kind when kind == PaymentFlowConstants.TransactionKindInvoicePayment => "전표지급",
-            var kind when kind == PaymentFlowConstants.TransactionKindRentalReceipt => "렌탈수금",
-            _ => string.IsNullOrWhiteSpace(transactionKind) ? "거래내역" : transactionKind.Trim()
+            var kind when string.Equals(kind, PaymentFlowConstants.TransactionKindReceipt, StringComparison.OrdinalIgnoreCase) => "일반수금",
+            var kind when string.Equals(kind, PaymentFlowConstants.TransactionKindPayment, StringComparison.OrdinalIgnoreCase) => "일반지급",
+            var kind when string.Equals(kind, PaymentFlowConstants.TransactionKindAdvanceDeposit, StringComparison.OrdinalIgnoreCase) => "선수금입금",
+            var kind when string.Equals(kind, PaymentFlowConstants.TransactionKindAdvanceRefund, StringComparison.OrdinalIgnoreCase) => "선수금환불",
+            var kind when string.Equals(kind, PaymentFlowConstants.TransactionKindAdvanceApply, StringComparison.OrdinalIgnoreCase) => "선수금차감",
+            var kind when string.Equals(kind, PaymentFlowConstants.TransactionKindInvoiceReceipt, StringComparison.OrdinalIgnoreCase) => "전표수금",
+            var kind when string.Equals(kind, PaymentFlowConstants.TransactionKindInvoicePayment, StringComparison.OrdinalIgnoreCase) => "전표지급",
+            var kind when string.Equals(kind, PaymentFlowConstants.TransactionKindRentalReceipt, StringComparison.OrdinalIgnoreCase) => "렌탈수금",
+            _ => trimmed
         };
     }
 }

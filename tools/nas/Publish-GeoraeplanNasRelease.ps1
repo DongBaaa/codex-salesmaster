@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ProjectRoot,
     [string]$NasRoot = '\\192.0.2.10\docker\georaeplan',
@@ -23,6 +23,7 @@ function Resolve-DotnetCommand {
 
     $candidates = @(
         $env:DOTNET_EXE,
+        'D:\.dotnet-sdk\dotnet.exe',
         'C:\Users\beene\AppData\Local\GeoraePlan.Android\dotnet8\dotnet.exe',
         'C:\Program Files\dotnet\dotnet.exe'
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
@@ -56,6 +57,177 @@ function Invoke-RobocopyMirror {
     & robocopy $Source $Destination /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) {
         throw "robocopy failed ($LASTEXITCODE): $Source -> $Destination"
+    }
+}
+
+function Resolve-SshExecutable {
+    $windowsPath = Join-Path $env:WINDIR 'System32\OpenSSH\ssh.exe'
+    if (Test-Path -LiteralPath $windowsPath) {
+        return $windowsPath
+    }
+
+    $sshCommand = Get-Command ssh -ErrorAction SilentlyContinue
+    if ($null -ne $sshCommand) {
+        return $sshCommand.Source
+    }
+
+    throw 'ssh command not found. Install OpenSSH client first.'
+}
+
+function Resolve-TarExecutable {
+    $tarCommand = Get-Command tar.exe -ErrorAction SilentlyContinue
+    if ($null -ne $tarCommand) {
+        return $tarCommand.Source
+    }
+
+    $tarCommand = Get-Command tar -ErrorAction SilentlyContinue
+    if ($null -ne $tarCommand) {
+        return $tarCommand.Source
+    }
+
+    throw 'tar command not found. Windows tar.exe is required for SSH upload fallback.'
+}
+
+function Quote-ProcessArgument {
+    param([Parameter(Mandatory = $true)][string]$Argument)
+
+    if ($Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+
+    $escaped = $Argument -replace '(\\*)"', '$1$1\"'
+    $escaped = $escaped -replace '(\\+)$', '$1$1'
+    return '"' + $escaped + '"'
+}
+
+function New-SshArgumentList {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [switch]$BatchMode
+    )
+
+    $args = @(
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-o', 'ConnectTimeout=15'
+    )
+
+    if ($BatchMode) {
+        $args += @('-o', 'BatchMode=yes')
+    }
+
+    if ($Config.Port -gt 0) {
+        $args += @('-p', $Config.Port.ToString())
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Config.KeyPath)) {
+        if (-not (Test-Path -LiteralPath $Config.KeyPath)) {
+            throw "NAS_SSH_KEY_PATH not found: $($Config.KeyPath)"
+        }
+
+        $args += @('-i', $Config.KeyPath)
+    }
+
+    $args += ('{0}@{1}' -f $Config.User, $Config.Host)
+    return $args
+}
+
+function Invoke-SshCommand {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$Command,
+        [switch]$IgnoreExitCode,
+        [switch]$BatchMode
+    )
+
+    $sshExe = Resolve-SshExecutable
+    $arguments = New-SshArgumentList -Config $Config -BatchMode:$BatchMode
+    $arguments += $Command
+
+    $stdoutPath = Join-Path ([System.IO.Path]::GetTempPath()) ("georaeplan-ssh-out-" + [Guid]::NewGuid().ToString('N') + '.log')
+    $stderrPath = Join-Path ([System.IO.Path]::GetTempPath()) ("georaeplan-ssh-err-" + [Guid]::NewGuid().ToString('N') + '.log')
+
+    try {
+        $process = Start-Process -FilePath $sshExe -ArgumentList $arguments -NoNewWindow -PassThru -Wait -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { '' }
+        $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
+
+        if (-not $IgnoreExitCode -and $process.ExitCode -ne 0) {
+            $message = if ([string]::IsNullOrWhiteSpace($stderr)) { $stdout } else { $stderr }
+            throw "ssh command failed with exit code $($process.ExitCode): $message"
+        }
+
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            StdOut   = $stdout
+            StdErr   = $stderr
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-NasEnvMapViaSsh {
+    param([Parameter(Mandatory = $true)]$Config)
+
+    if (-not (Test-NasSshConfigComplete -Config $Config)) {
+        return @{}
+    }
+
+    $result = Invoke-SshCommand -Config $Config -Command "test -f '$($Config.RemoteOpsPath)/.env' && cat '$($Config.RemoteOpsPath)/.env'" -IgnoreExitCode -BatchMode
+    if ($result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.StdOut)) {
+        return @{}
+    }
+
+    return ($result.StdOut -split "`r?`n") |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Where-Object { $_ -notmatch '^\s*#' } |
+        Where-Object { $_ -match '=' } |
+        ForEach-Object {
+            $parts = $_ -split '=', 2
+            [pscustomobject]@{ Key = $parts[0].Trim(); Value = $parts[1].Trim() }
+        } |
+        Group-Object -Property Key -AsHashTable -AsString
+}
+
+function Invoke-SshTarUpload {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDirectory,
+        [Parameter(Mandatory = $true)][string]$RemoteDirectory,
+        [Parameter(Mandatory = $true)]$Config,
+        [switch]$MarkShellScriptsExecutable
+    )
+
+    if (-not (Test-Path -LiteralPath $SourceDirectory)) {
+        throw "SSH upload source directory not found: $SourceDirectory"
+    }
+
+    $tarExe = Resolve-TarExecutable
+    $sshExe = Resolve-SshExecutable
+    $archivePath = Join-Path ([System.IO.Path]::GetTempPath()) ("georaeplan-upload-" + [Guid]::NewGuid().ToString('N') + '.tar')
+
+    try {
+        & $tarExe -C $SourceDirectory -cf $archivePath .
+        if ($LASTEXITCODE -ne 0) {
+            throw "tar archive creation failed for $SourceDirectory"
+        }
+
+        $remoteCommand = if ($MarkShellScriptsExecutable) {
+            "mkdir -p '$RemoteDirectory' && tar -xf - -C '$RemoteDirectory' && find '$RemoteDirectory' -maxdepth 1 -name '*.sh' -exec chmod +x {} +"
+        }
+        else {
+            "mkdir -p '$RemoteDirectory' && tar -xf - -C '$RemoteDirectory'"
+        }
+
+        $argumentString = ((New-SshArgumentList -Config $Config) + @($remoteCommand) | ForEach-Object { Quote-ProcessArgument $_ }) -join ' '
+        $cmdLine = "`"$sshExe`" $argumentString < `"$archivePath`""
+        $commandOutput = cmd /c $cmdLine 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            throw "ssh upload failed with exit code ${LASTEXITCODE}: $commandOutput"
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -122,10 +294,13 @@ function Resolve-NasSshConfig {
         (Get-NasHostFromRoot -NasRoot $NasRoot)
     )
 
+    $defaultKeyPath = Join-Path $env:USERPROFILE '.ssh\tradeplan_nas_ed25519'
+
     $user = Get-FirstConfiguredValue @(
         $NasSshUser,
         $env:NAS_SSH_USER,
-        ($NasEnv['NAS_SSH_USER'])
+        ($NasEnv['NAS_SSH_USER']),
+        'root'
     )
 
     $remoteOpsPath = Get-FirstConfiguredValue @(
@@ -139,6 +314,7 @@ function Resolve-NasSshConfig {
         ($(if ($NasSshPort -gt 0) { $NasSshPort.ToString() } else { '' })),
         $env:NAS_SSH_PORT,
         ($NasEnv['NAS_SSH_PORT']),
+        '429',
         '22'
     )
     $port = 22
@@ -147,7 +323,8 @@ function Resolve-NasSshConfig {
     $keyPath = Get-FirstConfiguredValue @(
         $NasSshKeyPath,
         $env:NAS_SSH_KEY_PATH,
-        ($NasEnv['NAS_SSH_KEY_PATH'])
+        ($NasEnv['NAS_SSH_KEY_PATH']),
+        ($(if (Test-Path -LiteralPath $defaultKeyPath) { $defaultKeyPath } else { '' }))
     )
 
     if (-not [string]::IsNullOrWhiteSpace($keyPath) -and -not [System.IO.Path]::IsPathRooted($keyPath)) {
@@ -186,12 +363,95 @@ function Test-NasScheduledApplyEnabled {
     return @('1', 'true', 'yes', 'on') -contains $value.Trim().ToLowerInvariant()
 }
 
+function Convert-ToPosixSingleQuotedLiteral {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    $quoteEscape = "'`"'`"'"
+    return "'" + ($Value -replace "'", $quoteEscape) + "'"
+}
+
+function Join-RemoteUnixPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$BasePath,
+        [Parameter(Mandatory = $true)][string]$ChildPath
+    )
+
+    $normalizedBase = ($BasePath -replace '\\', '/').TrimEnd('/')
+    $normalizedChild = ($ChildPath -replace '\\', '/').TrimStart('/')
+    if ([string]::IsNullOrWhiteSpace($normalizedBase)) {
+        return '/' + $normalizedChild
+    }
+
+    if ([string]::IsNullOrWhiteSpace($normalizedChild)) {
+        return $normalizedBase
+    }
+
+    return "$normalizedBase/$normalizedChild"
+}
+
+function Resolve-NasScheduledStatePaths {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$NasEnv,
+        [Parameter(Mandatory = $true)]$Config
+    )
+
+    $stateDir = Get-FirstConfiguredValue @(
+        ($NasEnv['STATE_DIR']),
+        (Join-RemoteUnixPath -BasePath $Config.RemoteOpsPath -ChildPath 'state')
+    )
+    if (-not $stateDir.StartsWith('/')) {
+        $stateDir = Join-RemoteUnixPath -BasePath $Config.RemoteOpsPath -ChildPath $stateDir
+    }
+
+    $pendingReleasePath = Get-FirstConfiguredValue @(
+        ($NasEnv['PENDING_RELEASE_FILE']),
+        (Join-RemoteUnixPath -BasePath $stateDir -ChildPath 'pending-release.txt')
+    )
+    if (-not $pendingReleasePath.StartsWith('/')) {
+        $pendingReleasePath = Join-RemoteUnixPath -BasePath $stateDir -ChildPath $pendingReleasePath
+    }
+
+    $currentReleasePath = Get-FirstConfiguredValue @(
+        ($NasEnv['CURRENT_RELEASE_FILE']),
+        (Join-RemoteUnixPath -BasePath $stateDir -ChildPath 'current-release.txt')
+    )
+    if (-not $currentReleasePath.StartsWith('/')) {
+        $currentReleasePath = Join-RemoteUnixPath -BasePath $stateDir -ChildPath $currentReleasePath
+    }
+
+    $failedReleasePath = Get-FirstConfiguredValue @(
+        ($NasEnv['FAILED_RELEASE_FILE']),
+        (Join-RemoteUnixPath -BasePath $stateDir -ChildPath 'failed-release.txt')
+    )
+    if (-not $failedReleasePath.StartsWith('/')) {
+        $failedReleasePath = Join-RemoteUnixPath -BasePath $stateDir -ChildPath $failedReleasePath
+    }
+
+    return [pscustomobject]@{
+        StateDir = $stateDir
+        PendingReleasePath = $pendingReleasePath
+        CurrentReleasePath = $currentReleasePath
+        FailedReleasePath = $failedReleasePath
+    }
+}
+
 function Queue-NasScheduledApply {
     param(
         [Parameter(Mandatory = $true)][string]$NasRoot,
         [Parameter(Mandatory = $true)][string]$ReleaseId,
-        [Parameter(Mandatory = $true)][hashtable]$NasEnv
+        [Parameter(Mandatory = $true)][hashtable]$NasEnv,
+        [Parameter(Mandatory = $true)]$Config
     )
+
+    if (Test-NasSshConfigComplete -Config $Config) {
+        $statePaths = Resolve-NasScheduledStatePaths -NasEnv $NasEnv -Config $Config
+        $remoteCommand = @(
+            "mkdir -p $(Convert-ToPosixSingleQuotedLiteral $statePaths.StateDir)",
+            "printf '%s\n' $(Convert-ToPosixSingleQuotedLiteral $ReleaseId) > $(Convert-ToPosixSingleQuotedLiteral $statePaths.PendingReleasePath)"
+        ) -join ' && '
+        Invoke-SshCommand -Config $Config -Command $remoteCommand -BatchMode | Out-Null
+        return "ssh://$($Config.Host)$($statePaths.PendingReleasePath)"
+    }
 
     $stateRelativePath = Get-FirstConfiguredValue @(
         ($NasEnv['STATE_DIR']),
@@ -206,7 +466,7 @@ function Queue-NasScheduledApply {
         if ([System.IO.Path]::IsPathRooted($pendingRelativePath)) {
             if ($pendingRelativePath -like '/volume1/*') {
                 $pendingRelativePath = $pendingRelativePath -replace '^/volume1/', ''
-                $pendingRelativePath = $pendingRelativePath -replace '/', '\'
+                $pendingRelativePath = $pendingRelativePath -replace '/', '\\'
             }
         }
     }
@@ -237,8 +497,43 @@ function Wait-NasScheduledApply {
         [Parameter(Mandatory = $true)][string]$NasRoot,
         [Parameter(Mandatory = $true)][string]$ReleaseId,
         [Parameter(Mandatory = $true)][hashtable]$NasEnv,
+        [Parameter(Mandatory = $true)]$Config,
         [int]$TimeoutSeconds = 150
     )
+
+    if (Test-NasSshConfigComplete -Config $Config) {
+        $statePaths = Resolve-NasScheduledStatePaths -NasEnv $NasEnv -Config $Config
+        $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        while ((Get-Date) -lt $deadline) {
+            $remoteCommand = @(
+                "if test -f $(Convert-ToPosixSingleQuotedLiteral $statePaths.CurrentReleasePath); then printf 'current='; cat $(Convert-ToPosixSingleQuotedLiteral $statePaths.CurrentReleasePath); fi",
+                "if test -f $(Convert-ToPosixSingleQuotedLiteral $statePaths.FailedReleasePath); then printf 'failed='; cat $(Convert-ToPosixSingleQuotedLiteral $statePaths.FailedReleasePath); fi"
+            ) -join '; '
+            $probe = Invoke-SshCommand -Config $Config -Command $remoteCommand -IgnoreExitCode -BatchMode
+            $currentRelease = ''
+            $failedRelease = ''
+            foreach ($line in ($probe.StdOut -split "`r?`n")) {
+                if ($line -like 'current=*') {
+                    $currentRelease = $line.Substring(8).Trim()
+                }
+                elseif ($line -like 'failed=*') {
+                    $failedRelease = $line.Substring(7).Trim()
+                }
+            }
+
+            if ($currentRelease -eq $ReleaseId) {
+                return $true
+            }
+
+            if ($failedRelease -eq $ReleaseId) {
+                return $false
+            }
+
+            Start-Sleep -Seconds 5
+        }
+
+        return $false
+    }
 
     $stateRelativePath = Get-FirstConfiguredValue @(
         ($NasEnv['STATE_DIR']),
@@ -269,11 +564,7 @@ function Invoke-NasApplyRelease {
         [Parameter(Mandatory = $true)]$Config
     )
 
-    $sshCommand = Get-Command ssh -ErrorAction SilentlyContinue
-    if ($null -eq $sshCommand) {
-        throw 'ssh command not found. Install OpenSSH client or configure a reachable SSH client first.'
-    }
-
+    $sshExe = Resolve-SshExecutable
     $sshArgs = @(
         '-o', 'StrictHostKeyChecking=accept-new',
         '-o', 'ConnectTimeout=10',
@@ -296,7 +587,7 @@ function Invoke-NasApplyRelease {
     $sshArgs += ('{0}@{1}' -f $Config.User, $Config.Host)
     $sshArgs += $remoteCommand
 
-    & $sshCommand.Source @sshArgs
+    & $sshExe @sshArgs
     if ($LASTEXITCODE -ne 0) {
         throw "NAS apply-release.sh execution failed with exit code $LASTEXITCODE."
     }
@@ -317,7 +608,11 @@ $liveRoot = Join-Path $NasRoot 'app\live'
 $opsEnvPath = Join-Path $NasRoot 'ops\.env'
 $tempPublishRoot = Join-Path ([System.IO.Path]::GetTempPath()) "georaeplan-$ReleaseId"
 $metadataPath = Join-Path $tempPublishRoot 'release-info.txt'
+$bootstrapSshConfig = Resolve-NasSshConfig -NasRoot $NasRoot -NasEnv @{} -NasSshHost $NasSshHost -NasSshUser $NasSshUser -NasSshPort $NasSshPort -NasSshKeyPath $NasSshKeyPath -NasRemoteOpsPath $NasRemoteOpsPath
 $nasEnv = Get-NasEnvMap -EnvPath $opsEnvPath
+if ($nasEnv.Count -eq 0) {
+    $nasEnv = Get-NasEnvMapViaSsh -Config $bootstrapSshConfig
+}
 $sshConfig = Resolve-NasSshConfig -NasRoot $NasRoot -NasEnv $nasEnv -NasSshHost $NasSshHost -NasSshUser $NasSshUser -NasSshPort $NasSshPort -NasSshKeyPath $NasSshKeyPath -NasRemoteOpsPath $NasRemoteOpsPath
 $scheduledApplyEnabled = Test-NasScheduledApplyEnabled -NasEnv $nasEnv
 
@@ -400,13 +695,31 @@ $commit = (& git -C $ProjectRoot rev-parse HEAD 2>$null)
 ) | Set-Content -Path $metadataPath -Encoding UTF8
 
 if (-not $SkipConfigSync) {
-    & (Join-Path $scriptRoot 'Sync-GeoraeplanNasConfig.ps1') -ProjectRoot $ProjectRoot -NasRoot $NasRoot
+    & (Join-Path $scriptRoot 'Sync-GeoraeplanNasConfig.ps1') `
+        -ProjectRoot $ProjectRoot `
+        -NasRoot $NasRoot `
+        -NasSshHost $sshConfig.Host `
+        -NasSshUser $sshConfig.User `
+        -NasSshPort $sshConfig.Port `
+        -NasSshKeyPath $sshConfig.KeyPath `
+        -NasRemoteOpsPath $sshConfig.RemoteOpsPath `
+        -UseSshFallback
     if (-not $?) {
         throw 'NAS config sync failed.'
     }
 }
 
-Invoke-RobocopyMirror -Source $tempPublishRoot -Destination $releaseRoot
+if (Test-Path -LiteralPath $NasRoot) {
+    Invoke-RobocopyMirror -Source $tempPublishRoot -Destination $releaseRoot
+}
+elseif (Test-NasSshConfigComplete -Config $sshConfig) {
+    $remoteReleaseRoot = "{0}/releases/{1}" -f (($sshConfig.RemoteOpsPath -replace '/ops/?$', '').TrimEnd('/')), $ReleaseId
+    Write-Warning "NAS UNC path is unavailable. Falling back to SSH upload: $remoteReleaseRoot"
+    Invoke-SshTarUpload -SourceDirectory $tempPublishRoot -RemoteDirectory $remoteReleaseRoot -Config $sshConfig
+}
+else {
+    throw "NAS release upload failed: UNC path '$NasRoot' is unavailable and SSH configuration is incomplete."
+}
 
 $appliedRemotely = $false
 $queuedForNasApply = $false
@@ -421,9 +734,9 @@ if ($MirrorToLive) {
         catch {
             if ($AllowScheduledApplyTrigger -or $scheduledApplyEnabled) {
                 Write-Warning "SSH apply-release failed and the script will fall back to the NAS scheduled trigger. Reason: $($_.Exception.Message)"
-                $queuedTriggerPath = Queue-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv
+                $queuedTriggerPath = Queue-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv -Config $sshConfig
                 Write-Host "nas_apply_release_mode=scheduled-trigger pending_path=$queuedTriggerPath"
-                if (-not (Wait-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv)) {
+                if (-not (Wait-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv -Config $sshConfig)) {
                     throw "NAS scheduled apply trigger was queued after SSH fallback, but release '$ReleaseId' was not applied within the timeout. Confirm the NAS scheduled task runs auto-apply-release.sh and check ops/state/auto-apply.log."
                 }
                 $queuedForNasApply = $true
@@ -434,9 +747,9 @@ if ($MirrorToLive) {
         }
     }
     elseif ($AllowScheduledApplyTrigger -or $scheduledApplyEnabled) {
-        $queuedTriggerPath = Queue-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv
+        $queuedTriggerPath = Queue-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv -Config $sshConfig
         Write-Host "nas_apply_release_mode=scheduled-trigger pending_path=$queuedTriggerPath"
-        if (-not (Wait-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv)) {
+        if (-not (Wait-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv -Config $sshConfig)) {
             throw "NAS scheduled apply trigger was queued but release '$ReleaseId' was not applied within the timeout. Confirm the NAS scheduled task runs auto-apply-release.sh and check ops/state/auto-apply.log."
         }
         $queuedForNasApply = $true

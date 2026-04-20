@@ -28,6 +28,8 @@ public sealed class SyncController : ControllerBase
     private readonly OfficeScopeService _officeScopeService;
     private readonly ICentralFileStorage _fileStorage;
     private readonly RevisionClock _revisionClock;
+    private readonly InventoryLedgerService _inventoryLedgerService;
+    private readonly RentalAssignmentHistoryService _rentalAssignmentHistoryService;
 
     public SyncController(
         AppDbContext dbContext,
@@ -35,7 +37,9 @@ public sealed class SyncController : ControllerBase
         IInvoiceNumberService invoiceNumberService,
         OfficeScopeService officeScopeService,
         ICentralFileStorage fileStorage,
-        RevisionClock revisionClock)
+        RevisionClock revisionClock,
+        InventoryLedgerService inventoryLedgerService,
+        RentalAssignmentHistoryService rentalAssignmentHistoryService)
     {
         _dbContext = dbContext;
         _currentUserContext = currentUserContext;
@@ -43,6 +47,8 @@ public sealed class SyncController : ControllerBase
         _officeScopeService = officeScopeService;
         _fileStorage = fileStorage;
         _revisionClock = revisionClock;
+        _inventoryLedgerService = inventoryLedgerService;
+        _rentalAssignmentHistoryService = rentalAssignmentHistoryService;
     }
 
     [HttpGet("status")]
@@ -163,89 +169,123 @@ public sealed class SyncController : ControllerBase
     public async Task<ActionResult<SyncPushResult>> Push([FromBody] SyncPushRequest request, CancellationToken cancellationToken)
     {
         var result = new SyncPushResult();
-
-        await UpsertEntitiesAsync(request.CompanyProfiles ?? [], _dbContext.CompanyProfiles,
-            (e, d) => e.Apply(d), d => new CompanyProfile { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        await UpsertUnitsAsync(request.Units ?? [], result, cancellationToken);
-        await UpsertEntitiesAsync(request.CustomerCategories ?? [], _dbContext.CustomerCategories,
-            (e, d) => e.Apply(d), d => new CustomerCategory { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        await UpsertPriceGradeOptionsAsync(request.PriceGradeOptions ?? [], result, cancellationToken);
-        await UpsertTradeTypeOptionsAsync(request.TradeTypeOptions ?? [], result, cancellationToken);
-        await UpsertItemCategoryOptionsAsync(request.ItemCategoryOptions ?? [], result, cancellationToken);
-        var scopedCustomerMasters = await PrepareScopedCustomerMastersAsync(request.CustomerMasters ?? [], result, cancellationToken);
-        var validCustomerMasters = await FilterValidCustomerMastersAsync(scopedCustomerMasters, result, cancellationToken);
-        await UpsertEntitiesAsync(validCustomerMasters, _dbContext.CustomerMasters,
-            (e, d) => e.Apply(d), d => new CustomerMaster { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        if (validCustomerMasters.Count > 0)
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        var scopedCustomers = await PrepareScopedCustomersAsync(request.Customers ?? [], result, cancellationToken);
-        var validCustomers = await FilterValidCustomersAsync(scopedCustomers, result, cancellationToken);
-        await UpsertEntitiesAsync(validCustomers, _dbContext.Customers,
-            (e, d) => e.Apply(d), d => new Customer { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        await CascadeDeletedCustomerContractsAsync(validCustomers, cancellationToken);
-        if (validCustomers.Count > 0)
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        var validCustomerContracts = await FilterValidCustomerContractsAsync(request.CustomerContracts ?? [], result, cancellationToken);
-        await UpsertEntitiesAsync(validCustomerContracts, _dbContext.CustomerContracts,
-            (e, d) => e.Apply(d), d => new CustomerContract { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        await PersistCustomerContractsToStorageAsync(validCustomerContracts, cancellationToken);
-        var scopedItems = await PrepareScopedItemsAsync(request.Items ?? [], result, cancellationToken);
-        await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
-            (e, d) => e.Apply(d), d => new Item { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        if (scopedItems.Count > 0)
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], cancellationToken);
-        var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
-        await UpsertInvoicesAsync(validInvoices, result, cancellationToken);
-        if (validInvoices.Count > 0)
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        var scopedTransactions = await PrepareScopedTransactionsAsync(request.Transactions ?? [], result, cancellationToken);
-        var validTransactions = await FilterValidTransactionsAsync(scopedTransactions, result, cancellationToken);
-        await UpsertEntitiesAsync(validTransactions, _dbContext.Transactions,
-            (e, d) => e.Apply(d), d => new TransactionRecord { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        if (validTransactions.Count > 0)
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        var validTransactionAttachments = await FilterValidTransactionAttachmentsAsync(request.TransactionAttachments ?? [], result, cancellationToken);
-        await UpsertEntitiesAsync(validTransactionAttachments, _dbContext.TransactionAttachments,
-            (e, d) => e.Apply(d), d => new TransactionAttachment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        await PersistTransactionAttachmentsToStorageAsync(validTransactionAttachments, cancellationToken);
-        var scopedInventoryTransfers = await PrepareScopedInventoryTransfersAsync(request.InventoryTransfers ?? [], result, cancellationToken);
-        var validInventoryTransfers = await FilterValidInventoryTransfersAsync(scopedInventoryTransfers, result, cancellationToken);
-        await UpsertInventoryTransfersAsync(validInventoryTransfers, result, cancellationToken);
-        var scopedRentalCompanies = await PrepareScopedRentalManagementCompaniesAsync(request.RentalManagementCompanies ?? [], result, cancellationToken);
-        await UpsertEntitiesAsync(scopedRentalCompanies, _dbContext.RentalManagementCompanies,
-            (e, d) => e.Apply(d), d => new RentalManagementCompany { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-        if (scopedRentalCompanies.Count > 0)
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        var scopedRentalProfiles = await PrepareScopedRentalBillingProfilesAsync(request.RentalBillingProfiles ?? [], result, cancellationToken);
-        var validRentalProfiles = await FilterValidRentalBillingProfilesAsync(scopedRentalProfiles, result, cancellationToken);
-        await UpsertRentalBillingProfilesAsync(validRentalProfiles, result, cancellationToken);
-        if (validRentalProfiles.Count > 0)
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        var requiresRentalAssetLock = (request.RentalAssets?.Count ?? 0) > 0;
-        if (requiresRentalAssetLock)
-            await RentalAssetSyncLock.WaitAsync(cancellationToken);
-
+        var deviceId = NormalizeDeviceId(request.DeviceId);
+        var requiresInventoryLedgerRebuild = false;
+        var requiresRentalAssignmentRefresh = false;
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
         try
         {
-            var scopedRentalAssets = await PrepareScopedRentalAssetsAsync(request.RentalAssets ?? [], result, cancellationToken);
-            var validRentalAssets = await FilterValidRentalAssetsAsync(scopedRentalAssets, result, cancellationToken);
-            await UpsertEntitiesAsync(validRentalAssets, _dbContext.RentalAssets,
-                (e, d) => e.Apply(d), d => new RentalAsset { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-            var scopedRentalBillingLogs = await PrepareScopedRentalBillingLogsAsync(request.RentalBillingLogs ?? [], result, cancellationToken);
-            var validRentalBillingLogs = await FilterValidRentalBillingLogsAsync(scopedRentalBillingLogs, result, cancellationToken);
-            await UpsertEntitiesAsync(validRentalBillingLogs, _dbContext.RentalBillingLogs,
-                (e, d) => e.Apply(d), d => new RentalBillingLog { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
-            var validPayments = await FilterValidPaymentsAsync(request.Payments ?? [], result, cancellationToken);
-            await UpsertEntitiesAsync(validPayments, _dbContext.Payments,
-                (e, d) => e.Apply(d), d => new Payment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, cancellationToken);
+            await UpsertEntitiesAsync(request.CompanyProfiles ?? [], _dbContext.CompanyProfiles,
+                (e, d) => e.Apply(d), d => new CompanyProfile { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            await UpsertUnitsAsync(request.Units ?? [], result, deviceId, cancellationToken);
+            await UpsertEntitiesAsync(request.CustomerCategories ?? [], _dbContext.CustomerCategories,
+                (e, d) => e.Apply(d), d => new CustomerCategory { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            await UpsertPriceGradeOptionsAsync(request.PriceGradeOptions ?? [], result, deviceId, cancellationToken);
+            await UpsertTradeTypeOptionsAsync(request.TradeTypeOptions ?? [], result, deviceId, cancellationToken);
+            await UpsertItemCategoryOptionsAsync(request.ItemCategoryOptions ?? [], result, deviceId, cancellationToken);
+            var scopedCustomerMasters = await PrepareScopedCustomerMastersAsync(request.CustomerMasters ?? [], result, cancellationToken);
+            var validCustomerMasters = await FilterValidCustomerMastersAsync(scopedCustomerMasters, result, cancellationToken);
+            await UpsertEntitiesAsync(validCustomerMasters, _dbContext.CustomerMasters,
+                (e, d) => e.Apply(d), d => new CustomerMaster { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            if (validCustomerMasters.Count > 0)
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            var scopedCustomers = await PrepareScopedCustomersAsync(request.Customers ?? [], result, cancellationToken);
+            var validCustomers = await FilterValidCustomersAsync(scopedCustomers, result, cancellationToken);
+            await UpsertEntitiesAsync(validCustomers, _dbContext.Customers,
+                (e, d) => e.Apply(d), d => new Customer { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            await CascadeDeletedCustomerContractsAsync(validCustomers, cancellationToken);
+            if (validCustomers.Count > 0)
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            var validCustomerContracts = await FilterValidCustomerContractsAsync(request.CustomerContracts ?? [], result, cancellationToken);
+            await UpsertEntitiesAsync(validCustomerContracts, _dbContext.CustomerContracts,
+                (e, d) => e.Apply(d), d => new CustomerContract { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            await PersistCustomerContractsToStorageAsync(validCustomerContracts, cancellationToken);
+            var scopedItems = await PrepareScopedItemsAsync(request.Items ?? [], result, cancellationToken);
+            await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
+                (e, d) => e.Apply(d), d => new Item { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            if (scopedItems.Count > 0)
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], result, cancellationToken);
+            var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
+            await UpsertInvoicesAsync(validInvoices, result, deviceId, cancellationToken);
+            if (validInvoices.Count > 0)
+            {
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                requiresInventoryLedgerRebuild = true;
+            }
+            var scopedTransactions = await PrepareScopedTransactionsAsync(request.Transactions ?? [], result, cancellationToken);
+            var validTransactions = await FilterValidTransactionsAsync(scopedTransactions, result, cancellationToken);
+            await UpsertEntitiesAsync(validTransactions, _dbContext.Transactions,
+                (e, d) => e.Apply(d), d => new TransactionRecord { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            if (validTransactions.Count > 0)
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            var validTransactionAttachments = await FilterValidTransactionAttachmentsAsync(request.TransactionAttachments ?? [], result, cancellationToken);
+            await UpsertEntitiesAsync(validTransactionAttachments, _dbContext.TransactionAttachments,
+                (e, d) => e.Apply(d), d => new TransactionAttachment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            await PersistTransactionAttachmentsToStorageAsync(validTransactionAttachments, cancellationToken);
+            var scopedInventoryTransfers = await PrepareScopedInventoryTransfersAsync(request.InventoryTransfers ?? [], result, cancellationToken);
+            var validInventoryTransfers = await FilterValidInventoryTransfersAsync(scopedInventoryTransfers, result, cancellationToken);
+            await UpsertInventoryTransfersAsync(validInventoryTransfers, result, deviceId, cancellationToken);
+            if (validInventoryTransfers.Count > 0)
+                requiresInventoryLedgerRebuild = true;
+            var scopedRentalCompanies = await PrepareScopedRentalManagementCompaniesAsync(request.RentalManagementCompanies ?? [], result, cancellationToken);
+            await UpsertEntitiesAsync(scopedRentalCompanies, _dbContext.RentalManagementCompanies,
+                (e, d) => e.Apply(d), d => new RentalManagementCompany { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            if (scopedRentalCompanies.Count > 0)
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            var requestedRentalProfiles = request.RentalBillingProfiles ?? [];
+            var incomingRentalProfileIdMap = BuildIncomingRentalBillingProfileIdMap(requestedRentalProfiles);
+            var scopedRentalProfiles = await PrepareScopedRentalBillingProfilesAsync(requestedRentalProfiles, result, cancellationToken);
+            var validRentalProfiles = await FilterValidRentalBillingProfilesAsync(scopedRentalProfiles, result, cancellationToken);
+            await UpsertRentalBillingProfilesAsync(validRentalProfiles, result, deviceId, cancellationToken);
+            if (validRentalProfiles.Count > 0)
+            {
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                requiresRentalAssignmentRefresh = true;
+            }
+
+            var resolvedRentalProfileIds = BuildResolvedRentalBillingProfileIdMap(validRentalProfiles, incomingRentalProfileIdMap);
+            var requiresRentalAssetLock = (request.RentalAssets?.Count ?? 0) > 0;
+            if (requiresRentalAssetLock)
+                await RentalAssetSyncLock.WaitAsync(cancellationToken);
+
+            try
+            {
+                var scopedRentalAssets = await PrepareScopedRentalAssetsAsync(request.RentalAssets ?? [], result, cancellationToken);
+                var validRentalAssets = await FilterValidRentalAssetsAsync(scopedRentalAssets, resolvedRentalProfileIds, result, cancellationToken);
+                await UpsertEntitiesAsync(validRentalAssets, _dbContext.RentalAssets,
+                    (e, d) => e.Apply(d), d => new RentalAsset { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+                var scopedRentalBillingLogs = await PrepareScopedRentalBillingLogsAsync(request.RentalBillingLogs ?? [], result, cancellationToken);
+                var validRentalBillingLogs = await FilterValidRentalBillingLogsAsync(scopedRentalBillingLogs, result, cancellationToken);
+                await UpsertEntitiesAsync(validRentalBillingLogs, _dbContext.RentalBillingLogs,
+                    (e, d) => e.Apply(d), d => new RentalBillingLog { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+                var validPayments = await FilterValidPaymentsAsync(request.Payments ?? [], result, cancellationToken);
+                await UpsertEntitiesAsync(validPayments, _dbContext.Payments,
+                    (e, d) => e.Apply(d), d => new Payment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                if (validRentalAssets.Count > 0)
+                    requiresRentalAssignmentRefresh = true;
+            }
+            finally
+            {
+                if (requiresRentalAssetLock)
+                    RentalAssetSyncLock.Release();
+            }
+
+            if (requiresRentalAssignmentRefresh)
+                await _rentalAssignmentHistoryService.RefreshAsync(cancellationToken);
+
+            if (requiresInventoryLedgerRebuild)
+                await _inventoryLedgerService.RebuildAsync(cancellationToken);
 
             await _dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
-        finally
+        catch
         {
-            if (requiresRentalAssetLock)
-                RentalAssetSyncLock.Release();
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
         }
 
         result.CurrentServerRevision = await GetCurrentRevisionAsync(cancellationToken);
@@ -255,29 +295,43 @@ public sealed class SyncController : ControllerBase
     private async Task UpsertEntitiesAsync<TEntity, TDto>(
         IEnumerable<TDto> payload, DbSet<TEntity> dbSet,
         Action<TEntity, TDto> apply, Func<TDto, TEntity> create,
-        SyncPushResult result, CancellationToken cancellationToken)
+        SyncPushResult result, string deviceId, CancellationToken cancellationToken)
         where TEntity : TrackedEntity
         where TDto : SyncEntityDto
     {
+        var entityName = typeof(TEntity).Name;
         foreach (var dto in payload)
         {
+            if (await TryAcceptDuplicateMutationAsync(dto, entityName, deviceId, result, cancellationToken))
+                continue;
+
             var entity = await dbSet.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
             if (entity is null)
             {
                 var newEntity = create(dto);
                 apply(newEntity, dto);
                 dbSet.Add(newEntity);
+                RegisterProcessedMutation(dto, entityName, deviceId);
+                await ResolveHistoricalConflictsAsync(entityName, newEntity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
                 result.AcceptedCount++;
                 continue;
             }
 
-            if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
+            if (HasExpectedRevisionConflict(entity, dto))
             {
-                AddServerConflict(dto, entity, typeof(TEntity).Name, "Server version is newer.", result);
+                AddServerConflict(dto, entity, entityName, BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                continue;
+            }
+
+            if (IsServerEntityNewer(entity, dto))
+            {
+                AddServerConflict(dto, entity, entityName, "Server version is newer.", result);
                 continue;
             }
 
             apply(entity, dto);
+            RegisterProcessedMutation(dto, entityName, deviceId);
+            await ResolveHistoricalConflictsAsync(entityName, entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
             result.AcceptedCount++;
         }
     }
@@ -285,6 +339,7 @@ public sealed class SyncController : ControllerBase
     private async Task UpsertPriceGradeOptionsAsync(
         IEnumerable<PriceGradeOptionDto> payload,
         SyncPushResult result,
+        string deviceId,
         CancellationToken cancellationToken)
     {
         await UpsertSelectionOptionEntitiesAsync(
@@ -296,12 +351,14 @@ public sealed class SyncController : ControllerBase
             dto => new PriceGradeOption { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id },
             nameof(PriceGradeOption),
             result,
+            deviceId,
             cancellationToken);
     }
 
     private async Task UpsertTradeTypeOptionsAsync(
         IEnumerable<TradeTypeOptionDto> payload,
         SyncPushResult result,
+        string deviceId,
         CancellationToken cancellationToken)
     {
         var normalizedPayload = payload
@@ -333,12 +390,14 @@ public sealed class SyncController : ControllerBase
             dto => new TradeTypeOption { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id },
             nameof(TradeTypeOption),
             result,
+            deviceId,
             cancellationToken);
     }
 
     private async Task UpsertItemCategoryOptionsAsync(
         IEnumerable<ItemCategoryOptionDto> payload,
         SyncPushResult result,
+        string deviceId,
         CancellationToken cancellationToken)
     {
         await UpsertSelectionOptionEntitiesAsync(
@@ -350,12 +409,14 @@ public sealed class SyncController : ControllerBase
             dto => new ItemCategoryOption { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id },
             nameof(ItemCategoryOption),
             result,
+            deviceId,
             cancellationToken);
     }
 
     private async Task UpsertUnitsAsync(
         IEnumerable<UnitDto> payload,
         SyncPushResult result,
+        string deviceId,
         CancellationToken cancellationToken)
     {
         var dedupedPayload = DeduplicatePulledUnits(payload.ToList());
@@ -363,6 +424,9 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in dedupedPayload)
         {
+            if (await TryAcceptDuplicateMutationAsync(dto, nameof(Unit), deviceId, result, cancellationToken))
+                continue;
+
             var normalizedName = UnitCatalogNormalizer.Normalize(dto.Name);
             if (string.IsNullOrWhiteSpace(normalizedName))
             {
@@ -388,11 +452,19 @@ public sealed class SyncController : ControllerBase
                 newEntity.Name = normalizedName;
                 _dbContext.Units.Add(newEntity);
                 existingUnits.Add(newEntity);
+                RegisterProcessedMutation(dto, nameof(Unit), deviceId);
+                await ResolveHistoricalConflictsAsync(nameof(Unit), newEntity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
                 result.AcceptedCount++;
                 continue;
             }
 
-            if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
+            if (HasExpectedRevisionConflict(entity, dto))
+            {
+                AddServerConflict(dto, entity, nameof(Unit), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                continue;
+            }
+
+            if (IsServerEntityNewer(entity, dto))
             {
                 AddServerConflict(dto, entity, nameof(Unit), "Server version is newer.", result);
                 continue;
@@ -400,6 +472,8 @@ public sealed class SyncController : ControllerBase
 
             entity.Apply(dto);
             entity.Name = normalizedName;
+            RegisterProcessedMutation(dto, nameof(Unit), deviceId);
+            await ResolveHistoricalConflictsAsync(nameof(Unit), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
             result.AcceptedCount++;
         }
     }
@@ -413,6 +487,7 @@ public sealed class SyncController : ControllerBase
         Func<TDto, TEntity> create,
         string entityName,
         SyncPushResult result,
+        string deviceId,
         CancellationToken cancellationToken)
         where TEntity : TrackedEntity
         where TDto : SyncEntityDto
@@ -421,6 +496,9 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
+            if (await TryAcceptDuplicateMutationAsync(dto, entityName, deviceId, result, cancellationToken))
+                continue;
+
             var normalizedName = NormalizeOptionName(dtoNameSelector(dto));
             if (string.IsNullOrWhiteSpace(normalizedName))
             {
@@ -445,25 +523,38 @@ public sealed class SyncController : ControllerBase
                 apply(newEntity, dto);
                 dbSet.Add(newEntity);
                 existingEntities.Add(newEntity);
+                RegisterProcessedMutation(dto, entityName, deviceId);
+                await ResolveHistoricalConflictsAsync(entityName, newEntity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
                 result.AcceptedCount++;
                 continue;
             }
 
-            if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
+            if (HasExpectedRevisionConflict(entity, dto))
+            {
+                AddServerConflict(dto, entity, entityName, BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                continue;
+            }
+
+            if (IsServerEntityNewer(entity, dto))
             {
                 AddServerConflict(dto, entity, entityName, "Server version is newer.", result);
                 continue;
             }
 
             apply(entity, dto);
+            RegisterProcessedMutation(dto, entityName, deviceId);
+            await ResolveHistoricalConflictsAsync(entityName, entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
             result.AcceptedCount++;
         }
     }
 
-    private async Task UpsertInvoicesAsync(IEnumerable<InvoiceDto> payload, SyncPushResult result, CancellationToken cancellationToken)
+    private async Task UpsertInvoicesAsync(IEnumerable<InvoiceDto> payload, SyncPushResult result, string deviceId, CancellationToken cancellationToken)
     {
         foreach (var dto in payload)
         {
+            if (await TryAcceptDuplicateMutationAsync(dto, nameof(Invoice), deviceId, result, cancellationToken))
+                continue;
+
             dto.VersionNumber = dto.VersionNumber <= 0 ? 1 : dto.VersionNumber;
             var entity = await _dbContext.Invoices.IgnoreQueryFilters()
                 .Include(x => x.Customer)
@@ -486,6 +577,8 @@ public sealed class SyncController : ControllerBase
 
                 ApplyInvoiceLines(entity, dto.Lines ?? []);
                 _dbContext.Invoices.Add(entity);
+                RegisterProcessedMutation(dto, nameof(Invoice), deviceId);
+                await ResolveHistoricalConflictsAsync(nameof(Invoice), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
                 result.AcceptedCount++;
                 continue;
             }
@@ -493,13 +586,19 @@ public sealed class SyncController : ControllerBase
             if (dto.VersionGroupId == Guid.Empty)
                 dto.VersionGroupId = entity.VersionGroupId == Guid.Empty ? entity.Id : entity.VersionGroupId;
 
-            if (!_officeScopeService.CanWriteOfficeForInvoices(entity.OfficeCode, entity.TenantCode))
+            if (!_officeScopeService.CanWriteOfficeForInvoices(entity.ResponsibleOfficeCode, entity.TenantCode))
             {
                 AddClientConflict(dto, nameof(Invoice), "Current account cannot modify this office scope.", result);
                 continue;
             }
 
-            if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
+            if (HasExpectedRevisionConflict(entity, dto))
+            {
+                AddServerConflict(dto, entity, nameof(Invoice), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                continue;
+            }
+
+            if (IsServerEntityNewer(entity, dto))
             {
                 AddServerConflict(dto, entity, nameof(Invoice), "Server version is newer.", result);
                 continue;
@@ -515,6 +614,8 @@ public sealed class SyncController : ControllerBase
             _dbContext.InvoiceLines.RemoveRange(entity.Lines);
             entity.Lines.Clear();
             ApplyInvoiceLines(entity, dto.Lines ?? []);
+            RegisterProcessedMutation(dto, nameof(Invoice), deviceId);
+            await ResolveHistoricalConflictsAsync(nameof(Invoice), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
             result.AcceptedCount++;
         }
     }
@@ -536,8 +637,14 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(
+                dto.OfficeCode,
+                existing?.OfficeCode);
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
+                dto.TenantCode,
+                dto.OfficeCode,
+                existing?.TenantCode,
+                existing?.OfficeCode);
             scoped.Add(dto);
         }
 
@@ -574,7 +681,7 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.Customers.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForCustomers(existing.OfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForCustomers(existing.ResponsibleOfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(Customer), "Current account cannot modify this office scope.", result);
                 continue;
@@ -583,8 +690,18 @@ public sealed class SyncController : ControllerBase
             if (existing is not null)
                 PreserveCustomerTextWhenIncomingLooksLossy(dto, existing);
 
-            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
+            dto.ResponsibleOfficeCode = _officeScopeService.ResolveCustomerResponsibleScopeForCreate(
+                dto.ResponsibleOfficeCode,
+                existing?.ResponsibleOfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                existing?.OfficeCode);
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
+                dto.TenantCode,
+                dto.OfficeCode,
+                existing?.TenantCode,
+                existing?.OfficeCode);
             scoped.Add(dto);
         }
 
@@ -659,24 +776,309 @@ public sealed class SyncController : ControllerBase
         SyncPushResult result,
         CancellationToken cancellationToken)
     {
-        var scoped = new List<ItemDto>();
+        var scoped = new Dictionary<Guid, ItemDto>();
+        var incomingCanonicalIdsByNaturalKey = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var dto in payload)
         {
             var existing = await _dbContext.Items.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+
+            var resolvedOfficeCode = _officeScopeService.ResolveScopeForCreate(
+                dto.OfficeCode,
+                existing?.OfficeCode);
+            var resolvedTenantCode = _officeScopeService.ResolveTenantForCreate(
+                dto.TenantCode,
+                resolvedOfficeCode,
+                existing?.TenantCode,
+                existing?.OfficeCode);
+
+            if (existing is null)
+            {
+                var naturalKey = BuildScopedItemNaturalKey(
+                    dto,
+                    resolvedOfficeCode,
+                    resolvedTenantCode);
+
+                if (!string.IsNullOrWhiteSpace(naturalKey) &&
+                    incomingCanonicalIdsByNaturalKey.TryGetValue(naturalKey, out var batchCanonicalId))
+                {
+                    if (dto.Id != batchCanonicalId)
+                    {
+                        AddNotice(
+                            result,
+                            nameof(Item),
+                            batchCanonicalId,
+                            "item-natural-key-batch-merged",
+                            $"품목 '{dto.NameOriginal}'은(는) 동일한 시리얼/관리번호/품목키가 같은 요청 안에 이미 있어 기존 저장 대상으로 합쳐졌습니다.");
+                    }
+
+                    dto.Id = batchCanonicalId;
+                }
+                else
+                {
+                    var requestedItemId = dto.Id;
+                    existing = await FindExistingItemByNaturalKeyAsync(
+                        dto,
+                        resolvedOfficeCode,
+                        resolvedTenantCode,
+                        cancellationToken);
+
+                    if (existing is not null)
+                    {
+                        dto.Id = existing.Id;
+                        if (requestedItemId != existing.Id)
+                        {
+                            AddNotice(
+                                result,
+                                nameof(Item),
+                                existing.Id,
+                                "item-natural-key-merged",
+                                $"품목 '{dto.NameOriginal}'은(는) 기존 서버 품목과 동일한 시리얼/관리번호/품목키로 판단되어 해당 품목에 병합되었습니다.");
+                        }
+                    }
+                    else if (dto.Id == Guid.Empty)
+                    {
+                        dto.Id = Guid.NewGuid();
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(naturalKey) && dto.Id != Guid.Empty)
+                        incomingCanonicalIdsByNaturalKey[naturalKey] = dto.Id;
+                }
+            }
+
             if (existing is not null && !_officeScopeService.CanWriteOfficeForItems(existing.OfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(Item), "Current account cannot modify this office scope.", result);
                 continue;
             }
 
-            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
-            scoped.Add(dto);
+            dto.OfficeCode = resolvedOfficeCode;
+            dto.TenantCode = resolvedTenantCode;
+
+            if (dto.Id == Guid.Empty)
+            {
+                dto.Id = Guid.NewGuid();
+            }
+
+            if (scoped.TryGetValue(dto.Id, out var existingScoped))
+            {
+                if (ShouldReplacePreparedItem(existingScoped, dto))
+                    scoped[dto.Id] = dto;
+
+                continue;
+            }
+
+            scoped[dto.Id] = dto;
         }
 
-        return scoped;
+        return scoped.Values.ToList();
+    }
+
+    private async Task<Item?> FindExistingItemByNaturalKeyAsync(
+        ItemDto dto,
+        string resolvedOfficeCode,
+        string resolvedTenantCode,
+        CancellationToken cancellationToken)
+    {
+        var normalizedNameMatchKey = string.IsNullOrWhiteSpace(dto.NameMatchKey)
+            ? RentalCatalogValueNormalizer.NormalizeLooseKey(dto.NameOriginal)
+            : RentalCatalogValueNormalizer.NormalizeLooseKey(dto.NameMatchKey);
+        var normalizedSpecificationMatchKey = string.IsNullOrWhiteSpace(dto.SpecificationMatchKey)
+            ? RentalCatalogValueNormalizer.NormalizeLooseKey(dto.SpecificationOriginal)
+            : RentalCatalogValueNormalizer.NormalizeLooseKey(dto.SpecificationMatchKey);
+        var normalizedItemKind = ItemOperationalPolicy.NormalizeItemKind(dto.ItemKind, dto.TrackingType, dto.CategoryName, dto.IsRental);
+        var normalizedTrackingType = ItemOperationalPolicy.NormalizeTrackingType(dto.TrackingType, dto.ItemKind, dto.CategoryName, dto.IsRental);
+        var materialKey = NormalizeItemIdentityValue(dto.MaterialNumber);
+        if (HasMeaningfulItemIdentityValue(materialKey))
+        {
+            var byMaterial = await _dbContext.Items.IgnoreQueryFilters()
+                .Where(item => item.OfficeCode == resolvedOfficeCode && item.TenantCode == resolvedTenantCode)
+                .Where(item => item.MaterialNumber == dto.MaterialNumber)
+                .ToListAsync(cancellationToken);
+
+            var exactMaterialMatch = byMaterial.FirstOrDefault(item =>
+                string.Equals(NormalizeItemIdentityValue(item.MaterialNumber), materialKey, StringComparison.OrdinalIgnoreCase));
+            if (exactMaterialMatch is not null)
+                return exactMaterialMatch;
+        }
+
+        var serialKey = NormalizeItemIdentityValue(dto.SerialNumber);
+        if (HasMeaningfulItemIdentityValue(serialKey))
+        {
+            var bySerial = await _dbContext.Items.IgnoreQueryFilters()
+                .Where(item => item.OfficeCode == resolvedOfficeCode && item.TenantCode == resolvedTenantCode)
+                .Where(item => item.SerialNumber == dto.SerialNumber)
+                .ToListAsync(cancellationToken);
+
+            var exactSerialMatch = bySerial.FirstOrDefault(item =>
+                string.Equals(NormalizeItemIdentityValue(item.SerialNumber), serialKey, StringComparison.OrdinalIgnoreCase));
+            if (exactSerialMatch is not null)
+                return exactSerialMatch;
+        }
+
+        var descriptorKey = BuildItemDescriptorKey(dto);
+        if (string.IsNullOrWhiteSpace(descriptorKey))
+            return null;
+
+        var descriptorCandidates = await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.OfficeCode == resolvedOfficeCode && item.TenantCode == resolvedTenantCode)
+            .Where(item =>
+                item.NameMatchKey == normalizedNameMatchKey &&
+                item.SpecificationMatchKey == normalizedSpecificationMatchKey &&
+                item.ItemKind == normalizedItemKind &&
+                item.TrackingType == normalizedTrackingType)
+            .ToListAsync(cancellationToken);
+
+        var matchingDescriptorCandidates = descriptorCandidates
+            .Where(item => string.Equals(BuildItemDescriptorKey(item), descriptorKey, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (matchingDescriptorCandidates.Count != 1)
+            return null;
+
+        var candidate = matchingDescriptorCandidates[0];
+        var candidateMaterialKey = NormalizeItemIdentityValue(candidate.MaterialNumber);
+        var candidateSerialKey = NormalizeItemIdentityValue(candidate.SerialNumber);
+
+        if (HasMeaningfulItemIdentityValue(materialKey) || HasMeaningfulItemIdentityValue(serialKey))
+        {
+            if (HasMeaningfulItemIdentityValue(candidateMaterialKey) || HasMeaningfulItemIdentityValue(candidateSerialKey))
+                return null;
+        }
+
+        return candidate;
+    }
+
+    private static string BuildScopedItemNaturalKey(
+        ItemDto dto,
+        string resolvedOfficeCode,
+        string resolvedTenantCode)
+    {
+        var descriptorKey = BuildItemDescriptorKey(dto);
+        if (string.IsNullOrWhiteSpace(descriptorKey))
+            return string.Empty;
+
+        var materialKey = NormalizeItemIdentityValue(dto.MaterialNumber);
+        if (HasMeaningfulItemIdentityValue(materialKey))
+        {
+            return string.Join('|',
+                resolvedTenantCode,
+                resolvedOfficeCode,
+                "MAT",
+                materialKey,
+                descriptorKey);
+        }
+
+        var serialKey = NormalizeItemIdentityValue(dto.SerialNumber);
+        if (HasMeaningfulItemIdentityValue(serialKey))
+        {
+            return string.Join('|',
+                resolvedTenantCode,
+                resolvedOfficeCode,
+                "SER",
+                serialKey,
+                descriptorKey);
+        }
+
+        return string.Join('|',
+            resolvedTenantCode,
+            resolvedOfficeCode,
+            "DESC",
+            descriptorKey);
+    }
+
+    private static string BuildItemDescriptorKey(ItemDto dto)
+        => BuildItemDescriptorKey(
+            dto.NameMatchKey,
+            dto.NameOriginal,
+            dto.SpecificationMatchKey,
+            dto.SpecificationOriginal,
+            dto.CategoryName,
+            dto.ItemKind,
+            dto.TrackingType,
+            dto.IsRental);
+
+    private static string BuildItemDescriptorKey(Item item)
+        => BuildItemDescriptorKey(
+            item.NameMatchKey,
+            item.NameOriginal,
+            item.SpecificationMatchKey,
+            item.SpecificationOriginal,
+            item.CategoryName,
+            item.ItemKind,
+            item.TrackingType,
+            item.IsRental);
+
+    private static string BuildItemDescriptorKey(
+        string? nameMatchKey,
+        string? nameOriginal,
+        string? specificationMatchKey,
+        string? specificationOriginal,
+        string? categoryName,
+        string? itemKind,
+        string? trackingType,
+        bool isRental)
+    {
+        var normalizedTrackingType = ItemOperationalPolicy.NormalizeTrackingType(
+            trackingType,
+            itemKind,
+            categoryName,
+            isRental);
+        var normalizedItemKind = ItemOperationalPolicy.NormalizeItemKind(
+            itemKind,
+            trackingType,
+            categoryName,
+            isRental);
+
+        return string.Join('|', new[]
+        {
+            string.IsNullOrWhiteSpace(nameMatchKey)
+                ? RentalCatalogValueNormalizer.NormalizeLooseKey(nameOriginal)
+                : RentalCatalogValueNormalizer.NormalizeLooseKey(nameMatchKey),
+            string.IsNullOrWhiteSpace(specificationMatchKey)
+                ? RentalCatalogValueNormalizer.NormalizeLooseKey(specificationOriginal)
+                : RentalCatalogValueNormalizer.NormalizeLooseKey(specificationMatchKey),
+            RentalCatalogValueNormalizer.NormalizeLooseKey(categoryName),
+            normalizedItemKind.Trim().ToUpperInvariant(),
+            normalizedTrackingType.Trim().ToUpperInvariant()
+        });
+    }
+
+    private static string NormalizeItemIdentityValue(string? value)
+        => RentalCatalogValueNormalizer.NormalizeLooseKey(value);
+
+    private static bool HasMeaningfulItemIdentityValue(string? value)
+    {
+        var normalized = NormalizeItemIdentityValue(value);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return false;
+
+        return normalized != "미상" &&
+               normalized != "UNKNOWN" &&
+               normalized != "NONE" &&
+               normalized != "NA" &&
+               normalized != "N/A" &&
+               normalized != "없음";
+    }
+
+    private static bool ShouldReplacePreparedItem(ItemDto current, ItemDto incoming)
+    {
+        if (incoming.Revision != current.Revision)
+            return incoming.Revision > current.Revision;
+
+        var updatedComparison = DateTime.Compare(
+            incoming.UpdatedAtUtc.ToUniversalTime(),
+            current.UpdatedAtUtc.ToUniversalTime());
+        if (updatedComparison != 0)
+            return updatedComparison > 0;
+
+        var createdComparison = DateTime.Compare(
+            incoming.CreatedAtUtc.ToUniversalTime(),
+            current.CreatedAtUtc.ToUniversalTime());
+        if (createdComparison != 0)
+            return createdComparison > 0;
+
+        return true;
     }
 
     private async Task<List<TransactionDto>> PrepareScopedTransactionsAsync(
@@ -690,14 +1092,24 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.Transactions.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForPayments(existing.OfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForPayments(existing.ResponsibleOfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(TransactionRecord), "Current account cannot modify this office scope.", result);
                 continue;
             }
 
-            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, existing?.OfficeCode);
+            dto.ResponsibleOfficeCode = _officeScopeService.ResolvePaymentResponsibleScopeForCreate(
+                dto.ResponsibleOfficeCode,
+                existing?.ResponsibleOfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                existing?.OfficeCode);
+            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
+                dto.TenantCode,
+                dto.OfficeCode,
+                existing?.TenantCode,
+                existing?.OfficeCode);
             scoped.Add(dto);
         }
 
@@ -713,6 +1125,10 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
+            var originalTransactionKind = dto.TransactionKind;
+            var originalLinkedInvoiceId = dto.LinkedInvoiceId;
+            var originalLinkedRentalBillingProfileId = dto.LinkedRentalBillingProfileId;
+            var originalCustomerId = dto.CustomerId;
             var existing = await _dbContext.Transactions.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
 
@@ -738,8 +1154,14 @@ public sealed class SyncController : ControllerBase
                     dto.SettlementAmount = 0m;
                     dto.TransactionKind = NormalizeTransactionKindWithoutInvoice(dto.TransactionKind, dto.PaymentTotal, dto.ReceiptTotal);
                     invoice = null;
+                    AddNotice(
+                        result,
+                        nameof(TransactionRecord),
+                        dto.Id,
+                        "transaction-invoice-link-cleared",
+                        $"수금/지급 '{dto.Id:D}'은(는) 연결 전표를 찾지 못해 전표 연결을 해제하고 일반 처리 기준으로 보정했습니다.");
                 }
-                else if (!_officeScopeService.CanReadOfficeForInvoices(invoice.OfficeCode, invoice.TenantCode))
+                else if (!_officeScopeService.CanReadOfficeForInvoices(invoice.ResponsibleOfficeCode, invoice.TenantCode))
                 {
                     AddClientConflict(dto, nameof(TransactionRecord),
                         $"Referenced invoice is outside the readable office scope: {dto.LinkedInvoiceId}.", result);
@@ -762,8 +1184,14 @@ public sealed class SyncController : ControllerBase
                     if (string.Equals(dto.TransactionKind, "렌탈수금", StringComparison.OrdinalIgnoreCase))
                         dto.TransactionKind = "일반수금";
                     profile = null;
+                    AddNotice(
+                        result,
+                        nameof(TransactionRecord),
+                        dto.Id,
+                        "transaction-rental-link-cleared",
+                        $"수금/지급 '{dto.Id:D}'은(는) 연결 렌탈 청구 대상을 찾지 못해 렌탈 연결을 해제하고 일반 수금으로 보정했습니다.");
                 }
-                else if (!_officeScopeService.CanReadOfficeForRentals(profile.OfficeCode, profile.TenantCode))
+                else if (!_officeScopeService.CanReadOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode))
                 {
                     AddClientConflict(dto, nameof(TransactionRecord),
                         $"Referenced rental billing profile is outside the readable office scope: {dto.LinkedRentalBillingProfileId}.", result);
@@ -779,13 +1207,33 @@ public sealed class SyncController : ControllerBase
                 {
                     customer = invoice.Customer;
                     dto.CustomerId = customer.Id;
+                    if (originalCustomerId != customer.Id)
+                    {
+                        AddNotice(
+                            result,
+                            nameof(TransactionRecord),
+                            dto.Id,
+                            "transaction-customer-relinked",
+                            $"수금/지급 '{dto.Id:D}'의 거래처를 연결 전표 기준으로 다시 맞췄습니다.");
+                    }
                 }
                 else if (profile?.CustomerId.HasValue == true && profile.CustomerId.Value != Guid.Empty)
                 {
                     customer = await _dbContext.Customers.IgnoreQueryFilters()
                         .FirstOrDefaultAsync(x => x.Id == profile.CustomerId.Value, cancellationToken);
                     if (customer is not null && !customer.IsDeleted)
+                    {
                         dto.CustomerId = customer.Id;
+                        if (originalCustomerId != customer.Id)
+                        {
+                            AddNotice(
+                                result,
+                                nameof(TransactionRecord),
+                                dto.Id,
+                                "transaction-customer-relinked",
+                                $"수금/지급 '{dto.Id:D}'의 거래처를 연결 렌탈 청구 기준으로 다시 맞췄습니다.");
+                        }
+                    }
                 }
 
                 if (customer is null || customer.IsDeleted)
@@ -799,19 +1247,56 @@ public sealed class SyncController : ControllerBase
                 }
             }
 
-            if (!_officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
+            if (!_officeScopeService.CanReadOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode))
             {
                 AddClientConflict(dto, nameof(TransactionRecord),
                     $"Referenced customer is outside the readable office scope: {dto.CustomerId}.", result);
                 continue;
             }
 
+            dto.ResponsibleOfficeCode = _officeScopeService.ResolvePaymentResponsibleScopeForCreate(
+                dto.ResponsibleOfficeCode,
+                customer.ResponsibleOfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                customer.OfficeCode);
             dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
                 dto.TenantCode,
                 dto.OfficeCode,
                 customer.TenantCode,
                 customer.OfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, customer.OfficeCode);
+
+            if (!string.Equals(originalTransactionKind, dto.TransactionKind, StringComparison.OrdinalIgnoreCase))
+            {
+                AddNotice(
+                    result,
+                    nameof(TransactionRecord),
+                    dto.Id,
+                    "transaction-kind-normalized",
+                    $"수금/지급 '{dto.Id:D}'의 처리구분을 '{originalTransactionKind}'에서 '{dto.TransactionKind}'(으)로 보정했습니다.");
+            }
+
+            if (originalLinkedInvoiceId != dto.LinkedInvoiceId)
+            {
+                AddNotice(
+                    result,
+                    nameof(TransactionRecord),
+                    dto.Id,
+                    "transaction-link-updated",
+                    $"수금/지급 '{dto.Id:D}'의 연결 전표 값이 서버 기준으로 조정되었습니다.");
+            }
+
+            if (originalLinkedRentalBillingProfileId != dto.LinkedRentalBillingProfileId)
+            {
+                AddNotice(
+                    result,
+                    nameof(TransactionRecord),
+                    dto.Id,
+                    "transaction-rental-link-updated",
+                    $"수금/지급 '{dto.Id:D}'의 연결 렌탈 청구 값이 서버 기준으로 조정되었습니다.");
+            }
+
             valid.Add(dto);
         }
 
@@ -853,7 +1338,7 @@ public sealed class SyncController : ControllerBase
                 if (existing is not null)
                 {
                     if (existing.Transaction is not null &&
-                        !_officeScopeService.CanWriteOfficeForPayments(existing.Transaction.OfficeCode, existing.Transaction.TenantCode))
+                        !_officeScopeService.CanWriteOfficeForPayments(existing.Transaction.ResponsibleOfficeCode, existing.Transaction.TenantCode))
                     {
                         AddClientConflict(dto, nameof(TransactionAttachment),
                             $"Referenced transaction is outside the writable office scope: {existing.TransactionId}.", result);
@@ -871,7 +1356,7 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (!_officeScopeService.CanWriteOfficeForPayments(transaction.OfficeCode, transaction.TenantCode))
+            if (!_officeScopeService.CanWriteOfficeForPayments(transaction.ResponsibleOfficeCode, transaction.TenantCode))
             {
                 AddClientConflict(dto, nameof(TransactionAttachment),
                     $"Referenced transaction is outside the writable office scope: {dto.TransactionId}.", result);
@@ -916,18 +1401,21 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            dto.SourceOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeLoose(
+                dto.SourceOfficeCode,
+                dto.FromWarehouseCode,
+                existing?.SourceOfficeCode ?? OfficeCodeCatalog.Usenet);
+            dto.TargetOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeLoose(
+                dto.TargetOfficeCode,
+                dto.ToWarehouseCode,
+                existing?.TargetOfficeCode ?? OfficeCodeCatalog.Yeonsu);
             dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
                 dto.TenantCode,
                 dto.SourceOfficeCode,
                 existing?.TenantCode,
                 existing?.SourceOfficeCode);
-            dto.SourceOfficeCode = _officeScopeService.ResolveScopeForCreate(dto.SourceOfficeCode, existing?.SourceOfficeCode);
-            dto.TargetOfficeCode = _officeScopeService.ResolveScopeForCreate(dto.TargetOfficeCode, existing?.TargetOfficeCode ?? dto.TargetOfficeCode);
-
-            if (string.IsNullOrWhiteSpace(dto.FromWarehouseCode))
-                dto.FromWarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(dto.SourceOfficeCode);
-            if (string.IsNullOrWhiteSpace(dto.ToWarehouseCode))
-                dto.ToWarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(dto.TargetOfficeCode);
+            dto.FromWarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(dto.SourceOfficeCode);
+            dto.ToWarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(dto.TargetOfficeCode);
 
             scoped.Add(dto);
         }
@@ -944,6 +1432,18 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
+            var sourceTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(dto.TenantCode, dto.SourceOfficeCode);
+            var targetTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, dto.TargetOfficeCode);
+            if (!string.Equals(sourceTenantCode, targetTenantCode, StringComparison.OrdinalIgnoreCase))
+            {
+                AddClientConflict(
+                    dto,
+                    nameof(InventoryTransfer),
+                    "재고이동은 같은 업체 내부 지점 간 이동만 지원합니다. 다른 업체로 보내려면 대상 업체에 품목을 먼저 등록/복제한 뒤 처리하세요.",
+                    result);
+                continue;
+            }
+
             var canAccessTransfer =
                 _officeScopeService.CanWriteOfficeForDeliveries(dto.SourceOfficeCode, dto.TenantCode) ||
                 _officeScopeService.CanWriteOfficeForDeliveries(dto.TargetOfficeCode, dto.TenantCode);
@@ -981,10 +1481,14 @@ public sealed class SyncController : ControllerBase
     private async Task UpsertInventoryTransfersAsync(
         IEnumerable<InventoryTransferDto> payload,
         SyncPushResult result,
+        string deviceId,
         CancellationToken cancellationToken)
     {
         foreach (var dto in payload)
         {
+            if (await TryAcceptDuplicateMutationAsync(dto, nameof(InventoryTransfer), deviceId, result, cancellationToken))
+                continue;
+
             var entity = await _dbContext.InventoryTransfers.IgnoreQueryFilters()
                 .Include(x => x.Lines)
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
@@ -995,6 +1499,8 @@ public sealed class SyncController : ControllerBase
                 entity.Apply(dto);
                 ApplyInventoryTransferLines(entity, dto.Lines ?? []);
                 _dbContext.InventoryTransfers.Add(entity);
+                RegisterProcessedMutation(dto, nameof(InventoryTransfer), deviceId);
+                await ResolveHistoricalConflictsAsync(nameof(InventoryTransfer), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
                 result.AcceptedCount++;
                 continue;
             }
@@ -1008,7 +1514,13 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
+            if (HasExpectedRevisionConflict(entity, dto))
+            {
+                AddServerConflict(dto, entity, nameof(InventoryTransfer), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                continue;
+            }
+
+            if (IsServerEntityNewer(entity, dto))
             {
                 AddServerConflict(dto, entity, nameof(InventoryTransfer), "Server version is newer.", result);
                 continue;
@@ -1018,6 +1530,8 @@ public sealed class SyncController : ControllerBase
             _dbContext.InventoryTransferLines.RemoveRange(entity.Lines);
             entity.Lines.Clear();
             ApplyInventoryTransferLines(entity, dto.Lines ?? []);
+            RegisterProcessedMutation(dto, nameof(InventoryTransfer), deviceId);
+            await ResolveHistoricalConflictsAsync(nameof(InventoryTransfer), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
             result.AcceptedCount++;
         }
     }
@@ -1028,23 +1542,55 @@ public sealed class SyncController : ControllerBase
         CancellationToken cancellationToken)
     {
         var scoped = new List<RentalManagementCompanyDto>();
+        var reservedCompanyIds = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var dto in payload)
         {
+            dto.Code = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.Code, dto.Code);
+            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, dto.Code);
+
+            var naturalKey = $"{dto.TenantCode}|{dto.Code}";
+            if (reservedCompanyIds.TryGetValue(naturalKey, out var reservedId))
+                dto.Id = reservedId;
+
             var existing = await _dbContext.RentalManagementCompanies.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            if (existing is null)
+            {
+                existing = await FindExistingRentalManagementCompanyByNaturalKeyAsync(dto, cancellationToken);
+                if (existing is not null)
+                    dto.Id = existing.Id;
+            }
+
             if (existing is not null && !_officeScopeService.HasGlobalDataScope &&
-                !_officeScopeService.CanReadOffice(_officeScopeService.CurrentOfficeCode, existing.TenantCode))
+                !_officeScopeService.CanWriteOfficeForRentals(existing.Code, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(RentalManagementCompany), "Current account cannot modify this tenant scope.", result);
                 continue;
             }
 
             dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, dto.Code, existing?.TenantCode, existing?.Code);
+            dto.Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id;
+            reservedCompanyIds[naturalKey] = existing?.Id ?? dto.Id;
             scoped.Add(dto);
         }
 
         return scoped;
+    }
+
+    private async Task<RentalManagementCompany?> FindExistingRentalManagementCompanyByNaturalKeyAsync(
+        RentalManagementCompanyDto dto,
+        CancellationToken cancellationToken)
+    {
+        var normalizedCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.Code, dto.Code);
+        var normalizedTenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, normalizedCode);
+
+        return await _dbContext.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(entity =>
+                entity.Code == normalizedCode &&
+                entity.TenantCode == normalizedTenantCode,
+                cancellationToken);
     }
 
     private async Task<List<RentalBillingProfileDto>> PrepareScopedRentalBillingProfilesAsync(
@@ -1071,14 +1617,24 @@ public sealed class SyncController : ControllerBase
                 }
             }
 
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.OfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.ResponsibleOfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(RentalBillingProfile), "Current account cannot modify this office scope.", result);
                 continue;
             }
 
-            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveScopeForRentalCreate(dto.OfficeCode, existing?.OfficeCode);
+            dto.ResponsibleOfficeCode = _officeScopeService.ResolveRentalResponsibleScopeForCreate(
+                dto.ResponsibleOfficeCode,
+                existing?.ResponsibleOfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                existing?.OfficeCode);
+            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(
+                dto.TenantCode,
+                dto.OfficeCode,
+                existing?.TenantCode,
+                existing?.OfficeCode);
             scoped.Add(dto);
         }
 
@@ -1097,13 +1653,63 @@ public sealed class SyncController : ControllerBase
             .FirstOrDefaultAsync(profile => profile.ProfileKey == profileKey, cancellationToken);
     }
 
+    private static Dictionary<string, List<Guid>> BuildIncomingRentalBillingProfileIdMap(
+        IEnumerable<RentalBillingProfileDto> payload)
+    {
+        var result = new Dictionary<string, List<Guid>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var dto in payload)
+        {
+            if (dto.Id == Guid.Empty || string.IsNullOrWhiteSpace(dto.ProfileKey))
+                continue;
+
+            var profileKey = dto.ProfileKey.Trim();
+            if (!result.TryGetValue(profileKey, out var ids))
+            {
+                ids = new List<Guid>();
+                result[profileKey] = ids;
+            }
+
+            if (!ids.Contains(dto.Id))
+                ids.Add(dto.Id);
+        }
+
+        return result;
+    }
+
+    private static Dictionary<Guid, Guid> BuildResolvedRentalBillingProfileIdMap(
+        IEnumerable<RentalBillingProfileDto> payload,
+        IReadOnlyDictionary<string, List<Guid>> incomingProfileIdsByKey)
+    {
+        var result = new Dictionary<Guid, Guid>();
+        foreach (var dto in payload)
+        {
+            if (dto.Id == Guid.Empty || string.IsNullOrWhiteSpace(dto.ProfileKey))
+                continue;
+
+            if (!incomingProfileIdsByKey.TryGetValue(dto.ProfileKey.Trim(), out var originalIds))
+                continue;
+
+            foreach (var originalId in originalIds)
+            {
+                if (originalId != Guid.Empty)
+                    result[originalId] = dto.Id;
+            }
+        }
+
+        return result;
+    }
+
     private async Task UpsertRentalBillingProfilesAsync(
         IEnumerable<RentalBillingProfileDto> payload,
         SyncPushResult result,
+        string deviceId,
         CancellationToken cancellationToken)
     {
         foreach (var dto in payload)
         {
+            if (await TryAcceptDuplicateMutationAsync(dto, nameof(RentalBillingProfile), deviceId, result, cancellationToken))
+                continue;
+
             var entity = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
             if (entity is null)
@@ -1122,11 +1728,19 @@ public sealed class SyncController : ControllerBase
                 };
                 newEntity.Apply(dto);
                 _dbContext.RentalBillingProfiles.Add(newEntity);
+                RegisterProcessedMutation(dto, nameof(RentalBillingProfile), deviceId);
+                await ResolveHistoricalConflictsAsync(nameof(RentalBillingProfile), newEntity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
                 result.AcceptedCount++;
                 continue;
             }
 
-            if (entity.UpdatedAtUtc > dto.UpdatedAtUtc)
+            if (HasExpectedRevisionConflict(entity, dto))
+            {
+                AddServerConflict(dto, entity, nameof(RentalBillingProfile), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                continue;
+            }
+
+            if (IsServerEntityNewer(entity, dto))
             {
                 AddServerConflict(dto, entity, nameof(RentalBillingProfile), "Server version is newer.", result);
                 continue;
@@ -1134,6 +1748,8 @@ public sealed class SyncController : ControllerBase
 
             dto.Id = entity.Id;
             entity.Apply(dto);
+            RegisterProcessedMutation(dto, nameof(RentalBillingProfile), deviceId);
+            await ResolveHistoricalConflictsAsync(nameof(RentalBillingProfile), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
             result.AcceptedCount++;
         }
     }
@@ -1151,14 +1767,19 @@ public sealed class SyncController : ControllerBase
             var linkedCustomer = await GetRentalReferenceCustomerAsync(dto.CustomerId, cancellationToken);
             if (linkedCustomer is not null)
             {
-                var resolvedOfficeCode = ResolveRentalCustomerOfficeCode(linkedCustomer.OfficeCode);
+                var resolvedResponsibleOfficeCode = ResolveRentalCustomerOfficeCode(linkedCustomer.ResponsibleOfficeCode);
+                var resolvedOwnerOfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                    linkedCustomer.OfficeCode,
+                    resolvedResponsibleOfficeCode,
+                    linkedCustomer.OfficeCode);
                 dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(
                     dto.TenantCode,
-                    resolvedOfficeCode,
+                    resolvedOwnerOfficeCode,
                     linkedCustomer.TenantCode,
                     linkedCustomer.OfficeCode);
-                dto.OfficeCode = resolvedOfficeCode;
-                dto.ManagementCompanyCode = resolvedOfficeCode;
+                dto.ResponsibleOfficeCode = resolvedResponsibleOfficeCode;
+                dto.OfficeCode = resolvedOwnerOfficeCode;
+                dto.ManagementCompanyCode = resolvedOwnerOfficeCode;
                 var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
                 dto.CustomerName = normalizedCustomerName;
             }
@@ -1182,6 +1803,125 @@ public sealed class SyncController : ControllerBase
         return valid;
     }
 
+    private static bool IsServerEntityNewer(TrackedEntity entity, SyncEntityDto dto)
+    {
+        if (entity.Revision > 0 && dto.Revision > 0)
+            return entity.Revision > dto.Revision;
+
+        return NormalizeConflictUtc(entity.UpdatedAtUtc) > NormalizeConflictUtc(dto.UpdatedAtUtc);
+    }
+
+    private static bool HasExpectedRevisionConflict(TrackedEntity entity, SyncEntityDto dto)
+        => dto.ExpectedRevision > 0 && entity.Revision != dto.ExpectedRevision;
+
+    private static string BuildExpectedRevisionConflictReason(long expectedRevision, long currentRevision)
+        => $"Expected revision mismatch. client={expectedRevision}, server={currentRevision}";
+
+    private async Task<bool> TryAcceptDuplicateMutationAsync(
+        SyncEntityDto dto,
+        string entityName,
+        string deviceId,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var mutationId = NormalizeMutationId(dto.MutationId);
+        if (string.IsNullOrWhiteSpace(mutationId))
+            return false;
+
+        var alreadyProcessed = _dbContext.ProcessedSyncMutations.Local.Any(entity =>
+                                   string.Equals(entity.MutationId, mutationId, StringComparison.OrdinalIgnoreCase)) ||
+                               await _dbContext.ProcessedSyncMutations
+                                   .AsNoTracking()
+                                   .AnyAsync(entity => entity.MutationId == mutationId, cancellationToken);
+        if (!alreadyProcessed)
+            return false;
+
+        if (dto.Id != Guid.Empty)
+        {
+            await ResolveHistoricalConflictsAsync(
+                entityName,
+                dto.Id,
+                "이미 처리된 동일 mutation 이 확인되어 기존 충돌을 자동 해결했습니다.",
+                cancellationToken);
+        }
+
+        result.AcceptedCount++;
+        result.DuplicateMutationCount++;
+        return true;
+    }
+
+    private void RegisterProcessedMutation(SyncEntityDto dto, string entityName, string deviceId)
+    {
+        var mutationId = NormalizeMutationId(dto.MutationId);
+        if (string.IsNullOrWhiteSpace(mutationId))
+            return;
+
+        if (_dbContext.ProcessedSyncMutations.Local.Any(entity =>
+                string.Equals(entity.MutationId, mutationId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        _dbContext.ProcessedSyncMutations.Add(new ProcessedSyncMutation
+        {
+            MutationId = mutationId,
+            DeviceId = deviceId,
+            EntityName = entityName,
+            EntityId = dto.Id.ToString("D"),
+            ExpectedRevision = dto.ExpectedRevision,
+            ProcessedAtUtc = dto.MutationCreatedAtUtc.HasValue && dto.MutationCreatedAtUtc.Value != default
+                ? NormalizeUtc(dto.MutationCreatedAtUtc.Value)
+                : DateTime.UtcNow
+        });
+    }
+
+    private async Task ResolveHistoricalConflictsAsync(
+        string entityName,
+        Guid entityId,
+        string resolutionNote,
+        CancellationToken cancellationToken)
+    {
+        if (entityId == Guid.Empty)
+            return;
+
+        var entityIdText = entityId.ToString();
+        var rows = await _dbContext.ConflictLogs
+            .Where(conflict =>
+                conflict.EntityName == entityName &&
+                conflict.EntityId == entityIdText &&
+                conflict.Status != "Resolved")
+            .ToListAsync(cancellationToken);
+        if (rows.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        var normalizedNote = (resolutionNote ?? string.Empty).Trim();
+        foreach (var row in rows)
+        {
+            row.Status = "Resolved";
+            row.ResolvedAtUtc = now;
+            row.ResolutionNote = normalizedNote;
+        }
+    }
+
+    private static string NormalizeDeviceId(string? deviceId)
+    {
+        var normalized = (deviceId ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? "unknown-device" : normalized;
+    }
+
+    private static string NormalizeMutationId(string? mutationId)
+        => string.IsNullOrWhiteSpace(mutationId) ? string.Empty : mutationId.Trim();
+
+    private static DateTime NormalizeConflictUtc(DateTime value)
+        => value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            DateTimeKind.Unspecified => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+            _ => value
+        };
+
     private async Task<Guid?> ResolveRentalBillingProfileCustomerReferenceAsync(
         RentalBillingProfileDto dto,
         CancellationToken cancellationToken)
@@ -1202,7 +1942,7 @@ public sealed class SyncController : ControllerBase
             }
         }
 
-        var preferredOfficeCode = _officeScopeService.ResolveScopeForRentalCreate(dto.OfficeCode, null);
+        var preferredOfficeCode = _officeScopeService.ResolveRentalResponsibleScopeForCreate(dto.ResponsibleOfficeCode, null);
         var preferredTenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, preferredOfficeCode);
         if (!string.IsNullOrWhiteSpace(normalizedBusinessNumber))
         {
@@ -1287,14 +2027,24 @@ public sealed class SyncController : ControllerBase
                     dto.Id = existing.Id;
             }
 
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.OfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.ResponsibleOfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(RentalAsset), "Current account cannot modify this office scope.", result);
                 continue;
             }
 
-            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveScopeForRentalCreate(dto.OfficeCode, existing?.OfficeCode);
+            dto.ResponsibleOfficeCode = _officeScopeService.ResolveRentalResponsibleScopeForCreate(
+                dto.ResponsibleOfficeCode,
+                existing?.ResponsibleOfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                existing?.OfficeCode);
+            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(
+                dto.TenantCode,
+                dto.OfficeCode,
+                existing?.TenantCode,
+                existing?.OfficeCode);
             dto.ManagementCompanyCode = string.IsNullOrWhiteSpace(dto.ManagementCompanyCode)
                 ? dto.OfficeCode
                 : dto.ManagementCompanyCode.Trim();
@@ -1524,6 +2274,7 @@ public sealed class SyncController : ControllerBase
 
     private async Task<List<RentalAssetDto>> FilterValidRentalAssetsAsync(
         IEnumerable<RentalAssetDto> payload,
+        IReadOnlyDictionary<Guid, Guid> resolvedRentalProfileIds,
         SyncPushResult result,
         CancellationToken cancellationToken)
     {
@@ -1531,30 +2282,47 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
+            if (dto.BillingProfileId.HasValue &&
+                dto.BillingProfileId.Value != Guid.Empty &&
+                resolvedRentalProfileIds.TryGetValue(dto.BillingProfileId.Value, out var remappedBillingProfileId))
+            {
+                dto.BillingProfileId = remappedBillingProfileId;
+            }
+
             dto.CustomerId = await ResolveRentalAssetCustomerReferenceAsync(dto, cancellationToken);
             dto.ItemId = await ResolveRentalAssetItemReferenceAsync(dto, cancellationToken);
             var linkedCustomer = await GetRentalReferenceCustomerAsync(dto.CustomerId, cancellationToken);
             if (linkedCustomer is not null)
             {
-                var resolvedOfficeCode = ResolveRentalCustomerOfficeCode(linkedCustomer.OfficeCode);
+                var resolvedResponsibleOfficeCode = ResolveRentalCustomerOfficeCode(linkedCustomer.ResponsibleOfficeCode);
+                var resolvedOwnerOfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                    linkedCustomer.OfficeCode,
+                    resolvedResponsibleOfficeCode,
+                    linkedCustomer.OfficeCode);
                 dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(
                     dto.TenantCode,
-                    resolvedOfficeCode,
+                    resolvedOwnerOfficeCode,
                     linkedCustomer.TenantCode,
                     linkedCustomer.OfficeCode);
-                dto.OfficeCode = resolvedOfficeCode;
-                dto.ManagementCompanyCode = resolvedOfficeCode;
+                dto.ResponsibleOfficeCode = resolvedResponsibleOfficeCode;
+                dto.OfficeCode = resolvedOwnerOfficeCode;
+                dto.ManagementCompanyCode = resolvedOwnerOfficeCode;
             }
 
             RentalBillingProfile? billingProfile = null;
             if (dto.BillingProfileId.HasValue && dto.BillingProfileId.Value != Guid.Empty)
             {
+                var requestedBillingProfileId = dto.BillingProfileId.Value;
                 billingProfile = await ResolveRentalAssetBillingProfileReferenceAsync(dto, cancellationToken);
                 if (billingProfile is null || billingProfile.IsDeleted)
                 {
-                    AddClientConflict(dto, nameof(RentalAsset),
-                        $"Referenced rental billing profile was not found: {dto.BillingProfileId}.", result);
-                    continue;
+                    billingProfile = await ResolveRentalAssetBillingProfileReferenceByFieldsAsync(dto, cancellationToken);
+                    if (billingProfile is null || billingProfile.IsDeleted)
+                    {
+                        AddClientConflict(dto, nameof(RentalAsset),
+                            $"Referenced rental billing profile was not found: {requestedBillingProfileId}.", result);
+                        continue;
+                    }
                 }
 
                 dto.BillingProfileId = billingProfile.Id;
@@ -1568,6 +2336,13 @@ public sealed class SyncController : ControllerBase
 
             if (billingProfile is not null)
             {
+                if (!_officeScopeService.CanReadOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
+                {
+                    AddClientConflict(dto, nameof(RentalAsset),
+                        $"Referenced rental billing profile is outside the readable office scope: {billingProfile.Id}.", result);
+                    continue;
+                }
+
                 if (billingProfile.CustomerId.HasValue && billingProfile.CustomerId.Value != Guid.Empty)
                     dto.CustomerId = billingProfile.CustomerId.Value;
 
@@ -1576,6 +2351,7 @@ public sealed class SyncController : ControllerBase
                     billingProfile.OfficeCode,
                     billingProfile.TenantCode,
                     billingProfile.OfficeCode);
+                dto.ResponsibleOfficeCode = billingProfile.ResponsibleOfficeCode;
                 dto.OfficeCode = billingProfile.OfficeCode;
                 dto.ManagementCompanyCode = billingProfile.OfficeCode;
             }
@@ -1593,9 +2369,16 @@ public sealed class SyncController : ControllerBase
         if (!dto.BillingProfileId.HasValue || dto.BillingProfileId.Value == Guid.Empty)
             return null;
 
+        var preferredOfficeCode = _officeScopeService.ResolveRentalResponsibleScopeForCreate(dto.ResponsibleOfficeCode, null);
+        var preferredTenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, preferredOfficeCode);
         var direct = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(x => x.Id == dto.BillingProfileId.Value, cancellationToken);
-        if (direct is not null && !direct.IsDeleted)
+        if (direct is not null &&
+            !direct.IsDeleted &&
+            RentalBillingProfileMatchesRentalAssetScope(direct, preferredOfficeCode, preferredTenantCode) &&
+            (RentalBillingProfileMatchesRentalAssetReference(direct, dto) ||
+             !direct.CustomerId.HasValue ||
+             direct.CustomerId.Value == Guid.Empty))
             return direct;
 
         var existingAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
@@ -1604,7 +2387,12 @@ public sealed class SyncController : ControllerBase
         {
             var fromExistingAsset = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == existingBillingProfileId, cancellationToken);
-            if (fromExistingAsset is not null && !fromExistingAsset.IsDeleted)
+            if (fromExistingAsset is not null &&
+                !fromExistingAsset.IsDeleted &&
+                RentalBillingProfileMatchesRentalAssetScope(fromExistingAsset, preferredOfficeCode, preferredTenantCode) &&
+                (RentalBillingProfileMatchesRentalAssetReference(fromExistingAsset, dto) ||
+                 !fromExistingAsset.CustomerId.HasValue ||
+                 fromExistingAsset.CustomerId.Value == Guid.Empty))
                 return fromExistingAsset;
         }
 
@@ -1615,12 +2403,46 @@ public sealed class SyncController : ControllerBase
         RentalAssetDto dto,
         CancellationToken cancellationToken)
     {
-        if (!dto.CustomerId.HasValue || dto.CustomerId.Value == Guid.Empty)
+        var resolvedCustomerId = dto.CustomerId;
+        if (!resolvedCustomerId.HasValue || resolvedCustomerId.Value == Guid.Empty)
+        {
+            resolvedCustomerId = await ResolveRentalAssetCustomerReferenceAsync(dto, cancellationToken);
+        }
+
+        if (!resolvedCustomerId.HasValue || resolvedCustomerId.Value == Guid.Empty)
             return null;
 
+        var preferredOfficeCode = _officeScopeService.ResolveRentalResponsibleScopeForCreate(dto.ResponsibleOfficeCode, null);
+        var preferredTenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, preferredOfficeCode);
+        var customerKeys = BuildRentalCustomerKeys(dto.CustomerName, dto.CurrentCustomerName);
         var candidates = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
-            .Where(profile => !profile.IsDeleted && profile.CustomerId == dto.CustomerId.Value)
+            .Where(profile => !profile.IsDeleted)
             .ToListAsync(cancellationToken);
+        candidates = candidates
+            .Where(profile => _officeScopeService.CanReadOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode))
+            .ToList();
+        var scopedCandidates = candidates
+            .Where(profile => RentalBillingProfileMatchesRentalAssetScope(profile, preferredOfficeCode, preferredTenantCode))
+            .ToList();
+        if (scopedCandidates.Count > 0)
+            candidates = scopedCandidates;
+
+        var customerIdMatches = candidates
+            .Where(profile => profile.CustomerId == resolvedCustomerId.Value)
+            .ToList();
+        if (customerIdMatches.Count > 0)
+        {
+            candidates = customerIdMatches;
+        }
+        else if (customerKeys.Count > 0)
+        {
+            var nameMatches = candidates
+                .Where(profile => ProfileMatchesRentalNames(profile, customerKeys))
+                .ToList();
+            if (nameMatches.Count > 0)
+                candidates = nameMatches;
+        }
+
         if (candidates.Count == 0)
             return null;
 
@@ -1791,7 +2613,7 @@ public sealed class SyncController : ControllerBase
         if (candidateNames.Count == 0)
             return null;
 
-        var preferredOfficeCode = _officeScopeService.ResolveScopeForRentalCreate(dto.OfficeCode, null);
+        var preferredOfficeCode = _officeScopeService.ResolveRentalResponsibleScopeForCreate(dto.ResponsibleOfficeCode, null);
         var preferredTenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, preferredOfficeCode);
         var exactNameMatches = await _dbContext.Customers.IgnoreQueryFilters()
             .Where(customer => !customer.IsDeleted && candidateNames.Contains(customer.NameOriginal))
@@ -1938,6 +2760,59 @@ public sealed class SyncController : ControllerBase
                siteKeys.Contains(profileSiteKey, StringComparer.OrdinalIgnoreCase);
     }
 
+    private bool RentalBillingProfileMatchesRentalAssetReference(
+        RentalBillingProfile profile,
+        RentalAssetDto dto)
+    {
+        var preferredOfficeCode = _officeScopeService.ResolveRentalResponsibleScopeForCreate(dto.ResponsibleOfficeCode, null);
+        var preferredTenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, preferredOfficeCode);
+        if (!RentalBillingProfileMatchesRentalAssetScope(profile, preferredOfficeCode, preferredTenantCode))
+            return false;
+
+        if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
+        {
+            if (profile.CustomerId == dto.CustomerId.Value)
+                return true;
+
+            if (profile.CustomerId.HasValue && profile.CustomerId.Value != Guid.Empty)
+                return false;
+        }
+
+        var candidateKeys = BuildRentalCustomerKeys(dto.CustomerName, dto.CurrentCustomerName);
+        return candidateKeys.Count == 0 || ProfileMatchesRentalNames(profile, candidateKeys);
+    }
+
+    private static bool RentalBillingProfileMatchesRentalAssetScope(
+        RentalBillingProfile profile,
+        string preferredOfficeCode,
+        string preferredTenantCode)
+    {
+        var profileOfficeCode = ResolveRentalCustomerOfficeCode(profile.ResponsibleOfficeCode);
+        var profileTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            profile.TenantCode,
+            profile.OfficeCode,
+            profile.TenantCode,
+            profile.ResponsibleOfficeCode);
+
+        return string.Equals(profileOfficeCode, preferredOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(profileTenantCode, preferredTenantCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ProfileMatchesRentalNames(
+        RentalBillingProfile profile,
+        IReadOnlyCollection<string> candidateKeys)
+    {
+        if (candidateKeys.Count == 0)
+            return true;
+
+        var profileKeys = BuildRentalCustomerKeys(profile.CustomerName);
+        return profileKeys.Any(profileKey =>
+            candidateKeys.Any(candidateKey =>
+                !string.IsNullOrWhiteSpace(profileKey) &&
+                !string.IsNullOrWhiteSpace(candidateKey) &&
+                string.Equals(profileKey, candidateKey, StringComparison.OrdinalIgnoreCase)));
+    }
+
     private Guid? ResolveReadableItemReference(
         IReadOnlyCollection<Item> candidates,
         string preferredOfficeCode,
@@ -1987,7 +2862,7 @@ public sealed class SyncController : ControllerBase
 
         var preferredCandidates = readableCandidates
             .Where(customer =>
-                string.Equals(customer.OfficeCode, preferredOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(customer.ResponsibleOfficeCode, preferredOfficeCode, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(customer.TenantCode, preferredTenantCode, StringComparison.OrdinalIgnoreCase))
             .ToList();
         if (preferredCandidates.Count == 1)
@@ -2003,8 +2878,8 @@ public sealed class SyncController : ControllerBase
            _officeScopeService.CanReadOfficeForRentals(item.OfficeCode, item.TenantCode);
 
     private bool CanReadCustomerForRentalReference(Customer customer)
-        => _officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode) ||
-           _officeScopeService.CanReadOfficeForRentals(customer.OfficeCode, customer.TenantCode);
+        => _officeScopeService.CanReadOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode) ||
+           _officeScopeService.CanReadOfficeForRentals(customer.ResponsibleOfficeCode, customer.TenantCode);
 
     private async Task<List<RentalBillingLogDto>> PrepareScopedRentalBillingLogsAsync(
         IEnumerable<RentalBillingLogDto> payload,
@@ -2017,14 +2892,24 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.RentalBillingLogs.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.OfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.ResponsibleOfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(RentalBillingLog), "Current account cannot modify this office scope.", result);
                 continue;
             }
 
-            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(dto.TenantCode, dto.OfficeCode, existing?.TenantCode, existing?.OfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveScopeForRentalCreate(dto.OfficeCode, existing?.OfficeCode);
+            dto.ResponsibleOfficeCode = _officeScopeService.ResolveRentalResponsibleScopeForCreate(
+                dto.ResponsibleOfficeCode,
+                existing?.ResponsibleOfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                existing?.OfficeCode);
+            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(
+                dto.TenantCode,
+                dto.OfficeCode,
+                existing?.TenantCode,
+                existing?.OfficeCode);
             scoped.Add(dto);
         }
 
@@ -2049,13 +2934,20 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (!_officeScopeService.CanReadOfficeForRentals(billingProfile.OfficeCode, billingProfile.TenantCode))
+            if (!_officeScopeService.CanReadOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
             {
                 AddClientConflict(dto, nameof(RentalBillingLog),
                     $"Referenced rental billing profile is outside the readable office scope: {dto.BillingProfileId}.", result);
                 continue;
             }
 
+            dto.ResponsibleOfficeCode = billingProfile.ResponsibleOfficeCode;
+            dto.OfficeCode = billingProfile.OfficeCode;
+            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(
+                dto.TenantCode,
+                billingProfile.OfficeCode,
+                billingProfile.TenantCode,
+                billingProfile.OfficeCode);
             valid.Add(dto);
         }
 
@@ -2069,6 +2961,7 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
+            var originalCustomerId = dto.CustomerId;
             var existing = await _dbContext.Invoices.IgnoreQueryFilters()
                 .Include(x => x.Customer)
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
@@ -2084,7 +2977,7 @@ public sealed class SyncController : ControllerBase
 
                 if (existing is not null)
                 {
-                    if (!_officeScopeService.CanWriteOfficeForInvoices(existing.OfficeCode, existing.TenantCode))
+                    if (!_officeScopeService.CanWriteOfficeForInvoices(existing.ResponsibleOfficeCode, existing.TenantCode))
                     {
                         AddClientConflict(dto, nameof(Invoice),
                             "Current account cannot modify this office scope.", result);
@@ -2098,14 +2991,27 @@ public sealed class SyncController : ControllerBase
                     if (customer is not null && !customer.IsDeleted)
                     {
                         dto.CustomerId = customer.Id;
+                        dto.ResponsibleOfficeCode = _officeScopeService.ResolveInvoiceResponsibleScopeForCreate(
+                            dto.ResponsibleOfficeCode,
+                            customer.ResponsibleOfficeCode);
+                        dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                            dto.OfficeCode,
+                            dto.ResponsibleOfficeCode,
+                            customer.OfficeCode);
                         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
                             dto.TenantCode,
                             dto.OfficeCode,
-                            existing.TenantCode,
-                            existing.OfficeCode);
-                        dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(
-                            dto.OfficeCode,
-                            existing.OfficeCode);
+                            customer.TenantCode,
+                            customer.OfficeCode);
+                        if (originalCustomerId != customer.Id)
+                        {
+                            AddNotice(
+                                result,
+                                nameof(Invoice),
+                                dto.Id,
+                                "invoice-customer-relinked",
+                                $"전표 '{dto.Id:D}'의 거래처를 기존 전표/이름 기준으로 다시 연결했습니다.");
+                        }
                         valid.Add(dto);
                         continue;
                     }
@@ -2124,14 +3030,27 @@ public sealed class SyncController : ControllerBase
                     if (customer is not null && !customer.IsDeleted)
                     {
                         dto.CustomerId = customer.Id;
+                        dto.ResponsibleOfficeCode = _officeScopeService.ResolveInvoiceResponsibleScopeForCreate(
+                            dto.ResponsibleOfficeCode,
+                            customer.ResponsibleOfficeCode);
+                        dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                            dto.OfficeCode,
+                            dto.ResponsibleOfficeCode,
+                            customer.OfficeCode);
                         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
                             dto.TenantCode,
                             dto.OfficeCode,
                             customer.TenantCode,
                             customer.OfficeCode);
-                        dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(
-                            dto.OfficeCode,
-                            customer.OfficeCode);
+                        if (originalCustomerId != customer.Id)
+                        {
+                            AddNotice(
+                                result,
+                                nameof(Invoice),
+                                dto.Id,
+                                "invoice-customer-relinked",
+                                $"전표 '{dto.Id:D}'의 거래처를 이름 기준으로 다시 연결했습니다.");
+                        }
                         valid.Add(dto);
                         continue;
                     }
@@ -2142,20 +3061,33 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (!_officeScopeService.CanReadOfficeForCustomers(customer.OfficeCode, customer.TenantCode))
+            if (!_officeScopeService.CanReadOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode))
             {
                 if (existing is not null &&
-                    _officeScopeService.CanWriteOfficeForInvoices(existing.OfficeCode, existing.TenantCode))
+                    _officeScopeService.CanWriteOfficeForInvoices(existing.ResponsibleOfficeCode, existing.TenantCode))
                 {
                     dto.CustomerId = existing.CustomerId;
+                    dto.ResponsibleOfficeCode = _officeScopeService.ResolveInvoiceResponsibleScopeForCreate(
+                        dto.ResponsibleOfficeCode,
+                        existing.ResponsibleOfficeCode);
+                    dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                        dto.OfficeCode,
+                        dto.ResponsibleOfficeCode,
+                        existing.OfficeCode);
                     dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
                         dto.TenantCode,
                         dto.OfficeCode,
                         existing.TenantCode,
                         existing.OfficeCode);
-                    dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(
-                        dto.OfficeCode,
-                        existing.OfficeCode);
+                    if (originalCustomerId != dto.CustomerId)
+                    {
+                        AddNotice(
+                            result,
+                            nameof(Invoice),
+                            dto.Id,
+                            "invoice-customer-relinked",
+                            $"전표 '{dto.Id:D}'의 거래처를 기존 저장값 기준으로 유지했습니다.");
+                    }
                     valid.Add(dto);
                     continue;
                 }
@@ -2165,21 +3097,36 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForInvoices(existing.OfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForInvoices(existing.ResponsibleOfficeCode, existing.TenantCode))
             {
                 AddClientConflict(dto, nameof(Invoice),
                     "Current account cannot modify this office scope.", result);
                 continue;
             }
 
+            dto.ResponsibleOfficeCode = _officeScopeService.ResolveInvoiceResponsibleScopeForCreate(
+                dto.ResponsibleOfficeCode,
+                customer.ResponsibleOfficeCode);
+            dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                existing?.OfficeCode ?? customer.OfficeCode);
             dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
                 dto.TenantCode,
                 dto.OfficeCode,
                 existing?.TenantCode ?? customer.TenantCode,
                 existing?.OfficeCode ?? customer.OfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(
-                dto.OfficeCode,
-                existing?.OfficeCode ?? customer.OfficeCode);
+
+            if (originalCustomerId != dto.CustomerId)
+            {
+                AddNotice(
+                    result,
+                    nameof(Invoice),
+                    dto.Id,
+                    "invoice-customer-relinked",
+                    $"전표 '{dto.Id:D}'의 거래처를 서버 기준 거래처로 다시 맞췄습니다.");
+            }
+
             valid.Add(dto);
         }
 
@@ -2212,7 +3159,7 @@ public sealed class SyncController : ControllerBase
                 .Include(x => x.Customer)
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
 
-            if (existing?.Customer is not null && !_officeScopeService.CanWriteOfficeForContracts(existing.Customer.OfficeCode, existing.Customer.TenantCode))
+            if (existing?.Customer is not null && !_officeScopeService.CanWriteOfficeForContracts(existing.Customer.ResponsibleOfficeCode, existing.Customer.TenantCode))
             {
                 AddClientConflict(dto, nameof(CustomerContract),
                     "Current account cannot modify this office scope.", result);
@@ -2230,7 +3177,7 @@ public sealed class SyncController : ControllerBase
                     continue;
                 }
 
-                if (!_officeScopeService.CanWriteOfficeForContracts(customer.OfficeCode, customer.TenantCode))
+                if (!_officeScopeService.CanWriteOfficeForContracts(customer.ResponsibleOfficeCode, customer.TenantCode))
                 {
                     AddClientConflict(dto, nameof(CustomerContract),
                         $"Referenced customer is outside the writable office scope: {dto.CustomerId}.", result);
@@ -2250,11 +3197,20 @@ public sealed class SyncController : ControllerBase
                 var fileContent = dto.FileContent ?? [];
                 var fileName = Path.GetFileName(dto.FileName ?? string.Empty);
                 var mimeType = dto.MimeType?.Trim() ?? string.Empty;
+                var hasAttachedFilePayload = fileContent.Length > 0 || dto.FileSize > 0 || !string.IsNullOrWhiteSpace(dto.FileHash);
+
+                if (!hasAttachedFilePayload)
+                {
+                    dto.FileSize = 0;
+                    dto.FileHash = string.Empty;
+                    dto.FileContent = [];
+                    continue;
+                }
 
                 if (fileContent.Length == 0)
                 {
                     AddClientConflict(dto, nameof(CustomerContract),
-                        "Contract file content is required.", result);
+                        "Contract file content is required when a contract PDF is attached.", result);
                     continue;
                 }
 
@@ -2303,7 +3259,7 @@ public sealed class SyncController : ControllerBase
                 if (existing is not null)
                 {
                     if (existing.Invoice is not null &&
-                        !_officeScopeService.CanWriteOfficeForPayments(existing.Invoice.OfficeCode, existing.Invoice.TenantCode))
+                        !_officeScopeService.CanWriteOfficeForPayments(existing.Invoice.ResponsibleOfficeCode, existing.Invoice.TenantCode))
                     {
                         AddClientConflict(dto, nameof(Payment),
                             $"Referenced invoice is outside the writable office scope: {existing.InvoiceId}.", result);
@@ -2319,7 +3275,7 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (!_officeScopeService.CanWriteOfficeForPayments(invoice.OfficeCode, invoice.TenantCode))
+            if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode))
             {
                 AddClientConflict(dto, nameof(Payment),
                     $"Referenced invoice is outside the writable office scope: {dto.InvoiceId}.", result);
@@ -2334,8 +3290,14 @@ public sealed class SyncController : ControllerBase
 
     private async Task UpsertItemWarehouseStocksAsync(
         IEnumerable<ItemWarehouseStockDto> payload,
+        SyncPushResult result,
         CancellationToken cancellationToken)
     {
+        var missingItemCount = 0;
+        var deletedItemCount = 0;
+        var outOfScopeItemCount = 0;
+        var outOfScopeWarehouseCount = 0;
+
         var sanitized = payload
             .Where(dto => dto.ItemId != Guid.Empty && !string.IsNullOrWhiteSpace(dto.WarehouseCode))
             .Select(dto => new ItemWarehouseStockDto
@@ -2373,8 +3335,30 @@ public sealed class SyncController : ControllerBase
         foreach (var dto in sanitized)
         {
             var item = await _dbContext.Items.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == dto.ItemId, cancellationToken);
-            if (item is null || item.IsDeleted || !_officeScopeService.CanWriteOfficeForItems(item.OfficeCode, item.TenantCode) || !_officeScopeService.CanWriteWarehouse(dto.WarehouseCode, item.OfficeCode))
+            if (item is null)
+            {
+                missingItemCount++;
                 continue;
+            }
+
+            if (item.IsDeleted)
+            {
+                deletedItemCount++;
+                continue;
+            }
+
+            if (!_officeScopeService.CanWriteOfficeForItems(item.OfficeCode, item.TenantCode))
+            {
+                outOfScopeItemCount++;
+                continue;
+            }
+
+            if (!_officeScopeService.CanWriteWarehouse(dto.WarehouseCode, item.OfficeCode))
+            {
+                outOfScopeWarehouseCount++;
+                continue;
+            }
+
             var entity = await _dbContext.ItemWarehouseStocks
                 .FirstOrDefaultAsync(x => x.ItemId == dto.ItemId && x.WarehouseCode == dto.WarehouseCode, cancellationToken);
 
@@ -2393,25 +3377,112 @@ public sealed class SyncController : ControllerBase
             entity.Quantity = dto.Quantity;
             entity.UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc);
         }
+
+        if (missingItemCount > 0)
+        {
+            AddNotice(
+                result,
+                nameof(ItemWarehouseStock),
+                Guid.Empty,
+                "item-warehouse-stock-skip-missing-item",
+                $"재고 수량 {missingItemCount:N0}건은 참조 품목을 찾지 못해 서버 반영에서 제외했습니다.");
+        }
+
+        if (deletedItemCount > 0)
+        {
+            AddNotice(
+                result,
+                nameof(ItemWarehouseStock),
+                Guid.Empty,
+                "item-warehouse-stock-skip-deleted-item",
+                $"재고 수량 {deletedItemCount:N0}건은 삭제된 품목을 참조해 서버 반영에서 제외했습니다.");
+        }
+
+        if (outOfScopeItemCount > 0)
+        {
+            AddNotice(
+                result,
+                nameof(ItemWarehouseStock),
+                Guid.Empty,
+                "item-warehouse-stock-skip-out-of-scope-item",
+                $"재고 수량 {outOfScopeItemCount:N0}건은 현재 계정이 수정할 수 없는 품목 범위라 서버 반영에서 제외했습니다.");
+        }
+
+        if (outOfScopeWarehouseCount > 0)
+        {
+            AddNotice(
+                result,
+                nameof(ItemWarehouseStock),
+                Guid.Empty,
+                "item-warehouse-stock-skip-out-of-scope-warehouse",
+                $"재고 수량 {outOfScopeWarehouseCount:N0}건은 현재 계정이 수정할 수 없는 창고 범위라 서버 반영에서 제외했습니다.");
+        }
+    }
+
+    private static InvoiceLine CreateInvoiceLine(Guid invoiceId, InvoiceLineDto line, Guid resolvedId)
+    {
+        var entity = new InvoiceLine();
+        ApplyInvoiceLine(entity, invoiceId, line, resolvedId);
+        return entity;
+    }
+
+    private static void ApplyInvoiceLine(InvoiceLine entity, Guid invoiceId, InvoiceLineDto line, Guid resolvedId)
+    {
+        var lineAmount = line.LineAmount == 0 ? line.Quantity * line.UnitPrice : line.LineAmount;
+        entity.Id = resolvedId;
+        entity.InvoiceId = invoiceId;
+        entity.ItemId = line.ItemId;
+        entity.ItemNameOriginal = line.ItemNameOriginal;
+        entity.SpecificationOriginal = line.SpecificationOriginal;
+        entity.Unit = line.Unit;
+        entity.Quantity = line.Quantity;
+        entity.UnitPrice = line.UnitPrice;
+        entity.LineAmount = lineAmount;
+        entity.Remark = line.Remark;
+        entity.SerialNumber = line.SerialNumber;
+        entity.MaterialNumber = line.MaterialNumber;
+        entity.InstallLocation = line.InstallLocation;
+        entity.RentalStartDate = line.RentalStartDate;
+        entity.RentalEndDate = line.RentalEndDate;
+        entity.ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType);
+        entity.IsDeleted = line.IsDeleted;
+    }
+
+    private static InventoryTransferLine CreateInventoryTransferLine(Guid transferId, InventoryTransferLineDto line, Guid resolvedId)
+    {
+        var entity = new InventoryTransferLine();
+        ApplyInventoryTransferLine(entity, transferId, line, resolvedId);
+        return entity;
+    }
+
+    private static void ApplyInventoryTransferLine(
+        InventoryTransferLine entity,
+        Guid transferId,
+        InventoryTransferLineDto line,
+        Guid resolvedId)
+    {
+        entity.Id = resolvedId;
+        entity.TransferId = transferId;
+        entity.ItemId = line.ItemId;
+        entity.ItemNameOriginal = line.ItemNameOriginal;
+        entity.SpecificationOriginal = line.SpecificationOriginal;
+        entity.Unit = line.Unit;
+        entity.Quantity = line.Quantity;
+        entity.ReceivedQuantity = line.ReceivedQuantity;
+        entity.QuantityDifference = line.QuantityDifference;
+        entity.Remark = line.Remark;
+        entity.ReceiptRemark = line.ReceiptRemark;
+        entity.IsDeleted = line.IsDeleted;
     }
 
     private static void ApplyInvoiceLines(Invoice invoice, IEnumerable<InvoiceLineDto> lines)
     {
         foreach (var line in lines)
         {
-            var lineAmount = line.LineAmount == 0 ? line.Quantity * line.UnitPrice : line.LineAmount;
-            invoice.Lines.Add(new InvoiceLine
-            {
-                Id = line.Id == Guid.Empty ? Guid.NewGuid() : line.Id,
-                InvoiceId = invoice.Id, ItemId = line.ItemId,
-                ItemNameOriginal = line.ItemNameOriginal, SpecificationOriginal = line.SpecificationOriginal,
-                Unit = line.Unit, Quantity = line.Quantity, UnitPrice = line.UnitPrice,
-                LineAmount = lineAmount, Remark = line.Remark,
-                SerialNumber = line.SerialNumber, MaterialNumber = line.MaterialNumber,
-                InstallLocation = line.InstallLocation, RentalStartDate = line.RentalStartDate,
-                RentalEndDate = line.RentalEndDate,
-                ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType)
-            });
+            if (line.IsDeleted)
+                continue;
+
+            invoice.Lines.Add(CreateInvoiceLine(invoice.Id, line, line.Id == Guid.Empty ? Guid.NewGuid() : line.Id));
         }
     }
 
@@ -2419,7 +3490,10 @@ public sealed class SyncController : ControllerBase
     {
         foreach (var line in lines)
         {
-            transfer.Lines.Add(line.ToEntity(transfer.Id));
+            if (line.IsDeleted)
+                continue;
+
+            transfer.Lines.Add(CreateInventoryTransferLine(transfer.Id, line, line.Id == Guid.Empty ? Guid.NewGuid() : line.Id));
         }
     }
 
@@ -2463,6 +3537,39 @@ public sealed class SyncController : ControllerBase
         _dbContext.ConflictLogs.Add(conflict);
         result.ConflictCount++;
         result.Conflicts.Add(conflict.ToDto());
+    }
+
+    private static void AddNotice(
+        SyncPushResult result,
+        string entityName,
+        Guid entityId,
+        string code,
+        string message)
+    {
+        var normalizedMessage = (message ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedMessage))
+            return;
+
+        var normalizedEntityName = (entityName ?? string.Empty).Trim();
+        var normalizedCode = (code ?? string.Empty).Trim();
+        var entityIdText = entityId == Guid.Empty ? string.Empty : entityId.ToString("D");
+
+        if (result.Notices.Any(existing =>
+                string.Equals(existing.EntityName, normalizedEntityName, StringComparison.Ordinal) &&
+                string.Equals(existing.EntityId, entityIdText, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(existing.Code, normalizedCode, StringComparison.Ordinal) &&
+                string.Equals(existing.Message, normalizedMessage, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        result.Notices.Add(new SyncNoticeDto
+        {
+            EntityName = normalizedEntityName,
+            EntityId = entityIdText,
+            Code = normalizedCode,
+            Message = normalizedMessage
+        });
     }
 
     private void AddServerConflict<TDto, TEntity>(TDto client, TEntity server, string entityName, string reason, SyncPushResult result)

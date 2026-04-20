@@ -1,11 +1,14 @@
 ﻿using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
+using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
+using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+
 
 namespace 거래플랜.Server.Api.Controllers;
 
@@ -27,8 +30,11 @@ public sealed class ItemsController : ControllerBase
     public async Task<ActionResult<List<ItemDto>>> GetAll(
         [FromQuery] string? q,
         [FromQuery] string? category,
+        [FromQuery] int? skip,
+        [FromQuery] int? take,
         CancellationToken cancellationToken)
     {
+        const int maxTake = 5000;
         var activeCategoryNames = (await _dbContext.ItemCategoryOptions
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -62,7 +68,16 @@ public sealed class ItemsController : ControllerBase
                 query = query.Where(x => x.CategoryName == category);
         }
 
-        return Ok(await query.OrderBy(x => x.NameOriginal).Take(200).Select(x => x.ToDto()).ToListAsync(cancellationToken));
+        query = query.OrderBy(x => x.NameOriginal);
+
+        var normalizedSkip = Math.Max(skip.GetValueOrDefault(), 0);
+        if (normalizedSkip > 0)
+            query = query.Skip(normalizedSkip);
+
+        if (take is > 0)
+            query = query.Take(Math.Min(take.Value, maxTake));
+
+        return Ok(await query.Select(x => x.ToDto()).ToListAsync(cancellationToken));
     }
 
     [HttpGet("categories")]
@@ -169,10 +184,10 @@ public sealed class ItemsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Policy = "AdminOrGod")]
+    [Authorize(Policy = PermissionNames.ItemEdit)]
     public async Task<ActionResult<ItemDto>> Create([FromBody] ItemDto dto, CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditItems())
             return Forbid();
 
         var entity = new Item { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
@@ -185,16 +200,18 @@ public sealed class ItemsController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
-    [Authorize(Policy = "AdminOrGod")]
+    [Authorize(Policy = PermissionNames.ItemEdit)]
     public async Task<ActionResult<ItemDto>> Update(Guid id, [FromBody] ItemDto dto, CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditItems())
             return Forbid();
 
         var entity = await _dbContext.Items.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
         if (!_officeScopeService.CanWriteOfficeForItems(entity.OfficeCode, entity.TenantCode))
             return Forbid();
+        if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Item)) is { } conflict)
+            return conflict;
 
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, entity.TenantCode, entity.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, entity.OfficeCode);
@@ -204,19 +221,24 @@ public sealed class ItemsController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
-    [Authorize(Policy = "AdminOrGod")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+    [Authorize(Policy = PermissionNames.ItemEdit)]
+    public async Task<IActionResult> Delete(Guid id, [FromQuery] long? expectedRevision, CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditItems())
             return Forbid();
 
         var entity = await _dbContext.Items.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
         if (!_officeScopeService.CanWriteOfficeForItems(entity.OfficeCode, entity.TenantCode))
             return Forbid();
+        if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Item)) is { } conflict)
+            return conflict;
 
         entity.IsDeleted = true;
         await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
 }
+
+
+

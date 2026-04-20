@@ -27,9 +27,12 @@
     <AssemblyTitle>거래플랜</AssemblyTitle>
     <Product>거래플랜</Product>
     <ApplicationIcon>..\..\AppIcons\tradeplan-windows.ico</ApplicationIcon>
-    <Version>1.1.129</Version>
-    <FileVersion>1.1.129.0</FileVersion>
+    <Version>1.1.150</Version>
+    <FileVersion>1.1.150.0</FileVersion>
   </PropertyGroup>
+
+  <ItemGroup>
+  </ItemGroup>
 
   <ItemGroup>
     <None Update="appsettings.json">
@@ -54,3 +57,4 @@
             ContinueOnError="WarnAndContinue" />
   </Target>
 </Project>
+

@@ -23,6 +23,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly BackupService _backup;
     private readonly RentalStateService _rental;
     private readonly SyncDiagnosticsService _diagnostics;
+    private readonly ErpApiClient _api;
     private readonly SessionState _session;
     private readonly IPrintService _invoicePrintService = new WpfInvoicePrintService();
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
@@ -215,6 +216,7 @@ public sealed partial class MainViewModel : ObservableObject
         BackupService backup,
         RentalStateService rental,
         SyncDiagnosticsService diagnostics,
+        ErpApiClient api,
         SessionState session)
     {
         _local = local;
@@ -222,6 +224,7 @@ public sealed partial class MainViewModel : ObservableObject
         _backup = backup;
         _rental = rental;
         _diagnostics = diagnostics;
+        _api = api;
         _session = session;
         _legacyMigrationService = new LegacyDataMigrationService(local);
 
@@ -303,20 +306,20 @@ public sealed partial class MainViewModel : ObservableObject
 
         try
         {
-            var dirtyBefore = await _local.CountDirtyAsync();
+            var dirtyBefore = await _local.CountDirtyAsync(_session);
             SyncStatus = "로그인 후 서버 동기화 중...";
 
             var syncOk = await _sync.TrySyncAsync();
-            var dirtyAfter = await _local.CountDirtyAsync();
+            var dirtyAfter = await _local.CountDirtyAsync(_session);
             if (syncOk && dirtyAfter == 0)
             {
                 var refreshOk = true;
-                refreshOk = await _sync.RefreshSharedMirrorFromServerAsync();
+                refreshOk = await _sync.RefreshCurrentBusinessScopeFromServerAsync();
 
                 await ReloadAfterPassiveSyncAsync();
                 SyncStatus = refreshOk
                     ? $"로그인 후 서버 동기화 완료 {DateTime.Now:HH:mm:ss}"
-                    : "로그인 후 서버 캐시 재구성은 일부 실패했지만 앱은 계속 사용할 수 있습니다.";
+                    : "로그인 후 현재 업체 DB 캐시 재구성은 일부 실패했지만 앱은 계속 사용할 수 있습니다.";
                 return;
             }
 
@@ -704,7 +707,7 @@ public sealed partial class MainViewModel : ObservableObject
             .Where(invoice => invoice.VoucherType == VoucherType.Purchase)
             .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount)));
 
-        var items = await _local.GetItemsAsync();
+        var items = await _local.GetItemsAsync(_session);
         DashboardSafetyStockAlerts = items.Count(i =>
             i.SafetyStock > 0 && i.CurrentStock <= i.SafetyStock);
         DashboardCustomerCount = _allCustomers.Count;
@@ -914,6 +917,13 @@ public sealed partial class MainViewModel : ObservableObject
         }
 
         var lines = EditLines.Where(l => !string.IsNullOrWhiteSpace(l.ItemName)).ToList();
+        var existingInvoice = await _local.GetInvoiceAsync(EditInvoiceId, _session);
+        var responsibleOfficeCode = string.IsNullOrWhiteSpace(existingInvoice?.ResponsibleOfficeCode)
+            ? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(EditCustomer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet)
+            : existingInvoice.ResponsibleOfficeCode;
+        var sourceWarehouseCode = string.IsNullOrWhiteSpace(existingInvoice?.SourceWarehouseCode)
+            ? OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(responsibleOfficeCode, DomainConstants.OfficeUsenet))
+            : existingInvoice.SourceWarehouseCode;
         var inv = new LocalInvoice
         {
             Id = EditInvoiceId,
@@ -921,6 +931,12 @@ public sealed partial class MainViewModel : ObservableObject
             InvoiceDate = EditInvoiceDate,
             VoucherType = EditVoucherType,
             Memo = EditMemo,
+            TaxInvoiceIssued = existingInvoice?.TaxInvoiceIssued ?? false,
+            ResponsibleOfficeCode = responsibleOfficeCode,
+            SourceWarehouseCode = sourceWarehouseCode,
+            LinkedRentalBillingProfileId = existingInvoice?.LinkedRentalBillingProfileId,
+            LinkedRentalBillingRunId = existingInvoice?.LinkedRentalBillingRunId,
+            ConcurrencyStamp = _editConcurrencyStamp,
             Lines = lines.Select(l => l.ToLocal(EditInvoiceId)).ToList()
         };
 
@@ -1065,6 +1081,7 @@ public sealed partial class MainViewModel : ObservableObject
                 return;
         }
 
+        var savedRowCount = 0;
         foreach (var row in PaymentRows)
         {
             if (row.Amount == 0) continue;
@@ -1072,6 +1089,20 @@ public sealed partial class MainViewModel : ObservableObject
             var result = await _local.SavePaymentAsync(row.ToLocal(), _session);
             if (!result.Success)
             {
+                if (result.ConcurrencyConflict)
+                {
+                    await LoadPaymentsAsync();
+                    var conflictDetail = savedRowCount > 0
+                        ? "\n일부 수금 행은 이미 저장되었을 수 있으니 최신 목록을 다시 확인하세요."
+                        : "\n최신 수금 내역을 다시 불러왔습니다. 확인 후 다시 저장하세요.";
+                    System.Windows.MessageBox.Show(
+                        result.Message + conflictDetail,
+                        "동시 수정 충돌",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Warning);
+                    return;
+                }
+
                 System.Windows.MessageBox.Show(
                     result.Message,
                     result.PermissionDenied ? "권한 없음" : "저장 실패",
@@ -1082,6 +1113,7 @@ public sealed partial class MainViewModel : ObservableObject
                 return;
             }
 
+            savedRowCount++;
         }
 
         var inv = await _local.GetInvoiceAsync(PaymentInvoice.Id, _session);

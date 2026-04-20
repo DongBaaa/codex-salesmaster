@@ -45,10 +45,15 @@ function New-Utf8NoBomEncoding {
     return New-Object System.Text.UTF8Encoding($false)
 }
 
+function New-Utf8BomEncoding {
+    return New-Object System.Text.UTF8Encoding($true)
+}
+
 function Write-Utf8File {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Content
+        [Parameter(Mandatory = $true)][string]$Content,
+        [switch]$WithBom
     )
 
     $directory = Split-Path -Parent $Path
@@ -56,7 +61,8 @@ function Write-Utf8File {
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
     }
 
-    [System.IO.File]::WriteAllText($Path, $Content, (New-Utf8NoBomEncoding))
+    $encoding = if ($WithBom) { New-Utf8BomEncoding } else { New-Utf8NoBomEncoding }
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
 }
 
 function Invoke-Dotnet {
@@ -232,6 +238,18 @@ function Invoke-RobocopyMirror {
     & robocopy @arguments | Out-Null
     if ($LASTEXITCODE -ge 8) {
         throw "robocopy failed ($LASTEXITCODE): $Source -> $Destination"
+    }
+}
+
+function Reset-TransientAppDataDirectories {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+
+    foreach ($child in @('backup', 'diagnostics', 'logs', 'temp')) {
+        $path = Join-Path $Root $child
+        Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $path | Out-Null
     }
 }
 
@@ -725,7 +743,8 @@ function Copy-CurrentAppSnapshot {
         }
     }
 
-    Invoke-RobocopyMirror -Source $SourceRoot -Destination $TargetRoot -ExcludeDirectories @('logs', 'temp') -ExcludeFiles @('거래플랜.db')
+    Invoke-RobocopyMirror -Source $SourceRoot -Destination $TargetRoot -ExcludeDirectories @('backup', 'diagnostics', 'logs', 'temp') -ExcludeFiles @('거래플랜.db')
+    Reset-TransientAppDataDirectories -Root $TargetRoot
 
     foreach ($child in @('data', 'attachments', 'backup', 'diagnostics', 'logs', 'temp')) {
         New-Item -ItemType Directory -Force -Path (Join-Path $TargetRoot $child) | Out-Null
@@ -797,8 +816,9 @@ function Start-IsolatedServerProcess {
     $startInfo.WorkingDirectory = $ServerWorkingDirectory
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
-    $startInfo.Arguments = ('"{0}"' -f $ServerDll.Replace('"', '""'))
+    $startInfo.Arguments = ('"{0}" --environment Development' -f $ServerDll.Replace('"', '""'))
     $startInfo.EnvironmentVariables['ASPNETCORE_ENVIRONMENT'] = 'Development'
+    $startInfo.EnvironmentVariables['DOTNET_ENVIRONMENT'] = 'Development'
     $startInfo.EnvironmentVariables['ASPNETCORE_URLS'] = $serverUrl
     $startInfo.EnvironmentVariables['Kestrel__Endpoints__Http__Url'] = $serverUrl
     $startInfo.EnvironmentVariables['ERP_DB_FALLBACK_SQLITE'] = '1'
@@ -918,6 +938,7 @@ if exist "%APP_SETTINGS%" if exist "%SET_API_SCRIPT%" (
   powershell -NoProfile -ExecutionPolicy Bypass -File "%SET_API_SCRIPT%" -BaseUrl "%SERVER_URL%" -AppSettingsPaths "%APP_SETTINGS%"
 )
 set "ASPNETCORE_ENVIRONMENT=Development"
+set "DOTNET_ENVIRONMENT=Development"
 set "ASPNETCORE_URLS=%SERVER_URL%"
 set "Kestrel__Endpoints__Http__Url=%SERVER_URL%"
 set "ERP_DB_FALLBACK_SQLITE=1"
@@ -929,7 +950,7 @@ set "FileStorage__RootPath=%SERVER_DATA_ROOT%\FileStore"
 set "Updates__StorageRoot=%SERVER_DATA_ROOT%\updates"
 pushd "%~dp0Server"
 echo [GeoraePlan] Starting isolated test server on %SERVER_URL%
-"%DOTNET_EXE%" "%SERVER_DLL%"
+"%DOTNET_EXE%" "%SERVER_DLL%" --environment Development
 popd
 echo.
 echo GeoraePlan test server has stopped.
@@ -1013,8 +1034,9 @@ function Start-HiddenServerProcess {
     $startInfo.WorkingDirectory = $ServerDir
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
-    $startInfo.Arguments = ('"{0}"' -f $ServerDll.Replace('"', '""'))
+    $startInfo.Arguments = ('"{0}" --environment Development' -f $ServerDll.Replace('"', '""'))
     $startInfo.EnvironmentVariables['ASPNETCORE_ENVIRONMENT'] = 'Development'
+    $startInfo.EnvironmentVariables['DOTNET_ENVIRONMENT'] = 'Development'
     $startInfo.EnvironmentVariables['ASPNETCORE_URLS'] = $ServerUrl
     $startInfo.EnvironmentVariables['Kestrel__Endpoints__Http__Url'] = $ServerUrl
     $startInfo.EnvironmentVariables['ERP_DB_FALLBACK_SQLITE'] = '1'
@@ -1190,7 +1212,7 @@ exit /b 0
 
     Write-Utf8File -Path (Join-Path $OutputRoot 'Run-App.cmd') -Content $runAppContent.Trim()
     Write-Utf8File -Path (Join-Path $OutputRoot 'Run-Server.cmd') -Content $runServerContent.Trim()
-    Write-Utf8File -Path (Join-Path $OutputRoot 'Run-All.ps1') -Content ($runAllPsContent.Replace('__DOTNET_EXE__', $DotnetExe))
+    Write-Utf8File -Path (Join-Path $OutputRoot 'Run-All.ps1') -Content ($runAllPsContent.Replace('__DOTNET_EXE__', $DotnetExe)) -WithBom
     Write-Utf8File -Path (Join-Path $OutputRoot 'Run-All.cmd') -Content $runAllContent.Trim()
 }
 
@@ -1418,8 +1440,8 @@ $commit = (Get-GitOutput -ProjectRoot $ProjectRoot -Arguments @('rev-parse', 'HE
 if ([string]::IsNullOrWhiteSpace($commit)) { $commit = 'unknown' }
 
 $changedFilesContent = Build-ChangedFilesMarkdown -ProjectRoot $ProjectRoot -GeneratedAt $generatedAt -Branch $branch -Commit $commit
-Write-Utf8File -Path $changedFilesPath -Content $changedFilesContent
-Write-Utf8File -Path (Join-Path $sessionRoot '최근 수정 파일.md') -Content $changedFilesContent
+Write-Utf8File -Path $changedFilesPath -Content $changedFilesContent -WithBom
+Write-Utf8File -Path (Join-Path $sessionRoot '최근 수정 파일.md') -Content $changedFilesContent -WithBom
 
 $checklistTokens = @{
     GENERATED_AT = $generatedAt
@@ -1431,8 +1453,8 @@ $checklistTokens = @{
     SERVER_DB_PATH = (Join-Path $serverOutput '거래플랜-local.db')
 }
 $checklistContent = Build-ChecklistContent -TemplatePath $templatePath -Tokens $checklistTokens
-Write-Utf8File -Path $currentChecklistPath -Content $checklistContent
-Write-Utf8File -Path (Join-Path $sessionRoot '검증 체크리스트.md') -Content $checklistContent
+Write-Utf8File -Path $currentChecklistPath -Content $checklistContent -WithBom
+Write-Utf8File -Path (Join-Path $sessionRoot '검증 체크리스트.md') -Content $checklistContent -WithBom
 
 $prepareLog = @(
     "generated_at=$generatedAt",
@@ -1455,7 +1477,7 @@ $prepareLog = @(
     "server_seed_succeeded=$seedSucceeded",
     "server_seed_skip_reason=$seedSkippedReason"
 ) -join [Environment]::NewLine
-Write-Utf8File -Path (Join-Path $sessionRoot '준비 로그.txt') -Content $prepareLog
+Write-Utf8File -Path (Join-Path $sessionRoot '준비 로그.txt') -Content $prepareLog -WithBom
 
 Write-Host '테스트 환경 준비 완료'
 Write-Host "- 현재 로컬 데이터 스냅샷: $SourceAppRoot"
@@ -1470,9 +1492,6 @@ if ($Launch) {
     Start-Process -FilePath (Join-Path $OutputRoot 'Run-All.cmd') -WorkingDirectory $OutputRoot
     Write-Host '로컬 테스트 서버/앱 실행을 시작했습니다.'
 }
-
-
-
 
 
 

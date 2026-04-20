@@ -1,4 +1,4 @@
-using CommunityToolkit.Mvvm.ComponentModel;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -51,6 +51,7 @@ public sealed partial class RecycleBinEntry : ObservableObject
     public string Subtitle { get; init; } = string.Empty;
     public string Detail { get; init; } = string.Empty;
     public DateTime DeletedAtUtc { get; init; }
+    public long Revision { get; init; }
     public string DeletedAtLocalText => DeletedAtUtc == default
         ? "-"
         : DeletedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");

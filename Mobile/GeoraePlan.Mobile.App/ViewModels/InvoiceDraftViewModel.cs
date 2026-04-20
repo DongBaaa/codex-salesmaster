@@ -578,7 +578,9 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         {
             Id = invoiceId,
             CustomerId = SelectedCustomer.Id,
+            TenantCode = _sessionTenantCode,
             OfficeCode = SelectedInvoiceOfficeCode,
+            ResponsibleOfficeCode = SelectedInvoiceOfficeCode,
             InvoiceNumber = string.Empty,
             LocalTempNumber = $"M-{DateTime.Now:yyyyMMdd-HHmmss}",
             VoucherType = VoucherType.Sales,

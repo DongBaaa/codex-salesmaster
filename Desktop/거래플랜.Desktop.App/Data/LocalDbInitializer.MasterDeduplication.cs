@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using System.Globalization;
+using 거래플랜.Desktop.App.Services;
 
 namespace 거래플랜.Desktop.App.Data;
 
@@ -313,7 +314,12 @@ public static partial class LocalDbInitializer
             BuildStrictTextKey(current.InstallLocation),
             BuildDateKey(current.RentalStartDate),
             BuildDateKey(current.RentalEndDate),
-            BuildStrictTextKey(current.Notes));
+            BuildItemNotesDuplicateKey(current));
+
+    private static string BuildItemNotesDuplicateKey(LocalItem current)
+        => string.Equals(current.SimpleMemo, RentalStateService.AutoCreatedRentalItemMemo, StringComparison.Ordinal)
+            ? string.Empty
+            : BuildStrictTextKey(current.Notes);
 
     private static string BuildBusinessDuplicateCustomerKey(LocalCustomer current)
     {
@@ -324,6 +330,7 @@ public static partial class LocalDbInitializer
             BuildStrictTextKey(current.TenantCode),
             BuildStrictTextKey(current.NameOriginal),
             BuildStrictTextKey(current.BusinessNumber),
+            BuildBusinessCustomerLocationKey(current),
             BuildStrictTextKey(current.ResponsibleOfficeCode),
             BuildStrictTextKey(current.TradeType));
     }
@@ -545,6 +552,27 @@ public static partial class LocalDbInitializer
 
     private static string BuildCustomerFullAddress(LocalCustomer current)
         => NormalizeComparableText($"{current.Address} {current.DetailAddress}");
+
+    private static string BuildBusinessCustomerLocationKey(LocalCustomer current)
+        => string.Join('|',
+            BuildStrictTextKey(TryExtractCustomerNoteValue(current.Notes, "종사업장")),
+            BuildStrictTextKey(BuildCustomerFullAddress(current)));
+
+    private static string TryExtractCustomerNoteValue(string? notes, string label)
+    {
+        if (string.IsNullOrWhiteSpace(notes) || string.IsNullOrWhiteSpace(label))
+            return string.Empty;
+
+        foreach (var line in notes
+                     .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                     .Select(current => current.Trim()))
+        {
+            if (line.StartsWith(label + ":", StringComparison.OrdinalIgnoreCase))
+                return line[(label.Length + 1)..].Trim();
+        }
+
+        return string.Empty;
+    }
 
     private static string NormalizeComparableText(string? value)
     {

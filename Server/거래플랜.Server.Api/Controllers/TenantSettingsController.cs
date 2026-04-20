@@ -1,6 +1,7 @@
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
+using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -58,6 +59,8 @@ public sealed class TenantSettingsController : ControllerBase
             .FirstOrDefaultAsync(current => current.TenantCode == normalizedTenantCode, cancellationToken);
         if (entity is null)
             return NotFound();
+        if (OptimisticConcurrencyGuard.Check(this, entity, request.ExpectedRevision, nameof(TenantDefinition)) is { } conflict)
+            return conflict;
 
         entity.TenantCode = normalizedTenantCode;
         entity.DisplayName = string.IsNullOrWhiteSpace(request.DisplayName)
@@ -83,6 +86,8 @@ public sealed class TenantSettingsController : ControllerBase
             .FirstOrDefaultAsync(current => current.OfficeCode == normalizedOfficeCode, cancellationToken);
         if (entity is null)
             return NotFound();
+        if (OptimisticConcurrencyGuard.Check(this, entity, request.ExpectedRevision, nameof(TenantOfficeDefinition)) is { } conflict)
+            return conflict;
 
         entity.DisplayName = string.IsNullOrWhiteSpace(request.DisplayName)
             ? OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode)
@@ -131,6 +136,8 @@ public sealed class TenantSettingsController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == id, cancellationToken);
         if (entity is null)
             return NotFound();
+        if (OptimisticConcurrencyGuard.Check(this, entity, request.ExpectedRevision, nameof(DataSharingPolicy)) is { } conflict)
+            return conflict;
 
         var normalized = await NormalizePolicyRequestAsync(request, cancellationToken, id);
         if (!normalized.Success)
@@ -152,12 +159,14 @@ public sealed class TenantSettingsController : ControllerBase
     }
 
     [HttpDelete("sharing-policies/{id:guid}")]
-    public async Task<IActionResult> DeleteSharingPolicy(Guid id, CancellationToken cancellationToken)
+    public async Task<IActionResult> DeleteSharingPolicy(Guid id, [FromQuery] long? expectedRevision, CancellationToken cancellationToken)
     {
         var entity = await _dbContext.DataSharingPolicies.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == id, cancellationToken);
         if (entity is null)
             return NotFound();
+        if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(DataSharingPolicy)) is { } conflict)
+            return conflict;
 
         entity.IsDeleted = true;
         entity.IsActive = false;

@@ -339,7 +339,7 @@
                                 <ColumnDefinition Width="84"/>
                                 <ColumnDefinition Width="96"/>
                                 <ColumnDefinition Width="140"/>
-                                <ColumnDefinition Width="172"/>
+                                <ColumnDefinition Width="264"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
@@ -372,7 +372,8 @@
 
                             <StackPanel Grid.Row="1" Grid.Column="8" Orientation="Horizontal" Margin="6,0,0,0" HorizontalAlignment="Left">
                                 <Button Style="{StaticResource BaseButtonStyle}" Content="항목추가" MinWidth="80" Margin="0,0,6,0" Command="{Binding AddLineCommand}"/>
-                                <Button Style="{StaticResource BaseButtonStyle}" Content="항목수정" MinWidth="80" Command="{Binding UpdateLineCommand}"/>
+                                <Button Style="{StaticResource BaseButtonStyle}" Content="항목수정" MinWidth="80" Margin="0,0,6,0" Command="{Binding UpdateLineCommand}"/>
+                                <Button Style="{StaticResource BaseButtonStyle}" Content="항목삭제" MinWidth="80" Command="{Binding DeleteLineCommand}"/>
                             </StackPanel>
                         </Grid>
                     </StackPanel>
@@ -381,7 +382,7 @@
                 <Border Grid.Row="1" Grid.Column="0" Margin="0,0,10,0" Background="#1A2B4A" BorderBrush="#2E4060" BorderThickness="1">
                     <DataGrid ItemsSource="{Binding Lines}" SelectedItem="{Binding SelectedLine}" IsReadOnly="False" BorderThickness="0">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="No" Width="42" IsReadOnly="True" Binding="{Binding Id}"/>
+                            <DataGridTextColumn Header="No" Width="42" IsReadOnly="True" Binding="{Binding RowNo}"/>
                             <DataGridTextColumn Header="품명" Width="*" Binding="{Binding ItemName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                             <DataGridTextColumn Header="규격" Width="188" Binding="{Binding Specification, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                             <DataGridTextColumn Header="수량" Width="60" Binding="{Binding Quantity, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, StringFormat=N0}"/>
@@ -434,7 +435,6 @@
                                     Margin="0,0,0,6"
                                     Command="{Binding EditPrintOutputCommand}"
                                     Visibility="{Binding CanEditPrintOutput, Converter={StaticResource BoolToVisibilityConverter}}"/>
-                            <Button Style="{StaticResource BaseButtonStyle}" Content="항목삭제" Margin="0,0,0,10" Command="{Binding DeleteLineCommand}"/>
                             <CheckBox Content="세금계산서 발행 완료"
                                       IsChecked="{Binding TaxInvoiceIssued}"
                                       Visibility="{Binding ShowTaxInvoiceIssuedOption, Converter={StaticResource BoolToVisibilityConverter}}"

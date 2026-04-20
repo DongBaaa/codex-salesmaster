@@ -225,7 +225,8 @@ public static class LocalMappings
     {
         Id = dto.Id,
         CustomerMasterId = dto.CustomerMasterId,
-        TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(dto.TenantCode, dto.OfficeCode),
+        TenantCode = NormalizeOperationalTenantCode(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode),
+        OfficeCode = NormalizeOwningOfficeCode(dto.OfficeCode, dto.ResponsibleOfficeCode, OfficeCodeCatalog.Shared),
         NameOriginal = dto.NameOriginal,
         NameMatchKey = dto.NameMatchKey,
         CategoryId = dto.CategoryId,
@@ -240,7 +241,7 @@ public static class LocalMappings
         Phone = dto.Phone,
         Email = dto.Email,
         Notes = dto.Notes,
-        ResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, DomainConstants.OfficeUsenet),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(dto.ResponsibleOfficeCode, dto.OfficeCode, DomainConstants.OfficeUsenet),
         CreatedAtUtc = dto.CreatedAtUtc,
         UpdatedAtUtc = dto.UpdatedAtUtc,
         Revision = dto.Revision,
@@ -252,8 +253,9 @@ public static class LocalMappings
     {
         Id = e.Id,
         CustomerMasterId = e.CustomerMasterId,
-        TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(e.TenantCode, e.ResponsibleOfficeCode),
-        OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(e.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        TenantCode = NormalizeOperationalTenantCode(e.TenantCode, e.OfficeCode, e.ResponsibleOfficeCode),
+        OfficeCode = NormalizeOwningOfficeCode(e.OfficeCode, e.ResponsibleOfficeCode, OfficeCodeCatalog.Shared),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(e.ResponsibleOfficeCode, e.OfficeCode, DomainConstants.OfficeUsenet),
         NameOriginal = e.NameOriginal,
         NameMatchKey = e.NameMatchKey,
         CategoryId = e.CategoryId,
@@ -398,7 +400,9 @@ public static class LocalMappings
     {
         Id = dto.Id,
         CustomerId = dto.CustomerId,
-        ResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, DomainConstants.OfficeUsenet),
+        TenantCode = NormalizeOperationalTenantCode(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode),
+        OfficeCode = NormalizeOwningOfficeCode(dto.OfficeCode, dto.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(dto.ResponsibleOfficeCode, dto.OfficeCode, DomainConstants.OfficeUsenet),
         InvoiceNumber = dto.InvoiceNumber,
         LocalTempNumber = dto.LocalTempNumber,
         LinkedRentalBillingProfileId = dto.LinkedRentalBillingProfileId,
@@ -408,6 +412,10 @@ public static class LocalMappings
         PreviousVersionId = dto.PreviousVersionId,
         IsLatestVersion = dto.IsLatestVersion,
         VoucherType = dto.VoucherType,
+        SourceWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(
+            dto.SourceWarehouseCode,
+            dto.ResponsibleOfficeCode,
+            dto.OfficeCode),
         InvoiceDate = dto.InvoiceDate,
         TotalAmount = dto.TotalAmount,
         SupplyAmount = dto.SupplyAmount,
@@ -428,7 +436,9 @@ public static class LocalMappings
         Id = e.Id,
         CustomerId = e.CustomerId,
         CustomerName = string.Empty,
-        OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(e.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        TenantCode = NormalizeOperationalTenantCode(e.TenantCode, e.OfficeCode, e.ResponsibleOfficeCode),
+        OfficeCode = NormalizeOwningOfficeCode(e.OfficeCode, e.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(e.ResponsibleOfficeCode, e.OfficeCode, DomainConstants.OfficeUsenet),
         InvoiceNumber = e.InvoiceNumber,
         LocalTempNumber = e.LocalTempNumber,
         LinkedRentalBillingProfileId = e.LinkedRentalBillingProfileId,
@@ -438,6 +448,10 @@ public static class LocalMappings
         PreviousVersionId = e.PreviousVersionId,
         IsLatestVersion = e.IsLatestVersion,
         VoucherType = e.VoucherType,
+        SourceWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(
+            e.SourceWarehouseCode,
+            e.ResponsibleOfficeCode,
+            e.OfficeCode),
         InvoiceDate = e.InvoiceDate,
         TotalAmount = e.TotalAmount,
         SupplyAmount = e.SupplyAmount,
@@ -543,7 +557,9 @@ public static class LocalMappings
     {
         Id = dto.Id,
         CustomerId = dto.CustomerId,
-        ResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, DomainConstants.OfficeUsenet),
+        TenantCode = NormalizeOperationalTenantCode(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode),
+        OfficeCode = NormalizeOwningOfficeCode(dto.OfficeCode, dto.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(dto.ResponsibleOfficeCode, dto.OfficeCode, DomainConstants.OfficeUsenet),
         TransactionDate = dto.TransactionDate,
         TransactionKind = dto.TransactionKind,
         LinkedInvoiceId = dto.LinkedInvoiceId,
@@ -576,7 +592,9 @@ public static class LocalMappings
     {
         Id = e.Id,
         CustomerId = e.CustomerId,
-        OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(e.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        TenantCode = NormalizeOperationalTenantCode(e.TenantCode, e.OfficeCode, e.ResponsibleOfficeCode),
+        OfficeCode = NormalizeOwningOfficeCode(e.OfficeCode, e.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(e.ResponsibleOfficeCode, e.OfficeCode, DomainConstants.OfficeUsenet),
         TransactionDate = e.TransactionDate,
         TransactionKind = e.TransactionKind,
         LinkedInvoiceId = e.LinkedInvoiceId,
@@ -769,6 +787,7 @@ public static class LocalMappings
     public static RentalManagementCompanyDto ToDto(LocalRentalManagementCompany e) => new()
     {
         Id = e.Id,
+        TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, e.Code),
         Code = e.Code,
         Name = e.Name,
         IsSystemDefault = e.IsSystemDefault,
@@ -782,6 +801,7 @@ public static class LocalMappings
     public static LocalRentalBillingProfile ToLocal(RentalBillingProfileDto dto) => new()
     {
         Id = dto.Id,
+        TenantCode = NormalizeOperationalTenantCode(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode),
         ProfileKey = dto.ProfileKey,
         CustomerId = dto.CustomerId,
         CustomerName = dto.CustomerName,
@@ -816,7 +836,8 @@ public static class LocalMappings
         OutstandingAmount = dto.OutstandingAmount,
         RequiresFollowUp = dto.RequiresFollowUp,
         LastSettledDate = dto.LastSettledDate,
-        ResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, DomainConstants.OfficeUsenet),
+        OfficeCode = NormalizeOwningOfficeCode(dto.OfficeCode, dto.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(dto.ResponsibleOfficeCode, dto.OfficeCode, DomainConstants.OfficeUsenet),
         BillingTemplateJson = dto.BillingTemplateJson,
         BillingRunsJson = dto.BillingRunsJson,
         IsActive = dto.IsActive,
@@ -830,7 +851,9 @@ public static class LocalMappings
     public static RentalBillingProfileDto ToDto(LocalRentalBillingProfile e) => new()
     {
         Id = e.Id,
-        OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(e.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        TenantCode = NormalizeOperationalTenantCode(e.TenantCode, e.OfficeCode, e.ResponsibleOfficeCode),
+        OfficeCode = NormalizeOwningOfficeCode(e.OfficeCode, e.ResponsibleOfficeCode, e.ManagementCompanyCode),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(e.ResponsibleOfficeCode, e.OfficeCode, DomainConstants.OfficeUsenet),
         ProfileKey = e.ProfileKey,
         CustomerId = e.CustomerId,
         CustomerName = e.CustomerName,
@@ -877,6 +900,7 @@ public static class LocalMappings
     public static LocalRentalAsset ToLocal(RentalAssetDto dto) => new()
     {
         Id = dto.Id,
+        TenantCode = NormalizeOperationalTenantCode(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode),
         AssetKey = dto.AssetKey,
         CustomerId = dto.CustomerId,
         ItemId = dto.ItemId,
@@ -914,7 +938,8 @@ public static class LocalMappings
         RentalEndDate = dto.RentalEndDate,
         FreeSupplyItems = dto.FreeSupplyItems,
         PaidSupplyItems = dto.PaidSupplyItems,
-        ResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, DomainConstants.OfficeUsenet),
+        OfficeCode = NormalizeOwningOfficeCode(dto.OfficeCode, dto.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(dto.ResponsibleOfficeCode, dto.OfficeCode, DomainConstants.OfficeUsenet),
         AssetStatus = dto.AssetStatus,
         Notes = dto.Notes,
         CreatedAtUtc = EnsureUtc(dto.CreatedAtUtc),
@@ -927,7 +952,9 @@ public static class LocalMappings
     public static RentalAssetDto ToDto(LocalRentalAsset e) => new()
     {
         Id = e.Id,
-        OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(e.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        TenantCode = NormalizeOperationalTenantCode(e.TenantCode, e.OfficeCode, e.ResponsibleOfficeCode),
+        OfficeCode = NormalizeOwningOfficeCode(e.OfficeCode, e.ResponsibleOfficeCode, e.ManagementCompanyCode),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(e.ResponsibleOfficeCode, e.OfficeCode, DomainConstants.OfficeUsenet),
         AssetKey = e.AssetKey,
         CustomerId = e.CustomerId,
         ItemId = e.ItemId,
@@ -977,6 +1004,7 @@ public static class LocalMappings
     {
         Id = dto.Id,
         BillingProfileId = dto.BillingProfileId,
+        TenantCode = NormalizeOperationalTenantCode(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode),
         BillingYearMonth = dto.BillingYearMonth,
         ScheduledDate = dto.ScheduledDate,
         ProcessedDate = dto.ProcessedDate,
@@ -984,7 +1012,8 @@ public static class LocalMappings
         Status = dto.Status,
         BilledAmount = dto.BilledAmount,
         Note = dto.Note,
-        ResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, DomainConstants.OfficeUsenet),
+        OfficeCode = NormalizeOwningOfficeCode(dto.OfficeCode, dto.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(dto.ResponsibleOfficeCode, dto.OfficeCode, DomainConstants.OfficeUsenet),
         CreatedAtUtc = EnsureUtc(dto.CreatedAtUtc),
         UpdatedAtUtc = EnsureUtc(dto.UpdatedAtUtc),
         Revision = dto.Revision,
@@ -995,7 +1024,9 @@ public static class LocalMappings
     public static RentalBillingLogDto ToDto(LocalRentalBillingLog e) => new()
     {
         Id = e.Id,
-        OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(e.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        TenantCode = NormalizeOperationalTenantCode(e.TenantCode, e.OfficeCode, e.ResponsibleOfficeCode),
+        OfficeCode = NormalizeOwningOfficeCode(e.OfficeCode, e.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(e.ResponsibleOfficeCode, e.OfficeCode, DomainConstants.OfficeUsenet),
         BillingProfileId = e.BillingProfileId,
         BillingYearMonth = e.BillingYearMonth,
         ScheduledDate = e.ScheduledDate,
@@ -1022,4 +1053,17 @@ public static class LocalMappings
             _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
         };
     }
+
+    private static string NormalizeResponsibleOfficeCode(string? responsibleOfficeCode, string? ownerOfficeCode = null, string? fallbackOfficeCode = null)
+        => OfficeCodeCatalog.NormalizeOfficeCodeLoose(responsibleOfficeCode, ownerOfficeCode, fallbackOfficeCode ?? DomainConstants.OfficeUsenet);
+
+    private static string NormalizeOwningOfficeCode(string? ownerOfficeCode, string? responsibleOfficeCode = null, string? fallbackOfficeCode = null)
+        => OfficeCodeCatalog.ResolveOwningOfficeCode(ownerOfficeCode, responsibleOfficeCode, fallbackOfficeCode);
+
+    private static string NormalizeOperationalTenantCode(string? tenantCode, string? ownerOfficeCode, string? responsibleOfficeCode = null)
+        => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            tenantCode,
+            NormalizeOwningOfficeCode(ownerOfficeCode, responsibleOfficeCode),
+            tenantCode,
+            NormalizeResponsibleOfficeCode(responsibleOfficeCode, ownerOfficeCode));
 }

@@ -122,9 +122,7 @@ public partial class CustomerManagementWindow : Window
         if (confirm != MessageBoxResult.Yes)
             return;
 
-        var result = _session.HasAdministrativePrivileges
-            ? await DeleteCustomerAsAdministratorAsync(selectedCustomer.Id)
-            : await _local.DeleteCustomerAsync(selectedCustomer.Id, _session);
+        var result = await _local.DeleteCustomerAsync(selectedCustomer.Id, _session, selectedCustomer.Source.Revision);
 
         if (!result.Success)
         {
@@ -135,13 +133,6 @@ public partial class CustomerManagementWindow : Window
         MessageBox.Show(result.Message, "거래처 삭제", MessageBoxButton.OK, MessageBoxImage.Information);
         await _vm.ReloadCommand.ExecuteAsync(null);
     }
-
-    private async Task<OfficeMutationResult> DeleteCustomerAsAdministratorAsync(Guid customerId)
-    {
-        await _local.DeleteCustomerAsync(customerId);
-        return OfficeMutationResult.Ok(customerId, "거래처를 삭제했습니다.");
-    }
-
     private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
     {
         while (current is not null)

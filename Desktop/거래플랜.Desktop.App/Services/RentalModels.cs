@@ -176,11 +176,24 @@ public sealed class RentalWorkbookAuditResult
     public List<RentalWorkbookMissingAssetEntry> MissingInWorkbookAssets { get; set; } = new();
 }
 
+public sealed class RentalWorkbookScopeIssue
+{
+    public string OfficeCode { get; set; } = string.Empty;
+    public string OfficeDisplayName { get; set; } = string.Empty;
+    public string TenantDisplayName { get; set; } = string.Empty;
+    public int RowCount { get; set; }
+    public bool WritableInCurrentSession { get; set; }
+    public bool HasStoredCredential { get; set; }
+    public string ResolutionHint { get; set; } = string.Empty;
+}
+
 public sealed class RentalWorkbookRebuildResult
 {
     public string WorkbookPath { get; set; } = string.Empty;
     public string BackupPath { get; set; } = string.Empty;
     public DateTime ProcessedAtUtc { get; set; }
+    public bool IsBlocked { get; set; }
+    public string BlockReason { get; set; } = string.Empty;
     public int UpdatedCount { get; set; }
     public int CreatedCount { get; set; }
     public int AmbiguousCount { get; set; }
@@ -188,6 +201,7 @@ public sealed class RentalWorkbookRebuildResult
     public int LinkedBillingProfileCount { get; set; }
     public int AutoCreatedCategoryCount { get; set; }
     public int AutoCreatedItemCount { get; set; }
+    public List<RentalWorkbookScopeIssue> ScopeIssues { get; set; } = new();
     public List<RentalWorkbookAuditEntry> UpdatedEntries { get; set; } = new();
     public List<RentalWorkbookAuditEntry> AmbiguousEntries { get; set; } = new();
     public List<RentalWorkbookMissingAssetEntry> MissingInWorkbookAssets { get; set; } = new();
@@ -325,6 +339,12 @@ public sealed class RentalBillingViewRow
     public Guid SelectionId { get; init; }
     public bool HasPersistedProfile { get; init; } = true;
     public LocalRentalBillingProfile Source { get; init; } = new();
+    public int GroupedSourceCount { get; init; } = 1;
+    public int GroupedPersistedProfileCount { get; init; }
+    public int GroupedUnlinkedAssetCount { get; init; }
+    public List<Guid> GroupedSelectionIds { get; init; } = new();
+    public List<Guid> GroupedPersistedProfileIds { get; init; } = new();
+    public string AggregateSummary { get; init; } = string.Empty;
     public string CustomerDisplayName { get; set; } = string.Empty;
     public string BillingCycleDisplay { get; init; } = string.Empty;
     public string ResponsibleOfficeName { get; init; } = string.Empty;
@@ -357,6 +377,7 @@ public sealed class RentalBillingViewRow
     public decimal CurrentBilledAmount { get; init; }
     public bool HasDataIssue { get; init; }
     public string DataIssueSummary { get; init; } = string.Empty;
+    public bool IsAggregateRow => GroupedSourceCount > 1;
     public bool IsSelected { get; set; }
 }
 

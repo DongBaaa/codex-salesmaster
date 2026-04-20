@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
+using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
 var summary = await BuildSummaryAsync();
@@ -156,7 +157,9 @@ static string BuildItemDuplicateKey(LocalItem current)
         BuildStrictTextKey(current.InstallLocation),
         BuildDateKey(current.RentalStartDate),
         BuildDateKey(current.RentalEndDate),
-        BuildStrictTextKey(current.Notes));
+        string.Equals(current.SimpleMemo, RentalStateService.AutoCreatedRentalItemMemo, StringComparison.Ordinal)
+            ? string.Empty
+            : BuildStrictTextKey(current.Notes));
 
 static string BuildRentalBillingProfileDuplicateKey(LocalRentalBillingProfile current)
     => RentalDuplicateNormalizer.BuildRentalBillingProfileDuplicateKey(

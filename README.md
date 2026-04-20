@@ -75,7 +75,7 @@ cd "D:\거래플랜"
 dotnet test "거래플랜.sln" -c Release --no-build
 ```
 
-- 참고: 현재 솔루션에 별도 테스트 프로젝트는 없어 `dotnet test` 는 빌드/구성 검증 성격이 강합니다.
+- 참고: 현재는 `Tests\GeoraePlan.Server.Api.Tests` 중심의 서버 자동 테스트와 task 기반 스모크 검증이 포함되어 있어 `dotnet test` 는 최소 서버 회귀 검증까지 수행합니다.
 
 ## NAS 주기 점검 / 백업 / 인증서 갱신
 - infra/nas/run-auto-apply.sh 는 기존 자동 배포 확인 외에 주기 점검도 같이 수행합니다.
@@ -112,6 +112,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\relea
 - 권장 동작 순서:
   1. SSH 설정이 있으면 배포 PC가 NAS의 `apply-release.sh`를 바로 실행
   2. SSH 설정이 없고 `NAS_SCHEDULED_APPLY_ENABLED=true`이면 NAS 작업 스케줄러의 `auto-apply-release.sh`가 pending release를 감지해 로컬에서 `apply-release.sh`를 실행
+- scheduled apply trigger 대기(`pending-release.txt` 기록, `current-release.txt` 확인)도 SSH 설정이 있으면 UNC 공유 대신 SSH로 처리합니다.
+- 데스크톱 자동업데이트는 같은 호스트의 패키지 다운로드가 인증을 요구하더라도, 실행 중 세션의 인증 헤더를 업데이터에 안전하게 전달해 다운로드를 계속할 수 있습니다.
 - 정말 필요한 경우에만 `-AllowLegacyLiveMirror`를 명시해 예전 방식의 직접 미러링을 허용할 수 있습니다.
 
 ## 인쇄 기본 동작

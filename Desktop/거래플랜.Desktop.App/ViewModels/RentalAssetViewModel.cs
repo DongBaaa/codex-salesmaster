@@ -28,6 +28,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private bool _suppressSelectionAutoSave;
     private bool _pendingFilterReload;
     private string _baselineStateSignature = string.Empty;
+    private long _editRevision;
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private bool _isOfficeFilterPopupOpen;
@@ -272,7 +273,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             preserveSelectionRowId: snapshot.EditId,
             refreshAfterSave: true,
             successMessage: "렌탈 자산을 저장했습니다.",
-            permissionDeniedMessage: "현재 선택한 렌탈 자산을 저장할 권한이 없습니다.");
+            permissionDeniedMessage: "현재 선택한 렌탈 자산을 저장할 권한이 없습니다.",
+            showConflictDialog: true);
     }
 
     [RelayCommand]
@@ -284,10 +286,24 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             return;
         }
 
-        var result = await _rental.DeleteAssetAsync(SelectedRow.Source.Id, _session);
-        StatusMessage = result.Message;
+        var targetAssetId = SelectedRow.Source.Id;
+        var result = await _rental.DeleteAssetAsync(targetAssetId, _session, SelectedRow.Source.Revision);
         if (!result.Success)
+        {
+            StatusMessage = result.Message;
+            if (result.ConcurrencyConflict)
+            {
+                await ReloadAsync();
+                SelectRowWithoutAutoSave(targetAssetId);
+                MessageBox.Show(
+                    result.Message,
+                    "동시 수정 충돌",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+
             return;
+        }
 
         await ReloadAsync();
         ResetForNewAsset();
@@ -314,16 +330,19 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             return;
 
         var successCount = 0;
+        var conflictCount = 0;
         var failureMessages = new List<string>();
         foreach (var row in targets)
         {
-            var result = await _rental.DeleteAssetAsync(row.Source.Id, _session);
+            var result = await _rental.DeleteAssetAsync(row.Source.Id, _session, row.Source.Revision);
             if (result.Success)
             {
                 successCount++;
                 continue;
             }
 
+            if (result.ConcurrencyConflict)
+                conflictCount++;
             failureMessages.Add($"{row.Source.CustomerName}: {result.Message}");
         }
 
@@ -333,6 +352,15 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         StatusMessage = failureMessages.Count == 0
             ? $"선택한 렌탈 자산 {successCount:N0}건을 삭제했습니다."
             : $"삭제 성공 {successCount:N0}건 / 실패 {failureMessages.Count:N0}건 - {string.Join(" | ", failureMessages.Take(3))}";
+
+        if (conflictCount > 0)
+        {
+            MessageBox.Show(
+                $"{conflictCount:N0}건은 다른 PC에서 먼저 수정되어 삭제하지 못했습니다. 최신 목록을 다시 불러왔습니다.",
+                "동시 수정 충돌",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     [RelayCommand]
@@ -387,7 +415,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
         var customer = await ResolveDocumentCustomerAsync(asset);
         var preferredCustomerContractDate = customer?.Id is Guid customerId && customerId != Guid.Empty
-            ? (await _local.GetPreferredCustomerContractAsync(customerId, _session))?.SignedDate
+            ? (await _local.GetRepresentativeCustomerContractAsync(customerId, _session))?.SignedDate
             : null;
         var officeOptions = EditOfficeOptions
             .Select(option => new DisplayOption
@@ -431,6 +459,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
 
         var source = value.Source;
+        _editRevision = source.Revision;
         EditId = source.Id;
         EditCustomerId = source.CustomerId;
         EditItemId = source.ItemId;
@@ -620,7 +649,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     public async Task<IReadOnlyList<LookupRow>> BuildItemLookupRowsAsync()
     {
-        var items = (await _local.GetItemsAsync())
+        var items = (await _local.GetItemsForRentalScopeAsync(_session))
             .Where(item => ItemOperationalPolicy.IsAsset(item.TrackingType))
             .ToList();
         return items
@@ -703,6 +732,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         var offices = await _local.GetOfficesAsync();
         var readableOfficeCodes = _rental.GetReadableAssetOfficeCodes(_session);
+        var writableOfficeCodes = _rental.GetWritableAssetOfficeCodes(_session);
         var currentFilterValues = GetSelectedFilterValues(OfficeFilterOptions);
         var currentEditOfficeCode = EditOfficeCode;
 
@@ -719,8 +749,15 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
             EditOfficeOptions.Clear();
 
+            var editableOfficeCodes = new HashSet<string>(writableOfficeCodes, StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(currentEditOfficeCode) &&
+                readableOfficeCodes.Contains(currentEditOfficeCode))
+            {
+                editableOfficeCodes.Add(currentEditOfficeCode);
+            }
+
             foreach (var office in offices
-                         .Where(office => readableOfficeCodes.Contains(office.Code))
+                         .Where(office => editableOfficeCodes.Contains(office.Code))
                          .OrderBy(office => office.Name, StringComparer.CurrentCultureIgnoreCase))
             {
                 EditOfficeOptions.Add(new DisplayOption
@@ -981,7 +1018,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             preserveSelectionRowId: requestedSelection?.Source.Id,
             refreshAfterSave: true,
             successMessage: "렌탈 자산을 자동 저장했습니다.",
-            permissionDeniedMessage: "현재 선택한 렌탈 자산을 자동 저장할 권한이 없습니다.");
+            permissionDeniedMessage: "현재 선택한 렌탈 자산을 자동 저장할 권한이 없습니다.",
+            showConflictDialog: false);
 
         if (saved)
             return true;
@@ -1003,7 +1041,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             preserveSelectionRowId: SelectedRow?.Source.Id,
             refreshAfterSave: refreshAfterSave,
             successMessage: "렌탈 자산을 자동 저장했습니다.",
-            permissionDeniedMessage: "현재 선택한 렌탈 자산을 자동 저장할 권한이 없습니다.");
+            permissionDeniedMessage: "현재 선택한 렌탈 자산을 자동 저장할 권한이 없습니다.",
+            showConflictDialog: false);
     }
 
     private bool TryCaptureAutoSaveSnapshot(out RentalAssetEditSnapshot snapshot)
@@ -1019,7 +1058,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         Guid? preserveSelectionRowId,
         bool refreshAfterSave,
         string successMessage,
-        string permissionDeniedMessage)
+        string permissionDeniedMessage,
+        bool showConflictDialog)
     {
         await _autoSaveGate.WaitAsync();
         try
@@ -1031,9 +1071,20 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             }
 
             var result = await _rental.SaveAssetAsync(BuildAsset(snapshot), _session);
-            StatusMessage = result.Message;
             if (!result.Success)
+            {
+                StatusMessage = result.Message;
+                if (result.ConcurrencyConflict && showConflictDialog)
+                {
+                    MessageBox.Show(
+                        result.Message,
+                        "동시 수정 충돌",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+
                 return false;
+            }
 
             if (refreshAfterSave)
             {
@@ -1092,6 +1143,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private RentalAssetEditSnapshot CaptureEditSnapshot()
         => new(
             EditId,
+            _editRevision,
             EditCustomerId,
             EditItemId,
             EditManagementId,
@@ -1131,6 +1183,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private void ApplySnapshot(RentalAssetEditSnapshot snapshot, bool resetBaseline)
     {
+        _editRevision = snapshot.EditRevision;
         EditId = snapshot.EditId;
         EditCustomerId = snapshot.EditCustomerId;
         EditItemId = snapshot.EditItemId;
@@ -1185,6 +1238,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private RentalAssetEditSnapshot CreateEmptySnapshot()
         => new(
             EditId: Guid.NewGuid(),
+            EditRevision: 0,
             EditCustomerId: null,
             EditItemId: null,
             EditManagementId: string.Empty,
@@ -1231,6 +1285,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         return new LocalRentalAsset
         {
             Id = snapshot.EditId,
+            Revision = snapshot.EditRevision,
             CustomerId = snapshot.EditCustomerId,
             ItemId = snapshot.EditItemId,
             ManagementId = snapshot.EditManagementId,
@@ -1340,6 +1395,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private sealed record RentalAssetEditSnapshot(
         Guid EditId,
+        long EditRevision,
         Guid? EditCustomerId,
         Guid? EditItemId,
         string EditManagementId,

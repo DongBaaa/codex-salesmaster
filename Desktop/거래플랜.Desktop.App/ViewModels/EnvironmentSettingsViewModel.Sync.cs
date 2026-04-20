@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Linq;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -26,6 +26,8 @@ public sealed class SyncScopeStatusRow
     public string ScopeKey { get; init; } = string.Empty;
     public string ScopeDisplayName { get; init; } = string.Empty;
     public string ScopeTypeText { get; init; } = string.Empty;
+    public string RequiredOfficeCode { get; init; } = string.Empty;
+    public string TargetTenantCode { get; init; } = string.Empty;
     public int PendingCount { get; init; }
     public string PendingSummary { get; init; } = string.Empty;
     public string CredentialStatusText { get; init; } = string.Empty;
@@ -85,6 +87,22 @@ public sealed partial class EnvironmentSettingsViewModel
         SyncCredentialPassword = string.Empty;
     }
 
+    partial void OnSelectedSyncScopeStatusChanged(SyncScopeStatusRow? value)
+    {
+        if (value is null)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(value.RequiredOfficeCode))
+            SyncCredentialOfficeCode = value.RequiredOfficeCode;
+
+        if (!string.IsNullOrWhiteSpace(value.CredentialUsername))
+            SyncCredentialUsername = value.CredentialUsername;
+        else if (value.IsCurrentSessionScope)
+            SyncCredentialUsername = _session.User?.Username ?? string.Empty;
+
+        SyncCredentialPassword = string.Empty;
+    }
+
     private async Task RefreshSyncStateAsync()
     {
         SyncModeText = _session.IsOfflineMode ? "오프라인 모드" : "온라인 동기화";
@@ -98,9 +116,15 @@ public sealed partial class EnvironmentSettingsViewModel
             : pendingSummary.BuildWaitingMessage();
 
         var summary = await _diagnostics.GetSummaryAsync();
-        SyncSummaryText = summary.OpenIssueCount == 0
+        var manualReviewIssueCount = Math.Max(0, summary.OpenIssueCount - summary.RecoverableIssueCount);
+        var syncSummaryText = summary.OpenIssueCount == 0
             ? "현재 미해결 동기화 오류가 없습니다."
-            : $"현재 미해결 동기화 오류 {summary.OpenIssueCount:N0}건 / 자동 복구 가능 {summary.RecoverableIssueCount:N0}건";
+            : $"현재 미해결 동기화 오류 {summary.OpenIssueCount:N0}건 / 자동 복구 가능 {summary.RecoverableIssueCount:N0}건 / 수동 확인 필요 {manualReviewIssueCount:N0}건";
+        var lastConflictSummary = await _local.GetSettingAsync("Sync.LastConflictSummary");
+        if (!string.IsNullOrWhiteSpace(lastConflictSummary))
+            syncSummaryText += Environment.NewLine + lastConflictSummary.Trim();
+
+        SyncSummaryText = syncSummaryText;
         SyncLastSuccessText = summary.LastSuccessAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "없음";
         SyncLastFailureText = summary.LastFailureAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "없음";
         SyncLastErrorText = string.IsNullOrWhiteSpace(summary.LastError) ? "없음" : summary.LastError;
@@ -157,6 +181,7 @@ public sealed partial class EnvironmentSettingsViewModel
             scopeKeys.Add($"OFFICE:{officeCode}");
 
         var currentOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, string.Empty);
+        var currentTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(_session.TenantCode, _session.OfficeCode);
         if (!string.IsNullOrWhiteSpace(currentOfficeCode))
             scopeKeys.Add($"OFFICE:{currentOfficeCode}");
 
@@ -179,25 +204,32 @@ public sealed partial class EnvironmentSettingsViewModel
                         .Take(3)
                         .Select(bucket => $"{bucket.EntityDisplayName} {bucket.Count:N0}건"));
 
-            var isShared = string.Equals(scopeKey, "SHARED", StringComparison.OrdinalIgnoreCase);
-            var officeCode = isShared
-                ? string.Empty
-                : scopeKey.StartsWith("OFFICE:", StringComparison.OrdinalIgnoreCase)
-                    ? scopeKey[7..]
-                    : string.Empty;
-            credentialMap.TryGetValue(officeCode, out var storedCredential);
-            var isCurrentScope = !isShared &&
-                                 !string.IsNullOrWhiteSpace(currentOfficeCode) &&
-                                 string.Equals(currentOfficeCode, officeCode, StringComparison.OrdinalIgnoreCase);
+            var scopeMetadata = ResolveSyncScopeMetadata(scopeKey);
+            credentialMap.TryGetValue(scopeMetadata.RequiredOfficeCode, out var storedCredential);
+            var isCurrentScope = scopeMetadata.IsShared
+                ? _session.HasAdministrativePrivileges
+                : scopeMetadata.IsOfficeScope
+                    ? !string.IsNullOrWhiteSpace(currentOfficeCode) &&
+                      string.Equals(currentOfficeCode, scopeMetadata.RequiredOfficeCode, StringComparison.OrdinalIgnoreCase)
+                    : !string.IsNullOrWhiteSpace(currentTenantCode) &&
+                      string.Equals(currentTenantCode, scopeMetadata.TargetTenantCode, StringComparison.OrdinalIgnoreCase);
 
             SyncScopeStatuses.Add(new SyncScopeStatusRow
             {
                 ScopeKey = scopeKey,
-                ScopeDisplayName = isShared ? "공용 마스터" : OfficeCodeCatalog.GetOfficeDisplayName(officeCode),
-                ScopeTypeText = isShared ? "공용" : "지점",
+                ScopeDisplayName = scopeMetadata.ScopeDisplayName,
+                ScopeTypeText = scopeMetadata.ScopeTypeText,
+                RequiredOfficeCode = scopeMetadata.RequiredOfficeCode,
+                TargetTenantCode = scopeMetadata.TargetTenantCode,
                 PendingCount = pendingCount,
                 PendingSummary = pendingSummaryText,
-                CredentialStatusText = ResolveSyncScopeCredentialStatus(isShared, isCurrentScope, pendingCount, storedCredential),
+                CredentialStatusText = ResolveSyncScopeCredentialStatus(
+                    scopeMetadata.IsShared,
+                    scopeMetadata.ScopeDisplayName,
+                    scopeMetadata.RequiredOfficeCode,
+                    isCurrentScope,
+                    pendingCount,
+                    storedCredential),
                 CredentialUsername = storedCredential?.Username ?? (isCurrentScope ? (_session.User?.Username ?? string.Empty) : string.Empty),
                 SavedAtText = storedCredential is null
                     ? "없음"
@@ -217,6 +249,8 @@ public sealed partial class EnvironmentSettingsViewModel
 
     private string ResolveSyncScopeCredentialStatus(
         bool isShared,
+        string scopeDisplayName,
+        string requiredOfficeCode,
         bool isCurrentScope,
         int pendingCount,
         StoredSyncCredential? storedCredential)
@@ -232,10 +266,37 @@ public sealed partial class EnvironmentSettingsViewModel
         if (isCurrentScope)
             return pendingCount > 0 ? "현재 로그인으로 처리" : "현재 로그인 지점";
 
-        if (storedCredential is not null)
-            return pendingCount > 0 ? "저장된 계정으로 추가 처리" : "저장된 계정 준비";
+        var targetCredentialDisplayName = string.IsNullOrWhiteSpace(requiredOfficeCode)
+            ? scopeDisplayName
+            : OfficeCodeCatalog.GetOfficeDisplayName(requiredOfficeCode);
 
-        return pendingCount > 0 ? "지점 로그인 필요" : "저장 계정 없음";
+        if (storedCredential is not null)
+            return pendingCount > 0 ? $"저장된 {targetCredentialDisplayName} 계정으로 추가 처리" : $"저장된 {targetCredentialDisplayName} 계정 준비";
+
+        return pendingCount > 0 ? $"{targetCredentialDisplayName} 로그인 필요" : "저장 계정 없음";
+    }
+
+    private static (bool IsShared, bool IsOfficeScope, string RequiredOfficeCode, string TargetTenantCode, string ScopeDisplayName, string ScopeTypeText) ResolveSyncScopeMetadata(string scopeKey)
+    {
+        if (string.Equals(scopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
+            return (true, false, string.Empty, string.Empty, "공용 마스터", "공용");
+
+        if (scopeKey.StartsWith("OFFICE:", StringComparison.OrdinalIgnoreCase))
+        {
+            var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(scopeKey[7..], string.Empty);
+            return (false, true, officeCode, string.Empty, OfficeCodeCatalog.GetOfficeDisplayName(officeCode), "지점");
+        }
+
+        if (scopeKey.StartsWith("TENANT:", StringComparison.OrdinalIgnoreCase))
+        {
+            var tenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(scopeKey[7..], string.Empty);
+            var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                TenantScopeCatalog.GetOfficeCodesForTenant(tenantCode).FirstOrDefault(),
+                string.Empty);
+            return (false, false, officeCode, tenantCode, TenantScopeCatalog.GetTenantDisplayName(tenantCode), "업체");
+        }
+
+        return (false, false, string.Empty, string.Empty, scopeKey, "범위");
     }
 
     [RelayCommand]
@@ -341,12 +402,212 @@ public sealed partial class EnvironmentSettingsViewModel
     }
 
     [RelayCommand]
+    private async Task SaveSelectedSyncScopeCredentialAsync()
+    {
+        var target = SelectedSyncScopeStatus;
+        if (target is null)
+        {
+            StatusMessage = "계정을 저장할 범위를 선택하세요.";
+            return;
+        }
+
+        if (string.Equals(target.ScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
+        {
+            StatusMessage = "공용 마스터 범위는 별도 지점 계정 저장 대상이 아닙니다. 관리자 전체 범위 로그인으로 처리합니다.";
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(target.RequiredOfficeCode))
+            SyncCredentialOfficeCode = target.RequiredOfficeCode;
+        if (!string.IsNullOrWhiteSpace(target.CredentialUsername))
+            SyncCredentialUsername = target.CredentialUsername;
+
+        if (string.IsNullOrWhiteSpace(SyncCredentialPassword))
+        {
+            StatusMessage = $"{OfficeCodeCatalog.GetOfficeDisplayName(SyncCredentialOfficeCode)} 계정 비밀번호를 입력한 뒤 저장하세요.";
+            return;
+        }
+
+        await SaveSyncCredentialAsync();
+    }
+
+    [RelayCommand]
+    private async Task RunSelectedSyncScopeSyncAsync()
+    {
+        if (IsBusy)
+            return;
+
+        var target = SelectedSyncScopeStatus;
+        if (target is null)
+        {
+            StatusMessage = "동기화할 범위를 선택하세요.";
+            return;
+        }
+
+        if (_session.IsOfflineMode)
+        {
+            StatusMessage = "오프라인 모드에서는 선택 범위 동기화를 실행할 수 없습니다.";
+            await RefreshSyncStateAsync();
+            return;
+        }
+
+        if (target.PendingCount <= 0)
+        {
+            StatusMessage = $"{target.ScopeDisplayName} 범위에는 남은 변경이 없습니다.";
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            StatusMessage = $"{target.ScopeDisplayName} 범위 동기화를 실행하는 중...";
+            var result = await _sync.TrySyncScopeAsync(target.ScopeKey);
+            var dirtyCount = await _local.CountDirtyAsync();
+            if (result.Succeeded && dirtyCount == 0)
+                await _sync.RefreshSharedMirrorFromServerAsync();
+
+            await RefreshSyncStateAsync();
+            StatusMessage = result.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand]
+    private async Task ViewSelectedSyncScopePendingAsync()
+    {
+        var target = SelectedSyncScopeStatus;
+        if (target is null)
+        {
+            StatusMessage = "확인할 범위를 선택하세요.";
+            return;
+        }
+
+        if (target.PendingCount <= 0)
+        {
+            StatusMessage = $"{target.ScopeDisplayName} 범위에는 남은 dirty가 없습니다.";
+            return;
+        }
+
+        var blockingReason = await _local.GetPendingSyncBlockingReasonAsync(_session, target.ScopeKey);
+        await OpenSyncDiagnosticsWindowAsync(target);
+        if (blockingReason is not null)
+            StatusMessage = blockingReason.Message;
+    }
+
+    [RelayCommand]
     private async Task OpenSyncDiagnosticsAsync()
     {
         if (IsBusy)
             return;
 
-        var diagnosticsViewModel = new SyncDiagnosticsViewModel(_diagnostics, _sync, _local, _rental, _session);
+        await OpenSyncDiagnosticsWindowAsync();
+    }
+
+    [RelayCommand]
+    private async Task RunFullResyncAsync()
+    {
+        if (IsBusy)
+            return;
+
+        if (_session.IsOfflineMode)
+        {
+            StatusMessage = "오프라인 모드에서는 중앙 서버 기준 전체 재동기화를 실행할 수 없습니다.";
+            await RefreshSyncStateAsync();
+            return;
+        }
+
+        var dirtyCount = await _local.CountDirtyAsync(_session);
+        if (dirtyCount > 0)
+        {
+            var waitingMessage = await _local.GetPendingSyncWaitingMessageAsync("미동기화 변경이 남아 있어 전체 재동기화를 바로 실행할 수 없습니다.");
+            StatusMessage = waitingMessage ?? $"미동기화 변경 {dirtyCount:N0}건이 남아 있어 전체 재동기화를 바로 실행할 수 없습니다.";
+            MessageBox.Show(
+                StatusMessage + Environment.NewLine + Environment.NewLine + "먼저 동기화를 완료한 뒤 다시 실행하세요.",
+                "전체 재동기화 보류",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            await RefreshSyncStateAsync();
+            return;
+        }
+
+        if (MessageBox.Show(
+                "현재 로컬 공유 캐시를 중앙 서버 기준으로 다시 내려받습니다." + Environment.NewLine +
+                "실행 전에 현재 로컬 DB 백업을 만든 뒤 진행합니다." + Environment.NewLine + Environment.NewLine +
+                "계속하시겠습니까?",
+                "전체 재동기화",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Question) != MessageBoxResult.OK)
+        {
+            StatusMessage = "전체 재동기화를 취소했습니다.";
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            StatusMessage = "전체 재동기화 전 백업을 생성하는 중...";
+            var backupPath = await _backup.BackupNowWithPathAsync();
+            var ok = await _sync.RefreshSharedMirrorFromServerAsync();
+            await RefreshSyncStateAsync();
+
+            StatusMessage = ok
+                ? string.IsNullOrWhiteSpace(backupPath)
+                    ? "중앙 서버 기준 전체 재동기화를 완료했습니다."
+                    : $"중앙 서버 기준 전체 재동기화를 완료했습니다. 백업: {System.IO.Path.GetFileName(backupPath)}"
+                : "중앙 서버 기준 전체 재동기화에 실패했습니다. 동기화 진단을 확인하세요.";
+
+            MessageBox.Show(
+                StatusMessage,
+                "전체 재동기화",
+                MessageBoxButton.OK,
+                ok ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand]
+    private async Task RunBackupAsync()
+    {
+        if (IsBusy)
+            return;
+
+        IsBusy = true;
+        try
+        {
+            var backupPath = await _backup.BackupNowWithPathAsync();
+            var ok = !string.IsNullOrWhiteSpace(backupPath);
+            await RefreshSyncStateAsync();
+            await ReloadBackupSnapshotsAsync();
+            StatusMessage = ok
+                ? $"백업을 완료했습니다: {System.IO.Path.GetFileName(backupPath)}"
+                : "백업 중 오류가 발생했습니다.";
+            MessageBox.Show(
+                ok ? $"백업이 완료되었습니다.{Environment.NewLine}{System.IO.Path.GetFileName(backupPath)}" : "백업 중 오류가 발생했습니다.",
+                "백업",
+                MessageBoxButton.OK,
+                ok ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task OpenSyncDiagnosticsWindowAsync(SyncScopeStatusRow? scope = null)
+    {
+        var diagnosticsViewModel = new SyncDiagnosticsViewModel(_diagnostics, _sync, _api, _local, _rental, _session);
+        if (scope is not null)
+        {
+            diagnosticsViewModel.SearchText = BuildSyncDiagnosticScopeSearchText(scope);
+            diagnosticsViewModel.SelectedStatus = "Open";
+        }
+
         await diagnosticsViewModel.LoadAsync();
 
         var owner = Application.Current?.Windows
@@ -360,30 +621,13 @@ public sealed partial class EnvironmentSettingsViewModel
         };
         window.ShowDialog();
         await RefreshSyncStateAsync();
-        StatusMessage = "동기화 진단 창을 열었습니다.";
+        StatusMessage = scope is null
+            ? "동기화 진단 창을 열었습니다."
+            : $"{scope.ScopeDisplayName} 범위 기준으로 동기화 진단 창을 열었습니다.";
     }
 
-    [RelayCommand]
-    private async Task RunBackupAsync()
-    {
-        if (IsBusy)
-            return;
-
-        IsBusy = true;
-        try
-        {
-            var ok = await _backup.BackupNowAsync();
-            await RefreshSyncStateAsync();
-            StatusMessage = ok ? "백업을 완료했습니다." : "백업 중 오류가 발생했습니다.";
-            MessageBox.Show(
-                ok ? "백업이 완료되었습니다." : "백업 중 오류가 발생했습니다.",
-                "백업",
-                MessageBoxButton.OK,
-                ok ? MessageBoxImage.Information : MessageBoxImage.Warning);
-        }
-        finally
-        {
-            IsBusy = false;
-        }
-    }
+    private static string BuildSyncDiagnosticScopeSearchText(SyncScopeStatusRow scope)
+        => !string.IsNullOrWhiteSpace(scope.RequiredOfficeCode)
+            ? scope.RequiredOfficeCode
+            : scope.ScopeKey;
 }

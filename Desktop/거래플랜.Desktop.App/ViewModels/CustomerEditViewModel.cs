@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
@@ -26,6 +27,8 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     private readonly LocalStateService _local;
     private readonly SessionState _session;
     private string _baselineStateSignature = string.Empty;
+    private long _loadedCustomerRevision;
+    private Guid? _editingContractId;
 
     public event Action? SavedAndNew;
     public event Action? SavedAndClose;
@@ -70,8 +73,10 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     private string _statusMessage = string.Empty;
 
     public bool HasStatus => !string.IsNullOrEmpty(StatusMessage);
-    public bool HasPendingChanges => !string.Equals(_baselineStateSignature, BuildStateSignature(), StringComparison.Ordinal);
-    public bool HasMeaningfulDraftContentForClose => HasMeaningfulDraftContent();
+    public bool IsEditingSelectedContract => _editingContractId.HasValue && SelectedContract?.Id == _editingContractId.Value;
+    public string ContractEntryModeText => IsEditingSelectedContract ? "선택 계약서 편집" : "새 계약서 입력";
+    public bool HasPendingChanges => HasPendingCustomerChanges || HasPendingContractDraft || HasPendingSelectedContractChanges;
+    public bool HasMeaningfulDraftContentForClose => HasMeaningfulDraftContent() || HasPendingContractDraft || HasPendingSelectedContractChanges;
 
     public ObservableCollection<LocalCustomerCategory> Categories { get; } = new();
     public ObservableCollection<string> OfficeCodes { get; } = new();
@@ -114,9 +119,12 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             TradeTypes.Add(CustomerTradeTypes.Sales);
 
         var offices = await _local.GetOfficesAsync();
+        var writableOfficeCodes = _local.GetWritableOfficeCodesForSession(_session);
+        var writableOfficeCodeSet = writableOfficeCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
         OfficeCodes.Clear();
         foreach (var officeCode in offices
                      .Select(office => office.Code)
+                     .Where(code => writableOfficeCodeSet.Contains(code))
                      .Where(code => !string.IsNullOrWhiteSpace(code))
                      .Distinct(StringComparer.OrdinalIgnoreCase)
                      .OrderBy(code => code, StringComparer.OrdinalIgnoreCase))
@@ -126,9 +134,13 @@ public sealed partial class CustomerEditViewModel : ObservableObject
 
         if (OfficeCodes.Count == 0)
         {
-            OfficeCodes.Add(DomainConstants.OfficeUsenet);
-            OfficeCodes.Add(DomainConstants.OfficeItworld);
-            OfficeCodes.Add(DomainConstants.OfficeYeonsu);
+            foreach (var officeCode in writableOfficeCodes)
+                OfficeCodes.Add(officeCode);
+        }
+
+        if (OfficeCodes.Count == 0)
+        {
+            OfficeCodes.Add(NormalizeOfficeCode(_session.OfficeCode));
         }
 
         StatusMessage = string.Empty;
@@ -138,6 +150,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             var defaultOfficeCode = NormalizeOfficeCode(_session.OfficeCode);
 
             IsNew = true;
+            _loadedCustomerRevision = 0;
             CustomerId = Guid.NewGuid();
             Name = MobilePhone = FaxNumber = Phone = Representative = string.Empty;
             Department = ContactPerson = BusinessNumber = BusinessType = BusinessItem = string.Empty;
@@ -149,12 +162,15 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             CategoryId = null;
             SelectedContract = null;
             Contracts.Clear();
+            _editingContractId = null;
             ResetContractEntry(makePrimary: true);
+            NotifyContractEntryModeChanged();
             CaptureBaselineState();
             return;
         }
 
         IsNew = false;
+        _loadedCustomerRevision = customer.Revision;
         CustomerId = customer.Id;
         Name = customer.NameOriginal;
         Phone = customer.Phone;
@@ -197,10 +213,24 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveAsync()
     {
-        if (!ValidateBeforeSave())
-            return;
+        var shouldPersistCustomer = IsNew || HasPendingCustomerChanges;
 
-        if (!await DoSaveAsync())
+        if (shouldPersistCustomer)
+        {
+            if (!ValidateBeforeSave())
+                return;
+
+            if (!await DoSaveAsync(showConflictDialog: true))
+                return;
+        }
+
+        if (!await PersistPendingContractDraftAsync(
+                shouldPersistCustomer
+                    ? "거래처와 계약서 초안을 저장했습니다. PDF는 나중에 추가할 수 있습니다."
+                    : "계약서 초안을 저장했습니다. PDF는 나중에 추가할 수 있습니다.",
+                shouldPersistCustomer
+                    ? "거래처와 선택 계약서 정보를 저장했습니다."
+                    : "선택 계약서 정보를 저장했습니다."))
             return;
 
         SavedAndClose?.Invoke();
@@ -209,14 +239,38 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveAndNewAsync()
     {
-        if (!ValidateBeforeSave())
-            return;
+        var shouldPersistCustomer = IsNew || HasPendingCustomerChanges;
 
-        if (!await DoSaveAsync())
+        if (shouldPersistCustomer)
+        {
+            if (!ValidateBeforeSave())
+                return;
+
+            if (!await DoSaveAsync(showConflictDialog: true))
+                return;
+        }
+
+        if (!await PersistPendingContractDraftAsync(
+                shouldPersistCustomer
+                    ? "거래처와 계약서 초안을 저장했습니다. 새 입력으로 넘어갑니다."
+                    : "계약서 초안을 저장했습니다. 새 입력으로 넘어갑니다.",
+                shouldPersistCustomer
+                    ? "거래처와 선택 계약서 정보를 저장하고 새 입력으로 넘어갑니다."
+                    : "선택 계약서 정보를 저장하고 새 입력으로 넘어갑니다."))
             return;
 
         await LoadAsync();
         SavedAndNew?.Invoke();
+    }
+
+    [RelayCommand]
+    private void BeginNewContractEntry()
+    {
+        _editingContractId = null;
+        SelectedContract = null;
+        ResetContractEntry(makePrimary: Contracts.Count == 0);
+        NotifyContractEntryModeChanged();
+        StatusMessage = "새 계약서 입력으로 전환했습니다.";
     }
 
     [RelayCommand]
@@ -241,22 +295,49 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         if (dialog.ShowDialog() != true)
             return;
 
-        var result = await _local.SaveCustomerContractAsync(
-            CustomerId,
-            dialog.FileName,
-            SelectedContractType,
-            ContractSignedDate,
-            ContractExpireDate,
-            ContractDescription,
-            NewContractIsPrimary || Contracts.Count == 0,
-            _session);
+        var editingContract = IsEditingSelectedContract ? SelectedContract : null;
+        if (editingContract is not null && ContractHasPdfFile(editingContract))
+        {
+            StatusMessage = "이미 PDF가 등록된 계약서입니다. 새 계약서를 등록하려면 '새 계약서' 버튼으로 입력을 초기화하세요.";
+            MessageBox.Show(
+                "이미 PDF가 등록된 계약서입니다. 새 계약서를 등록하려면 '새 계약서' 버튼으로 입력을 초기화한 뒤 진행하세요.",
+                "계약서 PDF 등록",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var contractType = SelectedContractType;
+        var signedDate = ContractSignedDate;
+        var expireDate = ContractExpireDate;
+        var description = ContractDescription;
+        var isPrimary = NewContractIsPrimary || (Contracts.Count == 0 && editingContract is null);
+
+        var result = editingContract is null
+            ? await _local.SaveCustomerContractAsync(
+                CustomerId,
+                dialog.FileName,
+                contractType,
+                signedDate,
+                expireDate,
+                description,
+                isPrimary,
+                _session)
+            : await _local.AttachCustomerContractPdfAsync(
+                editingContract.Id,
+                dialog.FileName,
+                contractType,
+                signedDate,
+                expireDate,
+                description,
+                isPrimary,
+                _session);
 
         StatusMessage = result.Message;
         if (!result.Success)
             return;
 
         await LoadContractsAsync(CustomerId, result.EntityId);
-        ResetContractEntry(makePrimary: Contracts.Count == 0);
     }
 
     [RelayCommand]
@@ -266,6 +347,17 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         if (contract is null)
         {
             StatusMessage = "열 계약서를 선택하세요.";
+            return;
+        }
+
+        if (!ContractHasPdfFile(contract))
+        {
+            StatusMessage = "선택한 계약서에는 아직 PDF 파일이 등록되지 않았습니다.";
+            MessageBox.Show(
+                "선택한 계약서에는 아직 PDF 파일이 등록되지 않았습니다. 'PDF 추가' 버튼으로 파일을 연결하세요.",
+                "계약서 열기",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
             return;
         }
 
@@ -347,26 +439,46 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     }
 
     private async Task<bool> DoSaveAsync()
-        => await DoSaveAsync(waitForServerWrite: true, successMessage: "거래처를 저장했습니다.");
+        => await DoSaveAsync(waitForServerWrite: true, successMessage: "거래처를 저장했습니다.", showConflictDialog: true);
+
+    private async Task<bool> DoSaveAsync(bool showConflictDialog)
+        => await DoSaveAsync(waitForServerWrite: true, successMessage: "거래처를 저장했습니다.", showConflictDialog: showConflictDialog);
 
     public async Task<bool> TryAutoSaveOnCloseAsync()
     {
         if (!HasPendingChanges || !HasMeaningfulDraftContentForClose)
             return true;
 
-        if (!ValidateBeforeSave())
+        var shouldPersistCustomer = IsNew || HasPendingCustomerChanges;
+        if (shouldPersistCustomer)
+        {
+            if (!ValidateBeforeSave())
+                return false;
+
+            if (!await DoSaveAsync(waitForServerWrite: false, successMessage: "거래처를 자동 저장했습니다.", showConflictDialog: false))
+                return false;
+        }
+
+        if (!await PersistPendingContractDraftAsync(
+                shouldPersistCustomer
+                    ? "거래처와 계약서 초안을 자동 저장했습니다."
+                    : "계약서 초안을 자동 저장했습니다.",
+                shouldPersistCustomer
+                    ? "거래처와 선택 계약서 정보를 자동 저장했습니다."
+                    : "선택 계약서 정보를 자동 저장했습니다."))
             return false;
 
-        return await DoSaveAsync(waitForServerWrite: false, successMessage: "거래처를 자동 저장했습니다.");
+        return true;
     }
 
-    private async Task<bool> DoSaveAsync(bool waitForServerWrite, string successMessage)
+    private async Task<bool> DoSaveAsync(bool waitForServerWrite, string successMessage, bool showConflictDialog)
     {
         var normalizedName = Name.Trim();
 
         var customer = new LocalCustomer
         {
             Id = CustomerId,
+            Revision = _loadedCustomerRevision,
             NameOriginal = normalizedName,
             NameMatchKey = normalizedName.ToUpperInvariant(),
             CategoryId = CategoryId,
@@ -390,28 +502,25 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             Notes = Notes,
         };
 
-        if (_session.HasAdministrativePrivileges)
-        {
-            await _local.UpsertCustomerAsync(customer);
-            if (waitForServerWrite)
-            {
-                var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
-                StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(successMessage, serverWriteResult);
-            }
-            else
-            {
-                StatusMessage = successMessage;
-            }
-
-            IsNew = false;
-            CaptureBaselineState();
-            return true;
-        }
-
         var result = await _local.UpsertCustomerAsync(customer, _session);
         StatusMessage = result.Message;
+        if (!result.Success)
+        {
+            if (result.ConcurrencyConflict && showConflictDialog)
+            {
+                MessageBox.Show(
+                    result.Message,
+                    "동시 수정 충돌",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+
+            return false;
+        }
+
         if (result.Success)
         {
+            _loadedCustomerRevision = customer.Revision;
             if (waitForServerWrite)
             {
                 var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
@@ -426,7 +535,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             CaptureBaselineState();
         }
 
-        return result.Success;
+        return true;
     }
 
     private async Task LoadContractsAsync(Guid customerId, Guid? selectContractId = null)
@@ -439,8 +548,49 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         SelectedContract = selectContractId.HasValue
             ? Contracts.FirstOrDefault(current => current.Id == selectContractId.Value)
             : Contracts.FirstOrDefault();
+    }
 
-        ResetContractEntry(makePrimary: Contracts.Count == 0);
+    private async Task<bool> PersistPendingContractDraftAsync(string draftSuccessMessage, string updateSuccessMessage)
+    {
+        if (HasPendingSelectedContractChanges && SelectedContract is not null)
+        {
+            var updateResult = await _local.UpdateCustomerContractAsync(
+                SelectedContract.Id,
+                SelectedContractType,
+                ContractSignedDate,
+                ContractExpireDate,
+                ContractDescription,
+                NewContractIsPrimary,
+                _session);
+
+            StatusMessage = updateResult.Message;
+            if (!updateResult.Success)
+                return false;
+
+            await LoadContractsAsync(CustomerId, updateResult.EntityId);
+            StatusMessage = updateSuccessMessage;
+            return true;
+        }
+
+        if (!HasPendingContractDraft)
+            return true;
+
+        var result = await _local.SaveCustomerContractDraftAsync(
+            CustomerId,
+            SelectedContractType,
+            ContractSignedDate,
+            ContractExpireDate,
+            ContractDescription,
+            NewContractIsPrimary || Contracts.Count == 0,
+            _session);
+
+        StatusMessage = result.Message;
+        if (!result.Success)
+            return false;
+
+        await LoadContractsAsync(CustomerId, result.EntityId);
+        StatusMessage = draftSuccessMessage;
+        return true;
     }
 
     private void ResetContractEntry(bool makePrimary)
@@ -452,8 +602,85 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         NewContractIsPrimary = makePrimary;
     }
 
+    partial void OnSelectedContractChanged(LocalCustomerContract? value)
+    {
+        if (value is null)
+        {
+            _editingContractId = null;
+            ResetContractEntry(makePrimary: Contracts.Count == 0);
+            NotifyContractEntryModeChanged();
+            return;
+        }
+
+        if (!ContractTypes.Contains(value.ContractType))
+            ContractTypes.Add(value.ContractType);
+
+        _editingContractId = value.Id;
+        SelectedContractType = string.IsNullOrWhiteSpace(value.ContractType)
+            ? ContractTypes.FirstOrDefault() ?? DefaultContractTypes[0]
+            : value.ContractType;
+        ContractSignedDate = value.SignedDate;
+        ContractExpireDate = value.ExpireDate;
+        ContractDescription = value.Description ?? string.Empty;
+        NewContractIsPrimary = value.IsPrimary;
+        NotifyContractEntryModeChanged();
+    }
+
+    private void NotifyContractEntryModeChanged()
+    {
+        OnPropertyChanged(nameof(IsEditingSelectedContract));
+        OnPropertyChanged(nameof(ContractEntryModeText));
+    }
+
     private static string NormalizeOfficeCode(string? officeCode)
     => OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, DomainConstants.OfficeUsenet);
+
+    private static bool ContractHasPdfFile(LocalCustomerContract? contract)
+        => contract is not null &&
+           !string.IsNullOrWhiteSpace(contract.FileName) &&
+           contract.FileSize > 0 &&
+           contract.FileContent is { Length: > 0 };
+
+    private bool HasPendingCustomerChanges
+        => !string.Equals(_baselineStateSignature, BuildStateSignature(), StringComparison.Ordinal);
+
+    private bool HasPendingContractDraft
+    {
+        get
+        {
+            if (IsEditingSelectedContract)
+                return false;
+
+            var defaultContractType = ContractTypes.FirstOrDefault() ?? DefaultContractTypes[0];
+            var expectedPrimary = Contracts.Count == 0;
+            return ContractSignedDate.HasValue
+                   || ContractExpireDate.HasValue
+                   || !string.IsNullOrWhiteSpace(ContractDescription)
+                   || !string.Equals(SelectedContractType, defaultContractType, StringComparison.Ordinal)
+                   || NewContractIsPrimary != expectedPrimary;
+        }
+    }
+
+    private bool HasPendingSelectedContractChanges
+    {
+        get
+        {
+            if (!IsEditingSelectedContract || SelectedContract is null)
+                return false;
+
+            return !string.Equals(
+                       (SelectedContractType ?? string.Empty).Trim(),
+                       (SelectedContract.ContractType ?? string.Empty).Trim(),
+                       StringComparison.Ordinal)
+                   || ContractSignedDate != SelectedContract.SignedDate
+                   || ContractExpireDate != SelectedContract.ExpireDate
+                   || !string.Equals(
+                       (ContractDescription ?? string.Empty).Trim(),
+                       (SelectedContract.Description ?? string.Empty).Trim(),
+                       StringComparison.Ordinal)
+                   || NewContractIsPrimary != SelectedContract.IsPrimary;
+        }
+    }
 
     private bool HasMeaningfulDraftContent()
         => !string.IsNullOrWhiteSpace(Name)
@@ -506,16 +733,6 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             .Append('|').Append(CustomerTradeTypes.Normalize(TradeType))
             .Append('|').Append(Notes ?? string.Empty)
             .Append('|').Append(IsNew);
-
-        foreach (var contract in Contracts.OrderBy(contract => contract.Id))
-        {
-            builder.Append('|').Append(contract.Id.ToString("D"))
-                .Append(':').Append(contract.FileName ?? string.Empty)
-                .Append(':').Append(contract.ContractType ?? string.Empty)
-                .Append(':').Append(contract.SignedDate?.ToString("yyyy-MM-dd") ?? string.Empty)
-                .Append(':').Append(contract.ExpireDate?.ToString("yyyy-MM-dd") ?? string.Empty)
-                .Append(':').Append(contract.IsPrimary);
-        }
 
         return builder.ToString();
     }

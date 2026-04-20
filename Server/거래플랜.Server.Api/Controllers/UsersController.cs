@@ -2,6 +2,7 @@
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Services;
+using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -86,6 +87,8 @@ public sealed class UsersController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (user is null)
             return NotFound();
+        if (OptimisticConcurrencyGuard.Check(this, user, request.ExpectedRevision, nameof(UserAccount)) is { } conflict)
+            return conflict;
 
         var username = request.Username.Trim();
         if (string.IsNullOrWhiteSpace(username))
@@ -127,6 +130,8 @@ public sealed class UsersController : ControllerBase
         var user = await _dbContext.Users.Include(x => x.Permissions)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (user is null) return NotFound();
+        if (OptimisticConcurrencyGuard.Check(this, user, request.ExpectedRevision, nameof(UserAccount)) is { } conflict)
+            return conflict;
 
         _dbContext.UserPermissions.RemoveRange(user.Permissions);
         foreach (var perm in request.Permissions.Distinct())
@@ -151,6 +156,8 @@ public sealed class UsersController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (user is null)
             return NotFound();
+        if (OptimisticConcurrencyGuard.Check(this, user, request.ExpectedRevision, nameof(UserAccount)) is { } conflict)
+            return conflict;
 
         user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -158,13 +165,15 @@ public sealed class UsersController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
-    public async Task<ActionResult> Delete(Guid id, CancellationToken cancellationToken)
+    public async Task<ActionResult> Delete(Guid id, [FromQuery] long? expectedRevision, CancellationToken cancellationToken)
     {
         var user = await _dbContext.Users
             .Include(x => x.Permissions)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (user is null)
             return NotFound();
+        if (OptimisticConcurrencyGuard.Check(this, user, expectedRevision, nameof(UserAccount)) is { } conflict)
+            return conflict;
 
         if (_currentUserContext.UserId == id)
             return BadRequest("You cannot delete the currently signed-in account.");

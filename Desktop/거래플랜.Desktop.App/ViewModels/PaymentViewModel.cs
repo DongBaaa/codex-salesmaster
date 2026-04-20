@@ -29,6 +29,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     private decimal _linkedRentalBilledAmount;
     private string _linkedRentalPeriodLabel = string.Empty;
     private Guid? _editingTransactionId;
+    private long _editingTransactionRevision;
     private bool _suppressTransactionKindChange;
     private int _historyLoadVersion;
     private int _attachmentLoadVersion;
@@ -146,7 +147,7 @@ public sealed partial class PaymentViewModel : ObservableObject
 
     public async Task LoadAsync(LocalCustomer? preselect = null)
     {
-        _allCustomers = await _local.GetCustomersAsync(_session);
+        _allCustomers = await _local.GetCustomersForOperationalSelectionAsync(_session);
         _contextInvoice = null;
         _contextRentalProfile = null;
         _contextRentalBillingRunId = null;
@@ -169,7 +170,7 @@ public sealed partial class PaymentViewModel : ObservableObject
 
     public async Task ReloadCustomersAsync()
     {
-        _allCustomers = await _local.GetCustomersAsync(_session);
+        _allCustomers = await _local.GetCustomersForOperationalSelectionAsync(_session);
     }
 
     public void SetCustomer(LocalCustomer customer)
@@ -202,7 +203,7 @@ public sealed partial class PaymentViewModel : ObservableObject
         IsCustomerSelectionLocked = true;
 
         var customer = _allCustomers.FirstOrDefault(current => current.Id == invoice.CustomerId)
-            ?? await _local.GetCustomerAsync(invoice.CustomerId, _session);
+            ?? await _local.GetCustomerForOperationalSelectionAsync(invoice.CustomerId, _session);
         if (customer is not null)
             SetCustomer(customer);
 
@@ -236,7 +237,7 @@ public sealed partial class PaymentViewModel : ObservableObject
 
         customer ??= profile.CustomerId.HasValue
             ? _allCustomers.FirstOrDefault(current => current.Id == profile.CustomerId.Value)
-                ?? await _local.GetCustomerAsync(profile.CustomerId.Value, _session)
+                ?? await _local.GetCustomerForOperationalSelectionAsync(profile.CustomerId.Value, _session)
             : _allCustomers.FirstOrDefault(current => string.Equals(current.NameOriginal, profile.CustomerName, StringComparison.OrdinalIgnoreCase));
         if (customer is not null)
             SetCustomer(customer);
@@ -261,6 +262,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     public void NewEntry()
     {
         _editingTransactionId = null;
+        _editingTransactionRevision = 0;
         IsEditingHistory = false;
         _linkedInvoice = _contextInvoice;
         _linkedRentalProfile = _contextRentalProfile;
@@ -857,6 +859,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             var transaction = new LocalTransaction
             {
                 Id = _editingTransactionId ?? Guid.NewGuid(),
+                Revision = _editingTransactionRevision,
                 CustomerId = SelectedCustomer.Id,
                 TransactionKind = kind,
                 LinkedInvoiceId = _linkedInvoice?.Id,
@@ -1056,7 +1059,24 @@ public sealed partial class PaymentViewModel : ObservableObject
             var result = await _local.SaveTransactionAsync(transaction, _session);
             if (!result.Success)
             {
-                StatusMessage = result.Message;
+                if (result.ConcurrencyConflict)
+                {
+                    StatusMessage = $"{result.Message} 최신 처리내역을 다시 불러왔습니다. 확인 후 다시 저장하세요.";
+                    if (SelectedCustomer is not null)
+                        await LoadHistoryAsync(SelectedCustomer.Id, Interlocked.Increment(ref _historyLoadVersion));
+
+                    await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
+                    System.Windows.MessageBox.Show(
+                        result.Message,
+                        "동시 수정 충돌",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Warning);
+                }
+                else
+                {
+                    StatusMessage = result.Message;
+                }
+
                 return;
             }
 
@@ -1108,10 +1128,30 @@ public sealed partial class PaymentViewModel : ObservableObject
         {
             IsSaving = true;
 
-            var result = await _local.DeleteTransactionAsync(target.Id, _session);
+            var result = await _local.DeleteTransactionAsync(target.Id, _session, target.Revision);
             if (!result.Success)
             {
-                StatusMessage = result.Message;
+                if (result.ConcurrencyConflict)
+                {
+                    StatusMessage = $"{result.Message} 최신 처리내역을 다시 불러왔습니다.";
+                    if (SelectedCustomer is not null)
+                    {
+                        await LoadHistoryAsync(SelectedCustomer.Id, Interlocked.Increment(ref _historyLoadVersion));
+                        SelectedHistory = History.FirstOrDefault(current => current.Id == target.Id);
+                    }
+
+                    await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
+                    System.Windows.MessageBox.Show(
+                        result.Message,
+                        "동시 수정 충돌",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Warning);
+                }
+                else
+                {
+                    StatusMessage = result.Message;
+                }
+
                 return;
             }
 
@@ -1290,7 +1330,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             return;
 
         var customer = _allCustomers.FirstOrDefault(current => current.Id == history.CustomerId)
-            ?? await _local.GetCustomerAsync(history.CustomerId, _session);
+            ?? await _local.GetCustomerForOperationalSelectionAsync(history.CustomerId, _session);
         if (customer is null)
         {
             StatusMessage = "연결된 거래처를 찾을 수 없어 처리내역을 수정할 수 없습니다.";
@@ -1323,6 +1363,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             SetCustomer(customer);
 
         _editingTransactionId = history.Id;
+        _editingTransactionRevision = history.Revision;
         _linkedInvoice = editInvoice;
         _linkedRentalProfile = editRentalProfile;
         _linkedRentalBillingRunId = history.LinkedRentalBillingRunId;

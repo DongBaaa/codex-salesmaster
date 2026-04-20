@@ -73,6 +73,7 @@ public sealed partial class RentalStateService
                 customerById,
                 profile.CustomerId,
                 profile.BusinessNumber,
+                profile.ResponsibleOfficeCode,
                 profile.CustomerName,
                 profile.InstallSiteName);
 
@@ -157,6 +158,7 @@ public sealed partial class RentalStateService
                 customerById,
                 linkedProfile?.CustomerId ?? asset.CustomerId,
                 linkedProfile?.BusinessNumber,
+                linkedProfile?.ResponsibleOfficeCode ?? asset.ResponsibleOfficeCode,
                 linkedProfile?.CustomerName,
                 asset.CurrentCustomerName,
                 asset.CustomerName);
@@ -259,6 +261,7 @@ public sealed partial class RentalStateService
                 customerById,
                 profile.CustomerId,
                 profile.BusinessNumber,
+                profile.ResponsibleOfficeCode,
                 profile.CustomerName,
                 profile.InstallSiteName);
 
@@ -314,6 +317,7 @@ public sealed partial class RentalStateService
                 customerById,
                 linkedProfile?.CustomerId ?? asset.CustomerId,
                 linkedProfile?.BusinessNumber,
+                linkedProfile?.ResponsibleOfficeCode ?? asset.ResponsibleOfficeCode,
                 linkedProfile?.CustomerName,
                 asset.CurrentCustomerName,
                 asset.CustomerName);
@@ -388,11 +392,17 @@ public sealed partial class RentalStateService
     private IQueryable<LocalCustomer> BuildRentalCleanupCustomerQuery(SessionState session)
     {
         var query = _db.Customers.AsNoTracking().Where(customer => !customer.IsDeleted);
-        if (CanViewAllRental(session))
+        var currentTenantCode = ResolveCurrentRentalTenantCode(session);
+        if (CanAdministrativelyViewAllRental(session))
             return query;
 
+        if (CanViewAllRental(session))
+            return query.Where(customer => customer.TenantCode == currentTenantCode);
+
         var readableOfficeCodes = GetReadableOfficeCodes(session);
-        return query.Where(customer => readableOfficeCodes.Contains(customer.ResponsibleOfficeCode));
+        return query.Where(customer =>
+            customer.TenantCode == currentTenantCode &&
+            readableOfficeCodes.Contains(customer.ResponsibleOfficeCode));
     }
 
     private static LocalCustomer? ResolveRentalCleanupCustomer(
@@ -400,9 +410,11 @@ public sealed partial class RentalStateService
         IReadOnlyDictionary<Guid, LocalCustomer> customerById,
         Guid? currentCustomerId,
         string? businessNumber,
+        string? preferredOfficeCode,
         params string?[] candidateNames)
     {
         var candidateKeys = BuildRentalCleanupNameKeys(candidateNames);
+        var normalizedPreferredOfficeCode = ResolveCustomerRentalOfficeCode(preferredOfficeCode);
         if (currentCustomerId.HasValue &&
             currentCustomerId.Value != Guid.Empty &&
             customerById.TryGetValue(currentCustomerId.Value, out var linkedCustomer))
@@ -422,6 +434,18 @@ public sealed partial class RentalStateService
             var businessMatches = customers
                 .Where(customer => NormalizeRentalCleanupBusinessNumber(customer.BusinessNumber) == normalizedRequestedBusinessNumber)
                 .ToList();
+            if (!string.IsNullOrWhiteSpace(normalizedPreferredOfficeCode) && businessMatches.Count > 1)
+            {
+                var officeBusinessMatches = PreferCustomerMatchesByOffice(
+                    businessMatches,
+                    normalizedPreferredOfficeCode,
+                    customer => customer.OfficeCode,
+                    customer => customer.ResponsibleOfficeCode);
+                if (officeBusinessMatches.Count == 1)
+                    return officeBusinessMatches[0];
+                if (officeBusinessMatches.Count > 1)
+                    businessMatches = officeBusinessMatches;
+            }
             if (businessMatches.Count == 1)
                 return businessMatches[0];
             if (businessMatches.Count > 1 && candidateKeys.Count > 0)
@@ -440,15 +464,39 @@ public sealed partial class RentalStateService
         var nameMatches = customers
             .Where(customer => CustomerMatchesRentalCleanupNames(customer, candidateKeys))
             .ToList();
+        if (!string.IsNullOrWhiteSpace(normalizedPreferredOfficeCode) && nameMatches.Count > 1)
+        {
+            var officeNameMatches = PreferCustomerMatchesByOffice(
+                nameMatches,
+                normalizedPreferredOfficeCode,
+                customer => customer.OfficeCode,
+                customer => customer.ResponsibleOfficeCode);
+            if (officeNameMatches.Count == 1)
+                return officeNameMatches[0];
+            if (officeNameMatches.Count > 1)
+                nameMatches = officeNameMatches;
+        }
         return nameMatches.Count == 1 ? nameMatches[0] : null;
     }
 
     private static HashSet<string> BuildRentalCleanupNameKeys(params string?[] values)
-        => values
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => RentalCatalogValueNormalizer.NormalizeLooseKey(value))
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    {
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in values)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                continue;
+
+            foreach (var candidate in BuildWorkbookCustomerNameCandidates(value))
+            {
+                var normalized = RentalCatalogValueNormalizer.NormalizeLooseKey(candidate);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    keys.Add(normalized);
+            }
+        }
+
+        return keys;
+    }
 
     private static bool CustomerMatchesRentalCleanupNames(LocalCustomer customer, IReadOnlyCollection<string> candidateKeys)
     {

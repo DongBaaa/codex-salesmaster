@@ -49,6 +49,10 @@ public static partial class DbInitializer
         var activeProfilesById = profiles
             .Where(profile => !profile.IsDeleted)
             .ToDictionary(profile => profile.Id);
+        var activeProfileAssetCounts = assets
+            .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
+            .GroupBy(asset => asset.BillingProfileId!.Value)
+            .ToDictionary(group => group.Key, group => group.Count());
 
         foreach (var asset in assets.Where(asset => !asset.IsDeleted))
         {
@@ -56,6 +60,19 @@ public static partial class DbInitializer
             var assetCustomerKeys = BuildRentalCustomerKeys(
                 asset.CustomerName,
                 asset.CurrentCustomerName);
+            var preferredResponsibleOfficeCode = ResolveRentalOperationalOfficeCode(
+                asset.ResponsibleOfficeCode,
+                asset.OfficeCode,
+                asset.ManagementCompanyCode);
+            var preferredOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+                asset.OfficeCode,
+                preferredResponsibleOfficeCode,
+                asset.ManagementCompanyCode,
+                OfficeCodeCatalog.Usenet);
+            var preferredTenantCode = NormalizeOperationalTenantCode(
+                asset.TenantCode,
+                preferredOwnerOfficeCode,
+                preferredResponsibleOfficeCode);
             var normalizedInstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation);
             var normalizedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallSiteName);
             var canonicalInstallLocation = !string.IsNullOrWhiteSpace(normalizedInstallLocation)
@@ -77,11 +94,25 @@ public static partial class DbInitializer
             if (asset.BillingProfileId.HasValue &&
                 (!activeProfilesById.ContainsKey(asset.BillingProfileId.Value) || asset.BillingProfileId.Value == Guid.Empty))
             {
+                UnregisterProfileAssetLink(activeProfileAssetCounts, asset.BillingProfileId.Value);
                 asset.BillingProfileId = null;
                 changed = true;
             }
 
             activeProfilesById.TryGetValue(asset.BillingProfileId ?? Guid.Empty, out var linkedProfile);
+            if (linkedProfile is not null &&
+                !ProfileMatchesAssetScope(
+                    linkedProfile,
+                    preferredTenantCode,
+                    preferredResponsibleOfficeCode,
+                    asset.CustomerId,
+                    assetCustomerKeys))
+            {
+                UnregisterProfileAssetLink(activeProfileAssetCounts, linkedProfile.Id);
+                asset.BillingProfileId = null;
+                linkedProfile = null;
+                changed = true;
+            }
 
             var resolvedCustomerId = ResolveAssetCustomerId(asset, linkedProfile, customerById, customers);
             if (asset.CustomerId != resolvedCustomerId)
@@ -93,18 +124,28 @@ public static partial class DbInitializer
             if (asset.CustomerId.HasValue &&
                 customerById.TryGetValue(asset.CustomerId.Value, out var linkedCustomer))
             {
-                var resolvedOfficeCode = ResolveCustomerRentalOfficeCode(linkedCustomer.OfficeCode);
-                if (!string.IsNullOrWhiteSpace(resolvedOfficeCode))
+                var resolvedResponsibleOfficeCode = ResolveCustomerRentalOfficeCode(linkedCustomer.ResponsibleOfficeCode);
+                var resolvedOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+                    linkedCustomer.OfficeCode,
+                    resolvedResponsibleOfficeCode,
+                    linkedCustomer.OfficeCode);
+                if (!string.IsNullOrWhiteSpace(resolvedResponsibleOfficeCode))
                 {
-                    if (!string.Equals(asset.OfficeCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(asset.ResponsibleOfficeCode, resolvedResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
-                        asset.OfficeCode = resolvedOfficeCode;
+                        asset.ResponsibleOfficeCode = resolvedResponsibleOfficeCode;
                         changed = true;
                     }
 
-                    if (!string.Equals(asset.ManagementCompanyCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(asset.OfficeCode, resolvedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
-                        asset.ManagementCompanyCode = resolvedOfficeCode;
+                        asset.OfficeCode = resolvedOwnerOfficeCode;
+                        changed = true;
+                    }
+
+                    if (!string.Equals(asset.ManagementCompanyCode, resolvedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    {
+                        asset.ManagementCompanyCode = resolvedOwnerOfficeCode;
                         changed = true;
                     }
                 }
@@ -125,10 +166,11 @@ public static partial class DbInitializer
 
             if (!asset.BillingProfileId.HasValue || asset.BillingProfileId.Value == Guid.Empty)
             {
-                var resolvedBillingProfileId = ResolveAssetBillingProfileId(asset, profiles);
+                var resolvedBillingProfileId = ResolveAssetBillingProfileId(asset, profiles, activeProfileAssetCounts);
                 if (resolvedBillingProfileId.HasValue && resolvedBillingProfileId.Value != Guid.Empty)
                 {
                     asset.BillingProfileId = resolvedBillingProfileId.Value;
+                    RegisterProfileAssetLink(activeProfileAssetCounts, resolvedBillingProfileId.Value);
                     changed = true;
                     activeProfilesById.TryGetValue(resolvedBillingProfileId.Value, out linkedProfile);
                 }
@@ -137,7 +179,12 @@ public static partial class DbInitializer
             if (linkedProfile is not null &&
                 linkedProfile.CustomerId.HasValue &&
                 linkedProfile.CustomerId.Value != Guid.Empty &&
-                CustomerReferenceLooksValid(linkedProfile.CustomerId, customerById, assetCustomerKeys) &&
+                CustomerReferenceLooksValid(
+                    linkedProfile.CustomerId,
+                    customerById,
+                    assetCustomerKeys,
+                    preferredTenantCode,
+                    preferredResponsibleOfficeCode) &&
                 asset.CustomerId != linkedProfile.CustomerId)
             {
                 asset.CustomerId = linkedProfile.CustomerId;
@@ -145,21 +192,36 @@ public static partial class DbInitializer
             }
 
             if (linkedProfile is not null &&
-                CustomerReferenceLooksValid(linkedProfile.CustomerId, customerById, assetCustomerKeys) &&
+                CustomerReferenceLooksValid(
+                    linkedProfile.CustomerId,
+                    customerById,
+                    assetCustomerKeys,
+                    preferredTenantCode,
+                    preferredResponsibleOfficeCode) &&
                 customerById.TryGetValue(linkedProfile.CustomerId ?? Guid.Empty, out var profileCustomer))
             {
-                var resolvedOfficeCode = ResolveCustomerRentalOfficeCode(profileCustomer.OfficeCode);
-                if (!string.IsNullOrWhiteSpace(resolvedOfficeCode))
+                var resolvedResponsibleOfficeCode = ResolveCustomerRentalOfficeCode(profileCustomer.ResponsibleOfficeCode);
+                var resolvedOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+                    profileCustomer.OfficeCode,
+                    resolvedResponsibleOfficeCode,
+                    profileCustomer.OfficeCode);
+                if (!string.IsNullOrWhiteSpace(resolvedResponsibleOfficeCode))
                 {
-                    if (!string.Equals(asset.OfficeCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(asset.ResponsibleOfficeCode, resolvedResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
-                        asset.OfficeCode = resolvedOfficeCode;
+                        asset.ResponsibleOfficeCode = resolvedResponsibleOfficeCode;
                         changed = true;
                     }
 
-                    if (!string.Equals(asset.ManagementCompanyCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(asset.OfficeCode, resolvedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
-                        asset.ManagementCompanyCode = resolvedOfficeCode;
+                        asset.OfficeCode = resolvedOwnerOfficeCode;
+                        changed = true;
+                    }
+
+                    if (!string.Equals(asset.ManagementCompanyCode, resolvedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    {
+                        asset.ManagementCompanyCode = resolvedOwnerOfficeCode;
                         changed = true;
                     }
                 }
@@ -194,18 +256,28 @@ public static partial class DbInitializer
                     changed = true;
                 }
 
-                var resolvedOfficeCode = ResolveCustomerRentalOfficeCode(linkedCustomer.OfficeCode);
-                if (!string.IsNullOrWhiteSpace(resolvedOfficeCode))
+                var resolvedResponsibleOfficeCode = ResolveCustomerRentalOfficeCode(linkedCustomer.ResponsibleOfficeCode);
+                var resolvedOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+                    linkedCustomer.OfficeCode,
+                    resolvedResponsibleOfficeCode,
+                    linkedCustomer.OfficeCode);
+                if (!string.IsNullOrWhiteSpace(resolvedResponsibleOfficeCode))
                 {
-                    if (!string.Equals(profile.OfficeCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(profile.ResponsibleOfficeCode, resolvedResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
-                        profile.OfficeCode = resolvedOfficeCode;
+                        profile.ResponsibleOfficeCode = resolvedResponsibleOfficeCode;
                         changed = true;
                     }
 
-                    if (!string.Equals(profile.ManagementCompanyCode, resolvedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(profile.OfficeCode, resolvedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase))
                     {
-                        profile.ManagementCompanyCode = resolvedOfficeCode;
+                        profile.OfficeCode = resolvedOwnerOfficeCode;
+                        changed = true;
+                    }
+
+                    if (!string.Equals(profile.ManagementCompanyCode, resolvedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase))
+                    {
+                        profile.ManagementCompanyCode = resolvedOwnerOfficeCode;
                         changed = true;
                     }
                 }
@@ -283,6 +355,12 @@ public static partial class DbInitializer
                     TouchTrackedEntity(log, now);
 
                 continue;
+            }
+
+            if (!string.Equals(log.ResponsibleOfficeCode, profile.ResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                log.ResponsibleOfficeCode = profile.ResponsibleOfficeCode;
+                changed = true;
             }
 
             if (!string.Equals(log.OfficeCode, profile.OfficeCode, StringComparison.OrdinalIgnoreCase))
@@ -420,14 +498,37 @@ public static partial class DbInitializer
     {
         var candidateKeys = BuildRentalCustomerKeys(
             profile.CustomerName);
+        var preferredResponsibleOfficeCode = ResolveRentalOperationalOfficeCode(
+            profile.ResponsibleOfficeCode,
+            profile.OfficeCode,
+            profile.ManagementCompanyCode);
+        var preferredOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+            profile.OfficeCode,
+            preferredResponsibleOfficeCode,
+            profile.ManagementCompanyCode,
+            OfficeCodeCatalog.Usenet);
+        var preferredTenantCode = NormalizeOperationalTenantCode(
+            profile.TenantCode,
+            preferredOwnerOfficeCode,
+            preferredResponsibleOfficeCode);
 
-        if (CustomerReferenceLooksValid(profile.CustomerId, customerById, candidateKeys))
+        if (CustomerReferenceLooksValid(
+                profile.CustomerId,
+                customerById,
+                candidateKeys,
+                preferredTenantCode,
+                preferredResponsibleOfficeCode))
             return profile.CustomerId;
 
         var linkedAssetCustomerIds = assets
             .Where(asset => !asset.IsDeleted && asset.BillingProfileId == profile.Id)
             .Select(asset => asset.CustomerId)
-            .Where(customerId => CustomerReferenceLooksValid(customerId, customerById, candidateKeys))
+            .Where(customerId => CustomerReferenceLooksValid(
+                customerId,
+                customerById,
+                candidateKeys,
+                preferredTenantCode,
+                preferredResponsibleOfficeCode))
             .Select(customerId => customerId!.Value)
             .Distinct()
             .ToList();
@@ -438,8 +539,15 @@ public static partial class DbInitializer
                    customers,
                    profile.BusinessNumber,
                    candidateKeys,
+                   preferredTenantCode,
+                   preferredResponsibleOfficeCode,
                    out var resolvedCustomerId)
-               || TryResolveBillingProfileCustomer(customers, profile, out resolvedCustomerId)
+               || TryResolveBillingProfileCustomer(
+                   customers,
+                   profile,
+                   preferredTenantCode,
+                   preferredResponsibleOfficeCode,
+                   out resolvedCustomerId)
             ? resolvedCustomerId
             : null;
     }
@@ -453,36 +561,72 @@ public static partial class DbInitializer
         var candidateKeys = BuildRentalCustomerKeys(
             asset.CustomerName,
             asset.CurrentCustomerName);
+        var preferredResponsibleOfficeCode = ResolveRentalOperationalOfficeCode(
+            asset.ResponsibleOfficeCode,
+            asset.OfficeCode,
+            asset.ManagementCompanyCode);
+        var preferredOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+            asset.OfficeCode,
+            preferredResponsibleOfficeCode,
+            asset.ManagementCompanyCode,
+            OfficeCodeCatalog.Usenet);
+        var preferredTenantCode = NormalizeOperationalTenantCode(
+            asset.TenantCode,
+            preferredOwnerOfficeCode,
+            preferredResponsibleOfficeCode);
 
         if (linkedProfile is not null &&
-            CustomerReferenceLooksValid(linkedProfile.CustomerId, customerById, candidateKeys))
+            CustomerReferenceLooksValid(
+                linkedProfile.CustomerId,
+                customerById,
+                candidateKeys,
+                preferredTenantCode,
+                preferredResponsibleOfficeCode))
             return linkedProfile.CustomerId;
 
-        if (CustomerReferenceLooksValid(asset.CustomerId, customerById, candidateKeys))
+        if (CustomerReferenceLooksValid(
+                asset.CustomerId,
+                customerById,
+                candidateKeys,
+                preferredTenantCode,
+                preferredResponsibleOfficeCode))
             return asset.CustomerId;
 
         return TryResolveRentalCustomerByNames(
                    customers,
                    null,
                    candidateKeys,
+                   preferredTenantCode,
+                   preferredResponsibleOfficeCode,
                    out var resolvedCustomerId)
-               || TryResolveAssetCustomer(customers, asset, out resolvedCustomerId)
+               || TryResolveAssetCustomer(
+                   customers,
+                   asset,
+                   preferredTenantCode,
+                   preferredResponsibleOfficeCode,
+                   out resolvedCustomerId)
             ? resolvedCustomerId
             : null;
     }
 
     private static Guid? ResolveAssetBillingProfileId(
         RentalAsset asset,
-        IReadOnlyCollection<RentalBillingProfile> profiles)
+        IReadOnlyCollection<RentalBillingProfile> profiles,
+        IReadOnlyDictionary<Guid, int> activeProfileAssetCounts)
     {
-        if (!asset.CustomerId.HasValue || asset.CustomerId.Value == Guid.Empty)
-            return null;
-
+        var assetCustomerKeys = BuildRentalCustomerKeys(
+            asset.CustomerName,
+            asset.CurrentCustomerName);
         var customerProfiles = profiles
-            .Where(profile => !profile.IsDeleted && profile.CustomerId == asset.CustomerId)
+            .Where(profile => !profile.IsDeleted)
+            .Where(profile => ProfileMatchesAssetCustomer(profile, asset.CustomerId, assetCustomerKeys))
             .ToList();
         if (customerProfiles.Count == 0)
             return null;
+
+        var officeScopedProfiles = FilterProfilesByAssetOffice(customerProfiles, asset);
+        if (officeScopedProfiles.Count > 0)
+            customerProfiles = officeScopedProfiles;
         if (customerProfiles.Count == 1)
             return customerProfiles[0].Id;
 
@@ -517,19 +661,27 @@ public static partial class DbInitializer
                 return siteMatches[0].Id;
         }
 
-        return null;
+        return SelectPreferredBillingProfile(customerProfiles, activeProfileAssetCounts, siteKeys);
     }
 
     private static bool TryResolveAssetCustomer(
         IReadOnlyCollection<Customer> customers,
         RentalAsset asset,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode,
         out Guid customerId)
     {
         customerId = Guid.Empty;
         var candidateKeys = BuildRentalCustomerKeys(
             asset.CustomerName,
             asset.CurrentCustomerName);
-        return TryResolveRentalCustomerByNames(customers, null, candidateKeys, out customerId);
+        return TryResolveRentalCustomerByNames(
+            customers,
+            null,
+            candidateKeys,
+            preferredTenantCode,
+            preferredResponsibleOfficeCode,
+            out customerId);
     }
 
     private static HashSet<string> BuildRentalSiteKeys(params string?[] values)
@@ -585,12 +737,17 @@ public static partial class DbInitializer
         IReadOnlyCollection<Customer> customers,
         string? businessNumber,
         IReadOnlyCollection<string> candidateKeys,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode,
         out Guid customerId)
     {
         customerId = Guid.Empty;
         var normalizedBusinessNumber = NormalizeBusinessNumber(businessNumber);
 
-        var scopedCustomers = customers.AsEnumerable();
+        var scopedCustomers = FilterCustomersByOperationalScope(
+            customers,
+            preferredTenantCode,
+            preferredResponsibleOfficeCode);
         if (!string.IsNullOrWhiteSpace(normalizedBusinessNumber))
         {
             var businessMatches = scopedCustomers
@@ -623,8 +780,11 @@ public static partial class DbInitializer
     private static bool CustomerReferenceLooksValid(
         Guid? customerId,
         IReadOnlyDictionary<Guid, Customer> customerById,
-        IReadOnlyCollection<string> candidateKeys)
+        IReadOnlyCollection<string> candidateKeys,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode)
         => HasValidCustomerId(customerId, customerById) &&
+           MatchesOperationalCustomerScope(customerById[customerId!.Value], preferredTenantCode, preferredResponsibleOfficeCode) &&
            (candidateKeys.Count == 0 || CustomerMatchesRentalNames(customerById[customerId!.Value], candidateKeys));
 
     private static bool CustomerMatchesRentalNames(Customer customer, IReadOnlyCollection<string> candidateKeys)
@@ -661,10 +821,240 @@ public static partial class DbInitializer
                siteKeys.Contains(profileSiteKey, StringComparer.OrdinalIgnoreCase);
     }
 
+    private static List<RentalBillingProfile> FilterProfilesByAssetOffice(
+        IReadOnlyCollection<RentalBillingProfile> profiles,
+        RentalAsset asset)
+    {
+        var normalizedOfficeCode = ResolveRentalOperationalOfficeCode(
+            string.IsNullOrWhiteSpace(asset.ResponsibleOfficeCode)
+                ? asset.ManagementCompanyCode
+                : asset.ResponsibleOfficeCode,
+            asset.OfficeCode,
+            asset.ManagementCompanyCode);
+        var normalizedTenantCode = NormalizeOperationalTenantCode(
+            asset.TenantCode,
+            ResolveOperationalOwnerOfficeCode(asset.OfficeCode, normalizedOfficeCode, asset.ManagementCompanyCode, OfficeCodeCatalog.Usenet),
+            normalizedOfficeCode);
+        if (string.IsNullOrWhiteSpace(normalizedOfficeCode))
+            return [];
+
+        var exactScopeMatches = profiles
+            .Where(profile => ProfileMatchesAssetScope(profile, normalizedTenantCode, normalizedOfficeCode, asset.CustomerId, []))
+            .ToList();
+        if (exactScopeMatches.Count > 0)
+            return exactScopeMatches;
+
+        return profiles
+            .Where(profile =>
+                string.Equals(
+                    ResolveRentalOperationalOfficeCode(
+                        string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
+                            ? profile.ManagementCompanyCode
+                            : profile.ResponsibleOfficeCode,
+                        profile.OfficeCode,
+                        profile.ManagementCompanyCode),
+                    normalizedOfficeCode,
+                    StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private static bool ProfileMatchesAssetCustomer(
+        RentalBillingProfile profile,
+        Guid? assetCustomerId,
+        IReadOnlyCollection<string> assetCustomerKeys)
+    {
+        if (assetCustomerId.HasValue &&
+            assetCustomerId.Value != Guid.Empty &&
+            profile.CustomerId == assetCustomerId)
+        {
+            return true;
+        }
+
+        return ProfileMatchesRentalNames(profile, assetCustomerKeys);
+    }
+
+    private static bool ProfileMatchesRentalNames(
+        RentalBillingProfile profile,
+        IReadOnlyCollection<string> candidateKeys)
+    {
+        if (candidateKeys.Count == 0)
+            return false;
+
+        var profileKeys = BuildRentalCustomerKeys(profile.CustomerName);
+        return profileKeys.Any(profileKey =>
+            candidateKeys.Any(candidateKey =>
+                !string.IsNullOrWhiteSpace(profileKey) &&
+                !string.IsNullOrWhiteSpace(candidateKey) &&
+                string.Equals(profileKey, candidateKey, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static Guid? SelectPreferredBillingProfile(
+        IReadOnlyList<RentalBillingProfile> profiles,
+        IReadOnlyDictionary<Guid, int> activeProfileAssetCounts,
+        IReadOnlyCollection<string> siteKeys)
+    {
+        if (profiles.Count == 0)
+            return null;
+        if (profiles.Count == 1)
+            return profiles[0].Id;
+
+        var rankedProfiles = profiles
+            .Select(profile => new
+            {
+                Profile = profile,
+                SiteMatch = siteKeys.Count > 0 && ProfileMatchesAssetSite(profile, siteKeys) ? 1 : 0,
+                LinkedAssetCount = activeProfileAssetCounts.TryGetValue(profile.Id, out var count) ? count : 0,
+                HasInstallSite = string.IsNullOrWhiteSpace(RentalCatalogValueNormalizer.NormalizeDisplayText(profile.InstallSiteName)) ? 0 : 1
+            })
+            .OrderByDescending(entry => entry.SiteMatch)
+            .ThenByDescending(entry => entry.LinkedAssetCount)
+            .ThenByDescending(entry => entry.HasInstallSite)
+            .ThenBy(entry => entry.Profile.InstallSiteName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(entry => entry.Profile.Id)
+            .ToList();
+
+        var best = rankedProfiles[0];
+        var bestCount = rankedProfiles.Count(entry =>
+            entry.SiteMatch == best.SiteMatch &&
+            entry.LinkedAssetCount == best.LinkedAssetCount &&
+            entry.HasInstallSite == best.HasInstallSite);
+
+        return bestCount == 1 ? best.Profile.Id : null;
+    }
+
+    private static void RegisterProfileAssetLink(IDictionary<Guid, int> activeProfileAssetCounts, Guid profileId)
+    {
+        if (profileId == Guid.Empty)
+            return;
+
+        activeProfileAssetCounts[profileId] = activeProfileAssetCounts.TryGetValue(profileId, out var currentCount)
+            ? currentCount + 1
+            : 1;
+    }
+
+    private static void UnregisterProfileAssetLink(IDictionary<Guid, int> activeProfileAssetCounts, Guid profileId)
+    {
+        if (profileId == Guid.Empty)
+            return;
+
+        if (!activeProfileAssetCounts.TryGetValue(profileId, out var currentCount))
+            return;
+
+        if (currentCount <= 1)
+        {
+            activeProfileAssetCounts.Remove(profileId);
+            return;
+        }
+
+        activeProfileAssetCounts[profileId] = currentCount - 1;
+    }
+
+    private static IEnumerable<Customer> FilterCustomersByOperationalScope(
+        IReadOnlyCollection<Customer> customers,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode)
+    {
+        var exactScopeMatches = customers
+            .Where(customer => MatchesOperationalCustomerScope(customer, preferredTenantCode, preferredResponsibleOfficeCode))
+            .ToList();
+        if (exactScopeMatches.Count > 0)
+            return exactScopeMatches;
+
+        if (!string.IsNullOrWhiteSpace(preferredTenantCode))
+        {
+            var tenantMatches = customers
+                .Where(customer =>
+                    string.Equals(
+                        NormalizeOperationalTenantCode(customer.TenantCode, customer.OfficeCode, customer.ResponsibleOfficeCode),
+                        preferredTenantCode,
+                        StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (tenantMatches.Count > 0)
+                return tenantMatches;
+        }
+
+        return customers;
+    }
+
+    private static bool MatchesOperationalCustomerScope(
+        Customer customer,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode)
+    {
+        var customerTenantCode = NormalizeOperationalTenantCode(customer.TenantCode, customer.OfficeCode, customer.ResponsibleOfficeCode);
+        if (!string.IsNullOrWhiteSpace(preferredTenantCode) &&
+            !string.Equals(customerTenantCode, preferredTenantCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(preferredResponsibleOfficeCode))
+            return true;
+
+        var customerResponsibleOfficeCode = ResolveRentalOperationalOfficeCode(
+            customer.ResponsibleOfficeCode,
+            customer.OfficeCode);
+        return string.Equals(customerResponsibleOfficeCode, preferredResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ProfileMatchesAssetScope(
+        RentalBillingProfile profile,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode,
+        Guid? assetCustomerId,
+        IReadOnlyCollection<string> assetCustomerKeys)
+        => MatchesOperationalTenantAndOfficeScope(profile.TenantCode, profile.OfficeCode, profile.ResponsibleOfficeCode, preferredTenantCode, preferredResponsibleOfficeCode) &&
+           ProfileMatchesAssetCustomer(profile, assetCustomerId, assetCustomerKeys);
+
+    private static bool MatchesOperationalTenantAndOfficeScope(
+        string? tenantCode,
+        string? ownerOfficeCode,
+        string? responsibleOfficeCode,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode)
+    {
+        var normalizedOfficeCode = ResolveRentalOperationalOfficeCode(responsibleOfficeCode, ownerOfficeCode);
+        var normalizedTenantCode = NormalizeOperationalTenantCode(tenantCode, ownerOfficeCode, normalizedOfficeCode);
+
+        return (string.IsNullOrWhiteSpace(preferredTenantCode) ||
+                string.Equals(normalizedTenantCode, preferredTenantCode, StringComparison.OrdinalIgnoreCase)) &&
+               (string.IsNullOrWhiteSpace(preferredResponsibleOfficeCode) ||
+                string.Equals(normalizedOfficeCode, preferredResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase));
+    }
+
     private static bool HasValidCustomerId(Guid? customerId, IReadOnlyDictionary<Guid, Customer> customerById)
         => customerId.HasValue &&
            customerId.Value != Guid.Empty &&
            customerById.ContainsKey(customerId.Value);
+
+    private static string ResolveRentalOperationalOfficeCode(params string?[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (OfficeCodeCatalog.TryNormalize(candidate, out var normalizedOfficeCode))
+                return normalizedOfficeCode;
+        }
+
+        return OfficeCodeCatalog.Usenet;
+    }
+
+    private static bool TryResolveBillingProfileCustomer(
+        IReadOnlyCollection<Customer> customers,
+        RentalBillingProfile profile,
+        string? preferredTenantCode,
+        string? preferredResponsibleOfficeCode,
+        out Guid customerId)
+    {
+        customerId = Guid.Empty;
+        var candidateKeys = BuildRentalCustomerKeys(profile.CustomerName);
+        return TryResolveRentalCustomerByNames(
+            customers,
+            profile.BusinessNumber,
+            candidateKeys,
+            preferredTenantCode,
+            preferredResponsibleOfficeCode,
+            out customerId);
+    }
 
     private static string ResolveCustomerRentalOfficeCode(string? officeCode)
         => OfficeCodeCatalog.NormalizeOfficeCodeLoose(officeCode, null, OfficeCodeCatalog.Usenet);

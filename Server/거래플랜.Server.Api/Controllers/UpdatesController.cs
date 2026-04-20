@@ -71,6 +71,8 @@ public sealed class UpdatesController : ControllerBase
             return;
 
         package.Platform = string.IsNullOrWhiteSpace(package.Platform) ? platform : package.Platform.Trim();
+        if (package.Mandatory && string.IsNullOrWhiteSpace(package.MinimumSupportedVersion))
+            package.MinimumSupportedVersion = package.Version;
 
         if (string.IsNullOrWhiteSpace(package.FileName) && !string.IsNullOrWhiteSpace(package.PackageUrl))
             package.FileName = Path.GetFileName(package.PackageUrl);

@@ -29,7 +29,10 @@ public sealed partial class MainViewModel
         RefreshCurrentUserDisplay();
 
         if (!_session.IsOfflineMode)
+        {
             await _sync.TrySyncAsync();
+            await _sync.RefreshCurrentBusinessScopeFromServerAsync();
+        }
 
         await LoadCustomersAsync();
         await LoadInvoiceFilterSettingsAsync();

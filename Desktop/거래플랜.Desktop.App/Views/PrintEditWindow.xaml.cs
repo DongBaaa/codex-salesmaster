@@ -34,6 +34,7 @@ public partial class PrintEditWindow : Window
         _viewModel.RequestClose -= OnRequestClose;
         Closing -= Window_Closing;
         Closed -= OnClosed;
+        _viewModel.Dispose();
     }
 
     private async void Window_Closing(object? sender, CancelEventArgs e)

@@ -23,6 +23,9 @@ public sealed partial class InventoryViewModel : ObservableObject
     private bool _suppressSelectionAutoSave;
     private int _selectedItemMovementLoadVersion;
     private string _baselineStateSignature = string.Empty;
+    private long _editRevision;
+    private string _editOfficeCode = DomainConstants.OfficeUsenet;
+    private string _editTenantCode = TenantScopeCatalog.UsenetGroup;
 
     public ObservableCollection<InventoryItemRow> FilteredItems { get; } = new();
     public ObservableCollection<InventoryMovementRow> SelectedItemMovements { get; } = new();
@@ -83,6 +86,11 @@ public sealed partial class InventoryViewModel : ObservableObject
     public string UsenetTabText => $"USENET 재고 ({UsenetTotalQuantity:N0})";
     public string ItworldTabText => $"ITWORLD 재고 ({ItworldTotalQuantity:N0})";
     public string YeonsuTabText => $"YEONSU 재고 ({YeonsuTotalQuantity:N0})";
+    public bool CanDeleteSelectedItem =>
+        SelectedItem is not null &&
+        (_session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.ItemEdit)) &&
+        _local.CanWriteItemScope(SelectedItem.Source, _session);
+    private bool CanSaveItems => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.ItemEdit);
     public decimal BoxCurrentStock => EditBoxQty > 0 ? Math.Floor(EditSelectedOfficeStock / EditBoxQty) : 0;
     public decimal AssetValue => EditSelectedOfficeStock * EditPurchasePrice;
     public decimal ShortageStock => EditSelectedOfficeStock < EditSafetyStock ? EditSafetyStock - EditSelectedOfficeStock : 0;
@@ -103,6 +111,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         _local = local;
         _session = session;
         _selectedOfficeCode = ResolveDefaultOfficeCode(session);
+        ApplyDraftScopeForNewItem();
         _local.InventoryStateChanged += HandleInventoryStateChanged;
         ResetEditBaseline();
     }
@@ -126,9 +135,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         if (reloadCategories)
             await ReloadItemCategoryOptionsAsync();
 
-        _allItems = _session.HasGlobalDataScope
-            ? await _local.GetItemsAsync()
-            : await _local.GetItemsAsync(_session);
+        _allItems = await _local.GetItemsAsync(_session);
         await LoadInventoryStateAsync();
         ApplyFilter();
 
@@ -213,6 +220,8 @@ public sealed partial class InventoryViewModel : ObservableObject
 
     partial void OnSelectedItemChanged(InventoryItemRow? value)
     {
+        DeleteItemCommand.NotifyCanExecuteChanged();
+
         if (value is null)
         {
             ClearDetailForm();
@@ -235,6 +244,10 @@ public sealed partial class InventoryViewModel : ObservableObject
         ShowUsenetOfficeCommand.NotifyCanExecuteChanged();
         ShowItworldOfficeCommand.NotifyCanExecuteChanged();
         ShowYeonsuOfficeCommand.NotifyCanExecuteChanged();
+
+        if (IsNew && SelectedItem is null)
+            ApplyDraftScopeForNewItem();
+
         _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(150), ApplyFilter);
     }
 
@@ -308,6 +321,13 @@ public sealed partial class InventoryViewModel : ObservableObject
         ResetForNewItem("신규 품목 정보를 입력하세요.");
     }
 
+    public void PrepareNewItemRegistration(string? initialItemName, string? statusMessage = null)
+    {
+        ResetForNewItem(statusMessage ?? "신규 품목 정보를 입력하세요.");
+        if (!string.IsNullOrWhiteSpace(initialItemName))
+            EditName = initialItemName.Trim();
+    }
+
     [RelayCommand]
     private async Task SaveItemAsync()
     {
@@ -318,7 +338,8 @@ public sealed partial class InventoryViewModel : ObservableObject
                 waitForServerWrite: true,
                 refreshAfterSave: true,
                 successMessage: "품목 정보를 저장했습니다. 재고 수량은 지점별 계산값으로 유지됩니다.",
-                permissionDeniedMessage: "현재 계정은 품목을 저장할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 저장을 요청하세요."))
+                permissionDeniedMessage: "현재 계정은 품목을 저장할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 저장을 요청하세요.",
+                showConflictDialog: true))
         {
             return;
         }
@@ -326,23 +347,75 @@ public sealed partial class InventoryViewModel : ObservableObject
         IsNew = false;
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDeleteSelectedItem))]
     private async Task DeleteItemAsync()
     {
-        if (!_session.HasAdministrativePrivileges)
-        {
-            StatusMessage = "현재 계정은 품목을 삭제할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 삭제를 요청하세요.";
-            return;
-        }
-
         if (SelectedItem is null)
             return;
 
-        await _local.DeleteItemAsync(SelectedItem.Id);
+        var deleteResult = await _local.DeleteItemAsync(SelectedItem.Id, _session, SelectedItem.Source.Revision);
+        if (!deleteResult.Success)
+        {
+            StatusMessage = deleteResult.Message;
+            if (deleteResult.ConcurrencyConflict)
+            {
+                System.Windows.MessageBox.Show(
+                    deleteResult.Message,
+                    "동시 수정 충돌",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Warning);
+            }
+
+            return;
+        }
+
         await LoadAsync();
         ResetForNewItem();
         var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
         StatusMessage = LocalStateService.ComposeServerWriteStatusMessage("품목을 삭제했습니다.", serverWriteResult);
+    }
+
+    public async Task<OfficeMutationResult> ResetSelectedInventoryValueAsync()
+    {
+        if (!_session.HasAdministrativePrivileges)
+        {
+            var deniedMessage = "현재 계정은 선택 재고 초기화를 실행할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 요청하세요.";
+            StatusMessage = deniedMessage;
+            return OfficeMutationResult.Denied(deniedMessage);
+        }
+
+        if (SelectedItem is null)
+        {
+            const string missingMessage = "재고를 초기화할 품목을 먼저 선택하세요.";
+            StatusMessage = missingMessage;
+            return OfficeMutationResult.Missing(missingMessage);
+        }
+
+        var selectedItemId = SelectedItem.Id;
+        _isInventoryRefreshInProgress = true;
+        try
+        {
+            var result = await _local.ResetItemInventoryValueAsync(selectedItemId, _session);
+            if (!result.Success)
+            {
+                StatusMessage = result.Message;
+                return result;
+            }
+
+            await RefreshInventoryScreenAsync(reloadCategories: false);
+            SelectItemWithoutAutoSave(selectedItemId);
+
+            if (SelectedItem is null)
+                ResetForNewItem();
+
+            ResetEditBaseline();
+            StatusMessage = result.Message;
+            return result;
+        }
+        finally
+        {
+            _isInventoryRefreshInProgress = false;
+        }
     }
 
     public async Task<bool> TryAutoSaveOnCloseAsync()
@@ -359,7 +432,8 @@ public sealed partial class InventoryViewModel : ObservableObject
             waitForServerWrite: false,
             refreshAfterSave: true,
             successMessage: "품목 정보를 자동 저장했습니다.",
-            permissionDeniedMessage: "현재 계정은 품목을 자동 저장할 권한이 없습니다.");
+            permissionDeniedMessage: "현재 계정은 품목을 자동 저장할 권한이 없습니다.",
+            showConflictDialog: false);
 
         if (saved)
             return true;
@@ -382,13 +456,14 @@ public sealed partial class InventoryViewModel : ObservableObject
             waitForServerWrite: waitForServerWrite,
             refreshAfterSave: refreshAfterSave,
             successMessage: "품목 정보를 자동 저장했습니다.",
-            permissionDeniedMessage: "현재 계정은 품목을 자동 저장할 권한이 없습니다.");
+            permissionDeniedMessage: "현재 계정은 품목을 자동 저장할 권한이 없습니다.",
+            showConflictDialog: false);
     }
 
     private bool TryCaptureAutoSaveSnapshot(out InventoryEditSnapshot snapshot)
     {
         snapshot = CaptureEditSnapshot();
-        return _session.HasAdministrativePrivileges
+        return CanSaveItems
                && HasPendingChanges
                && HasMeaningfulDraftContent(snapshot);
     }
@@ -399,12 +474,13 @@ public sealed partial class InventoryViewModel : ObservableObject
         bool waitForServerWrite,
         bool refreshAfterSave,
         string successMessage,
-        string permissionDeniedMessage)
+        string permissionDeniedMessage,
+        bool showConflictDialog)
     {
         await _autoSaveGate.WaitAsync();
         try
         {
-            if (!_session.HasAdministrativePrivileges)
+            if (!CanSaveItems)
             {
                 StatusMessage = permissionDeniedMessage;
                 return false;
@@ -415,11 +491,25 @@ public sealed partial class InventoryViewModel : ObservableObject
 
             try
             {
-                await _local.UpsertItemAsync(BuildItem(snapshot), snapshot.PreferredOfficeCode);
+                await _local.UpsertItemAsync(BuildItem(snapshot), _session, snapshot.PreferredOfficeCode);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                StatusMessage = ex.Message;
+                return false;
             }
             catch (InvalidOperationException ex)
             {
                 StatusMessage = ex.Message;
+                if (showConflictDialog)
+                {
+                    System.Windows.MessageBox.Show(
+                        ex.Message,
+                        "동시 수정 충돌",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Warning);
+                }
+
                 return false;
             }
 
@@ -586,6 +676,13 @@ public sealed partial class InventoryViewModel : ObservableObject
         var item = row.Source;
 
         IsNew = false;
+        _editRevision = item.Revision;
+        _editOfficeCode = NormalizeOfficeCode(item.OfficeCode);
+        _editTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            item.TenantCode,
+            item.OfficeCode,
+            _session.TenantCode,
+            _session.OfficeCode);
         EditId = item.Id;
         EditName = item.NameOriginal;
         EditCategoryName = item.CategoryName;
@@ -622,6 +719,8 @@ public sealed partial class InventoryViewModel : ObservableObject
     private void ClearDetailForm()
     {
         IsNew = true;
+        _editRevision = 0;
+        ApplyDraftScopeForNewItem();
         EditId = Guid.NewGuid();
         EditName = string.Empty;
         EditCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
@@ -732,7 +831,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         var normalizedNameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName);
         var normalizedSpecKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedSpec);
         var normalizedTrackingType = ItemTrackingTypes.Normalize(snapshot.EditTrackingType);
-        var allItems = await _local.GetItemsAsync();
+        var allItems = await _local.GetItemsAsync(_session);
         var duplicated = normalizedTrackingType == ItemTrackingTypes.Asset
             ? false
             : allItems.Any(item =>
@@ -808,6 +907,16 @@ public sealed partial class InventoryViewModel : ObservableObject
     private static string NormalizeOfficeCode(string? officeCode)
         => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, DomainConstants.OfficeUsenet);
 
+    private void ApplyDraftScopeForNewItem()
+    {
+        _editOfficeCode = NormalizeOfficeCode(SelectedOfficeCode);
+        _editTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            _session.TenantCode,
+            _editOfficeCode,
+            _session.TenantCode,
+            _session.OfficeCode);
+    }
+
     private static string ToOfficeDisplay(string officeCode)
         => OfficeCodeCatalog.GetOfficeDisplayName(officeCode);
 
@@ -879,6 +988,13 @@ public sealed partial class InventoryViewModel : ObservableObject
     {
         IsNew = snapshot.IsNew;
         EditId = snapshot.EditId;
+        _editRevision = snapshot.EditRevision;
+        _editOfficeCode = NormalizeOfficeCode(snapshot.EditOfficeCode);
+        _editTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            snapshot.EditTenantCode,
+            snapshot.EditOfficeCode,
+            _session.TenantCode,
+            _session.OfficeCode);
         EditName = snapshot.EditName;
         EditCategoryName = snapshot.EditCategoryName;
         EditItemKind = snapshot.EditItemKind;
@@ -918,6 +1034,7 @@ public sealed partial class InventoryViewModel : ObservableObject
     private InventoryEditSnapshot CaptureEditSnapshot()
         => new(
             EditId,
+            _editRevision,
             EditName,
             EditCategoryName,
             EditItemKind,
@@ -943,6 +1060,8 @@ public sealed partial class InventoryViewModel : ObservableObject
             EditSimpleMemo,
             EditIsSale,
             EditIsRental,
+            _editOfficeCode,
+            _editTenantCode,
             SelectedOfficeCode,
             IsNew);
 
@@ -973,6 +1092,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         return new LocalItem
         {
             Id = snapshot.EditId,
+            Revision = snapshot.EditRevision,
             NameOriginal = normalizedName,
             NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName),
             CategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(snapshot.EditCategoryName),
@@ -994,6 +1114,8 @@ public sealed partial class InventoryViewModel : ObservableObject
             LastPurchaseDate = snapshot.EditLastPurchaseDate,
             LastSaleDate = snapshot.EditLastSaleDate,
             SimpleMemo = snapshot.EditSimpleMemo,
+            OfficeCode = snapshot.EditOfficeCode,
+            TenantCode = snapshot.EditTenantCode,
             IsSale = !string.Equals(normalizedTrackingType, ItemTrackingTypes.Asset, StringComparison.Ordinal),
             IsRental = string.Equals(normalizedTrackingType, ItemTrackingTypes.Asset, StringComparison.Ordinal)
         };
@@ -1037,6 +1159,7 @@ public sealed partial class InventoryViewModel : ObservableObject
 
     private sealed record InventoryEditSnapshot(
         Guid EditId,
+        long EditRevision,
         string EditName,
         string EditCategoryName,
         string EditItemKind,
@@ -1062,6 +1185,8 @@ public sealed partial class InventoryViewModel : ObservableObject
         string EditSimpleMemo,
         bool EditIsSale,
         bool EditIsRental,
+        string EditOfficeCode,
+        string EditTenantCode,
         string PreferredOfficeCode,
         bool IsNew);
 }

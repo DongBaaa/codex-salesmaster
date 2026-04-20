@@ -44,10 +44,7 @@ public sealed class HttpCurrentUserContext : ICurrentUserContext
             if (user is null)
                 return false;
 
-            if (user.Claims.Any(claim => claim.Type == "god" && string.Equals(claim.Value, "true", StringComparison.OrdinalIgnoreCase)))
-                return true;
-
-            return string.Equals(OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(OfficeCode), OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase);
+            return user.Claims.Any(claim => claim.Type == "god" && string.Equals(claim.Value, "true", StringComparison.OrdinalIgnoreCase));
         }
     }
 

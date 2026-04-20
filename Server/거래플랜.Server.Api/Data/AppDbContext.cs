@@ -54,6 +54,10 @@ public sealed class AppDbContext : DbContext
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<ConflictLog> ConflictLogs => Set<ConflictLog>();
     public DbSet<RecycleBinPurgeRecord> RecycleBinPurgeRecords => Set<RecycleBinPurgeRecord>();
+    public DbSet<ProcessedSyncMutation> ProcessedSyncMutations => Set<ProcessedSyncMutation>();
+    public DbSet<InventoryLedgerEntry> InventoryLedgerEntries => Set<InventoryLedgerEntry>();
+    public DbSet<RentalAssetAssignmentHistory> RentalAssetAssignmentHistories => Set<RentalAssetAssignmentHistory>();
+    public DbSet<ActiveEditSession> ActiveEditSessions => Set<ActiveEditSession>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -143,10 +147,12 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<RentalAsset>().Property(x => x.SalePrice).HasPrecision(18, 2);
         modelBuilder.Entity<RentalAsset>().Property(x => x.MonthlyFee).HasPrecision(18, 2);
         modelBuilder.Entity<RentalBillingLog>().Property(x => x.BilledAmount).HasPrecision(18, 2);
+        modelBuilder.Entity<InventoryLedgerEntry>().Property(x => x.QuantityDelta).HasPrecision(18, 2);
 
         modelBuilder.Entity<Customer>().HasIndex(x => x.NameMatchKey);
         modelBuilder.Entity<Customer>().HasIndex(x => x.TenantCode);
         modelBuilder.Entity<Customer>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<Customer>().HasIndex(x => x.ResponsibleOfficeCode);
         modelBuilder.Entity<CustomerContract>().HasIndex(x => x.CustomerId);
         modelBuilder.Entity<CustomerContract>().HasIndex(x => new { x.CustomerId, x.IsPrimary });
         modelBuilder.Entity<CustomerMaster>().HasIndex(x => x.NameMatchKey);
@@ -159,12 +165,15 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<Item>().HasIndex(x => x.OfficeCode);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.TenantCode);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<Invoice>().HasIndex(x => x.ResponsibleOfficeCode);
+        modelBuilder.Entity<Invoice>().HasIndex(x => x.SourceWarehouseCode);
         modelBuilder.Entity<ItemWarehouseStock>().HasKey(x => new { x.ItemId, x.WarehouseCode });
         modelBuilder.Entity<ItemWarehouseStock>().HasIndex(x => x.WarehouseCode);
         modelBuilder.Entity<PaymentAttachment>().HasIndex(x => x.PaymentId);
         modelBuilder.Entity<TransactionRecord>().HasIndex(x => x.CustomerId);
         modelBuilder.Entity<TransactionRecord>().HasIndex(x => x.TenantCode);
         modelBuilder.Entity<TransactionRecord>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<TransactionRecord>().HasIndex(x => x.ResponsibleOfficeCode);
         modelBuilder.Entity<TransactionAttachment>().HasIndex(x => x.TransactionId);
         modelBuilder.Entity<InventoryTransfer>().HasIndex(x => x.TenantCode);
         modelBuilder.Entity<InventoryTransfer>().HasIndex(x => x.SourceOfficeCode);
@@ -174,13 +183,24 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<RentalManagementCompany>().HasIndex(x => new { x.TenantCode, x.Code }).IsUnique();
         modelBuilder.Entity<RentalBillingProfile>().HasIndex(x => new { x.TenantCode, x.ProfileKey }).IsUnique();
         modelBuilder.Entity<RentalBillingProfile>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<RentalBillingProfile>().HasIndex(x => x.ResponsibleOfficeCode);
         modelBuilder.Entity<RentalAsset>().HasIndex(x => new { x.TenantCode, x.AssetKey }).IsUnique();
         modelBuilder.Entity<RentalAsset>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<RentalAsset>().HasIndex(x => x.ResponsibleOfficeCode);
         modelBuilder.Entity<RentalBillingLog>().HasIndex(x => new { x.BillingProfileId, x.BillingYearMonth }).IsUnique();
         modelBuilder.Entity<RentalBillingLog>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<RentalBillingLog>().HasIndex(x => x.ResponsibleOfficeCode);
         modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => new { x.Kind, x.EntityId }).IsUnique();
         modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => x.TenantCode);
         modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<ProcessedSyncMutation>().HasIndex(x => x.MutationId).IsUnique();
+        modelBuilder.Entity<InventoryLedgerEntry>().HasIndex(x => new { x.ItemId, x.OccurredDate });
+        modelBuilder.Entity<InventoryLedgerEntry>().HasIndex(x => x.WarehouseCode);
+        modelBuilder.Entity<RentalAssetAssignmentHistory>().HasIndex(x => new { x.AssetId, x.IsCurrent });
+        modelBuilder.Entity<RentalAssetAssignmentHistory>().HasIndex(x => x.BillingProfileId);
+        modelBuilder.Entity<ActiveEditSession>().HasIndex(x => new { x.EntityType, x.EntityId, x.ExpiresAtUtc });
+        modelBuilder.Entity<ActiveEditSession>().HasIndex(x => x.LastHeartbeatUtc);
+        modelBuilder.Entity<ActiveEditSession>().HasIndex(x => x.Username);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.VersionGroupId);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.IsLatestVersion);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.LinkedRentalBillingProfileId);
@@ -270,7 +290,12 @@ public sealed class AppDbContext : DbContext
             return false;
         }
 
-        return entry.Entity is not AuditLog and not ConflictLog;
+        return entry.Entity is not AuditLog
+               and not ConflictLog
+               and not ProcessedSyncMutation
+               and not InventoryLedgerEntry
+               and not RentalAssetAssignmentHistory
+               and not ActiveEditSession;
     }
 
     private AuditLog? BuildAuditLog(EntityEntry entry, DateTime now)

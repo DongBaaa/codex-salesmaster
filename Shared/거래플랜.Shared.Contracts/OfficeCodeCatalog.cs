@@ -130,6 +130,38 @@ public static class OfficeCodeCatalog
         return Shared;
     }
 
+    public static string ResolveOwningOfficeCode(
+        string? ownerOfficeCode,
+        string? responsibleOfficeCode = null,
+        string? fallbackOwnerOfficeCode = null)
+    {
+        static string ConvertChildOfficeToOwner(string officeCode)
+            => string.Equals(officeCode, Yeonsu, StringComparison.OrdinalIgnoreCase)
+                ? Usenet
+                : officeCode;
+
+        if (TryNormalizeScope(ownerOfficeCode, out var normalizedOwner))
+        {
+            if (string.Equals(normalizedOwner, Shared, StringComparison.OrdinalIgnoreCase))
+                return Shared;
+
+            return ConvertChildOfficeToOwner(normalizedOwner);
+        }
+
+        if (TryNormalize(responsibleOfficeCode, out var normalizedResponsible))
+            return ConvertChildOfficeToOwner(normalizedResponsible);
+
+        if (TryNormalizeScope(fallbackOwnerOfficeCode, out normalizedOwner))
+        {
+            if (string.Equals(normalizedOwner, Shared, StringComparison.OrdinalIgnoreCase))
+                return Shared;
+
+            return ConvertChildOfficeToOwner(normalizedOwner);
+        }
+
+        return Usenet;
+    }
+
     public static string NormalizeLoose(string? primary, string? secondary = null, string? fallback = null)
     {
         foreach (var candidate in new[] { primary, secondary, fallback })

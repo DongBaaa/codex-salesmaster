@@ -46,6 +46,34 @@ public sealed class OfficeScopeService
         HasAdministrativeWriteAccess ||
         _currentUserContext.HasPermission(Security.PermissionNames.DeliveryViewAll);
 
+    public bool CanEditCustomers()
+        => HasAdministrativeWriteAccess || _currentUserContext.HasPermission(Security.PermissionNames.CustomerEdit);
+
+    public bool CanEditItems()
+        => HasAdministrativeWriteAccess || _currentUserContext.HasPermission(Security.PermissionNames.ItemEdit);
+
+    public bool CanEditInvoices()
+        => HasAdministrativeWriteAccess || _currentUserContext.HasPermission(Security.PermissionNames.InvoiceEdit);
+
+    public bool CanEditPayments()
+        => HasAdministrativeWriteAccess || _currentUserContext.HasPermission(Security.PermissionNames.PaymentEdit);
+
+    public bool CanResetInventory()
+        => HasAdministrativeWriteAccess || _currentUserContext.HasPermission(Security.PermissionNames.InventoryReset);
+
+    public bool CanEditRentalProfiles()
+        => HasAdministrativeRentalScope ||
+           _currentUserContext.HasPermission(Security.PermissionNames.RentalProfileEdit) ||
+           _currentUserContext.HasPermission(Security.PermissionNames.RentalEditAll);
+
+    public bool CanEditRentalAssets()
+        => HasAdministrativeRentalScope ||
+           _currentUserContext.HasPermission(Security.PermissionNames.RentalAssetEdit) ||
+           _currentUserContext.HasPermission(Security.PermissionNames.RentalEditAll);
+
+    public bool CanEditDeliveries()
+        => HasAdministrativeWriteAccess || _currentUserContext.HasPermission(Security.PermissionNames.DeliveryEdit);
+
     public string CurrentTenantCode => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
         _currentUserContext.TenantCode,
         _currentUserContext.OfficeCode);
@@ -61,6 +89,35 @@ public sealed class OfficeScopeService
     public IReadOnlyList<string> ReadableOfficeCodes => ResolveReadableOfficeCodes(DataArea.General);
 
     public IReadOnlyList<string> WritableOfficeCodes => ResolveWritableOfficeCodes(DataArea.General);
+
+    public ScopeMatrixSnapshotDto BuildCurrentScopeMatrix()
+    {
+        var rows = new[]
+        {
+            BuildScopeMatrixArea(DataArea.General),
+            BuildScopeMatrixArea(DataArea.Customers),
+            BuildScopeMatrixArea(DataArea.Items),
+            BuildScopeMatrixArea(DataArea.Invoices),
+            BuildScopeMatrixArea(DataArea.Payments),
+            BuildScopeMatrixArea(DataArea.Contracts),
+            BuildScopeMatrixArea(DataArea.Reports),
+            BuildScopeMatrixArea(DataArea.Rentals),
+            BuildScopeMatrixArea(DataArea.Deliveries)
+        };
+
+        return new ScopeMatrixSnapshotDto
+        {
+            GeneratedAtUtc = DateTime.UtcNow,
+            Username = _currentUserContext.Username,
+            TenantCode = CurrentTenantCode,
+            OfficeCode = CurrentOfficeCode,
+            ScopeType = CurrentScopeType,
+            IsAdmin = IsAdmin,
+            HasAdministrativeWriteAccess = HasAdministrativeWriteAccess,
+            HasGlobalDataScope = HasGlobalDataScope,
+            Areas = rows.ToList()
+        };
+    }
 
     public bool CanReadOffice(string? officeCode, string? tenantCode = null)
         => CanReadOffice(officeCode, tenantCode, DataArea.General);
@@ -107,13 +164,34 @@ public sealed class OfficeScopeService
         return CurrentOfficeCode;
     }
 
+    public string ResolveCustomerResponsibleScopeForCreate(string? requestedOfficeCode, string? fallbackOfficeCode = null)
+        => ResolveOperationalOfficeForCreate(requestedOfficeCode, fallbackOfficeCode, DataArea.Customers);
+
+    public string ResolveInvoiceResponsibleScopeForCreate(string? requestedOfficeCode, string? fallbackOfficeCode = null)
+        => ResolveOperationalOfficeForCreate(requestedOfficeCode, fallbackOfficeCode, DataArea.Invoices);
+
+    public string ResolvePaymentResponsibleScopeForCreate(string? requestedOfficeCode, string? fallbackOfficeCode = null)
+        => ResolveOperationalOfficeForCreate(requestedOfficeCode, fallbackOfficeCode, DataArea.Payments);
+
+    public string ResolveRentalResponsibleScopeForCreate(string? requestedOfficeCode, string? fallbackOfficeCode = null)
+        => ResolveOperationalOfficeForCreate(requestedOfficeCode, fallbackOfficeCode, DataArea.Rentals);
+
+    public string ResolveOwningOfficeForOperationalScope(
+        string? requestedOwnerOfficeCode,
+        string? responsibleOfficeCode = null,
+        string? fallbackOwnerOfficeCode = null)
+        => OfficeCodeCatalog.ResolveOwningOfficeCode(
+            requestedOwnerOfficeCode,
+            responsibleOfficeCode,
+            fallbackOwnerOfficeCode ?? CurrentOfficeCode);
+
     public string ResolveTenantForRentalCreate(
         string? requestedTenantCode,
         string? requestedOfficeCode,
         string? fallbackTenantCode = null,
         string? fallbackOfficeCode = null)
     {
-        if (HasGlobalDataScope || HasRentalWideWriteScope)
+        if (HasGlobalDataScope)
         {
             return TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
                 requestedTenantCode,
@@ -127,14 +205,28 @@ public sealed class OfficeScopeService
 
     public string ResolveScopeForRentalCreate(string? requestedOfficeCode, string? fallbackOfficeCode = null)
     {
-        if (HasGlobalDataScope || HasRentalWideWriteScope)
+        if (HasGlobalDataScope)
         {
             return OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
                 requestedOfficeCode,
                 fallbackOfficeCode ?? CurrentOfficeCode);
         }
 
-        return ResolveScopeForCreate(requestedOfficeCode, fallbackOfficeCode);
+        var writableOffices = ResolveWritableOfficeCodes(DataArea.Rentals);
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(requestedOfficeCode, out var requestedOffice) &&
+            writableOffices.Contains(requestedOffice, StringComparer.OrdinalIgnoreCase))
+        {
+            return requestedOffice;
+        }
+
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(fallbackOfficeCode, out var fallbackOffice) &&
+            writableOffices.Contains(fallbackOffice, StringComparer.OrdinalIgnoreCase))
+        {
+            return fallbackOffice;
+        }
+
+        return writableOffices.FirstOrDefault()
+               ?? CurrentOfficeCode;
     }
 
     public IQueryable<CustomerMaster> ApplyCustomerMasterScope(IQueryable<CustomerMaster> query)
@@ -158,12 +250,12 @@ public sealed class OfficeScopeService
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Customers);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+            readableOffices.Contains(entity.ResponsibleOfficeCode));
     }
 
     public IQueryable<Customer> ApplySyncCustomerScope(IQueryable<Customer> query)
     {
-        if (HasGlobalDataScope || HasRentalWideReadScope || HasDeliveryWideReadScope)
+        if (HasGlobalDataScope)
             return query;
 
         return ApplyCustomerScope(query);
@@ -179,7 +271,7 @@ public sealed class OfficeScopeService
         return query.Where(entity =>
             entity.Customer != null &&
             entity.Customer.TenantCode == tenantCode &&
-            (entity.Customer.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.Customer.OfficeCode)));
+            readableOffices.Contains(entity.Customer.ResponsibleOfficeCode));
     }
 
     public IQueryable<Item> ApplyItemScope(IQueryable<Item> query)
@@ -196,7 +288,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<Item> ApplySyncItemScope(IQueryable<Item> query)
     {
-        if (HasGlobalDataScope || HasRentalWideReadScope)
+        if (HasGlobalDataScope)
             return query;
 
         return ApplyItemScope(query);
@@ -211,7 +303,7 @@ public sealed class OfficeScopeService
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Invoices);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+            readableOffices.Contains(entity.ResponsibleOfficeCode));
     }
 
     public IQueryable<Invoice> ApplySyncInvoiceScope(IQueryable<Invoice> query)
@@ -232,7 +324,7 @@ public sealed class OfficeScopeService
         return query.Where(entity =>
             entity.Invoice != null &&
             entity.Invoice.TenantCode == tenantCode &&
-            (entity.Invoice.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.Invoice.OfficeCode)));
+            readableOffices.Contains(entity.Invoice.ResponsibleOfficeCode));
     }
 
     public IQueryable<TransactionRecord> ApplyTransactionScope(IQueryable<TransactionRecord> query)
@@ -244,7 +336,7 @@ public sealed class OfficeScopeService
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Payments);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+            readableOffices.Contains(entity.ResponsibleOfficeCode));
     }
 
     public IQueryable<TransactionAttachment> ApplyTransactionAttachmentScope(IQueryable<TransactionAttachment> query)
@@ -257,7 +349,7 @@ public sealed class OfficeScopeService
         return query.Where(entity =>
             entity.Transaction != null &&
             entity.Transaction.TenantCode == tenantCode &&
-            (entity.Transaction.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.Transaction.OfficeCode)));
+            readableOffices.Contains(entity.Transaction.ResponsibleOfficeCode));
     }
 
     public IQueryable<InventoryTransfer> ApplyInventoryTransferScope(IQueryable<InventoryTransfer> query)
@@ -274,7 +366,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalManagementCompany> ApplyRentalManagementCompanyScope(IQueryable<RentalManagementCompany> query)
     {
-        if (HasGlobalDataScope || HasRentalWideReadScope)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -283,38 +375,38 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalBillingProfile> ApplyRentalBillingProfileScope(IQueryable<RentalBillingProfile> query)
     {
-        if (HasGlobalDataScope || HasRentalWideReadScope)
+        if (HasGlobalDataScope || HasAdministrativeRentalScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Rentals);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+            readableOffices.Contains(entity.ResponsibleOfficeCode));
     }
 
     public IQueryable<RentalAsset> ApplyRentalAssetScope(IQueryable<RentalAsset> query)
     {
-        if (HasGlobalDataScope || HasRentalWideReadScope)
+        if (HasGlobalDataScope || HasAdministrativeRentalScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Rentals);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+            readableOffices.Contains(entity.ResponsibleOfficeCode));
     }
 
     public IQueryable<RentalBillingLog> ApplyRentalBillingLogScope(IQueryable<RentalBillingLog> query)
     {
-        if (HasGlobalDataScope || HasRentalWideReadScope)
+        if (HasGlobalDataScope || HasAdministrativeRentalScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Rentals);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+            readableOffices.Contains(entity.ResponsibleOfficeCode));
     }
 
     public IQueryable<ItemWarehouseStock> ApplyWarehouseScope(IQueryable<ItemWarehouseStock> query)
@@ -381,10 +473,10 @@ public sealed class OfficeScopeService
         => CanReadOffice(officeCode, tenantCode, DataArea.Reports);
 
     public bool CanReadOfficeForRentals(string? officeCode, string? tenantCode = null)
-        => HasRentalWideReadScope || CanReadOffice(officeCode, tenantCode, DataArea.Rentals);
+        => CanReadOffice(officeCode, tenantCode, DataArea.Rentals);
 
     public bool CanWriteOfficeForRentals(string? officeCode, string? tenantCode = null)
-        => HasRentalWideWriteScope || CanWriteOffice(officeCode, tenantCode, DataArea.Rentals);
+        => CanWriteOffice(officeCode, tenantCode, DataArea.Rentals);
 
     public bool CanReadOfficeForDeliveries(string? officeCode, string? tenantCode = null)
         => HasDeliveryWideReadScope || CanReadOffice(officeCode, tenantCode, DataArea.Deliveries);
@@ -410,10 +502,7 @@ public sealed class OfficeScopeService
         if (string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase))
             return true;
 
-        return string.Equals(
-            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(user.OfficeCode),
-            OfficeCodeCatalog.Usenet,
-            StringComparison.OrdinalIgnoreCase);
+        return false;
     }
 
     private bool CanReadOffice(string? officeCode, string? tenantCode, DataArea area)
@@ -475,18 +564,68 @@ public sealed class OfficeScopeService
     private string ResolveEntityTenantCode(string? tenantCode, string? officeCode)
         => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode, CurrentTenantCode, CurrentOfficeCode);
 
+    private string ResolveOperationalOfficeForCreate(string? requestedOfficeCode, string? fallbackOfficeCode, DataArea area)
+    {
+        if (HasGlobalDataScope)
+        {
+            return OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                requestedOfficeCode,
+                fallbackOfficeCode ?? CurrentOfficeCode);
+        }
+
+        var writableOffices = ResolveWritableOfficeCodes(area);
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(requestedOfficeCode, out var requestedOffice) &&
+            writableOffices.Contains(requestedOffice, StringComparer.OrdinalIgnoreCase))
+        {
+            return requestedOffice;
+        }
+
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(fallbackOfficeCode, out var fallbackOffice) &&
+            writableOffices.Contains(fallbackOffice, StringComparer.OrdinalIgnoreCase))
+        {
+            return fallbackOffice;
+        }
+
+        return writableOffices.FirstOrDefault()
+               ?? CurrentOfficeCode;
+    }
+
     private IReadOnlyList<string> ResolveReadableOfficeCodes(DataArea area)
     {
         if (HasGlobalDataScope)
             return OfficeCodeCatalog.All;
 
-        if (string.Equals(CurrentScopeType, TenantScopeCatalog.ScopeOfficeOnly, StringComparison.OrdinalIgnoreCase))
-            return [CurrentOfficeCode];
+        if (area == DataArea.Rentals && HasAdministrativeRentalScope)
+            return OfficeCodeCatalog.All;
 
-        var readable = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        if (area == DataArea.Rentals && HasRentalWideReadScope)
         {
-            CurrentOfficeCode
-        };
+            return TenantScopeCatalog.ResolveScopedOfficeCodes(
+                    CurrentOfficeCode,
+                    CurrentTenantCode,
+                    CurrentScopeType,
+                    hasGlobalScope: false,
+                    hasTenantScope: true)
+                .ToList();
+        }
+
+        if (string.Equals(CurrentScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            return TenantScopeCatalog.ResolveScopedOfficeCodes(
+                    CurrentOfficeCode,
+                    CurrentTenantCode,
+                    CurrentScopeType,
+                    hasGlobalScope: false,
+                    hasTenantScope: true)
+                .ToList();
+        }
+
+        var readable = TenantScopeCatalog.ResolveScopedOfficeCodes(
+            CurrentOfficeCode,
+            CurrentTenantCode,
+            TenantScopeCatalog.ScopeOfficeOnly,
+            hasGlobalScope: false,
+            hasTenantScope: false);
 
         foreach (var policy in GetActivePolicies())
         {
@@ -510,10 +649,34 @@ public sealed class OfficeScopeService
         if (HasGlobalDataScope)
             return OfficeCodeCatalog.All;
 
-        var writable = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        if (area == DataArea.Rentals && HasRentalWideWriteScope)
         {
-            CurrentOfficeCode
-        };
+            return TenantScopeCatalog.ResolveScopedOfficeCodes(
+                    CurrentOfficeCode,
+                    CurrentTenantCode,
+                    CurrentScopeType,
+                    hasGlobalScope: false,
+                    hasTenantScope: true)
+                .ToList();
+        }
+
+        if (string.Equals(CurrentScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            return TenantScopeCatalog.ResolveScopedOfficeCodes(
+                    CurrentOfficeCode,
+                    CurrentTenantCode,
+                    CurrentScopeType,
+                    hasGlobalScope: false,
+                    hasTenantScope: true)
+                .ToList();
+        }
+
+        var writable = TenantScopeCatalog.ResolveScopedOfficeCodes(
+            CurrentOfficeCode,
+            CurrentTenantCode,
+            TenantScopeCatalog.ScopeOfficeOnly,
+            hasGlobalScope: false,
+            hasTenantScope: false);
 
         if (!string.Equals(CurrentScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
             return writable.ToList();
@@ -564,4 +727,94 @@ public sealed class OfficeScopeService
             DataArea.Deliveries => policy.ShareDeliveries,
             _ => policy.ShareCustomers || policy.ShareItems || policy.ShareInvoices || policy.SharePayments || policy.ShareContracts || policy.ShareReports || policy.ShareRentals || policy.ShareDeliveries
         };
+
+    private ScopeMatrixAreaDto BuildScopeMatrixArea(DataArea area)
+    {
+        var readable = ResolveReadableOfficeCodes(area)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var writable = ResolveWritableOfficeCodes(area)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new ScopeMatrixAreaDto
+        {
+            AreaCode = GetAreaCode(area),
+            AreaDisplayName = GetAreaDisplayName(area),
+            ReadableOfficeCodes = readable,
+            WritableOfficeCodes = writable,
+            Note = BuildAreaNote(area, readable, writable)
+        };
+    }
+
+    private static string GetAreaCode(DataArea area)
+        => area switch
+        {
+            DataArea.General => "general",
+            DataArea.Customers => "customers",
+            DataArea.Items => "items",
+            DataArea.Invoices => "invoices",
+            DataArea.Payments => "payments",
+            DataArea.Contracts => "contracts",
+            DataArea.Reports => "reports",
+            DataArea.Rentals => "rentals",
+            DataArea.Deliveries => "deliveries",
+            _ => area.ToString().ToLowerInvariant()
+        };
+
+    private static string GetAreaDisplayName(DataArea area)
+        => area switch
+        {
+            DataArea.General => "기본 범위",
+            DataArea.Customers => "거래처",
+            DataArea.Items => "품목/재고",
+            DataArea.Invoices => "판매/구매",
+            DataArea.Payments => "수금/지급",
+            DataArea.Contracts => "계약서",
+            DataArea.Reports => "집계/리포트",
+            DataArea.Rentals => "렌탈",
+            DataArea.Deliveries => "납품/배송",
+            _ => area.ToString()
+        };
+
+    private string BuildAreaNote(DataArea area, IReadOnlyCollection<string> readable, IReadOnlyCollection<string> writable)
+    {
+        if (HasGlobalDataScope)
+            return "관리자 전역 범위입니다.";
+
+        if (area == DataArea.Rentals && HasAdministrativeRentalScope)
+            return "렌탈 관리자 범위입니다.";
+
+        if (area == DataArea.Rentals && HasRentalWideReadScope && HasRentalWideWriteScope)
+            return "렌탈 전체 권한으로 업체 전체 범위를 사용합니다.";
+
+        if (area == DataArea.Rentals && HasRentalWideReadScope)
+            return "렌탈 전체 조회 권한으로 업체 전체 범위를 사용합니다.";
+
+        if (area == DataArea.Deliveries && HasDeliveryWideReadScope)
+            return "납품 전체 조회 권한으로 상위 범위를 사용합니다.";
+
+        if (string.Equals(CurrentScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+            return "업체 전체 범위입니다.";
+
+        var sharedReadable = readable
+            .Where(code => !string.Equals(code, CurrentOfficeCode, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var sharedWritable = writable
+            .Where(code => !string.Equals(code, CurrentOfficeCode, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (sharedReadable.Count == 0 && sharedWritable.Count == 0)
+            return "현재 지점 기준 범위입니다.";
+
+        if (sharedReadable.Count > 0 && sharedWritable.Count == 0)
+            return $"연동 정책으로 읽기만 확장됨: {string.Join(", ", sharedReadable)}";
+
+        if (sharedWritable.Count > 0)
+            return $"연동 정책으로 쓰기 가능 지점 포함: {string.Join(", ", sharedWritable)}";
+
+        return string.Empty;
+    }
 }

@@ -7,6 +7,7 @@ public sealed partial class PaymentRowModel : ObservableObject
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid InvoiceId { get; set; }
+    public long Revision { get; set; }
 
     [ObservableProperty] private DateOnly _paymentDate = DateOnly.FromDateTime(DateTime.Today);
     [ObservableProperty] private decimal _amount;
@@ -16,6 +17,7 @@ public sealed partial class PaymentRowModel : ObservableObject
     {
         Id = p.Id,
         InvoiceId = p.InvoiceId,
+        Revision = p.Revision,
         PaymentDate = p.PaymentDate,
         Amount = p.Amount,
         Note = p.Note
@@ -25,6 +27,7 @@ public sealed partial class PaymentRowModel : ObservableObject
     {
         Id = Id,
         InvoiceId = InvoiceId,
+        Revision = Revision,
         PaymentDate = PaymentDate,
         Amount = Amount,
         Note = Note

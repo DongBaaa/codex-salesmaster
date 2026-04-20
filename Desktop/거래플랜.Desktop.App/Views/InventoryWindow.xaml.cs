@@ -10,6 +10,7 @@ namespace 거래플랜.Desktop.App.Views;
 
 public partial class InventoryWindow : Window
 {
+    private readonly EntityEditSessionMonitor? _editSessionMonitor;
     private bool _allowCloseWithoutSave;
     private bool _closeInProgress;
 
@@ -19,6 +20,22 @@ public partial class InventoryWindow : Window
         DataContext = vm;
         Activated += InventoryWindow_Activated;
         Closing += Window_Closing;
+        Loaded += (_, _) => _editSessionMonitor?.Start();
+        Closed += (_, _) => _editSessionMonitor?.Dispose();
+
+        _editSessionMonitor = EntityEditSessionMonitor.TryCreate(
+            this,
+            "품목/재고 관리",
+            () =>
+            {
+                var selected = vm.SelectedItem;
+                return selected is null
+                    ? null
+                    : new EditSessionSubject(
+                        "Item",
+                        selected.Id.ToString("D"),
+                        string.IsNullOrWhiteSpace(selected.NameOriginal) ? "품목" : selected.NameOriginal);
+            });
     }
 
     private void InventoryWindow_Activated(object? sender, EventArgs e)
@@ -64,6 +81,64 @@ public partial class InventoryWindow : Window
             "UI",
             "재고이동 창 열기",
             "재고이동 창을 여는 중 오류가 발생했습니다.");
+
+    private void ResetInventoryButton_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(
+            this,
+            async () =>
+            {
+                if (DataContext is not InventoryViewModel vm)
+                    return;
+
+                if (vm.SelectedItem is null)
+                {
+                    MessageBox.Show(
+                        this,
+                        "재고를 초기화할 품목을 먼저 선택하세요.",
+                        "선택 재고 초기화",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                    return;
+                }
+
+                var selectedItemName = string.IsNullOrWhiteSpace(vm.SelectedItem.NameOriginal)
+                    ? "선택한 품목"
+                    : vm.SelectedItem.NameOriginal;
+                var confirmationMessage = vm.HasMeaningfulDraftContentForClose && vm.HasPendingChanges
+                    ? $"현재 편집 중인 품목의 저장되지 않은 내용은 새로고침 과정에서 사라질 수 있습니다.\n\n'{selectedItemName}' 품목의 현재 재고 수량을 0으로 초기화할까요?\n창고별 현재고 스냅샷은 비워지며 기존 판매/구매/재고이동 이력은 유지됩니다."
+                    : $"'{selectedItemName}' 품목의 현재 재고 수량을 0으로 초기화할까요?\n창고별 현재고 스냅샷은 비워지며 기존 판매/구매/재고이동 이력은 유지됩니다.";
+
+                var confirmation = MessageBox.Show(
+                    this,
+                    confirmationMessage,
+                    "선택 재고 초기화",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+                if (confirmation != MessageBoxResult.Yes)
+                    return;
+
+                var result = await vm.ResetSelectedInventoryValueAsync();
+                if (!result.Success)
+                {
+                    MessageBox.Show(
+                        this,
+                        result.Message,
+                        "선택 재고 초기화",
+                        MessageBoxButton.OK,
+                        result.PermissionDenied || result.NotFound ? MessageBoxImage.Warning : MessageBoxImage.Error);
+                    return;
+                }
+
+                MessageBox.Show(
+                    this,
+                    result.Message,
+                    "선택 재고 초기화",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            },
+            "UI",
+            "선택 재고 초기화",
+            "선택 재고 초기화 중 오류가 발생했습니다.");
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => DialogWindowCloseHelper.Close(this);
 

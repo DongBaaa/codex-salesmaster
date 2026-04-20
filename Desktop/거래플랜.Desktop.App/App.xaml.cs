@@ -44,6 +44,50 @@ public partial class App : Application
         {
             DesktopAppUpdateService.TryCleanupStaleUpdateArtifacts();
 
+            var runtimeSelfCheck = DesktopAppUpdateService.RunStartupSelfCheck();
+            var runtimeSelfCheckLog = runtimeSelfCheck.BuildLogMessage();
+            if (!string.IsNullOrWhiteSpace(runtimeSelfCheckLog))
+            {
+                if (runtimeSelfCheck.HasBlockingIssue)
+                    AppLogger.Error("UPDATE", "Startup runtime self-check failed: " + runtimeSelfCheckLog);
+                else
+                    AppLogger.Warn("UPDATE", "Startup runtime self-check warning: " + runtimeSelfCheckLog);
+            }
+
+            if (runtimeSelfCheck.HasBlockingIssue)
+            {
+                MessageBox.Show(
+                    runtimeSelfCheck.BuildUserMessage() + Environment.NewLine + Environment.NewLine + "업데이트를 다시 적용하거나 설치 패키지로 재설치한 뒤 실행하세요.",
+                    "거래플랜 오류",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+                Shutdown(1);
+                return;
+            }
+
+            if (DesktopAppUpdateService.TryRelaunchCanonicalInstallIfNeeded(out var relaunchMessage))
+            {
+                if (!string.IsNullOrWhiteSpace(relaunchMessage))
+                    AppLogger.Info("UPDATE", relaunchMessage);
+
+                Shutdown();
+                return;
+            }
+
+            var restoreNotice = BackupService.TryApplyPendingRestoreOnStartup();
+            if (!string.IsNullOrWhiteSpace(restoreNotice))
+            {
+                AppLogger.Info("BACKUP", restoreNotice);
+                var restoreMessageImage = restoreNotice.Contains("오류", StringComparison.OrdinalIgnoreCase) || restoreNotice.Contains("건너", StringComparison.OrdinalIgnoreCase)
+                    ? MessageBoxImage.Warning
+                    : MessageBoxImage.Information;
+                MessageBox.Show(
+                    restoreNotice,
+                    "백업 복원",
+                    MessageBoxButton.OK,
+                    restoreMessageImage);
+            }
+
             var config = new ConfigurationBuilder()
                 .SetBasePath(AppContext.BaseDirectory)
                 .AddJsonFile("appsettings.json", optional: false)
@@ -70,6 +114,7 @@ public partial class App : Application
             services.AddScoped<RentalDocumentService>();
             services.AddScoped<SyncService>();
             services.AddScoped<BackupService>();
+            services.AddScoped<StartupIntegrityService>();
             services.AddScoped<RecentSelectionService>();
             services.AddTransient<StatementPrintService>();
             services.AddTransient<IPrintService, WpfInvoicePrintService>();
@@ -78,19 +123,33 @@ public partial class App : Application
 
             _services = services.BuildServiceProvider();
 
-            await using (var scope = _services.CreateAsyncScope())
-            {
-                var db = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
-                await LocalDbInitializer.InitializeAsync(db);
-            }
+            await OperationTiming.MeasureAsync(
+                "APP",
+                "로컬 DB 초기화 및 버전 정비",
+                async () =>
+                {
+                    await using var scope = _services.CreateAsyncScope();
+                    var db = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
+                    await LocalDbInitializer.InitializeAsync(db);
+                    await RunVersionChangeMaintenanceAsync(scope.ServiceProvider);
+                },
+                warningThreshold: TimeSpan.FromSeconds(4));
 
             bool? loggedIn;
             using (var loginScope = _services.CreateScope())
             {
                 var loginVm = loginScope.ServiceProvider.GetRequiredService<LoginViewModel>();
-                await loginVm.InitializeAsync();
+                await OperationTiming.MeasureAsync(
+                    "AUTH",
+                    "로그인 뷰모델 초기화",
+                    () => loginVm.InitializeAsync(),
+                    warningThreshold: TimeSpan.FromSeconds(2));
                 var loginWin = new LoginWindow(loginVm);
-                loggedIn = loginWin.ShowDialog();
+                loggedIn = OperationTiming.Measure(
+                    "AUTH",
+                    "로그인 창 표시",
+                    () => loginWin.ShowDialog(),
+                    warningThreshold: TimeSpan.FromSeconds(10));
             }
 
             if (loggedIn != true)
@@ -99,7 +158,25 @@ public partial class App : Application
                 return;
             }
 
-            await TryRunDeferredLegacyMigrationAsync();
+            using (var startupSafetyScope = _services.CreateScope())
+            {
+                var canContinue = await OperationTiming.MeasureAsync(
+                    "APP",
+                    "로그인 후 안전 점검",
+                    () => RunPostLoginSafetyChecksAsync(startupSafetyScope.ServiceProvider),
+                    warningThreshold: TimeSpan.FromSeconds(4));
+                if (!canContinue)
+                {
+                    Shutdown();
+                    return;
+                }
+            }
+
+            await OperationTiming.MeasureAsync(
+                "APP",
+                "지연 레거시 마이그레이션",
+                () => TryRunDeferredLegacyMigrationAsync(),
+                warningThreshold: TimeSpan.FromSeconds(4));
 
             var mainScope = _services.CreateScope();
             var sp = mainScope.ServiceProvider;
@@ -137,7 +214,11 @@ public partial class App : Application
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             mainWin.Show();
 
-            var initSucceeded = await TryInitializeMainWindowAsync(mainWin, mainVm);
+            var initSucceeded = await OperationTiming.MeasureAsync(
+                "UI",
+                "메인 윈도우 초기화",
+                () => TryInitializeMainWindowAsync(mainWin, mainVm),
+                warningThreshold: TimeSpan.FromSeconds(4));
             if (initSucceeded)
             {
                 UiTaskHelper.Forget(
@@ -157,6 +238,133 @@ public partial class App : Application
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
             Shutdown(1);
+        }
+    }
+
+    private static async Task RunVersionChangeMaintenanceAsync(IServiceProvider serviceProvider)
+    {
+        try
+        {
+            var api = serviceProvider.GetRequiredService<ErpApiClient>();
+            var local = serviceProvider.GetRequiredService<LocalStateService>();
+            var backup = serviceProvider.GetRequiredService<BackupService>();
+            var updateService = new DesktopAppUpdateService(api);
+            var result = await VersionChangeMaintenanceService.RunAsync(local, backup, updateService.GetCurrentVersion());
+            if (result.Ran)
+                AppLogger.Info("MAINT", result.Message);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("MAINT", $"버전 변경 후 1회 정비 실패: {ex.Message}");
+        }
+    }
+
+    private static async Task<bool> RunPostLoginSafetyChecksAsync(IServiceProvider serviceProvider)
+    {
+        if (!await EnsureMandatoryDesktopUpdateSatisfiedAsync(serviceProvider))
+            return false;
+
+        await RunStartupIntegrityCheckAsync(serviceProvider);
+        return true;
+    }
+
+    private static async Task<bool> EnsureMandatoryDesktopUpdateSatisfiedAsync(IServiceProvider serviceProvider)
+    {
+        var session = serviceProvider.GetRequiredService<SessionState>();
+        if (!session.IsLoggedIn || session.IsOfflineMode)
+            return true;
+
+        var diagnostics = serviceProvider.GetService<SyncDiagnosticsService>();
+
+        try
+        {
+            var api = serviceProvider.GetRequiredService<ErpApiClient>();
+            var updateService = new DesktopAppUpdateService(api);
+            var update = await updateService.CheckForUpdatesAsync(ct: CancellationToken.None);
+            if (!update.RequiresImmediateUpdate)
+                return true;
+
+            var requiredVersion = string.IsNullOrWhiteSpace(update.MinimumSupportedVersion)
+                ? update.LatestVersion
+                : update.MinimumSupportedVersion;
+            var message = update.IsBelowMinimumSupportedVersion
+                ? $"현재 버전 {update.CurrentVersion}은 서버 최소 허용 버전 {requiredVersion}보다 낮아 더 이상 사용할 수 없습니다.{Environment.NewLine}{Environment.NewLine}업데이트를 완료한 뒤 다시 실행하세요."
+                : $"현재 버전 {update.CurrentVersion}에서는 필수 PC 업데이트가 필요합니다.{Environment.NewLine}필수 버전: {update.LatestVersion}{Environment.NewLine}{Environment.NewLine}업데이트를 완료한 뒤 다시 실행하세요.";
+
+            AppLogger.Warn("UPDATE", message);
+            if (diagnostics is not null)
+            {
+                await diagnostics.RecordIssueAsync(
+                    phase: "startup-version-check",
+                    rawMessage: message,
+                    severity: "Warning");
+            }
+
+            MessageBox.Show(
+                message,
+                "필수 업데이트",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("UPDATE", $"시작 시 필수 업데이트 확인 실패: {ex.Message}");
+            if (diagnostics is not null)
+            {
+                await diagnostics.RecordIssueAsync(
+                    phase: "startup-version-check",
+                    rawMessage: ex.InnerException?.Message ?? ex.Message,
+                    exception: ex,
+                    severity: "Warning");
+            }
+
+            return true;
+        }
+    }
+
+    private static async Task RunStartupIntegrityCheckAsync(IServiceProvider serviceProvider)
+    {
+        var diagnostics = serviceProvider.GetService<SyncDiagnosticsService>();
+
+        try
+        {
+            var startupIntegrity = serviceProvider.GetRequiredService<StartupIntegrityService>();
+            var result = await startupIntegrity.RunAsync(CancellationToken.None);
+            if (string.IsNullOrWhiteSpace(result.Message))
+                return;
+
+            AppLogger.Info("MAINT", result.Message);
+            if (diagnostics is not null)
+            {
+                await diagnostics.RecordIssueAsync(
+                    phase: "startup-integrity",
+                    rawMessage: result.Message,
+                    severity: result.RequiresUserAttention ? "Warning" : "Info",
+                    recoveryAttempted: result.RefreshAttempted,
+                    recoverySucceeded: result.RefreshSucceeded);
+            }
+
+            if (!result.RequiresUserAttention)
+                return;
+
+            MessageBox.Show(
+                result.Message,
+                "시작 무결성 점검",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("MAINT", $"시작 시 무결성 점검 실패: {ex.Message}");
+            if (diagnostics is not null)
+            {
+                await diagnostics.RecordIssueAsync(
+                    phase: "startup-integrity",
+                    rawMessage: ex.InnerException?.Message ?? ex.Message,
+                    exception: ex,
+                    severity: "Warning");
+            }
         }
     }
 
@@ -379,36 +587,10 @@ public partial class App : Application
         }
     }
 
-    private async Task TryRunDeferredLegacyMigrationAsync()
+    private Task TryRunDeferredLegacyMigrationAsync()
     {
-        if (_services is null)
-            return;
-
-        await using var scope = _services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
-        var hasCustomers = await db.Customers.AnyAsync();
-        var hasItems = await db.Items.AnyAsync();
-        if (hasCustomers || hasItems)
-        {
-            AppLogger.Info("LEGACY", "기존 거래처/품목 데이터가 존재해 자동 마이그레이션 검사를 건너뜁니다.");
-            return;
-        }
-
-        try
-        {
-            var localState = scope.ServiceProvider.GetRequiredService<LocalStateService>();
-            var legacyMigration = new LegacyDataMigrationService(localState);
-            var migrationResult = await legacyMigration.TryAutoMigrateLocalDataAsync();
-
-            if (migrationResult.Applied)
-                AppLogger.Info("LEGACY", $"자동 마이그레이션 완료. source={migrationResult.SourceType}, path={migrationResult.SourcePath}, message={migrationResult.Message}");
-            else if (!string.IsNullOrWhiteSpace(migrationResult.Message))
-                AppLogger.Info("LEGACY", $"자동 마이그레이션 건너뜀. source={migrationResult.SourceType}, path={migrationResult.SourcePath}, message={migrationResult.Message}");
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Warn("LEGACY", $"자동 마이그레이션 실패. {ex.Message}");
-        }
+        AppLogger.Info("LEGACY", "레거시 자동 마이그레이션은 비활성화되어 환경설정의 백업/이전 데이터 관리에서만 수동 실행합니다.");
+        return Task.CompletedTask;
     }
 
     private async Task RunPostLoginSyncWithPopupAsync(MainWindow mainWin, MainViewModel mainVm, SessionState session)
@@ -629,3 +811,8 @@ public partial class App : Application
         }
     }
 }
+
+
+
+
+

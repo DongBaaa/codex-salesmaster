@@ -3,6 +3,7 @@
 public sealed class LocalMutationResult
 {
     public bool Success { get; init; }
+    public bool ConcurrencyConflict { get; init; }
     public bool PermissionDenied { get; init; }
     public bool NotFound { get; init; }
     public Guid EntityId { get; init; }
@@ -20,6 +21,12 @@ public sealed class LocalMutationResult
     public static LocalMutationResult Denied(string message) => new()
     {
         PermissionDenied = true,
+        Message = message
+    };
+
+    public static LocalMutationResult Conflict(string message) => new()
+    {
+        ConcurrencyConflict = true,
         Message = message
     };
 

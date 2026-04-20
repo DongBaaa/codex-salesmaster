@@ -9,7 +9,7 @@ public sealed partial class MainViewModel
     [RelayCommand]
     private async Task OpenSyncDiagnosticsAsync()
     {
-        var diagnosticsViewModel = new SyncDiagnosticsViewModel(_diagnostics, _sync, _local, _rental, _session);
+        var diagnosticsViewModel = new SyncDiagnosticsViewModel(_diagnostics, _sync, _api, _local, _rental, _session);
         await diagnosticsViewModel.LoadAsync();
 
         var window = new SyncDiagnosticsWindow(diagnosticsViewModel)

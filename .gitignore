@@ -79,3 +79,16 @@ Mobile/**/android-signing.local.json
 배포/*.sha256.txt
 배포/README.txt
 배포/관리자용/**
+
+# Additional local scratch / investigation artifacts
+.inspect-*.db
+.tmp-*/
+.tmp-*.db
+.tmp-*.json
+.tools/
+artifacts/
+temp/
+배포/로컬테스트/
+테스트 시행/임시소스스냅샷/
+**/__pycache__/
+*.codex-stage.*

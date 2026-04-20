@@ -14,23 +14,82 @@ public static partial class LocalDbInitializer
             .ThenBy(current => current.Name)
             .ToListAsync();
 
-        foreach (var canonicalName in UnitCatalogNormalizer.CanonicalDefaults)
+        var canonicalDefinitionByName = UnitCatalogNormalizer.CanonicalDefinitions
+            .ToDictionary(current => current.Name, StringComparer.Ordinal);
+
+        foreach (var definition in UnitCatalogNormalizer.CanonicalDefinitions)
         {
-            if (units.Any(current => !current.IsDeleted && current.IsActive && string.Equals(UnitCatalogNormalizer.Normalize(current.Name), canonicalName, StringComparison.Ordinal)))
+            var exact = units.FirstOrDefault(current => current.Id == definition.Id);
+            var sameName = units
+                .Where(current => !current.IsDeleted && current.IsActive && string.Equals(UnitCatalogNormalizer.Normalize(current.Name), definition.Name, StringComparison.Ordinal))
+                .OrderByDescending(current => current.Id == definition.Id)
+                .ThenBy(current => current.CreatedAtUtc)
+                .ThenBy(current => current.Id)
+                .ToList();
+
+            if (exact is null && sameName.Count == 0)
+            {
+                var created = new LocalUnit
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    IsActive = true,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now,
+                    Revision = 0,
+                    IsDeleted = false,
+                    IsDirty = false
+                };
+                db.Units.Add(created);
+                units.Add(created);
+                continue;
+            }
+
+            if (exact is null && sameName.Count > 0)
+            {
+                var source = sameName[0];
+                var replacement = new LocalUnit
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    IsActive = true,
+                    CreatedAtUtc = source.CreatedAtUtc,
+                    UpdatedAtUtc = source.UpdatedAtUtc,
+                    Revision = source.Revision,
+                    IsDeleted = false,
+                    IsDirty = source.IsDirty
+                };
+                db.Units.Add(replacement);
+                units.Add(replacement);
+                db.Units.Remove(source);
+                units.Remove(source);
+                exact = replacement;
+            }
+
+            if (exact is null)
                 continue;
 
-            var created = new LocalUnit
+            var changed = false;
+            if (!string.Equals(exact.Name, definition.Name, StringComparison.Ordinal))
             {
-                Name = canonicalName,
-                IsActive = true,
-                CreatedAtUtc = now,
-                UpdatedAtUtc = now,
-                Revision = 0,
-                IsDeleted = false,
-                IsDirty = false
-            };
-            db.Units.Add(created);
-            units.Add(created);
+                exact.Name = definition.Name;
+                changed = true;
+            }
+
+            if (!exact.IsActive)
+            {
+                exact.IsActive = true;
+                changed = true;
+            }
+
+            if (exact.IsDeleted)
+            {
+                exact.IsDeleted = false;
+                changed = true;
+            }
+
+            if (changed)
+                PreserveDirtyStateForStartupMaintenance(exact, now);
         }
 
         var groups = units
@@ -42,11 +101,18 @@ public static partial class LocalDbInitializer
         foreach (var group in groups)
         {
             var canonicalName = group.Key;
-            var canonical = group
-                .OrderByDescending(current => string.Equals(current.Name, canonicalName, StringComparison.Ordinal))
-                .ThenBy(current => current.CreatedAtUtc)
-                .ThenBy(current => current.Id)
-                .First();
+            var canonical = canonicalDefinitionByName.TryGetValue(canonicalName, out var definition)
+                ? group
+                    .OrderByDescending(current => current.Id == definition.Id)
+                    .ThenByDescending(current => string.Equals(current.Name, canonicalName, StringComparison.Ordinal))
+                    .ThenBy(current => current.CreatedAtUtc)
+                    .ThenBy(current => current.Id)
+                    .First()
+                : group
+                    .OrderByDescending(current => string.Equals(current.Name, canonicalName, StringComparison.Ordinal))
+                    .ThenBy(current => current.CreatedAtUtc)
+                    .ThenBy(current => current.Id)
+                    .First();
 
             if (!string.Equals(canonical.Name, canonicalName, StringComparison.Ordinal))
             {
@@ -87,8 +153,27 @@ public static partial class LocalDbInitializer
     {
         var now = DateTime.UtcNow;
         var transfers = await db.InventoryTransfers.IgnoreQueryFilters().ToListAsync();
+        var crossTenantTransferIds = new HashSet<Guid>();
         foreach (var transfer in transfers)
         {
+            var normalizedFromWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeLoose(
+                transfer.FromWarehouseCode,
+                fallbackOfficeCode: OfficeCodeCatalog.Usenet);
+            var normalizedToWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeLoose(
+                transfer.ToWarehouseCode,
+                fallbackOfficeCode: OfficeCodeCatalog.Yeonsu);
+            if (!string.Equals(transfer.FromWarehouseCode, normalizedFromWarehouseCode, StringComparison.OrdinalIgnoreCase))
+            {
+                transfer.FromWarehouseCode = normalizedFromWarehouseCode;
+                PreserveDirtyStateForStartupMaintenance(transfer, now);
+            }
+
+            if (!string.Equals(transfer.ToWarehouseCode, normalizedToWarehouseCode, StringComparison.OrdinalIgnoreCase))
+            {
+                transfer.ToWarehouseCode = normalizedToWarehouseCode;
+                PreserveDirtyStateForStartupMaintenance(transfer, now);
+            }
+
             var normalizedStatus = InventoryTransferStatusNormalizer.Normalize(
                 transfer.TransferStatus,
                 transfer.ReceivedByUsername,
@@ -97,23 +182,47 @@ public static partial class LocalDbInitializer
                 transfer.RejectedAtUtc);
 
             if (string.Equals(transfer.TransferStatus, normalizedStatus, StringComparison.Ordinal))
+            {
+                if (IsCrossTenantInventoryTransfer(transfer.FromWarehouseCode, transfer.ToWarehouseCode))
+                    crossTenantTransferIds.Add(transfer.Id);
+
                 continue;
+            }
 
             transfer.TransferStatus = normalizedStatus;
             PreserveDirtyStateForStartupMaintenance(transfer, now);
+
+            if (IsCrossTenantInventoryTransfer(transfer.FromWarehouseCode, transfer.ToWarehouseCode))
+                crossTenantTransferIds.Add(transfer.Id);
         }
 
+        var transferLines = await db.InventoryTransferLines.IgnoreQueryFilters().ToListAsync();
+        var crossTenantTransferLines = transferLines
+            .Where(line => crossTenantTransferIds.Contains(line.TransferId))
+            .ToList();
+        if (crossTenantTransferLines.Count > 0)
+            db.InventoryTransferLines.RemoveRange(crossTenantTransferLines);
+
+        var crossTenantTransfers = transfers
+            .Where(transfer => crossTenantTransferIds.Contains(transfer.Id))
+            .ToList();
+        if (crossTenantTransfers.Count > 0)
+            db.InventoryTransfers.RemoveRange(crossTenantTransfers);
+
         var deletedTransferIds = transfers
-            .Where(current => current.IsDeleted)
+            .Where(current => current.IsDeleted && !crossTenantTransferIds.Contains(current.Id))
             .Select(current => current.Id)
             .ToHashSet();
-        var allTransferIds = transfers.Select(current => current.Id).ToHashSet();
+        var allTransferIds = transfers
+            .Where(current => !crossTenantTransferIds.Contains(current.Id))
+            .Select(current => current.Id)
+            .ToHashSet();
         var existingItemIds = (await db.Items.IgnoreQueryFilters()
                 .Select(current => current.Id)
                 .ToListAsync())
             .ToHashSet();
 
-        foreach (var line in await db.InventoryTransferLines.IgnoreQueryFilters().ToListAsync())
+        foreach (var line in transferLines.Where(line => !crossTenantTransferIds.Contains(line.TransferId)))
         {
             if (!allTransferIds.Contains(line.TransferId) || deletedTransferIds.Contains(line.TransferId))
             {
@@ -125,6 +234,22 @@ public static partial class LocalDbInitializer
             if (line.ItemId.HasValue && !existingItemIds.Contains(line.ItemId.Value))
                 line.ItemId = null;
         }
+    }
+
+    private static bool IsCrossTenantInventoryTransfer(string? fromWarehouseCode, string? toWarehouseCode)
+    {
+        var normalizedFromWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeLoose(
+            fromWarehouseCode,
+            fallbackOfficeCode: OfficeCodeCatalog.Usenet);
+        var normalizedToWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeLoose(
+            toWarehouseCode,
+            fallbackOfficeCode: OfficeCodeCatalog.Yeonsu);
+        var sourceOfficeCode = ResolveOfficeCodeFromWarehouseCode(normalizedFromWarehouseCode);
+        var targetOfficeCode = ResolveOfficeCodeFromWarehouseCode(normalizedToWarehouseCode);
+        var sourceTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, sourceOfficeCode);
+        var targetTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, targetOfficeCode);
+
+        return !string.Equals(sourceTenantCode, targetTenantCode, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task PurgeDeletedInventoryTransferDataAsync(LocalDbContext db)

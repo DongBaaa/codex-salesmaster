@@ -33,8 +33,6 @@ public sealed class JwtTokenFactory : IJwtTokenFactory
         var scopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(
             user.ScopeType,
             TenantScopeCatalog.ScopeOfficeOnly);
-        var isGodMode = string.Equals(officeCode, OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase);
-
         var claims = new List<Claim>
         {
             new(ClaimTypes.NameIdentifier, user.Id.ToString()),
@@ -45,9 +43,6 @@ public sealed class JwtTokenFactory : IJwtTokenFactory
             ,
             new("scope", scopeType)
         };
-
-        if (isGodMode)
-            claims.Add(new Claim("god", "true"));
 
         claims.AddRange(user.Permissions.Select(permission => new Claim("perm", permission.Permission)));
 

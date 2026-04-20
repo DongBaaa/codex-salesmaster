@@ -1,4 +1,4 @@
-using 거래플랜.Server.Api.Controllers;
+﻿using 거래플랜.Server.Api.Controllers;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Services;
@@ -45,7 +45,486 @@ public sealed class SyncControllerTests : IDisposable
             new StubInvoiceNumberService(),
             officeScopeService,
             new StubCentralFileStorage(),
-            revisionClock);
+            revisionClock,
+            new InventoryLedgerService(_dbContext),
+            new RentalAssignmentHistoryService(_dbContext));
+    }
+
+    [Fact]
+    public async Task Push_DeduplicatesMutationId_ForCustomerUpdates()
+    {
+        var customerId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "기존 거래처",
+            NameMatchKey = "기존거래처",
+            TradeType = "매출"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var customer = await _dbContext.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customerId);
+        var mutationId = $"device-1:Customer:{customerId:N}:{customer.Revision}";
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-1",
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = customerId,
+                    TenantCode = customer.TenantCode,
+                    OfficeCode = customer.OfficeCode,
+                    ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                    NameOriginal = "수정 거래처",
+                    NameMatchKey = "수정거래처",
+                    TradeType = customer.TradeType,
+                    ExpectedRevision = customer.Revision,
+                    Revision = customer.Revision,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = customer.UpdatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = customer.CreatedAtUtc,
+                    UpdatedAtUtc = customer.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        };
+
+        var firstResponse = await _controller.Push(request, CancellationToken.None);
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstResult = Assert.IsType<SyncPushResult>(firstOk.Value);
+        Assert.Equal(1, firstResult.AcceptedCount);
+        Assert.Equal(0, firstResult.DuplicateMutationCount);
+
+        _dbContext.ChangeTracker.Clear();
+
+        var secondResponse = await _controller.Push(request, CancellationToken.None);
+        var secondOk = Assert.IsType<OkObjectResult>(secondResponse.Result);
+        var secondResult = Assert.IsType<SyncPushResult>(secondOk.Value);
+        Assert.Equal(1, secondResult.AcceptedCount);
+        Assert.Equal(1, secondResult.DuplicateMutationCount);
+        Assert.Equal(0, secondResult.ConflictCount);
+
+        var storedCustomer = await _dbContext.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customerId);
+        Assert.Equal("수정 거래처", storedCustomer.NameOriginal);
+        Assert.Equal(1, await _dbContext.ProcessedSyncMutations.CountAsync());
+    }
+
+    [Fact]
+    public async Task Push_ReturnsConflict_WhenCustomerExpectedRevisionDoesNotMatch()
+    {
+        var customerId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "서버 거래처",
+            NameMatchKey = "서버거래처",
+            TradeType = "매출"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var customer = await _dbContext.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customerId);
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-2",
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = customerId,
+                    TenantCode = customer.TenantCode,
+                    OfficeCode = customer.OfficeCode,
+                    ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                    NameOriginal = "클라이언트 거래처",
+                    NameMatchKey = "클라이언트거래처",
+                    TradeType = customer.TradeType,
+                    ExpectedRevision = customer.Revision + 1,
+                    Revision = customer.Revision,
+                    MutationId = $"device-2:Customer:{customerId:N}:mismatch",
+                    MutationCreatedAtUtc = customer.UpdatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = customer.CreatedAtUtc,
+                    UpdatedAtUtc = customer.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict => conflict.Reason.Contains("Expected revision mismatch", StringComparison.Ordinal));
+
+        var storedCustomer = await _dbContext.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customerId);
+        Assert.Equal("서버 거래처", storedCustomer.NameOriginal);
+        Assert.Equal(0, await _dbContext.ProcessedSyncMutations.CountAsync());
+    }
+
+    [Fact]
+    public async Task Push_PreservesYeonsuResponsibleOffice_ForUsenetTenantAllCustomerUpdate()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            IsAdmin = false
+        };
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var customerId = Guid.NewGuid();
+        scopedDb.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "담당지점 변경 테스트",
+            NameMatchKey = "담당지점변경테스트",
+            TradeType = "매출"
+        });
+        await scopedDb.SaveChangesAsync();
+
+        var customer = await scopedDb.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customerId);
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-yeonsu-reassign",
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = customerId,
+                    TenantCode = customer.TenantCode,
+                    OfficeCode = customer.OfficeCode,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    NameOriginal = customer.NameOriginal,
+                    NameMatchKey = customer.NameMatchKey,
+                    TradeType = customer.TradeType,
+                    ExpectedRevision = customer.Revision,
+                    Revision = customer.Revision,
+                    MutationId = $"device-yeonsu-reassign:Customer:{customerId:N}:1",
+                    MutationCreatedAtUtc = customer.UpdatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = customer.CreatedAtUtc,
+                    UpdatedAtUtc = customer.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        };
+
+        var response = await controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+
+        scopedDb.ChangeTracker.Clear();
+        var storedCustomer = await scopedDb.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customerId);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, storedCustomer.ResponsibleOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, storedCustomer.OfficeCode);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, storedCustomer.TenantCode);
+    }
+
+    [Fact]
+    public async Task Push_ResolvesHistoricalConflict_WhenSameCustomerLaterSyncsSuccessfully()
+    {
+        var customerId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "서버 거래처",
+            NameMatchKey = "서버거래처",
+            TradeType = "매출"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var customer = await _dbContext.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customerId);
+        var staleRequest = new SyncPushRequest
+        {
+            DeviceId = "device-3",
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = customerId,
+                    TenantCode = customer.TenantCode,
+                    OfficeCode = customer.OfficeCode,
+                    ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                    NameOriginal = "클라이언트 stale",
+                    NameMatchKey = "클라이언트STALE",
+                    TradeType = customer.TradeType,
+                    ExpectedRevision = customer.Revision + 1,
+                    Revision = customer.Revision,
+                    MutationId = $"device-3:Customer:{customerId:N}:stale",
+                    MutationCreatedAtUtc = customer.UpdatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = customer.CreatedAtUtc,
+                    UpdatedAtUtc = customer.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        };
+
+        var staleResponse = await _controller.Push(staleRequest, CancellationToken.None);
+        var staleOk = Assert.IsType<OkObjectResult>(staleResponse.Result);
+        var staleResult = Assert.IsType<SyncPushResult>(staleOk.Value);
+        Assert.Equal(1, staleResult.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var openConflict = await _dbContext.ConflictLogs.SingleAsync(log => log.EntityName == nameof(Customer) && log.EntityId == customerId.ToString());
+        Assert.Equal("Open", openConflict.Status);
+
+        var refreshedCustomer = await _dbContext.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customerId);
+        var successRequest = new SyncPushRequest
+        {
+            DeviceId = "device-3",
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = customerId,
+                    TenantCode = refreshedCustomer.TenantCode,
+                    OfficeCode = refreshedCustomer.OfficeCode,
+                    ResponsibleOfficeCode = refreshedCustomer.ResponsibleOfficeCode,
+                    NameOriginal = "정상 반영 거래처",
+                    NameMatchKey = "정상반영거래처",
+                    TradeType = refreshedCustomer.TradeType,
+                    ExpectedRevision = refreshedCustomer.Revision,
+                    Revision = refreshedCustomer.Revision,
+                    MutationId = $"device-3:Customer:{customerId:N}:success",
+                    MutationCreatedAtUtc = refreshedCustomer.UpdatedAtUtc.AddMinutes(2),
+                    CreatedAtUtc = refreshedCustomer.CreatedAtUtc,
+                    UpdatedAtUtc = refreshedCustomer.UpdatedAtUtc.AddMinutes(2)
+                }
+            ]
+        };
+
+        var successResponse = await _controller.Push(successRequest, CancellationToken.None);
+        var successOk = Assert.IsType<OkObjectResult>(successResponse.Result);
+        var successResult = Assert.IsType<SyncPushResult>(successOk.Value);
+        Assert.Equal(0, successResult.ConflictCount);
+        Assert.Equal(1, successResult.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var resolvedConflict = await _dbContext.ConflictLogs.SingleAsync(log => log.EntityName == nameof(Customer) && log.EntityId == customerId.ToString());
+        Assert.Equal("Resolved", resolvedConflict.Status);
+        Assert.NotNull(resolvedConflict.ResolvedAtUtc);
+        Assert.Contains("자동 해결", resolvedConflict.ResolutionNote, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Push_RejectsCrossTenantInventoryTransferRoute()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "테스트 품목",
+            NameMatchKey = "테스트품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var transferId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-transfer",
+            InventoryTransfers =
+            [
+                new InventoryTransferDto
+                {
+                    Id = transferId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                    TargetOfficeCode = OfficeCodeCatalog.Itworld,
+                    TransferNumber = "TR-TEST-001",
+                    TransferDate = new DateOnly(2026, 4, 13),
+                    FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    ToWarehouseCode = OfficeCodeCatalog.ItworldMainWarehouse,
+                    TransferStatus = "수령대기",
+                    MutationId = $"device-transfer:InventoryTransfer:{transferId:N}:1",
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    Lines =
+                    [
+                        new InventoryTransferLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            TransferId = transferId,
+                            ItemId = itemId,
+                            ItemNameOriginal = "테스트 품목",
+                            SpecificationOriginal = string.Empty,
+                            Unit = "개",
+                            Quantity = 1m,
+                            ReceivedQuantity = 1m
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict => conflict.Reason.Contains("같은 업체 내부 지점 간 이동", StringComparison.Ordinal));
+        Assert.False(await _dbContext.InventoryTransfers.IgnoreQueryFilters().AnyAsync(x => x.Id == transferId));
+    }
+
+    [Fact]
+    public async Task Push_RollsBackEarlierChanges_WhenLaterContractStorageWriteFails()
+    {
+        var customerId = Guid.NewGuid();
+        var contractId = Guid.NewGuid();
+        var seededCustomer = new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "롤백 거래처",
+            NameMatchKey = "롤백거래처",
+            TradeType = "매출",
+            Notes = "before"
+        };
+        var seededContract = new CustomerContract
+        {
+            Id = contractId,
+            CustomerId = customerId,
+            ContractType = "거래계약서",
+            FileName = "existing.pdf",
+            MimeType = "application/pdf",
+            FileSize = 10,
+            FileHash = "seed",
+            Description = "before"
+        };
+        _dbContext.Customers.Add(seededCustomer);
+        _dbContext.CustomerContracts.Add(seededContract);
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        };
+        var controller = CreateController(_dbContext, currentUser, new ThrowingCentralFileStorage());
+
+        var currentCustomer = await _dbContext.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customerId);
+        var currentContract = await _dbContext.CustomerContracts.IgnoreQueryFilters().FirstAsync(x => x.Id == contractId);
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-rollback",
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = currentCustomer.Id,
+                    TenantCode = currentCustomer.TenantCode,
+                    OfficeCode = currentCustomer.OfficeCode,
+                    ResponsibleOfficeCode = currentCustomer.ResponsibleOfficeCode,
+                    NameOriginal = currentCustomer.NameOriginal,
+                    NameMatchKey = currentCustomer.NameMatchKey,
+                    TradeType = currentCustomer.TradeType,
+                    Notes = "after",
+                    ExpectedRevision = currentCustomer.Revision,
+                    Revision = currentCustomer.Revision,
+                    MutationId = $"device-rollback:Customer:{currentCustomer.Id:N}:1",
+                    MutationCreatedAtUtc = currentCustomer.UpdatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = currentCustomer.CreatedAtUtc,
+                    UpdatedAtUtc = currentCustomer.UpdatedAtUtc.AddMinutes(1)
+                }
+            ],
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = currentContract.Id,
+                    CustomerId = currentCustomer.Id,
+                    ContractType = currentContract.ContractType,
+                    FileName = "updated.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = 16,
+                    FileHash = "changed",
+                    Description = "after",
+                    ExpectedRevision = currentContract.Revision,
+                    Revision = currentContract.Revision,
+                    MutationId = $"device-rollback:CustomerContract:{currentContract.Id:N}:1",
+                    MutationCreatedAtUtc = currentContract.UpdatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = currentContract.CreatedAtUtc,
+                    UpdatedAtUtc = currentContract.UpdatedAtUtc.AddMinutes(1),
+                    FileContent = [0x25, 0x50, 0x44, 0x46]
+                }
+            ]
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await controller.Push(request, CancellationToken.None));
+
+        _dbContext.ChangeTracker.Clear();
+        var storedCustomer = await _dbContext.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customerId);
+        var storedContract = await _dbContext.CustomerContracts.IgnoreQueryFilters().FirstAsync(x => x.Id == contractId);
+        Assert.Equal("before", storedCustomer.Notes);
+        Assert.Equal("before", storedContract.Description);
+        Assert.Equal(0, await _dbContext.ProcessedSyncMutations.CountAsync());
+    }
+
+    [Fact]
+    public async Task ConflictLogsController_HidesResolvedByDefault_AndResolveMarksStatus()
+    {
+        var openConflict = new ConflictLog
+        {
+            EntityName = nameof(Customer),
+            EntityId = Guid.NewGuid().ToString(),
+            Reason = "open",
+            Status = "Open",
+            CreatedAtUtc = new DateTime(2026, 4, 13, 1, 0, 0, DateTimeKind.Utc)
+        };
+        var resolvedConflict = new ConflictLog
+        {
+            EntityName = nameof(Item),
+            EntityId = Guid.NewGuid().ToString(),
+            Reason = "resolved",
+            Status = "Resolved",
+            CreatedAtUtc = new DateTime(2026, 4, 13, 0, 0, 0, DateTimeKind.Utc),
+            ResolvedAtUtc = new DateTime(2026, 4, 13, 0, 5, 0, DateTimeKind.Utc),
+            ResolutionNote = "already fixed"
+        };
+        _dbContext.ConflictLogs.AddRange(openConflict, resolvedConflict);
+        await _dbContext.SaveChangesAsync();
+
+        var controller = new ConflictLogsController(_dbContext);
+
+        var defaultResponse = await controller.GetAll(cancellationToken: CancellationToken.None);
+        var defaultOk = Assert.IsType<OkObjectResult>(defaultResponse.Result);
+        var defaultRows = Assert.IsType<List<ConflictLogDto>>(defaultOk.Value);
+        Assert.Single(defaultRows);
+        Assert.Equal(openConflict.Id, defaultRows[0].Id);
+
+        var allResponse = await controller.GetAll(includeResolved: true, cancellationToken: CancellationToken.None);
+        var allOk = Assert.IsType<OkObjectResult>(allResponse.Result);
+        var allRows = Assert.IsType<List<ConflictLogDto>>(allOk.Value);
+        Assert.Equal(2, allRows.Count);
+
+        var resolveResponse = await controller.Resolve(openConflict.Id, "manual note", CancellationToken.None);
+        var resolveOk = Assert.IsType<OkObjectResult>(resolveResponse.Result);
+        var resolvedDto = Assert.IsType<ConflictLogDto>(resolveOk.Value);
+        Assert.Equal("Resolved", resolvedDto.Status);
+        Assert.Equal("manual note", resolvedDto.ResolutionNote);
     }
 
     [Fact]
@@ -159,6 +638,173 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_ReusesExistingItem_WhenIncomingIdDiffersButMaterialNumberMatches()
+    {
+        var existing = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "IMC3010",
+            NameMatchKey = "IMC3010",
+            CategoryName = "A3컬러복합기",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            MaterialNumber = "2603-885",
+            SerialNumber = "9155RC30012",
+            Notes = "before",
+            UpdatedAtUtc = new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.Items.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = existing.NameOriginal,
+                    NameMatchKey = existing.NameMatchKey,
+                    CategoryName = existing.CategoryName,
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = existing.MaterialNumber,
+                    SerialNumber = existing.SerialNumber,
+                    Notes = "after",
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(3)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var items = await _dbContext.Items.IgnoreQueryFilters().ToListAsync();
+        Assert.Single(items);
+        Assert.Equal(existing.Id, items[0].Id);
+        Assert.Equal("after", items[0].Notes);
+    }
+
+    [Fact]
+    public async Task Push_ReusesExistingItem_WhenDescriptorMatchesSingleServerItemWithoutIdentifiers()
+    {
+        var existing = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "SL-X4220RX",
+            NameMatchKey = "SLX4220RX",
+            CategoryName = "A3컬러복합기",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            MaterialNumber = string.Empty,
+            SerialNumber = string.Empty,
+            InstallLocation = "사무실",
+            UpdatedAtUtc = new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.Items.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = existing.NameOriginal,
+                    NameMatchKey = existing.NameMatchKey,
+                    CategoryName = existing.CategoryName,
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "2603-063",
+                    SerialNumber = "28S3B1AG600076F",
+                    InstallLocation = existing.InstallLocation,
+                    Notes = "hydrated",
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(5)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var items = await _dbContext.Items.IgnoreQueryFilters().ToListAsync();
+        Assert.Single(items);
+        Assert.Equal(existing.Id, items[0].Id);
+        Assert.Equal("2603-063", items[0].MaterialNumber);
+        Assert.Equal("28S3B1AG600076F", items[0].SerialNumber);
+        Assert.Equal("hydrated", items[0].Notes);
+    }
+
+    [Fact]
+    public async Task Push_DeduplicatesNewItemsWithinSingleBatch_WhenNaturalKeyMatches()
+    {
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+
+        var request = new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = firstId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = "SL-C563W",
+                    NameMatchKey = "SLC563W",
+                    CategoryName = "A4컬러복합기",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "2603-532",
+                    SerialNumber = "ZKKTB8KT5B023FZ",
+                    Notes = "first",
+                    UpdatedAtUtc = new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc)
+                },
+                new ItemDto
+                {
+                    Id = secondId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = "SL-C563W",
+                    NameMatchKey = "SLC563W",
+                    CategoryName = "A4컬러복합기",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "2603-532",
+                    SerialNumber = "ZKKTB8KT5B023FZ",
+                    Notes = "second",
+                    UpdatedAtUtc = new DateTime(2026, 4, 10, 0, 5, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var items = await _dbContext.Items.IgnoreQueryFilters().ToListAsync();
+        Assert.Single(items);
+        Assert.Equal(firstId, items[0].Id);
+        Assert.Equal("second", items[0].Notes);
+    }
+
+    [Fact]
     public async Task Push_AllowsScopedCustomerUpdate_ForSameOfficeNonAdmin()
     {
         var scopedUser = new TestCurrentUserContext
@@ -176,6 +822,7 @@ public sealed class SyncControllerTests : IDisposable
             Id = Guid.NewGuid(),
             TenantCode = TenantScopeCatalog.Itworld,
             OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
             NameOriginal = "SYNC-CUSTOMER",
             NameMatchKey = "SYNCCUSTOMER",
             TradeType = "매출",
@@ -211,6 +858,71 @@ public sealed class SyncControllerTests : IDisposable
 
         var updated = await scopedDb.Customers.IgnoreQueryFilters().FirstAsync(customer => customer.Id == existing.Id);
         Assert.Equal("updated", updated.Notes);
+    }
+
+    [Fact]
+    public async Task Push_RejectsStaleCustomerUpdate_WhenServerRevisionIsNewerEvenIfIncomingTimestampIsLater()
+    {
+        var scopedUser = new TestCurrentUserContext
+        {
+            Username = "itworld_admin",
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            IsAdmin = true
+        };
+
+        await using var scopedDb = CreateDbContext(scopedUser);
+        var existing = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "STALE-CUSTOMER",
+            NameMatchKey = "STALECUSTOMER",
+            TradeType = "매출",
+            Notes = "server-current"
+        };
+        scopedDb.Customers.Add(existing);
+        await scopedDb.SaveChangesAsync();
+
+        var serverRevision = existing.Revision;
+        var serverUpdatedAtUtc = existing.UpdatedAtUtc;
+        existing.Notes = "server-newer";
+        await scopedDb.SaveChangesAsync();
+
+        var controller = CreateController(scopedDb, scopedUser);
+        var request = new SyncPushRequest
+        {
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = existing.Id,
+                    Revision = serverRevision,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = existing.NameOriginal,
+                    NameMatchKey = existing.NameMatchKey,
+                    TradeType = "매출",
+                    Notes = "client-stale",
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = serverUpdatedAtUtc.AddHours(1)
+                }
+            ]
+        };
+
+        var response = await controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Equal(0, result.AcceptedCount);
+
+        var reloaded = await scopedDb.Customers.IgnoreQueryFilters().FirstAsync(customer => customer.Id == existing.Id);
+        Assert.Equal("server-newer", reloaded.Notes);
     }
 
     [Fact]
@@ -293,7 +1005,7 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Push_AllowsCrossTenantRentalAssetUpdate_ForUserWithRentalEditAll()
+    public async Task Push_RejectsCrossTenantRentalAssetUpdate_ForUserWithRentalEditAll()
     {
         var currentUser = new TestCurrentUserContext
         {
@@ -349,10 +1061,10 @@ public sealed class SyncControllerTests : IDisposable
         var response = await controller.Push(request, CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPushResult>(ok.Value);
-        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.ConflictCount);
 
         var updated = await scopedDb.RentalAssets.IgnoreQueryFilters().FirstAsync(asset => asset.Id == existing.Id);
-        Assert.Equal("아이티월드에서 수정", updated.CurrentLocation);
+        Assert.Equal(existing.CurrentLocation, updated.CurrentLocation);
         Assert.Equal(TenantScopeCatalog.UsenetGroup, updated.TenantCode);
         Assert.Equal(OfficeCodeCatalog.Usenet, updated.OfficeCode);
     }
@@ -808,6 +1520,456 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal("창고", storedAsset.CurrentLocation);
     }
 
+
+    [Fact]
+    public async Task Push_ReassignsRentalAssetBillingProfile_ToSameScopeProfile_WhenIncomingReferenceUsesDifferentOffice()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "YEONSU-CUSTOMER",
+            NameMatchKey = "YEONSUCUSTOMER",
+            TradeType = "??"
+        };
+
+        var wrongScopeProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "PROFILE-USENET",
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            ItemName = "IMC2010",
+            InstallSiteName = "Main Office",
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            BillingDay = 25,
+            MonthlyAmount = 44000m
+        };
+        var correctScopeProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = "PROFILE-YEONSU",
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            ItemName = "IMC2010",
+            InstallSiteName = "Main Office",
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            BillingDay = 25,
+            MonthlyAmount = 44000m
+        };
+        var existingAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "USENET|2603-310|310|YEONSU-CUSTOMER|IMC2010",
+            ManagementId = "310",
+            ManagementNumber = "2603-310",
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            CurrentCustomerName = customer.NameOriginal,
+            ItemName = "IMC2010",
+            InstallLocation = "Main Office",
+            InstallSiteName = "Main Office",
+            BillingProfileId = wrongScopeProfile.Id,
+            CurrentLocation = "Room A",
+            CreatedAtUtc = new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc)
+        };
+
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalBillingProfiles.AddRange(wrongScopeProfile, correctScopeProfile);
+        _dbContext.RentalAssets.Add(existingAsset);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = existingAsset.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementId = existingAsset.ManagementId,
+                    ManagementNumber = existingAsset.ManagementNumber,
+                    CustomerName = customer.NameOriginal,
+                    CurrentCustomerName = customer.NameOriginal,
+                    ItemName = existingAsset.ItemName,
+                    InstallLocation = existingAsset.InstallLocation,
+                    InstallSiteName = existingAsset.InstallSiteName,
+                    BillingProfileId = wrongScopeProfile.Id,
+                    CurrentLocation = "Room B",
+                    CreatedAtUtc = existingAsset.CreatedAtUtc,
+                    UpdatedAtUtc = existingAsset.UpdatedAtUtc.AddMinutes(5)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        var storedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync(x => x.Id == existingAsset.Id);
+        Assert.Equal(correctScopeProfile.Id, storedAsset.BillingProfileId);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, storedAsset.ResponsibleOfficeCode);
+        Assert.Equal("Room B", storedAsset.CurrentLocation);
+    }
+
+    [Fact]
+    public async Task Push_AllowsRentalAssetReference_WhenBillingProfileCustomerIdIsMissingButNamesMatch()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "상수도사업본부 중부수도사업소",
+            NameMatchKey = "상수도사업본부중부수도사업소",
+            TradeType = "매출"
+        };
+        var profile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "USENET||상수도사업소중부수도사업소|묶음|후불|25|12||",
+            CustomerId = null,
+            CustomerName = "[상수도사업소]중부수도사업소",
+            ItemName = "SL-M3820ND",
+            InstallSiteName = "[상수도사업소]중부수도사업소",
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            BillingDay = 25,
+            MonthlyAmount = 120000m
+        };
+
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalBillingProfiles.Add(profile);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementId = "261",
+                    ManagementNumber = "2603-261",
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    CurrentCustomerName = customer.NameOriginal,
+                    ItemName = "SL-M3820ND",
+                    InstallLocation = customer.NameOriginal,
+                    InstallSiteName = customer.NameOriginal,
+                    BillingProfileId = profile.Id,
+                    CurrentLocation = "요금팀",
+                    CreatedAtUtc = new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 28, 0, 5, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        var storedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync();
+        Assert.Equal(profile.Id, storedAsset.BillingProfileId);
+        Assert.Equal(customer.Id, storedAsset.CustomerId);
+    }
+
+    [Fact]
+    public async Task Push_ResolvesRentalAssetBillingProfileByName_WhenCustomerIdMatchesButProfileCustomerIdIsMissing()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "[연수구]보건소-건강증진과",
+            NameMatchKey = "연수구보건소건강증진과",
+            TradeType = "매출"
+        };
+        var existingProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "USENET||연수구보건소-건강증진과|묶음|후불|25|24||",
+            CustomerId = null,
+            CustomerName = customer.NameOriginal,
+            ItemName = "IMC2010",
+            InstallSiteName = customer.NameOriginal,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            BillingDay = 25,
+            MonthlyAmount = 240000m
+        };
+
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalBillingProfiles.Add(existingProfile);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementId = "230",
+                    ManagementNumber = "2603-230",
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    CurrentCustomerName = customer.NameOriginal,
+                    ItemName = "IMC2010",
+                    InstallLocation = "영양플러스실",
+                    InstallSiteName = customer.NameOriginal,
+                    BillingProfileId = Guid.NewGuid(),
+                    CurrentLocation = "영양플러스실",
+                    CreatedAtUtc = new DateTime(2026, 3, 28, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 28, 0, 10, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        var storedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync();
+        Assert.Equal(existingProfile.Id, storedAsset.BillingProfileId);
+        Assert.Equal(customer.Id, storedAsset.CustomerId);
+    }
+
+    [Fact]
+    public async Task Pull_DoesNotIncludeCrossTenantRentalData_ForUserWithRentalEditAll()
+    {
+        var usenetCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "USENET-RENTAL-CUSTOMER",
+            NameMatchKey = "USENETRENTALCUSTOMER",
+            TradeType = "매출"
+        };
+        var itworldCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "ITWORLD-RENTAL-CUSTOMER",
+            NameMatchKey = "ITWORLDRENTALCUSTOMER",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.AddRange(usenetCustomer, itworldCustomer);
+
+        _dbContext.RentalManagementCompanies.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = "USENET"
+            },
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                Code = OfficeCodeCatalog.Itworld,
+                Name = "ITWORLD"
+            });
+
+        _dbContext.RentalAssets.AddRange(
+            new RentalAsset
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "USENET|2603-901|901|USENET-RENTAL-CUSTOMER|MODEL-U",
+                ManagementId = "901",
+                ManagementNumber = "2603-901",
+                CustomerId = usenetCustomer.Id,
+                CustomerName = usenetCustomer.NameOriginal,
+                ItemName = "MODEL-U",
+                CurrentLocation = "USENET-ROOM",
+                CreatedAtUtc = new DateTime(2026, 4, 7, 0, 0, 0, DateTimeKind.Utc),
+                UpdatedAtUtc = new DateTime(2026, 4, 7, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new RentalAsset
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                AssetKey = "ITWORLD|2603-902|902|ITWORLD-RENTAL-CUSTOMER|MODEL-I",
+                ManagementId = "902",
+                ManagementNumber = "2603-902",
+                CustomerId = itworldCustomer.Id,
+                CustomerName = itworldCustomer.NameOriginal,
+                ItemName = "MODEL-I",
+                CurrentLocation = "ITWORLD-ROOM",
+                CreatedAtUtc = new DateTime(2026, 4, 7, 0, 0, 0, DateTimeKind.Utc),
+                UpdatedAtUtc = new DateTime(2026, 4, 7, 0, 0, 0, DateTimeKind.Utc)
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "itworld_user",
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            Permissions = [거래플랜.Server.Api.Security.PermissionNames.RentalEditAll]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.DoesNotContain(result.Customers, customer => customer.Id == usenetCustomer.Id);
+        Assert.Contains(result.Customers, customer => customer.Id == itworldCustomer.Id);
+        Assert.DoesNotContain(result.RentalAssets, asset => asset.ManagementNumber == "2603-901");
+        Assert.Contains(result.RentalAssets, asset => asset.ManagementNumber == "2603-902");
+    }
+
+
+    [Fact]
+    public async Task Pull_AdminRentalUser_KeepsCustomerMirrorScoped_ButStillReceivesCrossTenantRentalAssets()
+    {
+        var usenetCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "USENET-ADMIN-RENTAL-CUSTOMER",
+            NameMatchKey = "USENETADMINRENTALCUSTOMER",
+            TradeType = "매출"
+        };
+        var itworldCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "ITWORLD-ADMIN-RENTAL-CUSTOMER",
+            NameMatchKey = "ITWORLDADMINRENTALCUSTOMER",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.AddRange(usenetCustomer, itworldCustomer);
+        _dbContext.Items.AddRange(
+            new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "USENET-ADMIN-ITEM",
+                NameMatchKey = "USENETADMINITEM"
+            },
+            new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "ITWORLD-ADMIN-ITEM",
+                NameMatchKey = "ITWORLDADMINITEM"
+            });
+
+        _dbContext.RentalAssets.AddRange(
+            new RentalAsset
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "USENET|2603-911|911|USENET-ADMIN-RENTAL-CUSTOMER|MODEL-U",
+                ManagementId = "911",
+                ManagementNumber = "2603-911",
+                CustomerId = usenetCustomer.Id,
+                CustomerName = usenetCustomer.NameOriginal,
+                ItemName = "MODEL-U",
+                CurrentLocation = "USENET-ROOM",
+                CreatedAtUtc = new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc),
+                UpdatedAtUtc = new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new RentalAsset
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                AssetKey = "ITWORLD|2603-912|912|ITWORLD-ADMIN-RENTAL-CUSTOMER|MODEL-I",
+                ManagementId = "912",
+                ManagementNumber = "2603-912",
+                CustomerId = itworldCustomer.Id,
+                CustomerName = itworldCustomer.NameOriginal,
+                ItemName = "MODEL-I",
+                CurrentLocation = "ITWORLD-ROOM",
+                CreatedAtUtc = new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc),
+                UpdatedAtUtc = new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc)
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "itworld_admin",
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            IsAdmin = true
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.DoesNotContain(result.Customers, customer => customer.Id == usenetCustomer.Id);
+        Assert.Contains(result.Customers, customer => customer.Id == itworldCustomer.Id);
+        Assert.DoesNotContain(result.Items, item => item.NameOriginal == "USENET-ADMIN-ITEM");
+        Assert.Contains(result.Items, item => item.NameOriginal == "ITWORLD-ADMIN-ITEM");
+        Assert.Contains(result.RentalAssets, asset => asset.ManagementNumber == "2603-911");
+        Assert.Contains(result.RentalAssets, asset => asset.ManagementNumber == "2603-912");
+    }
+
     [Fact]
     public async Task Pull_IncludesCrossTenantDeliveryData_ForUserWithDeliveryViewAll()
     {
@@ -816,6 +1978,7 @@ public sealed class SyncControllerTests : IDisposable
             Id = Guid.NewGuid(),
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
             NameOriginal = "유즈넷 납품처",
             NameMatchKey = "유즈넷납품처",
             TradeType = "매출"
@@ -825,6 +1988,7 @@ public sealed class SyncControllerTests : IDisposable
             Id = Guid.NewGuid(),
             TenantCode = TenantScopeCatalog.Itworld,
             OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
             NameOriginal = "아이티월드 납품처",
             NameMatchKey = "아이티월드납품처",
             TradeType = "매출"
@@ -869,7 +2033,7 @@ public sealed class SyncControllerTests : IDisposable
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPullResponse>(ok.Value);
 
-        Assert.Contains(result.Customers, customer => customer.Id == usenetCustomer.Id);
+        Assert.DoesNotContain(result.Customers, customer => customer.Id == usenetCustomer.Id);
         Assert.Contains(result.Customers, customer => customer.Id == itworldCustomer.Id);
         Assert.Contains(result.Invoices, invoice => invoice.InvoiceNumber == "US-DEL-1");
         Assert.Contains(result.Invoices, invoice => invoice.InvoiceNumber == "IT-DEL-1");
@@ -1657,6 +2821,333 @@ public sealed class SyncControllerTests : IDisposable
         Assert.True(storedAttachment.IsDeleted);
     }
 
+    [Fact]
+    public async Task Push_ReusesExistingRentalManagementCompany_WhenIncomingIdDiffersButTenantAndCodeMatch()
+    {
+        var existing = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            Code = OfficeCodeCatalog.Itworld,
+            Name = "아이티월드",
+            UpdatedAtUtc = new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.RentalManagementCompanies.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalManagementCompanies =
+            [
+                new RentalManagementCompanyDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    Code = OfficeCodeCatalog.Itworld,
+                    Name = "아이티월드(수정)",
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var companies = await _dbContext.RentalManagementCompanies.IgnoreQueryFilters().ToListAsync();
+        Assert.Single(companies);
+        Assert.Equal(existing.Id, companies[0].Id);
+        Assert.Equal("아이티월드(수정)", companies[0].Name);
+    }
+
+    [Fact]
+    public async Task Push_AllowsCombinedRentalPush_WhenReferencedManagementCompanyAlreadyExistsByNaturalKey()
+    {
+        var company = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            Code = OfficeCodeCatalog.Itworld,
+            Name = "아이티월드",
+            UpdatedAtUtc = new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.RentalManagementCompanies.Add(company);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalManagementCompanies =
+            [
+                new RentalManagementCompanyDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    Code = OfficeCodeCatalog.Itworld,
+                    Name = "아이티월드",
+                    CreatedAtUtc = company.CreatedAtUtc,
+                    UpdatedAtUtc = company.UpdatedAtUtc.AddMinutes(1)
+                }
+            ],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    ManagementId = "900",
+                    ManagementNumber = "2604-900",
+                    CustomerName = "테스트 거래처",
+                    ItemName = "MODEL-900",
+                    CurrentLocation = "창고",
+                    CreatedAtUtc = new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 4, 8, 0, 10, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        Assert.Single(await _dbContext.RentalManagementCompanies.IgnoreQueryFilters().ToListAsync());
+        Assert.Single(await _dbContext.RentalAssets.IgnoreQueryFilters().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Push_MergesItemByNaturalKey_AndReportsNotice()
+    {
+        var existing = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "A3 컬러복합기",
+            NameMatchKey = "A3컬러복합기",
+            SpecificationOriginal = "IMC2010",
+            SpecificationMatchKey = "IMC2010",
+            CategoryName = "A3컬러복합기",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            MaterialNumber = "2603-501",
+            SerialNumber = "SN-501"
+        };
+        _dbContext.Items.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-item-natural-key",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = existing.NameOriginal,
+                    NameMatchKey = existing.NameMatchKey,
+                    SpecificationOriginal = existing.SpecificationOriginal,
+                    SpecificationMatchKey = existing.SpecificationMatchKey,
+                    CategoryName = existing.CategoryName,
+                    ItemKind = existing.ItemKind,
+                    TrackingType = existing.TrackingType,
+                    MaterialNumber = existing.MaterialNumber,
+                    SerialNumber = "SN-501-UPDATED",
+                    Notes = "병합 업데이트",
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Contains(result.Notices, notice => notice.Code == "item-natural-key-merged" && notice.EntityId == existing.Id.ToString("D"));
+
+        var items = await _dbContext.Items.IgnoreQueryFilters().Where(item => item.OfficeCode == OfficeCodeCatalog.Itworld).ToListAsync();
+        Assert.Single(items);
+        Assert.Equal(existing.Id, items[0].Id);
+        Assert.Equal("병합 업데이트", items[0].Notes);
+        Assert.Equal("SN-501-UPDATED", items[0].SerialNumber);
+    }
+
+    [Fact]
+    public async Task Push_ClearsMissingInvoiceLinkForTransaction_AndReportsNotice()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "수금 거래처",
+            NameMatchKey = "수금거래처",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var transactionId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-transaction-repair",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = customer.Id,
+                    TenantCode = customer.TenantCode,
+                    OfficeCode = customer.OfficeCode,
+                    ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                    TransactionDate = new DateOnly(2026, 4, 13),
+                    TransactionKind = "전표수금",
+                    LinkedInvoiceId = Guid.NewGuid(),
+                    LinkedInvoiceNumber = "INV-MISSING",
+                    ReceiptTotal = 10000m,
+                    SettlementAmount = 10000m,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Contains(result.Notices, notice => notice.Code == "transaction-invoice-link-cleared" && notice.EntityId == transactionId.ToString("D"));
+        Assert.Contains(result.Notices, notice => notice.Code == "transaction-kind-normalized" && notice.EntityId == transactionId.ToString("D"));
+        Assert.Contains(result.Notices, notice => notice.Code == "transaction-link-updated" && notice.EntityId == transactionId.ToString("D"));
+
+        var stored = await _dbContext.Transactions.IgnoreQueryFilters().FirstAsync(x => x.Id == transactionId);
+        Assert.Null(stored.LinkedInvoiceId);
+        Assert.Equal("일반수금", stored.TransactionKind);
+        Assert.Equal(0m, stored.SettlementAmount);
+    }
+
+    [Fact]
+    public async Task Push_RelinksInvoiceCustomerByName_AndReportsNotice()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "인천보건환경연구원[총무과]",
+            NameMatchKey = "인천보건환경연구원총무과",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-invoice-relink",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = Guid.Empty,
+                    CustomerName = customer.NameOriginal,
+                    TenantCode = customer.TenantCode,
+                    OfficeCode = customer.OfficeCode,
+                    ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 4, 13),
+                    InvoiceNumber = "INV-REL-001",
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "정기 청구",
+                            Unit = "건",
+                            Quantity = 1m,
+                            UnitPrice = 50000m,
+                            LineAmount = 50000m
+                        }
+                    ],
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Contains(result.Notices, notice => notice.Code == "invoice-customer-relinked" && notice.EntityId == invoiceId.ToString("D"));
+
+        var stored = await _dbContext.Invoices.IgnoreQueryFilters().FirstAsync(x => x.Id == invoiceId);
+        Assert.Equal(customer.Id, stored.CustomerId);
+    }
+
+    [Fact]
+    public async Task Push_SkipsOutOfScopeWarehouseStock_AndReportsNotice()
+    {
+        var scopedUser = new TestCurrentUserContext
+        {
+            Username = "usenet-manager",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeTenantAll
+        };
+
+        await using var scopedDb = CreateDbContext(scopedUser);
+        var controller = CreateController(scopedDb, scopedUser);
+
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "재고 품목",
+            NameMatchKey = "재고품목",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        };
+        scopedDb.Items.Add(item);
+        await scopedDb.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-stock-scope",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = item.Id,
+                    WarehouseCode = OfficeCodeCatalog.ItworldMainWarehouse,
+                    Quantity = 5m,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        };
+
+        var response = await controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Contains(result.Notices, notice => notice.Code == "item-warehouse-stock-skip-out-of-scope-warehouse");
+        Assert.False(await scopedDb.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == item.Id));
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();
@@ -1675,7 +3166,10 @@ public sealed class SyncControllerTests : IDisposable
         return dbContext;
     }
 
-    private static SyncController CreateController(AppDbContext dbContext, TestCurrentUserContext currentUser)
+    private static SyncController CreateController(
+        AppDbContext dbContext,
+        TestCurrentUserContext currentUser,
+        ICentralFileStorage? fileStorage = null)
     {
         var revisionClock = new RevisionClock();
         var officeScopeService = new OfficeScopeService(currentUser, dbContext);
@@ -1684,8 +3178,10 @@ public sealed class SyncControllerTests : IDisposable
             currentUser,
             new StubInvoiceNumberService(),
             officeScopeService,
-            new StubCentralFileStorage(),
-            revisionClock);
+            fileStorage ?? new StubCentralFileStorage(),
+            revisionClock,
+            new InventoryLedgerService(dbContext),
+            new RentalAssignmentHistoryService(dbContext));
     }
 
     private sealed class TestCurrentUserContext : ICurrentUserContext
@@ -1715,6 +3211,21 @@ public sealed class SyncControllerTests : IDisposable
 
         public Task<string> SaveBytesAsync(string area, string ownerId, Guid fileId, string fileName, byte[] content, CancellationToken cancellationToken = default)
             => Task.FromResult(Path.Combine(RootPath, fileName));
+
+        public byte[] ReadBytes(string? storedPath, byte[]? fallback = null)
+            => fallback ?? [];
+
+        public void DeleteIfExists(string? storedPath)
+        {
+        }
+    }
+
+    private sealed class ThrowingCentralFileStorage : ICentralFileStorage
+    {
+        public string RootPath => Path.GetTempPath();
+
+        public Task<string> SaveBytesAsync(string area, string ownerId, Guid fileId, string fileName, byte[] content, CancellationToken cancellationToken = default)
+            => throw new InvalidOperationException("Simulated storage failure");
 
         public byte[] ReadBytes(string? storedPath, byte[]? fallback = null)
             => fallback ?? [];

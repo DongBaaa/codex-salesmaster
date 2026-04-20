@@ -1,16 +1,10 @@
-using System.IO;
+﻿using System.IO;
 
 namespace 거래플랜.Desktop.App.Infrastructure;
 
 public static class AppPaths
 {
     private const string AppRootOverrideEnvironmentKey = "GEORAEPLAN_APP_ROOT";
-    private const string DisableLegacyMergeEnvironmentKey = "GEORAEPLAN_DISABLE_LEGACY_MERGE";
-
-    private static readonly string _legacyBase = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "SalesMaster");
-
     private static readonly string _base = ResolveBaseDirectory();
 
     public static string DataDir { get; } = Path.Combine(_base, "data");
@@ -25,9 +19,6 @@ public static class AppPaths
 
     static AppPaths()
     {
-        if (!IsLegacyMergeDisabled())
-            MergeLegacyDataIfNeeded();
-
         Directory.CreateDirectory(DataDir);
         Directory.CreateDirectory(BackupDir);
         Directory.CreateDirectory(TempDir);
@@ -47,48 +38,5 @@ public static class AppPaths
         return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "거래플랜");
-    }
-
-    private static bool IsLegacyMergeDisabled()
-    {
-        var raw = Environment.GetEnvironmentVariable(DisableLegacyMergeEnvironmentKey);
-        if (string.IsNullOrWhiteSpace(raw))
-            return false;
-
-        return string.Equals(raw, "1", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(raw, "yes", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static void MergeLegacyDataIfNeeded()
-    {
-        if (!Directory.Exists(_legacyBase))
-            return;
-
-        MergeDirectory(_legacyBase, _base);
-    }
-
-    private static void MergeDirectory(string sourceDir, string destinationDir)
-    {
-        Directory.CreateDirectory(destinationDir);
-
-        foreach (var directory in Directory.GetDirectories(sourceDir, "*", SearchOption.AllDirectories))
-        {
-            var relative = Path.GetRelativePath(sourceDir, directory);
-            Directory.CreateDirectory(Path.Combine(destinationDir, relative));
-        }
-
-        foreach (var file in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
-        {
-            var relative = Path.GetRelativePath(sourceDir, file);
-            var destinationFile = Path.Combine(destinationDir, relative);
-            var destinationParent = Path.GetDirectoryName(destinationFile);
-
-            if (!string.IsNullOrWhiteSpace(destinationParent))
-                Directory.CreateDirectory(destinationParent);
-
-            if (!File.Exists(destinationFile))
-                File.Copy(file, destinationFile);
-        }
     }
 }

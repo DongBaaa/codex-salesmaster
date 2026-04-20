@@ -16,6 +16,7 @@ namespace 거래플랜.Desktop.App.Views;
 
 public partial class RentalBillingWindow : Window
 {
+    private readonly EntityEditSessionMonitor? _editSessionMonitor;
     private bool _allowClose;
     private bool _closeInProgress;
     private bool _customerEditorOpenInProgress;
@@ -26,6 +27,30 @@ public partial class RentalBillingWindow : Window
         InitializeComponent();
         DataContext = viewModel;
         Closing += HandleClosing;
+        Loaded += (_, _) => _editSessionMonitor?.Start();
+        Closed += (_, _) => _editSessionMonitor?.Dispose();
+
+        _editSessionMonitor = EntityEditSessionMonitor.TryCreate(
+            this,
+            "렌탈 청구관리",
+            () =>
+            {
+                if (viewModel.SelectedRow?.IsAggregateRow == true)
+                    return null;
+
+                var persistedId = viewModel.SelectedRow?.Source.Id ?? Guid.Empty;
+                var entityId = persistedId != Guid.Empty ? persistedId : viewModel.EditId;
+                if (entityId == Guid.Empty)
+                    return null;
+
+                var displayName = string.IsNullOrWhiteSpace(viewModel.EditCustomerName)
+                    ? "렌탈 청구 프로필"
+                    : viewModel.EditCustomerName;
+                return new EditSessionSubject(
+                    "RentalBillingProfile",
+                    entityId.ToString("D"),
+                    displayName);
+            });
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
@@ -66,6 +91,16 @@ public partial class RentalBillingWindow : Window
             if (DataContext is not RentalBillingViewModel viewModel || viewModel.SelectedRow is null)
             {
                 MessageBox.Show("수금을 등록할 대상을 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (!viewModel.CanRegisterSettlementSelected)
+            {
+                MessageBox.Show(
+                    "거래처 요약행은 바로 수금등록할 수 없습니다. 개별 청구 프로필 정리 후 다시 시도하세요.",
+                    "알림",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
                 return;
             }
 
@@ -211,6 +246,16 @@ public partial class RentalBillingWindow : Window
     {
         if (DataContext is not RentalBillingViewModel viewModel)
             return;
+
+        if (viewModel.SelectedRow?.IsAggregateRow == true)
+        {
+            MessageBox.Show(
+                "거래처 요약행에서는 장비 연결을 직접 편집할 수 없습니다. 개별 청구 프로필 정리 후 다시 시도하세요.",
+                "렌탈 자산 연결",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
 
         if (string.IsNullOrWhiteSpace(viewModel.EditCustomerName))
         {

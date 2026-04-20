@@ -25,7 +25,9 @@ public partial class MainWindow : Window
     private readonly BackupService _backup;
     private readonly SyncDiagnosticsService _diagnostics;
     private readonly DesktopAppUpdateService _updateService;
+    private readonly RuntimeSafetyMonitorService _runtimeSafety;
     private readonly DispatcherTimer _centralRevisionPollTimer;
+    private readonly DispatcherTimer _runtimeSafetyTimer;
     private bool _isInitialized;
     private DateTime _lastCentralRefreshUtc = DateTime.MinValue;
     private long _lastPassiveServerRevisionHint;
@@ -33,6 +35,7 @@ public partial class MainWindow : Window
     private bool _deactivateFlushInProgress;
     private bool _updatePromptInProgress;
     private bool _isClosingOrClosed;
+    private bool _runtimeSafetyCheckInProgress;
 
     public MainWindow(MainViewModel vm, LocalStateService local,
                       RentalStateService rental,
@@ -59,6 +62,7 @@ public partial class MainWindow : Window
         _backup = backup;
         _diagnostics = diagnostics;
         _updateService = new DesktopAppUpdateService(api);
+        _runtimeSafety = new RuntimeSafetyMonitorService(local, sync, backup, session, api, diagnostics);
         DataContext = vm;
         Activated += MainWindow_Activated;
         Deactivated += MainWindow_Deactivated;
@@ -68,6 +72,11 @@ public partial class MainWindow : Window
             Interval = TimeSpan.FromSeconds(60)
         };
         _centralRevisionPollTimer.Tick += CentralRevisionPollTimer_Tick;
+        _runtimeSafetyTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMinutes(30)
+        };
+        _runtimeSafetyTimer.Tick += RuntimeSafetyTimer_Tick;
     }
 
     public void BeginShutdownProtection()
@@ -77,6 +86,7 @@ public partial class MainWindow : Window
 
         _isClosingOrClosed = true;
         _centralRevisionPollTimer?.Stop();
+        _runtimeSafetyTimer?.Stop();
     }
 
     public LocalStateService LocalStateService => _local;
@@ -84,12 +94,16 @@ public partial class MainWindow : Window
     public RentalDocumentService RentalDocumentService => _rentalDocuments;
     public IPrintService InvoicePrintService => _invoicePrintService;
     public SessionState SessionState => _session;
+    public ErpApiClient ApiClient => _api;
 
     public void EndShutdownProtection()
     {
         _isClosingOrClosed = false;
         if (_isInitialized && !_session.IsOfflineMode)
+        {
             _centralRevisionPollTimer?.Start();
+            _runtimeSafetyTimer?.Start();
+        }
     }
 
     private void RunUiAsync(Func<Task> operation, string operationName, string? userMessage = null)
@@ -100,18 +114,69 @@ public partial class MainWindow : Window
             operationName,
             userMessage ?? $"{operationName} 중 오류가 발생했습니다.");
 
+    private void ShowDialogWithDeferredLoad(Window window, Func<Task> loadAsync, string windowTitle, string failureMessage)
+    {
+        var loadStarted = false;
+        window.ContentRendered += async (_, _) =>
+        {
+            if (loadStarted)
+                return;
+
+            loadStarted = true;
+            try
+            {
+                await OperationTiming.MeasureAsync(
+                    "UI",
+                    $"{windowTitle} 초기화",
+                    loadAsync,
+                    detail: window.GetType().Name,
+                    infoThreshold: TimeSpan.FromMilliseconds(600),
+                    warningThreshold: TimeSpan.FromSeconds(2));
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("UI", $"{windowTitle} 초기화 실패", ex);
+                MessageBox.Show(
+                    this,
+                    $"{failureMessage}{Environment.NewLine}{ex.Message}",
+                    windowTitle,
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+
+                if (window.IsLoaded)
+                    window.Close();
+            }
+        };
+
+        window.ShowDialog();
+    }
+
     public async Task InitAsync()
     {
         if (_isClosingOrClosed)
             return;
 
-        await _local.EnsureCompanyProfilesHealthyAsync();
-        _vm.SetInvoiceDefaultDateRange(await ResolveServerTodayAsync());
-        await _vm.LoadAsync();
+        await OperationTiming.MeasureAsync(
+            "APP",
+            "회사 프로필 상태 점검",
+            () => _local.EnsureCompanyProfilesHealthyAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
+        var serverClockCheck = await OperationTiming.MeasureAsync(
+            "APP",
+            "서버 기준 날짜 확인",
+            () => _runtimeSafety.ResolveServerTodayAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
+        _vm.SetInvoiceDefaultDateRange(serverClockCheck.ServerToday);
+        await OperationTiming.MeasureAsync(
+            "UI",
+            "메인 대시보드 로드",
+            () => _vm.LoadAsync(),
+            warningThreshold: TimeSpan.FromSeconds(3));
         if (!_session.IsOfflineMode)
         {
             _sync.Start(TimeSpan.FromMinutes(5));
             _centralRevisionPollTimer.Start();
+            _runtimeSafetyTimer.Start();
         }
 
         var popupSections = new List<string>();
@@ -132,33 +197,33 @@ public partial class MainWindow : Window
                 MessageBoxImage.Information);
         }
 
-        await CheckAndPromptForDesktopUpdateAsync();
+        await OperationTiming.MeasureAsync(
+            "UPDATE",
+            "데스크톱 업데이트 확인",
+            () => CheckAndPromptForDesktopUpdateAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
+        if (serverClockCheck.WarningRequired && !string.IsNullOrWhiteSpace(serverClockCheck.WarningMessage))
+        {
+            MessageBox.Show(
+                this,
+                serverClockCheck.WarningMessage,
+                "PC 시간 확인",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
 
         _isInitialized = true;
+        await OperationTiming.MeasureAsync(
+            "APP",
+            "주기 안전 점검 초기 실행",
+            () => RunPeriodicRuntimeSafetyCheckAsync(force: false),
+            warningThreshold: TimeSpan.FromSeconds(2));
     }
 
     private async Task<DateOnly> ResolveServerTodayAsync()
     {
-        if (_session.IsOfflineMode)
-            return DateOnly.FromDateTime(DateTime.Today);
-
-        try
-        {
-            var syncStatus = await _api.GetSyncStatusAsync();
-            if (syncStatus is null)
-                return DateOnly.FromDateTime(DateTime.Today);
-
-            var serverUtc = syncStatus.ServerUtc.Kind == DateTimeKind.Unspecified
-                ? DateTime.SpecifyKind(syncStatus.ServerUtc, DateTimeKind.Utc)
-                : syncStatus.ServerUtc.ToUniversalTime();
-            var serverLocal = TimeZoneInfo.ConvertTimeFromUtc(serverUtc, TimeZoneInfo.Local);
-            return DateOnly.FromDateTime(serverLocal);
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Warn("MAIN", $"서버 기준 날짜 조회 실패: {ex.Message}");
-            return DateOnly.FromDateTime(DateTime.Today);
-        }
+        var result = await _runtimeSafety.ResolveServerTodayAsync();
+        return result.ServerToday;
     }
 
     private void MainWindow_Activated(object? sender, EventArgs e)
@@ -209,11 +274,49 @@ public partial class MainWindow : Window
         await RunPassiveSyncRefreshAsync("중앙 revision polling", TimeSpan.FromMinutes(2), requireServerRevisionChange: true);
     }
 
+    private void RuntimeSafetyTimer_Tick(object? sender, EventArgs e)
+        => RunUiAsync(
+            () => RunPeriodicRuntimeSafetyCheckAsync(force: false),
+            "주기 운영 안전 점검",
+            "주기 운영 안전 점검 중 오류가 발생했습니다.");
+
+    private async Task RunPeriodicRuntimeSafetyCheckAsync(bool force)
+    {
+        if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode || _runtimeSafetyCheckInProgress)
+            return;
+
+        _runtimeSafetyCheckInProgress = true;
+        try
+        {
+            var result = await _runtimeSafety.RunPeriodicIntegrityAsync(force);
+            if (!result.Executed)
+                return;
+
+            if (!string.IsNullOrWhiteSpace(result.StatusMessage))
+                _vm.SyncStatus = result.StatusMessage;
+
+            if (result.WarningRequired && !string.IsNullOrWhiteSpace(result.WarningMessage))
+            {
+                MessageBox.Show(
+                    this,
+                    result.WarningMessage,
+                    "주기 무결성 점검",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        }
+        finally
+        {
+            _runtimeSafetyCheckInProgress = false;
+        }
+    }
+
     private async Task RunPassiveSyncRefreshAsync(string reason, TimeSpan minInterval, bool requireServerRevisionChange)
     {
         if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode || _centralRefreshInProgress || _vm.ForceSyncCommand.IsRunning)
             return;
 
+        var startAtUtc = DateTime.UtcNow;
         _centralRefreshInProgress = true;
         try
         {
@@ -242,6 +345,11 @@ public partial class MainWindow : Window
         }
         finally
         {
+            OperationTiming.LogIfSlow(
+                "SYNC",
+                $"{reason} 경량 재동기화",
+                DateTime.UtcNow - startAtUtc,
+                detail: requireServerRevisionChange ? "revision-check" : "forced-check");
             _centralRefreshInProgress = false;
         }
     }
@@ -421,7 +529,7 @@ public partial class MainWindow : Window
         if (confirm != MessageBoxResult.OK)
             return;
 
-        var deleteCustomerResult = await _local.DeleteCustomerAsync(customer.Id, _session);
+        var deleteCustomerResult = await _local.DeleteCustomerAsync(customer.Id, _session, customer.Revision);
         if (!deleteCustomerResult.Success)
         {
             MessageBox.Show(deleteCustomerResult.Message, "거래처 삭제", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -550,7 +658,11 @@ public partial class MainWindow : Window
             new PeriodLedgerExcelExportService(),
             _session);
 
-        await vm.InitializeAsync();
+        await OperationTiming.MeasureAsync(
+            "UI",
+            "자료기간별 집계 창 초기화",
+            () => vm.InitializeAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
         var win = new PeriodLedgerWindow(vm) { Owner = this };
         win.ShowDialog();
     }
@@ -641,7 +753,11 @@ public partial class MainWindow : Window
         bool preselectSelectedCustomer)
     {
         var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session, voucherType);
-        await vm.LoadAsync();
+        await OperationTiming.MeasureAsync(
+            "UI",
+            $"{voucherType} 전표 창 초기화",
+            () => vm.LoadAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
         vm.NewInvoice();
 
         if (preselectSelectedCustomer &&
@@ -668,8 +784,16 @@ public partial class MainWindow : Window
         };
 
         var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session, entryType);
-        await vm.LoadAsync();
-        await vm.LoadInvoiceAsync(invoice);
+        await OperationTiming.MeasureAsync(
+            "UI",
+            $"{entryType} 전표 편집 창 초기화",
+            () => vm.LoadAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
+        await OperationTiming.MeasureAsync(
+            "UI",
+            $"{entryType} 전표 상세 로드",
+            () => vm.LoadInvoiceAsync(invoice),
+            warningThreshold: TimeSpan.FromSeconds(2));
 
         var win = new SalesWindow(vm) { Owner = this };
         win.Closed += SalesWindow_Closed;
@@ -680,7 +804,11 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new CustomerEditViewModel(_local, _session);
-        await vm.LoadAsync(customer);
+        await OperationTiming.MeasureAsync(
+            "UI",
+            "거래처 등록/수정 창 초기화",
+            () => vm.LoadAsync(customer),
+            warningThreshold: TimeSpan.FromSeconds(2));
 
         var win = new CustomerEditWindow(vm) { Owner = this };
         if (win.ShowDialog() == true)
@@ -691,7 +819,11 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new InventoryViewModel(_local, _session);
-        await vm.LoadAsync();
+        await OperationTiming.MeasureAsync(
+            "UI",
+            "품목/재고 관리 창 초기화",
+            () => vm.LoadAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
         var win = new InventoryWindow(vm) { Owner = this };
         win.Show();
     }
@@ -710,7 +842,11 @@ public partial class MainWindow : Window
                 preselect = await _local.GetCustomerAsync(invoice.CustomerId, _session);
         }
 
-        await vm.LoadAsync(preselect);
+        await OperationTiming.MeasureAsync(
+            "UI",
+            "수금/지급 창 초기화",
+            () => vm.LoadAsync(preselect),
+            warningThreshold: TimeSpan.FromSeconds(2));
         var win = new PaymentWindow(vm) { Owner = this };
         win.Show();
     }
@@ -719,7 +855,11 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new YeonsuDeliveryViewModel(_local, _session);
-        await vm.InitializeAsync();
+        await OperationTiming.MeasureAsync(
+            "UI",
+            "매입/매출내역 창 초기화",
+            () => vm.InitializeAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
         var win = new YeonsuDeliveryWindow(vm, _local, _print, _invoicePrintService, _session)
         {
             Owner = this
@@ -741,7 +881,11 @@ public partial class MainWindow : Window
                 _diagnostics,
                 _rental,
                 async () => await _vm.ReloadForBusinessDatabaseChangeAsync());
-            await vm.InitializeAsync();
+            await OperationTiming.MeasureAsync(
+                "UI",
+                "환경설정 창 초기화",
+                () => vm.InitializeAsync(),
+                warningThreshold: TimeSpan.FromSeconds(2));
             var win = new EnvironmentSettingsWindow(vm, initialTab)
             {
                 Owner = this
@@ -775,7 +919,11 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new CustomerManagementViewModel(_local, _session);
-        await vm.InitializeAsync();
+        await OperationTiming.MeasureAsync(
+            "UI",
+            "거래처 관리 창 초기화",
+            () => vm.InitializeAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
         var win = new CustomerManagementWindow(vm, _local, _session)
         {
             Owner = this
@@ -788,7 +936,11 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var onboardingViewModel = new RentalCustomerOnboardingViewModel(_rental, _local, _session);
-        await onboardingViewModel.LoadAsync();
+        await OperationTiming.MeasureAsync(
+            "UI",
+            "신규 렌탈 거래처 등록 창 초기화",
+            () => onboardingViewModel.LoadAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
 
         var onboardingWindow = new RentalCustomerOnboardingWindow(onboardingViewModel)
         {
@@ -807,12 +959,11 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalDashboardViewModel(_rental, _session);
-        await vm.LoadAsync();
         var win = new RentalDashboardWindow(vm)
         {
             Owner = this
         };
-        win.ShowDialog();
+        ShowDialogWithDeferredLoad(win, () => vm.LoadAsync(), "렌탈 대시보드", "렌탈 대시보드 데이터를 불러오지 못했습니다.");
         await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
 
@@ -820,12 +971,11 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalBillingViewModel(_rental, _local, _session);
-        await vm.LoadAsync();
         var win = new RentalBillingWindow(vm)
         {
             Owner = this
         };
-        win.ShowDialog();
+        ShowDialogWithDeferredLoad(win, () => vm.LoadAsync(), "렌탈 청구관리", "렌탈 청구관리 데이터를 불러오지 못했습니다.");
 
         if (vm.InvoiceToOpenAfterClose.HasValue)
         {
@@ -841,12 +991,11 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalAssetViewModel(_rental, _local, _rentalDocuments, _invoicePrintService, _session);
-        await vm.LoadAsync();
         var win = new RentalAssetWindow(vm)
         {
             Owner = this
         };
-        win.ShowDialog();
+        ShowDialogWithDeferredLoad(win, () => vm.LoadAsync(), "렌탈 자산 / 설치현황", "렌탈 자산 데이터를 불러오지 못했습니다.");
         await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
 
@@ -854,12 +1003,11 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalSettingsViewModel(_rental, _local, _session);
-        await vm.LoadAsync();
         var win = new RentalSettingsWindow(vm)
         {
             Owner = this
         };
-        win.ShowDialog();
+        ShowDialogWithDeferredLoad(win, () => vm.LoadAsync(), "렌탈 설정", "렌탈 설정 데이터를 불러오지 못했습니다.");
         await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
 
@@ -881,6 +1029,7 @@ public partial class MainWindow : Window
         if (_isClosingOrClosed || _session.IsOfflineMode)
             return;
 
+        var startAtUtc = DateTime.UtcNow;
         if (!blockUntilServerFlush && _sync.HasActiveOrQueuedSync)
             return;
 
@@ -909,6 +1058,36 @@ public partial class MainWindow : Window
         {
             AppLogger.Warn("SYNC", $"{reason} flush failed: {ex.Message}");
         }
+        finally
+        {
+            OperationTiming.LogIfSlow(
+                "SYNC",
+                $"{reason} 전 dirty flush",
+                DateTime.UtcNow - startAtUtc,
+                detail: $"dirty={dirtyCount:N0}, block={blockUntilServerFlush}");
+        }
+    }
+
+    private async Task<bool> EnsureReadyForDesktopUpdateAsync(string targetVersion)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        _vm.SyncStatus = $"업데이트 {targetVersion} 전 dirty 데이터를 모두 동기화하는 중...";
+        var readiness = await UpdateReadinessService.EnsureReadyForUpdateAsync(_local, _sync, _session, cts.Token);
+        if (readiness.CanProceed)
+        {
+            if (readiness.SyncAttempted)
+                _vm.SyncStatus = readiness.Message;
+
+            return true;
+        }
+
+        _vm.SyncStatus = readiness.Message;
+        MessageBox.Show(
+            readiness.Message + Environment.NewLine + Environment.NewLine + "모든 dirty 데이터가 중앙 서버에 반영된 뒤에만 업데이트를 시작할 수 있습니다.",
+            "업데이트 보류",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
+        return false;
     }
 
     private async Task CheckAndPromptForDesktopUpdateAsync()
@@ -927,8 +1106,6 @@ public partial class MainWindow : Window
             if (string.Equals(lastPromptedVersion, result.LatestVersion, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            await _local.SetSettingAsync("Update.LastPromptedDesktopVersion", result.LatestVersion, CancellationToken.None);
-
             var answer = MessageBox.Show(
                 $"새 PC 버전 {result.LatestVersion}이 준비되어 있습니다.{Environment.NewLine}{Environment.NewLine}" +
                 "지금 업데이트를 시작하시겠습니까?",
@@ -937,8 +1114,15 @@ public partial class MainWindow : Window
                 MessageBoxImage.Information);
 
             if (answer != MessageBoxResult.Yes)
+            {
+                await _local.SetSettingAsync("Update.LastPromptedDesktopVersion", result.LatestVersion, CancellationToken.None);
+                return;
+            }
+
+            if (!await EnsureReadyForDesktopUpdateAsync(result.LatestVersion))
                 return;
 
+            await _local.SetSettingAsync("Update.LastPromptedDesktopVersion", result.LatestVersion, CancellationToken.None);
             _updateService.StartUpdate(result.Package);
             _vm.SyncStatus = $"업데이트 {result.LatestVersion} 설치를 시작했습니다.";
             Application.Current?.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));

@@ -11,9 +11,24 @@ if ([string]::IsNullOrWhiteSpace($solutionPath)) {
     throw '솔루션 파일을 찾을 수 없습니다.'
 }
 
+$syncRecoveryScript = (Get-ChildItem -Path $root -Recurse -File -Filter 'Invoke-SyncRecoveryCheck.ps1' | Select-Object -First 1).FullName
+$multiPcConflictScript = (Get-ChildItem -Path $root -Recurse -File -Filter 'Invoke-MultiPcConflictCheck.ps1' | Select-Object -First 1).FullName
+$accountScopeRegressionScript = Join-Path $root 'tasks\Run-OptionalAccountScopeRegression.ps1'
+$runtimeSafetyScript = Join-Path $root 'tasks\verify-runtime-safety.ps1'
+
+foreach ($requiredScript in @($runtimeSafetyScript, $syncRecoveryScript, $multiPcConflictScript, $accountScopeRegressionScript)) {
+    if ([string]::IsNullOrWhiteSpace($requiredScript) -or -not (Test-Path -LiteralPath $requiredScript)) {
+        throw "필수 검증 스크립트를 찾을 수 없습니다: $requiredScript"
+    }
+}
+
 $steps = @(
     @{ Name = 'build'; Command = $dotnet + ' build "' + $solutionPath + '" -c Debug -nodeReuse:false /p:UseSharedCompilation=false' },
     @{ Name = 'server-tests'; Command = "$dotnet test $root\Tests\GeoraePlan.Server.Api.Tests\GeoraePlan.Server.Api.Tests.csproj -c Debug --no-build" },
+    @{ Name = 'runtime-safety'; Command = "& '$runtimeSafetyScript'" },
+    @{ Name = 'sync-recovery'; Command = "& '$syncRecoveryScript' -ProjectRoot '$root'" },
+    @{ Name = 'multi-pc-conflict'; Command = "& '$multiPcConflictScript' -ProjectRoot '$root'" },
+    @{ Name = 'account-scope-regression'; Command = "& '$accountScopeRegressionScript' -ProjectRoot '$root'" },
     @{ Name = 'office-code-verifier'; Command = "$dotnet run --project $root\tasks\OfficeCodeVerifier\OfficeCodeVerifier.csproj -c Debug" },
     @{ Name = 'sync-probe-inspect'; Command = "$dotnet run --project $root\tmp\SyncProbe\SyncProbe.csproj -c Debug -- inspect" },
     @{ Name = 'syncdiag-inspect'; Command = "$dotnet run --project $root\.tmp\syncdiag\syncdiag.csproj -c Debug -- inspect" },
@@ -23,6 +38,7 @@ $steps = @(
     @{ Name = 'rental-ui-verifier'; Command = "$dotnet run --project $root\tasks\RentalUiVerifier\RentalUiVerifier.csproj -c Debug" },
     @{ Name = 'supplement-doc-smoke'; Command = "$dotnet run --project $root\tasks\SupplementDocSmoke\SupplementDocSmoke.csproj -c Debug" },
     @{ Name = 'document-audit'; Command = "$dotnet run --project $root\tasks\DocumentAudit\DocumentAudit.csproj -c Debug" },
+    @{ Name = 'backup-restore-smoke'; Command = "$dotnet run --project $root\tasks\BackupRestoreSmoke\BackupRestoreSmoke.csproj -c Debug" },
     @{ Name = 'operational-batch-verify'; Command = "$dotnet run --project $root\tasks\OperationalBatchRunner\OperationalBatchRunner.csproj -c Debug -- --mode=verify" },
     @{ Name = 'rental-catalog-repair'; Command = "$dotnet run --project $root\tasks\RentalCatalogRepairRunner\RentalCatalogRepairRunner.csproj -c Debug" },
     @{ Name = 'rental-term-verify'; Command = "$dotnet run --project $root\.tmp\rental_term_verify\rental_term_verify.csproj -c Debug" }
@@ -38,8 +54,17 @@ foreach ($step in $steps) {
     $exitCode = -1
     try {
         Push-Location $root
-        $combined = & "$env:SystemRoot\System32\cmd.exe" /d /c $step.Command 2>&1
-        $exitCode = $LASTEXITCODE
+        $combined = @()
+        try {
+            $script = [scriptblock]::Create($step.Command)
+            $combined = & $script 2>&1
+            $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+        }
+        catch {
+            $combined = @($_ | Out-String)
+            $exitCode = if ($LASTEXITCODE) { [int]$LASTEXITCODE } else { 1 }
+        }
+
         $lines = @($combined | ForEach-Object { $_.ToString() })
         $stdout = ($lines | Where-Object { $_ -ne $null }) -join [Environment]::NewLine
         $stderr = ''

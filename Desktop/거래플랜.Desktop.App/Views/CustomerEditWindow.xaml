@@ -297,6 +297,7 @@
                                 <ColumnDefinition Width="150"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
 
@@ -318,6 +319,11 @@
                                     <Style TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}"/>
                                 </DatePicker.Resources>
                             </DatePicker>
+                            <TextBlock Grid.Column="6"
+                                       Text="{Binding ContractEntryModeText}"
+                                       Margin="12,0,0,0"
+                                       Foreground="#90CAF9"
+                                       FontWeight="SemiBold"/>
                         </Grid>
 
                         <Grid Grid.Row="2">
@@ -328,16 +334,19 @@
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
 
                             <Label Grid.Column="0" Content="메모"/>
                             <TextBox Grid.Column="1" Text="{Binding ContractDescription, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0"/>
                             <CheckBox Grid.Column="2" Content="대표 계약서" IsChecked="{Binding NewContractIsPrimary}" Margin="0,0,12,0"/>
-                            <Button Grid.Column="3" Content="PDF 추가" Background="#1565C0" Margin="0,0,8,0"
+                            <Button Grid.Column="3" Content="새 계약서" Background="#455A64" Margin="0,0,8,0"
+                                    Command="{Binding BeginNewContractEntryCommand}"/>
+                            <Button Grid.Column="4" Content="PDF 추가" Background="#1565C0" Margin="0,0,8,0"
                                     Command="{Binding AddContractCommand}"/>
-                            <Button Grid.Column="4" Content="열기" Background="#2E7D32" Margin="0,0,8,0"
+                            <Button Grid.Column="5" Content="열기" Background="#2E7D32" Margin="0,0,8,0"
                                     Command="{Binding OpenContractCommand}"/>
-                            <Button Grid.Column="5" Content="대표 지정" Background="#6A1B9A" Margin="0,0,8,0"
+                            <Button Grid.Column="6" Content="대표 지정" Background="#6A1B9A" Margin="0,0,8,0"
                                     Command="{Binding SetPrimaryContractCommand}"/>
                         </Grid>
 
@@ -353,10 +362,33 @@
                                       AutoGenerateColumns="False">
                                 <DataGrid.Columns>
                                     <DataGridCheckBoxColumn Header="대표" Binding="{Binding IsPrimary}" Width="60"/>
+                                    <DataGridTemplateColumn Header="상태" Width="78">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding FileRegistrationStatus}"
+                                                           HorizontalAlignment="Center"
+                                                           FontWeight="Bold">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                            <Setter Property="Foreground" Value="#FFCC80"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding HasAttachedPdf}" Value="True">
+                                                                    <Setter Property="Foreground" Value="#A5D6A7"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=DataGridCell}, Path=IsSelected}" Value="True">
+                                                                    <Setter Property="Foreground" Value="Black"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
                                     <DataGridTextColumn Header="구분" Binding="{Binding ContractType}" Width="110"/>
                                     <DataGridTextColumn Header="체결일" Binding="{Binding SignedDate}" Width="95"/>
                                     <DataGridTextColumn Header="만료일" Binding="{Binding ExpireDate}" Width="95"/>
-                                    <DataGridTextColumn Header="파일명" Binding="{Binding FileName}" Width="220"/>
+                                    <DataGridTextColumn Header="파일명" Binding="{Binding FileName}" Width="190"/>
                                     <DataGridTextColumn Header="용량" Binding="{Binding FileSize, StringFormat={}{0:N0} B}" Width="100"/>
                                     <DataGridTextColumn Header="등록자" Binding="{Binding UploadedByUsername}" Width="90"/>
                                     <DataGridTextColumn Header="등록시각" Binding="{Binding UploadedAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm}}" Width="130"/>

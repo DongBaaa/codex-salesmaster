@@ -1,6 +1,7 @@
-using 거래플랜.Server.Api.Data;
+﻿using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
+using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
 using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
@@ -8,6 +9,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
+
 
 namespace 거래플랜.Server.Api.Controllers;
 
@@ -28,15 +30,29 @@ public sealed class CustomersController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<ActionResult<List<CustomerDto>>> GetAll([FromQuery] string? q, CancellationToken cancellationToken)
+    public async Task<ActionResult<List<CustomerDto>>> GetAll(
+        [FromQuery] string? q,
+        [FromQuery] int? skip,
+        [FromQuery] int? take,
+        CancellationToken cancellationToken)
     {
+        const int maxTake = 5000;
         var query = _officeScopeService.ApplyCustomerScope(_dbContext.Customers.AsNoTracking());
         if (!string.IsNullOrWhiteSpace(q))
         {
             query = query.Where(x => x.NameOriginal.Contains(q) || x.Phone.Contains(q) || x.BusinessNumber.Contains(q));
         }
 
-        return Ok(await query.OrderBy(x => x.NameOriginal).Take(200).Select(x => x.ToDto()).ToListAsync(cancellationToken));
+        query = query.OrderBy(x => x.NameOriginal);
+
+        var normalizedSkip = Math.Max(skip.GetValueOrDefault(), 0);
+        if (normalizedSkip > 0)
+            query = query.Skip(normalizedSkip);
+
+        if (take is > 0)
+            query = query.Take(Math.Min(take.Value, maxTake));
+
+        return Ok(await query.Select(x => x.ToDto()).ToListAsync(cancellationToken));
     }
 
     [HttpGet("{id:guid}")]
@@ -115,16 +131,22 @@ public sealed class CustomersController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Policy = "AdminOrGod")]
+    [Authorize(Policy = PermissionNames.CustomerEdit)]
     public async Task<ActionResult<CustomerDto>> Create([FromBody] CustomerDto dto, CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditCustomers())
             return Forbid();
 
         NormalizeCustomerClassification(dto);
         var entity = new Customer { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
+        dto.ResponsibleOfficeCode = _officeScopeService.ResolveCustomerResponsibleScopeForCreate(
+            dto.ResponsibleOfficeCode,
+            dto.OfficeCode);
+        dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+            dto.OfficeCode,
+            dto.ResponsibleOfficeCode,
+            dto.OfficeCode);
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode);
-        dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode);
         entity.Apply(dto);
         _dbContext.Customers.Add(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -132,37 +154,51 @@ public sealed class CustomersController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
-    [Authorize(Policy = "AdminOrGod")]
+    [Authorize(Policy = PermissionNames.CustomerEdit)]
     public async Task<ActionResult<CustomerDto>> Update(Guid id, [FromBody] CustomerDto dto, CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditCustomers())
             return Forbid();
 
         var entity = await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOfficeForCustomers(entity.OfficeCode, entity.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForCustomers(entity.ResponsibleOfficeCode, entity.TenantCode))
             return Forbid();
+        if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Customer)) is { } conflict)
+            return conflict;
 
         PreserveCustomerTextWhenIncomingLooksLossy(dto, entity);
         NormalizeCustomerClassification(dto);
-        dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, entity.TenantCode, entity.OfficeCode);
-        dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, entity.OfficeCode);
+        dto.ResponsibleOfficeCode = _officeScopeService.ResolveCustomerResponsibleScopeForCreate(
+            dto.ResponsibleOfficeCode,
+            entity.ResponsibleOfficeCode);
+        dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+            dto.OfficeCode,
+            dto.ResponsibleOfficeCode,
+            entity.OfficeCode);
+        dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
+            dto.TenantCode,
+            dto.OfficeCode,
+            entity.TenantCode,
+            entity.OfficeCode);
         entity.Apply(dto);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
 
     [HttpDelete("{id:guid}")]
-    [Authorize(Policy = "AdminOrGod")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+    [Authorize(Policy = PermissionNames.CustomerEdit)]
+    public async Task<IActionResult> Delete(Guid id, [FromQuery] long? expectedRevision, CancellationToken cancellationToken)
     {
-        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+        if (!_officeScopeService.CanEditCustomers())
             return Forbid();
 
         var entity = await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOfficeForCustomers(entity.OfficeCode, entity.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForCustomers(entity.ResponsibleOfficeCode, entity.TenantCode))
             return Forbid();
+        if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Customer)) is { } conflict)
+            return conflict;
 
         entity.IsDeleted = true;
 
@@ -224,3 +260,6 @@ public sealed class CustomersController : ControllerBase
         dto.TradeType = CustomerClassificationNormalizer.NormalizeTradeTypeOrDefault(rawTradeType);
     }
 }
+
+
+

@@ -22,6 +22,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     private bool _isInventoryRefreshInProgress;
     private int _openTransferVersion;
     private string _baselineStateSignature = string.Empty;
+    private long _transferRevision;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSavedTransfer))]
@@ -239,7 +240,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             return;
         }
 
-        var transfer = await _local.GetInventoryTransferAsync(transferId);
+        var transfer = await _local.GetInventoryTransferAsync(transferId, _session);
         if (version != Volatile.Read(ref _openTransferVersion))
             return;
 
@@ -264,10 +265,25 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            var result = await _local.DeleteInventoryTransferAsync(TransferId, _session);
-            StatusMessage = result.Message;
+            var targetTransferId = TransferId;
+            var result = await _local.DeleteInventoryTransferAsync(targetTransferId, _session, _transferRevision);
             if (!result.Success)
+            {
+                StatusMessage = result.Message;
+                if (result.ConcurrencyConflict)
+                {
+                    await RefreshWarehouseStocksAsync();
+                    await RefreshTransfersAsync();
+                    await OpenTransferAsync(targetTransferId);
+                    System.Windows.MessageBox.Show(
+                        result.Message,
+                        "동시 수정 충돌",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Warning);
+                }
+
                 return;
+            }
 
             await RefreshWarehouseStocksAsync();
             await RefreshTransfersAsync();
@@ -377,7 +393,8 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             snapshot,
             requestedSelectionId: snapshot.TransferId == Guid.Empty ? null : snapshot.TransferId,
             refreshAfterSave: true,
-            successMessage: snapshot.TransferId == Guid.Empty ? "재고이동을 저장했습니다." : "재고이동을 수정했습니다.");
+            successMessage: snapshot.TransferId == Guid.Empty ? "재고이동을 저장했습니다." : "재고이동을 수정했습니다.",
+            showConflictDialog: true);
     }
 
     [RelayCommand]
@@ -402,10 +419,24 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
                 TransferId,
                 Lines.Select(line => line.ToLocal(TransferId)).ToList(),
                 ReceiveMemo,
-                _session);
+                _session,
+                expectedRevision: _transferRevision);
             StatusMessage = result.Message;
             if (!result.Success)
+            {
+                if (result.ConcurrencyConflict)
+                {
+                    await RefreshTransfersAsync(TransferId);
+                    await OpenTransferAsync(TransferId);
+                    System.Windows.MessageBox.Show(
+                        result.Message,
+                        "동시 수정 충돌",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Warning);
+                }
+
                 return;
+            }
 
             await RefreshTransfersAsync(result.EntityId);
             await OpenTransferAsync(result.EntityId);
@@ -434,10 +465,23 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            var result = await _local.RejectInventoryTransferAsync(TransferId, RejectReason, _session);
+            var result = await _local.RejectInventoryTransferAsync(TransferId, RejectReason, _session, expectedRevision: _transferRevision);
             StatusMessage = result.Message;
             if (!result.Success)
+            {
+                if (result.ConcurrencyConflict)
+                {
+                    await RefreshTransfersAsync(TransferId);
+                    await OpenTransferAsync(TransferId);
+                    System.Windows.MessageBox.Show(
+                        result.Message,
+                        "동시 수정 충돌",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Warning);
+                }
+
                 return;
+            }
 
             await RefreshTransfersAsync(result.EntityId);
             await OpenTransferAsync(result.EntityId);
@@ -572,9 +616,9 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
 
     private async Task LoadLookupsAsync()
     {
-        _allItems = await _local.GetItemsAsync();
+        _allItems = await _local.GetItemsForInventoryTransferAsync(_session);
 
-        var warehouses = await _local.GetWarehousesAsync();
+        var warehouses = await _local.GetWarehousesForInventoryTransferAsync(_session);
         Warehouses.Clear();
         _warehouseNames.Clear();
 
@@ -591,7 +635,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     private async Task RefreshWarehouseStocksAsync()
     {
         _warehouseStocks.Clear();
-        foreach (var stock in await _local.GetItemWarehouseStocksAsync())
+        foreach (var stock in await _local.GetItemWarehouseStocksForInventoryTransferAsync(_session))
         {
             var key = (stock.ItemId, NormalizeCode(stock.WarehouseCode));
             _warehouseStocks[key] = stock.Quantity;
@@ -602,7 +646,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
 
     private async Task RefreshTransfersAsync(Guid? selectedTransferId = null)
     {
-        var transfers = await _local.GetInventoryTransfersAsync();
+        var transfers = await _local.GetInventoryTransfersAsync(_session);
         Transfers.Clear();
         foreach (var transfer in transfers)
             Transfers.Add(transfer);
@@ -620,7 +664,18 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     {
         ApplySnapshot(CreateNewTransferSnapshot(), resetBaseline: true);
         SetSelectedTransfer(null);
-        StatusMessage = "새 내부 재고이동 문서를 작성하세요.";
+        StatusMessage = BuildNewTransferStatusMessage();
+    }
+
+    private string BuildNewTransferStatusMessage()
+    {
+        if (Warehouses.Count == 0)
+            return "현재 업체에서 사용할 수 있는 재고이동 창고가 없습니다.";
+
+        if (Warehouses.Count == 1)
+            return "현재 업체에서 사용할 수 있는 내부 재고이동 창고가 1개뿐이라 저장할 수 없습니다.";
+
+        return "새 내부 재고이동 문서를 작성하세요.";
     }
 
     private void ResetLineEditor(bool clearSelection)
@@ -730,7 +785,8 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             snapshot,
             requestedSelectionId: requestedSelection?.Id,
             refreshAfterSave: true,
-            successMessage: "재고이동 문서를 자동 저장했습니다.");
+            successMessage: "재고이동 문서를 자동 저장했습니다.",
+            showConflictDialog: false);
 
         if (saved)
             return true;
@@ -751,7 +807,8 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             snapshot,
             requestedSelectionId: SelectedTransfer?.Id,
             refreshAfterSave: refreshAfterSave,
-            successMessage: "재고이동 문서를 자동 저장했습니다.");
+            successMessage: "재고이동 문서를 자동 저장했습니다.",
+            showConflictDialog: false);
     }
 
     private bool TryCaptureAutoSaveSnapshot(out InventoryTransferEditSnapshot snapshot)
@@ -764,7 +821,8 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         InventoryTransferEditSnapshot snapshot,
         Guid? requestedSelectionId,
         bool refreshAfterSave,
-        string successMessage)
+        string successMessage,
+        bool showConflictDialog)
     {
         await _autoSaveGate.WaitAsync();
         try
@@ -779,9 +837,20 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             try
             {
                 var result = await _local.SaveInventoryTransferAsync(transfer, _session);
-                StatusMessage = result.Message;
                 if (!result.Success)
+                {
+                    StatusMessage = result.Message;
+                    if (result.ConcurrencyConflict && showConflictDialog)
+                    {
+                        System.Windows.MessageBox.Show(
+                            result.Message,
+                            "동시 수정 충돌",
+                            System.Windows.MessageBoxButton.OK,
+                            System.Windows.MessageBoxImage.Warning);
+                    }
+
                     return false;
+                }
 
                 if (refreshAfterSave)
                 {
@@ -870,6 +939,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         transfer = new LocalInventoryTransfer
         {
             Id = transferId,
+            Revision = snapshot.Revision,
             TransferNumber = snapshot.TransferNumber,
             TransferDate = snapshot.TransferDate,
             FromWarehouseCode = snapshot.FromWarehouseCode,
@@ -893,6 +963,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     private InventoryTransferEditSnapshot CaptureEditSnapshot()
         => new(
             TransferId,
+            _transferRevision,
             TransferNumber,
             TransferDate,
             FromWarehouseCode,
@@ -915,6 +986,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     private InventoryTransferEditSnapshot CreateSnapshotFromTransfer(LocalInventoryTransfer transfer)
         => new(
             transfer.Id,
+            transfer.Revision,
             transfer.TransferNumber ?? string.Empty,
             transfer.TransferDate,
             transfer.FromWarehouseCode ?? string.Empty,
@@ -942,6 +1014,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         var fromWarehouseCode = DetermineDefaultFromWarehouseCode();
         return new InventoryTransferEditSnapshot(
             Guid.Empty,
+            0,
             string.Empty,
             DateOnly.FromDateTime(DateTime.Today),
             fromWarehouseCode,
@@ -968,6 +1041,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         try
         {
             TransferId = snapshot.TransferId;
+            _transferRevision = snapshot.Revision;
             TransferNumber = snapshot.TransferNumber;
             TransferDate = snapshot.TransferDate;
             FromWarehouseCode = snapshot.FromWarehouseCode;
@@ -1178,6 +1252,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
 
     private sealed record InventoryTransferEditSnapshot(
         Guid TransferId,
+        long Revision,
         string TransferNumber,
         DateOnly TransferDate,
         string FromWarehouseCode,

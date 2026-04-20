@@ -40,6 +40,8 @@ public sealed partial class EnvironmentSettingsViewModel
     [ObservableProperty] private bool _sharingAllowTargetWrite;
     [ObservableProperty] private bool _sharingIsActive = true;
     [ObservableProperty] private string _sharingNote = string.Empty;
+    [ObservableProperty] private string _currentScopeMatrixSummary = "현재 로그인 계정 범위를 아직 불러오지 않았습니다.";
+    [ObservableProperty] private string _currentScopeMatrixGeneratedAtText = "미조회";
 
     public ObservableCollection<TenantDefinitionDto> TenantDefinitions { get; } = new();
     public ObservableCollection<TenantOfficeDefinitionDto> TenantOfficeDefinitions { get; } = new();
@@ -48,12 +50,16 @@ public sealed partial class EnvironmentSettingsViewModel
     public ObservableCollection<DisplayOption> SharingSourceOfficeOptions { get; } = new();
     public ObservableCollection<DisplayOption> SharingTargetTenantOptions { get; } = new();
     public ObservableCollection<DisplayOption> SharingTargetOfficeOptions { get; } = new();
+    public ObservableCollection<ScopeMatrixAreaDto> CurrentScopeMatrixAreas { get; } = new();
 
     public string TenantConfigurationHint => CanManageTenantConfiguration
         ? "관리자는 업체 권역, 지점 역할, 지점 간 데이터 연동 정책을 직접 수정할 수 있습니다."
         : _session.IsOfflineMode
             ? "오프라인 모드에서는 업체 / 데이터 권한 설정을 불러오거나 변경할 수 없습니다."
             : "일반 사용자는 업체 / 데이터 권한 설정을 조회만 할 수 있고 변경은 관리자만 가능합니다.";
+    public string CurrentScopeMatrixHint => _session.IsOfflineMode
+        ? "오프라인 모드에서는 현재 계정의 서버 기준 범위를 조회할 수 없습니다."
+        : "현재 로그인 계정이 실제로 읽고 쓸 수 있는 지점 범위를 서버 기준으로 보여줍니다.";
 
     public bool CanDeleteSelectedSharingPolicy => CanManageTenantConfiguration && SelectedSharingPolicy is not null;
 
@@ -71,6 +77,9 @@ public sealed partial class EnvironmentSettingsViewModel
         SharingPolicies.Clear();
         SharingSourceTenantOptions.Clear();
         SharingTargetTenantOptions.Clear();
+        CurrentScopeMatrixAreas.Clear();
+
+        await ReloadCurrentScopeMatrixAsync();
 
         if (!CanManageTenantConfiguration || _session.IsOfflineMode)
         {
@@ -146,6 +155,44 @@ public sealed partial class EnvironmentSettingsViewModel
             NewSharingPolicy();
     }
 
+    private async Task ReloadCurrentScopeMatrixAsync()
+    {
+        CurrentScopeMatrixAreas.Clear();
+
+        if (_session.IsOfflineMode)
+        {
+            CurrentScopeMatrixGeneratedAtText = "오프라인";
+            CurrentScopeMatrixSummary = "오프라인 모드에서는 현재 계정 범위를 조회할 수 없습니다.";
+            return;
+        }
+
+        try
+        {
+            var snapshot = await _api.GetScopeMatrixAsync();
+            if (snapshot is null)
+            {
+                CurrentScopeMatrixGeneratedAtText = "미조회";
+                CurrentScopeMatrixSummary = "현재 계정 범위를 불러오지 못했습니다.";
+                return;
+            }
+
+            foreach (var area in snapshot.Areas
+                         .OrderBy(area => area.AreaDisplayName, StringComparer.CurrentCultureIgnoreCase))
+            {
+                CurrentScopeMatrixAreas.Add(area);
+            }
+
+            CurrentScopeMatrixGeneratedAtText = snapshot.GeneratedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+            CurrentScopeMatrixSummary =
+                $"{snapshot.Username} / {snapshot.TenantCode} / {snapshot.OfficeCode} / {TenantScopeCatalog.GetScopeDisplayName(snapshot.ScopeType)}";
+        }
+        catch (Exception ex)
+        {
+            CurrentScopeMatrixGeneratedAtText = "조회 실패";
+            CurrentScopeMatrixSummary = $"현재 계정 범위 조회 실패: {ex.Message}";
+        }
+    }
+
     [RelayCommand]
     private async Task SaveTenantDefinitionAsync()
     {
@@ -168,6 +215,7 @@ public sealed partial class EnvironmentSettingsViewModel
                 EditingTenantCode,
                 new UpdateTenantDefinitionRequest
                 {
+                    ExpectedRevision = SelectedTenantDefinition?.Revision ?? 0,
                     DisplayName = EditingTenantDisplayName,
                     StorageMode = EditingTenantStorageMode,
                     Description = EditingTenantDescription,
@@ -208,6 +256,7 @@ public sealed partial class EnvironmentSettingsViewModel
                 EditingOfficeCode,
                 new UpdateTenantOfficeDefinitionRequest
                 {
+                    ExpectedRevision = SelectedTenantOfficeDefinition?.Revision ?? 0,
                     DisplayName = EditingOfficeDisplayName,
                     IsHeadOffice = EditingOfficeIsHeadOffice,
                     IsActive = EditingOfficeIsActive
@@ -267,6 +316,7 @@ public sealed partial class EnvironmentSettingsViewModel
 
         var request = new UpsertDataSharingPolicyRequest
         {
+            ExpectedRevision = SelectedSharingPolicy?.Revision ?? 0,
             SourceTenantCode = SharingSourceTenantCode,
             SourceOfficeCode = SharingSourceOfficeCode,
             TargetTenantCode = SharingTargetTenantCode,
@@ -328,7 +378,7 @@ public sealed partial class EnvironmentSettingsViewModel
         try
         {
             IsBusy = true;
-            await _api.DeleteSharingPolicyAsync(SelectedSharingPolicy.Id);
+            await _api.DeleteSharingPolicyAsync(SelectedSharingPolicy.Id, SelectedSharingPolicy.Revision);
             StatusMessage = "연동 정책을 삭제했습니다.";
             await ReloadTenantConfigurationAsync();
             NewSharingPolicy();

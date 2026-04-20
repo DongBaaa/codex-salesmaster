@@ -1,5 +1,7 @@
 namespace 거래플랜.Shared.Contracts;
 
+public sealed record DefaultUnitDefinition(Guid Id, string Name);
+
 public static class UnitCatalogNormalizer
 {
     public const string DefaultEach = "EA";
@@ -16,6 +18,25 @@ public static class UnitCatalogNormalizer
         DefaultPiece,
         DefaultBox
     ];
+
+    public static IReadOnlyList<DefaultUnitDefinition> CanonicalDefinitions { get; } =
+    [
+        new(Guid.Parse("920747d5-a3f3-4a17-9981-38c43944ef25"), DefaultEach),
+        new(Guid.Parse("d1dd3e3e-33b8-4fde-b55d-2730bded73cd"), DefaultSet),
+        new(Guid.Parse("2afae70b-4f6a-491f-979e-2e64cf760043"), DefaultMachine),
+        new(Guid.Parse("4b40cf84-ac7b-4292-b2dd-b1106f7a7857"), DefaultPiece),
+        new(Guid.Parse("db9f045f-e897-4617-b8fe-93c6505f84e6"), DefaultBox)
+    ];
+
+    public static bool TryGetCanonicalDefinition(string? value, out DefaultUnitDefinition definition)
+    {
+        var normalized = Normalize(value);
+        definition = CanonicalDefinitions.FirstOrDefault(current =>
+            string.Equals(current.Name, normalized, StringComparison.Ordinal))
+            ?? default!;
+
+        return definition is not null;
+    }
 
     public static string Normalize(string? value)
     {

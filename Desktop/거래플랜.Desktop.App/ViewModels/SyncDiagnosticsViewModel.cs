@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -16,6 +17,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
 {
     private readonly SyncDiagnosticsService _diagnostics;
     private readonly SyncService _sync;
+    private readonly ErpApiClient _api;
     private readonly LocalStateService _local;
     private readonly RentalStateService _rental;
     private readonly SessionState _session;
@@ -36,6 +38,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     [ObservableProperty] private string _summaryStatusText = "동기화 진단을 불러오는 중...";
     [ObservableProperty] private int _openIssueCount;
     [ObservableProperty] private int _recoverableIssueCount;
+    [ObservableProperty] private int _manualReviewIssueCount;
     [ObservableProperty] private int _totalIssueCount;
     [ObservableProperty] private string _lastSuccessText = "없음";
     [ObservableProperty] private string _lastFailureText = "없음";
@@ -48,12 +51,14 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     public SyncDiagnosticsViewModel(
         SyncDiagnosticsService diagnostics,
         SyncService sync,
+        ErpApiClient api,
         LocalStateService local,
         RentalStateService rental,
         SessionState session)
     {
         _diagnostics = diagnostics;
         _sync = sync;
+        _api = api;
         _local = local;
         _rental = rental;
         _session = session;
@@ -62,7 +67,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     }
 
     public async Task LoadAsync()
-        => await ReloadAsync();
+        => await RefreshAllPanelsAsync(refreshServerIntegrity: true);
 
     public void Dispose()
         => _diagnostics.DiagnosticsChanged -= HandleDiagnosticsChanged;
@@ -111,6 +116,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
 
             OpenIssueCount = summary.OpenIssueCount;
             RecoverableIssueCount = summary.RecoverableIssueCount;
+            ManualReviewIssueCount = Math.Max(0, summary.OpenIssueCount - summary.RecoverableIssueCount);
             TotalIssueCount = summary.TotalIssueCount;
             LastSuccessText = summary.LastSuccessAtUtc.HasValue
                 ? summary.LastSuccessAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
@@ -122,7 +128,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
             LastRevisionText = summary.LastKnownSyncRevision.ToString("N0");
             SummaryStatusText = summary.OpenIssueCount == 0
                 ? "현재 미해결 동기화 오류가 없습니다."
-                : $"현재 미해결 동기화 오류 {summary.OpenIssueCount:N0}건, 자동 복구 가능 {summary.RecoverableIssueCount:N0}건";
+                : $"현재 미해결 동기화 오류 {summary.OpenIssueCount:N0}건, 자동 복구 가능 {summary.RecoverableIssueCount:N0}건, 수동 확인 필요 {ManualReviewIssueCount:N0}건";
 
             var selectedId = SelectedEvent?.Id;
             Events.Clear();
@@ -140,6 +146,14 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         }
     }
 
+    private async Task RefreshAllPanelsAsync(bool refreshServerIntegrity)
+    {
+        await ReloadAsync();
+        await RefreshOutboxAsync();
+        if (refreshServerIntegrity)
+            await LoadServerIntegrityAsync(updateSummaryStatus: false);
+    }
+
     private void UpdateSelectedRecoveryDescription()
     {
         var plan = BuildRecoveryPlan(SelectedEvent is null ? [] : [SelectedEvent]);
@@ -153,7 +167,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
 
     [RelayCommand]
     private async Task RefreshAsync()
-        => await ReloadAsync();
+        => await RefreshAllPanelsAsync(refreshServerIntegrity: true);
 
     [RelayCommand]
     private async Task RetrySyncAsync()
@@ -170,7 +184,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
             if (syncOk && dirtyCount == 0)
                 await _sync.RefreshSharedMirrorFromServerAsync();
 
-            await ReloadAsync();
+            await RefreshAllPanelsAsync(refreshServerIntegrity: true);
             SummaryStatusText = dirtyCount > 0
                 ? await _local.GetPendingSyncWaitingMessageAsync("동기화 작업은 완료됐지만")
                     ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다."
@@ -195,7 +209,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         {
             SummaryStatusText = "공유 캐시를 재구성하는 중...";
             var ok = await _sync.RefreshSharedMirrorFromServerAsync();
-            await ReloadAsync();
+            await RefreshAllPanelsAsync(refreshServerIntegrity: true);
             SummaryStatusText = ok ? "공유 캐시 재구성을 완료했습니다." : "공유 캐시 재구성에 실패했습니다. 진단 리포트를 저장해 주세요.";
         }
         finally
@@ -233,7 +247,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     {
         if (events.Count == 0)
         {
-            SummaryStatusText = selectedOnly ? "선택된 오류가 없습니다." : "복구할 미해결 오류가 없습니다.";
+            SummaryStatusText = selectedOnly ? "선택한 오류가 없습니다." : "복구할 미해결 오류가 없습니다.";
             return;
         }
 
@@ -242,7 +256,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         try
         {
             SummaryStatusText = selectedOnly
-                ? $"{plan.Title} 복구를 수행하는 중..."
+                ? $"{plan.Title} 복구를 실행하는 중..."
                 : "미해결 동기화 오류를 유형별로 자동 복구하는 중...";
 
             var summaryParts = new List<string>();
@@ -325,7 +339,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
                 recoveryAttempted: true,
                 recoverySucceeded: true);
 
-            await ReloadAsync();
+            await RefreshAllPanelsAsync(refreshServerIntegrity: true);
             SummaryStatusText = selectedOnly
                 ? $"{plan.Title} 복구를 완료했습니다. 필요 시 동기화를 다시 시도해 주세요."
                 : "미해결 오류 유형별 자동 복구를 완료했습니다. 필요 시 동기화를 다시 시도해 주세요.";
@@ -505,6 +519,45 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     }
 
     [RelayCommand]
+    private async Task ExportIntegrityReportAsync()
+    {
+        if (IsBusy)
+            return;
+
+        var dialog = new SaveFileDialog
+        {
+            Title = "통합 무결성 리포트 저장",
+            Filter = "무결성 리포트(Markdown)|*.md",
+            AddExtension = true,
+            DefaultExt = ".md",
+            FileName = $"integrity-report-{DateTime.Now:yyyyMMdd_HHmmss}.md",
+            InitialDirectory = AppPaths.DiagnosticsDir
+        };
+
+        if (dialog.ShowDialog() != true)
+            return;
+
+        IsBusy = true;
+        try
+        {
+            var markdown = await BuildCombinedIntegrityMarkdownAsync();
+            await File.WriteAllTextAsync(dialog.FileName, markdown, Encoding.UTF8);
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = Path.GetDirectoryName(dialog.FileName) ?? AppPaths.DiagnosticsDir,
+                UseShellExecute = true
+            });
+
+            SummaryStatusText = $"통합 무결성 리포트를 저장했습니다: {dialog.FileName}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand]
     private void OpenLogFolder()
     {
         _diagnostics.OpenLogFolder();
@@ -530,7 +583,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         try
         {
             await _diagnostics.ClearResolvedEventsAsync();
-            await ReloadAsync();
+            await RefreshAllPanelsAsync(refreshServerIntegrity: false);
             SummaryStatusText = "해결된 진단 이력을 정리했습니다.";
         }
         finally

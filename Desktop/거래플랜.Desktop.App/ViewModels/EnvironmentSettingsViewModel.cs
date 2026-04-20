@@ -55,16 +55,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [ObservableProperty] private string _legacySourceDbPath = string.Empty;
     [ObservableProperty] private string _legacyCustomerExcelPath = string.Empty;
     [ObservableProperty] private string _legacyItemExcelPath = string.Empty;
-    [ObservableProperty] private string _legacyMigrationStatus = "원본 데이터 추출/가져오기 대기";
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(CanEditOfficeCode))]
-    private LocalOffice? _selectedOffice;
-    [ObservableProperty] private string _officeCode = string.Empty;
-    [ObservableProperty] private string _officeName = string.Empty;
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(CanEditOfficeCode))]
-    private bool _isNewOffice = true;
+    [ObservableProperty] private string _legacyMigrationStatus = "백업/이전 데이터 관리 대기";
 
     [ObservableProperty] private UserAccountDto? _selectedUser;
     [ObservableProperty] private Guid _editingUserId;
@@ -86,9 +77,6 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     public bool CanManageTenantConfiguration => _session.HasAdministrativePrivileges && !_session.IsOfflineMode;
     public bool CanManageSelectionOptions => _session.HasAdministrativePrivileges;
     public bool CanEditCompanyProfiles => _session.HasAdministrativePrivileges;
-    public bool CanEditOfficeCode => false;
-    public bool CanEditOfficeName => false;
-    public bool CanManageOffices => false;
     public string UserManagementHint => CanManageUsers
         ? "사용자 ID, 담당지점, 권한, 비밀번호를 관리합니다."
         : _session.IsOfflineMode
@@ -122,6 +110,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         InitializeUpdateState();
         InitializeBusinessDatabaseSelection();
         InitializeSyncState();
+        InitializeBackupState();
     }
 
     public async Task InitializeAsync()
@@ -138,8 +127,8 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             await RunInitializationStepAsync(ReloadUsersAsync, "사용자", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(LoadCurrentUserCompanyProfileAsync, "현재 사용자 회사설정", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(RefreshSyncStateAsync, "동기화", () => hadInitializationWarning = true);
+            await RunInitializationStepAsync(ReloadBackupSnapshotsAsync, "백업 목록", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(ReloadRecycleBinAsync, "휴지통", () => hadInitializationWarning = true);
-            NewOffice();
             NewUser();
             if (!hadInitializationWarning)
                 StatusMessage = "환경설정을 불러왔습니다.";
@@ -403,7 +392,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             }
 
             IsBusy = true;
-            LegacyMigrationStatus = "외부 레거시 데이터를 엑셀로 추출 중...";
+            LegacyMigrationStatus = "이전 레거시 판매관리 데이터를 엑셀로 추출 중...";
             var result = await _legacyMigrationService.ExportFromOriginalAsync(
                 LegacySourceDbPath,
                 LegacyCustomerExcelPath,
@@ -431,23 +420,32 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         {
             if (string.IsNullOrWhiteSpace(LegacyCustomerExcelPath) || !File.Exists(LegacyCustomerExcelPath))
             {
-                StatusMessage = "거래처 엑셀 파일 경로를 확인하세요.";
+                StatusMessage = "이전 거래처 엑셀 파일 경로를 확인하세요.";
                 return;
             }
 
             if (string.IsNullOrWhiteSpace(LegacyItemExcelPath) || !File.Exists(LegacyItemExcelPath))
             {
-                StatusMessage = "제품 엑셀 파일 경로를 확인하세요.";
+                StatusMessage = "이전 품목 엑셀 파일 경로를 확인하세요.";
+                return;
+            }
+
+            var backupPath = await _backup.BackupNowWithPathAsync();
+            if (string.IsNullOrWhiteSpace(backupPath))
+            {
+                LegacyMigrationStatus = "이전 데이터 가져오기 전에 현재 DB 백업을 생성하지 못했습니다. 백업 상태를 확인한 뒤 다시 시도하세요.";
+                StatusMessage = LegacyMigrationStatus;
                 return;
             }
 
             IsBusy = true;
-            LegacyMigrationStatus = "엑셀 데이터를 거래플랜으로 가져오는 중...";
+            LegacyMigrationStatus = $"현재 DB 백업 완료: {Path.GetFileName(backupPath)}. 이전 엑셀 데이터를 거래플랜으로 가져오는 중...";
             var result = await _legacyMigrationService.ImportFromExcelAsync(
                 LegacyCustomerExcelPath,
                 LegacyItemExcelPath);
 
             await PersistLegacyMigrationSettingsAsync();
+            await ReloadBackupSnapshotsAsync();
             LegacyMigrationStatus =
                 $"가져오기 완료: 거래처 +{result.CreatedCustomers:N0}/수정 {result.UpdatedCustomers:N0}, 제품 +{result.CreatedItems:N0}/수정 {result.UpdatedItems:N0}";
             StatusMessage = LegacyMigrationStatus;
@@ -471,30 +469,6 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             return;
 
         await ImportLegacyExcelDataAsync();
-    }
-
-    [RelayCommand]
-    private void NewOffice()
-    {
-        SelectedOffice = Offices.FirstOrDefault();
-        OfficeCode = SelectedOffice?.Code ?? DomainConstants.OfficeUsenet;
-        OfficeName = SelectedOffice?.Name ?? OfficeCodeCatalog.GetOfficeDisplayName(OfficeCode);
-        IsNewOffice = false;
-        StatusMessage = "담당지점은 시스템 기본 3개만 사용합니다.";
-    }
-
-    [RelayCommand]
-    private Task SaveOfficeAsync()
-    {
-        StatusMessage = "담당지점 코드는 시스템 기본값으로 고정되어 수정할 수 없습니다.";
-        return Task.CompletedTask;
-    }
-
-    [RelayCommand]
-    private Task DeleteOfficeAsync()
-    {
-        StatusMessage = "담당지점은 시스템 기본 3개만 유지되며 삭제할 수 없습니다.";
-        return Task.CompletedTask;
     }
 
     [RelayCommand]
@@ -598,6 +572,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             {
                 await _api.UpdateUserAsync(EditingUserId, new UpdateUserRequest
                 {
+                    ExpectedRevision = SelectedUser?.Revision ?? 0,
                     Username = username,
                     Role = EditingUserRole,
                     TenantCode = EditingUserTenantCode,
@@ -611,6 +586,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
                 {
                     await _api.UpdateUserPasswordAsync(EditingUserId, new UpdateUserPasswordRequest
                     {
+                        ExpectedRevision = SelectedUser?.Revision ?? 0,
                         Password = EditingPassword
                     });
                 }
@@ -651,7 +627,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         try
         {
             IsBusy = true;
-            await _api.DeleteUserAsync(SelectedUser.Id);
+            await _api.DeleteUserAsync(SelectedUser.Id, SelectedUser.Revision);
             StatusMessage = "사용자를 삭제했습니다.";
             await ReloadUsersAsync();
             NewUser();
@@ -676,20 +652,6 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         var users = await _api.GetUsersAsync();
         foreach (var user in users.OrderBy(current => current.Username, StringComparer.OrdinalIgnoreCase))
             Users.Add(user);
-    }
-
-    partial void OnSelectedOfficeChanged(LocalOffice? value)
-    {
-        if (value is null)
-        {
-            if (!IsNewOffice)
-                NewOffice();
-            return;
-        }
-
-        IsNewOffice = false;
-        OfficeCode = value.Code;
-        OfficeName = value.Name;
     }
 
     partial void OnSelectedUserChanged(UserAccountDto? value)
@@ -763,24 +725,67 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         return File.Exists(candidate) ? candidate : string.Empty;
     }
 
-    private static List<string> BuildPermissionsForRole(string? role)
+    private List<string> BuildPermissionsForRole(string? role)
     {
-        if (!string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase))
-            return new List<string>();
+        if (string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase))
+            return new List<string>
+            {
+                AppPermissionNames.CompanyProfileEdit,
+                AppPermissionNames.AmountViewSales,
+                AppPermissionNames.AmountViewPurchase,
+                AppPermissionNames.SettingsEdit,
+                AppPermissionNames.DataBackupRestore,
+                AppPermissionNames.CustomerEdit,
+                AppPermissionNames.ItemEdit,
+                AppPermissionNames.InvoiceEdit,
+                AppPermissionNames.PaymentEdit,
+                AppPermissionNames.InventoryReset,
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.RentalAssetEdit,
+                AppPermissionNames.DeliveryEdit,
+                AppPermissionNames.RentalViewAll,
+                AppPermissionNames.RentalEditAll,
+                AppPermissionNames.DeliveryViewAll,
+                AppPermissionNames.RentalSettingsEdit,
+                AppPermissionNames.RentalImport
+            };
 
-        return new List<string>
+        var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(EditingUserTenantCode, _session.TenantCode);
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            EditingUserOfficeCode,
+            string.Equals(normalizedTenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
+                ? OfficeCodeCatalog.Itworld
+                : OfficeCodeCatalog.Usenet);
+
+        var permissions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            AppPermissionNames.CompanyProfileEdit,
             AppPermissionNames.AmountViewSales,
             AppPermissionNames.AmountViewPurchase,
-            AppPermissionNames.SettingsEdit,
-            AppPermissionNames.DataBackupRestore,
-            AppPermissionNames.RentalViewAll,
-            AppPermissionNames.RentalEditAll,
-            AppPermissionNames.DeliveryViewAll,
-            AppPermissionNames.RentalSettingsEdit,
-            AppPermissionNames.RentalImport
+            AppPermissionNames.CustomerEdit,
+            AppPermissionNames.ItemEdit,
+            AppPermissionNames.InvoiceEdit,
+            AppPermissionNames.PaymentEdit,
+            AppPermissionNames.InventoryReset,
+            AppPermissionNames.DeliveryEdit
         };
+
+        if (string.Equals(normalizedTenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalizedOfficeCode, OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase))
+        {
+            permissions.Add(AppPermissionNames.RentalProfileEdit);
+            permissions.Add(AppPermissionNames.RentalAssetEdit);
+            permissions.Add(AppPermissionNames.RentalViewAll);
+            permissions.Add(AppPermissionNames.RentalEditAll);
+            permissions.Add(AppPermissionNames.DeliveryViewAll);
+            permissions.Add(AppPermissionNames.RentalSettingsEdit);
+            permissions.Add(AppPermissionNames.RentalImport);
+        }
+        else if (string.Equals(normalizedOfficeCode, OfficeCodeCatalog.Yeonsu, StringComparison.OrdinalIgnoreCase))
+        {
+            permissions.Add(AppPermissionNames.RentalProfileEdit);
+        }
+
+        return permissions.ToList();
     }
 
     partial void OnSelectedCompanyProfileChanged(LocalCompanyProfile? value)
@@ -927,3 +932,5 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         => Guid.TryParse(value, out var profileId) ? profileId : null;
 
 }
+
+

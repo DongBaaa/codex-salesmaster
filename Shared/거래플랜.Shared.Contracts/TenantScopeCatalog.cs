@@ -136,17 +136,49 @@ public static class TenantScopeCatalog
             _ => UsenetGroup
         };
 
+    private static bool TryResolveTenantCodeForCanonicalOffice(string? officeCode, out string tenantCode)
+    {
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOfficeCode))
+        {
+            tenantCode = GetTenantCodeForOffice(normalizedOfficeCode);
+            return true;
+        }
+
+        tenantCode = string.Empty;
+        return false;
+    }
+
+    private static string NormalizeTenantCodeForSharedOfficeOrDefault(
+        string? tenantCode,
+        string? fallbackTenantCode,
+        string? fallbackOfficeCode)
+    {
+        if (TryNormalizeTenantCode(tenantCode, out var canonical))
+            return canonical;
+
+        if (TryNormalizeTenantCode(fallbackTenantCode, out canonical))
+            return canonical;
+
+        if (TryResolveTenantCodeForCanonicalOffice(fallbackOfficeCode, out canonical))
+            return canonical;
+
+        return UsenetGroup;
+    }
+
     public static string NormalizeTenantCodeForOfficeOrDefault(
         string? tenantCode,
         string? officeCode,
         string? fallbackTenantCode = null,
         string? fallbackOfficeCode = null)
     {
-        if (!string.IsNullOrWhiteSpace(officeCode))
-            return GetTenantCodeForOffice(officeCode);
+        if (TryResolveTenantCodeForCanonicalOffice(officeCode, out var canonical))
+            return canonical;
 
-        if (!string.IsNullOrWhiteSpace(fallbackOfficeCode))
-            return GetTenantCodeForOffice(fallbackOfficeCode);
+        if (OfficeCodeCatalog.IsSharedOfficeCode(officeCode))
+            return NormalizeTenantCodeForSharedOfficeOrDefault(tenantCode, fallbackTenantCode, fallbackOfficeCode);
+
+        if (TryResolveTenantCodeForCanonicalOffice(fallbackOfficeCode, out canonical))
+            return canonical;
 
         return NormalizeTenantCodeOrDefault(tenantCode, fallbackTenantCode);
     }
@@ -154,7 +186,9 @@ public static class TenantScopeCatalog
     public static bool TenantContainsOffice(string? tenantCode, string? officeCode)
     {
         var normalizedTenant = NormalizeTenantCodeOrDefault(tenantCode);
-        var normalizedOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode);
+        if (!OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOffice))
+            return false;
+
         return string.Equals(GetTenantCodeForOffice(normalizedOffice), normalizedTenant, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -166,6 +200,35 @@ public static class TenantScopeCatalog
             Itworld => [OfficeCodeCatalog.Itworld],
             _ => [OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Yeonsu]
         };
+    }
+
+    public static IReadOnlyList<string> GetNormalizedOfficeCodesForTenant(string? tenantCode)
+        => GetOfficeCodesForTenant(tenantCode)
+            .Select(officeCode => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    public static HashSet<string> ResolveScopedOfficeCodes(
+        string? officeCode,
+        string? tenantCode = null,
+        string? scopeType = null,
+        bool hasGlobalScope = false,
+        bool hasTenantScope = false)
+    {
+        if (hasGlobalScope)
+            return OfficeCodeCatalog.All.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (hasTenantScope || string.Equals(NormalizeScopeTypeOrDefault(scopeType), ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            var resolvedTenantCode = NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode);
+            return GetNormalizedOfficeCodesForTenant(resolvedTenantCode)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return
+        [
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode)
+        ];
     }
 
     public static string GetTenantDisplayName(string? tenantCode)

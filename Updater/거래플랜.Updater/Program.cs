@@ -5,6 +5,7 @@ using System.IO.Compression;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Windows;
 
 namespace 거래플랜.Updater;
@@ -73,9 +74,10 @@ internal static class Program
         var packagePath = Path.Combine(workRoot, string.IsNullOrWhiteSpace(options.FileName)
             ? $"desktop-{options.Version}.zip"
             : options.FileName);
+        var requestMetadata = UpdateRequestMetadata.LoadAndDelete(options.RequestMetadataPath);
 
         SetStage(window, "업데이트 다운로드 중", "새 버전 파일을 가져오고 있습니다.");
-        await DownloadAsync(options.PackageUrl, packagePath, progress =>
+        await DownloadAsync(options.PackageUrl, packagePath, requestMetadata, progress =>
         {
             var detail = progress.TotalBytes.HasValue
                 ? $"다운로드 {FormatBytes(progress.DownloadedBytes)} / {FormatBytes(progress.TotalBytes.Value)}"
@@ -100,6 +102,7 @@ internal static class Program
 
         SetStage(window, "업데이트 적용 중", "새 버전 파일을 설치 위치에 복사하고 있습니다.");
         await RunInstallScriptAsync(options, extractRoot, installScriptPath, _sessionLogPath);
+        ValidateInstalledApplication(options);
 
         if (!string.IsNullOrWhiteSpace(options.LaunchExe) && File.Exists(options.LaunchExe))
         {
@@ -182,6 +185,37 @@ internal static class Program
             throw new InvalidOperationException($"업데이트 설치가 실패했습니다. exitCode={installProcess.ExitCode}");
     }
 
+    private static void ValidateInstalledApplication(UpdateArguments options)
+    {
+        if (string.IsNullOrWhiteSpace(options.InstallRoot))
+            throw new InvalidOperationException("설치 경로가 비어 있어 업데이트 결과를 검증할 수 없습니다.");
+
+        if (!Directory.Exists(options.InstallRoot))
+            throw new DirectoryNotFoundException($"설치 경로를 찾지 못했습니다: {options.InstallRoot}");
+
+        if (string.IsNullOrWhiteSpace(options.LaunchExe) || !File.Exists(options.LaunchExe))
+            throw new FileNotFoundException("업데이트 후 실행 파일을 찾지 못했습니다.", options.LaunchExe);
+
+        foreach (var requiredPath in new[]
+                 {
+                     Path.Combine(options.InstallRoot, "appsettings.json"),
+                     Path.Combine(options.InstallRoot, "Updater", "거래플랜.Updater.exe")
+                 })
+        {
+            if (!File.Exists(requiredPath))
+                throw new FileNotFoundException($"업데이트 후 필수 파일이 누락되었습니다: {requiredPath}", requiredPath);
+        }
+
+        var installedVersion = FileVersionInfo.GetVersionInfo(options.LaunchExe).ProductVersion ?? string.Empty;
+        if (CompareVersions(installedVersion, options.Version) < 0)
+        {
+            throw new InvalidOperationException(
+                $"업데이트 후 실행 파일 버전이 기대 버전보다 낮습니다. 기대: {NormalizeVersionText(options.Version)}, 실제: {NormalizeVersionText(installedVersion)}");
+        }
+
+        TryLog($"VALIDATE installRoot={options.InstallRoot} version={NormalizeVersionText(installedVersion)}");
+    }
+
     private static async Task RelayStreamToLogAsync(StreamReader reader, string prefix)
     {
         while (true)
@@ -194,10 +228,17 @@ internal static class Program
         }
     }
 
-    private static async Task DownloadAsync(string packageUrl, string targetPath, Action<DownloadProgress>? reportProgress = null)
+    private static async Task DownloadAsync(
+        string packageUrl,
+        string targetPath,
+        UpdateRequestMetadata requestMetadata,
+        Action<DownloadProgress>? reportProgress = null)
     {
         using var http = new HttpClient();
-        using var response = await http.GetAsync(packageUrl, HttpCompletionOption.ResponseHeadersRead);
+        using var request = new HttpRequestMessage(HttpMethod.Get, packageUrl);
+        requestMetadata.ApplyTo(request);
+
+        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
         response.EnsureSuccessStatusCode();
 
         var totalBytes = response.Content.Headers.ContentLength;
@@ -450,6 +491,29 @@ internal static class Program
     private static string QuoteArgument(string value)
         => "\"" + (value ?? string.Empty).Replace("\"", "\\\"") + "\"";
 
+    private static int CompareVersions(string left, string right)
+    {
+        if (!Version.TryParse(NormalizeVersionText(left), out var leftVersion))
+            leftVersion = new Version(0, 0, 0);
+        if (!Version.TryParse(NormalizeVersionText(right), out var rightVersion))
+            rightVersion = new Version(0, 0, 0);
+
+        return leftVersion.CompareTo(rightVersion);
+    }
+
+    private static string NormalizeVersionText(string raw)
+    {
+        var normalized = (raw ?? string.Empty).Trim();
+        if (normalized.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[1..];
+
+        var plusIndex = normalized.IndexOf('+');
+        if (plusIndex >= 0)
+            normalized = normalized[..plusIndex];
+
+        return string.IsNullOrWhiteSpace(normalized) ? "0.0.0" : normalized;
+    }
+
     private static string FormatBytes(long bytes)
     {
         string[] units = ["B", "KB", "MB", "GB", "TB"];
@@ -475,6 +539,7 @@ internal sealed class UpdateArguments
     public string LaunchExe { get; init; } = string.Empty;
     public string Version { get; init; } = string.Empty;
     public string FileName { get; init; } = string.Empty;
+    public string RequestMetadataPath { get; init; } = string.Empty;
     public long FileSize { get; init; }
     public int ProcessId { get; init; }
 
@@ -504,6 +569,7 @@ internal sealed class UpdateArguments
             LaunchExe = launchExe,
             Version = values.GetValueOrDefault("--version", string.Empty),
             FileName = values.GetValueOrDefault("--file-name", Path.GetFileName(new Uri(packageUrl).AbsolutePath)),
+            RequestMetadataPath = values.GetValueOrDefault("--request-metadata-path", string.Empty),
             FileSize = long.TryParse(values.GetValueOrDefault("--file-size", "0"), out var fileSize) ? fileSize : 0,
             ProcessId = int.TryParse(values.GetValueOrDefault("--process-id", "0"), out var pid) ? pid : 0
         };
@@ -515,5 +581,56 @@ internal sealed class UpdateArguments
             throw new InvalidOperationException($"필수 인자가 없습니다: {key}");
 
         return value.Trim();
+    }
+}
+
+internal sealed class UpdateRequestMetadata
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
+    public Dictionary<string, string> Headers { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public static UpdateRequestMetadata LoadAndDelete(string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+            return new UpdateRequestMetadata();
+
+        try
+        {
+            if (!File.Exists(filePath))
+                throw new FileNotFoundException("업데이트 인증 메타데이터 파일을 찾지 못했습니다.", filePath);
+
+            var json = File.ReadAllText(filePath, Encoding.UTF8);
+            return JsonSerializer.Deserialize<UpdateRequestMetadata>(json, JsonOptions) ?? new UpdateRequestMetadata();
+        }
+        finally
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(filePath) && File.Exists(filePath))
+                    File.Delete(filePath);
+            }
+            catch
+            {
+                // 다음 정리 단계에서 다시 삭제 시도
+            }
+        }
+    }
+
+    public void ApplyTo(HttpRequestMessage request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        foreach (var header in Headers)
+        {
+            if (string.IsNullOrWhiteSpace(header.Key) || string.IsNullOrWhiteSpace(header.Value))
+                continue;
+
+            if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value))
+                request.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
     }
 }

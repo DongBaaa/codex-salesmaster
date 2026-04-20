@@ -11,6 +11,7 @@ namespace 거래플랜.Desktop.App.ViewModels;
 public sealed partial class EnvironmentSettingsViewModel
 {
     private const string RecycleBinFilterAll = "ALL";
+    private const int RecycleBinServerMutationBatchSize = 40;
     private List<RecycleBinEntry> _allRecycleBinEntries = new();
 
     private sealed class RecycleBinMirrorResult
@@ -566,70 +567,84 @@ public sealed partial class EnvironmentSettingsViewModel
         if (targets.Count == 0)
             return mirrorResult;
 
-        try
+        var remainingTargets = targets.Values.ToList();
+        foreach (var batch in remainingTargets.Chunk(RecycleBinServerMutationBatchSize))
         {
-            var result = string.Equals(action, "복원", StringComparison.Ordinal)
-                ? await _api.RestoreRecycleBinAsync(targets.Values
-                    .Select(current => new RecycleBinMutationTargetDto
-                    {
-                        EntityId = current.Target.EntityId,
-                        Kind = current.Target.Kind
-                    })
-                    .ToList())
-                : await _api.PurgeRecycleBinAsync(targets.Values
-                    .Select(current => new RecycleBinMutationTargetDto
-                    {
-                        EntityId = current.Target.EntityId,
-                        Kind = current.Target.Kind
-                    })
-                    .ToList());
+            var batchTargets = batch.ToDictionary(
+                current => (current.Entry.EntityId, NormalizeServerRecycleBinKind(current.Target.Kind)),
+                current => (current.Entry, current.Target));
 
-            if (result is null)
+            try
             {
-                mirrorResult.Failures.Add($"NAS 서버 {action} 반영 결과를 확인하지 못했습니다.");
-                return mirrorResult;
-            }
+                var result = string.Equals(action, "복원", StringComparison.Ordinal)
+                    ? await _api.RestoreRecycleBinAsync(batchTargets.Values
+                        .Select(current => current.Target)
+                        .ToList())
+                    : await _api.PurgeRecycleBinAsync(batchTargets.Values
+                        .Select(current => current.Target)
+                        .ToList());
 
-            if (result.Results.Count == 0)
+                ApplyRecycleBinServerMutationBatchResult(action, batchTargets, result, mirrorResult);
+            }
+            catch (Exception ex)
             {
-                if (result.SucceededCount >= targets.Count)
-                    mirrorResult.SucceededEntries.AddRange(targets.Values.Select(current => current.Entry));
-                else
-                    mirrorResult.Failures.Add(result.Messages.FirstOrDefault()
-                                              ?? $"NAS 서버 {action} 반영 중 실패한 항목이 있습니다.");
-                return mirrorResult;
+                mirrorResult.Failures.Add(
+                    $"NAS 서버 {action} 반영 실패: {ex.Message}" +
+                    (remainingTargets.Count > batch.Length
+                        ? " 일부 남은 항목 처리는 중단했습니다."
+                        : string.Empty));
+                break;
             }
-
-            var reported = new HashSet<(Guid EntityId, string Kind)>();
-            foreach (var itemResult in result.Results)
-            {
-                var key = (itemResult.EntityId, NormalizeServerRecycleBinKind(itemResult.Kind));
-                if (!targets.TryGetValue(key, out var target))
-                {
-                    if (!itemResult.Success && !string.IsNullOrWhiteSpace(itemResult.Message))
-                        mirrorResult.Failures.Add(itemResult.Message);
-                    continue;
-                }
-
-                reported.Add(key);
-                if (itemResult.Success)
-                    mirrorResult.SucceededEntries.Add(target.Entry);
-                else
-                    mirrorResult.Failures.Add($"{target.Entry.KindText} · {target.Entry.Title}: {itemResult.Message}");
-            }
-
-            foreach (var key in targets.Keys.Where(key => !reported.Contains(key)))
-            {
-                var target = targets[key];
-                mirrorResult.Failures.Add($"{target.Entry.KindText} · {target.Entry.Title}: NAS 서버 {action} 결과를 확인하지 못했습니다.");
-            }
-        }
-        catch (Exception ex)
-        {
-            mirrorResult.Failures.Add($"NAS 서버 {action} 반영 실패: {ex.Message}");
         }
 
         return mirrorResult;
+    }
+
+    private void ApplyRecycleBinServerMutationBatchResult(
+        string action,
+        IReadOnlyDictionary<(Guid EntityId, string Kind), (RecycleBinEntry Entry, RecycleBinMutationTargetDto Target)> batchTargets,
+        RecycleBinMutationResultDto? result,
+        RecycleBinMirrorResult mirrorResult)
+    {
+        if (result is null)
+        {
+            mirrorResult.Failures.Add($"NAS 서버 {action} 반영 결과를 확인하지 못했습니다.");
+            return;
+        }
+
+        if (result.Results.Count == 0)
+        {
+            if (result.SucceededCount >= batchTargets.Count)
+                mirrorResult.SucceededEntries.AddRange(batchTargets.Values.Select(current => current.Entry));
+            else
+                mirrorResult.Failures.Add(result.Messages.FirstOrDefault()
+                                          ?? $"NAS 서버 {action} 반영 중 실패한 항목이 있습니다.");
+            return;
+        }
+
+        var reported = new HashSet<(Guid EntityId, string Kind)>();
+        foreach (var itemResult in result.Results)
+        {
+            var key = (itemResult.EntityId, NormalizeServerRecycleBinKind(itemResult.Kind));
+            if (!batchTargets.TryGetValue(key, out var target))
+            {
+                if (!itemResult.Success && !string.IsNullOrWhiteSpace(itemResult.Message))
+                    mirrorResult.Failures.Add(itemResult.Message);
+                continue;
+            }
+
+            reported.Add(key);
+            if (itemResult.Success)
+                mirrorResult.SucceededEntries.Add(target.Entry);
+            else
+                mirrorResult.Failures.Add($"{target.Entry.KindText} · {target.Entry.Title}: {itemResult.Message}");
+        }
+
+        foreach (var key in batchTargets.Keys.Where(key => !reported.Contains(key)))
+        {
+            var target = batchTargets[key];
+            mirrorResult.Failures.Add($"{target.Entry.KindText} · {target.Entry.Title}: NAS 서버 {action} 결과를 확인하지 못했습니다.");
+        }
     }
 
     private static RecycleBinMutationTargetDto? ToServerRecycleBinTarget(RecycleBinEntry entry)
@@ -659,7 +674,8 @@ public sealed partial class EnvironmentSettingsViewModel
             : new RecycleBinMutationTargetDto
             {
                 EntityId = entry.EntityId,
-                Kind = kind
+                Kind = kind,
+                ExpectedRevision = entry.Revision
             };
     }
 

@@ -280,8 +280,9 @@ public static class DtoMappings
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
             CustomerMasterId = entity.CustomerMasterId,
-            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
-            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            TenantCode = NormalizeOperationalTenantCode(entity.TenantCode, entity.OfficeCode, entity.ResponsibleOfficeCode),
+            OfficeCode = NormalizeOwningOfficeCode(entity.OfficeCode, entity.ResponsibleOfficeCode, OfficeCodeCatalog.Shared),
+            ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(entity.ResponsibleOfficeCode, entity.OfficeCode, OfficeCodeCatalog.Usenet),
             NameOriginal = entity.NameOriginal,
             NameMatchKey = entity.NameMatchKey, CategoryId = entity.CategoryId,
             TradeType = CustomerClassificationNormalizer.NormalizeTradeTypeOrDefault(entity.TradeType),
@@ -308,15 +309,18 @@ public static class DtoMappings
         entity.BusinessItem = dto.BusinessItem;
         entity.Address = dto.Address; entity.Phone = dto.Phone; entity.Email = dto.Email;
         entity.Notes = dto.Notes; entity.IsDeleted = dto.IsDeleted;
-        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
-            dto.TenantCode,
+        entity.ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(
+            dto.ResponsibleOfficeCode,
             dto.OfficeCode,
-            entity.TenantCode,
+            entity.ResponsibleOfficeCode);
+        entity.OfficeCode = NormalizeOwningOfficeCode(
+            dto.OfficeCode,
+            entity.ResponsibleOfficeCode,
             entity.OfficeCode);
-        if (!string.IsNullOrWhiteSpace(dto.OfficeCode))
-            entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
-        else if (string.IsNullOrWhiteSpace(entity.OfficeCode))
-            entity.OfficeCode = OfficeCodeCatalog.Shared;
+        entity.TenantCode = NormalizeOperationalTenantCode(
+            dto.TenantCode,
+            entity.OfficeCode,
+            entity.ResponsibleOfficeCode);
     }
 
     public static CustomerContractDto ToDto(this CustomerContract entity, bool includeContent = false) =>
@@ -431,8 +435,9 @@ public static class DtoMappings
             UpdatedAtUtc = entity.UpdatedAtUtc,
             Revision = entity.Revision,
             CustomerId = entity.CustomerId,
-            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
-            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            TenantCode = NormalizeOperationalTenantCode(entity.TenantCode, entity.OfficeCode, entity.ResponsibleOfficeCode),
+            OfficeCode = NormalizeOwningOfficeCode(entity.OfficeCode, entity.ResponsibleOfficeCode, OfficeCodeCatalog.Usenet),
+            ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(entity.ResponsibleOfficeCode, entity.OfficeCode, OfficeCodeCatalog.Usenet),
             TransactionDate = entity.TransactionDate,
             TransactionKind = entity.TransactionKind,
             LinkedInvoiceId = entity.LinkedInvoiceId,
@@ -481,14 +486,18 @@ public static class DtoMappings
         entity.Note = dto.Note?.Trim() ?? string.Empty;
         entity.Memo = dto.Memo?.Trim() ?? string.Empty;
         entity.IsDeleted = dto.IsDeleted;
-        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+        entity.ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(
+            dto.ResponsibleOfficeCode,
+            dto.OfficeCode,
+            entity.ResponsibleOfficeCode);
+        entity.OfficeCode = NormalizeOwningOfficeCode(
+            dto.OfficeCode,
+            entity.ResponsibleOfficeCode,
+            entity.OfficeCode);
+        entity.TenantCode = NormalizeOperationalTenantCode(
             dto.TenantCode,
-            dto.OfficeCode,
-            entity.TenantCode,
-            entity.OfficeCode);
-        entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
-            dto.OfficeCode,
-            entity.OfficeCode);
+            entity.OfficeCode,
+            entity.ResponsibleOfficeCode);
     }
 
     public static TransactionAttachmentDto ToDto(this TransactionAttachment entity, bool includeContent = true) =>
@@ -673,8 +682,9 @@ public static class DtoMappings
             CreatedAtUtc = entity.CreatedAtUtc,
             UpdatedAtUtc = entity.UpdatedAtUtc,
             Revision = entity.Revision,
-            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
-            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            TenantCode = NormalizeOperationalTenantCode(entity.TenantCode, entity.OfficeCode, entity.ResponsibleOfficeCode),
+            OfficeCode = NormalizeOwningOfficeCode(entity.OfficeCode, entity.ResponsibleOfficeCode, OfficeCodeCatalog.Usenet),
+            ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(entity.ResponsibleOfficeCode, entity.OfficeCode, OfficeCodeCatalog.Usenet),
             ProfileKey = entity.ProfileKey,
             CustomerId = entity.CustomerId,
             CustomerName = entity.CustomerName,
@@ -754,12 +764,18 @@ public static class DtoMappings
         entity.BillingRunsJson = dto.BillingRunsJson ?? "[]";
         entity.IsActive = dto.IsActive;
         entity.IsDeleted = dto.IsDeleted;
-        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
-            dto.TenantCode,
+        entity.ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(
+            dto.ResponsibleOfficeCode,
             dto.OfficeCode,
-            entity.TenantCode,
+            entity.ResponsibleOfficeCode);
+        entity.OfficeCode = NormalizeOwningOfficeCode(
+            dto.OfficeCode,
+            entity.ResponsibleOfficeCode,
             entity.OfficeCode);
-        entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
+        entity.TenantCode = NormalizeOperationalTenantCode(
+            dto.TenantCode,
+            entity.OfficeCode,
+            entity.ResponsibleOfficeCode);
     }
 
     public static RentalAssetDto ToDto(this RentalAsset entity) =>
@@ -770,8 +786,9 @@ public static class DtoMappings
             CreatedAtUtc = entity.CreatedAtUtc,
             UpdatedAtUtc = entity.UpdatedAtUtc,
             Revision = entity.Revision,
-            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
-            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            TenantCode = NormalizeOperationalTenantCode(entity.TenantCode, entity.OfficeCode, entity.ResponsibleOfficeCode),
+            OfficeCode = NormalizeOwningOfficeCode(entity.OfficeCode, entity.ResponsibleOfficeCode, OfficeCodeCatalog.Usenet),
+            ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(entity.ResponsibleOfficeCode, entity.OfficeCode, OfficeCodeCatalog.Usenet),
             AssetKey = entity.AssetKey,
             CustomerId = entity.CustomerId,
             ItemId = entity.ItemId,
@@ -855,12 +872,18 @@ public static class DtoMappings
         entity.AssetStatus = dto.AssetStatus?.Trim() ?? string.Empty;
         entity.Notes = dto.Notes?.Trim() ?? string.Empty;
         entity.IsDeleted = dto.IsDeleted;
-        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
-            dto.TenantCode,
+        entity.ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(
+            dto.ResponsibleOfficeCode,
             dto.OfficeCode,
-            entity.TenantCode,
+            entity.ResponsibleOfficeCode);
+        entity.OfficeCode = NormalizeOwningOfficeCode(
+            dto.OfficeCode,
+            entity.ResponsibleOfficeCode,
             entity.OfficeCode);
-        entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
+        entity.TenantCode = NormalizeOperationalTenantCode(
+            dto.TenantCode,
+            entity.OfficeCode,
+            entity.ResponsibleOfficeCode);
     }
 
     public static RentalBillingLogDto ToDto(this RentalBillingLog entity) =>
@@ -871,8 +894,9 @@ public static class DtoMappings
             CreatedAtUtc = entity.CreatedAtUtc,
             UpdatedAtUtc = entity.UpdatedAtUtc,
             Revision = entity.Revision,
-            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
-            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            TenantCode = NormalizeOperationalTenantCode(entity.TenantCode, entity.OfficeCode, entity.ResponsibleOfficeCode),
+            OfficeCode = NormalizeOwningOfficeCode(entity.OfficeCode, entity.ResponsibleOfficeCode, OfficeCodeCatalog.Usenet),
+            ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(entity.ResponsibleOfficeCode, entity.OfficeCode, OfficeCodeCatalog.Usenet),
             BillingProfileId = entity.BillingProfileId,
             BillingYearMonth = entity.BillingYearMonth,
             ScheduledDate = entity.ScheduledDate,
@@ -894,12 +918,18 @@ public static class DtoMappings
         entity.BilledAmount = dto.BilledAmount;
         entity.Note = dto.Note?.Trim() ?? string.Empty;
         entity.IsDeleted = dto.IsDeleted;
-        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
-            dto.TenantCode,
+        entity.ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(
+            dto.ResponsibleOfficeCode,
             dto.OfficeCode,
-            entity.TenantCode,
+            entity.ResponsibleOfficeCode);
+        entity.OfficeCode = NormalizeOwningOfficeCode(
+            dto.OfficeCode,
+            entity.ResponsibleOfficeCode,
             entity.OfficeCode);
-        entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
+        entity.TenantCode = NormalizeOperationalTenantCode(
+            dto.TenantCode,
+            entity.OfficeCode,
+            entity.ResponsibleOfficeCode);
     }
 
     public static InvoiceDto ToDto(this Invoice entity) =>
@@ -909,8 +939,9 @@ public static class DtoMappings
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
             CustomerId = entity.CustomerId,
             CustomerName = entity.Customer?.NameOriginal ?? string.Empty,
-            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
-            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            TenantCode = NormalizeOperationalTenantCode(entity.TenantCode, entity.OfficeCode, entity.ResponsibleOfficeCode),
+            OfficeCode = NormalizeOwningOfficeCode(entity.OfficeCode, entity.ResponsibleOfficeCode, OfficeCodeCatalog.Usenet),
+            ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(entity.ResponsibleOfficeCode, entity.OfficeCode, OfficeCodeCatalog.Usenet),
             InvoiceNumber = entity.InvoiceNumber,
             LocalTempNumber = entity.LocalTempNumber,
             LinkedRentalBillingProfileId = entity.LinkedRentalBillingProfileId,
@@ -942,6 +973,7 @@ public static class DtoMappings
     {
         entity.CustomerId = dto.CustomerId; entity.InvoiceNumber = dto.InvoiceNumber;
         entity.LocalTempNumber = dto.LocalTempNumber; entity.VoucherType = dto.VoucherType;
+        entity.SourceWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(dto.SourceWarehouseCode, dto.ResponsibleOfficeCode, dto.OfficeCode);
         entity.InvoiceDate = dto.InvoiceDate; entity.TaxInvoiceIssued = dto.TaxInvoiceIssued; entity.Memo = dto.Memo; entity.IsDeleted = dto.IsDeleted;
         entity.LinkedRentalBillingProfileId = dto.LinkedRentalBillingProfileId;
         entity.LinkedRentalBillingRunId = dto.LinkedRentalBillingRunId;
@@ -949,20 +981,36 @@ public static class DtoMappings
         entity.VersionNumber = dto.VersionNumber <= 0 ? 1 : dto.VersionNumber;
         entity.PreviousVersionId = dto.PreviousVersionId;
         entity.IsLatestVersion = dto.IsLatestVersion;
-        entity.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
-            dto.TenantCode,
+        entity.ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(
+            dto.ResponsibleOfficeCode,
             dto.OfficeCode,
-            entity.TenantCode,
+            entity.ResponsibleOfficeCode);
+        entity.OfficeCode = NormalizeOwningOfficeCode(
+            dto.OfficeCode,
+            entity.ResponsibleOfficeCode,
             entity.OfficeCode);
-        if (!string.IsNullOrWhiteSpace(dto.OfficeCode))
-            entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
-        else if (string.IsNullOrWhiteSpace(entity.OfficeCode))
-            entity.OfficeCode = OfficeCodeCatalog.Shared;
+        entity.TenantCode = NormalizeOperationalTenantCode(
+            dto.TenantCode,
+            entity.OfficeCode,
+            entity.ResponsibleOfficeCode);
         var lines = dto.Lines ?? [];
         entity.TotalAmount = lines.Sum(x => x.LineAmount);
         entity.SupplyAmount = Math.Round(entity.TotalAmount / 1.1m, 0, MidpointRounding.AwayFromZero);
         entity.VatAmount = entity.TotalAmount - entity.SupplyAmount;
     }
+
+    private static string NormalizeResponsibleOfficeCode(string? responsibleOfficeCode, string? ownerOfficeCode = null, string? fallbackOfficeCode = null)
+        => OfficeCodeCatalog.NormalizeOfficeCodeLoose(responsibleOfficeCode, ownerOfficeCode, fallbackOfficeCode ?? OfficeCodeCatalog.Usenet);
+
+    private static string NormalizeOwningOfficeCode(string? ownerOfficeCode, string? responsibleOfficeCode = null, string? fallbackOfficeCode = null)
+        => OfficeCodeCatalog.ResolveOwningOfficeCode(ownerOfficeCode, responsibleOfficeCode, fallbackOfficeCode);
+
+    private static string NormalizeOperationalTenantCode(string? tenantCode, string? ownerOfficeCode, string? responsibleOfficeCode = null)
+        => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            tenantCode,
+            NormalizeOwningOfficeCode(ownerOfficeCode, responsibleOfficeCode),
+            tenantCode,
+            NormalizeResponsibleOfficeCode(responsibleOfficeCode, ownerOfficeCode));
 
     public static RecycleBinPurgeRecordDto ToDto(this RecycleBinPurgeRecord entity) =>
         new()
@@ -1105,6 +1153,9 @@ public static class DtoMappings
             Id = entity.Id, UserId = entity.UserId, Username = entity.Username,
             EntityName = entity.EntityName, EntityId = entity.EntityId,
             ClientJson = entity.ClientJson, ServerJson = entity.ServerJson,
-            Reason = entity.Reason, CreatedAtUtc = entity.CreatedAtUtc
+            Reason = entity.Reason, CreatedAtUtc = entity.CreatedAtUtc,
+            Status = entity.Status,
+            ResolvedAtUtc = entity.ResolvedAtUtc,
+            ResolutionNote = entity.ResolutionNote
         };
 }

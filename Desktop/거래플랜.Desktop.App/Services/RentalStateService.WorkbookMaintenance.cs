@@ -22,15 +22,34 @@ public sealed partial class RentalStateService
         SessionState session,
         CancellationToken ct = default)
     {
-        var backupPath = CreateLocalDbBackup("before-rental-workbook-rebuild");
+        if (!CanImportRental(session))
+            throw new InvalidOperationException("권한이 없어 렌탈 자산 기준 workbook 반영을 실행할 수 없습니다.");
+
         var context = await BuildWorkbookAuditContextAsync(path, ct);
         var now = DateTime.UtcNow;
+        var scopeCheck = await ValidateWorkbookRebuildScopeAsync(context, session, ct);
+        if (!scopeCheck.CanProceed)
+        {
+            return new RentalWorkbookRebuildResult
+            {
+                WorkbookPath = path,
+                ProcessedAtUtc = now,
+                IsBlocked = true,
+                BlockReason = scopeCheck.BlockReason,
+                ScopeIssues = scopeCheck.ScopeIssues.ToList(),
+                MissingInWorkbookAssets = context.Result.MissingInWorkbookAssets,
+                MissingInWorkbookCount = context.Result.MissingInWorkbookCount
+            };
+        }
+
+        var backupPath = CreateLocalDbBackup("before-rental-workbook-rebuild");
         var repairResult = new RentalCatalogRepairResult();
         var rebuildResult = new RentalWorkbookRebuildResult
         {
             WorkbookPath = path,
             BackupPath = backupPath,
             ProcessedAtUtc = now,
+            ScopeIssues = scopeCheck.ScopeIssues.ToList(),
             MissingInWorkbookAssets = context.Result.MissingInWorkbookAssets,
             MissingInWorkbookCount = context.Result.MissingInWorkbookCount
         };
@@ -111,8 +130,20 @@ public sealed partial class RentalStateService
                     }
 
                     ApplyWorkbookRowToAsset(operation.Asset, operation.Row, session, now);
-                    operation.Asset.CustomerId = await ResolveCustomerIdAsync(operation.Row.CustomerName, operation.Row.CustomerBusinessNumber, ct);
-                    await EnrichAssetReferencesAsync(operation.Asset, ct, repairResult, activeItems, allowCategoryRecovery: false, allowDerivedAssetBackfill: false);
+                    operation.Asset.CustomerId = await ResolveCustomerIdAsync(
+                        operation.Row.CustomerName,
+                        operation.Row.CustomerBusinessNumber,
+                        ct,
+                        allowWorkbookNameVariants: true,
+                        preferredOfficeCode: operation.Row.OfficeCode);
+                    await EnrichAssetReferencesAsync(
+                        operation.Asset,
+                        ct,
+                        repairResult,
+                        activeItems,
+                        allowCategoryRecovery: false,
+                        allowDerivedAssetBackfill: false,
+                        allowWorkbookNameVariants: true);
                     operation.Asset.BillingProfileId = await FindMatchingBillingProfileIdAsync(operation.Asset, ct);
                     if (operation.Asset.BillingProfileId.HasValue && operation.Asset.BillingProfileId.Value != Guid.Empty)
                         rebuildResult.LinkedBillingProfileCount++;
@@ -121,13 +152,19 @@ public sealed partial class RentalStateService
                     rebuildResult.UpdatedEntries.Add(CloneAuditEntry(operation.Entry));
                 }
 
-                var activeAssets = await _db.RentalAssets.IgnoreQueryFilters()
-                    .Where(asset => !asset.IsDeleted)
+                var persistedAssets = await _db.RentalAssets.IgnoreQueryFilters()
                     .ToListAsync(ct);
-                var assetBaseKeyById = activeAssets.ToDictionary(
+                var repairAssets = persistedAssets
+                    .Concat(executableOperations
+                        .Where(current => current.IsCreate)
+                        .Select(current => current.Asset))
+                    .GroupBy(asset => asset.Id)
+                    .Select(group => group.Last())
+                    .ToList();
+                var assetBaseKeyById = repairAssets.ToDictionary(
                     asset => asset.Id,
                     asset => BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ItemName));
-                AssignUniqueAssetKeysForRepair(activeAssets, assetBaseKeyById);
+                AssignUniqueAssetKeysForRepair(repairAssets, assetBaseKeyById);
 
                 await _db.SaveChangesAsync(ct);
             }
@@ -146,6 +183,76 @@ public sealed partial class RentalStateService
         {
             AssetSaveLock.Release();
         }
+    }
+
+    private async Task<WorkbookScopeCheckResult> ValidateWorkbookRebuildScopeAsync(
+        WorkbookAuditContext context,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var result = new WorkbookScopeCheckResult();
+        if (session is null || !session.IsLoggedIn)
+        {
+            result.BlockReason = "로그인 세션이 없어 workbook 반영 대상 범위를 확인할 수 없습니다.";
+            return result;
+        }
+
+        var executableEntries = context.Result.Entries
+            .Where(entry => entry.Action is "CreateNew" or "UpdateSafe")
+            .ToList();
+        if (executableEntries.Count == 0)
+            return result;
+
+        var storedCredentialOffices = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (_local is not null)
+        {
+            foreach (var credential in await _local.GetStoredSyncCredentialsAsync(ct))
+            {
+                var normalizedOfficeCode = NormalizeOfficeCode(credential.OfficeCode, string.Empty);
+                if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
+                    storedCredentialOffices.Add(normalizedOfficeCode);
+            }
+        }
+
+        foreach (var officeGroup in executableEntries
+                     .Select(entry => NormalizeOfficeCode(context.RowsByRowNumber[entry.RowNumber].OfficeCode, session.OfficeCode))
+                     .Where(officeCode => !string.IsNullOrWhiteSpace(officeCode))
+                     .GroupBy(officeCode => officeCode, StringComparer.OrdinalIgnoreCase)
+                     .OrderByDescending(group => group.Count())
+                     .ThenBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            var officeCode = officeGroup.Key;
+            var writableInCurrentSession = CanEditAssetScope(officeCode, session);
+            var hasStoredCredential = writableInCurrentSession || storedCredentialOffices.Contains(officeCode);
+            var issue = new RentalWorkbookScopeIssue
+            {
+                OfficeCode = officeCode,
+                OfficeDisplayName = OfficeCodeCatalog.GetOfficeDisplayName(officeCode),
+                TenantDisplayName = TenantScopeCatalog.GetTenantDisplayName(TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode)),
+                RowCount = officeGroup.Count(),
+                WritableInCurrentSession = writableInCurrentSession,
+                HasStoredCredential = hasStoredCredential,
+                ResolutionHint = BuildWorkbookScopeResolutionHint(
+                    officeCode,
+                    writableInCurrentSession,
+                    hasStoredCredential)
+            };
+
+            result.ScopeIssues.Add(issue);
+        }
+
+        var blockedIssues = result.ScopeIssues
+            .Where(issue => !issue.WritableInCurrentSession && !issue.HasStoredCredential)
+            .ToList();
+        if (blockedIssues.Count == 0)
+            return result;
+
+        result.BlockReason = "현재 세션으로 직접 수정할 수 없는 지점이 workbook 반영 대상에 포함되어 있습니다. "
+                             + string.Join(", ",
+                                 blockedIssues.Select(issue => $"{issue.OfficeDisplayName} {issue.RowCount:N0}건"))
+                             + "이(가) 저장 계정 없이 남아 있어 반영 후 dirty가 누적됩니다. "
+                             + "환경설정 > 동기화에서 해당 지점 계정을 먼저 저장한 뒤 다시 실행하세요.";
+        return result;
     }
 
     private async Task<WorkbookAuditContext> BuildWorkbookAuditContextAsync(string path, CancellationToken ct)
@@ -173,7 +280,12 @@ public sealed partial class RentalStateService
             rowsByNumber[row.RowNumber] = row;
             var (matchedAsset, matchedBy, ambiguous, warnings) = MatchWorkbookRowToAsset(row, assets);
             var differences = matchedAsset is null ? new List<string>() : BuildWorkbookDifferences(row, matchedAsset);
-            var resolvedCustomerId = await ResolveCustomerIdAsync(row.CustomerName, row.CustomerBusinessNumber, ct);
+            var resolvedCustomerId = await ResolveCustomerIdAsync(
+                row.CustomerName,
+                row.CustomerBusinessNumber,
+                ct,
+                allowWorkbookNameVariants: true,
+                preferredOfficeCode: row.OfficeCode);
             if (!string.IsNullOrWhiteSpace(row.CustomerName) && (!resolvedCustomerId.HasValue || resolvedCustomerId.Value == Guid.Empty))
             {
                 warnings.Add($"고객 마스터를 찾지 못했습니다: {row.CustomerName}");
@@ -361,6 +473,12 @@ public sealed partial class RentalStateService
                 KAdditional = GetCellString(row, headerMap, "K추가", "K 추가").Trim(),
                 CAdditional = GetCellString(row, headerMap, "C추가", "C 추가").Trim(),
                 Remarks = GetCellString(row, headerMap, "기타사항", "비고").Trim(),
+                Recall1 = GetCellString(row, headerMap, "회수1").Trim(),
+                Rental1 = GetCellString(row, headerMap, "렌탈1").Trim(),
+                Recall2 = GetCellString(row, headerMap, "회수2").Trim(),
+                Rental2 = GetCellString(row, headerMap, "렌탈2").Trim(),
+                Recall3 = GetCellString(row, headerMap, "회수3").Trim(),
+                Rental3 = GetCellString(row, headerMap, "렌탈3").Trim(),
                 AssetStatus = assetStatus
             };
 
@@ -409,14 +527,16 @@ public sealed partial class RentalStateService
         IReadOnlyList<LocalRentalAsset> assets)
     {
         var warnings = new List<string>();
-        var candidateSets = new List<(string Reason, List<LocalRentalAsset> Matches)>
-        {
-            ("ManagementNumber", FilterMatches(assets, asset => string.Equals(NormalizeProfileKeyPart(asset.ManagementNumber), NormalizeProfileKeyPart(row.ManagementNumber), StringComparison.Ordinal))),
-            ("ManagementId", FilterMatches(assets, asset => string.Equals(NormalizeProfileKeyPart(asset.ManagementId), NormalizeProfileKeyPart(row.ManagementId), StringComparison.Ordinal))),
-            ("MachineNumber", FilterMatches(assets, asset => string.Equals(NormalizeProfileKeyPart(asset.MachineNumber), NormalizeProfileKeyPart(row.MachineNumber), StringComparison.Ordinal))),
-            ("SourceManagementNumber", FilterMatches(assets, asset => HasImportedSourceIdentifier(asset.Notes, "원본 관리번호", row.ManagementNumber))),
-            ("SourceManagementId", FilterMatches(assets, asset => HasImportedSourceIdentifier(asset.Notes, "원본 관리ID", row.ManagementId)))
-        };
+        var normalizedManagementNumber = NormalizeProfileKeyPart(row.ManagementNumber);
+        var normalizedManagementId = NormalizeProfileKeyPart(row.ManagementId);
+        var normalizedMachineNumber = NormalizeProfileKeyPart(row.MachineNumber);
+
+        var candidateSets = new List<(string Reason, List<LocalRentalAsset> Matches)>();
+        AddCandidateSetIfValue(candidateSets, "ManagementNumber", normalizedManagementNumber, assets, asset => NormalizeProfileKeyPart(asset.ManagementNumber));
+        AddCandidateSetIfValue(candidateSets, "ManagementId", normalizedManagementId, assets, asset => NormalizeProfileKeyPart(asset.ManagementId));
+        AddCandidateSetIfValue(candidateSets, "MachineNumber", normalizedMachineNumber, assets, asset => NormalizeProfileKeyPart(asset.MachineNumber));
+        AddSourceCandidateSetIfValue(candidateSets, "SourceManagementNumber", row.ManagementNumber, assets, asset => HasImportedSourceIdentifier(asset.Notes, "원본 관리번호", row.ManagementNumber));
+        AddSourceCandidateSetIfValue(candidateSets, "SourceManagementId", row.ManagementId, assets, asset => HasImportedSourceIdentifier(asset.Notes, "원본 관리ID", row.ManagementId));
 
         var populatedSets = candidateSets
             .Where(current => current.Matches.Count > 0)
@@ -468,6 +588,32 @@ public sealed partial class RentalStateService
         IReadOnlyList<LocalRentalAsset> assets,
         Func<LocalRentalAsset, bool> predicate)
         => assets.Where(predicate).ToList();
+
+    private static void AddCandidateSetIfValue(
+        ICollection<(string Reason, List<LocalRentalAsset> Matches)> candidateSets,
+        string reason,
+        string normalizedValue,
+        IReadOnlyList<LocalRentalAsset> assets,
+        Func<LocalRentalAsset, string> valueSelector)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedValue))
+            return;
+
+        candidateSets.Add((reason, FilterMatches(assets, asset => string.Equals(valueSelector(asset), normalizedValue, StringComparison.Ordinal))));
+    }
+
+    private static void AddSourceCandidateSetIfValue(
+        ICollection<(string Reason, List<LocalRentalAsset> Matches)> candidateSets,
+        string reason,
+        string? rawValue,
+        IReadOnlyList<LocalRentalAsset> assets,
+        Func<LocalRentalAsset, bool> predicate)
+    {
+        if (string.IsNullOrWhiteSpace(NormalizeProfileKeyPart(rawValue)))
+            return;
+
+        candidateSets.Add((reason, FilterMatches(assets, predicate)));
+    }
 
     private static List<(LocalRentalAsset Asset, int Score)> RankWorkbookMatches(
         WorkbookRentalAssetRow row,
@@ -534,6 +680,12 @@ public sealed partial class RentalStateService
     {
         asset.ManagementCompanyCode = row.OfficeCode;
         asset.ResponsibleOfficeCode = row.OfficeCode;
+        asset.OfficeCode = row.OfficeCode;
+        asset.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            asset.TenantCode,
+            row.OfficeCode,
+            asset.TenantCode,
+            row.OfficeCode);
         asset.ManagementId = row.ManagementId;
         asset.ManagementNumber = row.ManagementNumber;
         asset.CurrentLocation = row.CurrentLocation;
@@ -541,18 +693,11 @@ public sealed partial class RentalStateService
         asset.Manufacturer = RentalCatalogValueNormalizer.NormalizeDisplayText(row.Manufacturer);
         asset.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(row.CustomerName);
         asset.CurrentCustomerName = asset.CustomerName;
+        asset.InstallSiteName = asset.CustomerName;
         asset.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(row.ItemName);
         asset.MachineNumber = row.MachineNumber;
         var normalizedInstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(row.InstallLocation);
-        if (!string.IsNullOrWhiteSpace(normalizedInstallLocation) || string.IsNullOrWhiteSpace(asset.InstallLocation))
-        {
-            asset.InstallLocation = normalizedInstallLocation;
-            asset.InstallSiteName = normalizedInstallLocation;
-        }
-        else if (string.IsNullOrWhiteSpace(asset.InstallSiteName))
-        {
-            asset.InstallSiteName = asset.InstallLocation;
-        }
+        asset.InstallLocation = normalizedInstallLocation;
         asset.PurchaseVendor = RentalCatalogValueNormalizer.NormalizeDisplayText(row.PurchaseVendor);
         asset.PurchaseDate = row.PurchaseDate;
         asset.DisposalDate = row.DisposalDate;
@@ -600,6 +745,18 @@ public sealed partial class RentalStateService
             lines.Add($"C추가: {row.CAdditional}");
         if (!string.IsNullOrWhiteSpace(row.Remarks))
             lines.Add($"기타사항: {row.Remarks}");
+        if (!string.IsNullOrWhiteSpace(row.Recall1))
+            lines.Add($"회수1: {row.Recall1}");
+        if (!string.IsNullOrWhiteSpace(row.Rental1))
+            lines.Add($"렌탈1: {row.Rental1}");
+        if (!string.IsNullOrWhiteSpace(row.Recall2))
+            lines.Add($"회수2: {row.Recall2}");
+        if (!string.IsNullOrWhiteSpace(row.Rental2))
+            lines.Add($"렌탈2: {row.Rental2}");
+        if (!string.IsNullOrWhiteSpace(row.Recall3))
+            lines.Add($"회수3: {row.Recall3}");
+        if (!string.IsNullOrWhiteSpace(row.Rental3))
+            lines.Add($"렌탈3: {row.Rental3}");
 
         return string.Join(Environment.NewLine, lines);
     }
@@ -614,6 +771,7 @@ public sealed partial class RentalStateService
         var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
         var destination = Path.Combine(AppPaths.BackupDir, $"거래플랜-{prefix}-{timestamp}.db");
         File.Copy(source, destination, overwrite: false);
+        BackupService.TrimManagedBackups();
         return destination;
     }
 
@@ -677,6 +835,7 @@ public sealed partial class RentalStateService
         var normalizedName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerName);
         if (string.IsNullOrWhiteSpace(normalizedName))
             yield break;
+        var normalizedAliasLookupName = NormalizeWorkbookAliasLookupName(normalizedName);
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -691,6 +850,15 @@ public sealed partial class RentalStateService
                 .Replace('}', ']');
             if (!string.Equals(normalizedBracketSeed, seed, StringComparison.Ordinal))
                 yield return normalizedBracketSeed.Trim();
+
+            var taggedBracketMatch = Regex.Match(seed, @"^\[(?<prefix>[^\]]+)\](?<body>.+)$");
+            if (taggedBracketMatch.Success)
+            {
+                var prefix = taggedBracketMatch.Groups["prefix"].Value.Trim();
+                var body = taggedBracketMatch.Groups["body"].Value.Trim();
+                foreach (var expanded in ExpandTaggedNameVariants(prefix, body))
+                    yield return expanded;
+            }
 
             var invertedBracketMatch = Regex.Match(seed, @"^(?<prefix>[^\[\]]+)\[(?<body>[^\[\]]+)\]$");
             if (invertedBracketMatch.Success)
@@ -735,6 +903,22 @@ public sealed partial class RentalStateService
                 yield return candidate;
         }
 
+        if (WorkbookCustomerAliasMap.TryGetValue(normalizedAliasLookupName, out var aliases))
+        {
+            foreach (var alias in aliases)
+            {
+                if (string.IsNullOrWhiteSpace(alias))
+                    continue;
+
+                foreach (var expanded in Expand(alias.Trim()))
+                {
+                    var candidate = RentalCatalogValueNormalizer.NormalizeDisplayText(expanded);
+                    if (!string.IsNullOrWhiteSpace(candidate) && seen.Add(candidate))
+                        yield return candidate;
+                }
+            }
+        }
+
         static IEnumerable<string> ExpandInstitutionPrefixes(string prefix)
         {
             if (string.IsNullOrWhiteSpace(prefix))
@@ -750,6 +934,86 @@ public sealed partial class RentalStateService
                     yield return reduced;
             }
         }
+
+        static IEnumerable<string> ExpandInstitutionPrefixVariants(string prefix)
+        {
+            if (string.IsNullOrWhiteSpace(prefix))
+                yield break;
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var candidate in Enumerate(prefix))
+            {
+                var normalized = RentalCatalogValueNormalizer.NormalizeDisplayText(candidate);
+                if (!string.IsNullOrWhiteSpace(normalized) && seen.Add(normalized))
+                    yield return normalized;
+            }
+
+            static IEnumerable<string> Enumerate(string seed)
+            {
+                yield return seed;
+
+                foreach (var reduced in ExpandInstitutionPrefixes(seed))
+                    yield return reduced;
+
+                if (seed.EndsWith("구", StringComparison.CurrentCultureIgnoreCase) &&
+                    !seed.EndsWith("구청", StringComparison.CurrentCultureIgnoreCase))
+                {
+                    yield return $"{seed}청";
+                }
+
+                if (string.Equals(seed, "보건환경연구원", StringComparison.CurrentCultureIgnoreCase))
+                    yield return "인천보건환경연구원";
+
+                if (string.Equals(seed, "상수도사업소", StringComparison.CurrentCultureIgnoreCase))
+                    yield return "상수도사업본부";
+
+                if (string.Equals(seed, "상수도사업본부", StringComparison.CurrentCultureIgnoreCase))
+                    yield return "상수도사업소";
+
+                if (string.Equals(seed, "연수구", StringComparison.CurrentCultureIgnoreCase))
+                    yield return "인천광역시 연수구";
+            }
+        }
+
+        static IEnumerable<string> ExpandTaggedNameVariants(string prefix, string body)
+        {
+            if (string.IsNullOrWhiteSpace(prefix) || string.IsNullOrWhiteSpace(body))
+                yield break;
+
+            foreach (var prefixVariant in ExpandInstitutionPrefixVariants(prefix))
+            {
+                yield return $"{prefixVariant}[{body}]";
+                yield return $"{prefixVariant} {body}";
+                yield return $"{prefixVariant}{body}";
+
+                var hyphenIndex = body.IndexOf('-', StringComparison.Ordinal);
+                if (hyphenIndex <= 0 || hyphenIndex >= body.Length - 1)
+                    continue;
+
+                var left = body[..hyphenIndex].Trim();
+                var right = body[(hyphenIndex + 1)..].Trim();
+                if (string.IsNullOrWhiteSpace(right))
+                    continue;
+
+                yield return $"{prefixVariant}[{right}]";
+                yield return $"{prefixVariant} {right}";
+                yield return $"{prefixVariant}{right}";
+
+                if (!string.IsNullOrWhiteSpace(left))
+                {
+                    yield return $"{prefixVariant} {left}[{right}]";
+                    yield return $"{prefixVariant}{left}[{right}]";
+                }
+            }
+        }
+
+        static string NormalizeWorkbookAliasLookupName(string value)
+            => value
+                .Replace('｛', '[')
+                .Replace('｝', ']')
+                .Replace('{', '[')
+                .Replace('}', ']')
+                .Trim();
     }
 
     private void ValidateRebuildTargets(
@@ -759,11 +1023,11 @@ public sealed partial class RentalStateService
         if (operations.Count == 0)
             return;
 
-        var allActiveAssets = _db.RentalAssets.IgnoreQueryFilters()
-            .Where(asset => !asset.IsDeleted)
+        var allAssets = _db.RentalAssets.IgnoreQueryFilters()
             .Select(asset => new
             {
                 asset.Id,
+                asset.IsDeleted,
                 ManagementId = NormalizeProfileKeyPart(asset.ManagementId),
                 ManagementNumber = NormalizeProfileKeyPart(asset.ManagementNumber)
             })
@@ -786,7 +1050,7 @@ public sealed partial class RentalStateService
                 .Where(current => !current.IsCreate)
                 .Select(current => current.Asset.Id)
                 .ToHashSet();
-            var untouchedAssets = allActiveAssets
+            var untouchedAssets = allAssets
                 .Where(current => !touchedAssetIds.Contains(current.Id))
                 .ToList();
 
@@ -812,7 +1076,10 @@ public sealed partial class RentalStateService
                     var conflictingAsset = untouchedAssets.FirstOrDefault(current => string.Equals(current.ManagementId, targetManagementId, StringComparison.Ordinal));
                     if (conflictingAsset is not null)
                     {
-                        AddRebuildAmbiguity(rebuildResult, operation.Entry, $"관리ID '{operation.Row.ManagementId}' 가 다른 활성 자산과 충돌합니다.");
+                        AddRebuildAmbiguity(
+                            rebuildResult,
+                            operation.Entry,
+                            $"관리ID '{operation.Row.ManagementId}' 가 다른 {(conflictingAsset.IsDeleted ? "삭제된" : "활성")} 자산과 충돌합니다.");
                         continue;
                     }
                 }
@@ -823,7 +1090,10 @@ public sealed partial class RentalStateService
 
                 var conflictingByNumber = untouchedAssets.FirstOrDefault(current => string.Equals(current.ManagementNumber, targetManagementNumber, StringComparison.Ordinal));
                 if (conflictingByNumber is not null)
-                    AddRebuildAmbiguity(rebuildResult, operation.Entry, $"관리번호 '{operation.Row.ManagementNumber}' 가 다른 활성 자산과 충돌합니다.");
+                    AddRebuildAmbiguity(
+                        rebuildResult,
+                        operation.Entry,
+                        $"관리번호 '{operation.Row.ManagementNumber}' 가 다른 {(conflictingByNumber.IsDeleted ? "삭제된" : "활성")} 자산과 충돌합니다.");
             }
 
             addedAmbiguity = rebuildResult.AmbiguousEntries.Count > beforeCount;
@@ -919,6 +1189,13 @@ public sealed partial class RentalStateService
         RentalWorkbookAuditResult Result,
         IReadOnlyDictionary<int, WorkbookRentalAssetRow> RowsByRowNumber);
 
+    private sealed class WorkbookScopeCheckResult
+    {
+        public string BlockReason { get; set; } = string.Empty;
+        public List<RentalWorkbookScopeIssue> ScopeIssues { get; } = new();
+        public bool CanProceed => string.IsNullOrWhiteSpace(BlockReason);
+    }
+
     private sealed record RentalWorkbookRebuildOperation(
         RentalWorkbookAuditEntry Entry,
         WorkbookRentalAssetRow Row,
@@ -926,6 +1203,21 @@ public sealed partial class RentalStateService
         bool IsCreate,
         string OriginalManagementId,
         string OriginalManagementNumber);
+
+    private static string BuildWorkbookScopeResolutionHint(
+        string officeCode,
+        bool writableInCurrentSession,
+        bool hasStoredCredential)
+    {
+        var officeDisplayName = OfficeCodeCatalog.GetOfficeDisplayName(officeCode);
+        if (writableInCurrentSession)
+            return "현재 세션으로 바로 반영 가능합니다.";
+
+        if (hasStoredCredential)
+            return $"{officeDisplayName} 저장 계정이 있어 반영 후 후속 동기화로 처리할 수 있습니다.";
+
+        return $"{officeDisplayName} 저장 계정이 없어 반영 후 dirty가 남습니다. 환경설정 > 동기화에서 먼저 계정을 저장하세요.";
+    }
 
     private sealed class WorkbookRentalAssetRow
     {
@@ -960,6 +1252,12 @@ public sealed partial class RentalStateService
         public string KAdditional { get; init; } = string.Empty;
         public string CAdditional { get; init; } = string.Empty;
         public string Remarks { get; init; } = string.Empty;
+        public string Recall1 { get; init; } = string.Empty;
+        public string Rental1 { get; init; } = string.Empty;
+        public string Recall2 { get; init; } = string.Empty;
+        public string Rental2 { get; init; } = string.Empty;
+        public string Recall3 { get; init; } = string.Empty;
+        public string Rental3 { get; init; } = string.Empty;
         public string AssetStatus { get; init; } = string.Empty;
         public bool HasStrongIdentifier =>
             !string.IsNullOrWhiteSpace(ManagementNumber) ||
@@ -973,4 +1271,3 @@ public sealed partial class RentalStateService
             string.IsNullOrWhiteSpace(MachineNumber);
     }
 }
-

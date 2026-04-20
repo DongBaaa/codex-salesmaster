@@ -14,6 +14,7 @@ public sealed partial class InvoiceLineEditModel : ObservableObject
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid? ItemId { get; set; }
     public string ItemTrackingType { get; set; } = ItemTrackingTypes.Stock;
+    [ObservableProperty] private int _rowNo;
 
     [ObservableProperty]
     private string _itemName = string.Empty;

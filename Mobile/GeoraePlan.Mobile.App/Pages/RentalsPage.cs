@@ -292,7 +292,7 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             if (value is not RentalBillingProfileDto profile)
                 return string.Empty;
 
-            return $"청구일 {profile.BillingDay}일 / 지점 {Normalize(profile.ResponsibleOfficeCode, "미지정")}";
+            return $"청구일 {profile.BillingDay}일 / 지점 {ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode)}";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
@@ -352,7 +352,7 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             if (value is not RentalAssetDto asset)
                 return string.Empty;
 
-            return $"월 {asset.MonthlyFee:N0}원 / 설치 {FormatDate(asset.InstallDate)} / 지점 {Normalize(asset.ResponsibleOfficeCode, "미지정")}";
+            return $"월 {asset.MonthlyFee:N0}원 / 설치 {FormatDate(asset.InstallDate)} / 지점 {ResolveOffice(asset.ResponsibleOfficeCode, asset.OfficeCode)}";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
@@ -377,6 +377,11 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
 
     private static string Normalize(string? value, string fallback)
         => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+
+    private static string ResolveOffice(string? responsibleOfficeCode, string? ownerOfficeCode)
+        => !string.IsNullOrWhiteSpace(responsibleOfficeCode)
+            ? responsibleOfficeCode.Trim()
+            : Normalize(ownerOfficeCode, "미지정");
 
     private static string FormatDate(DateOnly? value)
         => value.HasValue ? value.Value.ToString("yyyy-MM-dd") : "미정";

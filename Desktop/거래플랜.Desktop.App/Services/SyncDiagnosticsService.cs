@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -116,6 +117,14 @@ public sealed class SyncDiagnosticsService
     private static readonly Regex GuidPattern = new(
         @"[0-9a-fA-F]{8}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{12}",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex DeferredDirtyMissingCredentialPattern = new(
+        @"저장된\s+지점\s+동기화\s+계정\s+없음으로\s+dirty\s+보류:\s*scope=(?<scope>[^,]+),\s*office=(?<office>[^,]*),\s*tenant=(?<tenant>[^,]*),\s*count=(?<count>\d+)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    private static readonly Regex RemainingDirtyScopePattern = new(
+        @"동기화\s+후\s+dirty\s+잔존:\s*scope=(?<scope>[^,]+),\s*office=(?<office>[^,]*),\s*tenant=(?<tenant>[^,]*),\s*count=(?<count>\d+)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     private readonly SessionState _session;
 
@@ -500,12 +509,14 @@ public sealed class SyncDiagnosticsService
 
     private static string BuildMarkdownReport(SyncDiagnosticSummary summary, IReadOnlyList<SyncDiagnosticListItem> events)
     {
+        var manualReviewIssueCount = Math.Max(0, summary.OpenIssueCount - summary.RecoverableIssueCount);
         var builder = new StringBuilder();
         builder.AppendLine("# 동기화 진단 리포트");
         builder.AppendLine();
         builder.AppendLine($"- 생성시각: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         builder.AppendLine($"- 미해결 오류: {summary.OpenIssueCount:N0}건");
         builder.AppendLine($"- 자동 복구 가능: {summary.RecoverableIssueCount:N0}건");
+        builder.AppendLine($"- 수동 확인 필요: {manualReviewIssueCount:N0}건");
         builder.AppendLine($"- 마지막 성공: {(summary.LastSuccessAtUtc.HasValue ? summary.LastSuccessAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "없음")}");
         builder.AppendLine($"- 마지막 오류: {(string.IsNullOrWhiteSpace(summary.LastError) ? "없음" : summary.LastError)}");
         builder.AppendLine();
@@ -554,6 +565,47 @@ public sealed class SyncDiagnosticsService
             referenceEntityId = referenceMatch.Groups["refId"].Value;
         }
 
+        var deferredDirtyMatch = DeferredDirtyMissingCredentialPattern.Match(detail);
+        if (deferredDirtyMatch.Success)
+        {
+            var scopeKey = deferredDirtyMatch.Groups["scope"].Value.Trim();
+            var officeCode = deferredDirtyMatch.Groups["office"].Value.Trim();
+            var tenantCode = deferredDirtyMatch.Groups["tenant"].Value.Trim();
+            var targetDisplayName = ResolveScopeTargetDisplayName(scopeKey, officeCode, tenantCode);
+            return new SyncDiagnosticClassification(
+                syncPhase,
+                resolvedSeverity,
+                "권한/범위 오류",
+                "missing_sync_credential",
+                "PendingSyncScope",
+                scopeKey,
+                "Office",
+                officeCode,
+                $"pending_scope|missing_sync_credential|{scopeKey}|{officeCode}|{tenantCode}",
+                false,
+                $"환경설정 > 동기화에서 {targetDisplayName} 계정을 저장한 뒤 선택 범위 동기화를 다시 실행하세요.");
+        }
+
+        var remainingDirtyMatch = RemainingDirtyScopePattern.Match(detail);
+        if (remainingDirtyMatch.Success)
+        {
+            var scopeKey = remainingDirtyMatch.Groups["scope"].Value.Trim();
+            var officeCode = remainingDirtyMatch.Groups["office"].Value.Trim();
+            var tenantCode = remainingDirtyMatch.Groups["tenant"].Value.Trim();
+            return new SyncDiagnosticClassification(
+                syncPhase,
+                resolvedSeverity,
+                "저장/동기화 오류",
+                "remaining_dirty",
+                "PendingSyncScope",
+                scopeKey,
+                "Office",
+                officeCode,
+                $"pending_scope|remaining_dirty|{scopeKey}|{officeCode}|{tenantCode}",
+                true,
+                "남은 dirty 보기 또는 선택 범위 동기화로 잔여 변경을 확인한 뒤 다시 동기화하세요.");
+        }
+
         if (detail.Contains("cannot modify this office scope", StringComparison.OrdinalIgnoreCase))
         {
             return new SyncDiagnosticClassification(syncPhase, resolvedSeverity, "권한/범위 오류", "office_scope", entityName, entityId, referenceEntityName, referenceEntityId, normalized, false, "담당지점/권한/연동 정책 설정을 확인하세요.");
@@ -596,6 +648,24 @@ public sealed class SyncDiagnosticsService
         }
 
         return new SyncDiagnosticClassification(syncPhase, resolvedSeverity, "저장/동기화 오류", "general_sync_failure", entityName, entityId, referenceEntityName, referenceEntityId, normalized, recoveryAttempted || recoverySucceeded, recoverySucceeded ? "자동 복구가 완료되었습니다." : "동기화 재시도 후 동일하면 진단 리포트를 저장하세요.");
+    }
+
+    private static string ResolveScopeTargetDisplayName(string scopeKey, string officeCode, string tenantCode)
+    {
+        if (!string.IsNullOrWhiteSpace(officeCode))
+            return OfficeCodeCatalog.GetOfficeDisplayName(officeCode);
+
+        if (scopeKey.StartsWith("TENANT:", StringComparison.OrdinalIgnoreCase))
+        {
+            var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(scopeKey[7..], tenantCode);
+            if (!string.IsNullOrWhiteSpace(normalizedTenantCode))
+                return TenantScopeCatalog.GetTenantDisplayName(normalizedTenantCode);
+        }
+
+        if (!string.IsNullOrWhiteSpace(tenantCode))
+            return TenantScopeCatalog.GetTenantDisplayName(tenantCode);
+
+        return string.IsNullOrWhiteSpace(scopeKey) ? "해당 범위" : scopeKey;
     }
 
     private sealed record SyncDiagnosticClassification(

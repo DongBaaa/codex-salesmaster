@@ -701,10 +701,10 @@ public sealed partial class LocalStateService
 
     private static bool CanAccessRental(string? officeCode, SessionState session)
     {
-        if (CanManageAllRentalScope(session))
+        if (HasFullAccess(session))
             return true;
 
         var normalizedOfficeCode = NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet);
-        return GetReadableOfficeCodes(session).Contains(normalizedOfficeCode);
+        return GetReadableRentalOfficeCodes(session).Contains(normalizedOfficeCode);
     }
 }

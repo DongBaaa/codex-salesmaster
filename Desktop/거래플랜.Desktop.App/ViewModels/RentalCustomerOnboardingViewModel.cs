@@ -226,10 +226,12 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         BeginAutoSaveSuppression();
         try
         {
-            _customers = await _local.GetCustomersAsync(_session);
+            _customers = await _local.GetCustomersForRentalScopeAsync(_session);
             var offices = await _local.GetOfficesAsync();
+            var writableOfficeCodes = _local.GetWritableRentalOfficeCodesForSession(_session)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
             OfficeOptions.Clear();
-            foreach (var office in offices)
+            foreach (var office in offices.Where(office => writableOfficeCodes.Contains(office.Code)))
             {
                 OfficeOptions.Add(new DisplayOption
                 {
@@ -238,7 +240,9 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 });
             }
 
-            OfficeCode = OfficeOptions.FirstOrDefault()?.Value
+            OfficeCode = OfficeOptions.FirstOrDefault(option =>
+                             string.Equals(option.Value, OfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
+                ?? OfficeOptions.FirstOrDefault()?.Value
                 ?? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
             BillingMethod = "전자세금계산서";
             BillingDayMode = RentalBillingScheduleRules.BillingDayModeFixedDay;
@@ -669,7 +673,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     public async Task<IReadOnlyList<LookupRow>> BuildCustomerLookupRowsAsync()
     {
         if (_customers.Count == 0)
-            _customers = await _local.GetCustomersAsync(_session);
+            _customers = await _local.GetCustomersForRentalScopeAsync(_session);
 
         return _customers
             .OrderBy(customer => customer.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
@@ -743,8 +747,8 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     {
         if (CustomerId.HasValue && CustomerId.Value != Guid.Empty)
         {
-            var preferredContract = await _local.GetPreferredCustomerContractAsync(CustomerId.Value, _session, ct);
-            if (preferredContract?.SignedDate is DateOnly signedDate)
+            var representativeContract = await _local.GetRepresentativeCustomerContractAsync(CustomerId.Value, _session, ct);
+            if (representativeContract?.SignedDate is DateOnly signedDate)
                 return signedDate;
         }
 

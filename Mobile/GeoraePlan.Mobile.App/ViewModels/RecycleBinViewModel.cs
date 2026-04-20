@@ -84,7 +84,7 @@ public sealed class RecycleBinViewModel : ObservableObject
         {
             IsBusy = true;
             var result = await _api.RestoreRecycleBinAsync(
-                [new RecycleBinMutationTargetDto { EntityId = entry.EntityId, Kind = entry.Kind }]);
+                [new RecycleBinMutationTargetDto { EntityId = entry.EntityId, Kind = entry.Kind, ExpectedRevision = entry.Revision }]);
 
             await RefreshCoreAsync();
             StatusMessage = BuildMutationMessage("복원", result);
@@ -108,7 +108,7 @@ public sealed class RecycleBinViewModel : ObservableObject
         {
             IsBusy = true;
             var result = await _api.PurgeRecycleBinAsync(
-                [new RecycleBinMutationTargetDto { EntityId = entry.EntityId, Kind = entry.Kind }]);
+                [new RecycleBinMutationTargetDto { EntityId = entry.EntityId, Kind = entry.Kind, ExpectedRevision = entry.Revision }]);
 
             await RefreshCoreAsync();
             StatusMessage = BuildMutationMessage("영구삭제", result);
