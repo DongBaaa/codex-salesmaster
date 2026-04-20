@@ -2292,14 +2292,30 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         var normalizedStatus = string.IsNullOrWhiteSpace(status) ? "완료" : status.Trim();
-        var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
+        var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: false);
         var scheduledDate = currentRun?.ScheduledDate
             ?? GetNextBillingDate(profile, referenceDate)
             ?? RentalBillingScheduleRules.BuildBillingDate(referenceDate.Year, referenceDate.Month, profile.BillingDay, profile.BillingDayMode);
+        var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
+        IQueryable<LocalTransaction> settlementQuery = _db.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => !current.IsDeleted && current.LinkedRentalBillingProfileId == billingProfileId);
+        if (currentRun?.RunId is Guid currentRunId && currentRunId != Guid.Empty)
+            settlementQuery = settlementQuery.Where(current => current.LinkedRentalBillingRunId == currentRunId);
+
+        var settledAmountForCompletion = (await settlementQuery
+            .Select(current => current.SettlementAmount)
+            .ToListAsync(ct))
+            .Sum();
+        settledAmountForCompletion = Math.Max(0m, settledAmountForCompletion);
+
+        var remainingAmount = Math.Max(0m, billedAmount - settledAmountForCompletion);
+        if (remainingAmount > 0m)
+            return LocalMutationResult.Denied($"미수금 {remainingAmount:N0}원이 남아 있어 완납처리할 수 없습니다. 먼저 '이번 입금 등록'으로 수금을 완료하세요.");
+
         var billingYearMonth = $"{scheduledDate.Year:0000}-{scheduledDate.Month:00}";
         var log = await _db.RentalBillingLogs.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.BillingProfileId == billingProfileId && current.BillingYearMonth == billingYearMonth, ct);
-        var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
         var now = DateTime.UtcNow;
         if (log is null)
         {
@@ -2337,18 +2353,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile.LastBilledDate = scheduledDate;
         profile.BillingStatus = PaymentFlowConstants.BillingStatusCompleted;
         profile.CompletionStatus = PaymentFlowConstants.NormalizeCompletionStatus(normalizedStatus);
-        profile.SettledAmount = profile.SettledAmount <= 0m && profile.OutstandingAmount <= 0m
-            ? billedAmount
-            : profile.SettledAmount;
-        profile.OutstandingAmount = Math.Max(0m, billedAmount - profile.SettledAmount);
-        profile.SettlementStatus = profile.OutstandingAmount <= 0m
-            ? PaymentFlowConstants.SettlementStatusConfirmed
-            : PaymentFlowConstants.SettlementStatusPartial;
-        profile.RequiresFollowUp = profile.OutstandingAmount > 0m;
+        profile.SettledAmount = settledAmountForCompletion;
+        profile.OutstandingAmount = 0m;
+        profile.SettlementStatus = PaymentFlowConstants.SettlementStatusConfirmed;
+        profile.RequiresFollowUp = false;
         if (currentRun is not null)
         {
             currentRun.BilledAmount = billedAmount;
-            currentRun.SettledAmount = profile.SettledAmount;
+            currentRun.SettledAmount = settledAmountForCompletion;
             currentRun.SettlementStatus = profile.SettlementStatus;
             currentRun.SettledDate = profile.LastSettledDate;
             currentRun.Status = profile.BillingStatus;

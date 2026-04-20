@@ -87,6 +87,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private int _dueCount;
     [ObservableProperty] private int _issueCount;
     [ObservableProperty] private int _completedCount;
+    [ObservableProperty] private int _partialSettlementCount;
     [ObservableProperty] private decimal _totalOutstandingAmount;
 
     public ObservableCollection<DisplayOption> OfficeOptions { get; } = new();
@@ -116,7 +117,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public bool CanHoldSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
     public bool CanRegisterSettlementSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
     public bool CanDeleteSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
-    public bool CanMarkCompletedSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
+    public bool CanMarkCompletedSelected => SelectedRow is not null &&
+                                            HasPersistedSelectedProfile &&
+                                            CanEditCurrentSelection &&
+                                            !SelectedRow.IsAggregateRow &&
+                                            SelectedRow.OutstandingAmount <= 0m;
     public bool CanRemoveTemplateItem => SelectedTemplateItem is not null;
     public bool CanApplySelectedAssets => SelectedTemplateItem is not null && CandidateAssets.Any(asset => asset.IsSelected);
     public bool CanOpenCustomerContract => EditCustomerId.HasValue && EditCustomerId.Value != Guid.Empty;
@@ -344,6 +349,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 DueCount = rows.Count(row => row.DaysRemaining.HasValue && row.DaysRemaining.Value <= 0);
                 IssueCount = rows.Count(row => row.HasDataIssue);
                 CompletedCount = rows.Count(row => string.Equals(row.CompletionStatus, PaymentFlowConstants.CompletionDone, StringComparison.OrdinalIgnoreCase));
+                PartialSettlementCount = rows.Count(row => string.Equals(row.SettlementStatus, PaymentFlowConstants.SettlementStatusPartial, StringComparison.OrdinalIgnoreCase));
                 TotalOutstandingAmount = rows.Sum(row => row.OutstandingAmount);
                 var unlinkedCount = rows.Count(row => !row.HasPersistedProfile);
 
@@ -727,6 +733,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (!SelectedRow.HasPersistedProfile)
         {
             StatusMessage = "청구 프로필이 없는 설치처입니다. 저장 후 다시 완료 처리하세요.";
+            return;
+        }
+
+        if (SelectedRow.OutstandingAmount > 0m)
+        {
+            StatusMessage = "미수금이 남아 있어 완납처리할 수 없습니다. 먼저 '이번 입금 등록'으로 수금을 완료하세요.";
+            MessageBox.Show(
+                "미수금이 남아 있어 완납처리할 수 없습니다. 먼저 '이번 입금 등록'으로 수금을 완료하세요.",
+                "완납처리 불가",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
             return;
         }
 

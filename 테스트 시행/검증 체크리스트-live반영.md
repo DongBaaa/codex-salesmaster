@@ -21,7 +21,7 @@
 
 ## 4. 다중 PC / 동기화 확인
 - [ ] 필요 시 `준비-다중PC-검증.ps1` 로 PC-A / PC-B 분리 캐시 검증을 수행했다.
-- [x] 필요 시 `Invoke-MultiPcReadinessCheck.ps1` 로 다중 PC 실행 구성 자체를 점검했다.
+- [ ] 필요 시 `Invoke-MultiPcReadinessCheck.ps1` 로 다중 PC 실행 구성 자체를 점검했다.
 - [x] dirty 데이터가 남아 있으면 업데이트가 차단되는지 확인했다.
 - [x] 시작 시 무결성 점검 / 전체 재동기화 안내가 비정상 반복되지 않는지 확인했다.
 - [ ] 재고/렌탈 연동 수정이 포함되면 무결성 리포트에 재고 스냅샷 불일치가 남지 않는지 확인했다.
@@ -33,4 +33,7 @@
 - [x] 반영 직후 `Invoke-LiveObservationCheck.ps1` 로 live 서버 healthz/manifest/package 응답을 관찰했다.
 
 ## 메모
-- 
+- release id: `20260420-221753`
+- public stable manifest 기준 desktop.version: `1.1.151`
+- public healthz 확인 시각: `2026-04-20 22:20:59 KST` / 응답 `ok`
+- 이번 배포는 mandatory 업데이트 아님 상태를 유지해 `minimumSupportedVersion` 은 빈 값으로 남겼습니다.

@@ -253,12 +253,16 @@
                         </Grid>
 
                         <Grid Grid.Row="1" Margin="0,6,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="152"/>
                                 <ColumnDefinition Width="10"/>
                                 <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="96"/>
+                                <ColumnDefinition Width="260"/>
                                 <ColumnDefinition Width="10"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="96"/>
@@ -271,20 +275,55 @@
                             <ComboBox Grid.Column="1"
                                       Height="28"
                                       ItemsSource="{Binding TransactionKinds}"
-                                      DisplayMemberPath="Label"
-                                      SelectedValuePath="Value"
-                                      SelectedValue="{Binding SelectedTransactionKind}"/>
+                                       DisplayMemberPath="Label"
+                                       SelectedValuePath="Value"
+                                       SelectedValue="{Binding SelectedTransactionKind}"/>
                             <TextBlock Grid.Column="3" Text="정산금액" Style="{StaticResource InlineInfoLabelStyle}"/>
-                            <TextBox Grid.Column="4"
-                                     Height="28"
-                                     Text="{Binding SettlementAmount, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"
-                                     IsEnabled="{Binding IsSettlementAmountEnabled}"/>
+                            <Grid Grid.Column="4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="6"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="6"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0"
+                                         Height="28"
+                                         Text="{Binding SettlementAmount, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"
+                                         IsEnabled="{Binding IsSettlementAmountEnabled}"/>
+                                <Button Grid.Column="2"
+                                        Content="전액입력"
+                                        Style="{StaticResource BaseButtonStyle}"
+                                        Height="28"
+                                        MinWidth="72"
+                                        Padding="10,0"
+                                        Command="{Binding ApplyFullSettlementAmountCommand}"
+                                        Visibility="{Binding ShowSettlementGuide, Converter={StaticResource BoolToVisibility}}"/>
+                                <Button Grid.Column="4"
+                                        Content="초기화"
+                                        Style="{StaticResource BaseButtonStyle}"
+                                        Height="28"
+                                        MinWidth="60"
+                                        Padding="10,0"
+                                        Command="{Binding ClearSettlementInputCommand}"
+                                        Visibility="{Binding ShowSettlementGuide, Converter={StaticResource BoolToVisibility}}"/>
+                            </Grid>
                             <TextBlock Grid.Column="6" Text="{Binding ReserveBalanceLabelText}" Style="{StaticResource InlineInfoLabelStyle}"/>
                             <TextBlock Grid.Column="7"
                                        Text="{Binding AdvanceBalance, StringFormat={}{0:N0}}"
                                        Style="{StaticResource InlineInfoValueStyle}"/>
                             <TextBlock Grid.Column="9" Text="정산방향" Style="{StaticResource InlineInfoLabelStyle}"/>
                             <TextBlock Grid.Column="10" Text="{Binding PaymentActionLabel}" Style="{StaticResource InlineInfoValueStyle}"/>
+
+                            <TextBlock Grid.Row="1"
+                                       Grid.Column="3"
+                                       Grid.ColumnSpan="8"
+                                       Margin="0,6,0,0"
+                                       Text="{Binding SettlementGuideText}"
+                                       Foreground="#90CAF9"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Visibility="{Binding ShowSettlementGuide, Converter={StaticResource BoolToVisibility}}"/>
                         </Grid>
                     </Grid>
 

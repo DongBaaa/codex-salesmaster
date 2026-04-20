@@ -120,6 +120,12 @@ public sealed partial class PaymentViewModel : ObservableObject
         PaymentFlowConstants.IsInvoiceSettlementKind(SelectedTransactionKind) ||
         PaymentFlowConstants.IsRentalSettlementKind(SelectedTransactionKind) ||
         (_linkedInvoice is not null && PaymentFlowConstants.IsGeneralSettlementKind(SelectedTransactionKind));
+    public bool ShowSettlementGuide => IsSettlementAmountEnabled && (_linkedInvoice is not null || _linkedRentalProfile is not null);
+    public string SettlementGuideText => _linkedRentalProfile is not null
+        ? "기본값은 미수 전체입니다. 분할입금이면 이번 입금분만 입력하세요."
+        : _linkedInvoice is not null
+            ? "기본값은 잔액 전체입니다. 분할 수금/지급이면 이번 처리분만 입력하세요."
+            : string.Empty;
 
     public bool CanAddAttachment => SelectedHistory is not null;
     public bool CanEditHistory => SelectedHistory is not null && !IsSaving;
@@ -279,6 +285,8 @@ public sealed partial class PaymentViewModel : ObservableObject
         RebuildTransactionKinds(ResolveDefaultTransactionKind());
         RequestApplySuggestedAmounts(forceResetAmounts: false);
         ResetAttachmentEditor();
+        NotifySettlementUiStateChanged();
+        RequestRefreshContext();
     }
 
     partial void OnCashReceiptChanged(decimal value) => RecalcReceipt();
@@ -309,9 +317,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             return;
 
         RequestApplySuggestedAmounts(forceResetAmounts: false);
-        OnPropertyChanged(nameof(PaymentActionLabel));
-        OnPropertyChanged(nameof(ReserveBalanceLabelText));
-        OnPropertyChanged(nameof(IsSettlementAmountEnabled));
+        NotifySettlementUiStateChanged();
         RequestRefreshContext();
     }
 
@@ -643,6 +649,15 @@ public sealed partial class PaymentViewModel : ObservableObject
         BankReceipt = SettlementAmount;
     }
 
+    private void NotifySettlementUiStateChanged()
+    {
+        OnPropertyChanged(nameof(PaymentActionLabel));
+        OnPropertyChanged(nameof(ReserveBalanceLabelText));
+        OnPropertyChanged(nameof(IsSettlementAmountEnabled));
+        OnPropertyChanged(nameof(ShowSettlementGuide));
+        OnPropertyChanged(nameof(SettlementGuideText));
+    }
+
     private void RequestRefreshContext()
     {
         var version = Interlocked.Increment(ref _contextRefreshVersion);
@@ -729,7 +744,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             TransactionSummary = $"{GetReserveLabel(kind)} 잔액 {AdvanceBalance:N0}";
         }
 
-        OnPropertyChanged(nameof(PaymentActionLabel));
+        NotifySettlementUiStateChanged();
     }
 
     private void RequestLoadHistory(Guid customerId)
@@ -838,6 +853,43 @@ public sealed partial class PaymentViewModel : ObservableObject
     }
 
     private bool CanSave() => !IsSaving;
+
+    [RelayCommand]
+    private async Task ApplyFullSettlementAmountAsync()
+    {
+        if (!ShowSettlementGuide)
+            return;
+
+        var version = Interlocked.Increment(ref _settlementSuggestionVersion);
+        var kind = PaymentFlowConstants.NormalizeTransactionKind(SelectedTransactionKind);
+
+        if (_linkedInvoice is not null)
+        {
+            await ApplyInvoiceDefaultSettlementAsync(
+                forceResetAmounts: true,
+                advanceOnly: kind == PaymentFlowConstants.TransactionKindAdvanceApply,
+                version);
+            if (IsCurrentSettlementSuggestion(version))
+                StatusMessage = "남은 잔액 전체를 입력했습니다.";
+            return;
+        }
+
+        if (_linkedRentalProfile is not null)
+        {
+            await ApplyRentalDefaultSettlementAsync(forceResetAmounts: true, version);
+            if (IsCurrentSettlementSuggestion(version))
+                StatusMessage = "현재 미수금 전체를 입력했습니다.";
+        }
+    }
+
+    [RelayCommand]
+    private void ClearSettlementInput()
+    {
+        SettlementAmount = 0m;
+        CashReceipt = CardReceipt = BankReceipt = DiscountApplied = ReceiptTotal = 0m;
+        CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
+        StatusMessage = "이번 처리금액을 초기화했습니다.";
+    }
 
     [RelayCommand(CanExecute = nameof(CanSave))]
     private async Task SaveAsync()
@@ -1054,6 +1106,50 @@ public sealed partial class PaymentViewModel : ObservableObject
                         ? (SettlementAmount > 0m ? Math.Min(SettlementAmount, ReceiptTotal) : ReceiptTotal)
                         : 0m;
                     break;
+            }
+
+            if (_linkedInvoice is not null &&
+                (PaymentFlowConstants.IsInvoiceSettlementKind(kind) || PaymentFlowConstants.IsGeneralSettlementKind(kind)))
+            {
+                var invoiceSummary = await GetInvoiceSettlementSummaryAsync(_linkedInvoice.Id);
+                var editableSettlement = GetEditingSettlementAmountForLinkedContext(linkedInvoiceId: _linkedInvoice.Id);
+                var availableSettlement = Math.Max(0m, invoiceSummary.RemainingAmount + editableSettlement);
+                var enteredAmount = PaymentFlowConstants.IsPaymentKind(kind) ? PaymentTotal : ReceiptTotal;
+                if (enteredAmount > availableSettlement)
+                {
+                    var reserveLabel = UsesPrepaidReserve(kind) ? "선지급금" : "선수금";
+                    var overAmount = enteredAmount - availableSettlement;
+                    var confirm = System.Windows.MessageBox.Show(
+                        $"이번 처리금액이 현재 잔액보다 {overAmount:N0}원 많습니다.\n초과분은 {reserveLabel}(으)로 처리됩니다. 계속하시겠습니까?",
+                        "초과 처리 확인",
+                        System.Windows.MessageBoxButton.YesNo,
+                        System.Windows.MessageBoxImage.Warning);
+                    if (confirm != System.Windows.MessageBoxResult.Yes)
+                    {
+                        StatusMessage = "초과 처리 확인이 취소되었습니다. 금액을 다시 확인하세요.";
+                        return;
+                    }
+                }
+            }
+
+            if (_linkedRentalProfile is not null && kind == PaymentFlowConstants.TransactionKindRentalReceipt)
+            {
+                var rentalSummary = await GetRentalSettlementSummaryAsync(_linkedRentalProfile.Id, _linkedRentalBillingRunId, _linkedRentalBilledAmount);
+                var editableSettlement = GetEditingSettlementAmountForLinkedContext(
+                    linkedRentalProfileId: _linkedRentalProfile.Id,
+                    linkedRentalRunId: _linkedRentalBillingRunId);
+                var availableSettlement = Math.Max(0m, rentalSummary.OutstandingAmount + editableSettlement);
+                if (ReceiptTotal > availableSettlement)
+                {
+                    var overAmount = ReceiptTotal - availableSettlement;
+                    System.Windows.MessageBox.Show(
+                        $"이번 입금액이 현재 미수금보다 {overAmount:N0}원 많습니다.\n렌탈 청구는 초과입금을 자동 처리하지 않으므로 금액을 다시 확인하세요.",
+                        "렌탈 수금 확인",
+                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxImage.Warning);
+                    StatusMessage = "렌탈 수금 금액이 미수금을 초과했습니다. 금액을 다시 확인하세요.";
+                    return;
+                }
             }
 
             var result = await _local.SaveTransactionAsync(transaction, _session);
@@ -1401,11 +1497,34 @@ public sealed partial class PaymentViewModel : ObservableObject
 
         IsEditingHistory = true;
         ResetAttachmentEditor();
-        OnPropertyChanged(nameof(PaymentActionLabel));
-        OnPropertyChanged(nameof(ReserveBalanceLabelText));
-        OnPropertyChanged(nameof(IsSettlementAmountEnabled));
+        NotifySettlementUiStateChanged();
         await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
         StatusMessage = "최근 처리내역 수정 모드입니다.";
+    }
+
+    private decimal GetEditingSettlementAmountForLinkedContext(
+        Guid? linkedInvoiceId = null,
+        Guid? linkedRentalProfileId = null,
+        Guid? linkedRentalRunId = null)
+    {
+        if (!IsEditingHistory || !_editingTransactionId.HasValue || SelectedHistory?.Id != _editingTransactionId.Value)
+            return 0m;
+
+        var current = SelectedHistory;
+        if (current is null || current.IsDeleted)
+            return 0m;
+
+        if (linkedInvoiceId.HasValue && current.LinkedInvoiceId == linkedInvoiceId.Value)
+            return Math.Max(0m, current.SettlementAmount);
+
+        if (linkedRentalProfileId.HasValue &&
+            current.LinkedRentalBillingProfileId == linkedRentalProfileId.Value &&
+            (!linkedRentalRunId.HasValue || current.LinkedRentalBillingRunId == linkedRentalRunId.Value))
+        {
+            return Math.Max(0m, current.SettlementAmount);
+        }
+
+        return 0m;
     }
 }
 
