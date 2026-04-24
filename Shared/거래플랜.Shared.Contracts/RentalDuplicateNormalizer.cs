@@ -41,12 +41,66 @@ public static class RentalDuplicateNormalizer
         int billingDay,
         int billingCycleMonths,
         string? billingMethod)
+        => BuildProfileKeyCore(
+            managementCompanyCode,
+            customerId,
+            businessNumber,
+            customerName,
+            billingType,
+            billingAdvanceMode,
+            billingDay,
+            billingCycleMonths,
+            billingMethod,
+            includeCustomerNameWithCustomerId: true);
+
+    public static string BuildLegacyProfileKey(
+        string? managementCompanyCode,
+        Guid? customerId,
+        string? businessNumber,
+        string? customerName,
+        string? billingType,
+        string? billingAdvanceMode,
+        int billingDay,
+        int billingCycleMonths,
+        string? billingMethod)
+        => BuildProfileKeyCore(
+            managementCompanyCode,
+            customerId,
+            businessNumber,
+            customerName,
+            billingType,
+            billingAdvanceMode,
+            billingDay,
+            billingCycleMonths,
+            billingMethod,
+            includeCustomerNameWithCustomerId: false);
+
+    private static string BuildProfileKeyCore(
+        string? managementCompanyCode,
+        Guid? customerId,
+        string? businessNumber,
+        string? customerName,
+        string? billingType,
+        string? billingAdvanceMode,
+        int billingDay,
+        int billingCycleMonths,
+        string? billingMethod,
+        bool includeCustomerNameWithCustomerId)
     {
-        var ownerKey = customerId.HasValue && customerId.Value != Guid.Empty
-            ? $"CUSTOMER:{customerId.Value:N}"
-            : string.Join('|',
+        string ownerKey;
+        if (customerId.HasValue && customerId.Value != Guid.Empty)
+        {
+            ownerKey = $"CUSTOMER:{customerId.Value:N}";
+            var normalizedCustomerName = NormalizeProfileKeyPart(customerName);
+            if (includeCustomerNameWithCustomerId && !string.IsNullOrWhiteSpace(normalizedCustomerName))
+                ownerKey = string.Join('|', ownerKey, $"NAME:{normalizedCustomerName}");
+        }
+        else
+        {
+            ownerKey = string.Join('|',
                 NormalizeProfileKeyPart(businessNumber),
                 NormalizeProfileKeyPart(customerName));
+        }
 
         return string.Join('|',
             NormalizeProfileKeyPart(managementCompanyCode),

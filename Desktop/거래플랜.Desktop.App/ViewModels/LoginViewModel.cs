@@ -83,7 +83,8 @@ public sealed partial class LoginViewModel : ObservableObject
                 result.User.Permissions,
                 result.User.TenantCode,
                 result.User.ScopeType,
-                ResolveOfficeCode(result.User));
+                ResolveOfficeCode(result.User),
+                Password);
             await _local.SaveOfficeSyncCredentialAsync(result.User, Username, Password);
             await SaveRememberOptionsAsync();
             _session.SetSession(result.Token, result.User);
@@ -93,10 +94,14 @@ public sealed partial class LoginViewModel : ObservableObject
         {
             // Server unreachable — offer offline mode if cache exists
             var cached = await _local.GetCachedSessionAsync(Username);
-            if (cached is not null)
+            if (cached is not null && await _local.VerifyCachedSessionPasswordAsync(Username, Password))
             {
                 ErrorMessage = "서버에 연결할 수 없습니다. 오프라인 모드로 시작할 수 있습니다.";
                 ShowOfflineButton = true;
+            }
+            else if (cached is not null)
+            {
+                ErrorMessage = "서버에 연결할 수 없고 오프라인 비밀번호 검증에 실패했습니다. 최근에 정상 로그인한 비밀번호를 입력하세요.";
             }
             else
             {
@@ -123,6 +128,11 @@ public sealed partial class LoginViewModel : ObservableObject
             ErrorMessage = "오프라인 캐시가 없습니다.";
             return;
         }
+        if (!await _local.VerifyCachedSessionPasswordAsync(Username, Password))
+        {
+            ErrorMessage = "오프라인 비밀번호 검증에 실패했습니다. 최근 정상 로그인한 비밀번호를 입력하세요.";
+            return;
+        }
         _session.SetOfflineSession(cached);
         var cachedOffice = await _local.GetCachedOfficeCodeAsync();
         if (!string.IsNullOrWhiteSpace(cachedOffice))
@@ -142,7 +152,10 @@ public sealed partial class LoginViewModel : ObservableObject
            !string.IsNullOrWhiteSpace(Username) &&
            !string.IsNullOrWhiteSpace(Password);
 
-    private bool CanOfflineLogin() => ShowOfflineButton && !string.IsNullOrWhiteSpace(Username);
+    private bool CanOfflineLogin()
+        => ShowOfflineButton &&
+           !string.IsNullOrWhiteSpace(Username) &&
+           !string.IsNullOrWhiteSpace(Password);
 
     partial void OnUsernameChanged(string value)
     {

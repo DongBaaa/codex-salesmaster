@@ -83,7 +83,7 @@ public sealed class MobileAppUpdateService
 
         var fileName = string.IsNullOrWhiteSpace(package.FileName)
             ? $"georaeplan-{NormalizeVersionText(package.Version)}.apk"
-            : package.FileName;
+            : Path.GetFileName(package.FileName) ?? string.Empty;
         var targetPath = await DownloadPackageAsync(packageUri.ToString(), downloadRoot, fileName, ct);
 
         if (!await HasMatchingFileAsync(targetPath, package.Sha256, ct))
@@ -98,7 +98,17 @@ public sealed class MobileAppUpdateService
 
     private async Task<string> DownloadPackageAsync(string packageUrl, string downloadRoot, string fileName, CancellationToken ct)
     {
-        var targetPath = Path.Combine(downloadRoot, fileName);
+        var safeFileName = Path.GetFileName(fileName);
+        if (string.IsNullOrWhiteSpace(safeFileName))
+            safeFileName = "georaeplan-update.apk";
+
+        var targetPath = Path.GetFullPath(Path.Combine(downloadRoot, safeFileName));
+        var safeRoot = Path.GetFullPath(downloadRoot);
+        if (!safeRoot.EndsWith(Path.DirectorySeparatorChar))
+            safeRoot += Path.DirectorySeparatorChar;
+        if (!targetPath.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("업데이트 파일 저장 경로가 안전하지 않습니다.");
+
         if (await HasMatchingFileAsync(targetPath, string.Empty, ct))
             return targetPath;
 

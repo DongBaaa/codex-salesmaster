@@ -528,6 +528,163 @@ public sealed partial class LocalStateService
         };
     }
 
+    public async Task MarkRecycleBinServerMutationCleanAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        CancellationToken ct = default)
+    {
+        var customerIds = new HashSet<Guid>();
+        var invoiceIds = new HashSet<Guid>();
+        var rentalProfileIds = new HashSet<Guid>();
+
+        switch (kind)
+        {
+            case RecycleBinEntityKind.Customer:
+                MarkServerMirroredClean(await FindSyncEntityAsync(_db.Customers, entityId, ct));
+                break;
+            case RecycleBinEntityKind.CustomerContract:
+            {
+                var contract = await FindSyncEntityAsync(_db.CustomerContracts, entityId, ct);
+                MarkServerMirroredClean(contract);
+                if (contract is not null)
+                    customerIds.Add(contract.CustomerId);
+                break;
+            }
+            case RecycleBinEntityKind.Item:
+                MarkServerMirroredClean(await FindSyncEntityAsync(_db.Items, entityId, ct));
+                break;
+            case RecycleBinEntityKind.CompanyProfile:
+                MarkServerMirroredClean(await FindSyncEntityAsync(_db.CompanyProfiles, entityId, ct));
+                break;
+            case RecycleBinEntityKind.PriceGradeOption:
+                MarkServerMirroredClean(await FindSyncEntityAsync(_db.PriceGradeOptions, entityId, ct));
+                break;
+            case RecycleBinEntityKind.TradeTypeOption:
+                MarkServerMirroredClean(await FindSyncEntityAsync(_db.TradeTypeOptions, entityId, ct));
+                break;
+            case RecycleBinEntityKind.ItemCategoryOption:
+                MarkServerMirroredClean(await FindSyncEntityAsync(_db.ItemCategoryOptions, entityId, ct));
+                break;
+            case RecycleBinEntityKind.Invoice:
+                await MarkInvoiceGroupServerMirroredCleanAsync(entityId, customerIds, ct);
+                break;
+            case RecycleBinEntityKind.Payment:
+            {
+                var payment = await FindSyncEntityAsync(_db.Payments, entityId, ct);
+                MarkServerMirroredClean(payment);
+                if (payment is not null)
+                    invoiceIds.Add(payment.InvoiceId);
+                break;
+            }
+            case RecycleBinEntityKind.Transaction:
+            {
+                var transaction = await FindSyncEntityAsync(_db.Transactions, entityId, ct);
+                MarkServerMirroredClean(transaction);
+                if (transaction is not null)
+                {
+                    customerIds.Add(transaction.CustomerId);
+                    if (transaction.LinkedInvoiceId.HasValue && transaction.LinkedInvoiceId.Value != Guid.Empty)
+                        invoiceIds.Add(transaction.LinkedInvoiceId.Value);
+                    if (transaction.LinkedRentalBillingProfileId.HasValue && transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
+                        rentalProfileIds.Add(transaction.LinkedRentalBillingProfileId.Value);
+                }
+                break;
+            }
+            case RecycleBinEntityKind.InventoryTransfer:
+                MarkServerMirroredClean(await FindSyncEntityAsync(_db.InventoryTransfers, entityId, ct));
+                break;
+            case RecycleBinEntityKind.RentalManagementCompany:
+                MarkServerMirroredClean(await FindSyncEntityAsync(_db.RentalManagementCompanies, entityId, ct));
+                break;
+            case RecycleBinEntityKind.RentalBillingProfile:
+            {
+                var profile = await FindSyncEntityAsync(_db.RentalBillingProfiles, entityId, ct);
+                MarkServerMirroredClean(profile);
+                if (profile?.CustomerId is Guid customerId && customerId != Guid.Empty)
+                    customerIds.Add(customerId);
+                break;
+            }
+            case RecycleBinEntityKind.RentalAsset:
+            {
+                var asset = await FindSyncEntityAsync(_db.RentalAssets, entityId, ct);
+                MarkServerMirroredClean(asset);
+                if (asset?.CustomerId is Guid customerId && customerId != Guid.Empty)
+                    customerIds.Add(customerId);
+                if (asset?.BillingProfileId is Guid profileId && profileId != Guid.Empty)
+                    rentalProfileIds.Add(profileId);
+                break;
+            }
+            case RecycleBinEntityKind.RentalBillingLog:
+            {
+                var log = await FindSyncEntityAsync(_db.RentalBillingLogs, entityId, ct);
+                MarkServerMirroredClean(log);
+                if (log is not null && log.BillingProfileId != Guid.Empty)
+                    rentalProfileIds.Add(log.BillingProfileId);
+                break;
+            }
+        }
+
+        foreach (var invoiceId in invoiceIds)
+            await MarkInvoiceGroupServerMirroredCleanAsync(invoiceId, customerIds, ct);
+
+        if (rentalProfileIds.Count > 0)
+        {
+            var profiles = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                .Where(profile => rentalProfileIds.Contains(profile.Id))
+                .ToListAsync(ct);
+            foreach (var profile in profiles)
+            {
+                MarkServerMirroredClean(profile);
+                if (profile.CustomerId is Guid customerId && customerId != Guid.Empty)
+                    customerIds.Add(customerId);
+            }
+        }
+
+        if (customerIds.Count > 0)
+        {
+            var customers = await _db.Customers.IgnoreQueryFilters()
+                .Where(customer => customerIds.Contains(customer.Id))
+                .ToListAsync(ct);
+            foreach (var customer in customers)
+                MarkServerMirroredClean(customer);
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task MarkInvoiceGroupServerMirroredCleanAsync(
+        Guid invoiceId,
+        HashSet<Guid> customerIds,
+        CancellationToken ct)
+    {
+        var target = await FindSyncEntityAsync(_db.Invoices, invoiceId, ct);
+        if (target is null)
+            return;
+
+        var versionGroupId = target.VersionGroupId == Guid.Empty ? target.Id : target.VersionGroupId;
+        var groupInvoices = await _db.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == target.Id || invoice.VersionGroupId == versionGroupId)
+            .ToListAsync(ct);
+        foreach (var invoice in groupInvoices)
+        {
+            MarkServerMirroredClean(invoice);
+            customerIds.Add(invoice.CustomerId);
+        }
+    }
+
+    private static async Task<T?> FindSyncEntityAsync<T>(
+        DbSet<T> set,
+        Guid entityId,
+        CancellationToken ct)
+        where T : LocalSyncEntity
+        => await set.IgnoreQueryFilters().FirstOrDefaultAsync(entity => entity.Id == entityId, ct);
+
+    private static void MarkServerMirroredClean(LocalSyncEntity? entity)
+    {
+        if (entity is not null)
+            entity.IsDirty = false;
+    }
+
     private async Task<OfficeMutationResult> RestoreCompanyProfileAsync(
         Guid profileId,
         SessionState session,
@@ -1614,6 +1771,11 @@ public sealed partial class LocalStateService
         if (!CanWriteRentalScope(session, asset.ResponsibleOfficeCode, asset.ManagementCompanyCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 자산을 복원할 수 없습니다.");
 
+        var activeConflict = await FindActiveRentalAssetRestoreConflictAsync(asset, ct);
+        if (activeConflict is not null)
+            return OfficeMutationResult.Denied(
+                $"같은 렌탈 자산 식별값을 가진 활성 자산이 있어 복원할 수 없습니다. 활성 자산: {BuildRentalAssetConflictDisplay(activeConflict)}");
+
         var now = DateTime.UtcNow;
         if (asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
         {
@@ -1643,6 +1805,36 @@ public sealed partial class LocalStateService
         await _db.SaveChangesAsync(ct);
         return OfficeMutationResult.Ok(asset.Id, "렌탈 자산을 복원했습니다.");
     }
+
+    private async Task<LocalRentalAsset?> FindActiveRentalAssetRestoreConflictAsync(
+        LocalRentalAsset target,
+        CancellationToken ct)
+    {
+        var candidates = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .Where(current => current.Id != target.Id && !current.IsDeleted)
+            .ToListAsync(ct);
+
+        return candidates.FirstOrDefault(candidate =>
+            RentalAssetRestoreKeysMatch(candidate.ManagementNumber, target.ManagementNumber) ||
+            RentalAssetRestoreKeysMatch(candidate.ManagementId, target.ManagementId) ||
+            RentalAssetRestoreKeysMatch(candidate.AssetKey, target.AssetKey));
+    }
+
+    private static bool RentalAssetRestoreKeysMatch(string? left, string? right)
+    {
+        var normalizedLeft = (left ?? string.Empty).Trim();
+        var normalizedRight = (right ?? string.Empty).Trim();
+        return !string.IsNullOrWhiteSpace(normalizedLeft) &&
+               string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildRentalAssetConflictDisplay(LocalRentalAsset asset)
+        => JoinSegments(
+            string.IsNullOrWhiteSpace(asset.ManagementNumber) ? null : $"관리번호 {asset.ManagementNumber}",
+            string.IsNullOrWhiteSpace(asset.ManagementId) ? null : $"관리ID {asset.ManagementId}",
+            string.IsNullOrWhiteSpace(asset.AssetKey) ? null : $"자산키 {asset.AssetKey}",
+            string.IsNullOrWhiteSpace(asset.ItemName) ? null : asset.ItemName);
 
     private async Task<OfficeMutationResult> RestoreRentalBillingLogAsync(
         Guid logId,
@@ -1702,7 +1894,7 @@ public sealed partial class LocalStateService
             asset.BillingEligibilityStatus = GetBillingEligibilityStatusAfterProfilePurge(asset.AssetStatus);
             if (!string.Equals(asset.BillingEligibilityStatus, "청구제외", StringComparison.OrdinalIgnoreCase))
                 asset.BillingExclusionReason = string.Empty;
-            asset.IsDirty = true;
+            asset.IsDirty = false;
             asset.UpdatedAtUtc = DateTime.UtcNow;
         }
 
@@ -1735,7 +1927,7 @@ public sealed partial class LocalStateService
                 continue;
 
             profile.BillingTemplateJson = normalizedJson;
-            profile.IsDirty = true;
+            profile.IsDirty = false;
             profile.UpdatedAtUtc = DateTime.UtcNow;
         }
 

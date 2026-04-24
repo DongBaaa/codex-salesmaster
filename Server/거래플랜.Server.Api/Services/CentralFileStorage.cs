@@ -38,11 +38,11 @@ public sealed class CentralFileStorage : ICentralFileStorage
 
     public byte[] ReadBytes(string? storedPath, byte[]? fallback = null)
     {
-        if (!string.IsNullOrWhiteSpace(storedPath) && File.Exists(storedPath))
+        if (TryResolveSafeStoredPath(storedPath, out var safePath) && File.Exists(safePath))
         {
             try
             {
-                return File.ReadAllBytes(storedPath);
+                return File.ReadAllBytes(safePath);
             }
             catch
             {
@@ -55,12 +55,12 @@ public sealed class CentralFileStorage : ICentralFileStorage
 
     public void DeleteIfExists(string? storedPath)
     {
-        if (string.IsNullOrWhiteSpace(storedPath) || !File.Exists(storedPath))
+        if (!TryResolveSafeStoredPath(storedPath, out var safePath) || !File.Exists(safePath))
             return;
 
         try
         {
-            File.Delete(storedPath);
+            File.Delete(safePath);
         }
         catch
         {
@@ -91,5 +91,30 @@ public sealed class CentralFileStorage : ICentralFileStorage
             safeName = safeName.Replace(invalid, '_');
 
         return safeName;
+    }
+
+    private bool TryResolveSafeStoredPath(string? storedPath, out string safePath)
+    {
+        safePath = string.Empty;
+        if (string.IsNullOrWhiteSpace(storedPath))
+            return false;
+
+        try
+        {
+            var root = Path.GetFullPath(RootPath);
+            if (!root.EndsWith(Path.DirectorySeparatorChar))
+                root += Path.DirectorySeparatorChar;
+
+            var fullPath = Path.GetFullPath(storedPath);
+            if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            safePath = fullPath;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

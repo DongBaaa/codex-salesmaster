@@ -23,7 +23,10 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     private readonly SyncService _sync;
     private readonly BackupService _backup;
     private readonly SyncDiagnosticsService _diagnostics;
+    private readonly DataIntegrityIssueService _dataIntegrity;
     private readonly RentalStateService _rental;
+    private readonly RentalDocumentService _rentalDocuments;
+    private readonly IPrintService _invoicePrintService;
     private readonly LegacyDataMigrationService _legacyMigrationService;
     private readonly DesktopAppUpdateService _updateService;
 
@@ -93,7 +96,10 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         SyncService sync,
         BackupService backup,
         SyncDiagnosticsService diagnostics,
+        DataIntegrityIssueService dataIntegrity,
         RentalStateService rental,
+        RentalDocumentService rentalDocuments,
+        IPrintService invoicePrintService,
         Func<Task>? applyBusinessDatabaseChangeAsync = null)
     {
         _local = local;
@@ -102,7 +108,10 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         _sync = sync;
         _backup = backup;
         _diagnostics = diagnostics;
+        _dataIntegrity = dataIntegrity;
         _rental = rental;
+        _rentalDocuments = rentalDocuments;
+        _invoicePrintService = invoicePrintService;
         _legacyMigrationService = new LegacyDataMigrationService(local);
         _updateService = new DesktopAppUpdateService(api);
         _applyBusinessDatabaseChangeAsync = applyBusinessDatabaseChangeAsync;

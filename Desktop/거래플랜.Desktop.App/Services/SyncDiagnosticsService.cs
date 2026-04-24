@@ -249,6 +249,7 @@ public sealed class SyncDiagnosticsService
         var recoverableIssueCount = await db.SyncDiagnosticEvents.CountAsync(current => current.Status == "Open" && current.IsRecoverable, ct);
         var totalIssueCount = await db.SyncDiagnosticEvents.CountAsync(ct);
         var lastFailure = await db.SyncDiagnosticEvents
+            .Where(current => current.Status == "Open")
             .OrderByDescending(current => current.LastOccurredAtUtc)
             .Select(current => (DateTime?)current.LastOccurredAtUtc)
             .FirstOrDefaultAsync(ct);

@@ -111,6 +111,93 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task Restore_ContinuesBatch_WhenRentalAssetNaturalKeyConflicts()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var activeAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "asset-active",
+            ManagementId = "MID-RESTORE-CONFLICT",
+            ManagementNumber = "MN-ACTIVE",
+            ItemName = "active asset",
+            IsDeleted = false
+        };
+        var deletedAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "asset-deleted",
+            ManagementId = "MID-RESTORE-CONFLICT",
+            ManagementNumber = "MN-DELETED",
+            ItemName = "deleted asset",
+            IsDeleted = true
+        };
+        var deletedCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "batch restore customer",
+            NameMatchKey = "batchrestorecustomer",
+            TradeType = "sales",
+            IsDeleted = true
+        };
+        dbContext.RentalAssets.AddRange(activeAsset, deletedAsset);
+        dbContext.Customers.Add(deletedCustomer);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = deletedAsset.Id,
+                        Kind = "rental-asset"
+                    },
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = deletedCustomer.Id,
+                        Kind = "customer"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        Assert.Equal(2, payload.RequestedCount);
+        Assert.Equal(1, payload.SucceededCount);
+
+        var assetResult = Assert.Single(payload.Results, item => item.EntityId == deletedAsset.Id);
+        var customerResult = Assert.Single(payload.Results, item => item.EntityId == deletedCustomer.Id);
+        Assert.False(assetResult.Success);
+        Assert.Contains("활성 자산", assetResult.Message);
+        Assert.True(customerResult.Success);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.Id == deletedAsset.Id)
+            .Select(asset => asset.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.Customers.IgnoreQueryFilters()
+            .Where(customer => customer.Id == deletedCustomer.Id)
+            .Select(customer => customer.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task GetAll_IncludesRevisionForDeletedEntries()
     {
         var currentUser = CreateAdminUser();

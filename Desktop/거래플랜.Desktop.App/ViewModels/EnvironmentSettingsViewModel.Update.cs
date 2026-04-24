@@ -1,4 +1,5 @@
-﻿using System.Windows;
+using System.Windows;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Shared.Contracts;
@@ -125,7 +126,9 @@ public sealed partial class EnvironmentSettingsViewModel
             _updateService.StartUpdate(_pendingDesktopUpdate);
             UpdateStatusText = $"업데이트 {_pendingDesktopUpdate.Version} 설치를 시작했습니다.";
             StatusMessage = "업데이트 도우미를 실행했습니다. 저장 후 앱을 다시 시작합니다.";
-            Application.Current?.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));
+            Application.Current?.Dispatcher.BeginInvoke(
+                new Action(App.RequestShutdownForUpdate),
+                DispatcherPriority.Send);
         }
         catch (Exception ex)
         {

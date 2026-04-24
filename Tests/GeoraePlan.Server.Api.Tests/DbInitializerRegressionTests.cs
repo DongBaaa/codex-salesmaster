@@ -200,6 +200,213 @@ public sealed class DbInitializerRegressionTests : IDisposable
         var remaining = Assert.Single(customers);
         Assert.Equal(OfficeCodeCatalog.Yeonsu, remaining.ResponsibleOfficeCode);
     }
+
+    [Fact]
+    public async Task EnsureRentalAssetsTableAsync_AllowsDeletedNaturalKeyDuplicates_ButBlocksActiveDuplicates()
+    {
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureRentalAssetsTableAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+
+        var activeAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "asset-index-duplicate",
+            ManagementId = "MID-INDEX-DUP",
+            ManagementNumber = "MN-INDEX-DUP",
+            ItemName = "active asset",
+            IsDeleted = false
+        };
+        var deletedAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "asset-index-duplicate",
+            ManagementId = "MID-INDEX-DUP",
+            ManagementNumber = "MN-INDEX-DUP",
+            ItemName = "deleted asset",
+            IsDeleted = true
+        };
+
+        _dbContext.RentalAssets.AddRange(activeAsset, deletedAsset);
+        await _dbContext.SaveChangesAsync();
+
+        _dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "asset-index-duplicate-other",
+            ManagementId = "MID-INDEX-DUP",
+            ManagementNumber = "MN-INDEX-DUP-OTHER",
+            ItemName = "second active asset",
+            IsDeleted = false
+        });
+
+        var ex = await Assert.ThrowsAsync<DbUpdateException>(() => _dbContext.SaveChangesAsync());
+        Assert.Contains("UNIQUE", ex.InnerException?.Message ?? ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RepairRentalCustomerLinkageAsync_NormalizesItworldRentalScope_AndPreservesYeonsuScope()
+    {
+        var brokenProfileId = Guid.Parse("91111111-1111-1111-1111-111111111111");
+        var brokenAssetId = Guid.Parse("92222222-2222-2222-2222-222222222222");
+        var brokenLogId = Guid.Parse("93333333-3333-3333-3333-333333333333");
+        var yeonsuProfileId = Guid.Parse("94444444-4444-4444-4444-444444444444");
+        var yeonsuAssetId = Guid.Parse("95555555-5555-5555-5555-555555555555");
+        var wrongUsenetCustomerId = Guid.Parse("96666666-6666-6666-6666-666666666666");
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = wrongUsenetCustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Wrong USENET Customer",
+            NameMatchKey = "WRONGUSENETCUSTOMER"
+        });
+
+        _dbContext.RentalBillingProfiles.AddRange(
+            new RentalBillingProfile
+            {
+                Id = brokenProfileId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerId = wrongUsenetCustomerId,
+                CustomerName = "Broken ITWORLD Customer",
+                InstallSiteName = "ITWORLD Site",
+                ItemName = "Printer",
+                MonthlyAmount = 120000m,
+                BillingTemplateJson = "[]"
+            },
+            new RentalBillingProfile
+            {
+                Id = yeonsuProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                CustomerName = "YEONSU Customer",
+                InstallSiteName = "YEONSU Site",
+                ItemName = "Copier",
+                MonthlyAmount = 90000m,
+                BillingTemplateJson = "[]"
+            });
+
+        _dbContext.RentalAssets.AddRange(
+            new RentalAsset
+            {
+                Id = brokenAssetId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerId = wrongUsenetCustomerId,
+                BillingProfileId = brokenProfileId,
+                AssetKey = "ITWORLD|BROKEN-001|SN-BROKEN",
+                CustomerName = "Broken ITWORLD Customer",
+                CurrentCustomerName = "Broken ITWORLD Customer",
+                InstallSiteName = "ITWORLD Site",
+                InstallLocation = "ITWORLD Site",
+                ItemName = "Printer",
+                ManagementNumber = "BROKEN-001",
+                MachineNumber = "SN-BROKEN",
+                AssetStatus = "ACTIVE",
+                BillingEligibilityStatus = string.Empty,
+                MonthlyFee = 120000m
+            },
+            new RentalAsset
+            {
+                Id = yeonsuAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                BillingProfileId = yeonsuProfileId,
+                AssetKey = "USENET|YEONSU-001|SN-YEONSU",
+                CustomerName = "YEONSU Customer",
+                CurrentCustomerName = "YEONSU Customer",
+                InstallSiteName = "YEONSU Site",
+                InstallLocation = "YEONSU Site",
+                ItemName = "Copier",
+                ManagementNumber = "YEONSU-001",
+                MachineNumber = "SN-YEONSU",
+                AssetStatus = "ACTIVE",
+                BillingEligibilityStatus = string.Empty,
+                MonthlyFee = 90000m
+            });
+
+        _dbContext.RentalBillingLogs.Add(new RentalBillingLog
+        {
+            Id = brokenLogId,
+            BillingProfileId = brokenProfileId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            BillingYearMonth = "202604",
+            Status = "PENDING",
+            BilledAmount = 120000m
+        });
+
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "RepairRentalCustomerLinkageAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
+
+        var fixedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == brokenProfileId);
+        var fixedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == brokenAssetId);
+        var fixedLog = await _dbContext.RentalBillingLogs.IgnoreQueryFilters().SingleAsync(log => log.Id == brokenLogId);
+        var yeonsuProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == yeonsuProfileId);
+        var yeonsuAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == yeonsuAssetId);
+
+        Assert.Equal(TenantScopeCatalog.Itworld, fixedProfile.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Itworld, fixedProfile.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Itworld, fixedProfile.ManagementCompanyCode);
+        Assert.Equal(OfficeCodeCatalog.Itworld, fixedProfile.ResponsibleOfficeCode);
+
+        Assert.Equal(TenantScopeCatalog.Itworld, fixedAsset.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Itworld, fixedAsset.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Itworld, fixedAsset.ManagementCompanyCode);
+        Assert.Equal(OfficeCodeCatalog.Itworld, fixedAsset.ResponsibleOfficeCode);
+
+        Assert.Equal(TenantScopeCatalog.Itworld, fixedLog.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Itworld, fixedLog.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Itworld, fixedLog.ResponsibleOfficeCode);
+
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, yeonsuProfile.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, yeonsuProfile.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, yeonsuProfile.ManagementCompanyCode);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, yeonsuProfile.ResponsibleOfficeCode);
+
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, yeonsuAsset.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, yeonsuAsset.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, yeonsuAsset.ManagementCompanyCode);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, yeonsuAsset.ResponsibleOfficeCode);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();

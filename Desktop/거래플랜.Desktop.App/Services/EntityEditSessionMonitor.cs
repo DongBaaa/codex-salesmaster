@@ -154,27 +154,31 @@ public sealed class EntityEditSessionMonitor : IDisposable
         if (_disposed)
             return;
 
-        if (others.Count == 0)
+        var activeOthers = others
+            .Where(current => !IsCurrentLocalEditor(current))
+            .ToList();
+
+        if (activeOthers.Count == 0)
         {
             RestoreWindowTitle();
             _lastWarningSignature = string.Empty;
             return;
         }
 
-        var first = others[0];
-        var suffix = others.Count == 1
+        var first = activeOthers[0];
+        var suffix = activeOthers.Count == 1
             ? $" [다른 PC 편집중: {first.Username} / {first.OfficeCode}]"
-            : $" [다른 PC 편집중: {first.Username} 외 {others.Count - 1}명]";
+            : $" [다른 PC 편집중: {first.Username} 외 {activeOthers.Count - 1}명]";
         _owner.Title = _baseTitle + suffix;
 
         var warningSignature = string.Join(
             "|",
-            others.Select(current => $"{current.Username}@{current.MachineName}@{current.OfficeCode}"));
+            activeOthers.Select(current => $"{current.Username}@{current.MachineName}@{current.OfficeCode}"));
         if (string.Equals(_lastWarningSignature, warningSignature, StringComparison.Ordinal))
             return;
 
         _lastWarningSignature = warningSignature;
-        var lines = others
+        var lines = activeOthers
             .Select(current => $"- {current.Username} / {current.OfficeCode} / {current.MachineName}")
             .ToList();
         var subjectDisplay = string.IsNullOrWhiteSpace(subject.DisplayName)
@@ -188,6 +192,35 @@ public sealed class EntityEditSessionMonitor : IDisposable
             MessageBoxButton.OK,
             MessageBoxImage.Warning);
     }
+
+    private bool IsCurrentLocalEditor(EditSessionParticipantDto participant)
+    {
+        if (participant.AppSessionId != Guid.Empty &&
+            participant.AppSessionId == _session.SessionId)
+        {
+            return true;
+        }
+
+        var currentUsername = NormalizeIdentityText(_session.User?.Username);
+        var participantUsername = NormalizeIdentityText(participant.Username);
+        if (string.IsNullOrWhiteSpace(currentUsername) ||
+            !string.Equals(currentUsername, participantUsername, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var currentOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode);
+        var participantOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(participant.OfficeCode);
+        var currentMachineName = NormalizeIdentityText(Environment.MachineName);
+        var participantMachineName = NormalizeIdentityText(participant.MachineName);
+
+        return !string.IsNullOrWhiteSpace(currentMachineName) &&
+               string.Equals(currentOfficeCode, participantOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(currentMachineName, participantMachineName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeIdentityText(string? value)
+        => (value ?? string.Empty).Trim();
 
     private void RestoreWindowTitle()
     {

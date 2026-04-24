@@ -582,7 +582,7 @@
                                 </DataGridTemplateColumn>
                                 <DataGridTextColumn Header="수량" Binding="{Binding Quantity, UpdateSourceTrigger=PropertyChanged}" Width="70"/>
                                 <DataGridTextColumn Header="단가" Binding="{Binding UnitPrice, UpdateSourceTrigger=PropertyChanged}" Width="90"/>
-                                <DataGridTextColumn Header="금액" Binding="{Binding Amount, UpdateSourceTrigger=PropertyChanged}" Width="90"/>
+                                <DataGridTextColumn Header="금액" Binding="{Binding Amount, StringFormat=N0}" Width="90" IsReadOnly="True"/>
                                 <DataGridTextColumn Header="연결장비" Binding="{Binding IncludedAssetSummary}" Width="220" IsReadOnly="True"/>
                                 <DataGridTextColumn Header="비고" Binding="{Binding Note, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
                             </DataGrid.Columns>
@@ -593,6 +593,7 @@
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="시리얼번호" Binding="{Binding MachineNumber}" Width="120"/>
                                     <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="120"/>
+                                    <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, StringFormat=N0}" Width="90"/>
                                     <DataGridTextColumn Header="현재 거래처" Binding="{Binding CurrentCustomerName}" Width="160"/>
                                     <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="160"/>
                                     <DataGridTextColumn Header="상태" Binding="{Binding AssetStatus}" Width="76"/>

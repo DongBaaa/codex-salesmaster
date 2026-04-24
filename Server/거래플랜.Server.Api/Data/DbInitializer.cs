@@ -3394,11 +3394,31 @@ public static partial class DbInitializer
 
         foreach (var sql in new[]
                  {
-                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_TenantCode_AssetKey\" ON \"RentalAssets\" (\"TenantCode\", \"AssetKey\");",
-                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"ManagementId\") WHERE TRIM(\"ManagementId\") <> '';",
-                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"ManagementNumber\") WHERE TRIM(\"ManagementNumber\") <> '';",
-                     "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_OfficeCode\" ON \"RentalAssets\" (\"OfficeCode\");"
+                     "DROP INDEX IF EXISTS \"IX_RentalAssets_TenantCode_AssetKey\";",
+                     "DROP INDEX IF EXISTS \"IX_RentalAssets_ManagementId\";",
+                     "DROP INDEX IF EXISTS \"IX_RentalAssets_ManagementNumber\";"
                  })
+        {
+            try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
+        }
+
+        string[] activeOnlyIndexSql = providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase)
+            ?
+            [
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_TenantCode_AssetKey\" ON \"RentalAssets\" (\"TenantCode\", \"AssetKey\") WHERE COALESCE(\"IsDeleted\", false) = false AND COALESCE(TRIM(\"AssetKey\"), '') <> '';",
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"ManagementId\") WHERE COALESCE(\"IsDeleted\", false) = false AND COALESCE(TRIM(\"ManagementId\"), '') <> '';",
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"ManagementNumber\") WHERE COALESCE(\"IsDeleted\", false) = false AND COALESCE(TRIM(\"ManagementNumber\"), '') <> '';",
+                "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_OfficeCode\" ON \"RentalAssets\" (\"OfficeCode\");"
+            ]
+            :
+            [
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_TenantCode_AssetKey\" ON \"RentalAssets\" (\"TenantCode\", \"AssetKey\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"AssetKey\"), '') <> '';",
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"ManagementId\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementId\"), '') <> '';",
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"ManagementNumber\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementNumber\"), '') <> '';",
+                "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_OfficeCode\" ON \"RentalAssets\" (\"OfficeCode\");"
+            ];
+
+        foreach (var sql in activeOnlyIndexSql)
         {
             try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
         }

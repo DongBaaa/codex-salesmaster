@@ -1368,6 +1368,143 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DoesNotAttachDepartmentBillingProfile_ToParentCustomer()
+    {
+        var parentCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Waterworks",
+            NameMatchKey = "WATERWORKS",
+            TradeType = "매출",
+            BusinessNumber = "131-83-01359"
+        };
+        _dbContext.Customers.Add(parentCustomer);
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "유즈넷"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "USENET|CUSTOMER:PARENT|NAME:WATERWORKSQUALITY|묶음|후불|25|1|전자세금계산서",
+                    CustomerId = parentCustomer.Id,
+                    CustomerName = "Waterworks[Quality]",
+                    BusinessNumber = parentCustomer.BusinessNumber,
+                    ItemName = "IMC2000",
+                    BillingType = "묶음",
+                    BillingAdvanceMode = "후불",
+                    BillingDay = 25,
+                    BillingCycleMonths = 1,
+                    BillingMethod = "전자세금계산서",
+                    MonthlyAmount = 55000m,
+                    CreatedAtUtc = new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync();
+        Assert.Null(storedProfile.CustomerId);
+        Assert.Equal("Waterworks[Quality]", storedProfile.CustomerName);
+    }
+
+    [Fact]
+    public async Task Push_RelinksDepartmentBillingProfile_ToExactDepartmentCustomer()
+    {
+        var parentCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Waterworks",
+            NameMatchKey = "WATERWORKS",
+            TradeType = "매출",
+            BusinessNumber = "131-83-01359"
+        };
+        var departmentCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Waterworks[Quality]",
+            NameMatchKey = "WATERWORKSQUALITY",
+            TradeType = "매출",
+            BusinessNumber = parentCustomer.BusinessNumber
+        };
+        _dbContext.Customers.AddRange(parentCustomer, departmentCustomer);
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "유즈넷"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "USENET|CUSTOMER:PARENT|NAME:WATERWORKSQUALITY|묶음|후불|25|1|전자세금계산서",
+                    CustomerId = parentCustomer.Id,
+                    CustomerName = departmentCustomer.NameOriginal,
+                    BusinessNumber = parentCustomer.BusinessNumber,
+                    ItemName = "IMC2000",
+                    BillingType = "묶음",
+                    BillingAdvanceMode = "후불",
+                    BillingDay = 25,
+                    BillingCycleMonths = 1,
+                    BillingMethod = "전자세금계산서",
+                    MonthlyAmount = 55000m,
+                    CreatedAtUtc = new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync();
+        Assert.Equal(departmentCustomer.Id, storedProfile.CustomerId);
+        Assert.Equal(departmentCustomer.NameOriginal, storedProfile.CustomerName);
+    }
+
+    [Fact]
     public async Task Push_AcceptsRentalAsset_WhenReferencedBillingProfileIsInSameBatch()
     {
         var companyId = Guid.NewGuid();
@@ -2123,6 +2260,57 @@ public sealed class SyncControllerTests : IDisposable
             .FirstAsync();
         Assert.Null(asset.ItemId);
         Assert.Equal("UNKNOWN-RENTAL-ITEM", asset.ItemName);
+    }
+
+    [Fact]
+    public async Task Push_DoesNotRelinkRentalAssetCustomerAcrossTenant()
+    {
+        var usenetCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "아이티월드",
+            NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("아이티월드"),
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(usenetCustomer);
+        await _dbContext.SaveChangesAsync();
+
+        var assetId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    CustomerId = usenetCustomer.Id,
+                    CustomerName = usenetCustomer.NameOriginal,
+                    CurrentCustomerName = usenetCustomer.NameOriginal,
+                    ItemName = "MODEL-CROSS-TENANT",
+                    ManagementNumber = "2603-998",
+                    MachineNumber = "SN-998",
+                    CurrentLocation = "창고",
+                    CreatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 25, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var asset = await _dbContext.RentalAssets.IgnoreQueryFilters().FirstAsync(current => current.Id == assetId);
+        Assert.Null(asset.CustomerId);
+        Assert.Equal(TenantScopeCatalog.Itworld, asset.TenantCode);
     }
 
     [Fact]

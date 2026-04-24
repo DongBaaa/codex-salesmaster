@@ -26,6 +26,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private bool _pendingFilterReload;
     private bool _suppressCandidateAssetSelectionChanges;
     private bool _suppressContractDateSynchronization;
+    private bool _updatingTemplateDerivedValues;
     private readonly List<RentalBillingAssetOption> _includedAssetPool = new();
     private readonly List<RentalBillingAssetOption> _candidateAssetPool = new();
     private readonly Dictionary<Guid, RentalBillingAssetLinkEdit> _pendingAssetLinkEdits = new();
@@ -136,17 +137,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public Guid? InvoiceToOpenAfterClose { get; private set; }
 
     private bool CanAccessCurrentSelection => SelectedRow is null || CanOperateScope(
-        string.IsNullOrWhiteSpace(SelectedRow.Source.ResponsibleOfficeCode)
-            ? SelectedRow.Source.ManagementCompanyCode
-            : SelectedRow.Source.ResponsibleOfficeCode);
+        ResolveProfileOfficeCode(SelectedRow.Source, _session.OfficeCode));
 
     private bool HasPersistedSelectedProfile => SelectedRow?.HasPersistedProfile == true;
     private bool CanEditSelectedRowInEditor => SelectedRow is null || !SelectedRow.IsAggregateRow;
 
     private bool CanEditCurrentSelection => SelectedRow is null || CanOperateScope(
-        string.IsNullOrWhiteSpace(SelectedRow.Source.ResponsibleOfficeCode)
-            ? SelectedRow.Source.ManagementCompanyCode
-            : SelectedRow.Source.ResponsibleOfficeCode);
+        ResolveProfileOfficeCode(SelectedRow.Source, _session.OfficeCode));
 
     public RentalBillingViewModel(RentalStateService rental, LocalStateService local, SessionState session)
     {
@@ -314,6 +311,15 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         {
             EndAutoSaveSuppression();
         }
+    }
+
+    public async Task LoadAndSelectProfileAsync(Guid profileId)
+    {
+        await LoadAsync();
+        SelectRow(profileId);
+        StatusMessage = SelectedRow is null
+            ? "점검 항목의 청구 프로필을 목록에서 찾지 못했습니다. 필터, 권한, 삭제 상태를 확인하세요."
+            : "운영 점검 항목의 청구 프로필을 선택했습니다. 표시 품목, 월 기준금액, 연결 자산을 확인한 뒤 저장하세요.";
     }
 
     [RelayCommand]
@@ -793,6 +799,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditBillingAdvanceMode = "후불";
         EditOfficeCode = EditOfficeOptions.FirstOrDefault()?.Value
             ?? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
+        EnsureEditOfficeOption(EditOfficeCode);
         EditBillingMethod = string.Empty;
         EditBillingStatus = "예정";
         EditSettlementStatus = PaymentFlowConstants.SettlementStatusUnpaid;
@@ -952,6 +959,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         RefreshBillingAssetCollections();
         SelectedTemplateItem.IncludedAssetSummary = BuildIncludedAssetSummary(SelectedTemplateItem.IncludedAssetIds);
+        ApplyIncludedAssetMonthlyFeesToTemplateItem(SelectedTemplateItem);
         UpdateTemplateDerivedValues();
         ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
         ScheduleContractDateRefresh();
@@ -1008,6 +1016,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private IReadOnlyList<RentalBillingAssetLinkEdit> BuildPendingAssetLinkEdits()
     {
+        EnsureTemplateMonthlyFeesInPendingAssetEdits();
+
         var includedAssetIds = TemplateItems
             .SelectMany(item => item.IncludedAssetIds)
             .Where(id => id != Guid.Empty)
@@ -1090,11 +1100,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditItemName = source.ItemName;
         EditBillingType = string.IsNullOrWhiteSpace(source.BillingType) ? "묶음" : source.BillingType;
         EditBillingAdvanceMode = string.IsNullOrWhiteSpace(source.BillingAdvanceMode) ? "후불" : source.BillingAdvanceMode;
-        EditOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
-            string.IsNullOrWhiteSpace(source.ResponsibleOfficeCode)
-                ? source.ManagementCompanyCode
-                : source.ResponsibleOfficeCode,
-            _session.OfficeCode);
+        EditOfficeCode = ResolveProfileOfficeCode(source, _session.OfficeCode);
+        EnsureEditOfficeOption(EditOfficeCode);
         EditBillingMethod = source.BillingMethod;
         EditBillingStatus = source.BillingStatus;
         EditSettlementStatus = PaymentFlowConstants.NormalizeSettlementStatus(source.SettlementStatus);
@@ -1170,49 +1177,169 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         _suppressFilterReload = true;
         try
         {
-            var currentFilterValue = SelectedOfficeFilter?.Value ?? AllOption;
-            var readableOfficeCodes = _local.GetReadableRentalOfficeCodesForSession(_session)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var writableOfficeCodes = _local.GetWritableRentalOfficeCodesForSession(_session)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var offices = await _local.GetOfficesAsync();
+        var currentFilterValue = SelectedOfficeFilter?.Value ?? AllOption;
+        var currentEditOfficeCode = EditOfficeCode;
+        var readableOfficeCodes = _local.GetReadableRentalOfficeCodesForSession(_session);
+        var writableOfficeCodes = CanManageAll
+            ? OfficeCodeCatalog.All
+            : _local.GetWritableRentalOfficeCodesForSession(_session);
+        var selectedRowOfficeCode = ResolveProfileOfficeCode(SelectedRow?.Source, _session.OfficeCode);
 
-            OfficeOptions.Clear();
-            EditOfficeOptions.Clear();
-            OfficeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
-            foreach (var office in await _local.GetOfficesAsync())
+        OfficeOptions.Clear();
+        EditOfficeOptions.Clear();
+        OfficeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
+        foreach (var office in BuildOfficeDisplayOptions(offices, readableOfficeCodes))
+        {
+            OfficeOptions.Add(new DisplayOption
             {
-                if (readableOfficeCodes.Contains(office.Code))
-                {
-                    OfficeOptions.Add(new DisplayOption
-                    {
-                        Value = office.Code,
-                        DisplayName = office.Name
-                    });
-                }
-
-                if (writableOfficeCodes.Contains(office.Code))
-                {
-                    EditOfficeOptions.Add(new DisplayOption
-                    {
-                        Value = office.Code,
-                        DisplayName = office.Name
-                    });
-                }
-            }
-
-            SelectedOfficeFilter = OfficeOptions.FirstOrDefault(option =>
-                                       string.Equals(option.Value, currentFilterValue, StringComparison.OrdinalIgnoreCase))
-                                   ?? OfficeOptions.FirstOrDefault(option => option.Value == AllOption)
-                                   ?? OfficeOptions.FirstOrDefault();
-
-            if (!EditOfficeOptions.Any(option => option.Value == EditOfficeCode) && EditOfficeOptions.Count > 0)
-                EditOfficeCode = EditOfficeOptions[0].Value;
-
+                Value = office.Value,
+                DisplayName = office.DisplayName
+            });
         }
-        finally
+
+        var editableOfficeCodes = BuildEditableBillingOfficeCodes(
+            writableOfficeCodes,
+            readableOfficeCodes,
+            [currentEditOfficeCode, selectedRowOfficeCode]);
+        foreach (var office in BuildOfficeDisplayOptions(offices, editableOfficeCodes))
+        {
+            EditOfficeOptions.Add(new DisplayOption
+            {
+                Value = office.Value,
+                DisplayName = office.DisplayName
+            });
+        }
+
+        SelectedOfficeFilter = OfficeOptions.FirstOrDefault(option =>
+                                   string.Equals(option.Value, currentFilterValue, StringComparison.OrdinalIgnoreCase))
+                               ?? OfficeOptions.FirstOrDefault(option => option.Value == AllOption)
+                               ?? OfficeOptions.FirstOrDefault();
+
+        if (EditOfficeOptions.Count == 0)
+        {
+            var fallbackOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
+            EditOfficeOptions.Add(new DisplayOption
+            {
+                Value = fallbackOfficeCode,
+                DisplayName = OfficeCodeCatalog.GetOfficeDisplayName(fallbackOfficeCode)
+            });
+        }
+
+        EditOfficeCode = EditOfficeOptions.FirstOrDefault(option =>
+                           string.Equals(option.Value, currentEditOfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
+                       ?? EditOfficeOptions.First().Value;
+
+    }
+    finally
         {
             _suppressFilterReload = false;
         }
+    }
+
+    private static IReadOnlyList<string> BuildEditableBillingOfficeCodes(
+        IEnumerable<string> writableOfficeCodes,
+        IEnumerable<string> readableOfficeCodes,
+        IEnumerable<string?> preserveOfficeCodes)
+    {
+        var editableOfficeCodes = NormalizeOfficeCodes(writableOfficeCodes);
+        var readableOfficeCodeSet = NormalizeOfficeCodes(readableOfficeCodes);
+        foreach (var officeCode in preserveOfficeCodes)
+        {
+            if (!OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOfficeCode))
+                continue;
+
+            if (readableOfficeCodeSet.Contains(normalizedOfficeCode))
+                editableOfficeCodes.Add(normalizedOfficeCode);
+        }
+
+        return editableOfficeCodes.ToList();
+    }
+
+    private static HashSet<string> NormalizeOfficeCodes(IEnumerable<string?> officeCodes)
+    {
+        var normalizedOfficeCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var officeCode in officeCodes)
+        {
+            if (OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOfficeCode))
+                normalizedOfficeCodes.Add(normalizedOfficeCode);
+        }
+
+        return normalizedOfficeCodes;
+    }
+
+    private static IReadOnlyList<DisplayOption> BuildOfficeDisplayOptions(
+        IEnumerable<LocalOffice> offices,
+        IEnumerable<string> officeCodes)
+    {
+        var normalizedOfficeCodes = NormalizeOfficeCodes(officeCodes)
+            .OrderBy(OfficeCodeCatalog.GetOfficeDisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var officeLookup = offices
+            .Select(office => new
+            {
+                Office = office,
+                Code = OfficeCodeCatalog.TryNormalizeOfficeCode(office.Code, out var normalizedOfficeCode)
+                    ? normalizedOfficeCode
+                    : string.Empty
+            })
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.Code))
+            .GroupBy(entry => entry.Code, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.First().Office,
+                StringComparer.OrdinalIgnoreCase);
+
+        return normalizedOfficeCodes
+            .Select(code =>
+            {
+                var displayName = officeLookup.TryGetValue(code, out var office) && !string.IsNullOrWhiteSpace(office.Name)
+                    ? office.Name
+                    : OfficeCodeCatalog.GetOfficeDisplayName(code);
+                return new DisplayOption
+                {
+                    Value = code,
+                    DisplayName = displayName
+                };
+            })
+            .OrderBy(option => option.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(option => option.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void EnsureEditOfficeOption(string? officeCode)
+    {
+        if (!OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOfficeCode))
+            return;
+
+        if (EditOfficeOptions.Any(option => string.Equals(option.Value, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        var readableOfficeCodes = CanManageAll
+            ? OfficeCodeCatalog.All
+            : _local.GetReadableRentalOfficeCodesForSession(_session);
+        if (!readableOfficeCodes.Contains(normalizedOfficeCode))
+            return;
+
+        EditOfficeOptions.Add(new DisplayOption
+        {
+            Value = normalizedOfficeCode,
+            DisplayName = OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode)
+        });
+    }
+
+    private static string ResolveProfileOfficeCode(LocalRentalBillingProfile? profile, string fallbackOfficeCode)
+    {
+        if (profile is null)
+            return OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(fallbackOfficeCode, DomainConstants.OfficeUsenet);
+
+        return RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+            profile.TenantCode,
+            profile.OfficeCode,
+            profile.ManagementCompanyCode,
+            profile.ResponsibleOfficeCode,
+            fallbackOfficeCode);
     }
 
     public async Task<IReadOnlyList<LookupRow>> BuildCustomerLookupRowsAsync()
@@ -1242,9 +1369,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditCustomerId = customer.Id;
         EditCustomerName = customer.NameOriginal?.Trim() ?? string.Empty;
         EditBusinessNumber = customer.BusinessNumber?.Trim() ?? string.Empty;
-        EditOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+        EditOfficeCode = RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+            customer.TenantCode,
+            customer.OfficeCode,
+            customer.OfficeCode,
             customer.ResponsibleOfficeCode,
-            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet));
+            _session.OfficeCode);
+        EnsureEditOfficeOption(EditOfficeCode);
 
         var department = customer.Department?.Trim() ?? string.Empty;
         EditInstallLocation = string.IsNullOrWhiteSpace(department)
@@ -1285,9 +1416,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             EditCustomerName = customer.NameOriginal?.Trim() ?? string.Empty;
             EditBusinessNumber = customer.BusinessNumber?.Trim() ?? string.Empty;
             EditEmail = customer.Email?.Trim() ?? string.Empty;
-            EditOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            EditOfficeCode = RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+                customer.TenantCode,
+                customer.OfficeCode,
+                customer.OfficeCode,
                 customer.ResponsibleOfficeCode,
-                OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet));
+                _session.OfficeCode);
+            EnsureEditOfficeOption(EditOfficeCode);
 
             var department = customer.Department?.Trim() ?? string.Empty;
             if (!string.IsNullOrWhiteSpace(department))
@@ -1579,8 +1714,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private void WireTemplateItem(RentalBillingTemplateEditorItem item)
     {
-        item.PropertyChanged += (_, _) =>
+        item.PropertyChanged += (_, args) =>
         {
+            if (_updatingTemplateDerivedValues || !IsTemplateEditorChangeProperty(args.PropertyName))
+                return;
+
+            if (IsTemplatePriceProperty(args.PropertyName))
+                ApplyTemplateMonthlyFeesToPendingAssetEdits(item);
+
             UpdateTemplateDerivedValues();
             ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
         };
@@ -1728,6 +1869,155 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         asset.Notes = edit.Notes ?? string.Empty;
     }
 
+    private void ApplyIncludedAssetMonthlyFeesToTemplateItem(RentalBillingTemplateEditorItem? item)
+    {
+        if (item is null)
+            return;
+
+        var includedAssetIds = item.IncludedAssetIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (includedAssetIds.Count == 0)
+            return;
+
+        var includedAssets = includedAssetIds
+            .Select(FindBillingAssetOption)
+            .Where(asset => asset is not null)
+            .Cast<RentalBillingAssetOption>()
+            .ToList();
+        if (includedAssets.Count == 0)
+            return;
+
+        var monthlyFees = includedAssets
+            .Select(asset => Math.Max(0m, asset.MonthlyFee))
+            .ToList();
+        if (monthlyFees.All(fee => fee <= 0m))
+            return;
+
+        var totalMonthlyFee = monthlyFees.Sum();
+        var distinctPositiveFees = monthlyFees
+            .Where(fee => fee > 0m)
+            .Distinct()
+            .ToList();
+        var effectiveLineMode = string.Equals((EditBillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal)
+            ? NormalizeBillingLineModeValue(item.BillingLineMode)
+            : NormalizeBillingLineModeValue(EditBillingType);
+
+        if (includedAssetIds.Count == 1 ||
+            string.Equals(effectiveLineMode, "묶음", StringComparison.OrdinalIgnoreCase) ||
+            distinctPositiveFees.Count != 1)
+        {
+            item.Quantity = 1m;
+            item.UnitPrice = totalMonthlyFee;
+        }
+        else
+        {
+            item.Quantity = includedAssetIds.Count;
+            item.UnitPrice = distinctPositiveFees[0];
+        }
+
+        item.NormalizeCalculatedAmount();
+        ApplyTemplateMonthlyFeesToPendingAssetEdits(item);
+    }
+
+    private void EnsureTemplateMonthlyFeesInPendingAssetEdits()
+    {
+        foreach (var item in TemplateItems)
+            ApplyTemplateMonthlyFeesToPendingAssetEdits(item);
+    }
+
+    private void ApplyTemplateMonthlyFeesToPendingAssetEdits(RentalBillingTemplateEditorItem item)
+    {
+        if (!TryResolveTemplateMonthlyFeeForLinkedAssets(item, out var monthlyFee))
+            return;
+
+        foreach (var assetId in item.IncludedAssetIds.Where(id => id != Guid.Empty).Distinct())
+        {
+            var edit = GetOrCreatePendingAssetLinkEdit(assetId);
+            edit.MonthlyFee = monthlyFee;
+            SetCachedAssetMonthlyFee(assetId, monthlyFee);
+        }
+    }
+
+    private RentalBillingAssetLinkEdit GetOrCreatePendingAssetLinkEdit(Guid assetId)
+    {
+        if (_pendingAssetLinkEdits.TryGetValue(assetId, out var edit))
+            return edit;
+
+        var asset = FindBillingAssetOption(assetId);
+        edit = asset is null
+            ? new RentalBillingAssetLinkEdit
+            {
+                AssetId = assetId,
+                CustomerId = EditCustomerId,
+                CustomerName = EditCustomerName
+            }
+            : BuildAssetLinkEdit(asset);
+
+        _pendingAssetLinkEdits[assetId] = edit;
+        return edit;
+    }
+
+    private bool TryResolveTemplateMonthlyFeeForLinkedAssets(
+        RentalBillingTemplateEditorItem item,
+        out decimal monthlyFee)
+    {
+        monthlyFee = 0m;
+        var includedAssetIds = item.IncludedAssetIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (includedAssetIds.Count == 0)
+            return false;
+
+        if (includedAssetIds.Count == 1)
+        {
+            monthlyFee = item.EffectiveAmount;
+            return monthlyFee >= 0m;
+        }
+
+        var quantity = item.Quantity <= 0m ? 1m : item.Quantity;
+        var unitPrice = Math.Max(0m, item.UnitPrice);
+        if (unitPrice <= 0m || quantity != includedAssetIds.Count)
+            return false;
+
+        monthlyFee = unitPrice;
+        return true;
+    }
+
+    private RentalBillingAssetOption? FindBillingAssetOption(Guid assetId)
+        => _includedAssetPool
+            .Concat(_candidateAssetPool)
+            .Concat(IncludedAssets)
+            .Concat(CandidateAssets)
+            .FirstOrDefault(asset => asset.AssetId == assetId);
+
+    private void SetCachedAssetMonthlyFee(Guid assetId, decimal monthlyFee)
+    {
+        foreach (var asset in _includedAssetPool
+                     .Concat(_candidateAssetPool)
+                     .Concat(IncludedAssets)
+                     .Concat(CandidateAssets)
+                     .Where(asset => asset.AssetId == assetId))
+        {
+            asset.MonthlyFee = monthlyFee;
+        }
+    }
+
+    private static bool IsTemplatePriceProperty(string? propertyName)
+        => string.Equals(propertyName, nameof(RentalBillingTemplateEditorItem.Quantity), StringComparison.Ordinal) ||
+           string.Equals(propertyName, nameof(RentalBillingTemplateEditorItem.UnitPrice), StringComparison.Ordinal) ||
+           string.Equals(propertyName, nameof(RentalBillingTemplateEditorItem.Amount), StringComparison.Ordinal);
+
+    private static bool IsTemplateEditorChangeProperty(string? propertyName)
+        => string.Equals(propertyName, nameof(RentalBillingTemplateEditorItem.DisplayItemName), StringComparison.Ordinal) ||
+           string.Equals(propertyName, nameof(RentalBillingTemplateEditorItem.BillingLineMode), StringComparison.Ordinal) ||
+           string.Equals(propertyName, nameof(RentalBillingTemplateEditorItem.Quantity), StringComparison.Ordinal) ||
+           string.Equals(propertyName, nameof(RentalBillingTemplateEditorItem.UnitPrice), StringComparison.Ordinal) ||
+           string.Equals(propertyName, nameof(RentalBillingTemplateEditorItem.Amount), StringComparison.Ordinal) ||
+           string.Equals(propertyName, nameof(RentalBillingTemplateEditorItem.Note), StringComparison.Ordinal);
+
     private List<RentalBillingTemplateItemModel> ToTemplateModels()
         => TemplateItems.Select(item => new RentalBillingTemplateItemModel
         {
@@ -1738,31 +2028,41 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 : NormalizeBillingLineModeValue(EditBillingType),
             Quantity = item.Quantity <= 0m ? 1m : item.Quantity,
             UnitPrice = Math.Max(0m, item.UnitPrice),
-            Amount = item.Amount > 0m ? item.Amount : item.EffectiveAmount,
+            Amount = item.EffectiveAmount,
             Note = (item.Note ?? string.Empty).Trim(),
             IncludedAssetIds = item.IncludedAssetIds.Distinct().ToList()
         }).ToList();
 
     private void UpdateTemplateDerivedValues()
     {
-        foreach (var item in TemplateItems)
-        {
-            item.IncludedAssetSummary = BuildIncludedAssetSummary(item.IncludedAssetIds);
-            if (item.Quantity <= 0m)
-                item.Quantity = 1m;
-            if (item.Amount <= 0m)
-                item.Amount = item.EffectiveAmount;
-        }
+        if (_updatingTemplateDerivedValues)
+            return;
 
-        EditMonthlyAmount = TemplateItems.Sum(item => item.EffectiveAmount);
-        EditItemName = BuildTemplateItemName();
-        EditOutstandingAmount = Math.Max(0m, EditMonthlyAmount - EditSettledAmount);
-        var linkedAssetCount = TemplateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count();
-        TemplateSummary = $"표시품목 {TemplateItems.Count:N0}건 / 연결장비 {linkedAssetCount:N0}대";
-        BillingSchedulePreviewText = BuildBillingSchedulePreview();
-        DocumentIssuePreviewText = BuildDocumentIssuePreview();
-        ApplySelectedAssetsHint = BuildApplySelectedAssetsHint(linkedAssetCount);
-        OnPropertyChanged(nameof(CanApplySelectedAssets));
+        _updatingTemplateDerivedValues = true;
+        try
+        {
+            foreach (var item in TemplateItems)
+            {
+                item.IncludedAssetSummary = BuildIncludedAssetSummary(item.IncludedAssetIds);
+                if (item.Quantity <= 0m)
+                    item.Quantity = 1m;
+                item.NormalizeCalculatedAmount();
+            }
+
+            EditMonthlyAmount = TemplateItems.Sum(item => item.EffectiveAmount);
+            EditItemName = BuildTemplateItemName();
+            EditOutstandingAmount = Math.Max(0m, EditMonthlyAmount - EditSettledAmount);
+            var linkedAssetCount = TemplateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count();
+            TemplateSummary = $"표시품목 {TemplateItems.Count:N0}건 / 연결장비 {linkedAssetCount:N0}대";
+            BillingSchedulePreviewText = BuildBillingSchedulePreview();
+            DocumentIssuePreviewText = BuildDocumentIssuePreview();
+            ApplySelectedAssetsHint = BuildApplySelectedAssetsHint(linkedAssetCount);
+            OnPropertyChanged(nameof(CanApplySelectedAssets));
+        }
+        finally
+        {
+            _updatingTemplateDerivedValues = false;
+        }
     }
 
     private string BuildTemplateItemName()

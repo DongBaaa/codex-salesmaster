@@ -1,4 +1,5 @@
 using System.IO;
+using Microsoft.Extensions.DependencyInjection;
 using 거래플랜.Desktop.App.Infrastructure;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -31,6 +32,7 @@ public sealed class RuntimeSafetyMonitorService
     private readonly SessionState _session;
     private readonly ErpApiClient _api;
     private readonly SyncDiagnosticsService _diagnostics;
+    private readonly IServiceScopeFactory? _scopeFactory;
 
     public RuntimeSafetyMonitorService(
         LocalStateService local,
@@ -38,7 +40,8 @@ public sealed class RuntimeSafetyMonitorService
         BackupService backup,
         SessionState session,
         ErpApiClient api,
-        SyncDiagnosticsService diagnostics)
+        SyncDiagnosticsService diagnostics,
+        IServiceScopeFactory? scopeFactory = null)
     {
         _local = local;
         _sync = sync;
@@ -46,6 +49,7 @@ public sealed class RuntimeSafetyMonitorService
         _session = session;
         _api = api;
         _diagnostics = diagnostics;
+        _scopeFactory = scopeFactory;
     }
 
     public async Task<ServerClockCheckResult> ResolveServerTodayAsync(CancellationToken ct = default)
@@ -80,7 +84,8 @@ public sealed class RuntimeSafetyMonitorService
             var warningMessage = string.Empty;
 
             if (clockSkew >= ClockSkewThreshold &&
-                await TryMarkWarningAsync(ClockWarningSettingKey, ClockWarningCooldown, ct))
+                await WithScopedRuntimeServicesAsync(
+                    (local, _, _) => TryMarkWarningAsync(local, ClockWarningSettingKey, ClockWarningCooldown, ct)))
             {
                 warningRequired = true;
                 warningMessage =
@@ -122,7 +127,18 @@ public sealed class RuntimeSafetyMonitorService
                 WarningMessage: string.Empty);
         }
 
-        if (!force && !await IsPeriodicRunDueAsync(ct))
+        return await WithScopedRuntimeServicesAsync(
+            (local, sync, backup) => RunPeriodicIntegrityCoreAsync(local, sync, backup, force, ct));
+    }
+
+    private async Task<PeriodicIntegrityMonitorResult> RunPeriodicIntegrityCoreAsync(
+        LocalStateService local,
+        SyncService sync,
+        BackupService backup,
+        bool force,
+        CancellationToken ct)
+    {
+        if (!force && !await IsPeriodicRunDueAsync(local, ct))
         {
             return new PeriodicIntegrityMonitorResult(
                 Executed: false,
@@ -131,22 +147,23 @@ public sealed class RuntimeSafetyMonitorService
                 WarningMessage: string.Empty);
         }
 
-        await _local.SetSettingAsync(PeriodicIntegrityRunSettingKey, DateTime.UtcNow.ToString("O"), ct);
+        await local.SetSettingAsync(PeriodicIntegrityRunSettingKey, DateTime.UtcNow.ToString("O"), ct);
 
-        var report = await _local.BuildIntegrityReportAsync(_session, ct);
+        var report = await local.BuildIntegrityReportAsync(_session, ct);
         var autoRecoveryAttempted = false;
         var autoRecoverySucceeded = false;
         string? backupPath = null;
 
         if (report.RequiresFullMirrorRefresh &&
             !_sync.HasActiveOrQueuedSync &&
-            !await _local.HasPendingSyncChangesAsync(ct))
+            !sync.HasActiveOrQueuedSync &&
+            !await local.HasPendingSyncChangesAsync(ct))
         {
             autoRecoveryAttempted = true;
-            backupPath = await _backup.BackupNowWithPathAsync(ct);
-            autoRecoverySucceeded = await _sync.RefreshSharedMirrorFromServerAsync(ct);
+            backupPath = await backup.BackupNowWithPathAsync(ct);
+            autoRecoverySucceeded = await sync.RefreshSharedMirrorFromServerAsync(ct);
             if (autoRecoverySucceeded)
-                report = await _local.BuildIntegrityReportAsync(_session, ct);
+                report = await local.BuildIntegrityReportAsync(_session, ct);
         }
 
         if (!report.HasIssues)
@@ -178,6 +195,7 @@ public sealed class RuntimeSafetyMonitorService
             ct: ct);
 
         var warningRequired = await TryMarkWarningAsync(
+            local,
             PeriodicIntegrityWarningSettingKey,
             PeriodicIntegrityWarningCooldown,
             ct);
@@ -193,25 +211,38 @@ public sealed class RuntimeSafetyMonitorService
             WarningMessage: warningMessage);
     }
 
-    private async Task<bool> IsPeriodicRunDueAsync(CancellationToken ct)
+    private async Task<bool> IsPeriodicRunDueAsync(LocalStateService local, CancellationToken ct)
     {
-        var lastRunRaw = await _local.GetSettingAsync(PeriodicIntegrityRunSettingKey, ct);
+        var lastRunRaw = await local.GetSettingAsync(PeriodicIntegrityRunSettingKey, ct);
         if (!DateTime.TryParse(lastRunRaw, out var lastRunUtc))
             return true;
 
         return DateTime.UtcNow - lastRunUtc.ToUniversalTime() >= PeriodicIntegrityInterval;
     }
 
-    private async Task<bool> TryMarkWarningAsync(string settingKey, TimeSpan cooldown, CancellationToken ct)
+    private async Task<bool> TryMarkWarningAsync(LocalStateService local, string settingKey, TimeSpan cooldown, CancellationToken ct)
     {
-        var lastShownRaw = await _local.GetSettingAsync(settingKey, ct);
+        var lastShownRaw = await local.GetSettingAsync(settingKey, ct);
         if (DateTime.TryParse(lastShownRaw, out var lastShownUtc) &&
             DateTime.UtcNow - lastShownUtc.ToUniversalTime() < cooldown)
         {
             return false;
         }
 
-        await _local.SetSettingAsync(settingKey, DateTime.UtcNow.ToString("O"), ct);
+        await local.SetSettingAsync(settingKey, DateTime.UtcNow.ToString("O"), ct);
         return true;
+    }
+
+    private async Task<T> WithScopedRuntimeServicesAsync<T>(
+        Func<LocalStateService, SyncService, BackupService, Task<T>> action)
+    {
+        if (_scopeFactory is null)
+            return await action(_local, _sync, _backup);
+
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var local = scope.ServiceProvider.GetRequiredService<LocalStateService>();
+        var sync = scope.ServiceProvider.GetRequiredService<SyncService>();
+        var backup = scope.ServiceProvider.GetRequiredService<BackupService>();
+        return await action(local, sync, backup);
     }
 }

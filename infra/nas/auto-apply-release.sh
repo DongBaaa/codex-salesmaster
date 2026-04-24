@@ -3,10 +3,8 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
 AUTO_APPLY_ENABLED="${NAS_SCHEDULED_APPLY_ENABLED:-true}"
-PENDING_RELEASE_FILE="${PENDING_RELEASE_FILE:-$STATE_DIR/pending-release.txt}"
 AUTO_APPLY_LOG_FILE="${AUTO_APPLY_LOG_FILE:-$STATE_DIR/auto-apply.log}"
 AUTO_APPLY_LOCK_DIR="${AUTO_APPLY_LOCK_DIR:-$STATE_DIR/auto-apply.lock}"
-FAILED_RELEASE_FILE="${FAILED_RELEASE_FILE:-$STATE_DIR/failed-release.txt}"
 AUTO_APPLY_ENABLED_NORMALIZED="$(printf '%s' "$AUTO_APPLY_ENABLED" | tr -d -- '\r' | LC_ALL=C sed $'1s/^\xEF\xBB\xBF//' | tr '[:upper:]' '[:lower:]')"
 
 ensure_state_dir

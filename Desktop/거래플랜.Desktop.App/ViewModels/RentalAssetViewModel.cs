@@ -163,6 +163,15 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         ResetForNewAsset();
     }
 
+    public async Task LoadAndSelectAssetAsync(Guid assetId)
+    {
+        await LoadAsync();
+        SelectRowWithoutAutoSave(assetId);
+        StatusMessage = SelectedRow is null
+            ? "점검 항목의 렌탈 자산을 목록에서 찾지 못했습니다. 필터, 권한, 삭제 상태를 확인하세요."
+            : "운영 점검 항목의 렌탈 자산을 선택했습니다. 월요금, 청구대상 여부, 청구 프로필 연결을 확인한 뒤 저장하세요.";
+    }
+
     public async Task ApplyInitialCustomerFilterAsync(LocalCustomer customer)
     {
         ArgumentNullException.ThrowIfNull(customer);
@@ -470,6 +479,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 ? source.ManagementCompanyCode
                 : source.ResponsibleOfficeCode,
             _session.OfficeCode);
+        EnsureEditOfficeOption(EditOfficeCode);
         EditCurrentLocation = source.CurrentLocation;
         EditItemCategoryName = source.ItemCategoryName;
         EditManufacturer = source.Manufacturer;
@@ -735,35 +745,29 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         var writableOfficeCodes = _rental.GetWritableAssetOfficeCodes(_session);
         var currentFilterValues = GetSelectedFilterValues(OfficeFilterOptions);
         var currentEditOfficeCode = EditOfficeCode;
+        var selectedRowOfficeCode = ResolveAssetOfficeCode(SelectedRow?.Source, _session.OfficeCode);
 
         _suppressFilterReload = true;
         try
         {
+            var readableOfficeOptions = BuildOfficeDisplayOptions(offices, readableOfficeCodes);
             ResetSelectableFilterOptions(
                 OfficeFilterOptions,
-                offices
-                    .Where(office => readableOfficeCodes.Contains(office.Code))
-                    .OrderBy(office => office.Name, StringComparer.CurrentCultureIgnoreCase)
-                    .Select(office => new SelectableFilterOption(office.Code, office.Name)),
+                readableOfficeOptions.Select(office => new SelectableFilterOption(office.Value, office.DisplayName)),
                 currentFilterValues);
 
             EditOfficeOptions.Clear();
 
-            var editableOfficeCodes = new HashSet<string>(writableOfficeCodes, StringComparer.OrdinalIgnoreCase);
-            if (!string.IsNullOrWhiteSpace(currentEditOfficeCode) &&
-                readableOfficeCodes.Contains(currentEditOfficeCode))
-            {
-                editableOfficeCodes.Add(currentEditOfficeCode);
-            }
-
-            foreach (var office in offices
-                         .Where(office => editableOfficeCodes.Contains(office.Code))
-                         .OrderBy(office => office.Name, StringComparer.CurrentCultureIgnoreCase))
+            var editableOfficeCodes = BuildEditableAssetOfficeCodes(
+                writableOfficeCodes,
+                readableOfficeCodes,
+                [currentEditOfficeCode, selectedRowOfficeCode]);
+            foreach (var office in BuildOfficeDisplayOptions(offices, editableOfficeCodes))
             {
                 EditOfficeOptions.Add(new DisplayOption
                 {
-                    Value = office.Code,
-                    DisplayName = office.Name
+                    Value = office.Value,
+                    DisplayName = office.DisplayName
                 });
             }
 
@@ -790,6 +794,108 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         {
             _suppressFilterReload = false;
         }
+    }
+
+    private static IReadOnlyList<string> BuildEditableAssetOfficeCodes(
+        IEnumerable<string> writableOfficeCodes,
+        IEnumerable<string> readableOfficeCodes,
+        IEnumerable<string?> preserveOfficeCodes)
+    {
+        var editableOfficeCodes = NormalizeOfficeCodes(writableOfficeCodes);
+        var readableOfficeCodeSet = NormalizeOfficeCodes(readableOfficeCodes);
+        foreach (var officeCode in preserveOfficeCodes)
+        {
+            if (!OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOfficeCode))
+                continue;
+
+            if (readableOfficeCodeSet.Contains(normalizedOfficeCode))
+                editableOfficeCodes.Add(normalizedOfficeCode);
+        }
+
+        return editableOfficeCodes.ToList();
+    }
+
+    private static HashSet<string> NormalizeOfficeCodes(IEnumerable<string?> officeCodes)
+    {
+        var normalizedOfficeCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var officeCode in officeCodes)
+        {
+            if (OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOfficeCode))
+                normalizedOfficeCodes.Add(normalizedOfficeCode);
+        }
+
+        return normalizedOfficeCodes;
+    }
+
+    private static IReadOnlyList<DisplayOption> BuildOfficeDisplayOptions(
+        IEnumerable<LocalOffice> offices,
+        IEnumerable<string> officeCodes)
+    {
+        var normalizedOfficeCodes = NormalizeOfficeCodes(officeCodes)
+            .OrderBy(OfficeCodeCatalog.GetOfficeDisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var officeLookup = offices
+            .Select(office => new
+            {
+                Office = office,
+                Code = OfficeCodeCatalog.TryNormalizeOfficeCode(office.Code, out var normalizedOfficeCode)
+                    ? normalizedOfficeCode
+                    : string.Empty
+            })
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.Code))
+            .GroupBy(entry => entry.Code, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.First().Office,
+                StringComparer.OrdinalIgnoreCase);
+
+        return normalizedOfficeCodes
+            .Select(code =>
+            {
+                var displayName = officeLookup.TryGetValue(code, out var office) && !string.IsNullOrWhiteSpace(office.Name)
+                    ? office.Name
+                    : OfficeCodeCatalog.GetOfficeDisplayName(code);
+                return new DisplayOption
+                {
+                    Value = code,
+                    DisplayName = displayName
+                };
+            })
+            .OrderBy(option => option.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(option => option.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void EnsureEditOfficeOption(string? officeCode)
+    {
+        if (!OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOfficeCode))
+            return;
+
+        if (EditOfficeOptions.Any(option => string.Equals(option.Value, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        var readableOfficeCodes = _rental.GetReadableAssetOfficeCodes(_session);
+        if (!readableOfficeCodes.Contains(normalizedOfficeCode))
+            return;
+
+        EditOfficeOptions.Add(new DisplayOption
+        {
+            Value = normalizedOfficeCode,
+            DisplayName = OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode)
+        });
+    }
+
+    private static string ResolveAssetOfficeCode(LocalRentalAsset? asset, string fallbackOfficeCode)
+    {
+        if (asset is null)
+            return OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(fallbackOfficeCode, DomainConstants.OfficeUsenet);
+
+        return OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            string.IsNullOrWhiteSpace(asset.ResponsibleOfficeCode)
+                ? asset.ManagementCompanyCode
+                : asset.ResponsibleOfficeCode,
+            fallbackOfficeCode);
     }
 
     private void HandleInventoryStateChanged(object? sender, EventArgs e)
@@ -1190,6 +1296,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         EditManagementId = snapshot.EditManagementId;
         EditManagementNumber = snapshot.EditManagementNumber;
         EditOfficeCode = snapshot.EditOfficeCode;
+        EnsureEditOfficeOption(EditOfficeCode);
         EditCurrentLocation = snapshot.EditCurrentLocation;
         EditItemCategoryName = snapshot.EditItemCategoryName;
         EditManufacturer = snapshot.EditManufacturer;
@@ -1286,6 +1393,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         {
             Id = snapshot.EditId,
             Revision = snapshot.EditRevision,
+            TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
+            OfficeCode = officeCode,
             CustomerId = snapshot.EditCustomerId,
             ItemId = snapshot.EditItemId,
             ManagementId = snapshot.EditManagementId,

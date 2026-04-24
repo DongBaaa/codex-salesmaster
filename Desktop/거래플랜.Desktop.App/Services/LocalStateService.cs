@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
@@ -3263,7 +3264,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 	}
 
-	public async Task SaveSessionCacheAsync(string username, string role, IEnumerable<string> permissions, string? tenantCode = null, string? scopeType = null, string? officeCode = null, CancellationToken ct = default(CancellationToken))
+	public async Task SaveSessionCacheAsync(string username, string role, IEnumerable<string> permissions, string? tenantCode = null, string? scopeType = null, string? officeCode = null, string? password = null, CancellationToken ct = default(CancellationToken))
 	{
 		await SetSettingAsync("CachedSession_Username", username, ct);
 		await SetSettingAsync("CachedSession_Role", role, ct);
@@ -3271,6 +3272,25 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		await SetSettingAsync("CachedSession_TenantCode", TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode), ct);
 		await SetSettingAsync("CachedSession_ScopeType", TenantScopeCatalog.NormalizeScopeTypeOrDefault(scopeType, DomainConstants.IsAdminRole(role) ? "Admin" : "OfficeOnly"), ct);
 		await SetSettingAsync("CachedSession_OfficeCode", NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet), ct);
+		if (!string.IsNullOrEmpty(password))
+		{
+			await SetSettingAsync("CachedSession_PasswordProof", ProtectOfflinePasswordProof(password), ct);
+		}
+	}
+
+	public async Task<bool> VerifyCachedSessionPasswordAsync(string username, string password, CancellationToken ct = default(CancellationToken))
+	{
+		if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
+		{
+			return false;
+		}
+		string? cachedUsername = await GetSettingAsync("CachedSession_Username", ct);
+		if (!string.Equals(cachedUsername, username, StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+		string? protectedProof = await GetSettingAsync("CachedSession_PasswordProof", ct);
+		return VerifyOfflinePasswordProof(password, protectedProof);
 	}
 
 	public async Task<UserSessionDto?> GetCachedSessionAsync(string username, CancellationToken ct = default(CancellationToken))
@@ -3301,6 +3321,53 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	public Task<string?> GetCachedOfficeCodeAsync(CancellationToken ct = default(CancellationToken))
 	{
 		return GetSettingAsync("CachedSession_OfficeCode", ct);
+	}
+
+	private static string ProtectOfflinePasswordProof(string password)
+	{
+		try
+		{
+			byte[] salt = RandomNumberGenerator.GetBytes(16);
+			const int iterations = 120000;
+			byte[] hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, 32);
+			string payload = string.Join('|', "v1", iterations.ToString(CultureInfo.InvariantCulture), Convert.ToBase64String(salt), Convert.ToBase64String(hash));
+			byte[] protectedBytes = ProtectedData.Protect(Encoding.UTF8.GetBytes(payload), null, DataProtectionScope.CurrentUser);
+			return Convert.ToBase64String(protectedBytes);
+		}
+		catch
+		{
+			return string.Empty;
+		}
+	}
+
+	private static bool VerifyOfflinePasswordProof(string password, string? protectedProof)
+	{
+		if (string.IsNullOrWhiteSpace(protectedProof))
+		{
+			return false;
+		}
+		try
+		{
+			byte[] protectedBytes = Convert.FromBase64String(protectedProof);
+			byte[] payloadBytes = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.CurrentUser);
+			string payload = Encoding.UTF8.GetString(payloadBytes);
+			string[] parts = payload.Split('|');
+			if (parts.Length != 4 ||
+			    !string.Equals(parts[0], "v1", StringComparison.Ordinal) ||
+			    !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int iterations) ||
+			    iterations < 10000)
+			{
+				return false;
+			}
+			byte[] salt = Convert.FromBase64String(parts[2]);
+			byte[] expectedHash = Convert.FromBase64String(parts[3]);
+			byte[] actualHash = Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, expectedHash.Length);
+			return CryptographicOperations.FixedTimeEquals(actualHash, expectedHash);
+		}
+		catch
+		{
+			return false;
+		}
 	}
 
 	public Task<List<LocalTransaction>> GetTransactionsAsync(Guid customerId, CancellationToken ct = default(CancellationToken))
@@ -3377,8 +3444,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return new CustomerFinancialSummary();
 		}
 		List<LocalInvoice> scopedInvoices = (await (from invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking().Include((LocalInvoice invoice) => invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted))
-			where !invoice.IsDeleted && invoice.CustomerId == customerId && ((int)invoice.VoucherType == 0 || (int)invoice.VoucherType == 1)
-			select invoice).ToListAsync(ct)).Where((LocalInvoice invoice) => CanAccessInvoice(invoice, session)).ToList();
+			where invoice.CustomerId == customerId && ((int)invoice.VoucherType == 0 || (int)invoice.VoucherType == 1)
+			select invoice).ToListAsync(ct)).Where((LocalInvoice invoice) => IsCustomerFinancialSummaryInvoice(invoice) && CanAccessInvoice(invoice, session)).ToList();
 		decimal receivableAmount = scopedInvoices.Where((LocalInvoice invoice) => invoice.VoucherType == VoucherType.Sales).Sum((LocalInvoice invoice) => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted).Sum((LocalPayment payment) => payment.Amount)));
 		decimal payableAmount = scopedInvoices.Where((LocalInvoice invoice) => invoice.VoucherType == VoucherType.Purchase).Sum((LocalInvoice invoice) => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted).Sum((LocalPayment payment) => payment.Amount)));
 		List<LocalTransaction> transactions = await (from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
@@ -3394,6 +3461,15 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			PrepaymentAmount = prepaymentAmount,
 			PrepaidAmount = prepaidAmount
 		};
+	}
+
+	private static bool IsCustomerFinancialSummaryInvoice(LocalInvoice invoice)
+	{
+		return invoice is not null &&
+			!invoice.IsDeleted &&
+			invoice.IsLatestVersion &&
+			invoice.IsConfirmed &&
+			(invoice.VoucherType == VoucherType.Sales || invoice.VoucherType == VoucherType.Purchase);
 	}
 
 	public async Task<InvoiceSettlementSummary> GetInvoiceSettlementSummaryAsync(Guid invoiceId, SessionState session, CancellationToken ct = default(CancellationToken))
@@ -5008,7 +5084,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return false;
 		}
-		if (session.HasAdministrativePrivileges || CanWriteAllScopedData(session))
+		if (CanWriteAllScopedData(session))
 		{
 			return true;
 		}

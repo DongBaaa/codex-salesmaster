@@ -1,4 +1,4 @@
-# 거래플랜 live 반영 체크리스트
+﻿# 거래플랜 live 반영 체크리스트
 
 - 용도: NAS live/stable 반영 전 최종 확인
 - 작성 원칙: 체크 후 반영, 문제 발견 시 즉시 반영 보류
@@ -33,7 +33,7 @@
 - [x] 반영 직후 `Invoke-LiveObservationCheck.ps1` 로 live 서버 healthz/manifest/package 응답을 관찰했다.
 
 ## 메모
-- release id: `20260420-221753`
-- public stable manifest 기준 desktop.version: `1.1.151`
-- public healthz 확인 시각: `2026-04-20 22:20:59 KST` / 응답 `ok`
+- release id: `20260421-000534`
+- public stable manifest 기준 desktop.version: `1.1.152`
+- public healthz 확인 시각: `2026-04-21 00:09:08 KST` / 응답 `ok`
 - 이번 배포는 mandatory 업데이트 아님 상태를 유지해 `minimumSupportedVersion` 은 빈 값으로 남겼습니다.

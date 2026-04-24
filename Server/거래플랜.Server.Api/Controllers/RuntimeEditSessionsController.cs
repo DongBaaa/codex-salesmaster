@@ -14,6 +14,7 @@ namespace 거래플랜.Server.Api.Controllers;
 public sealed class RuntimeEditSessionsController : ControllerBase
 {
     private static readonly TimeSpan SessionTtl = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan LocalEditorReplacementWindow = TimeSpan.FromMinutes(10);
 
     private readonly AppDbContext _dbContext;
     private readonly ICurrentUserContext _currentUserContext;
@@ -125,6 +126,26 @@ public sealed class RuntimeEditSessionsController : ControllerBase
         session.LastHeartbeatUtc = nowUtc;
         session.ExpiresAtUtc = nowUtc.Add(SessionTtl);
 
+        var localEditorReplacementThresholdUtc = nowUtc.Subtract(LocalEditorReplacementWindow);
+        var sameLocalEditorSessions = await _dbContext.ActiveEditSessions
+            .Where(entity =>
+                entity.Id != request.EditSessionId &&
+                entity.EntityType == normalizedEntityType &&
+                entity.EntityId == normalizedEntityId &&
+                entity.TenantCode == session.TenantCode &&
+                (
+                    entity.AppSessionId == session.AppSessionId ||
+                    (
+                        entity.Username == session.Username &&
+                        entity.OfficeCode == session.OfficeCode &&
+                        entity.MachineName == session.MachineName &&
+                        entity.LastHeartbeatUtc >= localEditorReplacementThresholdUtc
+                    )
+                ))
+            .ToListAsync(cancellationToken);
+        if (sameLocalEditorSessions.Count > 0)
+            _dbContext.ActiveEditSessions.RemoveRange(sameLocalEditorSessions);
+
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         var others = await _dbContext.ActiveEditSessions
@@ -132,8 +153,15 @@ public sealed class RuntimeEditSessionsController : ControllerBase
             .Where(entity =>
                 entity.EntityType == normalizedEntityType &&
                 entity.EntityId == normalizedEntityId &&
+                entity.TenantCode == session.TenantCode &&
                 entity.ExpiresAtUtc > nowUtc &&
-                entity.Id != request.EditSessionId)
+                entity.Id != request.EditSessionId &&
+                entity.AppSessionId != session.AppSessionId &&
+                !(
+                    entity.Username == session.Username &&
+                    entity.OfficeCode == session.OfficeCode &&
+                    entity.MachineName == session.MachineName
+                ))
             .OrderBy(entity => entity.Username)
             .ThenBy(entity => entity.MachineName)
             .ToListAsync(cancellationToken);

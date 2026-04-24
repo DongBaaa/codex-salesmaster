@@ -24,12 +24,63 @@ public partial class App : Application
     private ServiceProvider? _services;
     private bool _shutdownInProgress;
     private readonly SemaphoreSlim _saveCycleLock = new(1, 1);
+    private static readonly TimeSpan PostLoginSyncPopupSoftLimit = TimeSpan.FromSeconds(8);
     private DispatcherTimer? _autoSaveTimer;
     private int _unexpectedErrorDialogOpen;
     private bool _restartToLoginRequested;
+    private bool _updateShutdownRequested;
 
     internal void RequestRestartToLogin()
         => _restartToLoginRequested = true;
+
+    public static void RequestShutdownForUpdate()
+    {
+        if (Current is not App app)
+        {
+            Current?.Shutdown(0);
+            return;
+        }
+
+        if (app.Dispatcher.CheckAccess())
+        {
+            app.BeginShutdownForUpdate();
+        }
+        else
+        {
+            app.Dispatcher.BeginInvoke(
+                new Action(app.BeginShutdownForUpdate),
+                DispatcherPriority.Send);
+        }
+    }
+
+    private void BeginShutdownForUpdate()
+    {
+        _updateShutdownRequested = true;
+        _shutdownInProgress = true;
+        _autoSaveTimer?.Stop();
+        AppLogger.Info("UPDATE", "업데이트 적용을 위해 앱 종료를 시작합니다. 업데이트 준비 단계에서 dirty 동기화는 이미 완료되었습니다.");
+
+        try
+        {
+            if (MainWindow is Window mainWindow)
+            {
+                if (mainWindow is MainWindow appWindow)
+                    appWindow.BeginShutdownProtection();
+
+                if (mainWindow.IsLoaded)
+                {
+                    mainWindow.Close();
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("UPDATE", $"업데이트 종료 중 메인 창 닫기 실패: {ex.Message}");
+        }
+
+        Shutdown(0);
+    }
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -109,6 +160,7 @@ public partial class App : Application
             services.AddSingleton<OfficeAccessService>();
             services.AddSingleton<SyncRequestDispatcher>();
             services.AddScoped<SyncDiagnosticsService>();
+            services.AddScoped<DataIntegrityIssueService>();
             services.AddScoped<LocalStateService>();
             services.AddScoped<RentalStateService>();
             services.AddScoped<RentalDocumentService>();
@@ -192,23 +244,44 @@ public partial class App : Application
                 sp.GetRequiredService<ErpApiClient>(),
                 sp.GetRequiredService<SyncService>(),
                 sp.GetRequiredService<BackupService>(),
-                sp.GetRequiredService<SyncDiagnosticsService>());
+                sp.GetRequiredService<SyncDiagnosticsService>(),
+                sp.GetRequiredService<DataIntegrityIssueService>(),
+                sp.GetRequiredService<IServiceScopeFactory>());
 
             MainWindow = mainWin;
 
             StartAutoSaveTimer(sp, mainVm);
+            var mainScopeDisposed = false;
 
             mainWin.Closing += (_, args) => HandleMainWindowClosing(mainWin, sp, mainVm, args);
 
             mainWin.Closed += (_, _) =>
             {
-                _autoSaveTimer?.Stop();
-                var session = sp.GetRequiredService<SessionState>();
-                _services?.GetRequiredService<OfficeAccessService>().ClearSessionAccess(session);
-                session.Clear();
-                mainScope.Dispose();
-                RestartToLoginIfRequested();
-                Shutdown();
+                try
+                {
+                    _autoSaveTimer?.Stop();
+                    if (!mainScopeDisposed)
+                    {
+                        var session = sp.GetRequiredService<SessionState>();
+                        _services?.GetRequiredService<OfficeAccessService>().ClearSessionAccess(session);
+                        session.Clear();
+                    }
+                }
+                catch (ObjectDisposedException ex)
+                {
+                    AppLogger.Warn("APP", $"메인 창 종료 정리 중 이미 dispose된 서비스 접근을 건너뜁니다: {ex.ObjectName}");
+                }
+                finally
+                {
+                    if (!mainScopeDisposed)
+                    {
+                        mainScope.Dispose();
+                        mainScopeDisposed = true;
+                    }
+
+                    RestartToLoginIfRequested();
+                    Shutdown();
+                }
             };
 
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
@@ -219,7 +292,7 @@ public partial class App : Application
                 "메인 윈도우 초기화",
                 () => TryInitializeMainWindowAsync(mainWin, mainVm),
                 warningThreshold: TimeSpan.FromSeconds(4));
-            if (initSucceeded)
+            if (initSucceeded && !_updateShutdownRequested && !_shutdownInProgress && !mainScopeDisposed && mainWin.IsLoaded)
             {
                 UiTaskHelper.Forget(
                     RunPostLoginSyncWithPopupAsync(mainWin, mainVm, sp.GetRequiredService<SessionState>()),
@@ -230,6 +303,13 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
+            if (_updateShutdownRequested || _shutdownInProgress)
+            {
+                AppLogger.Info("UPDATE", $"앱 종료 진행 중 시작 후속 처리를 건너뜁니다: {ex.Message}");
+                Shutdown(0);
+                return;
+            }
+
             AppLogger.Error("APP", "Startup failure", ex);
             await TryRecordStartupDiagnosticAsync(ex);
             MessageBox.Show(
@@ -485,6 +565,14 @@ public partial class App : Application
 
     private void HandleMainWindowClosing(MainWindow mainWin, IServiceProvider sp, MainViewModel mainVm, CancelEventArgs args)
     {
+        if (_updateShutdownRequested)
+        {
+            _autoSaveTimer?.Stop();
+            mainWin.BeginShutdownProtection();
+            _shutdownInProgress = true;
+            return;
+        }
+
         if (_restartToLoginRequested)
         {
             _autoSaveTimer?.Stop();
@@ -598,10 +686,21 @@ public partial class App : Application
         if (session.IsOfflineMode)
         {
             await mainVm.RunPostLoginSyncAsync();
+            await mainWin.RunDataIntegrityScanAndPromptAsync("오프라인 로컬 점검");
+            return;
+        }
+
+        var showBlockingPopup = await mainVm.ShouldShowPostLoginSyncPopupAsync();
+        if (!showBlockingPopup)
+        {
+            mainVm.SyncStatus = "로그인 완료. 시작 동기화는 백그라운드에서 확인합니다.";
+            await mainVm.RunPostLoginSyncAsync();
+            await mainWin.RunDataIntegrityScanAndPromptAsync("로그인 후 동기화");
             return;
         }
 
         Window? popup = null;
+        Task? syncTask = null;
         try
         {
             await Dispatcher.InvokeAsync(() =>
@@ -610,7 +709,7 @@ public partial class App : Application
                 popup = ShowActivityPopup(
                     mainWin,
                     "거래플랜 동기화",
-                    "로그인 후 데이터를 불러오고 있습니다.\n첫 동기화는 데이터 양에 따라 잠시 걸릴 수 있습니다.");
+                    "로그인 후 데이터를 불러오고 있습니다.\n오래 걸리면 화면을 먼저 열고 백그라운드에서 계속 진행합니다.");
             }, DispatcherPriority.Send);
 
             await Dispatcher.InvokeAsync(() =>
@@ -620,7 +719,13 @@ public partial class App : Application
 
             await Task.Delay(150);
 
-            await mainVm.RunPostLoginSyncAsync();
+            syncTask = mainVm.RunPostLoginSyncAsync();
+            var completedTask = await Task.WhenAny(syncTask, Task.Delay(PostLoginSyncPopupSoftLimit));
+            if (!ReferenceEquals(completedTask, syncTask))
+            {
+                mainVm.SyncStatus = "초기 동기화가 계속 진행 중입니다. 화면은 먼저 사용할 수 있으며 완료되면 자동 반영됩니다.";
+                AppLogger.Info("APP", "로그인 후 동기화가 지연되어 대기 팝업을 닫고 백그라운드 진행으로 전환합니다.");
+            }
         }
         finally
         {
@@ -639,6 +744,11 @@ public partial class App : Application
                 mainWin.Activate();
             }, DispatcherPriority.Background);
         }
+
+        if (syncTask is not null)
+            await syncTask;
+
+        await mainWin.RunDataIntegrityScanAndPromptAsync("로그인 후 동기화");
     }
 
     private async Task<SaveCycleResult> RunSaveCycleAsync(IServiceProvider sp, MainViewModel mainVm, bool isShutdown)

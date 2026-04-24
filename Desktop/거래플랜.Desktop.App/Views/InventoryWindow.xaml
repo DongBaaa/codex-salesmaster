@@ -53,6 +53,11 @@
             <Setter Property="Height" Value="36"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
         <Style x:Key="ToolbarButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="Height" Value="36"/>
             <Setter Property="MinWidth" Value="104"/>
@@ -141,6 +146,21 @@
                             Content="등록 (신규)"
                             Background="#1B5E20"
                             Command="{Binding NewItemCommand}"/>
+                    <Border Background="#0F2034"
+                            BorderBrush="#4FC3F7"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            Height="36"
+                            Padding="10,0"
+                            Margin="0,0,8,0"
+                            VerticalAlignment="Center"
+                            ToolTip="체크하면 저장 후 현재 입력값을 유지한 채 다음 신규 품목 등록을 바로 이어갑니다. 재고 수량은 새 품목으로 복사하지 않습니다.">
+                        <CheckBox Content="같은 상품명 계속입력"
+                                  IsChecked="{Binding KeepEnteredValuesForNextNewItem, UpdateSourceTrigger=PropertyChanged}"
+                                  Foreground="#E6EE9C"
+                                  FontWeight="Bold"
+                                  VerticalAlignment="Center"/>
+                    </Border>
                     <Button Style="{StaticResource ToolbarButtonStyle}"
                             Content="저장"
                             Background="#0D47A1"

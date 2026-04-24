@@ -15,6 +15,8 @@ internal static class Program
     private const long MinimumUpdaterWorkBytes = 512L * 1024 * 1024;
     private const long InstallBufferBytes = 256L * 1024 * 1024;
     private static readonly TimeSpan UpdateArtifactRetention = TimeSpan.FromDays(3);
+    private static readonly TimeSpan ProcessExitGracePeriod = TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan ProcessCloseWindowGracePeriod = TimeSpan.FromSeconds(15);
 
     private static string? _sessionLogPath;
 
@@ -71,9 +73,17 @@ internal static class Program
         SetStage(window, "업데이트 준비 중", "임시 작업 폴더와 설치 공간을 확인하고 있습니다.");
         EnsureWorkDriveFreeSpace(workRoot, options.FileSize);
 
-        var packagePath = Path.Combine(workRoot, string.IsNullOrWhiteSpace(options.FileName)
+        var safePackageFileName = string.IsNullOrWhiteSpace(options.FileName)
             ? $"desktop-{options.Version}.zip"
-            : options.FileName);
+            : Path.GetFileName(options.FileName);
+        if (string.IsNullOrWhiteSpace(safePackageFileName))
+            safePackageFileName = $"desktop-{options.Version}.zip";
+        var safeWorkRoot = Path.GetFullPath(workRoot);
+        if (!safeWorkRoot.EndsWith(Path.DirectorySeparatorChar))
+            safeWorkRoot += Path.DirectorySeparatorChar;
+        var packagePath = Path.GetFullPath(Path.Combine(workRoot, safePackageFileName));
+        if (!packagePath.StartsWith(safeWorkRoot, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("업데이트 패키지 저장 경로가 안전하지 않습니다.");
         var requestMetadata = UpdateRequestMetadata.LoadAndDelete(options.RequestMetadataPath);
 
         SetStage(window, "업데이트 다운로드 중", "새 버전 파일을 가져오고 있습니다.");
@@ -297,17 +307,63 @@ internal static class Program
             if (process.HasExited)
                 return;
 
-            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
-            await process.WaitForExitAsync(timeout.Token);
-            TryLog($"PROCESS exited pid={processId}");
+            if (await WaitForProcessExitWithinAsync(process, ProcessExitGracePeriod))
+            {
+                TryLog($"PROCESS exited pid={processId}");
+                return;
+            }
+
+            TryLog($"PROCESS close requested after grace timeout pid={processId}");
+            try
+            {
+                if (!process.CloseMainWindow())
+                    TryLog($"PROCESS close main window unavailable pid={processId}");
+            }
+            catch (InvalidOperationException)
+            {
+                TryLog($"PROCESS exited before close request pid={processId}");
+                return;
+            }
+
+            if (await WaitForProcessExitWithinAsync(process, ProcessCloseWindowGracePeriod))
+            {
+                TryLog($"PROCESS exited after close request pid={processId}");
+                return;
+            }
+
+            TryLog($"PROCESS kill requested pid={processId}");
+            process.Kill();
+            await process.WaitForExitAsync();
+            TryLog($"PROCESS killed pid={processId}");
         }
         catch (ArgumentException)
         {
             TryLog($"PROCESS already exited pid={processId}");
         }
-        catch (OperationCanceledException ex)
+        catch (InvalidOperationException)
         {
-            throw new InvalidOperationException("기존 거래플랜 종료를 10분 이상 기다렸지만 완료되지 않았습니다.", ex);
+            TryLog($"PROCESS already exited pid={processId}");
+        }
+    }
+
+    private static async Task<bool> WaitForProcessExitWithinAsync(Process process, TimeSpan timeout)
+    {
+        if (process.HasExited)
+            return true;
+
+        using var cancellation = new CancellationTokenSource(timeout);
+        try
+        {
+            await process.WaitForExitAsync(cancellation.Token);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return process.HasExited;
+        }
+        catch (InvalidOperationException)
+        {
+            return true;
         }
     }
 

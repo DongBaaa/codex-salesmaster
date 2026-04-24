@@ -140,6 +140,8 @@ public sealed partial class PaymentViewModel : ObservableObject
     public bool IsAdmin => _session.HasAdministrativePrivileges;
     public string SaveButtonLabel => IsEditingHistory ? "수정 저장" : "저장";
 
+    public event EventHandler? TransactionsChanged;
+
     public PaymentViewModel(LocalStateService local, SessionState session)
     {
         _local = local;
@@ -150,6 +152,18 @@ public sealed partial class PaymentViewModel : ObservableObject
     public LocalStateService LocalStateService => _local;
     public SessionState SessionState => _session;
     public List<LocalCustomer> GetAllCustomers() => _allCustomers;
+
+    private void NotifyTransactionsChanged()
+    {
+        try
+        {
+            TransactionsChanged?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("PAYMENT", $"수금/지급 변경 알림 처리 실패: {ex.Message}");
+        }
+    }
 
     public async Task LoadAsync(LocalCustomer? preselect = null)
     {
@@ -213,14 +227,17 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (customer is not null)
             SetCustomer(customer);
 
-        var transactionKind = invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement
-            ? PaymentFlowConstants.TransactionKindPayment
-            : PaymentFlowConstants.TransactionKindReceipt;
+        var transactionKind = ResolveInvoiceDefaultTransactionKind(invoice);
         RebuildTransactionKinds(transactionKind);
         await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
         await ApplySuggestedAmountsCoreAsync(forceResetAmounts: true, Interlocked.Increment(ref _settlementSuggestionVersion));
         Memo = invoice.Memo;
     }
+
+    private static string ResolveInvoiceDefaultTransactionKind(LocalInvoice invoice)
+        => invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement
+            ? PaymentFlowConstants.TransactionKindInvoicePayment
+            : PaymentFlowConstants.TransactionKindInvoiceReceipt;
 
     public async Task ConfigureForRentalBillingAsync(
         LocalRentalBillingProfile profile,
@@ -481,13 +498,13 @@ public sealed partial class PaymentViewModel : ObservableObject
             {
                 if (_linkedInvoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement)
                 {
-                    TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindPayment, "일반지급"));
                     TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindInvoicePayment, "전표지급"));
+                    TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindPayment, "일반지급"));
                 }
                 else
                 {
-                    TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindReceipt, "일반수금"));
                     TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindInvoiceReceipt, "전표수금"));
+                    TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindReceipt, "일반수금"));
                     TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceApply, "선수금차감"));
                 }
             }
@@ -1182,6 +1199,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
             StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
             await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
+            NotifyTransactionsChanged();
         }
         finally
         {
@@ -1263,6 +1281,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
             StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
             await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
+            NotifyTransactionsChanged();
         }
         finally
         {

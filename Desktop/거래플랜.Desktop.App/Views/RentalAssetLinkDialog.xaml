@@ -128,6 +128,7 @@
                         <DataGridCheckBoxColumn Header="선택" Binding="{Binding IsSelected, Mode=TwoWay}" Width="54"/>
                         <DataGridTextColumn Header="시리얼번호" Binding="{Binding MachineNumber}" Width="150"/>
                         <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="150"/>
+                        <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, StringFormat=N0}" Width="90"/>
                         <DataGridTextColumn Header="현재 거래처" Binding="{Binding CurrentCustomerName}" Width="170"/>
                         <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="180"/>
                         <DataGridTextColumn Header="상태" Binding="{Binding AssetStatus}" Width="84"/>

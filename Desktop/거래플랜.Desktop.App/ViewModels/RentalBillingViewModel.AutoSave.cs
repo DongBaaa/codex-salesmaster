@@ -383,6 +383,7 @@ public sealed partial class RentalBillingViewModel
             foreach (var assetId in item.IncludedAssetIds.Distinct())
                 editorItem.IncludedAssetIds.Add(assetId);
 
+            WireTemplateItem(editorItem);
             TemplateItems.Add(editorItem);
         }
 

@@ -5,6 +5,8 @@ namespace 거래플랜.Desktop.App.ViewModels;
 
 public sealed partial class RentalBillingTemplateEditorItem : ObservableObject
 {
+    private bool _suppressCalculatedAmountSync;
+
     [ObservableProperty] private Guid _itemId = Guid.NewGuid();
     [ObservableProperty] private string _displayItemName = string.Empty;
     [ObservableProperty] private string _billingLineMode = string.Empty;
@@ -16,9 +18,44 @@ public sealed partial class RentalBillingTemplateEditorItem : ObservableObject
 
     public ObservableCollection<Guid> IncludedAssetIds { get; } = new();
 
-    public decimal EffectiveAmount => Amount > 0m
-        ? Amount
-        : Math.Max(0m, Quantity <= 0m ? 1m : Quantity) * Math.Max(0m, UnitPrice);
+    public decimal EffectiveAmount => CalculateLineAmount(Quantity, UnitPrice);
+
+    public static decimal CalculateLineAmount(decimal quantity, decimal unitPrice)
+        => Math.Max(0m, quantity <= 0m ? 1m : quantity) * Math.Max(0m, unitPrice);
+
+    partial void OnQuantityChanged(decimal value) => SyncCalculatedAmount();
+
+    partial void OnUnitPriceChanged(decimal value) => SyncCalculatedAmount();
+
+    partial void OnAmountChanged(decimal value) => OnPropertyChanged(nameof(EffectiveAmount));
+
+    public void NormalizeCalculatedAmount()
+        => SyncCalculatedAmount();
+
+    private void SyncCalculatedAmount()
+    {
+        if (_suppressCalculatedAmountSync)
+            return;
+
+        var calculatedAmount = CalculateLineAmount(Quantity, UnitPrice);
+        if (Amount == calculatedAmount)
+        {
+            OnPropertyChanged(nameof(EffectiveAmount));
+            return;
+        }
+
+        _suppressCalculatedAmountSync = true;
+        try
+        {
+            Amount = calculatedAmount;
+        }
+        finally
+        {
+            _suppressCalculatedAmountSync = false;
+        }
+
+        OnPropertyChanged(nameof(EffectiveAmount));
+    }
 }
 
 public sealed partial class RentalBillingAssetOption : ObservableObject

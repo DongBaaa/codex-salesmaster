@@ -1057,6 +1057,10 @@
                                         Background="#5D4037"
                                         Margin="0,0,8,0"
                                         Command="{Binding OpenSyncDiagnosticsCommand}"/>
+                                <Button Content="운영점검 알림창"
+                                        Background="#6A1B9A"
+                                        Margin="0,0,8,0"
+                                        Command="{Binding OpenDataIntegrityAlertCommand}"/>
                                 <Button Content="전체 재동기화"
                                         Background="#0277BD"
                                         Margin="0,0,8,0"

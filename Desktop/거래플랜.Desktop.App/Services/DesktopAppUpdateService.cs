@@ -271,7 +271,7 @@ public sealed class DesktopAppUpdateService
             "--file-size",
             package.FileSize.ToString(),
             "--file-name",
-            QuoteArgument(package.FileName ?? string.Empty),
+            QuoteArgument(Path.GetFileName(package.FileName ?? string.Empty) ?? string.Empty),
             "--notes",
             QuoteArgument(package.Notes ?? string.Empty)
         };

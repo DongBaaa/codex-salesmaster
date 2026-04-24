@@ -738,7 +738,7 @@ function Write-Sha256File {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $hash = Get-FileHash -LiteralPath $Path -Algorithm SHA256
-    ("{0} *{1}" -f $hash.Hash, (Split-Path -Leaf $Path)) | Set-Content -LiteralPath ($Path + '.sha256.txt') -Encoding ASCII
+    ("{0} *{1}" -f $hash.Hash, (Split-Path -Leaf $Path)) | Set-Content -LiteralPath ($Path + '.sha256.txt') -Encoding UTF8
 }
 
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {

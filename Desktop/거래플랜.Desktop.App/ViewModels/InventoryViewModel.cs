@@ -69,6 +69,7 @@ public sealed partial class InventoryViewModel : ObservableObject
     [ObservableProperty] private string _editSimpleMemo = string.Empty;
     [ObservableProperty] private bool _editIsSale = true;
     [ObservableProperty] private bool _editIsRental;
+    [ObservableProperty] private bool _keepEnteredValuesForNextNewItem;
 
     [ObservableProperty] private string _statusMessage = "품목은 재고/자산/비재고 청구항목으로 구분되며 재고 방식이 '재고'인 품목만 수량을 계산합니다.";
     [ObservableProperty] private bool _isNew = true;
@@ -118,7 +119,15 @@ public sealed partial class InventoryViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
+        var repairResult = await _local.RepairMissingItemMastersFromOperationalReferencesAsync(_session);
         await RefreshInventoryScreenAsync(reloadCategories: true);
+        if (repairResult.HasChanges)
+        {
+            var preview = repairResult.RepairedItemNames.Count > 0
+                ? $" ({string.Join(", ", repairResult.RepairedItemNames.Take(4))}{(repairResult.RepairedItemNames.Count > 4 ? " 외" : string.Empty)})"
+                : string.Empty;
+            StatusMessage = $"전표/재고 참조만 남아 있던 품목 마스터 {repairResult.RepairedCount:N0}건을 복구했습니다{preview}. 동기화 시 중앙 서버에 반영됩니다.";
+        }
     }
 
     public async Task ReloadItemCategoryOptionsAsync()
@@ -315,10 +324,19 @@ public sealed partial class InventoryViewModel : ObservableObject
     [RelayCommand]
     private async Task NewItem()
     {
+        var templateSnapshot = CaptureEditSnapshot();
         if (!await TryAutoSaveCurrentEditAsync(waitForServerWrite: false, refreshAfterSave: true))
             return;
 
-        ResetForNewItem("신규 품목 정보를 입력하세요.");
+        if (KeepEnteredValuesForNextNewItem && HasMeaningfulDraftContent(templateSnapshot))
+        {
+            PrepareRepeatedNewItemRegistration(
+                templateSnapshot,
+                "같은 상품명 계속입력: 현재 입력값을 유지한 채 새 품목 ID로 전환했습니다. 품명/규격을 조정한 뒤 저장하세요.");
+            return;
+        }
+
+        ResetForNewItem("신규 품목 정보를 입력하세요. 입력칸을 비운 새 품목으로 저장됩니다.");
     }
 
     public void PrepareNewItemRegistration(string? initialItemName, string? statusMessage = null)
@@ -341,6 +359,14 @@ public sealed partial class InventoryViewModel : ObservableObject
                 permissionDeniedMessage: "현재 계정은 품목을 저장할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 저장을 요청하세요.",
                 showConflictDialog: true))
         {
+            return;
+        }
+
+        if (KeepEnteredValuesForNextNewItem)
+        {
+            PrepareRepeatedNewItemRegistration(
+                snapshot,
+                "품목 정보를 저장했습니다. 같은 상품명 계속입력 상태라 현재 입력값을 유지하고 다음 신규 품목 입력을 준비했습니다.");
             return;
         }
 
@@ -723,7 +749,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         ApplyDraftScopeForNewItem();
         EditId = Guid.NewGuid();
         EditName = string.Empty;
-        EditCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
+        EditCategoryName = string.Empty;
         EditItemKind = ItemKinds.Product;
         EditTrackingType = ItemTrackingTypes.Stock;
         EditSpec = string.Empty;
@@ -952,6 +978,46 @@ public sealed partial class InventoryViewModel : ObservableObject
         SelectedItemMovements.Clear();
         if (!string.IsNullOrWhiteSpace(statusMessage))
             StatusMessage = statusMessage;
+    }
+
+    private void PrepareRepeatedNewItemRegistration(InventoryEditSnapshot sourceSnapshot, string statusMessage)
+    {
+        var targetOfficeCode = NormalizeOfficeCode(SelectedOfficeCode);
+        var targetTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            _session.TenantCode,
+            targetOfficeCode,
+            _session.TenantCode,
+            _session.OfficeCode);
+        var repeatedSnapshot = sourceSnapshot with
+        {
+            EditId = Guid.NewGuid(),
+            EditRevision = 0,
+            EditUsenetStock = 0m,
+            EditItworldStock = 0m,
+            EditYeonsuStock = 0m,
+            EditSelectedOfficeStock = 0m,
+            EditTotalStock = 0m,
+            EditLastPurchaseDate = null,
+            EditLastSaleDate = null,
+            EditOfficeCode = targetOfficeCode,
+            EditTenantCode = targetTenantCode,
+            PreferredOfficeCode = SelectedOfficeCode,
+            IsNew = true
+        };
+
+        _suppressSelectionAutoSave = true;
+        try
+        {
+            SelectedItem = null;
+        }
+        finally
+        {
+            _suppressSelectionAutoSave = false;
+        }
+
+        SelectedItemMovements.Clear();
+        ApplySnapshot(repeatedSnapshot, resetBaseline: true);
+        StatusMessage = statusMessage;
     }
 
     private void SelectItemWithoutAutoSave(Guid itemId)

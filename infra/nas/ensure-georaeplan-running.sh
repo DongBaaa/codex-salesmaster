@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
 ENSURE_RUNNING_LOG_FILE="${ENSURE_RUNNING_LOG_FILE:-$STATE_DIR/ensure-running.log}"
-STARTUP_HEALTH_RETRIES="${STARTUP_HEALTH_RETRIES:-45}"
+STARTUP_HEALTH_RETRIES="${STARTUP_HEALTH_RETRIES:-900}"
 
 ensure_state_dir
 mkdir -p "$(dirname "$ENSURE_RUNNING_LOG_FILE")"

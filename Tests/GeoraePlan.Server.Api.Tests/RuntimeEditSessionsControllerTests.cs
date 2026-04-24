@@ -70,6 +70,118 @@ public sealed class RuntimeEditSessionsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task HeartbeatAsync_ReplacesSameLocalEditorSessions_AndIgnoresOtherTenants()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "alpha",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet
+        };
+
+        await using var dbContext = CreateDbContext(currentUser);
+        var selfAppSessionId = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+        dbContext.ActiveEditSessions.AddRange(
+            new ActiveEditSession
+            {
+                Id = Guid.NewGuid(),
+                AppSessionId = selfAppSessionId,
+                Username = "alpha",
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                ScreenName = "판매/구매 전표",
+                EntityType = "Invoice",
+                EntityId = "INVOICE-1",
+                EntityDisplayName = "테스트 전표",
+                MachineName = "PC-ALPHA",
+                OpenedAtUtc = now.AddSeconds(-40),
+                LastHeartbeatUtc = now.AddSeconds(-20),
+                ExpiresAtUtc = now.AddMinutes(1)
+            },
+            new ActiveEditSession
+            {
+                Id = Guid.NewGuid(),
+                AppSessionId = Guid.NewGuid(),
+                Username = "alpha",
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                ScreenName = "판매/구매 전표",
+                EntityType = "Invoice",
+                EntityId = "INVOICE-1",
+                EntityDisplayName = "테스트 전표",
+                MachineName = "PC-ALPHA",
+                OpenedAtUtc = now.AddSeconds(-35),
+                LastHeartbeatUtc = now.AddSeconds(-15),
+                ExpiresAtUtc = now.AddMinutes(1)
+            },
+            new ActiveEditSession
+            {
+                Id = Guid.NewGuid(),
+                AppSessionId = Guid.NewGuid(),
+                Username = "beta",
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                ScreenName = "판매/구매 전표",
+                EntityType = "Invoice",
+                EntityId = "INVOICE-1",
+                EntityDisplayName = "테스트 전표",
+                MachineName = "PC-BETA",
+                OpenedAtUtc = now.AddSeconds(-30),
+                LastHeartbeatUtc = now.AddSeconds(-10),
+                ExpiresAtUtc = now.AddMinutes(1)
+            },
+            new ActiveEditSession
+            {
+                Id = Guid.NewGuid(),
+                AppSessionId = Guid.NewGuid(),
+                Username = "itworld",
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                TenantCode = TenantScopeCatalog.Itworld,
+                ScreenName = "판매/구매 전표",
+                EntityType = "Invoice",
+                EntityId = "INVOICE-1",
+                EntityDisplayName = "테스트 전표",
+                MachineName = "PC-ITWORLD",
+                OpenedAtUtc = now.AddSeconds(-30),
+                LastHeartbeatUtc = now.AddSeconds(-10),
+                ExpiresAtUtc = now.AddMinutes(1)
+            });
+        await dbContext.SaveChangesAsync();
+
+        var editSessionId = Guid.NewGuid();
+        var controller = new RuntimeEditSessionsController(dbContext, currentUser);
+        var response = await controller.HeartbeatAsync(new EditSessionHeartbeatRequest
+        {
+            EditSessionId = editSessionId,
+            AppSessionId = selfAppSessionId,
+            ScreenName = "판매/구매 전표",
+            EntityType = "Invoice",
+            EntityId = "INVOICE-1",
+            EntityDisplayName = "테스트 전표",
+            MachineName = "PC-ALPHA"
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<EditSessionHeartbeatResponse>(ok.Value);
+        var other = Assert.Single(payload.OtherEditors);
+        Assert.Equal("beta", other.Username);
+        Assert.Equal("PC-BETA", other.MachineName);
+
+        var sameLocalRows = await dbContext.ActiveEditSessions
+            .AsNoTracking()
+            .Where(entity =>
+                entity.EntityType == "Invoice" &&
+                entity.EntityId == "INVOICE-1" &&
+                entity.TenantCode == TenantScopeCatalog.UsenetGroup &&
+                entity.Username == "alpha" &&
+                entity.MachineName == "PC-ALPHA")
+            .ToListAsync();
+        var selfRow = Assert.Single(sameLocalRows);
+        Assert.Equal(editSessionId, selfRow.Id);
+    }
+
+    [Fact]
     public async Task GetActiveAsync_ExcludesSameAppSession_AndOtherTenantRows()
     {
         var currentUser = new TestCurrentUserContext

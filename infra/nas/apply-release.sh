@@ -69,4 +69,20 @@ if ! wait_for_health "$HEALTH_CHECK_RETRIES"; then
 fi
 
 printf '%s\n' "$release_id" > "$CURRENT_RELEASE_FILE"
+if [[ -f "$PENDING_RELEASE_FILE" ]]; then
+  pending_release_id="$(read_first_line_clean "$PENDING_RELEASE_FILE" || true)"
+  pending_release_id="$(sanitize_release_id "$pending_release_id")"
+  if [[ "$pending_release_id" == "$release_id" ]]; then
+    rm -f "$PENDING_RELEASE_FILE"
+  fi
+fi
+
+if [[ -f "$FAILED_RELEASE_FILE" ]]; then
+  failed_release_id="$(read_first_line_clean "$FAILED_RELEASE_FILE" || true)"
+  failed_release_id="$(sanitize_release_id "$failed_release_id")"
+  if [[ "$failed_release_id" == "$release_id" ]]; then
+    rm -f "$FAILED_RELEASE_FILE"
+  fi
+fi
+
 echo "apply_release_done release=$release_id url=http://127.0.0.1:${API_HOST_PORT}/healthz"

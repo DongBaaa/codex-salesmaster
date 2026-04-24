@@ -31,6 +31,38 @@ public sealed partial class MainViewModel
             });
     }
 
+    public async Task RefreshSelectedCustomerFinancialPreviewAsync()
+    {
+        if (SelectedCustomerFilter is not null)
+        {
+            await RefreshCustomerFinancialPreviewAsync(SelectedCustomerFilter);
+            return;
+        }
+
+        if (SelectedInvoiceRow is not null)
+        {
+            var invoice = await _local.GetInvoiceAsync(SelectedInvoiceRow.Id, _session);
+            var customer = invoice is null
+                ? null
+                : await _local.GetCustomerAsync(invoice.CustomerId, _session);
+            await RefreshCustomerFinancialPreviewAsync(customer);
+            return;
+        }
+
+        await RefreshCustomerFinancialPreviewAsync(null);
+    }
+
+    public async Task RefreshAfterFinancialTransactionChangedAsync(Guid? fallbackCustomerId = null)
+    {
+        await LoadInvoiceListAsync();
+
+        if (SelectedCustomerFilter is not null || SelectedInvoiceRow is not null || !fallbackCustomerId.HasValue)
+            return;
+
+        var customer = await _local.GetCustomerAsync(fallbackCustomerId.Value, _session);
+        await RefreshCustomerFinancialPreviewAsync(customer);
+    }
+
     private Task RefreshCustomerFinancialPreviewAsync(LocalCustomer? customer)
         => RefreshCustomerFinancialPreviewAsync(customer, Interlocked.Increment(ref _customerFinancialPreviewVersion));
 

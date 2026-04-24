@@ -1,6 +1,7 @@
-﻿using 거래플랜.Server.Api.Data;
+using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
+using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
@@ -22,6 +23,7 @@ public sealed class CustomerCategoriesController : ControllerBase
         => Ok(await _dbContext.CustomerCategories.AsNoTracking().Select(x => x.ToDto()).ToListAsync(cancellationToken));
 
     [HttpPost]
+    [Authorize(Policy = PermissionNames.SettingsEdit)]
     public async Task<ActionResult<CustomerCategoryDto>> Create([FromBody] CustomerCategoryDto dto, CancellationToken cancellationToken)
     {
         var entity = new CustomerCategory { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
@@ -32,6 +34,7 @@ public sealed class CustomerCategoriesController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
+    [Authorize(Policy = PermissionNames.SettingsEdit)]
     public async Task<ActionResult<CustomerCategoryDto>> Update(Guid id, [FromBody] CustomerCategoryDto dto, CancellationToken cancellationToken)
     {
         var entity = await _dbContext.CustomerCategories.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);

@@ -1,4 +1,5 @@
 ﻿using System.IO;
+using System.Globalization;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -40,9 +41,33 @@ public sealed class SyncService : IDisposable
         "ExpectedRevision",
         "MutationId",
         "MutationCreatedAtUtc",
+        "FileContent",
         "PreparedAtUtc",
         "SentAtUtc",
         "AcknowledgedAtUtc"
+    };
+    private static readonly HashSet<string> RentalBillingTemplateOnlyConflictIgnoredPropertyNames = new(
+        EquivalentConflictIgnoredPropertyNames,
+        StringComparer.OrdinalIgnoreCase)
+    {
+        "BillingTemplateJson"
+    };
+    private static readonly HashSet<string> RentalAssetRevisionRetryIgnoredPropertyNames = new(
+        EquivalentConflictIgnoredPropertyNames,
+        StringComparer.OrdinalIgnoreCase)
+    {
+        "BillingProfileId",
+        "CustomerId",
+        "CustomerName",
+        "CurrentCustomerName",
+        "LastAssignmentClearedAtUtc",
+        "ManagementId",
+        "ResponsibleOfficeCode",
+        "ItemId",
+        "InstallLocation",
+        "InstallSiteName",
+        "Notes",
+        "SalePrice"
     };
     private static readonly HashSet<string> ItemCanonicalRepairIgnoredPropertyNames = new(
         EquivalentConflictIgnoredPropertyNames,
@@ -52,6 +77,7 @@ public sealed class SyncService : IDisposable
         "OfficeCode",
         "TenantCode"
     };
+    private static readonly SemaphoreSlim GlobalSyncOperationLock = new(1, 1);
 
     private readonly LocalDbContext _db;
     private readonly LocalStateService _local;
@@ -282,7 +308,10 @@ public sealed class SyncService : IDisposable
         }
     }
 
-    public async Task<bool> RefreshSharedMirrorFromServerAsync(CancellationToken ct = default)
+    public Task<bool> RefreshSharedMirrorFromServerAsync(CancellationToken ct = default)
+        => ExecuteWithGlobalSyncOperationLockAsync(() => RefreshSharedMirrorFromServerCoreAsync(ct), ct);
+
+    private async Task<bool> RefreshSharedMirrorFromServerCoreAsync(CancellationToken ct)
     {
         if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
             return false;
@@ -319,7 +348,10 @@ public sealed class SyncService : IDisposable
         }
     }
 
-    public async Task<bool> RefreshCurrentBusinessScopeFromServerAsync(CancellationToken ct = default)
+    public Task<bool> RefreshCurrentBusinessScopeFromServerAsync(CancellationToken ct = default)
+        => ExecuteWithGlobalSyncOperationLockAsync(() => RefreshCurrentBusinessScopeFromServerCoreAsync(ct), ct);
+
+    private async Task<bool> RefreshCurrentBusinessScopeFromServerCoreAsync(CancellationToken ct)
     {
         if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
             return false;
@@ -514,7 +546,35 @@ public sealed class SyncService : IDisposable
         _dispatcher.CompleteSync(succeeded);
     }
 
+    private static async Task<T> ExecuteWithGlobalSyncOperationLockAsync<T>(Func<Task<T>> operation, CancellationToken ct)
+    {
+        var entered = false;
+        try
+        {
+            await GlobalSyncOperationLock.WaitAsync(ct);
+            entered = true;
+            return await operation();
+        }
+        finally
+        {
+            if (entered)
+                GlobalSyncOperationLock.Release();
+        }
+    }
+
     private async Task<bool> RunSyncCoreAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await ExecuteWithGlobalSyncOperationLockAsync(() => RunSyncCoreLockedAsync(ct), ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return false;
+        }
+    }
+
+    private async Task<bool> RunSyncCoreLockedAsync(CancellationToken ct)
     {
         try
         {
@@ -553,6 +613,9 @@ public sealed class SyncService : IDisposable
         }
         catch (Exception ex)
         {
+            if (!ct.IsCancellationRequested)
+                await TryClearStaleDirtyAfterFailureAsync(ct);
+
             var detail = ex.InnerException?.Message ?? ex.Message;
             if (detail.Length > 220)
                 detail = detail[..220] + "...";
@@ -571,6 +634,23 @@ public sealed class SyncService : IDisposable
             SetStatus($"동기화 오류: {detail}");
             AppLogger.Error("SYNC", "동기화 실패", ex);
             return false;
+        }
+    }
+
+    private async Task TryClearStaleDirtyAfterFailureAsync(CancellationToken ct)
+    {
+        try
+        {
+            await ClearStaleDirtyWithStoredOfficeSessionsAsync(ct);
+        }
+        catch (Exception cleanupEx) when (!ct.IsCancellationRequested)
+        {
+            AppLogger.Warn("SYNC", $"실패 후 stale dirty 정리 실패: {cleanupEx.Message}");
+            await TryRecordDiagnosticAsync(
+                phase: "stale-dirty-after-failure",
+                rawMessage: cleanupEx.InnerException?.Message ?? cleanupEx.Message,
+                exception: cleanupEx,
+                severity: "Warning");
         }
     }
 
@@ -1025,7 +1105,8 @@ public sealed class SyncService : IDisposable
             if (!entity.IsDirty || !serverMap.TryGetValue(entity.Id, out var serverEntity))
                 continue;
 
-            if (!IsStaleDirtyMatch(entity, serverEntity))
+            if (!IsStaleDirtyMatch(entity, serverEntity) &&
+                !IsStaleDirtyPayloadMatch(entity, serverEntity))
                 continue;
 
             entity.Revision = serverEntity.Revision;
@@ -1053,6 +1134,39 @@ public sealed class SyncService : IDisposable
         return localEntity.Revision <= serverEntity.Revision &&
                AreEquivalentUtc(localEntity.UpdatedAtUtc, serverEntity.UpdatedAtUtc);
     }
+
+    private static bool IsStaleDirtyPayloadMatch<TLocal, TDto>(TLocal localEntity, TDto serverEntity)
+        where TLocal : class, ILocalSyncEntity
+        where TDto : SyncEntityDto
+    {
+        return TryMapLocalEntityToDto(localEntity) is TDto localDto &&
+               AreEquivalentConflictPayloads(localDto, serverEntity);
+    }
+
+    private static SyncEntityDto? TryMapLocalEntityToDto(ILocalSyncEntity entity)
+        => entity switch
+        {
+            LocalCompanyProfile value => LocalMappings.ToDto(value),
+            LocalUnit value => LocalMappings.ToDto(value),
+            LocalCustomerCategory value => LocalMappings.ToDto(value),
+            LocalPriceGradeOption value => LocalMappings.ToDto(value),
+            LocalTradeTypeOption value => LocalMappings.ToDto(value),
+            LocalItemCategoryOption value => LocalMappings.ToDto(value),
+            LocalCustomerMaster value => LocalMappings.ToDto(value),
+            LocalCustomer value => LocalMappings.ToDto(value),
+            LocalCustomerContract value => LocalMappings.ToDto(value),
+            LocalItem value => LocalMappings.ToDto(value),
+            LocalTransaction value => LocalMappings.ToDto(value),
+            LocalTransactionAttachment value => LocalMappings.ToDto(value),
+            LocalInventoryTransfer value => LocalMappings.ToDto(value),
+            LocalRentalManagementCompany value => LocalMappings.ToDto(value),
+            LocalRentalBillingProfile value => LocalMappings.ToDto(value),
+            LocalRentalAsset value => LocalMappings.ToDto(value),
+            LocalRentalBillingLog value => LocalMappings.ToDto(value),
+            LocalInvoice value => LocalMappings.ToDto(value),
+            LocalPayment value => LocalMappings.ToDto(value),
+            _ => null
+        };
 
     private static bool AreEquivalentUtc(DateTime left, DateTime right)
         => Math.Abs((left.ToUniversalTime() - right.ToUniversalTime()).TotalSeconds) < 1;
@@ -1564,9 +1678,46 @@ public sealed class SyncService : IDisposable
                     await AppendConflictSummaryAsync($"중복 품목 자연키/리비전 충돌 {repairedItemRevisionConflicts.Count}건을 서버 기준 품목으로 자동 복구했습니다.");
                 }
 
+                var preparedRentalProfileRevisionRetries = await PrepareRentalBillingProfileRevisionRetriesAsync(
+                    result.Conflicts
+                        .Except(serverNewerConflicts)
+                        .Except(repairedItemRevisionConflicts)
+                        .ToList(),
+                    req.DeviceId,
+                    session,
+                    ct);
+
+                if (preparedRentalProfileRevisionRetries > 0)
+                {
+                    AppLogger.Warn("SYNC", $"렌탈 청구 프로필 리비전 충돌 {preparedRentalProfileRevisionRetries}건을 서버 최신 rev 기준 재시도로 준비했습니다.");
+                    await AppendConflictSummaryAsync($"렌탈 청구 프로필 리비전 충돌 {preparedRentalProfileRevisionRetries}건을 서버 최신 rev 기준으로 재시도 준비했습니다.");
+                }
+
+                var rentalAssetConflictRepair = await RepairRentalAssetRevisionConflictsAsync(
+                    result.Conflicts
+                        .Except(serverNewerConflicts)
+                        .Except(repairedItemRevisionConflicts)
+                        .ToList(),
+                    req.DeviceId,
+                    session,
+                    ct);
+
+                if (rentalAssetConflictRepair.ResolvedConflicts.Count > 0)
+                {
+                    AppLogger.Warn("SYNC", $"렌탈 자산 리비전 충돌 {rentalAssetConflictRepair.ResolvedConflicts.Count}건을 서버 기준 자산 정보로 자동 정리했습니다.");
+                    await AppendConflictSummaryAsync($"렌탈 자산 리비전 충돌 {rentalAssetConflictRepair.ResolvedConflicts.Count}건을 서버 기준 자산 정보로 자동 정리했습니다.");
+                }
+
+                if (rentalAssetConflictRepair.PreparedRetryCount > 0)
+                {
+                    AppLogger.Warn("SYNC", $"렌탈 자산 리비전 충돌 {rentalAssetConflictRepair.PreparedRetryCount}건을 서버 최신 rev 기준 재시도로 준비했습니다.");
+                    await AppendConflictSummaryAsync($"렌탈 자산 리비전 충돌 {rentalAssetConflictRepair.PreparedRetryCount}건을 서버 최신 rev 기준으로 재시도 준비했습니다.");
+                }
+
                 var equivalentRevisionConflicts = result.Conflicts
                     .Except(serverNewerConflicts)
                     .Except(repairedItemRevisionConflicts)
+                    .Except(rentalAssetConflictRepair.ResolvedConflicts)
                     .Where(IsEquivalentRevisionConflict)
                     .ToList();
 
@@ -1922,6 +2073,375 @@ public sealed class SyncService : IDisposable
         return resolved;
     }
 
+    private async Task<int> PrepareRentalBillingProfileRevisionRetriesAsync(
+        IReadOnlyCollection<ConflictLogDto> conflicts,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var preparedCount = 0;
+        foreach (var conflict in conflicts)
+        {
+            if (await TryPrepareRentalBillingProfileRevisionRetryAsync(conflict, deviceId, session, ct))
+                preparedCount++;
+        }
+
+        return preparedCount;
+    }
+
+    private sealed record RentalAssetConflictRepairResult(
+        IReadOnlyList<ConflictLogDto> ResolvedConflicts,
+        int PreparedRetryCount);
+
+    private async Task<RentalAssetConflictRepairResult> RepairRentalAssetRevisionConflictsAsync(
+        IReadOnlyCollection<ConflictLogDto> conflicts,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var resolved = new List<ConflictLogDto>();
+        var preparedRetryCount = 0;
+
+        foreach (var conflict in conflicts)
+        {
+            var outcome = await TryRepairRentalAssetRevisionConflictAsync(conflict, deviceId, session, ct);
+            if (outcome is null)
+                continue;
+
+            if (outcome.Value.IsResolved)
+                resolved.Add(conflict);
+            else if (outcome.Value.PreparedRetry)
+                preparedRetryCount++;
+        }
+
+        return new RentalAssetConflictRepairResult(resolved, preparedRetryCount);
+    }
+
+    private async Task<(bool IsResolved, bool PreparedRetry)?> TryRepairRentalAssetRevisionConflictAsync(
+        ConflictLogDto conflict,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (!string.Equals(conflict.EntityName, "RentalAsset", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var reason = (conflict.Reason ?? string.Empty).Trim();
+        if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        if (!Guid.TryParse(conflict.EntityId, out var assetId) || assetId == Guid.Empty)
+            return null;
+
+        if (!TryDeserializeConflictRentalAssetDto(conflict.ClientJson, out var clientSnapshot) ||
+            clientSnapshot is null ||
+            clientSnapshot.Id != assetId)
+        {
+            return null;
+        }
+
+        if (!TryDeserializeConflictRentalAssetDto(conflict.ServerJson, out var serverSnapshot) ||
+            serverSnapshot is null ||
+            serverSnapshot.Id != assetId)
+        {
+            return null;
+        }
+
+        if (!AreEquivalentConflictPayloads(
+                clientSnapshot,
+                serverSnapshot,
+                RentalAssetRevisionRetryIgnoredPropertyNames))
+        {
+            return null;
+        }
+
+        var asset = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == assetId, ct);
+        if (asset is null || !asset.IsDirty || asset.IsDeleted)
+            return null;
+
+        var localSnapshot = LocalMappings.ToDto(asset);
+        if (!AreEquivalentConflictPayloads(
+                localSnapshot,
+                clientSnapshot,
+                RentalAssetRevisionRetryIgnoredPropertyNames))
+            return null;
+
+        var hasLocalCustomerReference = asset.CustomerId.HasValue &&
+                                        asset.CustomerId.Value != Guid.Empty &&
+                                        await _db.Customers.IgnoreQueryFilters()
+                                            .AnyAsync(customer => customer.Id == asset.CustomerId.Value && !customer.IsDeleted, ct);
+        var hasServerCustomerReference = serverSnapshot.CustomerId.HasValue &&
+                                         serverSnapshot.CustomerId.Value != Guid.Empty &&
+                                         await _db.Customers.IgnoreQueryFilters()
+                                             .AnyAsync(customer => customer.Id == serverSnapshot.CustomerId.Value && !customer.IsDeleted, ct);
+        var hasLocalBillingProfileReference = asset.BillingProfileId.HasValue &&
+                                              asset.BillingProfileId.Value != Guid.Empty &&
+                                              await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                                                  .AnyAsync(profile => profile.Id == asset.BillingProfileId.Value && !profile.IsDeleted, ct);
+        var hasServerBillingProfileReference = serverSnapshot.BillingProfileId.HasValue &&
+                                               serverSnapshot.BillingProfileId.Value != Guid.Empty &&
+                                               await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                                                   .AnyAsync(profile => profile.Id == serverSnapshot.BillingProfileId.Value && !profile.IsDeleted, ct);
+        var hasLocalItemReference = asset.ItemId.HasValue &&
+                                    asset.ItemId.Value != Guid.Empty &&
+                                    await _db.Items.IgnoreQueryFilters()
+                                        .AnyAsync(item => item.Id == asset.ItemId.Value && !item.IsDeleted, ct);
+        var hasServerItemReference = serverSnapshot.ItemId.HasValue &&
+                                     serverSnapshot.ItemId.Value != Guid.Empty &&
+                                     await _db.Items.IgnoreQueryFilters()
+                                         .AnyAsync(item => item.Id == serverSnapshot.ItemId.Value && !item.IsDeleted, ct);
+
+        MergeServerPreferredRentalAssetFields(
+            asset,
+            serverSnapshot,
+            hasLocalCustomerReference,
+            hasServerCustomerReference,
+            hasLocalBillingProfileReference,
+            hasServerBillingProfileReference,
+            hasLocalItemReference,
+            hasServerItemReference);
+        var mergedSnapshot = LocalMappings.ToDto(asset);
+
+        if (AreEquivalentConflictPayloads(mergedSnapshot, serverSnapshot))
+        {
+            asset.Revision = serverSnapshot.Revision;
+            asset.UpdatedAtUtc = serverSnapshot.UpdatedAtUtc;
+            asset.IsDeleted = serverSnapshot.IsDeleted;
+            asset.IsDirty = false;
+            await RemoveSupersededOutboxEntriesAsync(
+                nameof(LocalRentalAsset),
+                assetId,
+                clientSnapshot.MutationId,
+                ct);
+            await _db.SaveChangesAsync(ct);
+            return (IsResolved: true, PreparedRetry: false);
+        }
+
+        if (!await HasValidRentalAssetRetryReferencesAsync(asset, ct))
+            return null;
+
+        asset.Revision = serverSnapshot.Revision;
+        asset.IsDirty = true;
+
+        var rebasedSnapshot = LocalMappings.ToDto(asset);
+        await RequeuePreparedMutationAsync(
+            nameof(LocalRentalAsset),
+            assetId,
+            clientSnapshot.MutationId,
+            rebasedSnapshot,
+            deviceId,
+            session,
+            ct);
+
+        await _db.SaveChangesAsync(ct);
+        return (IsResolved: false, PreparedRetry: true);
+    }
+
+    private async Task RemoveSupersededOutboxEntriesAsync(
+        string entityName,
+        Guid entityId,
+        string? previousMutationId,
+        CancellationToken ct)
+    {
+        var rows = await _db.SyncOutboxEntries
+            .Where(entry =>
+                entry.Status != "Acknowledged" &&
+                ((entry.EntityName == entityName && entry.EntityId == entityId) ||
+                 (!string.IsNullOrWhiteSpace(previousMutationId) && entry.MutationId == previousMutationId)))
+            .ToListAsync(ct);
+        if (rows.Count == 0)
+            return;
+
+        _db.SyncOutboxEntries.RemoveRange(rows);
+    }
+
+    private async Task<bool> TryPrepareRentalBillingProfileRevisionRetryAsync(
+        ConflictLogDto conflict,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (!string.Equals(conflict.EntityName, "RentalBillingProfile", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var reason = (conflict.Reason ?? string.Empty).Trim();
+        if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!Guid.TryParse(conflict.EntityId, out var profileId) || profileId == Guid.Empty)
+            return false;
+
+        if (!TryDeserializeConflictRentalBillingProfileDto(conflict.ClientJson, out var clientSnapshot) ||
+            clientSnapshot is null ||
+            clientSnapshot.Id != profileId)
+        {
+            return false;
+        }
+
+        if (!TryDeserializeConflictRentalBillingProfileDto(conflict.ServerJson, out var serverSnapshot) ||
+            serverSnapshot is null ||
+            serverSnapshot.Id != profileId)
+        {
+            return false;
+        }
+
+        if (!AreEquivalentConflictPayloads(
+                clientSnapshot,
+                serverSnapshot,
+                RentalBillingTemplateOnlyConflictIgnoredPropertyNames))
+        {
+            return false;
+        }
+
+        var profile = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == profileId, ct);
+        if (profile is null || !profile.IsDirty || profile.IsDeleted)
+            return false;
+
+        var localSnapshot = LocalMappings.ToDto(profile);
+        if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot))
+            return false;
+
+        var canonicalTemplateJson = await BuildCanonicalRentalBillingTemplateJsonAsync(profileId, profile, ct);
+        if (string.IsNullOrWhiteSpace(canonicalTemplateJson))
+            return false;
+
+        if (!AreEquivalentBillingTemplateJson(clientSnapshot.BillingTemplateJson, canonicalTemplateJson))
+            return false;
+
+        if (AreEquivalentBillingTemplateJson(serverSnapshot.BillingTemplateJson, canonicalTemplateJson))
+            return false;
+
+        if (!string.Equals(profile.BillingTemplateJson ?? string.Empty, canonicalTemplateJson, StringComparison.Ordinal))
+            profile.BillingTemplateJson = canonicalTemplateJson;
+
+        profile.Revision = serverSnapshot.Revision;
+        profile.IsDirty = true;
+
+        var rebasedSnapshot = LocalMappings.ToDto(profile);
+        await RequeuePreparedMutationAsync(
+            nameof(LocalRentalBillingProfile),
+            profileId,
+            clientSnapshot.MutationId,
+            rebasedSnapshot,
+            deviceId,
+            session,
+            ct);
+
+        await _db.SaveChangesAsync(ct);
+        return true;
+    }
+
+    private async Task<bool> HasValidRentalAssetRetryReferencesAsync(LocalRentalAsset asset, CancellationToken ct)
+    {
+        if (asset.BillingProfileId.HasValue &&
+            asset.BillingProfileId.Value != Guid.Empty &&
+            !await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                .AnyAsync(profile => profile.Id == asset.BillingProfileId.Value && !profile.IsDeleted, ct))
+        {
+            return false;
+        }
+
+        if (asset.CustomerId.HasValue &&
+            asset.CustomerId.Value != Guid.Empty &&
+            !await _db.Customers.IgnoreQueryFilters()
+                .AnyAsync(customer => customer.Id == asset.CustomerId.Value && !customer.IsDeleted, ct))
+        {
+            return false;
+        }
+
+        if (asset.ItemId.HasValue &&
+            asset.ItemId.Value != Guid.Empty &&
+            !await _db.Items.IgnoreQueryFilters()
+                .AnyAsync(item => item.Id == asset.ItemId.Value && !item.IsDeleted, ct))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static void MergeServerPreferredRentalAssetFields(
+        LocalRentalAsset asset,
+        RentalAssetDto serverSnapshot,
+        bool hasLocalCustomerReference,
+        bool hasServerCustomerReference,
+        bool hasLocalBillingProfileReference,
+        bool hasServerBillingProfileReference,
+        bool hasLocalItemReference,
+        bool hasServerItemReference)
+    {
+        if ((!asset.CustomerId.HasValue ||
+             asset.CustomerId.Value == Guid.Empty ||
+             !hasLocalCustomerReference) &&
+            hasServerCustomerReference &&
+            serverSnapshot.CustomerId.HasValue &&
+            serverSnapshot.CustomerId.Value != Guid.Empty)
+        {
+            asset.CustomerId = serverSnapshot.CustomerId.Value;
+            if (!string.IsNullOrWhiteSpace(serverSnapshot.CustomerName))
+                asset.CustomerName = serverSnapshot.CustomerName.Trim();
+            if (!string.IsNullOrWhiteSpace(serverSnapshot.CurrentCustomerName))
+                asset.CurrentCustomerName = serverSnapshot.CurrentCustomerName.Trim();
+        }
+
+        if ((!asset.BillingProfileId.HasValue ||
+             asset.BillingProfileId.Value == Guid.Empty ||
+             !hasLocalBillingProfileReference) &&
+            hasServerBillingProfileReference &&
+            serverSnapshot.BillingProfileId.HasValue &&
+            serverSnapshot.BillingProfileId.Value != Guid.Empty)
+        {
+            asset.BillingProfileId = serverSnapshot.BillingProfileId.Value;
+        }
+
+        if ((!asset.ItemId.HasValue ||
+             asset.ItemId.Value == Guid.Empty ||
+             !hasLocalItemReference) &&
+            hasServerItemReference &&
+            serverSnapshot.ItemId.HasValue &&
+            serverSnapshot.ItemId.Value != Guid.Empty)
+        {
+            asset.ItemId = serverSnapshot.ItemId.Value;
+        }
+
+        if (string.IsNullOrWhiteSpace(asset.CustomerName) &&
+            !string.IsNullOrWhiteSpace(serverSnapshot.CustomerName))
+        {
+            asset.CustomerName = serverSnapshot.CustomerName.Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(asset.CurrentCustomerName) &&
+            !string.IsNullOrWhiteSpace(serverSnapshot.CurrentCustomerName))
+        {
+            asset.CurrentCustomerName = serverSnapshot.CurrentCustomerName.Trim();
+        }
+
+        if (asset.SalePrice <= 0m && serverSnapshot.SalePrice > 0m)
+            asset.SalePrice = serverSnapshot.SalePrice;
+
+        if (string.IsNullOrWhiteSpace(asset.InstallLocation) &&
+            !string.IsNullOrWhiteSpace(serverSnapshot.InstallLocation))
+        {
+            asset.InstallLocation = serverSnapshot.InstallLocation.Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(asset.InstallSiteName) &&
+            !string.IsNullOrWhiteSpace(serverSnapshot.InstallSiteName))
+        {
+            asset.InstallSiteName = serverSnapshot.InstallSiteName.Trim();
+        }
+
+        if (CollapseWhitespace(asset.Notes)
+            .Equals(CollapseWhitespace(serverSnapshot.Notes), StringComparison.Ordinal))
+        {
+            asset.Notes = serverSnapshot.Notes ?? string.Empty;
+        }
+    }
+
     private async Task<bool> TryApplyServerItemConflictSnapshotAsync(ConflictLogDto conflict, CancellationToken ct)
     {
         if (!string.Equals(conflict.EntityName, "Item", StringComparison.OrdinalIgnoreCase))
@@ -2124,6 +2644,179 @@ public sealed class SyncService : IDisposable
         }
     }
 
+    private async Task<string?> BuildCanonicalRentalBillingTemplateJsonAsync(
+        Guid profileId,
+        LocalRentalBillingProfile profile,
+        CancellationToken ct)
+    {
+        var linkedAssets = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(asset =>
+                !asset.IsDeleted &&
+                asset.BillingProfileId.HasValue &&
+                asset.BillingProfileId.Value == profileId)
+            .ToListAsync(ct);
+        if (linkedAssets.Count == 0)
+            return null;
+
+        var templateItems = _rental.GetBillingTemplateItems(profile, linkedAssets);
+        if (templateItems.Count != 1)
+            return null;
+
+        var linkedAssetIds = linkedAssets
+            .Select(asset => asset.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToList();
+        if (linkedAssetIds.Count == 0)
+            return null;
+
+        templateItems[0].IncludedAssetIds = linkedAssetIds;
+        var canonicalTemplateJson = _rental.SerializeBillingTemplateItems(templateItems);
+        return string.IsNullOrWhiteSpace(canonicalTemplateJson)
+            ? null
+            : canonicalTemplateJson;
+    }
+
+    private async Task RequeuePreparedMutationAsync<TDto>(
+        string entityName,
+        Guid entityId,
+        string? previousMutationId,
+        TDto entity,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+        where TDto : SyncEntityDto
+    {
+        entity.ExpectedRevision = Math.Max(0, entity.Revision);
+        entity.MutationCreatedAtUtc = NormalizeMutationUtc(entity.UpdatedAtUtc);
+        entity.MutationId = BuildMutationId(deviceId, entityName, entity);
+
+        var rows = await _db.SyncOutboxEntries
+            .Where(entry =>
+                entry.Status != "Acknowledged" &&
+                (entry.EntityName == entityName && entry.EntityId == entityId ||
+                 (!string.IsNullOrWhiteSpace(previousMutationId) && entry.MutationId == previousMutationId)))
+            .OrderByDescending(entry => entry.PreparedAtUtc)
+            .ToListAsync(ct);
+
+        var primary = rows.FirstOrDefault();
+        if (primary is null)
+        {
+            primary = new LocalSyncOutboxEntry
+            {
+                Id = Guid.NewGuid(),
+                DeviceId = deviceId,
+                EntityName = entityName,
+                EntityId = entityId
+            };
+            _db.SyncOutboxEntries.Add(primary);
+        }
+
+        foreach (var duplicate in rows.Skip(1))
+            _db.SyncOutboxEntries.Remove(duplicate);
+
+        var duplicateMutationRows = await _db.SyncOutboxEntries
+            .Where(entry =>
+                entry.Id != primary.Id &&
+                entry.MutationId == entity.MutationId)
+            .ToListAsync(ct);
+        foreach (var duplicate in duplicateMutationRows)
+            _db.SyncOutboxEntries.Remove(duplicate);
+
+        var scope = ResolvePreparedMutationScope(entity, session, new PreparedMutationScopeLookup());
+        primary.MutationId = entity.MutationId;
+        primary.ExpectedRevision = entity.ExpectedRevision;
+        primary.TenantCode = scope.TenantCode;
+        primary.OfficeCode = scope.OfficeCode;
+        primary.ResponsibleOfficeCode = scope.ResponsibleOfficeCode;
+        primary.Status = "Prepared";
+        primary.ErrorMessage = string.Empty;
+        primary.PreparedAtUtc = DateTime.UtcNow;
+        primary.SentAtUtc = null;
+        primary.AcknowledgedAtUtc = null;
+    }
+
+    private static bool TryDeserializeConflictRentalBillingProfileDto(
+        string? json,
+        out RentalBillingProfileDto? dto)
+    {
+        dto = null;
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        try
+        {
+            dto = System.Text.Json.JsonSerializer.Deserialize<RentalBillingProfileDto>(json);
+            return dto is not null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryDeserializeConflictRentalAssetDto(
+        string? json,
+        out RentalAssetDto? dto)
+    {
+        dto = null;
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        try
+        {
+            dto = System.Text.Json.JsonSerializer.Deserialize<RentalAssetDto>(json);
+            return dto is not null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool AreEquivalentBillingTemplateJson(string? left, string? right)
+    {
+        var normalizedLeft = NormalizeConflictJsonFragment(left);
+        var normalizedRight = NormalizeConflictJsonFragment(right);
+        if (normalizedLeft is not null || normalizedRight is not null)
+            return JsonNode.DeepEquals(normalizedLeft, normalizedRight);
+
+        return string.Equals(
+            (left ?? string.Empty).Trim(),
+            (right ?? string.Empty).Trim(),
+            StringComparison.Ordinal);
+    }
+
+    private static JsonNode? NormalizeConflictJsonFragment(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return null;
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return NormalizeConflictJson(document.RootElement, EquivalentConflictIgnoredPropertyNames);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string CollapseWhitespace(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        return string.Join(
+            ' ',
+            (value ?? string.Empty)
+                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    }
+
     private static bool AreEquivalentConflictPayloads<TLeft, TRight>(
         TLeft left,
         TRight right,
@@ -2147,6 +2840,7 @@ public sealed class SyncService : IDisposable
             JsonValueKind.Array => NormalizeConflictArray(element, ignoredProperties),
             JsonValueKind.Null => null,
             JsonValueKind.Undefined => null,
+            JsonValueKind.Number => JsonValue.Create(NormalizeConflictJsonNumber(element)),
             _ => JsonNode.Parse(element.GetRawText())
         };
     }
@@ -2173,6 +2867,17 @@ public sealed class SyncService : IDisposable
             normalized.Add(NormalizeConflictJson(item, ignoredProperties));
 
         return normalized;
+    }
+
+    private static string NormalizeConflictJsonNumber(JsonElement element)
+    {
+        if (element.TryGetInt64(out var integer))
+            return integer.ToString(CultureInfo.InvariantCulture);
+
+        if (element.TryGetDecimal(out var number))
+            return number.ToString("G29", CultureInfo.InvariantCulture);
+
+        return element.GetRawText();
     }
 
     private async Task<List<ConflictLogDto>> GetDeferredSyncConflictsAsync(
@@ -3299,9 +4004,10 @@ public sealed class SyncService : IDisposable
         IReadOnlyList<RentalAssetDto> dtos,
         CancellationToken ct)
     {
-        var skippedIncomingIds = await RemoveStalePulledRentalAssetConflictsAsync(dtos, ct);
+        var dedupedDtos = DeduplicatePulledRentalAssets(dtos);
+        var skippedIncomingIds = await RemoveStalePulledRentalAssetConflictsAsync(dedupedDtos, ct);
 
-        foreach (var dto in dtos)
+        foreach (var dto in dedupedDtos)
         {
             if (skippedIncomingIds.Contains(dto.Id))
                 continue;
@@ -3322,6 +4028,63 @@ public sealed class SyncService : IDisposable
         }
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    private static IReadOnlyList<RentalAssetDto> DeduplicatePulledRentalAssets(IReadOnlyList<RentalAssetDto> dtos)
+    {
+        if (dtos.Count == 0)
+            return dtos;
+
+        var latestById = dtos
+            .GroupBy(dto => dto.Id)
+            .Select(group => group
+                .OrderByDescending(dto => dto.Revision)
+                .ThenByDescending(dto => dto.UpdatedAtUtc)
+                .ThenByDescending(dto => dto.CreatedAtUtc)
+                .ThenBy(dto => dto.Id)
+                .First())
+            .ToDictionary(dto => dto.Id);
+
+        var kept = latestById.Values.ToDictionary(dto => dto.Id);
+        PruneDuplicateActiveRentalAssets(kept, dto => dto.ManagementNumber);
+        PruneDuplicateActiveRentalAssets(kept, dto => dto.ManagementId);
+        PruneDuplicateActiveRentalAssets(kept, dto => dto.AssetKey);
+
+        var droppedDuplicates = latestById.Count - kept.Count;
+        if (droppedDuplicates > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"렌탈 자산 pull 중복 수신 정리: received={dtos.Count}, byId={latestById.Count}, droppedActiveDuplicates={droppedDuplicates}");
+        }
+
+        return kept.Values
+            .OrderBy(dto => dto.Revision)
+            .ThenBy(dto => dto.UpdatedAtUtc)
+            .ThenBy(dto => dto.Id)
+            .ToList();
+    }
+
+    private static void PruneDuplicateActiveRentalAssets(
+        Dictionary<Guid, RentalAssetDto> kept,
+        Func<RentalAssetDto, string?> keySelector)
+    {
+        foreach (var group in kept.Values
+                     .Where(dto => !dto.IsDeleted)
+                     .GroupBy(dto => NormalizeRentalAssetNaturalKey(keySelector(dto)), StringComparer.OrdinalIgnoreCase)
+                     .Where(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1)
+                     .ToList())
+        {
+            var canonical = group
+                .OrderByDescending(dto => dto.Revision)
+                .ThenByDescending(dto => dto.UpdatedAtUtc)
+                .ThenByDescending(dto => dto.CreatedAtUtc)
+                .ThenBy(dto => dto.Id)
+                .First();
+
+            foreach (var duplicate in group.Where(dto => dto.Id != canonical.Id))
+                kept.Remove(duplicate.Id);
+        }
     }
 
     private async Task<HashSet<Guid>> RemoveStalePulledItemConflictsAsync(
@@ -3498,6 +4261,7 @@ public sealed class SyncService : IDisposable
         var staleConflictIds = new HashSet<Guid>();
         var skippedIncomingIds = new HashSet<Guid>();
         var dirtyConflictDetails = new List<string>();
+        var recoveredDirtyConflictDetails = new List<string>();
 
         foreach (var candidate in candidates)
         {
@@ -3737,6 +4501,7 @@ public sealed class SyncService : IDisposable
         var staleConflictIds = new HashSet<Guid>();
         var skippedIncomingIds = new HashSet<Guid>();
         var dirtyConflictDetails = new List<string>();
+        var recoveredDirtyConflictDetails = new List<string>();
 
         foreach (var candidate in candidates)
         {
@@ -3751,6 +4516,14 @@ public sealed class SyncService : IDisposable
 
             if (candidate.IsDirty)
             {
+                if (CanRecoverDirtyRentalAssetPullConflict(candidate, matchingIncomingIds, dtos))
+                {
+                    staleConflictIds.Add(candidate.Id);
+                    recoveredDirtyConflictDetails.Add(
+                        $"{candidate.ManagementNumber}/{candidate.ManagementId} -> {candidate.Id}");
+                    continue;
+                }
+
                 foreach (var incomingId in matchingIncomingIds)
                     skippedIncomingIds.Add(incomingId);
 
@@ -3775,6 +4548,14 @@ public sealed class SyncService : IDisposable
                 $"렌탈 자산 pull 충돌 복구: 관리번호/관리ID가 같은 로컬 자산 {staleConflictIds.Count}건을 서버 기준으로 정리했습니다.");
         }
 
+        if (recoveredDirtyConflictDetails.Count > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"렌탈 자산 pull 충돌 자동 복구: 서버 반영된 휴지통/동기화 결과와 같은 식별값의 로컬 dirty 자산 {recoveredDirtyConflictDetails.Count}건을 서버 기준으로 정리했습니다. " +
+                $"details={string.Join(", ", recoveredDirtyConflictDetails.Take(10))}");
+        }
+
         if (dirtyConflictDetails.Count > 0)
         {
             AppLogger.Warn(
@@ -3784,6 +4565,36 @@ public sealed class SyncService : IDisposable
         }
 
         return skippedIncomingIds;
+    }
+
+    private static bool CanRecoverDirtyRentalAssetPullConflict(
+        LocalRentalAsset candidate,
+        IReadOnlyCollection<Guid> matchingIncomingIds,
+        IReadOnlyList<RentalAssetDto> incomingDtos)
+    {
+        if (matchingIncomingIds.Count == 0)
+            return false;
+
+        var matchingIncoming = incomingDtos
+            .Where(dto => matchingIncomingIds.Contains(dto.Id))
+            .ToList();
+        if (matchingIncoming.Count == 0)
+            return false;
+
+        return matchingIncoming.Any(dto =>
+            !dto.IsDeleted &&
+            (
+                NaturalKeysMatch(candidate.ManagementNumber, dto.ManagementNumber) ||
+                NaturalKeysMatch(candidate.ManagementId, dto.ManagementId) ||
+                NaturalKeysMatch(candidate.AssetKey, dto.AssetKey)));
+    }
+
+    private static bool NaturalKeysMatch(string? left, string? right)
+    {
+        var normalizedLeft = NormalizeRentalAssetNaturalKey(left);
+        var normalizedRight = NormalizeRentalAssetNaturalKey(right);
+        return !string.IsNullOrWhiteSpace(normalizedLeft) &&
+               string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
     }
 
     private static Dictionary<string, HashSet<Guid>> BuildIncomingRentalBillingProfileLookup(

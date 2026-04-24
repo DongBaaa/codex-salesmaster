@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Microsoft.Extensions.DependencyInjection;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
@@ -24,6 +25,7 @@ public partial class MainWindow : Window
     private readonly SyncService _sync;
     private readonly BackupService _backup;
     private readonly SyncDiagnosticsService _diagnostics;
+    private readonly DataIntegrityIssueService _dataIntegrity;
     private readonly DesktopAppUpdateService _updateService;
     private readonly RuntimeSafetyMonitorService _runtimeSafety;
     private readonly DispatcherTimer _centralRevisionPollTimer;
@@ -36,6 +38,8 @@ public partial class MainWindow : Window
     private bool _updatePromptInProgress;
     private bool _isClosingOrClosed;
     private bool _runtimeSafetyCheckInProgress;
+    private bool _dataIntegrityPromptInProgress;
+    private string _lastDataIntegrityIssueSignature = string.Empty;
 
     public MainWindow(MainViewModel vm, LocalStateService local,
                       RentalStateService rental,
@@ -46,7 +50,9 @@ public partial class MainWindow : Window
                       ErpApiClient api,
                       SyncService sync,
                       BackupService backup,
-                      SyncDiagnosticsService diagnostics)
+                      SyncDiagnosticsService diagnostics,
+                      DataIntegrityIssueService dataIntegrity,
+                      IServiceScopeFactory serviceScopeFactory)
     {
         InitializeComponent();
         Title = AppRuntimeInfo.WithTestLabel(Title);
@@ -61,8 +67,9 @@ public partial class MainWindow : Window
         _sync = sync;
         _backup = backup;
         _diagnostics = diagnostics;
+        _dataIntegrity = dataIntegrity;
         _updateService = new DesktopAppUpdateService(api);
-        _runtimeSafety = new RuntimeSafetyMonitorService(local, sync, backup, session, api, diagnostics);
+        _runtimeSafety = new RuntimeSafetyMonitorService(local, sync, backup, session, api, diagnostics, serviceScopeFactory);
         DataContext = vm;
         Activated += MainWindow_Activated;
         Deactivated += MainWindow_Deactivated;
@@ -338,6 +345,7 @@ public partial class MainWindow : Window
 
             await _vm.ReloadAfterPassiveSyncAsync();
             AppLogger.Info("SYNC", $"{reason} 후 경량 재동기화 완료");
+            await RunDataIntegrityScanAndPromptAsync($"{reason} 후 동기화");
         }
         catch (Exception ex)
         {
@@ -351,6 +359,140 @@ public partial class MainWindow : Window
                 DateTime.UtcNow - startAtUtc,
                 detail: requireServerRevisionChange ? "revision-check" : "forced-check");
             _centralRefreshInProgress = false;
+        }
+    }
+
+    public async Task RunDataIntegrityScanAndPromptAsync(string reason, bool forceShow = false)
+    {
+        if (_isClosingOrClosed || _dataIntegrityPromptInProgress)
+            return;
+
+        _dataIntegrityPromptInProgress = true;
+        try
+        {
+            var result = await OperationTiming.MeasureAsync(
+                "INTEGRITY",
+                $"{reason} 운영 점검",
+                () => _dataIntegrity.ScanAsync(_session),
+                warningThreshold: TimeSpan.FromSeconds(3));
+
+            if (!result.HasIssues)
+                return;
+
+            if (!forceShow && string.Equals(_lastDataIntegrityIssueSignature, result.IssueSignature, StringComparison.Ordinal))
+                return;
+
+            _lastDataIntegrityIssueSignature = result.IssueSignature;
+            await Dispatcher.InvokeAsync(() => ShowDataIntegrityAlert(result), DispatcherPriority.Background);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("INTEGRITY", $"{reason} 운영 점검 실패: {ex.Message}");
+        }
+        finally
+        {
+            _dataIntegrityPromptInProgress = false;
+        }
+    }
+
+    private void ShowDataIntegrityAlert(DataIntegrityScanResult result)
+    {
+        if (_isClosingOrClosed || !IsLoaded)
+            return;
+
+        var vm = new DataIntegrityAlertViewModel(result);
+        var win = new DataIntegrityAlertWindow
+        {
+            Owner = this,
+            DataContext = vm
+        };
+
+        if (win.ShowDialog() != true)
+            return;
+
+        UiTaskHelper.Forget(
+            HandleDataIntegrityAlertActionAsync(win.RequestedAction, win.RequestedSummary),
+            "INTEGRITY",
+            "운영 점검 바로가기",
+            ex => MessageBox.Show(
+                this,
+                $"운영 점검 바로가기를 열지 못했습니다.{Environment.NewLine}{ex.Message}",
+                "운영 점검",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning));
+    }
+
+    private async Task HandleDataIntegrityAlertActionAsync(DataIntegrityAlertAction action, DataIntegrityIssueSummary? summary)
+    {
+        if (action == DataIntegrityAlertAction.None)
+            return;
+
+        if (action == DataIntegrityAlertAction.Details)
+        {
+            await OpenDataIntegrityIssueWindowAsync(summary?.Code);
+            return;
+        }
+
+        if (action != DataIntegrityAlertAction.Fix)
+            return;
+
+        if (summary is null)
+        {
+            await OpenDataIntegrityIssueWindowAsync(null);
+            return;
+        }
+
+        var scan = await _dataIntegrity.ScanAsync(_session);
+        var issues = scan.Issues
+            .Where(issue => string.Equals(issue.Code, summary.Code, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (issues.Count == 1)
+        {
+            await OpenDataIntegrityFixTargetAsync(issues[0]);
+            return;
+        }
+
+        await OpenDataIntegrityIssueWindowAsync(summary.Code);
+    }
+
+    private async Task OpenDataIntegrityIssueWindowAsync(string? initialCode)
+    {
+        var vm = new DataIntegrityIssueViewModel(_dataIntegrity, _session, initialCode);
+        await OperationTiming.MeasureAsync(
+            "UI",
+            "운영 점검 상세 창 초기화",
+            () => vm.LoadAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
+
+        var win = new DataIntegrityIssueWindow(vm)
+        {
+            Owner = this
+        };
+        if (win.ShowDialog() == true && win.RequestedIssue is not null)
+            await OpenDataIntegrityFixTargetAsync(win.RequestedIssue);
+    }
+
+    private async Task OpenDataIntegrityFixTargetAsync(DataIntegrityIssueDetail issue)
+    {
+        switch (issue.DirectActionKind)
+        {
+            case DataIntegrityDirectActionKind.OpenRentalBillingProfile when issue.ProfileId.HasValue:
+                await OpenRentalBillingWindowAsync(issue.ProfileId.Value);
+                break;
+            case DataIntegrityDirectActionKind.OpenRentalAsset when issue.AssetId.HasValue:
+                await OpenRentalAssetWindowAsync(issue.AssetId.Value);
+                break;
+            case DataIntegrityDirectActionKind.OpenRentalBillingProfile when issue.AssetId.HasValue:
+                await OpenRentalAssetWindowAsync(issue.AssetId.Value);
+                break;
+            default:
+                MessageBox.Show(
+                    this,
+                    "이 항목은 원본 화면 바로가기를 지원하지 않습니다. 상세 내용을 기준으로 수동 확인하세요.",
+                    "운영 점검",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                break;
         }
     }
 
@@ -718,10 +860,10 @@ public partial class MainWindow : Window
         => RunUiAsync(OpenRentalDashboardWindowAsync, "렌탈 대시보드 창 열기");
 
     private void RentalBillingMenuItem_Click(object sender, RoutedEventArgs e)
-        => RunUiAsync(OpenRentalBillingWindowAsync, "렌탈 청구관리 창 열기");
+        => RunUiAsync(() => OpenRentalBillingWindowAsync(), "렌탈 청구관리 창 열기");
 
     private void RentalAssetMenuItem_Click(object sender, RoutedEventArgs e)
-        => RunUiAsync(OpenRentalAssetWindowAsync, "렌탈 자산 창 열기");
+        => RunUiAsync(() => OpenRentalAssetWindowAsync(), "렌탈 자산 창 열기");
 
     private void RentalSettingsMenuItem_Click(object sender, RoutedEventArgs e)
         => RunUiAsync(OpenRentalSettingsWindowAsync, "렌탈 설정 창 열기");
@@ -842,12 +984,26 @@ public partial class MainWindow : Window
                 preselect = await _local.GetCustomerAsync(invoice.CustomerId, _session);
         }
 
+        var refreshCustomerId = preselect?.Id;
         await OperationTiming.MeasureAsync(
             "UI",
             "수금/지급 창 초기화",
             () => vm.LoadAsync(preselect),
             warningThreshold: TimeSpan.FromSeconds(2));
         var win = new PaymentWindow(vm) { Owner = this };
+        void RefreshMainAfterPaymentChange()
+            => RunUiAsync(
+                () => _vm.RefreshAfterFinancialTransactionChangedAsync(refreshCustomerId),
+                "수금/지급 후 메인 화면 재조회",
+                "수금/지급 후 메인 화면을 다시 불러오는 중 오류가 발생했습니다.");
+
+        EventHandler paymentTransactionsChanged = (_, _) => RefreshMainAfterPaymentChange();
+        vm.TransactionsChanged += paymentTransactionsChanged;
+        win.Closed += (_, _) =>
+        {
+            vm.TransactionsChanged -= paymentTransactionsChanged;
+            RefreshMainAfterPaymentChange();
+        };
         win.Show();
     }
 
@@ -879,7 +1035,10 @@ public partial class MainWindow : Window
                 _sync,
                 _backup,
                 _diagnostics,
+                _dataIntegrity,
                 _rental,
+                _rentalDocuments,
+                _invoicePrintService,
                 async () => await _vm.ReloadForBusinessDatabaseChangeAsync());
             await OperationTiming.MeasureAsync(
                 "UI",
@@ -967,7 +1126,7 @@ public partial class MainWindow : Window
         await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
 
-    private async Task OpenRentalBillingWindowAsync()
+    private async Task OpenRentalBillingWindowAsync(Guid? targetProfileId = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalBillingViewModel(_rental, _local, _session);
@@ -975,7 +1134,11 @@ public partial class MainWindow : Window
         {
             Owner = this
         };
-        ShowDialogWithDeferredLoad(win, () => vm.LoadAsync(), "렌탈 청구관리", "렌탈 청구관리 데이터를 불러오지 못했습니다.");
+        ShowDialogWithDeferredLoad(
+            win,
+            () => targetProfileId.HasValue ? vm.LoadAndSelectProfileAsync(targetProfileId.Value) : vm.LoadAsync(),
+            "렌탈 청구관리",
+            "렌탈 청구관리 데이터를 불러오지 못했습니다.");
 
         if (vm.InvoiceToOpenAfterClose.HasValue)
         {
@@ -987,7 +1150,7 @@ public partial class MainWindow : Window
         await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
 
-    private async Task OpenRentalAssetWindowAsync()
+    private async Task OpenRentalAssetWindowAsync(Guid? targetAssetId = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalAssetViewModel(_rental, _local, _rentalDocuments, _invoicePrintService, _session);
@@ -995,7 +1158,11 @@ public partial class MainWindow : Window
         {
             Owner = this
         };
-        ShowDialogWithDeferredLoad(win, () => vm.LoadAsync(), "렌탈 자산 / 설치현황", "렌탈 자산 데이터를 불러오지 못했습니다.");
+        ShowDialogWithDeferredLoad(
+            win,
+            () => targetAssetId.HasValue ? vm.LoadAndSelectAssetAsync(targetAssetId.Value) : vm.LoadAsync(),
+            "렌탈 자산 / 설치현황",
+            "렌탈 자산 데이터를 불러오지 못했습니다.");
         await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
 
@@ -1125,7 +1292,9 @@ public partial class MainWindow : Window
             await _local.SetSettingAsync("Update.LastPromptedDesktopVersion", result.LatestVersion, CancellationToken.None);
             _updateService.StartUpdate(result.Package);
             _vm.SyncStatus = $"업데이트 {result.LatestVersion} 설치를 시작했습니다.";
-            Application.Current?.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));
+            Application.Current?.Dispatcher.BeginInvoke(
+                new Action(App.RequestShutdownForUpdate),
+                DispatcherPriority.Send);
         }
         catch (Exception ex)
         {

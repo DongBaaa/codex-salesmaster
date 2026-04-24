@@ -362,10 +362,10 @@
                             <TextBox Grid.Row="1" Grid.Column="2" Height="30" Text="{Binding InputSpec, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
                             <TextBox Grid.Row="1" Grid.Column="3" Height="30" Text="{Binding InputQty, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" TextAlignment="Right"/>
                             <TextBox Grid.Row="1" Grid.Column="4" Height="30" Text="{Binding InputUnit, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
-                            <TextBox Grid.Row="1" Grid.Column="5" Height="30" Text="{Binding InputUnitPrice, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" TextAlignment="Right"/>
+                            <TextBox Grid.Row="1" Grid.Column="5" Height="30" Text="{Binding InputUnitPrice, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" TextAlignment="Right"/>
                             <TextBox Grid.Row="1" Grid.Column="6"
                                      Height="30"
-                                     Text="{Binding InputLineAmount, UpdateSourceTrigger=PropertyChanged}"
+                                     Text="{Binding InputLineAmount, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"
                                      Margin="4,0,0,0"
                                      TextAlignment="Right"/>
                             <TextBox Grid.Row="1" Grid.Column="7" Height="30" Text="{Binding InputRemark, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>

@@ -498,7 +498,7 @@ function Wait-NasScheduledApply {
         [Parameter(Mandatory = $true)][string]$ReleaseId,
         [Parameter(Mandatory = $true)][hashtable]$NasEnv,
         [Parameter(Mandatory = $true)]$Config,
-        [int]$TimeoutSeconds = 150
+        [int]$TimeoutSeconds = 900
     )
 
     if (Test-NasSshConfigComplete -Config $Config) {
@@ -583,7 +583,7 @@ function Invoke-NasApplyRelease {
         $sshArgs += @('-i', $Config.KeyPath)
     }
 
-    $remoteCommand = "cd '$($Config.RemoteOpsPath)' && /bin/bash ./apply-release.sh '$ReleaseId'"
+    $remoteCommand = "cd '$($Config.RemoteOpsPath)' && HEALTH_CHECK_RETRIES=900 /bin/bash ./apply-release.sh '$ReleaseId'"
     $sshArgs += ('{0}@{1}' -f $Config.User, $Config.Host)
     $sshArgs += $remoteCommand
 

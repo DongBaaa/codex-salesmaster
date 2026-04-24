@@ -27,6 +27,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly SessionState _session;
     private readonly IPrintService _invoicePrintService = new WpfInvoicePrintService();
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly TimeSpan RecentPostLoginSyncSkipWindow = TimeSpan.FromMinutes(2);
     private readonly LegacyDataMigrationService _legacyMigrationService;
     private CancellationTokenSource? _customerAutoSaveCts;
     private int _customerAutoSaveVersion;
@@ -296,6 +297,17 @@ public sealed partial class MainViewModel : ObservableObject
         FilterTo = _invoiceDefaultTo;
     }
 
+    public async Task<bool> ShouldShowPostLoginSyncPopupAsync()
+    {
+        if (_session.IsOfflineMode)
+            return false;
+
+        if (await _local.IsServerMirrorRefreshRequiredAsync())
+            return true;
+
+        return !await HasPersistedSyncRevisionAsync();
+    }
+
     public async Task RunPostLoginSyncAsync()
     {
         if (_session.IsOfflineMode)
@@ -306,6 +318,16 @@ public sealed partial class MainViewModel : ObservableObject
 
         try
         {
+            if (await ShouldSkipImmediatePostLoginSyncAsync())
+            {
+                var lastSuccess = await GetLastSuccessfulSyncAtAsync();
+                SyncStatus = lastSuccess.HasValue
+                    ? $"최근 동기화 기록({lastSuccess.Value.ToLocalTime():HH:mm:ss})이 있어 시작 동기화는 생략했습니다."
+                    : "최근 동기화 기록이 있어 시작 동기화는 생략했습니다.";
+                return;
+            }
+
+            var shouldRefreshCurrentBusinessScope = await ShouldRefreshCurrentBusinessScopeAfterPostLoginAsync();
             var dirtyBefore = await _local.CountDirtyAsync(_session);
             SyncStatus = "로그인 후 서버 동기화 중...";
 
@@ -314,12 +336,13 @@ public sealed partial class MainViewModel : ObservableObject
             if (syncOk && dirtyAfter == 0)
             {
                 var refreshOk = true;
-                refreshOk = await _sync.RefreshCurrentBusinessScopeFromServerAsync();
+                if (shouldRefreshCurrentBusinessScope)
+                    refreshOk = await _sync.RefreshCurrentBusinessScopeFromServerAsync();
 
                 await ReloadAfterPassiveSyncAsync();
-                SyncStatus = refreshOk
-                    ? $"로그인 후 서버 동기화 완료 {DateTime.Now:HH:mm:ss}"
-                    : "로그인 후 현재 업체 DB 캐시 재구성은 일부 실패했지만 앱은 계속 사용할 수 있습니다.";
+                SyncStatus = shouldRefreshCurrentBusinessScope && !refreshOk
+                    ? "로그인 후 현재 업체 DB 캐시 재구성은 일부 실패했지만 앱은 계속 사용할 수 있습니다."
+                    : $"로그인 후 서버 동기화 완료 {DateTime.Now:HH:mm:ss}";
                 return;
             }
 
@@ -368,6 +391,39 @@ public sealed partial class MainViewModel : ObservableObject
                 severity: "Warning");
             SyncStatus = "로그인 후 자동 동기화에 실패했지만 앱은 계속 사용할 수 있습니다.";
         }
+    }
+
+    private async Task<bool> ShouldSkipImmediatePostLoginSyncAsync()
+    {
+        if (await _local.IsServerMirrorRefreshRequiredAsync())
+            return false;
+
+        if (!await HasPersistedSyncRevisionAsync())
+            return false;
+
+        var lastSuccess = await GetLastSuccessfulSyncAtAsync();
+        if (!lastSuccess.HasValue || DateTimeOffset.Now - lastSuccess.Value.ToLocalTime() > RecentPostLoginSyncSkipWindow)
+            return false;
+
+        var dirtyCount = await _local.CountDirtyAsync(_session);
+        return dirtyCount == 0;
+    }
+
+    private async Task<bool> ShouldRefreshCurrentBusinessScopeAfterPostLoginAsync()
+        => await _local.IsServerMirrorRefreshRequiredAsync();
+
+    private async Task<bool> HasPersistedSyncRevisionAsync()
+    {
+        var revisionRaw = await _local.GetSettingAsync("LastSyncRevision");
+        return long.TryParse(revisionRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var revision) && revision > 0;
+    }
+
+    private async Task<DateTimeOffset?> GetLastSuccessfulSyncAtAsync()
+    {
+        var raw = await _local.GetSettingAsync("Sync.LastSuccessAt");
+        return DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var value)
+            ? value
+            : null;
     }
 
     // ?? Customer Filter (Left Panel) ???????????????????????????????????????
@@ -667,6 +723,7 @@ public sealed partial class MainViewModel : ObservableObject
 
         await RefreshDashboardMetricsAsync();
         await LoadInvoiceFavoritesAsync();
+        await RefreshSelectedCustomerFinancialPreviewAsync();
     }
 
     private async Task RefreshDashboardMetricsAsync(IEnumerable<LocalInvoice>? invoices = null)

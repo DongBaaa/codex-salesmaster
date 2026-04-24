@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -30,7 +30,9 @@ public sealed partial class LocalStateService
         var failedCount = await _db.SyncOutboxEntries
             .AsNoTracking()
             .CountAsync(entry => entry.Status == "Failed", ct);
-        var pendingCount = Math.Max(0, totalCount - acknowledgedCount);
+        var pendingCount = await _db.SyncOutboxEntries
+            .AsNoTracking()
+            .CountAsync(entry => entry.Status != "Acknowledged" && entry.Status != "Failed", ct);
         return new SyncOutboxSummary(totalCount, pendingCount, failedCount, acknowledgedCount);
     }
 

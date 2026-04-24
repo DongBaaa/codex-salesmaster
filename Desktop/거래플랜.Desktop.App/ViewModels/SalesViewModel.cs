@@ -828,18 +828,18 @@ public sealed partial class SalesViewModel : ObservableObject
 
     public void RecalcTotals()
     {
-        var lineAmountSum = Lines.Sum(l => l.LineAmount);
-        if (IsPurchaseLikeDocument)
-        {
-            SupplyAmount = lineAmountSum;
-            VatAmount = Math.Round(SupplyAmount * 0.1m, 0, MidpointRounding.AwayFromZero);
-            TotalAmount = SupplyAmount + VatAmount;
-            return;
-        }
+        var totals = CalculateTaxInclusiveTotals(Lines.Select(l => l.LineAmount));
+        SupplyAmount = totals.SupplyAmount;
+        VatAmount = totals.VatAmount;
+        TotalAmount = totals.TotalAmount;
+    }
 
-        TotalAmount = lineAmountSum;
-        SupplyAmount = Math.Round(TotalAmount / 1.1m, 0, MidpointRounding.AwayFromZero);
-        VatAmount = TotalAmount - SupplyAmount;
+    private static (decimal SupplyAmount, decimal VatAmount, decimal TotalAmount) CalculateTaxInclusiveTotals(IEnumerable<decimal> lineAmounts)
+    {
+        var totalAmount = lineAmounts.Sum();
+        var supplyAmount = Math.Round(totalAmount / 1.1m, 0, MidpointRounding.AwayFromZero);
+        var vatAmount = totalAmount - supplyAmount;
+        return (supplyAmount, vatAmount, totalAmount);
     }
 
     // ?? ?곹뭹 寃???????????????????????????????????????????????????????????

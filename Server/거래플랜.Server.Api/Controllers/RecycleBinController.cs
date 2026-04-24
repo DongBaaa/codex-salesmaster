@@ -2,6 +2,7 @@
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
+using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
 using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
@@ -489,6 +490,7 @@ public sealed class RecycleBinController : ControllerBase
     }
 
     [HttpPost("restore")]
+    [Authorize(Policy = PermissionNames.DataBackupRestore)]
     public async Task<ActionResult<RecycleBinMutationResultDto>> Restore(
         [FromBody] RecycleBinMutationRequest request,
         CancellationToken cancellationToken)
@@ -505,7 +507,9 @@ public sealed class RecycleBinController : ControllerBase
 
         foreach (var target in targets)
         {
-            var mutation = await RestoreCoreAsync(target, cancellationToken);
+            var mutation = await TryRecycleBinMutationAsync(
+                () => RestoreCoreAsync(target, cancellationToken),
+                "복원 처리 중 오류가 발생했습니다.");
             result.Messages.Add(mutation.Message);
             result.Results.Add(new RecycleBinMutationItemResultDto
             {
@@ -522,6 +526,7 @@ public sealed class RecycleBinController : ControllerBase
     }
 
     [HttpPost("purge")]
+    [Authorize(Policy = PermissionNames.DataBackupRestore)]
     public async Task<ActionResult<RecycleBinMutationResultDto>> Purge(
         [FromBody] RecycleBinMutationRequest request,
         CancellationToken cancellationToken)
@@ -539,7 +544,9 @@ public sealed class RecycleBinController : ControllerBase
 
         foreach (var target in targets)
         {
-            var mutation = await PurgeCoreAsync(target, cancellationToken);
+            var mutation = await TryRecycleBinMutationAsync(
+                () => PurgeCoreAsync(target, cancellationToken),
+                "영구삭제 처리 중 오류가 발생했습니다.");
             result.Messages.Add(mutation.Message);
             result.Results.Add(new RecycleBinMutationItemResultDto
             {
@@ -553,6 +560,24 @@ public sealed class RecycleBinController : ControllerBase
         }
 
         return Ok(result);
+    }
+
+    private static async Task<(bool Success, string Message)> TryRecycleBinMutationAsync(
+        Func<Task<(bool Success, string Message)>> mutation,
+        string fallbackMessage)
+    {
+        try
+        {
+            return await mutation();
+        }
+        catch (DbUpdateException ex)
+        {
+            return (false, $"{fallbackMessage} {ex.InnerException?.Message ?? ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"{fallbackMessage} {ex.Message}");
+        }
     }
 
     private async Task<(bool Success, string Message)> RestoreCoreAsync(
@@ -981,6 +1006,10 @@ public sealed class RecycleBinController : ControllerBase
         if (!revisionCheck.Success)
             return revisionCheck;
 
+        var activeConflict = await FindActiveRentalAssetRestoreConflictAsync(asset, cancellationToken);
+        if (activeConflict is not null)
+            return (false, $"같은 렌탈 자산 식별값을 가진 활성 자산이 있어 복원할 수 없습니다. 활성 자산: {BuildRentalAssetConflictDisplay(activeConflict)}");
+
         var customerRestored = false;
         if (asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
         {
@@ -1003,6 +1032,36 @@ public sealed class RecycleBinController : ControllerBase
             ? "렌탈 자산을 복원하고 연결된 거래처도 함께 활성화했습니다."
             : "렌탈 자산을 복원했습니다.");
     }
+
+    private async Task<RentalAsset?> FindActiveRentalAssetRestoreConflictAsync(
+        RentalAsset target,
+        CancellationToken cancellationToken)
+    {
+        var candidates = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .Where(current => current.Id != target.Id && !current.IsDeleted)
+            .ToListAsync(cancellationToken);
+
+        return candidates.FirstOrDefault(candidate =>
+            RentalAssetRestoreKeysMatch(candidate.ManagementNumber, target.ManagementNumber) ||
+            RentalAssetRestoreKeysMatch(candidate.ManagementId, target.ManagementId) ||
+            RentalAssetRestoreKeysMatch(candidate.AssetKey, target.AssetKey));
+    }
+
+    private static bool RentalAssetRestoreKeysMatch(string? left, string? right)
+    {
+        var normalizedLeft = (left ?? string.Empty).Trim();
+        var normalizedRight = (right ?? string.Empty).Trim();
+        return !string.IsNullOrWhiteSpace(normalizedLeft) &&
+               string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildRentalAssetConflictDisplay(RentalAsset asset)
+        => JoinSegments(
+            string.IsNullOrWhiteSpace(asset.ManagementNumber) ? null : $"관리번호 {asset.ManagementNumber}",
+            string.IsNullOrWhiteSpace(asset.ManagementId) ? null : $"관리ID {asset.ManagementId}",
+            string.IsNullOrWhiteSpace(asset.AssetKey) ? null : $"자산키 {asset.AssetKey}",
+            string.IsNullOrWhiteSpace(asset.ItemName) ? null : asset.ItemName);
 
     private async Task<(bool Success, string Message)> RestoreRentalBillingLogAsync(RecycleBinMutationTargetDto target, CancellationToken cancellationToken)
     {

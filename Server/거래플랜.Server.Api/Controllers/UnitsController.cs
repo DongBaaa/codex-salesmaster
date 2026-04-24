@@ -1,6 +1,7 @@
-﻿using 거래플랜.Server.Api.Data;
+using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
+using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
@@ -22,6 +23,7 @@ public sealed class UnitsController : ControllerBase
         => Ok(await _dbContext.Units.AsNoTracking().Select(x => x.ToDto()).ToListAsync(cancellationToken));
 
     [HttpPost]
+    [Authorize(Policy = PermissionNames.SettingsEdit)]
     public async Task<ActionResult<UnitDto>> Create([FromBody] UnitDto dto, CancellationToken cancellationToken)
     {
         var entity = new Unit { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
@@ -32,6 +34,7 @@ public sealed class UnitsController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
+    [Authorize(Policy = PermissionNames.SettingsEdit)]
     public async Task<ActionResult<UnitDto>> Update(Guid id, [FromBody] UnitDto dto, CancellationToken cancellationToken)
     {
         var entity = await _dbContext.Units.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
@@ -44,6 +47,7 @@ public sealed class UnitsController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [Authorize(Policy = PermissionNames.SettingsEdit)]
     public async Task<IActionResult> Delete(Guid id, [FromQuery] long? expectedRevision, CancellationToken cancellationToken)
     {
         var entity = await _dbContext.Units.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);

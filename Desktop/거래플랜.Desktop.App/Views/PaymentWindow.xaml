@@ -3,8 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:거래플랜.Desktop.App.Converters"
         Title="수금/지급 입력"
-        Width="920"
-        Height="740" MinWidth="880" MinHeight="700"
+        Width="1080"
+        Height="820" MinWidth="1020" MinHeight="780"
         WindowStartupLocation="CenterOwner"
         ResizeMode="CanResize"
         Background="#151F2E"
@@ -655,7 +655,7 @@
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="일자" Binding="{Binding TransactionDate}" Width="82"/>
                                 <DataGridTextColumn Header="구분" Binding="{Binding TransactionKindDisplay}" Width="84"/>
-                                <DataGridTextColumn Header="연결전표" Binding="{Binding LinkedInvoiceNumber}" Width="108"/>
+                                <DataGridTextColumn Header="거래내역" Binding="{Binding LinkedInvoiceNumber}" Width="108"/>
                                 <DataGridTextColumn Header="수금합계" Binding="{Binding ReceiptTotal, StringFormat={}{0:N0}}" Width="84"/>
                                 <DataGridTextColumn Header="지불합계" Binding="{Binding PaymentTotal, StringFormat={}{0:N0}}" Width="84"/>
                                 <DataGridTextColumn Header="거래내용" Binding="{Binding Note}" Width="*"/>

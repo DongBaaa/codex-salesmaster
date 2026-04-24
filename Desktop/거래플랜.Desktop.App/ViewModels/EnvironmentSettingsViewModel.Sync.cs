@@ -507,6 +507,168 @@ public sealed partial class EnvironmentSettingsViewModel
     }
 
     [RelayCommand]
+    private async Task OpenDataIntegrityAlertAsync()
+    {
+        if (IsBusy)
+            return;
+
+        StatusMessage = "운영 점검 알림을 불러오는 중...";
+        var result = await _dataIntegrity.ScanAsync(_session);
+        if (!result.HasIssues)
+        {
+            var ownerWindow = ResolveActiveWindow();
+            const string noIssuesMessage = "현재 확인된 운영 위험 신호가 없습니다.";
+            if (ownerWindow is not null)
+            {
+                MessageBox.Show(
+                    ownerWindow,
+                    noIssuesMessage,
+                    "운영 점검 알림",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+            else
+            {
+                MessageBox.Show(
+                    noIssuesMessage,
+                    "운영 점검 알림",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+
+            StatusMessage = noIssuesMessage;
+            return;
+        }
+
+        var owner = ResolveActiveWindow();
+        var window = new DataIntegrityAlertWindow
+        {
+            DataContext = new DataIntegrityAlertViewModel(result)
+        };
+
+        if (owner is not null)
+            window.Owner = owner;
+
+        if (window.ShowDialog() == true)
+            await HandleDataIntegrityAlertActionAsync(window.RequestedAction, window.RequestedSummary);
+        else
+            StatusMessage = $"운영 점검 알림 {result.TotalIssueCount:N0}건을 확인했습니다.";
+
+        await RefreshSyncStateAsync();
+    }
+
+    private async Task HandleDataIntegrityAlertActionAsync(DataIntegrityAlertAction action, DataIntegrityIssueSummary? summary)
+    {
+        if (action == DataIntegrityAlertAction.None)
+            return;
+
+        if (action == DataIntegrityAlertAction.Details)
+        {
+            await OpenDataIntegrityIssueWindowAsync(summary?.Code);
+            return;
+        }
+
+        if (action != DataIntegrityAlertAction.Fix)
+            return;
+
+        if (summary is null)
+        {
+            await OpenDataIntegrityIssueWindowAsync(null);
+            return;
+        }
+
+        var scan = await _dataIntegrity.ScanAsync(_session);
+        var issues = scan.Issues
+            .Where(issue => string.Equals(issue.Code, summary.Code, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (issues.Count == 1)
+        {
+            await OpenDataIntegrityFixTargetAsync(issues[0]);
+            return;
+        }
+
+        await OpenDataIntegrityIssueWindowAsync(summary.Code);
+    }
+
+    private async Task OpenDataIntegrityIssueWindowAsync(string? initialCode)
+    {
+        var viewModel = new DataIntegrityIssueViewModel(_dataIntegrity, _session, initialCode);
+        await viewModel.LoadAsync();
+
+        var owner = ResolveActiveWindow();
+        var window = new DataIntegrityIssueWindow(viewModel);
+        if (owner is not null)
+            window.Owner = owner;
+
+        if (window.ShowDialog() == true && window.RequestedIssue is not null)
+            await OpenDataIntegrityFixTargetAsync(window.RequestedIssue);
+        else
+            StatusMessage = string.IsNullOrWhiteSpace(initialCode)
+                ? "운영 점검 상세 창을 열었습니다."
+                : "선택한 운영 점검 유형 상세를 열었습니다.";
+    }
+
+    private async Task OpenDataIntegrityFixTargetAsync(DataIntegrityIssueDetail issue)
+    {
+        var owner = ResolveActiveWindow();
+        switch (issue.DirectActionKind)
+        {
+            case DataIntegrityDirectActionKind.OpenRentalBillingProfile when issue.ProfileId.HasValue:
+            {
+                var billingViewModel = new RentalBillingViewModel(_rental, _local, _session);
+                await billingViewModel.LoadAndSelectProfileAsync(issue.ProfileId.Value);
+                var window = new RentalBillingWindow(billingViewModel);
+                if (owner is not null)
+                    window.Owner = owner;
+
+                window.ShowDialog();
+                StatusMessage = "운영 점검 항목의 렌탈 청구관리 화면을 열었습니다.";
+                break;
+            }
+            case DataIntegrityDirectActionKind.OpenRentalAsset when issue.AssetId.HasValue:
+            case DataIntegrityDirectActionKind.OpenRentalBillingProfile when issue.AssetId.HasValue:
+            {
+                var assetViewModel = new RentalAssetViewModel(_rental, _local, _rentalDocuments, _invoicePrintService, _session);
+                await assetViewModel.LoadAndSelectAssetAsync(issue.AssetId.Value);
+                var window = new RentalAssetWindow(assetViewModel);
+                if (owner is not null)
+                    window.Owner = owner;
+
+                window.ShowDialog();
+                StatusMessage = "운영 점검 항목의 렌탈 자산 화면을 열었습니다.";
+                break;
+            }
+            default:
+                if (owner is not null)
+                {
+                    MessageBox.Show(
+                        owner,
+                        "이 항목은 원본 화면 바로가기를 지원하지 않습니다. 상세 내용을 기준으로 수동 확인하세요.",
+                        "운영 점검",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+                else
+                {
+                    MessageBox.Show(
+                        "이 항목은 원본 화면 바로가기를 지원하지 않습니다. 상세 내용을 기준으로 수동 확인하세요.",
+                        "운영 점검",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+
+                StatusMessage = "운영 점검 상세에서 수동 확인이 필요한 항목입니다.";
+                break;
+        }
+    }
+
+    private static Window? ResolveActiveWindow()
+        => Application.Current?.Windows
+            .OfType<Window>()
+            .FirstOrDefault(window => window.IsActive)
+            ?? Application.Current?.MainWindow;
+
+    [RelayCommand]
     private async Task RunFullResyncAsync()
     {
         if (IsBusy)

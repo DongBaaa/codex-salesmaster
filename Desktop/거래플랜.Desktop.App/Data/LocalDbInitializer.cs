@@ -37,11 +37,12 @@ private const string MergeDuplicateRentalBillingProfilesStepKey = "Migration.Mer
 private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Migration.MergeDuplicateRentalBillingProfiles.PostLinkage.v3";
     private const string MergeDuplicateRentalAssetsStepKey = "Migration.MergeDuplicateRentalAssets.v2";
     private const string MergeDuplicateCompanyProfilesStepKey = "Migration.MergeDuplicateCompanyProfiles.v1";
-    private const string RepairRentalCustomerLinkageStepKey = "Migration.RepairRentalCustomerLinkage.v8";
+    private const string RepairRentalCustomerLinkageStepKey = "Migration.RepairRentalCustomerLinkage.v10";
     private const string NormalizeCaseVariantItemIdsStepKey = "Migration.NormalizeCaseVariantItemIds.v1";
     private const string MergeDuplicateItemsStepKey = "Migration.MergeDuplicateItems.v3";
     private const string NormalizeRentalBillingScheduleRulesStepKey = "Migration.NormalizeRentalBillingScheduleRules.v2";
     private const string CleanupDeletedInvoiceChainStepKey = "Migration.CleanupDeletedInvoiceChain.v1";
+    private const string NormalizeRentalAssetActiveUniqueIndexesStepKey = "Migration.NormalizeRentalAssetActiveUniqueIndexes.v1";
     private const string BackfillItemScopeFieldsStepKey = "Migration.BackfillItemScopeFields.v1";
     private const string BackfillItemOperationalFieldsStepKey = "Migration.BackfillItemOperationalFields.v1";
     private const string BackfillOperationalOwnerOfficeFieldsStepKey = "Migration.BackfillOperationalOwnerOfficeFields.v1";
@@ -160,6 +161,10 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             db,
             MergeDuplicateRentalAssetsStepKey,
             async () => await MergeDuplicateRentalAssetsAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeRentalAssetActiveUniqueIndexesStepKey,
+            async () => await NormalizeRentalAssetActiveUniqueIndexesAsync(db));
         await RunStartupMaintenanceStepAsync(
             db,
             MergeDuplicateCompanyProfilesStepKey,
@@ -3257,12 +3262,29 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                                );
                                """;
             await db.Database.ExecuteSqlRawAsync(sql);
-            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_AssetKey\" ON \"RentalAssets\" (\"AssetKey\");");
-            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"ManagementId\") WHERE TRIM(\"ManagementId\") <> '';");
-            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"ManagementNumber\") WHERE TRIM(\"ManagementNumber\") <> '';");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_AssetKey\" ON \"RentalAssets\" (\"AssetKey\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"AssetKey\"), '') <> '';");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"ManagementId\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementId\"), '') <> '';");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"ManagementNumber\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementNumber\"), '') <> '';");
         }
         catch
         {
+        }
+    }
+
+    private static async Task NormalizeRentalAssetActiveUniqueIndexesAsync(LocalDbContext db)
+    {
+        try
+        {
+            await TryCreateIndexAsync(db, "DROP INDEX IF EXISTS \"IX_RentalAssets_AssetKey\";");
+            await TryCreateIndexAsync(db, "DROP INDEX IF EXISTS \"IX_RentalAssets_ManagementId\";");
+            await TryCreateIndexAsync(db, "DROP INDEX IF EXISTS \"IX_RentalAssets_ManagementNumber\";");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_AssetKey\" ON \"RentalAssets\" (\"AssetKey\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"AssetKey\"), '') <> '';");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"ManagementId\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementId\"), '') <> '';");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"ManagementNumber\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementNumber\"), '') <> '';");
+        }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(NormalizeRentalAssetActiveUniqueIndexesAsync), ex);
         }
     }
 

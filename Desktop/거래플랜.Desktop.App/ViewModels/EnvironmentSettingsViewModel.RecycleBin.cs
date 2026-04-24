@@ -317,11 +317,23 @@ public sealed partial class EnvironmentSettingsViewModel
             var failures = new List<string>();
             foreach (var entry in actionEntries)
             {
-                var result = await _local.RestoreRecycleBinEntryAsync(entry.Kind, entry.EntityId, _session);
-                if (result.Success)
-                    succeeded++;
-                else
-                    failures.Add($"{entry.KindText} · {entry.Title}: {result.Message}");
+                try
+                {
+                    var result = await _local.RestoreRecycleBinEntryAsync(entry.Kind, entry.EntityId, _session);
+                    if (result.Success)
+                    {
+                        await _local.MarkRecycleBinServerMutationCleanAsync(entry.Kind, entry.EntityId);
+                        succeeded++;
+                    }
+                    else
+                    {
+                        failures.Add($"{entry.KindText} · {entry.Title}: {result.Message}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{entry.KindText} · {entry.Title}: 로컬 복원 반영 실패 - {ex.InnerException?.Message ?? ex.Message}");
+                }
             }
 
             failures.AddRange(serverMirror.Failures);
@@ -359,11 +371,23 @@ public sealed partial class EnvironmentSettingsViewModel
             var succeeded = 0;
             foreach (var entry in actionEntries)
             {
-                var result = await _local.ApplyServerPurgeRecycleBinEntryAsync(entry.Kind, entry.EntityId);
-                if (result.Success)
-                    succeeded++;
-                else
-                    failures.Add($"{entry.KindText} · {entry.Title}: {result.Message}");
+                try
+                {
+                    var result = await _local.ApplyServerPurgeRecycleBinEntryAsync(entry.Kind, entry.EntityId);
+                    if (result.Success)
+                    {
+                        await _local.MarkRecycleBinServerMutationCleanAsync(entry.Kind, entry.EntityId);
+                        succeeded++;
+                    }
+                    else
+                    {
+                        failures.Add($"{entry.KindText} · {entry.Title}: {result.Message}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{entry.KindText} · {entry.Title}: 로컬 영구삭제 반영 실패 - {ex.InnerException?.Message ?? ex.Message}");
+                }
             }
 
             failures.AddRange(serverMirror.Failures);
