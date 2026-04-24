@@ -5987,11 +5987,54 @@ public sealed class SyncService : IDisposable
             if (!TryParseRecycleBinEntityKind(kind, out var entityKind))
                 continue;
 
+            if (await IsPurgeRecordSupersededByActiveLocalEntityAsync(entityKind, dto.EntityId, dto.Revision, ct))
+            {
+                AppLogger.Info("SYNC", $"서버 영구삭제 기록 무시: 더 최신 활성 로컬 엔티티가 존재합니다. {kind} / {dto.EntityId:D}");
+                continue;
+            }
+
             var result = await _local.ApplyServerPurgeRecycleBinEntryAsync(entityKind, dto.EntityId, ct);
             if (!result.Success && !result.NotFound)
                 AppLogger.Warn("SYNC", $"서버 영구삭제 반영 실패: {kind} / {dto.EntityId:D} / {result.Message}");
         }
     }
+
+    private Task<bool> IsPurgeRecordSupersededByActiveLocalEntityAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        long purgeRevision,
+        CancellationToken ct)
+        => kind switch
+        {
+            RecycleBinEntityKind.Customer => HasActiveLocalEntityNewerThanPurgeAsync(_db.Customers, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.CustomerContract => HasActiveLocalEntityNewerThanPurgeAsync(_db.CustomerContracts, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.Item => HasActiveLocalEntityNewerThanPurgeAsync(_db.Items, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.CompanyProfile => HasActiveLocalEntityNewerThanPurgeAsync(_db.CompanyProfiles, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.PriceGradeOption => HasActiveLocalEntityNewerThanPurgeAsync(_db.PriceGradeOptions, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.TradeTypeOption => HasActiveLocalEntityNewerThanPurgeAsync(_db.TradeTypeOptions, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.ItemCategoryOption => HasActiveLocalEntityNewerThanPurgeAsync(_db.ItemCategoryOptions, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.Invoice => HasActiveLocalEntityNewerThanPurgeAsync(_db.Invoices, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.Payment => HasActiveLocalEntityNewerThanPurgeAsync(_db.Payments, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.Transaction => HasActiveLocalEntityNewerThanPurgeAsync(_db.Transactions, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.InventoryTransfer => HasActiveLocalEntityNewerThanPurgeAsync(_db.InventoryTransfers, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.RentalManagementCompany => HasActiveLocalEntityNewerThanPurgeAsync(_db.RentalManagementCompanies, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.RentalBillingProfile => HasActiveLocalEntityNewerThanPurgeAsync(_db.RentalBillingProfiles, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.RentalAsset => HasActiveLocalEntityNewerThanPurgeAsync(_db.RentalAssets, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.RentalBillingLog => HasActiveLocalEntityNewerThanPurgeAsync(_db.RentalBillingLogs, entityId, purgeRevision, ct),
+            _ => Task.FromResult(false)
+        };
+
+    private static Task<bool> HasActiveLocalEntityNewerThanPurgeAsync<TEntity>(
+        DbSet<TEntity> set,
+        Guid entityId,
+        long purgeRevision,
+        CancellationToken ct)
+        where TEntity : class, ILocalSyncEntity
+        => set.IgnoreQueryFilters().AnyAsync(entity =>
+            entity.Id == entityId &&
+            !entity.IsDeleted &&
+            entity.Revision > purgeRevision,
+            ct);
 
     private static string NormalizePurgeRecordKind(string? value)
         => (value ?? string.Empty).Trim().ToLowerInvariant();
@@ -6005,12 +6048,24 @@ public sealed class SyncService : IDisposable
             "rentalbillinglog" => 2,
             "contract" => 3,
             "invoice" => 4,
+            "inventory-transfer" => 4,
+            "inventorytransfer" => 4,
             "rental-asset" => 5,
             "rentalasset" => 5,
             "item" => 6,
             "rental-billing-profile" => 7,
             "rentalbillingprofile" => 7,
+            "rental-management-company" => 7,
+            "rentalmanagementcompany" => 7,
             "customer" => 8,
+            "company-profile" => 9,
+            "companyprofile" => 9,
+            "price-grade-option" => 10,
+            "pricegradeoption" => 10,
+            "trade-type-option" => 10,
+            "tradetypeoption" => 10,
+            "item-category-option" => 10,
+            "itemcategoryoption" => 10,
             _ => 99
         };
 
@@ -6027,6 +6082,22 @@ public sealed class SyncService : IDisposable
             case "item":
                 kind = RecycleBinEntityKind.Item;
                 return true;
+            case "companyprofile":
+            case "company-profile":
+                kind = RecycleBinEntityKind.CompanyProfile;
+                return true;
+            case "pricegradeoption":
+            case "price-grade-option":
+                kind = RecycleBinEntityKind.PriceGradeOption;
+                return true;
+            case "tradetypeoption":
+            case "trade-type-option":
+                kind = RecycleBinEntityKind.TradeTypeOption;
+                return true;
+            case "itemcategoryoption":
+            case "item-category-option":
+                kind = RecycleBinEntityKind.ItemCategoryOption;
+                return true;
             case "invoice":
                 kind = RecycleBinEntityKind.Invoice;
                 return true;
@@ -6035,6 +6106,14 @@ public sealed class SyncService : IDisposable
                 return true;
             case "transaction":
                 kind = RecycleBinEntityKind.Transaction;
+                return true;
+            case "inventorytransfer":
+            case "inventory-transfer":
+                kind = RecycleBinEntityKind.InventoryTransfer;
+                return true;
+            case "rentalmanagementcompany":
+            case "rental-management-company":
+                kind = RecycleBinEntityKind.RentalManagementCompany;
                 return true;
             case "rentalbillingprofile":
             case "rental-billing-profile":

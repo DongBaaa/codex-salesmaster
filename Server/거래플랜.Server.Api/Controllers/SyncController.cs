@@ -117,12 +117,15 @@ public sealed class SyncController : ControllerBase
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             Payments = await _officeScopeService.ApplyPaymentScope(_dbContext.Payments.IgnoreQueryFilters().Include(x => x.Invoice).ThenInclude(invoice => invoice!.Customer).AsNoTracking())
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            PurgeRecords = (await _dbContext.RecycleBinPurgeRecords
-                    .AsNoTracking()
-                    .Where(x => x.Revision > sinceRev)
-                    .OrderBy(x => x.Revision)
-                    .ToListAsync(cancellationToken))
-                .Where(x => _officeScopeService.CanReadOffice(x.OfficeCode, x.TenantCode))
+            PurgeRecords = (await FilterSupersededPurgeRecordsAsync(
+                    (await _dbContext.RecycleBinPurgeRecords
+                        .AsNoTracking()
+                        .Where(x => x.Revision > sinceRev)
+                        .OrderBy(x => x.Revision)
+                        .ToListAsync(cancellationToken))
+                    .Where(x => _officeScopeService.CanReadOffice(x.OfficeCode, x.TenantCode))
+                    .ToList(),
+                    cancellationToken))
                 .Select(x => x.ToDto())
                 .ToList()
         };
@@ -241,7 +244,10 @@ public sealed class SyncController : ControllerBase
             await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
                 (e, d) => e.Apply(d), d => new Item { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
             if (scopedItems.Count > 0)
+            {
                 await _dbContext.SaveChangesAsync(cancellationToken);
+                await RemoveSupersededPurgeRecordsAsync("item", scopedItems, cancellationToken);
+            }
             await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], result, cancellationToken);
             var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
             await UpsertInvoicesAsync(validInvoices, result, deviceId, cancellationToken);
@@ -3886,6 +3892,97 @@ public sealed class SyncController : ControllerBase
             entity.FileContent = [];
         }
     }
+
+    private async Task RemoveSupersededPurgeRecordsAsync<TDto>(
+        string kind,
+        IEnumerable<TDto> payload,
+        CancellationToken cancellationToken)
+        where TDto : SyncEntityDto
+    {
+        var normalizedKind = NormalizePurgeRecordKind(kind);
+        var activeIds = payload
+            .Where(current => current.Id != Guid.Empty && !current.IsDeleted)
+            .Select(current => current.Id)
+            .Distinct()
+            .ToList();
+        if (activeIds.Count == 0)
+            return;
+
+        await _dbContext.RecycleBinPurgeRecords
+            .Where(current => current.Kind == normalizedKind && activeIds.Contains(current.EntityId))
+            .ExecuteDeleteAsync(cancellationToken);
+    }
+
+    private async Task<List<RecycleBinPurgeRecord>> FilterSupersededPurgeRecordsAsync(
+        IReadOnlyList<RecycleBinPurgeRecord> records,
+        CancellationToken cancellationToken)
+    {
+        if (records.Count == 0)
+            return [];
+
+        var filtered = new List<RecycleBinPurgeRecord>(records.Count);
+        foreach (var record in records)
+        {
+            if (await IsPurgeRecordSupersededByActiveEntityAsync(record, cancellationToken))
+                continue;
+
+            filtered.Add(record);
+        }
+
+        return filtered;
+    }
+
+    private Task<bool> IsPurgeRecordSupersededByActiveEntityAsync(
+        RecycleBinPurgeRecord record,
+        CancellationToken cancellationToken)
+    {
+        if (record.EntityId == Guid.Empty)
+            return Task.FromResult(false);
+
+        return NormalizePurgeRecordKind(record.Kind) switch
+        {
+            "customer" => HasActiveEntityNewerThanPurgeAsync(_dbContext.Customers.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "contract" => HasActiveEntityNewerThanPurgeAsync(_dbContext.CustomerContracts.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "item" => HasActiveEntityNewerThanPurgeAsync(_dbContext.Items.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "company-profile" => HasActiveEntityNewerThanPurgeAsync(_dbContext.CompanyProfiles.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "companyprofile" => HasActiveEntityNewerThanPurgeAsync(_dbContext.CompanyProfiles.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "price-grade-option" => HasActiveEntityNewerThanPurgeAsync(_dbContext.PriceGradeOptions.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "pricegradeoption" => HasActiveEntityNewerThanPurgeAsync(_dbContext.PriceGradeOptions.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "trade-type-option" => HasActiveEntityNewerThanPurgeAsync(_dbContext.TradeTypeOptions.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "tradetypeoption" => HasActiveEntityNewerThanPurgeAsync(_dbContext.TradeTypeOptions.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "item-category-option" => HasActiveEntityNewerThanPurgeAsync(_dbContext.ItemCategoryOptions.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "itemcategoryoption" => HasActiveEntityNewerThanPurgeAsync(_dbContext.ItemCategoryOptions.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "invoice" => HasActiveEntityNewerThanPurgeAsync(_dbContext.Invoices.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "payment" => HasActiveEntityNewerThanPurgeAsync(_dbContext.Payments.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "transaction" => HasActiveEntityNewerThanPurgeAsync(_dbContext.Transactions.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "inventory-transfer" => HasActiveEntityNewerThanPurgeAsync(_dbContext.InventoryTransfers.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "inventorytransfer" => HasActiveEntityNewerThanPurgeAsync(_dbContext.InventoryTransfers.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "rental-management-company" => HasActiveEntityNewerThanPurgeAsync(_dbContext.RentalManagementCompanies.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "rentalmanagementcompany" => HasActiveEntityNewerThanPurgeAsync(_dbContext.RentalManagementCompanies.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "rental-billing-profile" => HasActiveEntityNewerThanPurgeAsync(_dbContext.RentalBillingProfiles.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "rentalbillingprofile" => HasActiveEntityNewerThanPurgeAsync(_dbContext.RentalBillingProfiles.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "rental-asset" => HasActiveEntityNewerThanPurgeAsync(_dbContext.RentalAssets.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "rentalasset" => HasActiveEntityNewerThanPurgeAsync(_dbContext.RentalAssets.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "rental-billing-log" => HasActiveEntityNewerThanPurgeAsync(_dbContext.RentalBillingLogs.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "rentalbillinglog" => HasActiveEntityNewerThanPurgeAsync(_dbContext.RentalBillingLogs.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            _ => Task.FromResult(false)
+        };
+    }
+
+    private static Task<bool> HasActiveEntityNewerThanPurgeAsync<TEntity>(
+        IQueryable<TEntity> query,
+        Guid entityId,
+        long purgeRevision,
+        CancellationToken cancellationToken)
+        where TEntity : TrackedEntity
+        => query.AnyAsync(entity =>
+            entity.Id == entityId &&
+            !entity.IsDeleted &&
+            entity.Revision > purgeRevision,
+            cancellationToken);
+
+    private static string NormalizePurgeRecordKind(string? kind)
+        => (kind ?? string.Empty).Trim().ToLowerInvariant();
 
     private async Task<long> GetCurrentRevisionAsync(CancellationToken cancellationToken)
     {
