@@ -13,6 +13,7 @@ public sealed record VersionChangeMaintenanceResult(
 public static class VersionChangeMaintenanceService
 {
     private const string LastProcessedVersionSettingKey = "System.LastPostUpdateMaintenanceVersion";
+    private static readonly Version FullMirrorRefreshBaselineVersion = new(1, 1, 172);
     private static readonly string[] TransientSettingPrefixes =
     [
         "Rental.BillingEditorDraft",
@@ -47,7 +48,9 @@ public static class VersionChangeMaintenanceService
 
         await local.ClearInvalidOfficeSyncCredentialsAsync();
         var normalizedSharedOptionIdCount = await local.NormalizeSharedOptionIdCasingAsync(ct);
-        await local.MarkServerMirrorRefreshRequiredAsync(ct);
+        var requiresFullMirrorRefresh = RequiresFullMirrorRefreshAfterVersionChange(lastProcessedVersion);
+        if (requiresFullMirrorRefresh)
+            await local.MarkServerMirrorRefreshRequiredAsync(ct);
 
         var deletedTempFileCount = 0;
         deletedTempFileCount += CleanupFilesOlderThan(AppPaths.CustomerContractPreviewDir, TimeSpan.FromDays(7));
@@ -61,7 +64,9 @@ public static class VersionChangeMaintenanceService
             + (backupCreated ? " 시작 전 DB 백업도 생성했습니다." : " 시작 전 DB 백업은 생성하지 못했습니다.")
             + (clearedSettingCount > 0 ? $" 임시 draft 설정 {clearedSettingCount:N0}건을 정리했습니다." : string.Empty)
             + (normalizedSharedOptionIdCount > 0 ? $" 공유 선택옵션 ID 표기 {normalizedSharedOptionIdCount:N0}건을 정리했습니다." : string.Empty)
-            + " 다음 동기화에서 중앙 서버 기준 전체 캐시를 1회 다시 받아 범위 불일치 데이터를 정리합니다."
+            + (requiresFullMirrorRefresh
+                ? " 다음 동기화에서 중앙 서버 기준 전체 캐시를 1회 다시 받아 범위 불일치 데이터를 정리합니다."
+                : " 중앙 서버 기준 전체 캐시 재동기화는 이미 적용된 기준 버전에서 완료되어 이번 정비에서는 생략했습니다.")
             + (deletedTempFileCount > 0 ? $" 오래된 임시 파일 {deletedTempFileCount:N0}건을 정리했습니다." : string.Empty);
 
         return new VersionChangeMaintenanceResult(
@@ -70,6 +75,17 @@ public static class VersionChangeMaintenanceService
             ClearedSettingCount: clearedSettingCount,
             DeletedTempFileCount: deletedTempFileCount,
             Message: message);
+    }
+
+    private static bool RequiresFullMirrorRefreshAfterVersionChange(string? lastProcessedVersion)
+    {
+        if (string.IsNullOrWhiteSpace(lastProcessedVersion))
+            return true;
+
+        if (!Version.TryParse(lastProcessedVersion.Trim(), out var parsedLastProcessedVersion))
+            return true;
+
+        return parsedLastProcessedVersion.CompareTo(FullMirrorRefreshBaselineVersion) < 0;
     }
 
     private static int CleanupFilesOlderThan(string rootPath, TimeSpan retention)

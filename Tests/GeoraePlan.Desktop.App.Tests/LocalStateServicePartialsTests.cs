@@ -29,6 +29,25 @@ public sealed class LocalStateServicePartialsTests
         Assert.Equal("ITWORLD", summary.PrimaryBucket?.ScopeDisplayName);
     }
 
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("", true)]
+    [InlineData("1.1.171", true)]
+    [InlineData("1.1.172", false)]
+    [InlineData("1.1.173", false)]
+    [InlineData("invalid", true)]
+    public void VersionChangeMaintenance_FullMirrorRefresh_RunsOnlyBeforeBaselineVersion(
+        string? lastProcessedVersion,
+        bool expected)
+    {
+        var actual = InvokePrivateStatic<bool>(
+            typeof(VersionChangeMaintenanceService),
+            "RequiresFullMirrorRefreshAfterVersionChange",
+            new object?[] { lastProcessedVersion });
+
+        Assert.Equal(expected, actual);
+    }
+
     [Fact]
     public void SalesViewModel_CalculateTaxInclusiveTotals_DoesNotAddVatOnTop()
     {

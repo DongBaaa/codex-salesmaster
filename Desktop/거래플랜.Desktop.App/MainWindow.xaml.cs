@@ -204,11 +204,6 @@ public partial class MainWindow : Window
                 MessageBoxImage.Information);
         }
 
-        await OperationTiming.MeasureAsync(
-            "UPDATE",
-            "데스크톱 업데이트 확인",
-            () => CheckAndPromptForDesktopUpdateAsync(),
-            warningThreshold: TimeSpan.FromSeconds(2));
         if (serverClockCheck.WarningRequired && !string.IsNullOrWhiteSpace(serverClockCheck.WarningMessage))
         {
             MessageBox.Show(
@@ -220,11 +215,52 @@ public partial class MainWindow : Window
         }
 
         _isInitialized = true;
+        QueueDeferredStartupSafetyChecks();
+    }
+
+    private void QueueDeferredStartupSafetyChecks()
+    {
+        UiTaskHelper.Forget(
+            RunDeferredStartupSafetyChecksAsync(),
+            "APP",
+            "메인 화면 후속 안전 점검",
+            ex => AppLogger.Warn("APP", $"메인 화면 후속 안전 점검 실패: {ex.Message}"));
+    }
+
+    private async Task RunDeferredStartupSafetyChecksAsync()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        await WaitForInitialSyncIdleAsync(TimeSpan.FromSeconds(20));
+
+        if (_isClosingOrClosed)
+            return;
+
+        await OperationTiming.MeasureAsync(
+            "UPDATE",
+            "데스크톱 업데이트 확인",
+            () => CheckAndPromptForDesktopUpdateAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
+
+        if (_isClosingOrClosed)
+            return;
+
         await OperationTiming.MeasureAsync(
             "APP",
             "주기 안전 점검 초기 실행",
             () => RunPeriodicRuntimeSafetyCheckAsync(force: false),
             warningThreshold: TimeSpan.FromSeconds(2));
+    }
+
+    private async Task WaitForInitialSyncIdleAsync(TimeSpan maxWait)
+    {
+        var startedAtUtc = DateTime.UtcNow;
+        while (!_isClosingOrClosed
+               && !_session.IsOfflineMode
+               && _sync.HasActiveOrQueuedSync
+               && DateTime.UtcNow - startedAtUtc < maxWait)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+        }
     }
 
     private async Task<DateOnly> ResolveServerTodayAsync()

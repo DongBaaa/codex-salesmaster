@@ -1,0 +1,16 @@
+﻿{
+  "safety": {
+    "backupConfirmed": false,
+    "backupConfirmedAt": "",
+    "restorePossible": false,
+    "approvedBy": "",
+    "notes": "운영 쓰기 검증은 승인 대상의 비고/메모성 필드만 최소 변경 후 즉시 원복합니다. 수량, 금액, 상태, 세액, 라인, 잔액 필드는 별도 승인 없이는 금지합니다."
+  },
+  "customers": [],
+  "items": [],
+  "invoices": [],
+  "payments": [],
+  "rentalAssets": [],
+  "rentalBillingProfiles": [],
+  "inventoryTransfers": []
+}

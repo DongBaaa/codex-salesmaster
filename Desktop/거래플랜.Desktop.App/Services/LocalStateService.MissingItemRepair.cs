@@ -132,18 +132,22 @@ public sealed partial class LocalStateService
             candidates[transferCandidate.ItemId] = transferCandidate;
         }
 
-        var stockTotals = await _db.ItemWarehouseStocks
+        var stockRows = await _db.ItemWarehouseStocks
             .AsNoTracking()
+            .Select(stock => new { stock.ItemId, stock.Quantity })
+            .ToListAsync(ct);
+        var stockTotals = stockRows
             .GroupBy(stock => stock.ItemId)
-            .Select(group => new { ItemId = group.Key, Quantity = group.Sum(stock => stock.Quantity) })
-            .ToDictionaryAsync(row => row.ItemId, row => row.Quantity, ct);
+            .ToDictionary(group => group.Key, group => group.Sum(stock => stock.Quantity));
 
-        var movementTotals = await _db.InventoryMovements
+        var movementRows = await _db.InventoryMovements
             .AsNoTracking()
             .Where(movement => movement.ItemId.HasValue)
-            .GroupBy(movement => movement.ItemId!.Value)
-            .Select(group => new { ItemId = group.Key, Quantity = group.Sum(movement => movement.QuantityDelta) })
-            .ToDictionaryAsync(row => row.ItemId, row => row.Quantity, ct);
+            .Select(movement => new { ItemId = movement.ItemId!.Value, movement.QuantityDelta })
+            .ToListAsync(ct);
+        var movementTotals = movementRows
+            .GroupBy(movement => movement.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(movement => movement.QuantityDelta));
 
         var missingReferenceIds = referencedItemIds
             .Where(itemId => !activeItemIds.Contains(itemId))

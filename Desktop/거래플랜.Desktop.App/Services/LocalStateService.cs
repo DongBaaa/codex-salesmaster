@@ -1794,7 +1794,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public Task<List<LocalInvoice>> GetInvoicesWithOptionsAsync(DateOnly? from, DateOnly? to, Guid? customerId, bool latestOnly, CancellationToken ct = default(CancellationToken))
 	{
-		IQueryable<LocalInvoice> source = _db.Invoices.Include((LocalInvoice i) => i.Lines.Where((LocalInvoiceLine l) => !l.IsDeleted)).Include((LocalInvoice i) => i.Payments.Where((LocalPayment p) => !p.IsDeleted)).AsNoTracking();
+		IQueryable<LocalInvoice> source = _db.Invoices.Include((LocalInvoice i) => i.Lines.Where((LocalInvoiceLine l) => !l.IsDeleted)).Include((LocalInvoice i) => i.Payments.Where((LocalPayment p) => !p.IsDeleted)).AsSplitQuery().AsNoTracking();
 		if (latestOnly)
 		{
 			source = source.Where((LocalInvoice i) => i.IsLatestVersion);
@@ -1818,7 +1818,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public Task<List<LocalInvoice>> GetInvoicesWithOptionsAsync(DateOnly? from, DateOnly? to, Guid? customerId, bool latestOnly, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
-		IQueryable<LocalInvoice> query = _db.Invoices.Include((LocalInvoice i) => i.Lines.Where((LocalInvoiceLine l) => !l.IsDeleted)).Include((LocalInvoice i) => i.Payments.Where((LocalPayment p) => !p.IsDeleted)).AsNoTracking();
+		IQueryable<LocalInvoice> query = _db.Invoices.Include((LocalInvoice i) => i.Lines.Where((LocalInvoiceLine l) => !l.IsDeleted)).Include((LocalInvoice i) => i.Payments.Where((LocalPayment p) => !p.IsDeleted)).AsSplitQuery().AsNoTracking();
 		query = ApplyInvoiceScope(query, session);
 		if (latestOnly)
 		{
@@ -1845,7 +1845,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	{
 		string officeFilterText = (responsibleOfficeCode ?? string.Empty).Trim();
 		string normalizedOfficeCode = (string.IsNullOrWhiteSpace(officeFilterText) ? string.Empty : NormalizeOfficeCode(officeFilterText, DomainConstants.OfficeYeonsu));
-		IQueryable<LocalInvoice> query = from invoice in _db.Invoices.Include((LocalInvoice invoice) => invoice.Lines.Where((LocalInvoiceLine line) => !line.IsDeleted)).Include((LocalInvoice invoice) => invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted)).AsNoTracking()
+		IQueryable<LocalInvoice> query = from invoice in _db.Invoices.Include((LocalInvoice invoice) => invoice.Lines.Where((LocalInvoiceLine line) => !line.IsDeleted)).Include((LocalInvoice invoice) => invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted)).AsSplitQuery().AsNoTracking()
 			where !invoice.IsDeleted && invoice.IsLatestVersion && invoice.IsConfirmed && (int)invoice.VoucherType == 0
 			select invoice;
 		if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
@@ -1884,7 +1884,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	{
 		string officeFilterText = (responsibleOfficeCode ?? string.Empty).Trim();
 		string normalizedOfficeCode = (string.IsNullOrWhiteSpace(officeFilterText) ? string.Empty : NormalizeOfficeCode(officeFilterText, DomainConstants.OfficeYeonsu));
-		IQueryable<LocalInvoice> query = from invoice in _db.Invoices.Include((LocalInvoice invoice) => invoice.Lines.Where((LocalInvoiceLine line) => !line.IsDeleted)).Include((LocalInvoice invoice) => invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted)).AsNoTracking()
+		IQueryable<LocalInvoice> query = from invoice in _db.Invoices.Include((LocalInvoice invoice) => invoice.Lines.Where((LocalInvoiceLine line) => !line.IsDeleted)).Include((LocalInvoice invoice) => invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted)).AsSplitQuery().AsNoTracking()
 			where !invoice.IsDeleted && invoice.IsLatestVersion && invoice.IsConfirmed && ((int)invoice.VoucherType == 0 || (int)invoice.VoucherType == 1 || (int)invoice.VoucherType == 2)
 			select invoice;
 		if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
@@ -1915,7 +1915,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<LocalInvoice?> GetInvoiceAsync(Guid id, CancellationToken ct = default(CancellationToken))
 	{
-		return await _db.Invoices.Include((LocalInvoice i) => i.Lines.Where((LocalInvoiceLine l) => !l.IsDeleted)).Include((LocalInvoice i) => i.Payments.Where((LocalPayment p) => !p.IsDeleted)).AsNoTracking()
+		return await _db.Invoices.Include((LocalInvoice i) => i.Lines.Where((LocalInvoiceLine l) => !l.IsDeleted)).Include((LocalInvoice i) => i.Payments.Where((LocalPayment p) => !p.IsDeleted)).AsSplitQuery().AsNoTracking()
 			.FirstOrDefaultAsync((LocalInvoice i) => i.Id == id, ct);
 	}
 
@@ -1933,7 +1933,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			versionGroupId = ((invoice.VersionGroupId == Guid.Empty) ? invoice.Id : invoice.VersionGroupId);
 		}
-		return await (from i in _db.Invoices.Include((LocalInvoice i) => i.Lines.Where((LocalInvoiceLine l) => !l.IsDeleted)).Include((LocalInvoice i) => i.Payments.Where((LocalPayment p) => !p.IsDeleted)).AsNoTracking()
+		return await (from i in _db.Invoices.Include((LocalInvoice i) => i.Lines.Where((LocalInvoiceLine l) => !l.IsDeleted)).Include((LocalInvoice i) => i.Payments.Where((LocalPayment p) => !p.IsDeleted)).AsSplitQuery().AsNoTracking()
 			where i.VersionGroupId == versionGroupId || (i.VersionGroupId == Guid.Empty && i.Id == versionGroupId)
 			orderby i.VersionNumber descending, i.UpdatedAtUtc descending
 			select i).ToListAsync(ct);
