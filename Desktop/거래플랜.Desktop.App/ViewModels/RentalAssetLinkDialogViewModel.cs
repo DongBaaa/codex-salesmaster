@@ -20,6 +20,7 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private bool _includeRelinkTargets = true;
+    [ObservableProperty] private bool _includeOtherOfficeAssets = true;
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _statusMessage = "설치현황 장비를 불러오는 중입니다.";
     [ObservableProperty] private RentalBillingAssetOption? _selectedAsset;
@@ -53,6 +54,14 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
 
     partial void OnIncludeRelinkTargetsChanged(bool value) => ApplyFilter();
 
+    partial void OnIncludeOtherOfficeAssetsChanged(bool value)
+    {
+        UiTaskHelper.Forget(
+            LoadAsync(),
+            "RENTAL",
+            "렌탈 자산 연결 후보 다시 불러오기");
+    }
+
     public async Task LoadAsync(CancellationToken ct = default)
     {
         IsBusy = true;
@@ -64,6 +73,7 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
                 _currentCustomerName,
                 _currentOfficeCode,
                 _session,
+                IncludeOtherOfficeAssets,
                 ct);
 
             _assetPool.Clear();
@@ -93,6 +103,9 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
                         ? "미연결"
                         : candidate.CurrentBillingProfileDisplay,
                     ResponsibleOfficeName = candidate.ResponsibleOfficeName,
+                    ManagementCompanyName = candidate.ManagementCompanyName,
+                    AssetScopeDisplay = candidate.AssetScopeDisplay,
+                    IsOutsideCurrentOffice = candidate.IsOutsideCurrentOffice,
                     Notes = source.Notes ?? string.Empty,
                     MonthlyFee = source.MonthlyFee,
                     ContractStartDate = ToDateTime(source.ContractStartDate ?? source.InstallDate ?? source.ContractDate),
@@ -116,7 +129,7 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
             SelectedAsset = Assets.FirstOrDefault(asset => asset.IsSelected) ?? Assets.FirstOrDefault();
             StatusMessage = _assetPool.Count == 0
                 ? "연결 가능한 설치현황 장비가 없습니다."
-                : $"설치현황 자산 {_assetPool.Count:N0}대를 불러왔습니다. 시리얼번호/관리번호/거래처명으로 바로 검색할 수 있습니다.";
+                : $"설치현황 자산 {_assetPool.Count:N0}대를 불러왔습니다. {BuildScopeStatusSuffix()} 시리얼번호/관리번호/거래처명으로 바로 검색할 수 있습니다.";
         }
         finally
         {
@@ -151,8 +164,8 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
         StatusMessage = _assetPool.Count == 0
             ? "연결 가능한 설치현황 장비가 없습니다."
             : SelectedCount > 0
-                ? $"선택 장비 {SelectedCount:N0}대를 현재 거래처에 연결할 예정입니다."
-                : $"표시 장비 {Assets.Count:N0}대 / 전체 {_assetPool.Count:N0}대";
+                ? $"선택 장비 {SelectedCount:N0}대를 현재 거래처에 연결할 예정입니다. {BuildScopeStatusSuffix()}"
+                : $"표시 장비 {Assets.Count:N0}대 / 전체 {_assetPool.Count:N0}대 ({BuildScopeStatusSuffix()})";
         OnPropertyChanged(nameof(SelectedCount));
         OnPropertyChanged(nameof(CanConfirm));
     }
@@ -171,7 +184,9 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
                (asset.CurrentCustomerName ?? string.Empty).Contains(keyword, StringComparison.CurrentCultureIgnoreCase) ||
                (asset.InstallLocation ?? string.Empty).Contains(keyword, StringComparison.CurrentCultureIgnoreCase) ||
                (asset.CurrentBillingProfileDisplay ?? string.Empty).Contains(keyword, StringComparison.CurrentCultureIgnoreCase) ||
-               (asset.ResponsibleOfficeName ?? string.Empty).Contains(keyword, StringComparison.CurrentCultureIgnoreCase);
+               (asset.ResponsibleOfficeName ?? string.Empty).Contains(keyword, StringComparison.CurrentCultureIgnoreCase) ||
+               (asset.ManagementCompanyName ?? string.Empty).Contains(keyword, StringComparison.CurrentCultureIgnoreCase) ||
+               (asset.AssetScopeDisplay ?? string.Empty).Contains(keyword, StringComparison.CurrentCultureIgnoreCase);
     }
 
     private void HandleAssetOptionPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -187,8 +202,8 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
             OnPropertyChanged(nameof(SelectedCount));
             OnPropertyChanged(nameof(CanConfirm));
             StatusMessage = SelectedCount > 0
-                ? $"선택 장비 {SelectedCount:N0}대를 현재 거래처에 연결할 예정입니다."
-                : $"표시 장비 {Assets.Count:N0}대 / 전체 {_assetPool.Count:N0}대";
+                ? $"선택 장비 {SelectedCount:N0}대를 현재 거래처에 연결할 예정입니다. {BuildScopeStatusSuffix()}"
+                : $"표시 장비 {Assets.Count:N0}대 / 전체 {_assetPool.Count:N0}대 ({BuildScopeStatusSuffix()})";
             return;
         }
 
@@ -212,6 +227,9 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
             BillingEligibilityStatus = asset.BillingEligibilityStatus,
             CurrentBillingProfileDisplay = asset.CurrentBillingProfileDisplay,
             ResponsibleOfficeName = asset.ResponsibleOfficeName,
+            ManagementCompanyName = asset.ManagementCompanyName,
+            AssetScopeDisplay = asset.AssetScopeDisplay,
+            IsOutsideCurrentOffice = asset.IsOutsideCurrentOffice,
             Notes = asset.Notes,
             MonthlyFee = asset.MonthlyFee,
             ContractStartDate = asset.ContractStartDate,
@@ -221,6 +239,17 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
             IsLinkedToAnotherProfile = asset.IsLinkedToAnotherProfile,
             IsSelected = asset.IsSelected
         };
+
+    private string BuildScopeStatusSuffix()
+    {
+        if (!IncludeOtherOfficeAssets)
+            return "현재 담당지점 자산만 표시 중입니다.";
+
+        var outsideCount = _assetPool.Count(asset => asset.IsOutsideCurrentOffice);
+        return outsideCount > 0
+            ? $"다른 담당지점 자산 {outsideCount:N0}대 포함 중입니다."
+            : "다른 담당지점 자산까지 확인 중입니다.";
+    }
 
     private static DateTime? ToDateTime(DateOnly? value)
         => value?.ToDateTime(TimeOnly.MinValue);

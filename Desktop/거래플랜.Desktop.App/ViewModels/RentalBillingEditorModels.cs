@@ -73,6 +73,9 @@ public sealed partial class RentalBillingAssetOption : ObservableObject
     [ObservableProperty] private string _billingEligibilityStatus = string.Empty;
     [ObservableProperty] private string _currentBillingProfileDisplay = string.Empty;
     [ObservableProperty] private string _responsibleOfficeName = string.Empty;
+    [ObservableProperty] private string _managementCompanyName = string.Empty;
+    [ObservableProperty] private string _assetScopeDisplay = string.Empty;
+    [ObservableProperty] private bool _isOutsideCurrentOffice;
     [ObservableProperty] private string _notes = string.Empty;
     [ObservableProperty] private decimal _monthlyFee;
     [ObservableProperty] private DateTime? _contractStartDate;

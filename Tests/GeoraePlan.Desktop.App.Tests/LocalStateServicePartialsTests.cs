@@ -213,6 +213,311 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task RentalStateService_GetAssetLinkCandidates_ExpandedScopeIncludesSameTenantOwnerAssets()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-link-candidates-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetOwnedAssetId = Guid.Parse("81111111-1111-1111-1111-111111111111");
+            var yeonsuAssetId = Guid.Parse("82222222-2222-2222-2222-222222222222");
+            var itworldAssetId = Guid.Parse("82333333-3333-3333-3333-333333333333");
+            db.RentalAssets.AddRange(
+                new LocalRentalAsset
+                {
+                    Id = usenetOwnedAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = "TEST:USENET-SN",
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementNumber = "U-001",
+                    MachineNumber = "USENET-SN",
+                    ItemName = "SL-M3820ND",
+                    CustomerName = "연수구 보건소[보건행정과]",
+                    CurrentCustomerName = "연수구 보건소[보건행정과]",
+                    AssetStatus = "임대진행중",
+                    BillingEligibilityStatus = "미확인"
+                },
+                new LocalRentalAsset
+                {
+                    Id = yeonsuAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = "TEST:YEONSU-SN",
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementNumber = "Y-001",
+                    MachineNumber = "YEONSU-SN",
+                    ItemName = "SL-M3820ND",
+                    CustomerName = "연수구 보건소[보건행정과]",
+                    CurrentCustomerName = "연수구 보건소[보건행정과]",
+                    AssetStatus = "임대진행중",
+                    BillingEligibilityStatus = "미확인"
+                },
+                new LocalRentalAsset
+                {
+                    Id = itworldAssetId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    AssetKey = "TEST:ITWORLD-SN",
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    ManagementNumber = "IT-001",
+                    MachineNumber = "ITWORLD-SN",
+                    ItemName = "SL-M3820ND",
+                    CustomerName = "연수구 보건소[보건행정과]",
+                    CurrentCustomerName = "연수구 보건소[보건행정과]",
+                    AssetStatus = "임대진행중",
+                    BillingEligibilityStatus = "미확인"
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var service = new RentalStateService(db);
+
+            var currentOfficeOnly = await service.GetAssetLinkCandidatesAsync(
+                null,
+                null,
+                "연수구 보건소[보건행정과]",
+                OfficeCodeCatalog.Yeonsu,
+                session,
+                includeOtherOfficeAssets: false);
+            var expanded = await service.GetAssetLinkCandidatesAsync(
+                null,
+                null,
+                "연수구 보건소[보건행정과]",
+                OfficeCodeCatalog.Yeonsu,
+                session,
+                includeOtherOfficeAssets: true);
+            var itworldExpanded = await service.GetAssetLinkCandidatesAsync(
+                null,
+                null,
+                "연수구 보건소[보건행정과]",
+                OfficeCodeCatalog.Itworld,
+                session,
+                includeOtherOfficeAssets: true);
+
+            Assert.DoesNotContain(currentOfficeOnly, candidate => candidate.Source.Id == usenetOwnedAssetId);
+            Assert.Contains(currentOfficeOnly, candidate => candidate.Source.Id == yeonsuAssetId);
+            Assert.DoesNotContain(expanded, candidate => candidate.Source.Id == itworldAssetId);
+            Assert.Contains(itworldExpanded, candidate => candidate.Source.Id == itworldAssetId);
+
+            var expandedUsenetAsset = Assert.Single(expanded, candidate => candidate.Source.Id == usenetOwnedAssetId);
+            Assert.True(expandedUsenetAsset.IsOutsideCurrentOffice);
+            Assert.Equal("USENET", expandedUsenetAsset.ManagementCompanyName);
+            Assert.Equal("USENET", expandedUsenetAsset.AssetScopeDisplay);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_SaveBillingProfile_CanTransferUsenetOwnedAssetToYeonsuBillingWithoutChangingOwner()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-link-transfer-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("83333333-3333-3333-3333-333333333333");
+            var assetId = Guid.Parse("84444444-4444-4444-4444-444444444444");
+            var customerId = Guid.Parse("85555555-5555-5555-5555-555555555555");
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "TEST:USENET-TRANSFER-SN",
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementNumber = "U-TRANSFER-001",
+                MachineNumber = "USENET-TRANSFER-SN",
+                ItemName = "SL-M3820ND",
+                CustomerName = "기존 거래처",
+                CurrentCustomerName = "기존 거래처",
+                InstallSiteName = "기존 거래처",
+                InstallLocation = "기존 위치",
+                MonthlyFee = 30_000m,
+                AssetStatus = "임대진행중",
+                BillingEligibilityStatus = "미확인"
+            });
+            await db.SaveChangesAsync();
+
+            var templateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    ItemId = Guid.Parse("86666666-6666-6666-6666-666666666666"),
+                    DisplayItemName = "SL-M3820ND",
+                    BillingLineMode = "묶음",
+                    Quantity = 1m,
+                    UnitPrice = 30_000m,
+                    Amount = 30_000m,
+                    IncludedAssetIds = [assetId]
+                }
+            });
+            var profile = new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                CustomerId = customerId,
+                CustomerName = "연수구 보건소[보건행정과]",
+                InstallSiteName = "연수구 보건소[보건행정과]",
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = templateJson,
+                MonthlyAmount = 30_000m
+            };
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(
+                profile,
+                CreateAdminSession(),
+                [
+                    new RentalBillingAssetLinkEdit
+                    {
+                        AssetId = assetId,
+                        CustomerId = customerId,
+                        CustomerName = "연수구 보건소[보건행정과]",
+                        InstallLocation = "보건행정과",
+                        InstallSiteName = "연수구 보건소[보건행정과]",
+                        MonthlyFee = 30_000m,
+                        Notes = "link test"
+                    }
+                ]);
+
+            Assert.True(result.Success, result.Message);
+
+            var persistedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, persistedProfile.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, persistedProfile.ManagementCompanyCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, persistedProfile.OfficeCode);
+            Assert.Equal(TenantScopeCatalog.UsenetGroup, persistedProfile.TenantCode);
+
+            var persistedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
+            Assert.Equal(profileId, persistedAsset.BillingProfileId);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, persistedAsset.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, persistedAsset.ManagementCompanyCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, persistedAsset.OfficeCode);
+            Assert.Equal(TenantScopeCatalog.UsenetGroup, persistedAsset.TenantCode);
+            Assert.Equal("청구대상", persistedAsset.BillingEligibilityStatus);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_SaveBillingProfile_DeniesCrossTenantAssetTransfer()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-link-cross-tenant-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("87777777-7777-7777-7777-777777777777");
+            var assetId = Guid.Parse("88888888-8888-8888-8888-888888888888");
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                AssetKey = "TEST:ITWORLD-TRANSFER-SN",
+                ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                ManagementNumber = "IT-TRANSFER-001",
+                MachineNumber = "ITWORLD-TRANSFER-SN",
+                ItemName = "SL-M3820ND",
+                CustomerName = "아이티월드 거래처",
+                CurrentCustomerName = "아이티월드 거래처",
+                AssetStatus = "임대진행중",
+                BillingEligibilityStatus = "미확인"
+            });
+            await db.SaveChangesAsync();
+
+            var templateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    ItemId = Guid.Parse("89999999-9999-9999-9999-999999999999"),
+                    DisplayItemName = "SL-M3820ND",
+                    BillingLineMode = "묶음",
+                    Quantity = 1m,
+                    UnitPrice = 30_000m,
+                    Amount = 30_000m,
+                    IncludedAssetIds = [assetId]
+                }
+            });
+            var profile = new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                CustomerName = "연수구 보건소[보건행정과]",
+                InstallSiteName = "연수구 보건소[보건행정과]",
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingTemplateJson = templateJson,
+                MonthlyAmount = 30_000m
+            };
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(
+                profile,
+                CreateAdminSession(),
+                [
+                    new RentalBillingAssetLinkEdit
+                    {
+                        AssetId = assetId,
+                        CustomerName = "연수구 보건소[보건행정과]",
+                        MonthlyFee = 30_000m
+                    }
+                ]);
+
+            Assert.False(result.Success);
+            Assert.Contains("다른 업체/담당지점", result.Message, StringComparison.Ordinal);
+
+            var persistedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
+            Assert.Null(persistedAsset.BillingProfileId);
+            Assert.Equal(OfficeCodeCatalog.Itworld, persistedAsset.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Itworld, persistedAsset.ManagementCompanyCode);
+            Assert.Equal(TenantScopeCatalog.Itworld, persistedAsset.TenantCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public void LocalIntegrityReport_BuildSummaryText_AndToMarkdown_IncludeKeySignals()
     {
         var report = new LocalIntegrityReport(
@@ -1891,6 +2196,20 @@ public sealed class LocalStateServicePartialsTests
             // AppPaths is static for the test process; keep the temp root available
             // until process exit so parallel xUnit tests cannot delete the active DB path.
         }
+    }
+
+    private static SessionState CreateAdminSession()
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "admin",
+            Role = DomainConstants.RoleAdmin,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
     }
 
     private static T InvokePrivateStatic<T>(string methodName, params object?[]? args)

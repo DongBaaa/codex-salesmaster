@@ -42,6 +42,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private string _statusMessage = "렌탈 청구 대상을 불러오는 중입니다.";
     [ObservableProperty] private RentalBillingViewRow? _selectedRow;
     [ObservableProperty] private RentalBillingTemplateEditorItem? _selectedTemplateItem;
+    [ObservableProperty] private RentalBillingAssetOption? _selectedIncludedAsset;
 
     [ObservableProperty] private Guid _editId = Guid.NewGuid();
     [ObservableProperty] private Guid? _editCustomerId;
@@ -124,6 +125,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                             !SelectedRow.IsAggregateRow &&
                                             SelectedRow.OutstandingAmount <= 0m;
     public bool CanRemoveTemplateItem => SelectedTemplateItem is not null;
+    public bool CanRemoveIncludedAsset => SelectedTemplateItem is not null &&
+                                          SelectedIncludedAsset is not null &&
+                                          SelectedIncludedAsset.AssetId != Guid.Empty;
     public bool CanApplySelectedAssets => SelectedTemplateItem is not null && CandidateAssets.Any(asset => asset.IsSelected);
     public bool CanOpenCustomerContract => EditCustomerId.HasValue && EditCustomerId.Value != Guid.Empty;
     public bool IsFixedBillingDayMode => string.Equals(EditBillingDayMode, RentalBillingScheduleRules.BillingDayModeFixedDay, StringComparison.Ordinal);
@@ -292,7 +296,15 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         SyncIncludedAssetsFromTemplate();
         UpdateTemplateDerivedValues();
         RemoveTemplateItemCommand.NotifyCanExecuteChanged();
+        RemoveIncludedAssetCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(CanRemoveIncludedAsset));
         ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnSelectedIncludedAssetChanged(RentalBillingAssetOption? value)
+    {
+        OnPropertyChanged(nameof(CanRemoveIncludedAsset));
+        RemoveIncludedAssetCommand.NotifyCanExecuteChanged();
     }
 
     public async Task LoadAsync()
@@ -866,6 +878,56 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             TemplateItems.Add(CreateDefaultTemplateItem());
         SelectedTemplateItem = TemplateItems[Math.Clamp(index, 0, TemplateItems.Count - 1)];
         UpdateTemplateDerivedValues();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRemoveIncludedAsset))]
+    private void RemoveIncludedAsset()
+    {
+        if (SelectedTemplateItem is null ||
+            SelectedIncludedAsset is null ||
+            SelectedIncludedAsset.AssetId == Guid.Empty)
+        {
+            return;
+        }
+
+        var removedAssetId = SelectedIncludedAsset.AssetId;
+        var removedAsset = CloneBillingAssetOption(SelectedIncludedAsset, isSelected: false);
+        var removedCount = 0;
+        foreach (var templateItem in TemplateItems)
+            removedCount += RemoveIncludedAssetId(templateItem.IncludedAssetIds, removedAssetId);
+
+        if (removedCount == 0)
+            return;
+
+        if (!TemplateItems.SelectMany(item => item.IncludedAssetIds).Contains(removedAssetId))
+            _pendingAssetLinkEdits.Remove(removedAssetId);
+
+        if (_candidateAssetPool.All(asset => asset.AssetId != removedAssetId))
+            _candidateAssetPool.Add(removedAsset);
+
+        RefreshBillingAssetCollections();
+        foreach (var item in TemplateItems)
+            item.IncludedAssetSummary = BuildIncludedAssetSummary(item.IncludedAssetIds);
+
+        UpdateTemplateDerivedValues();
+        ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
+        RemoveIncludedAssetCommand.NotifyCanExecuteChanged();
+        StatusMessage = "선택 장비를 현재 청구 포함 목록에서 제거했습니다. 저장하면 설치현황 청구 연결도 해제됩니다.";
+    }
+
+    private static int RemoveIncludedAssetId(ObservableCollection<Guid> includedAssetIds, Guid assetId)
+    {
+        var removedCount = 0;
+        for (var index = includedAssetIds.Count - 1; index >= 0; index--)
+        {
+            if (includedAssetIds[index] != assetId)
+                continue;
+
+            includedAssetIds.RemoveAt(index);
+            removedCount++;
+        }
+
+        return removedCount;
     }
 
     [RelayCommand]
@@ -1738,8 +1800,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (SelectedTemplateItem is null)
         {
             IncludedAssets.Clear();
+            SelectedIncludedAsset = null;
             CandidateAssets.Clear();
             AssetCandidateSummary = "후보 장비가 없습니다.";
+            RemoveIncludedAssetCommand.NotifyCanExecuteChanged();
+            OnPropertyChanged(nameof(CanRemoveIncludedAsset));
             ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
             OnPropertyChanged(nameof(CanApplySelectedAssets));
             return;
@@ -1759,6 +1824,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         {
             if (assetLookup.TryGetValue(assetId, out var option))
                 IncludedAssets.Add(CloneBillingAssetOption(option, isSelected: true));
+        }
+
+        if (SelectedIncludedAsset is null ||
+            !IncludedAssets.Any(asset => asset.AssetId == SelectedIncludedAsset.AssetId))
+        {
+            SelectedIncludedAsset = IncludedAssets.FirstOrDefault();
         }
 
         var selectedCandidateIds = candidateSelectionIds ?? CandidateAssets
@@ -1785,6 +1856,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         AssetCandidateSummary = CandidateAssets.Count == 0
             ? "후보 장비가 없습니다."
             : $"후보 장비 {CandidateAssets.Count:N0}대";
+        RemoveIncludedAssetCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(CanRemoveIncludedAsset));
         ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanApplySelectedAssets));
     }
@@ -1803,7 +1876,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     }
 
     private static RentalBillingAssetOption CreateBillingAssetOption(LocalRentalAsset asset, bool isSelected = false)
-        => new()
+    {
+        var responsibleOfficeName = OfficeCodeCatalog.GetOfficeDisplayName(
+            string.IsNullOrWhiteSpace(asset.ResponsibleOfficeCode)
+                ? asset.ManagementCompanyCode
+                : asset.ResponsibleOfficeCode);
+        var managementCompanyName = OfficeCodeCatalog.GetOfficeDisplayName(
+            string.IsNullOrWhiteSpace(asset.ManagementCompanyCode)
+                ? asset.OfficeCode
+                : asset.ManagementCompanyCode);
+
+        return new()
         {
             AssetId = asset.Id,
             CustomerId = asset.CustomerId,
@@ -1815,6 +1898,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             InstallLocation = string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
             AssetStatus = asset.AssetStatus,
             BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? "미확인" : asset.BillingEligibilityStatus,
+            ResponsibleOfficeName = responsibleOfficeName,
+            ManagementCompanyName = managementCompanyName,
+            AssetScopeDisplay = BuildAssetScopeDisplay(responsibleOfficeName, managementCompanyName),
             Notes = asset.Notes ?? string.Empty,
             MonthlyFee = asset.MonthlyFee,
             ContractStartDate = ToDateTime(asset.ContractStartDate),
@@ -1822,6 +1908,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             InstallDate = ToDateTime(asset.InstallDate),
             IsSelected = isSelected
         };
+    }
 
     private static RentalBillingAssetOption CloneBillingAssetOption(RentalBillingAssetOption asset, bool isSelected = false)
         => new()
@@ -1839,6 +1926,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             BillingEligibilityStatus = asset.BillingEligibilityStatus,
             CurrentBillingProfileDisplay = asset.CurrentBillingProfileDisplay,
             ResponsibleOfficeName = asset.ResponsibleOfficeName,
+            ManagementCompanyName = asset.ManagementCompanyName,
+            AssetScopeDisplay = asset.AssetScopeDisplay,
+            IsOutsideCurrentOffice = asset.IsOutsideCurrentOffice,
             Notes = asset.Notes,
             MonthlyFee = asset.MonthlyFee,
             ContractStartDate = asset.ContractStartDate,
@@ -1848,6 +1938,15 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             IsLinkedToAnotherProfile = asset.IsLinkedToAnotherProfile,
             IsSelected = isSelected
         };
+
+    private static string BuildAssetScopeDisplay(string responsibleOfficeName, string managementCompanyName)
+    {
+        var responsible = string.IsNullOrWhiteSpace(responsibleOfficeName) ? "-" : responsibleOfficeName.Trim();
+        var management = string.IsNullOrWhiteSpace(managementCompanyName) ? "-" : managementCompanyName.Trim();
+        return string.Equals(responsible, management, StringComparison.CurrentCultureIgnoreCase)
+            ? responsible
+            : $"담당 {responsible} / 관리 {management}";
+    }
 
     private void ApplyPendingAssetLinkEdit(RentalBillingAssetOption asset)
     {

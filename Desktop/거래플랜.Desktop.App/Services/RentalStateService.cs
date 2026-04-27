@@ -1600,7 +1600,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile.OutstandingAmount = Math.Max(0m, profile.OutstandingAmount);
         profile.RequiresFollowUp = profile.RequiresFollowUp || profile.OutstandingAmount > 0m;
         profile.ResponsibleOfficeCode = officeCode;
-        profile.ManagementCompanyCode = officeCode;
+        profile.ManagementCompanyCode = profileScope.OwnerOfficeCode;
         if (!CanAccessRental(profile.ResponsibleOfficeCode, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 저장할 수 없습니다.");
 
@@ -2101,6 +2101,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         string? customerName,
         string? officeCode,
         SessionState session,
+        bool includeOtherOfficeAssets = false,
         CancellationToken ct = default)
     {
         await EnsureAdministrativeBusinessCachesAsync(session, ct);
@@ -2124,11 +2125,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerName);
-        var query = ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+        var query = (includeOtherOfficeAssets
+                ? ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
+                : ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session))
             .Where(asset => !asset.IsDeleted)
             .Where(asset => asset.TenantCode == normalizedTenantCode);
 
-        if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
+        if (!includeOtherOfficeAssets && !string.IsNullOrWhiteSpace(normalizedOfficeCode))
             query = query.Where(asset =>
                 asset.ResponsibleOfficeCode == normalizedOfficeCode ||
                 asset.ManagementCompanyCode == normalizedOfficeCode);
@@ -2172,11 +2175,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     ? BuildBillingProfileDisplayName(linkedProfile, customerNameMap)
                     : string.Empty;
 
+                var responsibleOfficeName = ResolveOfficeDisplayName(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, offices);
+                var managementCompanyName = ResolveOfficeDisplayName(asset.ManagementCompanyCode, asset.OfficeCode, offices);
+                var isOutsideCurrentOffice = IsOutsideCurrentAssetOffice(asset, normalizedOfficeCode);
+
                 return new RentalAssetLinkCandidate
                 {
                     Source = asset,
                     CustomerDisplayName = ResolvePrimaryAssetCustomerName(asset),
-                    ResponsibleOfficeName = ResolveOfficeDisplayName(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, offices),
+                    ResponsibleOfficeName = responsibleOfficeName,
+                    ManagementCompanyName = managementCompanyName,
+                    AssetScopeDisplay = BuildAssetScopeDisplay(responsibleOfficeName, managementCompanyName),
+                    IsOutsideCurrentOffice = isOutsideCurrentOffice,
                     BillingProfileId = asset.BillingProfileId,
                     CurrentBillingProfileDisplay = currentProfileDisplay
                 };
@@ -2350,11 +2360,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private static void ApplyAssetOfficeScope(LocalRentalAsset asset, string officeCode)
     {
-        var normalizedOfficeCode = NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet);
-        asset.ManagementCompanyCode = normalizedOfficeCode;
-        asset.ResponsibleOfficeCode = normalizedOfficeCode;
-        asset.OfficeCode = normalizedOfficeCode;
-        asset.TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(normalizedOfficeCode);
+        var normalizedResponsibleOfficeCode = NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet);
+        var ownerOfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(
+            null,
+            normalizedResponsibleOfficeCode,
+            DomainConstants.OfficeUsenet);
+        asset.ManagementCompanyCode = ownerOfficeCode;
+        asset.ResponsibleOfficeCode = normalizedResponsibleOfficeCode;
+        asset.OfficeCode = ownerOfficeCode;
+        asset.TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(ownerOfficeCode);
     }
 
     public async Task<LocalMutationResult> DeleteAssetAsync(
@@ -4613,12 +4627,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
         string? profileResponsibleOfficeCode,
         CancellationToken ct)
     {
-        var assetIds = templateItems
+        var templateAssetIds = templateItems
             .SelectMany(item => item.IncludedAssetIds ?? Enumerable.Empty<Guid>())
-            .Concat((assetLinkEdits ?? Array.Empty<RentalBillingAssetLinkEdit>())
-                .Where(edit => edit is not null)
-                .Select(edit => edit.AssetId))
             .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToHashSet();
+        var explicitLinkAssetIds = (assetLinkEdits ?? Array.Empty<RentalBillingAssetLinkEdit>())
+            .Where(edit => edit is not null && edit.AssetId != Guid.Empty)
+            .Select(edit => edit.AssetId)
+            .Distinct()
+            .ToHashSet();
+        var assetIds = templateAssetIds
+            .Concat(explicitLinkAssetIds)
             .Distinct()
             .ToList();
         if (assetIds.Count == 0)
@@ -4631,10 +4651,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ToListAsync(ct);
 
         return assets
-            .Where(asset => !RentalAssetMatchesBillingProfileScope(
-                asset,
-                profileTenantCode,
-                profileResponsibleOfficeCode))
+            .Where(asset =>
+            {
+                if (templateAssetIds.Contains(asset.Id) &&
+                    !explicitLinkAssetIds.Contains(asset.Id) &&
+                    !RentalAssetMatchesBillingProfileScope(
+                        asset,
+                        profileTenantCode,
+                        profileResponsibleOfficeCode))
+                {
+                    return true;
+                }
+
+                return explicitLinkAssetIds.Contains(asset.Id) &&
+                       !RentalAssetCanTransferToBillingProfileScope(asset, profileTenantCode);
+            })
             .ToList();
     }
 
@@ -4661,6 +4692,36 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         return string.Equals(assetTenantCode, normalizedProfileTenantCode, StringComparison.OrdinalIgnoreCase) &&
                string.Equals(assetResponsibleOfficeCode, normalizedProfileResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool RentalAssetCanTransferToBillingProfileScope(
+        LocalRentalAsset asset,
+        string? profileTenantCode)
+    {
+        var assetOwnerOfficeCode = ResolveLinkedAssetManagementCompanyCode(asset, asset.ResponsibleOfficeCode);
+        var assetTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            asset.TenantCode,
+            assetOwnerOfficeCode,
+            asset.TenantCode,
+            asset.ResponsibleOfficeCode);
+        var normalizedProfileTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+            profileTenantCode,
+            assetTenantCode);
+
+        return string.Equals(assetTenantCode, normalizedProfileTenantCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveLinkedAssetManagementCompanyCode(LocalRentalAsset asset, string? fallbackOfficeCode)
+    {
+        var normalizedResponsibleOfficeCode = NormalizeOfficeCode(asset.ResponsibleOfficeCode, fallbackOfficeCode);
+        var ownerOfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(
+            FirstNonEmpty(asset.ManagementCompanyCode, asset.OfficeCode),
+            normalizedResponsibleOfficeCode,
+            fallbackOfficeCode);
+
+        return string.IsNullOrWhiteSpace(ownerOfficeCode)
+            ? NormalizeOfficeCode(fallbackOfficeCode, DomainConstants.OfficeUsenet)
+            : ownerOfficeCode;
     }
 
     private async Task SyncLinkedBillingProfileMonthlyFeeFromAssetAsync(
@@ -4876,12 +4937,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var previousBillingProfileId = asset.BillingProfileId;
             var shouldInclude = includedAssetIds.Contains(asset.Id);
             assetLinkEditMap.TryGetValue(asset.Id, out var edit);
+            var hasExplicitAssetLinkEdit = edit is not null;
             var matchesProfileScope = RentalAssetMatchesBillingProfileScope(
                 asset,
                 normalizedTenantCode,
                 normalizedOfficeCode);
+            var canTransferToProfileScope = hasExplicitAssetLinkEdit &&
+                                            RentalAssetCanTransferToBillingProfileScope(asset, normalizedTenantCode);
 
-            if (!matchesProfileScope)
+            if (!matchesProfileScope && !canTransferToProfileScope)
             {
                 if (asset.BillingProfileId == profile.Id)
                 {
@@ -4931,8 +4995,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 if (edit is not null)
                     asset.Notes = (edit.Notes ?? string.Empty).Trim();
 
+                var linkedAssetOwnerOfficeCode = ResolveLinkedAssetManagementCompanyCode(asset, normalizedOfficeCode);
                 asset.ResponsibleOfficeCode = normalizedOfficeCode;
-                asset.ManagementCompanyCode = normalizedOfficeCode;
+                asset.ManagementCompanyCode = linkedAssetOwnerOfficeCode;
+                asset.OfficeCode = linkedAssetOwnerOfficeCode;
+                asset.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                    asset.TenantCode,
+                    linkedAssetOwnerOfficeCode,
+                    normalizedTenantCode,
+                    normalizedOfficeCode);
                 asset.BillingEligibilityStatus = RentalAssetStatusRules.IsNonOperating(asset.AssetStatus)
                     ? "청구제외"
                     : "청구대상";
@@ -5010,6 +5081,27 @@ WHERE ""AssignedUsername"" <> '';", ct);
                    RentalCatalogValueNormalizer.NormalizeDisplayText(asset.CurrentCustomerName),
                    normalizedCustomerName,
                    StringComparison.CurrentCultureIgnoreCase);
+    }
+
+    private static bool IsOutsideCurrentAssetOffice(LocalRentalAsset asset, string? normalizedOfficeCode)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedOfficeCode))
+            return false;
+
+        var responsibleOfficeCode = NormalizeOfficeCode(asset.ResponsibleOfficeCode, string.Empty);
+        var managementCompanyCode = NormalizeOfficeCode(asset.ManagementCompanyCode, string.Empty);
+
+        return !string.Equals(responsibleOfficeCode, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(managementCompanyCode, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildAssetScopeDisplay(string responsibleOfficeName, string managementCompanyName)
+    {
+        var responsible = string.IsNullOrWhiteSpace(responsibleOfficeName) ? "-" : responsibleOfficeName.Trim();
+        var management = string.IsNullOrWhiteSpace(managementCompanyName) ? "-" : managementCompanyName.Trim();
+        return string.Equals(responsible, management, StringComparison.CurrentCultureIgnoreCase)
+            ? responsible
+            : $"담당 {responsible} / 관리 {management}";
     }
 
     private void UpsertBillingRun(LocalRentalBillingProfile profile, RentalBillingRunModel run)

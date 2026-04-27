@@ -110,6 +110,7 @@
             <WrapPanel VerticalAlignment="Center">
                 <TextBlock Text="검색" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <TextBox Width="260" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0"/>
+                <CheckBox Content="다른 담당지점 자산도 표시" IsChecked="{Binding IncludeOtherOfficeAssets}" Foreground="#EAF2FF" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,12,0"/>
                 <CheckBox Content="다른 청구프로필 연결 장비도 표시" IsChecked="{Binding IncludeRelinkTargets}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0"/>
                 <Button Content="새로고침" Command="{Binding ReloadCommand}" Background="#1565C0" BorderBrush="#1565C0"/>
             </WrapPanel>
@@ -134,6 +135,8 @@
                         <DataGridTextColumn Header="상태" Binding="{Binding AssetStatus}" Width="84"/>
                         <DataGridTextColumn Header="현재 청구프로필" Binding="{Binding CurrentBillingProfileDisplay}" Width="220"/>
                         <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="110"/>
+                        <DataGridTextColumn Header="관리회사" Binding="{Binding ManagementCompanyName}" Width="110"/>
+                        <DataGridTextColumn Header="자산소속" Binding="{Binding AssetScopeDisplay}" Width="170"/>
                     </DataGrid.Columns>
                 </DataGrid>
             </Border>
@@ -149,6 +152,7 @@
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
@@ -189,13 +193,17 @@
                             <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding SelectedAsset.InstallDateDisplay, Mode=OneWay}" Style="{StaticResource ReadOnlyInfoTextBoxStyle}" Margin="0,0,0,8"/>
 
                             <TextBlock Grid.Row="8" Grid.Column="0" Text="메모" VerticalAlignment="Top" Margin="0,0,10,0"/>
-                            <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding SelectedAsset.Notes, UpdateSourceTrigger=PropertyChanged}" Height="84" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+                            <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding SelectedAsset.Notes, UpdateSourceTrigger=PropertyChanged}" Height="84" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Margin="0,0,0,8"/>
+
+                            <TextBlock Grid.Row="9" Grid.Column="0" Text="자산소속" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBox Grid.Row="9" Grid.Column="1" Text="{Binding SelectedAsset.AssetScopeDisplay}" Style="{StaticResource ReadOnlyInfoTextBoxStyle}"/>
                         </Grid>
 
                         <Border Background="#223754" CornerRadius="6" Padding="10" Margin="0,10,0,0">
                             <StackPanel>
                                 <TextBlock Text="안내" Foreground="#4FC3F7" FontWeight="Bold"/>
                                 <TextBlock Text="선택된 장비는 저장 시 현재 거래처에 연결되고, 설치현황 거래처명도 메인 거래처명 기준으로 함께 정리됩니다." Margin="0,6,0,0" TextWrapping="Wrap"/>
+                                <TextBlock Text="다른 담당지점 자산을 선택하면 청구 담당지점만 현재 프로필로 변경하고, 관리회사/기관 소속은 유지합니다." Foreground="#C5E1A5" Margin="0,6,0,0" TextWrapping="Wrap"/>
                                 <TextBlock Text="다른 청구프로필에 연결된 장비를 선택하면 저장 전에 재연결 여부를 다시 확인합니다." Foreground="#FFCC80" Margin="0,6,0,0" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>

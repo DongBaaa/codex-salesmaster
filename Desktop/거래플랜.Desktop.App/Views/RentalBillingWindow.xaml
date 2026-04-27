@@ -84,6 +84,7 @@
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Height" Value="28"/>
+            <Setter Property="MinWidth" Value="150"/>
             <Setter Property="Padding" Value="8,1"/>
             <Setter Property="SelectedDateFormat" Value="Short"/>
             <Style.Triggers>
@@ -99,7 +100,7 @@
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Height" Value="28"/>
-            <Setter Property="Padding" Value="8,0,10,0"/>
+            <Setter Property="Padding" Value="6,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Style.Triggers>
                 <Trigger Property="IsReadOnly" Value="True">
@@ -114,7 +115,12 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
-        <Style x:Key="RentalDatePickerButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}"/>
+        <Style x:Key="RentalDatePickerButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}">
+            <Setter Property="Width" Value="Auto"/>
+            <Setter Property="MinWidth" Value="28"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="Padding" Value="4,0"/>
+        </Style>
         <Style x:Key="BillingDetailLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
             <Setter Property="Margin" Value="0,0,4,6"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
@@ -589,17 +595,24 @@
                         </DataGrid>
 
                         <Expander Header="내부 포함 장비" IsExpanded="False" Margin="0,0,0,10">
-                            <DataGrid ItemsSource="{Binding IncludedAssets}" Height="210">
-                                <DataGrid.Columns>
-                                    <DataGridTextColumn Header="시리얼번호" Binding="{Binding MachineNumber}" Width="120"/>
-                                    <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="120"/>
-                                    <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, StringFormat=N0}" Width="90"/>
-                                    <DataGridTextColumn Header="현재 거래처" Binding="{Binding CurrentCustomerName}" Width="160"/>
-                                    <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="160"/>
-                                    <DataGridTextColumn Header="상태" Binding="{Binding AssetStatus}" Width="76"/>
-                                    <DataGridTextColumn Header="청구상태" Binding="{Binding BillingEligibilityStatus}" Width="90"/>
-                                </DataGrid.Columns>
-                            </DataGrid>
+                            <DockPanel LastChildFill="True">
+                                <WrapPanel DockPanel.Dock="Top" Margin="0,8,0,8">
+                                    <Button Content="선택 장비 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveIncludedAssetCommand}" IsEnabled="{Binding CanRemoveIncludedAsset}"/>
+                                    <TextBlock Text="삭제 후 저장하면 해당 장비는 현재 청구 연결에서 해제됩니다." Foreground="#90CAF9" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                </WrapPanel>
+                                <DataGrid ItemsSource="{Binding IncludedAssets}" SelectedItem="{Binding SelectedIncludedAsset}" Height="210">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="시리얼번호" Binding="{Binding MachineNumber}" Width="120"/>
+                                        <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="120"/>
+                                        <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, StringFormat=N0}" Width="90"/>
+                                        <DataGridTextColumn Header="현재 거래처" Binding="{Binding CurrentCustomerName}" Width="160"/>
+                                        <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="160"/>
+                                        <DataGridTextColumn Header="상태" Binding="{Binding AssetStatus}" Width="76"/>
+                                        <DataGridTextColumn Header="청구상태" Binding="{Binding BillingEligibilityStatus}" Width="90"/>
+                                        <DataGridTextColumn Header="자산소속" Binding="{Binding AssetScopeDisplay}" Width="170"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </DockPanel>
                         </Expander>
                     </StackPanel>
                 </ScrollViewer>

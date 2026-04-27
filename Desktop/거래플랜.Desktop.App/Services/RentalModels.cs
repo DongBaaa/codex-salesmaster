@@ -298,6 +298,9 @@ public sealed class RentalAssetLinkCandidate
     public LocalRentalAsset Source { get; init; } = new();
     public string CustomerDisplayName { get; set; } = string.Empty;
     public string ResponsibleOfficeName { get; init; } = string.Empty;
+    public string ManagementCompanyName { get; init; } = string.Empty;
+    public string AssetScopeDisplay { get; init; } = string.Empty;
+    public bool IsOutsideCurrentOffice { get; init; }
     public Guid? BillingProfileId { get; init; }
     public string CurrentBillingProfileDisplay { get; init; } = string.Empty;
 }
