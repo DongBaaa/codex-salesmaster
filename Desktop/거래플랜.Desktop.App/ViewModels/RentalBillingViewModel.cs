@@ -107,6 +107,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public ObservableCollection<RentalBillingViewRow> Rows { get; } = new();
     public ObservableCollection<RentalBillingTemplateEditorItem> TemplateItems { get; } = new();
     public ObservableCollection<RentalBillingAssetOption> IncludedAssets { get; } = new();
+    public ObservableCollection<RentalAssetAssignmentHistoryViewItem> IncludedAssetAssignmentHistories { get; } = new();
     public ObservableCollection<RentalBillingAssetOption> CandidateAssets { get; } = new();
 
     public bool CanViewAll => _session.HasAdministrativePrivileges ||
@@ -305,6 +306,28 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(CanRemoveIncludedAsset));
         RemoveIncludedAssetCommand.NotifyCanExecuteChanged();
+        UiTaskHelper.Forget(
+            LoadIncludedAssetAssignmentHistoriesAsync(value?.AssetId ?? Guid.Empty),
+            "RENTAL",
+            "청구 포함 장비 임대 이력 조회",
+            ex => StatusMessage = $"선택 장비 임대 이력을 불러오지 못했습니다. {ex.Message}");
+    }
+
+    private async Task LoadIncludedAssetAssignmentHistoriesAsync(Guid assetId)
+    {
+        if (assetId == Guid.Empty)
+        {
+            IncludedAssetAssignmentHistories.Clear();
+            return;
+        }
+
+        var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId);
+        if (SelectedIncludedAsset?.AssetId != assetId)
+            return;
+
+        IncludedAssetAssignmentHistories.Clear();
+        foreach (var history in histories)
+            IncludedAssetAssignmentHistories.Add(history);
     }
 
     public async Task LoadAsync()

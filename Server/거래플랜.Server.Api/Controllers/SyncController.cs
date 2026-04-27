@@ -67,6 +67,11 @@ public sealed class SyncController : ControllerBase
     [ProducesResponseType(typeof(SyncPullResponse), StatusCodes.Status200OK)]
     public async Task<ActionResult<SyncPullResponse>> Pull([FromQuery] long sinceRev, CancellationToken cancellationToken)
     {
+        var readableRentalAssetIds = await _officeScopeService
+            .ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
+            .Select(asset => asset.Id)
+            .ToListAsync(cancellationToken);
+
         var response = new SyncPullResponse
         {
             CompanyProfiles = await _dbContext.CompanyProfiles.IgnoreQueryFilters().AsNoTracking()
@@ -109,6 +114,14 @@ public sealed class SyncController : ControllerBase
             RentalAssets = await _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).OrderBy(x => x.CustomerName).ThenBy(x => x.AssetKey)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            RentalAssetAssignmentHistories = readableRentalAssetIds.Count == 0
+                ? []
+                : await _dbContext.RentalAssetAssignmentHistories.AsNoTracking()
+                    .Where(history => readableRentalAssetIds.Contains(history.AssetId))
+                    .OrderByDescending(history => history.IsCurrent)
+                    .ThenByDescending(history => history.LinkedAtUtc)
+                    .Select(history => history.ToDto())
+                    .ToListAsync(cancellationToken),
             RentalBillingLogs = await _officeScopeService.ApplyRentalBillingLogScope(_dbContext.RentalBillingLogs.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).OrderBy(x => x.ScheduledDate).ThenBy(x => x.BillingYearMonth)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),

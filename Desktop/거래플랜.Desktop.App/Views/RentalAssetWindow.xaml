@@ -265,6 +265,7 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0" Grid.ColumnSpan="5" Text="렌탈 자산 상세" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
@@ -405,6 +406,31 @@
 
                         <TextBlock Grid.Row="15" Grid.Column="0" Text="관리메모" VerticalAlignment="Top" Margin="0,0,10,0"/>
                         <TextBox Grid.Row="15" Grid.Column="1" Grid.ColumnSpan="4" Text="{Binding EditNotes, UpdateSourceTrigger=PropertyChanged}" Height="80" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+
+                        <Border Grid.Row="16" Grid.ColumnSpan="5"
+                                Background="#20344B"
+                                BorderBrush="#38506D"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Padding="10,8"
+                                Margin="0,10,0,0">
+                            <StackPanel>
+                                <TextBlock Text="임대 이력" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,6"/>
+                                <TextBlock Text="회수·연결해제·재임대 시점의 거래처/설치위치/청구 연결 내역을 자동으로 누적합니다." Foreground="#90CAF9" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                <DataGrid ItemsSource="{Binding AssignmentHistories}" Height="180" IsReadOnly="True">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="상태" Binding="{Binding StatusDisplay}" Width="90"/>
+                                        <DataGridTextColumn Header="기간" Binding="{Binding PeriodDisplay}" Width="220"/>
+                                        <DataGridTextColumn Header="거래처" Binding="{Binding CustomerName}" Width="160"/>
+                                        <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="150"/>
+                                        <DataGridTextColumn Header="청구연결" Binding="{Binding BillingProfileDisplay}" Width="180"/>
+                                        <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, StringFormat=N0}" Width="90"/>
+                                        <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="100"/>
+                                        <DataGridTextColumn Header="사유" Binding="{Binding ChangeReason}" Width="*"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </StackPanel>
+                        </Border>
                     </Grid>
                 </ScrollViewer>
             </Border>

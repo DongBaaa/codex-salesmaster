@@ -1000,6 +1000,23 @@ public static class LocalMappings
         IsDeleted = e.IsDeleted
     };
 
+    public static LocalRentalAssetAssignmentHistory ToLocal(RentalAssetAssignmentHistoryDto dto) => new()
+    {
+        Id = dto.Id,
+        AssetId = dto.AssetId,
+        BillingProfileId = dto.BillingProfileId,
+        CustomerId = dto.CustomerId,
+        TenantCode = NormalizeOperationalTenantCode(dto.TenantCode, dto.ResponsibleOfficeCode, dto.ResponsibleOfficeCode),
+        ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(dto.ResponsibleOfficeCode, dto.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+        CustomerName = dto.CustomerName,
+        InstallLocation = dto.InstallLocation,
+        IsCurrent = dto.IsCurrent,
+        LinkedAtUtc = EnsureUtc(dto.LinkedAtUtc),
+        UnlinkedAtUtc = dto.UnlinkedAtUtc.HasValue ? EnsureUtc(dto.UnlinkedAtUtc.Value) : null,
+        CreatedAtUtc = EnsureUtc(dto.LinkedAtUtc),
+        UpdatedAtUtc = dto.UnlinkedAtUtc.HasValue ? EnsureUtc(dto.UnlinkedAtUtc.Value) : EnsureUtc(dto.LinkedAtUtc)
+    };
+
     public static LocalRentalBillingLog ToLocal(RentalBillingLogDto dto) => new()
     {
         Id = dto.Id,

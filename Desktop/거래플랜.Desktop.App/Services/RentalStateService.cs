@@ -2198,6 +2198,54 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ToList();
     }
 
+    public async Task<IReadOnlyList<RentalAssetAssignmentHistoryViewItem>> GetAssetAssignmentHistoriesAsync(
+        Guid assetId,
+        CancellationToken ct = default)
+    {
+        if (assetId == Guid.Empty)
+            return [];
+
+        await RefreshLocalRentalAssetAssignmentHistoriesAsync([assetId], DateTime.UtcNow, "이력 조회", ct);
+
+        var histories = await _db.RentalAssetAssignmentHistories
+            .AsNoTracking()
+            .Where(history => history.AssetId == assetId)
+            .OrderByDescending(history => history.IsCurrent)
+            .ThenByDescending(history => history.LinkedAtUtc)
+            .ToListAsync(ct);
+        if (histories.Count == 0)
+            return [];
+
+        var profileIds = histories
+            .Where(history => history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty)
+            .Select(history => history.BillingProfileId!.Value)
+            .Distinct()
+            .ToList();
+        var profileLookup = profileIds.Count == 0
+            ? new Dictionary<Guid, LocalRentalBillingProfile>()
+            : await _db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(profile => profileIds.Contains(profile.Id))
+                .ToDictionaryAsync(profile => profile.Id, ct);
+        var asset = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == assetId, ct);
+
+        return histories
+            .GroupBy(BuildAssignmentHistoryLogicalKey)
+            .Select(group => group
+                .OrderByDescending(history => history.IsCurrent)
+                .ThenByDescending(history => !string.IsNullOrWhiteSpace(history.BillingProfileDisplay))
+                .ThenByDescending(history => history.UpdatedAtUtc)
+                .First())
+            .OrderByDescending(history => history.IsCurrent)
+            .ThenByDescending(history => history.LinkedAtUtc)
+            .Select(history => BuildAssignmentHistoryViewItem(history, asset, profileLookup))
+            .ToList();
+    }
+
     public async Task<LocalMutationResult> SaveAssetAsync(
         LocalRentalAsset asset,
         SessionState session,
@@ -2350,6 +2398,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             await _db.SaveChangesAsync(ct);
             await SyncLinkedBillingProfileMonthlyFeeFromAssetAsync(asset.Id, ct);
+            await RefreshLocalRentalAssetAssignmentHistoriesAsync([asset.Id], DateTime.UtcNow, "자산 저장", ct);
             return LocalMutationResult.Ok(asset.Id, "렌탈 자산을 저장했습니다.");
         }
         finally
@@ -2371,6 +2420,379 @@ WHERE ""AssignedUsername"" <> '';", ct);
         asset.TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(ownerOfficeCode);
     }
 
+    private async Task RefreshLocalRentalAssetAssignmentHistoriesAsync(
+        IEnumerable<Guid> assetIds,
+        DateTime nowUtc,
+        string reason,
+        CancellationToken ct)
+    {
+        var targetAssetIds = assetIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (targetAssetIds.Count == 0)
+            return;
+
+        nowUtc = NormalizeHistoryUtc(nowUtc);
+        var assets = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .Where(asset => targetAssetIds.Contains(asset.Id))
+            .ToListAsync(ct);
+        if (assets.Count == 0)
+            return;
+
+        var histories = await _db.RentalAssetAssignmentHistories
+            .Where(history => targetAssetIds.Contains(history.AssetId))
+            .ToListAsync(ct);
+        var currentByAssetId = histories
+            .Where(history => history.IsCurrent)
+            .GroupBy(history => history.AssetId)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(history => history.LinkedAtUtc).ToList());
+        var hasChanges = false;
+
+        foreach (var asset in assets)
+        {
+            currentByAssetId.TryGetValue(asset.Id, out var currentRows);
+            currentRows ??= [];
+
+            var desiredCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(
+                string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName);
+            var desiredInstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(
+                string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation);
+            var hasDesiredAssignment = !asset.IsDeleted && HasCurrentRentalAssignment(asset, desiredCustomerName, desiredInstallLocation);
+
+            var matchingCurrent = currentRows.FirstOrDefault(history =>
+                history.BillingProfileId == asset.BillingProfileId &&
+                history.CustomerId == asset.CustomerId &&
+                string.Equals(history.CustomerName, desiredCustomerName, StringComparison.Ordinal) &&
+                string.Equals(history.InstallLocation, desiredInstallLocation, StringComparison.Ordinal) &&
+                string.Equals(history.TenantCode, asset.TenantCode, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(history.ResponsibleOfficeCode, asset.ResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase));
+
+            if (!hasDesiredAssignment)
+            {
+                foreach (var stale in currentRows)
+                    hasChanges |= CloseAssignmentHistory(stale, asset.LastAssignmentClearedAtUtc ?? nowUtc, reason, nowUtc, asset);
+
+                if (currentRows.Count == 0)
+                    hasChanges |= await EnsureEndedHistoryFromClearedSnapshotAsync(asset, histories, nowUtc, reason, ct);
+
+                continue;
+            }
+
+            foreach (var stale in currentRows.Where(history => matchingCurrent is null || history.Id != matchingCurrent.Id))
+                hasChanges |= CloseAssignmentHistory(stale, nowUtc, "재임대/연결 변경", nowUtc, asset);
+
+            if (matchingCurrent is not null)
+            {
+                hasChanges |= await PopulateAssignmentHistorySnapshotAsync(matchingCurrent, asset, desiredCustomerName, desiredInstallLocation, reason, nowUtc, ct);
+                continue;
+            }
+
+            var linkedAtUtc = ResolveAssignmentLinkedAtUtc(asset, nowUtc);
+            var historyId = SyncIdentityGenerator.CreateRentalAssetAssignmentHistoryId(
+                asset.Id,
+                linkedAtUtc,
+                asset.BillingProfileId,
+                asset.CustomerId,
+                desiredCustomerName,
+                desiredInstallLocation);
+            var newHistory = new LocalRentalAssetAssignmentHistory
+            {
+                Id = historyId == Guid.Empty ? Guid.NewGuid() : historyId,
+                AssetId = asset.Id,
+                BillingProfileId = asset.BillingProfileId,
+                CustomerId = asset.CustomerId,
+                TenantCode = asset.TenantCode,
+                ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+                CustomerName = desiredCustomerName,
+                InstallLocation = desiredInstallLocation,
+                IsCurrent = true,
+                LinkedAtUtc = linkedAtUtc,
+                CreatedAtUtc = nowUtc,
+                UpdatedAtUtc = nowUtc,
+                ChangeReason = reason
+            };
+            await PopulateAssignmentHistorySnapshotAsync(newHistory, asset, desiredCustomerName, desiredInstallLocation, reason, nowUtc, ct);
+            _db.RentalAssetAssignmentHistories.Add(newHistory);
+            histories.Add(newHistory);
+            hasChanges = true;
+        }
+
+        if (hasChanges)
+            await _db.SaveChangesAsync(ct);
+    }
+
+    private static bool HasCurrentRentalAssignment(LocalRentalAsset asset, string customerName, string installLocation)
+    {
+        if (asset.BillingProfileId.HasValue || asset.CustomerId.HasValue)
+            return true;
+        if (asset.LastAssignmentClearedAtUtc.HasValue)
+            return false;
+        return !string.IsNullOrWhiteSpace(customerName) || !string.IsNullOrWhiteSpace(installLocation);
+    }
+
+    private async Task<bool> PopulateAssignmentHistorySnapshotAsync(
+        LocalRentalAssetAssignmentHistory history,
+        LocalRentalAsset asset,
+        string customerName,
+        string installLocation,
+        string reason,
+        DateTime nowUtc,
+        CancellationToken ct)
+    {
+        var changed = false;
+        changed |= SetIfDifferent(value => history.AssetId = value, history.AssetId, asset.Id);
+        changed |= SetIfDifferent(value => history.BillingProfileId = value, history.BillingProfileId, asset.BillingProfileId);
+        changed |= SetIfDifferent(value => history.CustomerId = value, history.CustomerId, asset.CustomerId);
+        changed |= SetIfDifferent(value => history.TenantCode = value, history.TenantCode, asset.TenantCode);
+        changed |= SetIfDifferent(value => history.ResponsibleOfficeCode = value, history.ResponsibleOfficeCode, asset.ResponsibleOfficeCode);
+        changed |= SetIfDifferent(value => history.CustomerName = value, history.CustomerName, customerName);
+        changed |= SetIfDifferent(value => history.InstallLocation = value, history.InstallLocation, installLocation);
+        changed |= SetIfDifferent(value => history.BillingProfileDisplay = value, history.BillingProfileDisplay, await ResolveLastBillingProfileDisplayAsync(asset.BillingProfileId, asset, ct));
+        changed |= SetIfDifferent(value => history.ItemName = value, history.ItemName, asset.ItemName);
+        changed |= SetIfDifferent(value => history.MachineNumber = value, history.MachineNumber, asset.MachineNumber);
+        changed |= SetIfDifferent(value => history.ManagementNumber = value, history.ManagementNumber, asset.ManagementNumber);
+        changed |= SetIfDifferent(value => history.MonthlyFee = value, history.MonthlyFee, Math.Max(0m, asset.MonthlyFee));
+        changed |= SetIfDifferent(value => history.ContractStartDate = value, history.ContractStartDate, asset.ContractStartDate);
+        changed |= SetIfDifferent(value => history.ContractEndDate = value, history.ContractEndDate, asset.RentalEndDate);
+        changed |= SetIfDifferent(value => history.ChangeReason = value, history.ChangeReason, reason);
+        if (changed)
+            history.UpdatedAtUtc = nowUtc;
+        return changed;
+    }
+
+    private async Task<bool> EnsureEndedHistoryFromClearedSnapshotAsync(
+        LocalRentalAsset asset,
+        List<LocalRentalAssetAssignmentHistory> histories,
+        DateTime nowUtc,
+        string reason,
+        CancellationToken ct)
+    {
+        var unlinkedAtUtc = NormalizeHistoryUtc(asset.LastAssignmentClearedAtUtc ?? nowUtc);
+        var customerName = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
+            asset.LastCustomerName,
+            asset.CurrentCustomerName,
+            asset.CustomerName));
+        var installLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
+            asset.LastInstallLocation,
+            asset.InstallLocation,
+            asset.InstallSiteName));
+        var billingProfileId = asset.LastBillingProfileId ?? asset.BillingProfileId;
+        if (string.IsNullOrWhiteSpace(customerName) &&
+            string.IsNullOrWhiteSpace(installLocation) &&
+            !billingProfileId.HasValue)
+        {
+            return false;
+        }
+
+        var exists = histories.Any(history =>
+            history.AssetId == asset.Id &&
+            !history.IsCurrent &&
+            history.BillingProfileId == billingProfileId &&
+            string.Equals(history.CustomerName, customerName, StringComparison.Ordinal) &&
+            string.Equals(history.InstallLocation, installLocation, StringComparison.Ordinal) &&
+            NullableHistoryUtcEquals(history.UnlinkedAtUtc, unlinkedAtUtc));
+        if (exists)
+            return false;
+
+        var linkedAtUtc = ResolveAssignmentLinkedAtUtc(asset, unlinkedAtUtc);
+        if (linkedAtUtc >= unlinkedAtUtc)
+            linkedAtUtc = NormalizeHistoryUtc(asset.CreatedAtUtc == default ? unlinkedAtUtc.AddMinutes(-1) : asset.CreatedAtUtc);
+
+        var historyId = SyncIdentityGenerator.CreateRentalAssetAssignmentHistoryId(
+            asset.Id,
+            linkedAtUtc,
+            billingProfileId,
+            asset.CustomerId,
+            customerName,
+            installLocation);
+        var history = new LocalRentalAssetAssignmentHistory
+        {
+            Id = historyId == Guid.Empty ? Guid.NewGuid() : historyId,
+            AssetId = asset.Id,
+            BillingProfileId = billingProfileId,
+            CustomerId = asset.CustomerId,
+            TenantCode = asset.TenantCode,
+            ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+            CustomerName = customerName,
+            InstallLocation = installLocation,
+            BillingProfileDisplay = string.IsNullOrWhiteSpace(asset.LastBillingProfileDisplay)
+                ? await ResolveLastBillingProfileDisplayAsync(billingProfileId, asset, ct)
+                : asset.LastBillingProfileDisplay,
+            ItemName = asset.ItemName,
+            MachineNumber = asset.MachineNumber,
+            ManagementNumber = asset.ManagementNumber,
+            MonthlyFee = Math.Max(0m, asset.MonthlyFee),
+            ContractStartDate = asset.ContractStartDate,
+            ContractEndDate = asset.RentalEndDate,
+            ChangeReason = reason,
+            IsCurrent = false,
+            LinkedAtUtc = linkedAtUtc,
+            UnlinkedAtUtc = unlinkedAtUtc,
+            CreatedAtUtc = nowUtc,
+            UpdatedAtUtc = nowUtc
+        };
+        _db.RentalAssetAssignmentHistories.Add(history);
+        histories.Add(history);
+        return true;
+    }
+
+    private static bool CloseAssignmentHistory(
+        LocalRentalAssetAssignmentHistory history,
+        DateTime unlinkedAtUtc,
+        string reason,
+        DateTime nowUtc,
+        LocalRentalAsset asset)
+    {
+        var normalizedUnlinkedAtUtc = NormalizeHistoryUtc(unlinkedAtUtc);
+        var changed = false;
+        changed |= SetIfDifferent(value => history.IsCurrent = value, history.IsCurrent, false);
+        changed |= SetIfDifferent(value => history.UnlinkedAtUtc = value, history.UnlinkedAtUtc, normalizedUnlinkedAtUtc);
+        changed |= SetIfDifferent(value => history.ChangeReason = value, history.ChangeReason, reason);
+        changed |= SetIfDifferent(value => history.ItemName = value, history.ItemName, asset.ItemName);
+        changed |= SetIfDifferent(value => history.MachineNumber = value, history.MachineNumber, asset.MachineNumber);
+        changed |= SetIfDifferent(value => history.ManagementNumber = value, history.ManagementNumber, asset.ManagementNumber);
+        if (changed)
+            history.UpdatedAtUtc = nowUtc;
+        return changed;
+    }
+
+    private async Task ApplyAssignmentClearedSnapshotAsync(
+        LocalRentalAsset asset,
+        Guid? previousBillingProfileId,
+        DateTime clearedAtUtc,
+        CancellationToken ct)
+    {
+        var snapshotCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
+            asset.CurrentCustomerName,
+            asset.CustomerName,
+            asset.LastCustomerName));
+        var snapshotInstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
+            asset.InstallLocation,
+            asset.InstallSiteName,
+            asset.LastInstallLocation));
+        var snapshotBillingProfileId = previousBillingProfileId ?? asset.BillingProfileId ?? asset.LastBillingProfileId;
+
+        if (!string.IsNullOrWhiteSpace(snapshotCustomerName) ||
+            !string.IsNullOrWhiteSpace(snapshotInstallLocation) ||
+            snapshotBillingProfileId.HasValue)
+        {
+            asset.LastCustomerName = snapshotCustomerName;
+            asset.LastInstallLocation = snapshotInstallLocation;
+            asset.LastBillingProfileId = snapshotBillingProfileId;
+            asset.LastBillingProfileDisplay = await ResolveLastBillingProfileDisplayAsync(snapshotBillingProfileId, asset, ct);
+            asset.LastAssignmentClearedAtUtc = NormalizeHistoryUtc(clearedAtUtc);
+        }
+
+        asset.BillingProfileId = null;
+        asset.CustomerId = null;
+    }
+
+    private static DateTime ResolveAssignmentLinkedAtUtc(LocalRentalAsset asset, DateTime fallbackUtc)
+    {
+        if (asset.UpdatedAtUtc != default)
+            return NormalizeHistoryUtc(asset.UpdatedAtUtc);
+        if (asset.ContractStartDate.HasValue)
+            return CreateUtcDate(asset.ContractStartDate.Value);
+        if (asset.InstallDate.HasValue)
+            return CreateUtcDate(asset.InstallDate.Value);
+        if (asset.CreatedAtUtc != default)
+            return NormalizeHistoryUtc(asset.CreatedAtUtc);
+        return NormalizeHistoryUtc(fallbackUtc);
+    }
+
+    private static RentalAssetAssignmentHistoryViewItem BuildAssignmentHistoryViewItem(
+        LocalRentalAssetAssignmentHistory history,
+        LocalRentalAsset? asset,
+        IReadOnlyDictionary<Guid, LocalRentalBillingProfile> profileLookup)
+    {
+        LocalRentalBillingProfile? profile = null;
+        if (history.BillingProfileId.HasValue)
+            profileLookup.TryGetValue(history.BillingProfileId.Value, out profile);
+
+        var billingProfileDisplay = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
+            history.BillingProfileDisplay,
+            BuildBillingProfileDisplay(profile),
+            history.BillingProfileId?.ToString("D")));
+        var linkedAtUtc = NormalizeHistoryUtc(history.LinkedAtUtc);
+        var unlinkedAtUtc = history.UnlinkedAtUtc.HasValue ? NormalizeHistoryUtc(history.UnlinkedAtUtc.Value) : (DateTime?)null;
+        var responsibleOfficeCode = string.IsNullOrWhiteSpace(history.ResponsibleOfficeCode)
+            ? asset?.ResponsibleOfficeCode
+            : history.ResponsibleOfficeCode;
+
+        return new RentalAssetAssignmentHistoryViewItem
+        {
+            HistoryId = history.Id,
+            AssetId = history.AssetId,
+            IsCurrent = history.IsCurrent,
+            LinkedAtLocal = linkedAtUtc.ToLocalTime(),
+            UnlinkedAtLocal = unlinkedAtUtc?.ToLocalTime(),
+            CustomerName = FirstNonEmpty(history.CustomerName, asset?.CurrentCustomerName, asset?.CustomerName),
+            InstallLocation = FirstNonEmpty(history.InstallLocation, asset?.InstallLocation, asset?.InstallSiteName),
+            BillingProfileDisplay = billingProfileDisplay,
+            ResponsibleOfficeName = OfficeCodeCatalog.GetOfficeDisplayName(responsibleOfficeCode ?? DomainConstants.OfficeUsenet),
+            ItemName = FirstNonEmpty(history.ItemName, asset?.ItemName),
+            MachineNumber = FirstNonEmpty(history.MachineNumber, asset?.MachineNumber),
+            ManagementNumber = FirstNonEmpty(history.ManagementNumber, asset?.ManagementNumber),
+            MonthlyFee = history.MonthlyFee > 0m ? history.MonthlyFee : Math.Max(0m, asset?.MonthlyFee ?? 0m),
+            ChangeReason = history.ChangeReason
+        };
+    }
+
+    private static string BuildAssignmentHistoryLogicalKey(LocalRentalAssetAssignmentHistory history)
+    {
+        var unlinked = history.UnlinkedAtUtc.HasValue
+            ? NormalizeHistoryUtc(history.UnlinkedAtUtc.Value).ToString("O", CultureInfo.InvariantCulture)
+            : string.Empty;
+        return string.Join(
+            "|",
+            history.AssetId.ToString("D"),
+            history.BillingProfileId?.ToString("D") ?? string.Empty,
+            history.CustomerId?.ToString("D") ?? string.Empty,
+            RentalCatalogValueNormalizer.NormalizeDisplayText(history.CustomerName),
+            RentalCatalogValueNormalizer.NormalizeDisplayText(history.InstallLocation),
+            NormalizeHistoryUtc(history.LinkedAtUtc).ToString("O", CultureInfo.InvariantCulture),
+            unlinked,
+            history.IsCurrent ? "1" : "0");
+    }
+
+    private static string BuildBillingProfileDisplay(LocalRentalBillingProfile? profile)
+    {
+        if (profile is null)
+            return string.Empty;
+        var customerName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.CustomerName);
+        var itemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(profile.ItemName);
+        if (!string.IsNullOrWhiteSpace(customerName) && !string.IsNullOrWhiteSpace(itemName))
+            return $"{customerName} · {itemName}";
+        return FirstNonEmpty(customerName, itemName);
+    }
+
+    private static bool SetIfDifferent<T>(Action<T> setter, T current, T next)
+    {
+        if (EqualityComparer<T>.Default.Equals(current, next))
+            return false;
+        setter(next);
+        return true;
+    }
+
+    private static DateTime NormalizeHistoryUtc(DateTime value)
+    {
+        if (value == default)
+            return DateTime.UtcNow;
+        if (value.Kind == DateTimeKind.Utc)
+            return value;
+        if (value.Kind == DateTimeKind.Local)
+            return value.ToUniversalTime();
+        return DateTime.SpecifyKind(value, DateTimeKind.Utc);
+    }
+
+    private static bool NullableHistoryUtcEquals(DateTime? current, DateTime expected)
+        => current.HasValue && NormalizeHistoryUtc(current.Value) == NormalizeHistoryUtc(expected);
+
+    private static DateTime CreateUtcDate(DateOnly date)
+        => new(date.Year, date.Month, date.Day, 0, 0, 0, DateTimeKind.Utc);
+
     public async Task<LocalMutationResult> DeleteAssetAsync(
         Guid assetId,
         SessionState session,
@@ -2391,6 +2813,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         asset.IsDirty = true;
         asset.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
+        await RefreshLocalRentalAssetAssignmentHistoriesAsync([assetId], DateTime.UtcNow, "자산 삭제", ct);
         return LocalMutationResult.Ok(assetId, "렌탈 자산을 삭제했습니다.");
     }
 
@@ -4930,6 +5353,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return;
 
         var relinkedProfileIds = new HashSet<Guid>();
+        var touchedAssetIds = new HashSet<Guid>();
         var templateMonthlyFeeByAssetId = BuildTemplateAssetMonthlyFeeMap(templateItems);
         var now = DateTime.UtcNow;
         foreach (var asset in linkedAssets)
@@ -4949,12 +5373,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
             {
                 if (asset.BillingProfileId == profile.Id)
                 {
-                    asset.BillingProfileId = null;
+                    await ApplyAssignmentClearedSnapshotAsync(asset, previousBillingProfileId, now, ct);
                     asset.BillingEligibilityStatus = RentalAssetStatusRules.IsNonOperating(asset.AssetStatus)
                         ? "청구제외"
                         : "미확인";
                     asset.IsDirty = true;
                     asset.UpdatedAtUtc = now;
+                    touchedAssetIds.Add(asset.Id);
                 }
 
                 continue;
@@ -4962,6 +5387,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             if (shouldInclude)
             {
+                touchedAssetIds.Add(asset.Id);
                 asset.BillingProfileId = profile.Id;
                 asset.CustomerId = profile.CustomerId;
                 asset.CustomerName = normalizedProfileCustomerName;
@@ -5022,10 +5448,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             }
             else if (asset.BillingProfileId == profile.Id)
             {
-                asset.BillingProfileId = null;
+                await ApplyAssignmentClearedSnapshotAsync(asset, previousBillingProfileId, now, ct);
                 asset.BillingEligibilityStatus = RentalAssetStatusRules.IsNonOperating(asset.AssetStatus)
                     ? "청구제외"
                     : "미확인";
+                touchedAssetIds.Add(asset.Id);
             }
 
             asset.IsDirty = true;
@@ -5060,6 +5487,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         await _db.SaveChangesAsync(ct);
+        await RefreshLocalRentalAssetAssignmentHistoriesAsync(touchedAssetIds, now, "청구 연결 변경", ct);
     }
 
     private static bool IsBillingCandidateCustomerMatch(

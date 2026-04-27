@@ -39,6 +39,7 @@ public sealed class LocalDbContext : DbContext
     public DbSet<LocalRentalManagementCompany> RentalManagementCompanies => Set<LocalRentalManagementCompany>();
     public DbSet<LocalRentalBillingProfile> RentalBillingProfiles => Set<LocalRentalBillingProfile>();
     public DbSet<LocalRentalAsset> RentalAssets => Set<LocalRentalAsset>();
+    public DbSet<LocalRentalAssetAssignmentHistory> RentalAssetAssignmentHistories => Set<LocalRentalAssetAssignmentHistory>();
     public DbSet<LocalRentalBillingLog> RentalBillingLogs => Set<LocalRentalBillingLog>();
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -227,6 +228,12 @@ public sealed class LocalDbContext : DbContext
             .HasIndex(asset => asset.OfficeCode);
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => asset.ResponsibleOfficeCode);
+        model.Entity<LocalRentalAssetAssignmentHistory>()
+            .HasIndex(history => new { history.AssetId, history.IsCurrent });
+        model.Entity<LocalRentalAssetAssignmentHistory>()
+            .HasIndex(history => history.BillingProfileId);
+        model.Entity<LocalRentalAssetAssignmentHistory>()
+            .HasIndex(history => history.LinkedAtUtc);
         model.Entity<LocalRentalBillingLog>()
             .HasIndex(log => new { log.BillingProfileId, log.BillingYearMonth })
             .IsUnique();

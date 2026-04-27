@@ -3609,6 +3609,8 @@ public sealed class SyncService : IDisposable
         _db.ChangeTracker.Clear();
         await UpsertPulledRentalAssetsAsync(pull.RentalAssets, ct);
         _db.ChangeTracker.Clear();
+        await UpsertPulledRentalAssetAssignmentHistoriesAsync(pull.RentalAssetAssignmentHistories, ct);
+        _db.ChangeTracker.Clear();
         await UpsertPulledAsync(pull.RentalBillingLogs, _db.RentalBillingLogs, LocalMappings.ToLocal, ct);
         _db.ChangeTracker.Clear();
         await UpsertPulledInvoicesAsync(pull.Invoices, ct);
@@ -4025,6 +4027,80 @@ public sealed class SyncService : IDisposable
             {
                 _db.Entry(existing).CurrentValues.SetValues(local);
             }
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task UpsertPulledRentalAssetAssignmentHistoriesAsync(
+        IReadOnlyList<RentalAssetAssignmentHistoryDto> dtos,
+        CancellationToken ct)
+    {
+        if (dtos.Count == 0)
+            return;
+
+        var dedupedDtos = dtos
+            .Where(dto => dto.Id != Guid.Empty && dto.AssetId != Guid.Empty)
+            .GroupBy(dto => dto.Id)
+            .Select(group => group
+                .OrderByDescending(dto => dto.IsCurrent)
+                .ThenByDescending(dto => dto.UnlinkedAtUtc ?? dto.LinkedAtUtc)
+                .ThenByDescending(dto => dto.LinkedAtUtc)
+                .First())
+            .ToList();
+        if (dedupedDtos.Count == 0)
+            return;
+
+        var assetIds = dedupedDtos
+            .Select(dto => dto.AssetId)
+            .Distinct()
+            .ToList();
+        var existingRows = await _db.RentalAssetAssignmentHistories
+            .Where(history => assetIds.Contains(history.AssetId))
+            .ToListAsync(ct);
+
+        foreach (var dto in dedupedDtos)
+        {
+            var local = LocalMappings.ToLocal(dto);
+            var existing = existingRows.FirstOrDefault(history => history.Id == local.Id);
+            if (existing is null)
+            {
+                existing = existingRows.FirstOrDefault(history =>
+                    history.AssetId == local.AssetId &&
+                    history.BillingProfileId == local.BillingProfileId &&
+                    history.CustomerId == local.CustomerId &&
+                    string.Equals(history.CustomerName, local.CustomerName, StringComparison.Ordinal) &&
+                    string.Equals(history.InstallLocation, local.InstallLocation, StringComparison.Ordinal) &&
+                    history.LinkedAtUtc == local.LinkedAtUtc);
+            }
+
+            if (existing is null)
+            {
+                _db.RentalAssetAssignmentHistories.Add(local);
+                existingRows.Add(local);
+                continue;
+            }
+
+            if (existing.Id != local.Id)
+            {
+                _db.RentalAssetAssignmentHistories.Remove(existing);
+                _db.RentalAssetAssignmentHistories.Add(local);
+                existingRows.Remove(existing);
+                existingRows.Add(local);
+                continue;
+            }
+
+            local.BillingProfileDisplay = string.IsNullOrWhiteSpace(existing.BillingProfileDisplay)
+                ? local.BillingProfileDisplay
+                : existing.BillingProfileDisplay;
+            local.ItemName = string.IsNullOrWhiteSpace(existing.ItemName) ? local.ItemName : existing.ItemName;
+            local.MachineNumber = string.IsNullOrWhiteSpace(existing.MachineNumber) ? local.MachineNumber : existing.MachineNumber;
+            local.ManagementNumber = string.IsNullOrWhiteSpace(existing.ManagementNumber) ? local.ManagementNumber : existing.ManagementNumber;
+            local.MonthlyFee = existing.MonthlyFee > 0m ? existing.MonthlyFee : local.MonthlyFee;
+            local.ContractStartDate ??= existing.ContractStartDate;
+            local.ContractEndDate ??= existing.ContractEndDate;
+            local.ChangeReason = string.IsNullOrWhiteSpace(existing.ChangeReason) ? local.ChangeReason : existing.ChangeReason;
+            _db.Entry(existing).CurrentValues.SetValues(local);
         }
 
         await _db.SaveChangesAsync(ct);

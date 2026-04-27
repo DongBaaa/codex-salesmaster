@@ -84,6 +84,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public ObservableCollection<string> BillingEligibilityStatusOptions { get; } = new();
     public ObservableCollection<LocalItemCategoryOption> ItemCategoryOptions { get; } = new();
     public ObservableCollection<RentalAssetViewRow> Rows { get; } = new();
+    public ObservableCollection<RentalAssetAssignmentHistoryViewItem> AssignmentHistories { get; } = new();
 
     public bool CanViewAll => _rental.CanViewAllAssetScope(_session);
     public bool CanManageAll => _rental.CanManageAllAssetScope(_session);
@@ -455,6 +456,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         if (value is null)
         {
+            AssignmentHistories.Clear();
             EditLastCustomerName = string.Empty;
             EditLastInstallLocation = string.Empty;
             EditLastBillingProfileDisplay = string.Empty;
@@ -517,6 +519,28 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanDeleteSelected));
         ResetEditBaseline();
+        UiTaskHelper.Forget(
+            LoadAssignmentHistoriesAsync(source.Id),
+            "RENTAL",
+            "렌탈 자산 임대 이력 조회",
+            ex => StatusMessage = $"임대 이력을 불러오지 못했습니다. {ex.Message}");
+    }
+
+    private async Task LoadAssignmentHistoriesAsync(Guid assetId)
+    {
+        if (assetId == Guid.Empty)
+        {
+            AssignmentHistories.Clear();
+            return;
+        }
+
+        var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId);
+        if (SelectedRow?.Source.Id != assetId)
+            return;
+
+        AssignmentHistories.Clear();
+        foreach (var history in histories)
+            AssignmentHistories.Add(history);
     }
 
     private void ApplyAssetStatusUiRules()

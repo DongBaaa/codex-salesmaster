@@ -907,6 +907,22 @@ public static class DtoMappings
             Note = entity.Note,
         };
 
+    public static RentalAssetAssignmentHistoryDto ToDto(this RentalAssetAssignmentHistory entity) =>
+        new()
+        {
+            Id = entity.Id,
+            AssetId = entity.AssetId,
+            BillingProfileId = entity.BillingProfileId,
+            CustomerId = entity.CustomerId,
+            TenantCode = NormalizeOperationalTenantCode(entity.TenantCode, entity.ResponsibleOfficeCode, entity.ResponsibleOfficeCode),
+            ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(entity.ResponsibleOfficeCode, entity.ResponsibleOfficeCode, OfficeCodeCatalog.Usenet),
+            CustomerName = entity.CustomerName,
+            InstallLocation = entity.InstallLocation,
+            IsCurrent = entity.IsCurrent,
+            LinkedAtUtc = NormalizeUtc(entity.LinkedAtUtc),
+            UnlinkedAtUtc = NormalizeUtc(entity.UnlinkedAtUtc)
+        };
+
     public static void Apply(this RentalBillingLog entity, RentalBillingLogDto dto)
     {
         entity.BillingProfileId = dto.BillingProfileId;

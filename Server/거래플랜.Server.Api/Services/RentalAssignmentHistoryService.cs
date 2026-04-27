@@ -1,6 +1,7 @@
-﻿using 거래플랜.Server.Api.Data;
+using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using Microsoft.EntityFrameworkCore;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Server.Api.Services;
 
@@ -36,10 +37,7 @@ public sealed class RentalAssignmentHistoryService
             currentRowsForAsset ??= [];
             var desiredCustomerName = NormalizeText(string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName);
             var desiredInstallLocation = NormalizeText(string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation);
-            var hasDesiredAssignment = asset.BillingProfileId.HasValue
-                                       || asset.CustomerId.HasValue
-                                       || !string.IsNullOrWhiteSpace(desiredCustomerName)
-                                       || !string.IsNullOrWhiteSpace(desiredInstallLocation);
+            var hasDesiredAssignment = HasCurrentAssignment(asset, desiredCustomerName, desiredInstallLocation);
 
             var matchingCurrent = currentRowsForAsset.FirstOrDefault(row =>
                 row.BillingProfileId == asset.BillingProfileId &&
@@ -54,7 +52,7 @@ public sealed class RentalAssignmentHistoryService
                 foreach (var stale in currentRowsForAsset)
                 {
                     stale.IsCurrent = false;
-                    stale.UnlinkedAtUtc ??= now;
+                    stale.UnlinkedAtUtc ??= NormalizeUtc(asset.LastAssignmentClearedAtUtc ?? now);
                 }
 
                 continue;
@@ -69,9 +67,18 @@ public sealed class RentalAssignmentHistoryService
             if (matchingCurrent is not null)
                 continue;
 
+            var linkedAtUtc = NormalizeUtc(asset.UpdatedAtUtc == default ? now : asset.UpdatedAtUtc);
+            var deterministicHistoryId = SyncIdentityGenerator.CreateRentalAssetAssignmentHistoryId(
+                asset.Id,
+                linkedAtUtc,
+                asset.BillingProfileId,
+                asset.CustomerId,
+                desiredCustomerName,
+                desiredInstallLocation);
+
             _dbContext.RentalAssetAssignmentHistories.Add(new RentalAssetAssignmentHistory
             {
-                Id = Guid.NewGuid(),
+                Id = deterministicHistoryId == Guid.Empty ? Guid.NewGuid() : deterministicHistoryId,
                 AssetId = asset.Id,
                 BillingProfileId = asset.BillingProfileId,
                 CustomerId = asset.CustomerId,
@@ -80,7 +87,7 @@ public sealed class RentalAssignmentHistoryService
                 CustomerName = desiredCustomerName,
                 InstallLocation = desiredInstallLocation,
                 IsCurrent = true,
-                LinkedAtUtc = asset.UpdatedAtUtc == default ? now : asset.UpdatedAtUtc
+                LinkedAtUtc = linkedAtUtc
             });
         }
 
@@ -96,4 +103,27 @@ public sealed class RentalAssignmentHistoryService
 
     private static string NormalizeText(string? value)
         => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+
+    private static bool HasCurrentAssignment(RentalAsset asset, string desiredCustomerName, string desiredInstallLocation)
+    {
+        if (asset.BillingProfileId.HasValue || asset.CustomerId.HasValue)
+            return true;
+
+        if (asset.LastAssignmentClearedAtUtc.HasValue)
+            return false;
+
+        return !string.IsNullOrWhiteSpace(desiredCustomerName)
+               || !string.IsNullOrWhiteSpace(desiredInstallLocation);
+    }
+
+    private static DateTime NormalizeUtc(DateTime value)
+    {
+        if (value == default)
+            return DateTime.UtcNow;
+        if (value.Kind == DateTimeKind.Utc)
+            return value;
+        if (value.Kind == DateTimeKind.Local)
+            return value.ToUniversalTime();
+        return DateTime.SpecifyKind(value, DateTimeKind.Utc);
+    }
 }

@@ -618,6 +618,31 @@ public sealed class LocalRentalAsset : LocalSyncEntity
     public string Notes { get; set; } = string.Empty;
 }
 
+public sealed class LocalRentalAssetAssignmentHistory
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid AssetId { get; set; }
+    public Guid? BillingProfileId { get; set; }
+    public Guid? CustomerId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUsenet;
+    public string CustomerName { get; set; } = string.Empty;
+    public string InstallLocation { get; set; } = string.Empty;
+    public string BillingProfileDisplay { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
+    public string MachineNumber { get; set; } = string.Empty;
+    public string ManagementNumber { get; set; } = string.Empty;
+    public decimal MonthlyFee { get; set; }
+    public DateOnly? ContractStartDate { get; set; }
+    public DateOnly? ContractEndDate { get; set; }
+    public string ChangeReason { get; set; } = string.Empty;
+    public bool IsCurrent { get; set; } = true;
+    public DateTime LinkedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? UnlinkedAtUtc { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
 public sealed class LocalRentalBillingLog : LocalSyncEntity
 {
     public Guid BillingProfileId { get; set; }

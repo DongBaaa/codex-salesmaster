@@ -419,7 +419,158 @@ public sealed class LocalStateServicePartialsTests
             Assert.Equal(OfficeCodeCatalog.Usenet, persistedAsset.ManagementCompanyCode);
             Assert.Equal(OfficeCodeCatalog.Usenet, persistedAsset.OfficeCode);
             Assert.Equal(TenantScopeCatalog.UsenetGroup, persistedAsset.TenantCode);
+
+            var history = Assert.Single(await db.RentalAssetAssignmentHistories.Where(current => current.AssetId == assetId).ToListAsync());
+            Assert.True(history.IsCurrent);
+            Assert.Equal(profileId, history.BillingProfileId);
+            Assert.Equal(customerId, history.CustomerId);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, history.ResponsibleOfficeCode);
             Assert.Equal("청구대상", persistedAsset.BillingEligibilityStatus);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+
+    [Fact]
+    public async Task RentalStateService_SaveBillingProfile_RemovingIncludedAssetClosesAssignmentHistoryWithoutDeletingAsset()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-history-unlink-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("8a111111-1111-1111-1111-111111111111");
+            var assetId = Guid.Parse("8a222222-2222-2222-2222-222222222222");
+            var customerId = Guid.Parse("8a333333-3333-3333-3333-333333333333");
+            var itemId = Guid.Parse("8a444444-4444-4444-4444-444444444444");
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "TEST:HISTORY-SN",
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementNumber = "H-001",
+                MachineNumber = "HISTORY-SN",
+                ItemName = "Printer",
+                CustomerName = "Old Customer",
+                CurrentCustomerName = "Old Customer",
+                InstallLocation = "Old Location",
+                AssetStatus = "\uC784\uB300\uC9C4\uD589\uC911",
+                BillingEligibilityStatus = "\uBBF8\uD655\uC778"
+            });
+            await db.SaveChangesAsync();
+
+            var linkedTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    ItemId = itemId,
+                    DisplayItemName = "Printer",
+                    BillingLineMode = "\uBB36\uC74C",
+                    Quantity = 1m,
+                    UnitPrice = 40_000m,
+                    Amount = 40_000m,
+                    IncludedAssetIds = [assetId]
+                }
+            });
+            var profile = new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                CustomerId = customerId,
+                CustomerName = "Customer A",
+                InstallSiteName = "Office 1",
+                BillingType = "\uBB36\uC74C",
+                BillingAdvanceMode = "\uD6C4\uBD88",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = linkedTemplateJson,
+                MonthlyAmount = 40_000m
+            };
+
+            var service = new RentalStateService(db);
+            var linkResult = await service.SaveBillingProfileAsync(
+                profile,
+                CreateAdminSession(),
+                [
+                    new RentalBillingAssetLinkEdit
+                    {
+                        AssetId = assetId,
+                        CustomerId = customerId,
+                        CustomerName = "Customer A",
+                        InstallLocation = "Office 1",
+                        MonthlyFee = 40_000m
+                    }
+                ]);
+            Assert.True(linkResult.Success, linkResult.Message);
+
+            db.ChangeTracker.Clear();
+            var unlinkedTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    ItemId = itemId,
+                    DisplayItemName = "Printer",
+                    BillingLineMode = "\uBB36\uC74C",
+                    Quantity = 1m,
+                    UnitPrice = 40_000m,
+                    Amount = 40_000m
+                }
+            });
+            var unlinkProfile = new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                CustomerId = customerId,
+                CustomerName = "Customer A",
+                InstallSiteName = "Office 1",
+                BillingType = "\uBB36\uC74C",
+                BillingAdvanceMode = "\uD6C4\uBD88",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = unlinkedTemplateJson,
+                MonthlyAmount = 40_000m
+            };
+
+            var unlinkResult = await new RentalStateService(db).SaveBillingProfileAsync(
+                unlinkProfile,
+                CreateAdminSession(),
+                Array.Empty<RentalBillingAssetLinkEdit>());
+            Assert.True(unlinkResult.Success, unlinkResult.Message);
+
+            var persistedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
+            Assert.Null(persistedAsset.BillingProfileId);
+            Assert.Null(persistedAsset.CustomerId);
+            Assert.Equal("Customer A", persistedAsset.CurrentCustomerName);
+            Assert.Equal("Customer A", persistedAsset.LastCustomerName);
+            Assert.NotNull(persistedAsset.LastAssignmentClearedAtUtc);
+
+            var history = Assert.Single(await db.RentalAssetAssignmentHistories.Where(current => current.AssetId == assetId).ToListAsync());
+            Assert.False(history.IsCurrent);
+            Assert.Equal(profileId, history.BillingProfileId);
+            Assert.NotNull(history.UnlinkedAtUtc);
+
+            var rows = await new RentalStateService(db).GetAssetAssignmentHistoriesAsync(assetId);
+            var row = Assert.Single(rows);
+            Assert.False(row.IsCurrent);
+            Assert.Equal("Customer A", row.CustomerName);
         }
         finally
         {

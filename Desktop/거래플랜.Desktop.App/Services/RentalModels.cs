@@ -48,6 +48,28 @@ public sealed class RentalExpiringAssetItem
     public int DaysRemaining { get; set; }
 }
 
+public sealed class RentalAssetAssignmentHistoryViewItem
+{
+    public Guid HistoryId { get; init; }
+    public Guid AssetId { get; init; }
+    public bool IsCurrent { get; init; }
+    public string StatusDisplay => IsCurrent ? "현재 임대" : "종료";
+    public DateTime LinkedAtLocal { get; init; }
+    public DateTime? UnlinkedAtLocal { get; init; }
+    public string LinkedAtDisplay => LinkedAtLocal.ToString("yyyy-MM-dd HH:mm");
+    public string UnlinkedAtDisplay => IsCurrent ? "현재" : UnlinkedAtLocal?.ToString("yyyy-MM-dd HH:mm") ?? "-";
+    public string PeriodDisplay => $"{LinkedAtDisplay} ~ {UnlinkedAtDisplay}";
+    public string CustomerName { get; init; } = string.Empty;
+    public string InstallLocation { get; init; } = string.Empty;
+    public string BillingProfileDisplay { get; init; } = string.Empty;
+    public string ResponsibleOfficeName { get; init; } = string.Empty;
+    public string ItemName { get; init; } = string.Empty;
+    public string MachineNumber { get; init; } = string.Empty;
+    public string ManagementNumber { get; init; } = string.Empty;
+    public decimal MonthlyFee { get; init; }
+    public string ChangeReason { get; init; } = string.Empty;
+}
+
 public sealed class RentalLinkReviewItem
 {
     public string QueueType { get; set; } = string.Empty;

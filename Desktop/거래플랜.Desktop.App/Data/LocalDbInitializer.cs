@@ -255,6 +255,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryCreateRentalManagementCompaniesTableAsync(db);
         await TryCreateRentalBillingProfilesTableAsync(db);
         await TryCreateRentalAssetsTableAsync(db);
+        await TryCreateRentalAssetAssignmentHistoriesTableAsync(db);
         await TryCreateRentalBillingLogsTableAsync(db);
         await EnsureLegacyRentalNamingColumnsAsync(db);
 
@@ -3285,6 +3286,46 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         catch (Exception ex)
         {
             LogSchemaStepFailure(nameof(NormalizeRentalAssetActiveUniqueIndexesAsync), ex);
+        }
+    }
+
+    private static async Task TryCreateRentalAssetAssignmentHistoriesTableAsync(LocalDbContext db)
+    {
+        try
+        {
+            const string sql = """
+                               CREATE TABLE IF NOT EXISTS "RentalAssetAssignmentHistories" (
+                                   "Id" TEXT NOT NULL CONSTRAINT "PK_RentalAssetAssignmentHistories" PRIMARY KEY,
+                                   "AssetId" TEXT NOT NULL,
+                                   "BillingProfileId" TEXT NULL,
+                                   "CustomerId" TEXT NULL,
+                                   "TenantCode" TEXT NOT NULL DEFAULT 'USENET_GROUP',
+                                   "ResponsibleOfficeCode" TEXT NOT NULL DEFAULT 'USENET',
+                                   "CustomerName" TEXT NOT NULL DEFAULT '',
+                                   "InstallLocation" TEXT NOT NULL DEFAULT '',
+                                   "BillingProfileDisplay" TEXT NOT NULL DEFAULT '',
+                                   "ItemName" TEXT NOT NULL DEFAULT '',
+                                   "MachineNumber" TEXT NOT NULL DEFAULT '',
+                                   "ManagementNumber" TEXT NOT NULL DEFAULT '',
+                                   "MonthlyFee" REAL NOT NULL DEFAULT 0,
+                                   "ContractStartDate" TEXT NULL,
+                                   "ContractEndDate" TEXT NULL,
+                                   "ChangeReason" TEXT NOT NULL DEFAULT '',
+                                   "IsCurrent" INTEGER NOT NULL DEFAULT 1,
+                                   "LinkedAtUtc" TEXT NOT NULL,
+                                   "UnlinkedAtUtc" TEXT NULL,
+                                   "CreatedAtUtc" TEXT NOT NULL,
+                                   "UpdatedAtUtc" TEXT NOT NULL
+                               );
+                               """;
+            await db.Database.ExecuteSqlRawAsync(sql);
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_AssetId_IsCurrent\" ON \"RentalAssetAssignmentHistories\" (\"AssetId\", \"IsCurrent\");");
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_BillingProfileId\" ON \"RentalAssetAssignmentHistories\" (\"BillingProfileId\");");
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_LinkedAtUtc\" ON \"RentalAssetAssignmentHistories\" (\"LinkedAtUtc\");");
+        }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateRentalAssetAssignmentHistoriesTableAsync), ex);
         }
     }
 

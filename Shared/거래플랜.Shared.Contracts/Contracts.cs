@@ -587,6 +587,21 @@ public sealed class RentalBillingLogDto : SyncEntityDto
     public string Note { get; set; } = string.Empty;
 }
 
+public sealed class RentalAssetAssignmentHistoryDto
+{
+    public Guid Id { get; set; }
+    public Guid AssetId { get; set; }
+    public Guid? BillingProfileId { get; set; }
+    public Guid? CustomerId { get; set; }
+    public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
+    public string CustomerName { get; set; } = string.Empty;
+    public string InstallLocation { get; set; } = string.Empty;
+    public bool IsCurrent { get; set; }
+    public DateTime LinkedAtUtc { get; set; }
+    public DateTime? UnlinkedAtUtc { get; set; }
+}
+
 public sealed class ItemWarehouseStockDto
 {
     public Guid ItemId { get; set; }
@@ -663,6 +678,7 @@ public sealed class SyncPullResponse
     public List<RentalManagementCompanyDto> RentalManagementCompanies { get; set; } = new();
     public List<RentalBillingProfileDto> RentalBillingProfiles { get; set; } = new();
     public List<RentalAssetDto> RentalAssets { get; set; } = new();
+    public List<RentalAssetAssignmentHistoryDto> RentalAssetAssignmentHistories { get; set; } = new();
     public List<RentalBillingLogDto> RentalBillingLogs { get; set; } = new();
     public List<InvoiceDto> Invoices { get; set; } = new();
     public List<PaymentDto> Payments { get; set; } = new();
