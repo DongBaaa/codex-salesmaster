@@ -287,18 +287,49 @@ public partial class App : Application
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             mainWin.Show();
 
+            var session = sp.GetRequiredService<SessionState>();
+            var showStartupSyncPopupImmediately = await ShouldShowPostLoginSyncPopupImmediatelyAsync(mainVm, session);
+            Window? startupSyncPopup = null;
+            if (showStartupSyncPopupImmediately)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    mainWin.IsEnabled = false;
+                    startupSyncPopup = ShowActivityPopup(
+                        mainWin,
+                        "거래플랜 동기화",
+                        "로그인 후 화면과 데이터를 준비하고 있습니다.\n잠시만 기다려 주세요.");
+                }, DispatcherPriority.Send);
+
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    startupSyncPopup?.UpdateLayout();
+                }, DispatcherPriority.Render);
+            }
+
             var initSucceeded = await OperationTiming.MeasureAsync(
                 "UI",
                 "메인 윈도우 초기화",
-                () => TryInitializeMainWindowAsync(mainWin, mainVm),
+                () => TryInitializeMainWindowAsync(mainWin, mainVm, deferStartupNotifications: showStartupSyncPopupImmediately),
                 warningThreshold: TimeSpan.FromSeconds(4));
             if (initSucceeded && !_updateShutdownRequested && !_shutdownInProgress && !mainScopeDisposed && mainWin.IsLoaded)
             {
+                var popupForPostLoginSync = startupSyncPopup;
+                startupSyncPopup = null;
                 UiTaskHelper.Forget(
-                    RunPostLoginSyncWithPopupAsync(mainWin, mainVm, sp.GetRequiredService<SessionState>()),
+                    RunPostLoginSyncThenStartupNotificationsAsync(
+                        mainWin,
+                        mainVm,
+                        session,
+                        popupForPostLoginSync,
+                        showDeferredStartupNotifications: showStartupSyncPopupImmediately),
                     "APP",
                     "로그인 후 자동 동기화",
                     ex => AppLogger.Error("APP", "Post-login sync scheduling failure", ex));
+            }
+            else
+            {
+                CloseStartupSyncPopup(mainWin, startupSyncPopup);
             }
         }
         catch (Exception ex)
@@ -445,6 +476,22 @@ public partial class App : Application
                     exception: ex,
                     severity: "Warning");
             }
+        }
+    }
+
+    private static async Task<bool> ShouldShowPostLoginSyncPopupImmediatelyAsync(MainViewModel mainVm, SessionState session)
+    {
+        if (session.IsOfflineMode)
+            return false;
+
+        try
+        {
+            return await mainVm.ShouldShowPostLoginSyncPopupAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("APP", $"시작 동기화 팝업 사전 판단 실패: {ex.Message}");
+            return false;
         }
     }
 
@@ -654,11 +701,11 @@ public partial class App : Application
         }
     }
 
-    private async Task<bool> TryInitializeMainWindowAsync(MainWindow mainWin, MainViewModel mainVm)
+    private async Task<bool> TryInitializeMainWindowAsync(MainWindow mainWin, MainViewModel mainVm, bool deferStartupNotifications = false)
     {
         try
         {
-            await mainWin.InitAsync();
+            await mainWin.InitAsync(deferStartupNotifications);
             return true;
         }
         catch (Exception ex)
@@ -681,7 +728,29 @@ public partial class App : Application
         return Task.CompletedTask;
     }
 
-    private async Task RunPostLoginSyncWithPopupAsync(MainWindow mainWin, MainViewModel mainVm, SessionState session)
+    private async Task RunPostLoginSyncThenStartupNotificationsAsync(
+        MainWindow mainWin,
+        MainViewModel mainVm,
+        SessionState session,
+        Window? startupSyncPopup,
+        bool showDeferredStartupNotifications)
+    {
+        try
+        {
+            await RunPostLoginSyncWithPopupAsync(mainWin, mainVm, session, startupSyncPopup);
+        }
+        finally
+        {
+            if (showDeferredStartupNotifications && mainWin.IsLoaded)
+            {
+                await Dispatcher.InvokeAsync(
+                    mainWin.ShowDeferredStartupNotifications,
+                    DispatcherPriority.Background);
+            }
+        }
+    }
+
+    private async Task RunPostLoginSyncWithPopupAsync(MainWindow mainWin, MainViewModel mainVm, SessionState session, Window? existingPopup = null)
     {
         if (session.IsOfflineMode)
         {
@@ -690,27 +759,48 @@ public partial class App : Application
             return;
         }
 
-        var showBlockingPopup = await mainVm.ShouldShowPostLoginSyncPopupAsync();
+        bool showBlockingPopup;
+        try
+        {
+            showBlockingPopup = await mainVm.ShouldShowPostLoginSyncPopupAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("APP", $"시작 동기화 팝업 표시 판단 실패: {ex.Message}");
+            showBlockingPopup = false;
+        }
+
         if (!showBlockingPopup)
         {
+            CloseStartupSyncPopup(mainWin, existingPopup);
             mainVm.SyncStatus = "로그인 완료. 시작 동기화는 백그라운드에서 확인합니다.";
             await mainVm.RunPostLoginSyncAsync();
             await mainWin.RunDataIntegrityScanAndPromptAsync("로그인 후 동기화");
             return;
         }
 
-        Window? popup = null;
+        Window? popup = existingPopup;
         Task? syncTask = null;
         try
         {
-            await Dispatcher.InvokeAsync(() =>
+            if (popup is null)
             {
-                mainWin.IsEnabled = false;
-                popup = ShowActivityPopup(
-                    mainWin,
-                    "거래플랜 동기화",
-                    "로그인 후 데이터를 불러오고 있습니다.\n오래 걸리면 화면을 먼저 열고 백그라운드에서 계속 진행합니다.");
-            }, DispatcherPriority.Send);
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    mainWin.IsEnabled = false;
+                    popup = ShowActivityPopup(
+                        mainWin,
+                        "거래플랜 동기화",
+                        "로그인 후 데이터를 불러오고 있습니다.\n오래 걸리면 화면을 먼저 열고 백그라운드에서 계속 진행합니다.");
+                }, DispatcherPriority.Send);
+            }
+            else
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    mainWin.IsEnabled = false;
+                }, DispatcherPriority.Send);
+            }
 
             await Dispatcher.InvokeAsync(() =>
             {
@@ -749,6 +839,24 @@ public partial class App : Application
             await syncTask;
 
         await mainWin.RunDataIntegrityScanAndPromptAsync("로그인 후 동기화");
+    }
+
+    private static void CloseStartupSyncPopup(MainWindow mainWin, Window? popup)
+    {
+        try
+        {
+            popup?.Close();
+        }
+        catch
+        {
+            // ignored
+        }
+
+        if (mainWin.IsLoaded)
+        {
+            mainWin.IsEnabled = true;
+            mainWin.Activate();
+        }
     }
 
     private async Task<SaveCycleResult> RunSaveCycleAsync(IServiceProvider sp, MainViewModel mainVm, bool isShutdown)

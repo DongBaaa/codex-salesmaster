@@ -40,6 +40,8 @@ public partial class MainWindow : Window
     private bool _runtimeSafetyCheckInProgress;
     private bool _dataIntegrityPromptInProgress;
     private string _lastDataIntegrityIssueSignature = string.Empty;
+    private string? _deferredStartupDashboardMessage;
+    private string? _deferredStartupClockWarningMessage;
 
     public MainWindow(MainViewModel vm, LocalStateService local,
                       RentalStateService rental,
@@ -158,7 +160,7 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
-    public async Task InitAsync()
+    public async Task InitAsync(bool deferStartupNotifications = false)
     {
         if (_isClosingOrClosed)
             return;
@@ -192,30 +194,64 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(_vm.RentalAlertPopupMessage))
             popupSections.Add(_vm.RentalAlertPopupMessage);
 
-        if (popupSections.Count > 0)
+        var dashboardMessage = popupSections.Count > 0
+            ? string.Join(Environment.NewLine + Environment.NewLine, popupSections)
+              + Environment.NewLine
+              + Environment.NewLine
+              + "확인을 누르면 메인화면으로 이동해 계속 작업할 수 있습니다."
+            : null;
+
+        var clockWarningMessage = serverClockCheck.WarningRequired && !string.IsNullOrWhiteSpace(serverClockCheck.WarningMessage)
+            ? serverClockCheck.WarningMessage
+            : null;
+
+        if (deferStartupNotifications)
+        {
+            _deferredStartupDashboardMessage = dashboardMessage;
+            _deferredStartupClockWarningMessage = clockWarningMessage;
+        }
+        else
+        {
+            ShowStartupNotifications(dashboardMessage, clockWarningMessage);
+        }
+
+        _isInitialized = true;
+        QueueDeferredStartupSafetyChecks();
+    }
+
+    public void ShowDeferredStartupNotifications()
+    {
+        var dashboardMessage = _deferredStartupDashboardMessage;
+        var clockWarningMessage = _deferredStartupClockWarningMessage;
+        _deferredStartupDashboardMessage = null;
+        _deferredStartupClockWarningMessage = null;
+
+        ShowStartupNotifications(dashboardMessage, clockWarningMessage);
+    }
+
+    private void ShowStartupNotifications(string? dashboardMessage, string? clockWarningMessage)
+    {
+        if (_isClosingOrClosed || !IsLoaded)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(dashboardMessage))
         {
             MessageBox.Show(
-                string.Join(Environment.NewLine + Environment.NewLine, popupSections)
-                + Environment.NewLine
-                + Environment.NewLine
-                + "확인을 누르면 메인화면으로 이동해 계속 작업할 수 있습니다.",
+                dashboardMessage,
                 "대시보드 알림",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
 
-        if (serverClockCheck.WarningRequired && !string.IsNullOrWhiteSpace(serverClockCheck.WarningMessage))
+        if (!string.IsNullOrWhiteSpace(clockWarningMessage))
         {
             MessageBox.Show(
                 this,
-                serverClockCheck.WarningMessage,
+                clockWarningMessage,
                 "PC 시간 확인",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
         }
-
-        _isInitialized = true;
-        QueueDeferredStartupSafetyChecks();
     }
 
     private void QueueDeferredStartupSafetyChecks()
