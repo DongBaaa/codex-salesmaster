@@ -44,6 +44,8 @@
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Height" Value="28"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style x:Key="ReadOnlyInfoTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
             <Setter Property="IsReadOnly" Value="True"/>
@@ -76,6 +78,8 @@
             <Setter Property="Padding" Value="8,1"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="184"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -168,7 +172,7 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0">
-                    <TextBlock Text="수금/지급 입력"
+                    <TextBlock Text="거래처별 수금·지급 내역 입력과 최근 처리기록 확인"
                                Foreground="White"
                                FontSize="18"
                                FontWeight="Bold"/>
@@ -278,7 +282,7 @@
                                        DisplayMemberPath="Label"
                                        SelectedValuePath="Value"
                                        SelectedValue="{Binding SelectedTransactionKind}"/>
-                            <TextBlock Grid.Column="3" Text="정산금액" Style="{StaticResource InlineInfoLabelStyle}"/>
+                            <TextBlock Grid.Column="3" Text="대표전화" Style="{StaticResource InlineInfoLabelStyle}"/>
                             <Grid Grid.Column="4">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -706,7 +710,7 @@
                                     <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
 
-                                <Label Grid.Row="0" Grid.Column="0" Content="증빙종류"/>
+                            <Label Grid.Row="0" Grid.Column="0" Content="지급일자"/>
                                 <ComboBox Grid.Row="0"
                                           Grid.Column="1"
                                           ItemsSource="{Binding AttachmentTypes}"

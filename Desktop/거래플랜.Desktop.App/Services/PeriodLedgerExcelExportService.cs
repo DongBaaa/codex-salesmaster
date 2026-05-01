@@ -1,11 +1,14 @@
 ﻿using System.Diagnostics;
 using System.IO;
 using ClosedXML.Excel;
+using 거래플랜.Desktop.App.Infrastructure;
 
 namespace 거래플랜.Desktop.App.Services;
 
 public sealed class PeriodLedgerExcelExportService
 {
+    private const int BlockLedgerColumnCount = 10;
+
     public async Task<string> ExportAsync(
         PeriodLedgerBuildResult data,
         string? exportDirectory = null,
@@ -52,16 +55,16 @@ public sealed class PeriodLedgerExcelExportService
         var includeProfit = data.Query.IncludeProfit;
 
         ws.Cell(1, 1).Value = data.Title;
-        ws.Range(1, 1, 1, includeProfit ? 9 : 8).Merge();
+        ws.Range(1, 1, 1, BlockLedgerColumnCount).Merge();
         ws.Cell(1, 1).Style.Font.Bold = true;
         ws.Cell(1, 1).Style.Font.FontSize = 16;
         ws.Cell(1, 1).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
 
         ws.Cell(2, 1).Value = $"기간: {data.Query.From:yyyy-MM-dd} ~ {data.Query.To:yyyy-MM-dd}";
-        ws.Range(2, 1, 2, includeProfit ? 9 : 8).Merge();
+        ws.Range(2, 1, 2, BlockLedgerColumnCount).Merge();
 
         ws.Cell(3, 1).Value = $"구분: {data.ScopeLabel}  /  옵션: 가나다라순({(data.Query.SortByCustomerName ? "ON" : "OFF")}), 순이익표시({(includeProfit ? "ON" : "OFF")})";
-        ws.Range(3, 1, 3, includeProfit ? 9 : 8).Merge();
+        ws.Range(3, 1, 3, BlockLedgerColumnCount).Merge();
 
         var row = 5;
         WriteBlockLedgerHeader(ws, row, includeProfit);
@@ -71,7 +74,7 @@ public sealed class PeriodLedgerExcelExportService
         foreach (var block in data.Blocks)
         {
             ws.Cell(row, 1).Value = block.CustomerName;
-            ws.Range(row, 1, row, includeProfit ? 9 : 8).Merge();
+            ws.Range(row, 1, row, BlockLedgerColumnCount).Merge();
             ws.Cell(row, 1).Style.Fill.BackgroundColor = XLColor.FromHtml("#E9EDF7");
             ws.Cell(row, 1).Style.Font.Bold = true;
             ws.Cell(row, 1).Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
@@ -83,11 +86,12 @@ public sealed class PeriodLedgerExcelExportService
                 {
                     ws.Cell(row, 3).Value = "(소계)";
                     ws.Cell(row, 5).Value = entry.SubTotalQuantity;
-                    ws.Cell(row, 7).Value = entry.SubTotalAmount;
+                    ws.Cell(row, 7).Value = (entry.SubTotalAmount ?? 0m) - (entry.SubTotalVat ?? 0m);
                     ws.Cell(row, 8).Value = entry.SubTotalVat;
-                    ws.Range(row, 1, row, includeProfit ? 9 : 8).Style.Font.Bold = true;
-                    ws.Range(row, 1, row, includeProfit ? 9 : 8).Style.Fill.BackgroundColor = XLColor.FromHtml("#F8F8F8");
-                    ApplyRowBorder(ws, row, includeProfit);
+                    ws.Cell(row, 9).Value = entry.SubTotalAmount;
+                    ws.Range(row, 1, row, BlockLedgerColumnCount).Style.Font.Bold = true;
+                    ws.Range(row, 1, row, BlockLedgerColumnCount).Style.Fill.BackgroundColor = XLColor.FromHtml("#F8F8F8");
+                    ApplyRowBorder(ws, row, includeProfit, endColumnOverride: BlockLedgerColumnCount);
                     ApplyNumberFormats(ws, row, includeProfit, subtotalRow: true);
                     row++;
                     continue;
@@ -103,8 +107,9 @@ public sealed class PeriodLedgerExcelExportService
                 ws.Cell(row, 8).Value = entry.ReceivableBalance;
                 if (includeProfit)
                     ws.Cell(row, 9).Value = entry.ProfitAmount;
+                ws.Cell(row, includeProfit ? 10 : 9).Value = entry.Note;
 
-                ApplyRowBorder(ws, row, includeProfit);
+                ApplyRowBorder(ws, row, includeProfit, endColumnOverride: BlockLedgerColumnCount);
                 ApplyNumberFormats(ws, row, includeProfit);
 
                 row++;
@@ -115,11 +120,13 @@ public sealed class PeriodLedgerExcelExportService
                     ws.Cell(row, 4).Value = "규격";
                     ws.Cell(row, 5).Value = "수량";
                     ws.Cell(row, 6).Value = "단가";
-                    ws.Cell(row, 7).Value = "합계";
+                    ws.Cell(row, 7).Value = "공급가";
                     ws.Cell(row, 8).Value = "부가세";
-                    ws.Range(row, 3, row, 8).Style.Fill.BackgroundColor = XLColor.FromHtml("#F1F3F8");
-                    ws.Range(row, 3, row, 8).Style.Font.Bold = true;
-                    ApplyRowBorder(ws, row, includeProfit);
+                    ws.Cell(row, 9).Value = "합계";
+                    ws.Cell(row, 10).Value = "품목비고";
+                    ws.Range(row, 3, row, 10).Style.Fill.BackgroundColor = XLColor.FromHtml("#F1F3F8");
+                    ws.Range(row, 3, row, 10).Style.Font.Bold = true;
+                    ApplyRowBorder(ws, row, includeProfit, endColumnOverride: BlockLedgerColumnCount);
                     row++;
 
                     foreach (var item in entry.Items)
@@ -129,10 +136,13 @@ public sealed class PeriodLedgerExcelExportService
                         ws.Cell(row, 4).Value = item.Specification;
                         ws.Cell(row, 5).Value = item.Quantity;
                         ws.Cell(row, 6).Value = item.UnitPrice;
-                        ws.Cell(row, 7).Value = item.LineAmount;
+                        ws.Cell(row, 7).Value = item.SupplyAmount;
                         ws.Cell(row, 8).Value = item.VatAmount;
-                        ApplyRowBorder(ws, row, includeProfit);
-                        ws.Range(row, 5, row, 8).Style.NumberFormat.Format = "#,##0";
+                        ws.Cell(row, 9).Value = item.LineAmount;
+                        ws.Cell(row, 10).Value = item.ItemNote;
+                        ApplyRowBorder(ws, row, includeProfit, endColumnOverride: BlockLedgerColumnCount);
+                        ws.Range(row, 5, row, 9).Style.NumberFormat.Format = "#,##0";
+                        ws.Range(row, 5, row, 9).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Right;
                         row++;
                     }
                 }
@@ -148,12 +158,12 @@ public sealed class PeriodLedgerExcelExportService
         if (includeProfit)
             ws.Cell(row, 9).Value = data.Totals.ProfitAmount;
 
-        ws.Range(row, 1, row, includeProfit ? 9 : 8).Style.Font.Bold = true;
-        ws.Range(row, 1, row, includeProfit ? 9 : 8).Style.Fill.BackgroundColor = XLColor.FromHtml("#EFEFEF");
-        ApplyRowBorder(ws, row, includeProfit);
+        ws.Range(row, 1, row, BlockLedgerColumnCount).Style.Font.Bold = true;
+        ws.Range(row, 1, row, BlockLedgerColumnCount).Style.Fill.BackgroundColor = XLColor.FromHtml("#EFEFEF");
+        ApplyRowBorder(ws, row, includeProfit, endColumnOverride: BlockLedgerColumnCount);
         ApplyNumberFormats(ws, row, includeProfit);
 
-        SetCommonSheetStyles(ws, includeProfit ? 9 : 8, headerRow, row, applyBlockDefaultWidths: true);
+        SetCommonSheetStyles(ws, BlockLedgerColumnCount, headerRow, row, applyBlockDefaultWidths: true);
     }
 
     private static void FillPaymentLedgerSheet(IXLWorksheet ws, PeriodLedgerBuildResult data)
@@ -171,7 +181,7 @@ public sealed class PeriodLedgerExcelExportService
         ws.Range(3, 1, 3, 11).Merge();
 
         var row = 5;
-        var headers = new[] { "No", "거래날짜", "전표구분", "품목거래내역", "거래금액", "수금액", "지불액", "누적잔액", "전미수/미지불", "거래처명", "비고" };
+        var headers = new[] { "No", "거래날짜", "전표구분", "품목거래내역", "거래금액", "수금액", "지불액", "누적잔액", "전미수/미지불", "거래처명", "전표메모" };
         for (var i = 0; i < headers.Length; i++)
             ws.Cell(row, i + 1).Value = headers[i];
 
@@ -215,8 +225,8 @@ public sealed class PeriodLedgerExcelExportService
         ApplyRowBorder(ws, row, false, endColumnOverride: 11);
         ws.Range(row, 5, row, 9).Style.NumberFormat.Format = "#,##0";
 
-        SetPaymentColumnWidths(ws);
         SetCommonSheetStyles(ws, 11, headerRow, row, applyBlockDefaultWidths: false);
+        SetPaymentColumnWidths(ws);
     }
 
     private static void FillYeonsuDeliverySheet(IXLWorksheet ws, PeriodLedgerBuildResult data)
@@ -236,7 +246,7 @@ public sealed class PeriodLedgerExcelExportService
         var row = 5;
         var headers = new[]
         {
-            "No", "납품일자", "거래처명", "품목요약", "합계금액", "출고창고", "비고", "마지막 저장자", "마지막 저장시간"
+            "No", "납품일자", "거래처명", "품목요약", "합계금액", "출고창고", "전표메모", "마지막 저장자", "마지막 저장시간"
         };
         for (var i = 0; i < headers.Length; i++)
             ws.Cell(row, i + 1).Value = headers[i];
@@ -275,15 +285,15 @@ public sealed class PeriodLedgerExcelExportService
         ApplyRowBorder(ws, row, includeProfit: false, endColumnOverride: 9);
         ws.Cell(row, 5).Style.NumberFormat.Format = "#,##0";
 
-        SetYeonsuColumnWidths(ws);
         SetCommonSheetStyles(ws, 9, headerRow, row, applyBlockDefaultWidths: false);
+        SetYeonsuColumnWidths(ws);
     }
 
     private static void WriteBlockLedgerHeader(IXLWorksheet ws, int row, bool includeProfit)
     {
         var headers = includeProfit
-            ? new[] { "거래날짜", "구분", "품목거래내역", "거래금액", "수금액", "지불액", "누적잔액", "전미수/미지불", "순이익" }
-            : new[] { "거래날짜", "구분", "품목거래내역", "거래금액", "수금액", "지불액", "누적잔액", "전미수/미지불" };
+            ? new[] { "거래날짜", "구분", "품목거래내역", "거래금액", "수금액", "지불액", "누적잔액", "전미수/미지불", "순이익", "전표메모" }
+            : new[] { "거래날짜", "구분", "품목거래내역", "거래금액", "수금액", "지불액", "누적잔액", "전미수/미지불", "전표메모", "품목비고" };
 
         for (var i = 0; i < headers.Length; i++)
             ws.Cell(row, i + 1).Value = headers[i];
@@ -291,7 +301,7 @@ public sealed class PeriodLedgerExcelExportService
         ws.Range(row, 1, row, headers.Length).Style.Fill.BackgroundColor = XLColor.FromHtml("#E5E5E5");
         ws.Range(row, 1, row, headers.Length).Style.Font.Bold = true;
         ws.Range(row, 1, row, headers.Length).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-        ApplyRowBorder(ws, row, includeProfit);
+        ApplyRowBorder(ws, row, includeProfit, endColumnOverride: BlockLedgerColumnCount);
     }
 
     private static void ApplyRowBorder(IXLWorksheet ws, int row, bool includeProfit, int? endColumnOverride = null)
@@ -305,13 +315,14 @@ public sealed class PeriodLedgerExcelExportService
     {
         if (!subtotalRow)
         {
-            ws.Range(row, 4, row, includeProfit ? 9 : 8).Style.NumberFormat.Format = "#,##0";
-            ws.Range(row, 4, row, includeProfit ? 9 : 8).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Right;
+            var lastAmountColumn = includeProfit ? 9 : 8;
+            ws.Range(row, 4, row, lastAmountColumn).Style.NumberFormat.Format = "#,##0";
+            ws.Range(row, 4, row, lastAmountColumn).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Right;
         }
         else
         {
-            ws.Range(row, 5, row, 8).Style.NumberFormat.Format = "#,##0";
-            ws.Range(row, 5, row, 8).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Right;
+            ws.Range(row, 5, row, 9).Style.NumberFormat.Format = "#,##0";
+            ws.Range(row, 5, row, 9).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Right;
         }
     }
 
@@ -338,39 +349,49 @@ public sealed class PeriodLedgerExcelExportService
         // hard minimum-like readability: do not drop below 9pt by avoiding workbook scaling over-compression.
         ws.PageSetup.Scale = 100;
 
-        if (applyBlockDefaultWidths && lastCol <= 9)
-            SetBlockColumnWidths(ws, lastCol == 9);
+        if (applyBlockDefaultWidths)
+            SetBlockColumnWidths(ws, lastCol >= BlockLedgerColumnCount && ws.Cell(headerRow, 9).GetString() == "순이익");
     }
 
     private static void SetBlockColumnWidths(IXLWorksheet ws, bool includeProfit)
     {
-        ws.Column(1).Width = 12;
-        ws.Column(2).Width = 8;
-        ws.Column(3).Width = 40;
-        ws.Column(4).Width = 15;
-        ws.Column(5).Width = 15;
-        ws.Column(6).Width = 15;
-        ws.Column(7).Width = 15;
-        ws.Column(8).Width = 15;
+        EnsureColumnMinWidth(ws.Column(1), 12);
+        EnsureColumnMinWidth(ws.Column(2), 8);
+        EnsureColumnMinWidth(ws.Column(3), 32);
+        EnsureColumnMinWidth(ws.Column(4), 13);
+        EnsureColumnMinWidth(ws.Column(5), 13);
+        EnsureColumnMinWidth(ws.Column(6), 13);
+        EnsureColumnMinWidth(ws.Column(7), 13);
+        EnsureColumnMinWidth(ws.Column(8), 13);
         if (includeProfit)
-            ws.Column(9).Width = 15;
+        {
+            EnsureColumnMinWidth(ws.Column(9), 13);
+            EnsureColumnMinWidth(ws.Column(10), 26);
+        }
+        else
+        {
+            EnsureColumnMinWidth(ws.Column(9), 26);
+            EnsureColumnMinWidth(ws.Column(10), 24);
+        }
 
         ws.Column(3).Style.Alignment.WrapText = true;
+        ws.Column(9).Style.Alignment.WrapText = true;
+        ws.Column(10).Style.Alignment.WrapText = true;
     }
 
     private static void SetPaymentColumnWidths(IXLWorksheet ws)
     {
-        ws.Column(1).Width = 6;
-        ws.Column(2).Width = 12;
-        ws.Column(3).Width = 10;
-        ws.Column(4).Width = 35;
-        ws.Column(5).Width = 15;
-        ws.Column(6).Width = 15;
-        ws.Column(7).Width = 15;
-        ws.Column(8).Width = 15;
-        ws.Column(9).Width = 15;
-        ws.Column(10).Width = 24;
-        ws.Column(11).Width = 24;
+        EnsureColumnMinWidth(ws.Column(1), 6);
+        EnsureColumnMinWidth(ws.Column(2), 12);
+        EnsureColumnMinWidth(ws.Column(3), 10);
+        EnsureColumnMinWidth(ws.Column(4), 35);
+        EnsureColumnMinWidth(ws.Column(5), 15);
+        EnsureColumnMinWidth(ws.Column(6), 15);
+        EnsureColumnMinWidth(ws.Column(7), 15);
+        EnsureColumnMinWidth(ws.Column(8), 15);
+        EnsureColumnMinWidth(ws.Column(9), 15);
+        EnsureColumnMinWidth(ws.Column(10), 24);
+        EnsureColumnMinWidth(ws.Column(11), 24);
         ws.Column(4).Style.Alignment.WrapText = true;
         ws.Column(10).Style.Alignment.WrapText = true;
         ws.Column(11).Style.Alignment.WrapText = true;
@@ -378,17 +399,23 @@ public sealed class PeriodLedgerExcelExportService
 
     private static void SetYeonsuColumnWidths(IXLWorksheet ws)
     {
-        ws.Column(1).Width = 6;
-        ws.Column(2).Width = 12;
-        ws.Column(3).Width = 24;
-        ws.Column(4).Width = 36;
-        ws.Column(5).Width = 15;
-        ws.Column(6).Width = 14;
-        ws.Column(7).Width = 24;
-        ws.Column(8).Width = 14;
-        ws.Column(9).Width = 20;
+        EnsureColumnMinWidth(ws.Column(1), 6);
+        EnsureColumnMinWidth(ws.Column(2), 12);
+        EnsureColumnMinWidth(ws.Column(3), 24);
+        EnsureColumnMinWidth(ws.Column(4), 36);
+        EnsureColumnMinWidth(ws.Column(5), 15);
+        EnsureColumnMinWidth(ws.Column(6), 14);
+        EnsureColumnMinWidth(ws.Column(7), 24);
+        EnsureColumnMinWidth(ws.Column(8), 14);
+        EnsureColumnMinWidth(ws.Column(9), 20);
         ws.Column(4).Style.Alignment.WrapText = true;
         ws.Column(7).Style.Alignment.WrapText = true;
+    }
+
+    private static void EnsureColumnMinWidth(IXLColumn column, double minimumWidth)
+    {
+        if (column.Width < minimumWidth)
+            column.Width = minimumWidth;
     }
 
     private static void ApplyPrintSetup(IXLWorksheet ws)
@@ -408,10 +435,7 @@ public sealed class PeriodLedgerExcelExportService
         if (!string.IsNullOrWhiteSpace(preferred))
             return preferred.Trim();
 
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "거래플랜",
-            "Exports");
+        return AppPaths.UserDownloadsDir;
     }
 
     private static string BuildFileName(PeriodLedgerBuildResult data)
@@ -439,10 +463,17 @@ public sealed class PeriodLedgerExcelExportService
 
     private static void OpenWithShell(string path)
     {
-        Process.Start(new ProcessStartInfo(path)
+        try
         {
-            UseShellExecute = true
-        });
+            Process.Start(new ProcessStartInfo(path)
+            {
+                UseShellExecute = true
+            });
+        }
+        catch
+        {
+            // 파일 저장은 완료되었으므로, 기본 연결 프로그램 실행 실패는 집계 실패로 처리하지 않습니다.
+        }
     }
 }
 

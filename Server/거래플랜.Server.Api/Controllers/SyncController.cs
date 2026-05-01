@@ -116,8 +116,8 @@ public sealed class SyncController : ControllerBase
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             RentalAssetAssignmentHistories = readableRentalAssetIds.Count == 0
                 ? []
-                : await _dbContext.RentalAssetAssignmentHistories.AsNoTracking()
-                    .Where(history => readableRentalAssetIds.Contains(history.AssetId))
+                : await _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking()
+                    .Where(history => history.Revision > sinceRev && readableRentalAssetIds.Contains(history.AssetId))
                     .OrderByDescending(history => history.IsCurrent)
                     .ThenByDescending(history => history.LinkedAtUtc)
                     .Select(history => history.ToDto())
@@ -301,7 +301,9 @@ public sealed class SyncController : ControllerBase
             }
 
             var resolvedRentalProfileIds = BuildResolvedRentalBillingProfileIdMap(validRentalProfiles, incomingRentalProfileIdMap);
-            var requiresRentalAssetLock = (request.RentalAssets?.Count ?? 0) > 0;
+            var requiresRentalAssetLock =
+                (request.RentalAssets?.Count ?? 0) > 0 ||
+                (request.RentalAssetAssignmentHistories?.Count ?? 0) > 0;
             if (requiresRentalAssetLock)
                 await RentalAssetSyncLock.WaitAsync(cancellationToken);
 
@@ -311,6 +313,9 @@ public sealed class SyncController : ControllerBase
                 var validRentalAssets = await FilterValidRentalAssetsAsync(scopedRentalAssets, resolvedRentalProfileIds, result, cancellationToken);
                 await UpsertEntitiesAsync(validRentalAssets, _dbContext.RentalAssets,
                     (e, d) => e.Apply(d), d => new RentalAsset { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+                var scopedRentalAssignmentHistories = await PrepareScopedRentalAssetAssignmentHistoriesAsync(request.RentalAssetAssignmentHistories ?? [], result, cancellationToken);
+                await UpsertEntitiesAsync(scopedRentalAssignmentHistories, _dbContext.RentalAssetAssignmentHistories,
+                    (e, d) => e.Apply(d), d => new RentalAssetAssignmentHistory { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
                 var scopedRentalBillingLogs = await PrepareScopedRentalBillingLogsAsync(request.RentalBillingLogs ?? [], result, cancellationToken);
                 var validRentalBillingLogs = await FilterValidRentalBillingLogsAsync(scopedRentalBillingLogs, result, cancellationToken);
                 await UpsertEntitiesAsync(validRentalBillingLogs, _dbContext.RentalBillingLogs,
@@ -2153,6 +2158,90 @@ public sealed class SyncController : ControllerBase
                 reservedManagementNumbers,
                 cancellationToken);
             dto.AssetKey = BuildRentalAssetKey(dto.ManagementCompanyCode, dto.ManagementNumber, dto.ManagementId, dto.MachineNumber, dto.CustomerName, dto.ItemName);
+            scoped.Add(dto);
+        }
+
+        return scoped;
+    }
+
+    private async Task<List<RentalAssetAssignmentHistoryDto>> PrepareScopedRentalAssetAssignmentHistoriesAsync(
+        IEnumerable<RentalAssetAssignmentHistoryDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var scoped = new List<RentalAssetAssignmentHistoryDto>();
+
+        foreach (var dto in payload)
+        {
+            dto.Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id;
+            if (dto.AssetId == Guid.Empty)
+            {
+                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory), "Referenced rental asset was not found.", result);
+                continue;
+            }
+
+            var existing = await _dbContext.RentalAssetAssignmentHistories
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(history => history.Id == dto.Id, cancellationToken);
+            var asset = await _dbContext.RentalAssets
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == dto.AssetId, cancellationToken);
+
+            if (asset is null && existing is null)
+            {
+                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory), "Referenced rental asset was not found.", result);
+                continue;
+            }
+
+            var responsibleOfficeCode = existing?.ResponsibleOfficeCode
+                                        ?? asset?.ResponsibleOfficeCode
+                                        ?? dto.ResponsibleOfficeCode;
+            var officeCode = existing?.OfficeCode
+                             ?? asset?.OfficeCode
+                             ?? dto.OfficeCode;
+            var tenantCode = existing?.TenantCode
+                             ?? asset?.TenantCode
+                             ?? dto.TenantCode;
+
+            if (!_officeScopeService.CanWriteOfficeForRentals(responsibleOfficeCode, tenantCode))
+            {
+                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory), "Current account cannot modify this office scope.", result);
+                continue;
+            }
+
+            dto.ResponsibleOfficeCode = _officeScopeService.ResolveRentalResponsibleScopeForCreate(
+                responsibleOfficeCode,
+                officeCode);
+            dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                officeCode,
+                dto.ResponsibleOfficeCode,
+                officeCode);
+            dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(
+                tenantCode,
+                dto.OfficeCode,
+                tenantCode,
+                dto.OfficeCode);
+
+            if (asset is not null)
+            {
+                dto.ItemName = string.IsNullOrWhiteSpace(dto.ItemName) ? asset.ItemName : dto.ItemName.Trim();
+                dto.MachineNumber = string.IsNullOrWhiteSpace(dto.MachineNumber) ? asset.MachineNumber : dto.MachineNumber.Trim();
+                dto.ManagementNumber = string.IsNullOrWhiteSpace(dto.ManagementNumber) ? asset.ManagementNumber : dto.ManagementNumber.Trim();
+                if (dto.MonthlyFee <= 0m)
+                    dto.MonthlyFee = asset.MonthlyFee;
+                dto.ContractStartDate ??= asset.ContractStartDate;
+                dto.ContractEndDate ??= asset.RentalEndDate;
+            }
+
+            dto.CustomerName = dto.CustomerName?.Trim() ?? string.Empty;
+            dto.InstallLocation = dto.InstallLocation?.Trim() ?? string.Empty;
+            dto.BillingProfileDisplay = dto.BillingProfileDisplay?.Trim() ?? string.Empty;
+            dto.ChangeReason = dto.ChangeReason?.Trim() ?? string.Empty;
+            if (!dto.IsCurrent && dto.UnlinkedAtUtc is null)
+                dto.UnlinkedAtUtc = dto.LinkedAtUtc == default ? DateTime.UtcNow : dto.LinkedAtUtc;
+            if (dto.LinkedAtUtc == default)
+                dto.LinkedAtUtc = dto.UnlinkedAtUtc ?? DateTime.UtcNow;
+
             scoped.Add(dto);
         }
 
@@ -4016,6 +4105,7 @@ public sealed class SyncController : ControllerBase
         maxRevision = Math.Max(maxRevision, await _dbContext.RentalManagementCompanies.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.RentalAssets.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.RentalBillingLogs.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Invoices.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Payments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
@@ -4051,9 +4141,19 @@ public sealed class SyncController : ControllerBase
         dto.TradeType = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.TradeType, dto.TradeType);
         dto.Department = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Department, dto.Department);
         dto.ContactPerson = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.ContactPerson, dto.ContactPerson);
+        dto.Representative = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Representative, dto.Representative);
+        dto.BusinessNumber = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.BusinessNumber, dto.BusinessNumber);
+        dto.BusinessType = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.BusinessType, dto.BusinessType);
+        dto.BusinessItem = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.BusinessItem, dto.BusinessItem);
         dto.Address = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Address, dto.Address);
+        dto.DetailAddress = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.DetailAddress, dto.DetailAddress);
         dto.Notes = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Notes, dto.Notes);
         dto.Phone = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Phone, dto.Phone);
+        dto.MobilePhone = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.MobilePhone, dto.MobilePhone);
+        dto.FaxNumber = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.FaxNumber, dto.FaxNumber);
         dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Email, dto.Email);
+        dto.HomePage = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.HomePage, dto.HomePage);
+        dto.Recipient = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.Recipient, dto.Recipient);
+        dto.PriceGrade = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(existing.PriceGrade, dto.PriceGrade);
     }
 }

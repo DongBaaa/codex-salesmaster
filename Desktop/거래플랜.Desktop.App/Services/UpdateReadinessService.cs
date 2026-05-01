@@ -176,7 +176,7 @@ public static class UpdateReadinessService
         var parts = new List<string>();
         if (remainingDirtyCount > 0)
         {
-            var pendingMessage = await local.GetPendingSyncWaitingMessageAsync(prefix, ct);
+            var pendingMessage = await local.GetPendingSyncWaitingMessageAsync(session, prefix, ct);
             parts.Add(string.IsNullOrWhiteSpace(pendingMessage)
                 ? $"{prefix} 미동기화 dirty 데이터 {remainingDirtyCount:N0}건이 남아 있습니다."
                 : pendingMessage);

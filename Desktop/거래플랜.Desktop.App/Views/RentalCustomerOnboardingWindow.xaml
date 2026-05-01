@@ -24,6 +24,8 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Padding" Value="8,4"/>
             <Setter Property="Height" Value="34"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -31,6 +33,8 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Padding" Value="8,1"/>
             <Setter Property="Height" Value="30"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="Button">
             <Setter Property="Foreground" Value="White"/>
@@ -93,13 +97,13 @@
                 <StackPanel>
                     <TextBlock Text="진행 단계" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
                     <Border Background="#223754" CornerRadius="4" Padding="10" Margin="0,0,0,8">
-                        <TextBlock Text="1. 거래처정보"/>
+                        <TextBlock Text="2. 렌탈 기본정보"/>
                     </Border>
                     <Border Background="#223754" CornerRadius="4" Padding="10" Margin="0,0,0,8">
                         <TextBlock Text="2. 렌탈 기본정보"/>
                     </Border>
                     <Border Background="#223754" CornerRadius="4" Padding="10" Margin="0,0,0,8">
-                        <TextBlock Text="3. 임대료 청구 설정"/>
+                        <TextBlock Text="4. 장비 연결"/>
                     </Border>
                     <Border Background="#223754" CornerRadius="4" Padding="10" Margin="0,0,0,8">
                         <TextBlock Text="4. 장비 연결"/>
@@ -118,10 +122,10 @@
                     <TabItem Header="거래처정보">
                         <Grid Margin="6">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="104"/>
                                 <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="20"/>
-                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="104"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
@@ -130,7 +134,7 @@
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
-                            <TextBlock Grid.Row="0" Grid.Column="0" Text="거래처명" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="거래처명" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <Grid Grid.Row="0" Grid.Column="1" Margin="0,0,0,8">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -139,17 +143,17 @@
                                 <TextBox Grid.Column="0" Text="{Binding CustomerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
                                 <Button Grid.Column="1" Content="조회" MinWidth="72" Padding="10,0" Click="CustomerLookupButton_Click"/>
                             </Grid>
-                            <TextBlock Grid.Row="0" Grid.Column="3" Text="사업자번호" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3" Text="사업자번호" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="0" Grid.Column="4" Text="{Binding BusinessNumber, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="1" Grid.Column="0" Text="대표자" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="대표자" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Representative, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="1" Grid.Column="3" Text="담당자" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="1" Grid.Column="3" Text="담당자" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="1" Grid.Column="4" Text="{Binding ContactPerson, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="2" Grid.Column="0" Text="연락처" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="대표전화" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Phone, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="2" Grid.Column="3" Text="이메일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="2" Grid.Column="3" Text="이메일" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="2" Grid.Column="4" Text="{Binding Email, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="3" Grid.Column="0" Text="주소" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBlock Grid.Row="3" Grid.Column="0" Text="주소" VerticalAlignment="Center" Margin="0,0,4,0"/>
                             <TextBox Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="4" Text="{Binding Address, UpdateSourceTrigger=PropertyChanged}"/>
                         </Grid>
                     </TabItem>
@@ -157,21 +161,21 @@
                     <TabItem Header="렌탈 기본정보">
                         <Grid Margin="6">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="104"/>
                                 <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="20"/>
-                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="8"/>
+                                <ColumnDefinition Width="104"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
-                            <TextBlock Grid.Row="0" Grid.Column="0" Text="담당지점" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="담당지점" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <ComboBox Grid.Row="0" Grid.Column="1" ItemsSource="{Binding OfficeOptions}" DisplayMemberPath="DisplayName" SelectedValuePath="Value" SelectedValue="{Binding OfficeCode}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="0" Grid.Column="3" Text="설치위치" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="0" Grid.Column="3" Text="설치위치" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="0" Grid.Column="4" Text="{Binding InstallLocation, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                            <TextBlock Grid.Row="1" Grid.Column="0" Text="청구방식" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="청구방식" VerticalAlignment="Center" Margin="0,0,4,0"/>
                             <ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{Binding BillingMethodOptions}" SelectedItem="{Binding BillingMethod}" Margin="0,0,0,0"/>
                         </Grid>
                     </TabItem>
@@ -189,44 +193,44 @@
                             </Grid.RowDefinitions>
                             <Grid Grid.Row="0">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="220"/>
-                                    <ColumnDefinition Width="20"/>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="220"/>
+                                    <ColumnDefinition Width="104"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="104"/>
+                                    <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="청구유형" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBlock Grid.Column="0" Text="청구일 유형" VerticalAlignment="Center" Margin="0,0,4,8"/>
                                 <ComboBox Grid.Column="1" ItemsSource="{Binding BillingTypeOptions}" SelectedItem="{Binding BillingType}" Margin="0,0,0,8"/>
-                                <TextBlock Grid.Column="3" Text="선불/후불" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBlock Grid.Column="3" Text="선불/후불" VerticalAlignment="Center" Margin="0,0,4,8"/>
                                 <ComboBox Grid.Column="4" ItemsSource="{Binding BillingAdvanceModeOptions}" SelectedItem="{Binding BillingAdvanceMode}" Margin="0,0,0,8"/>
                             </Grid>
                             <Grid Grid.Row="1">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="220"/>
-                                    <ColumnDefinition Width="20"/>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="220"/>
+                                    <ColumnDefinition Width="104"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="104"/>
+                                    <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="청구일 유형" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBlock Grid.Column="0" Text="청구유형" VerticalAlignment="Center" Margin="0,0,4,8"/>
                                 <ComboBox Grid.Column="1" ItemsSource="{Binding BillingDayModeOptions}" SelectedItem="{Binding BillingDayMode}" Margin="0,0,0,8"/>
-                                <TextBlock Grid.Column="3" Text="청구주기(개월)" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBlock Grid.Column="3" Text="청구주기(개월)" VerticalAlignment="Center" Margin="0,0,4,8"/>
                                 <TextBox Grid.Column="4" Text="{Binding BillingCycleMonths, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
                             </Grid>
                             <Grid Grid.Row="2">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="220"/>
-                                    <ColumnDefinition Width="20"/>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="220"/>
+                                    <ColumnDefinition Width="104"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="104"/>
+                                    <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="청구일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBlock Grid.Column="0" Text="청구일" VerticalAlignment="Center" Margin="0,0,4,8"/>
                                 <TextBox Grid.Column="1"
                                          Text="{Binding BillingDay, UpdateSourceTrigger=PropertyChanged}"
                                          IsEnabled="{Binding IsFixedBillingDayMode}"
                                          Margin="0,0,0,8"/>
-                                <TextBlock Grid.Column="3" Text="청구 기준월" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBlock Grid.Column="3" Text="청구 기준월" VerticalAlignment="Center" Margin="0,0,4,8"/>
                                 <ComboBox Grid.Column="4" ItemsSource="{Binding BillingAnchorMonthOptions}" SelectedItem="{Binding BillingAnchorMonth}" Margin="0,0,0,8"/>
                             </Grid>
                             <WrapPanel Grid.Row="3" Margin="0,0,0,8">
@@ -237,13 +241,13 @@
                             </WrapPanel>
                             <Grid Grid.Row="4">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="220"/>
-                                    <ColumnDefinition Width="20"/>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="220"/>
+                                    <ColumnDefinition Width="104"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="104"/>
+                                    <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="계약 체결일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBlock Grid.Column="0" Text="계약 체결일" VerticalAlignment="Center" Margin="0,0,4,8"/>
                                 <StackPanel Grid.Column="1" Margin="0,0,0,8">
                                     <DatePicker SelectedDate="{Binding BillingStartDate}"/>
                                     <TextBlock Text="{Binding ContractDateWarningMessage}"
@@ -252,33 +256,33 @@
                                                TextWrapping="Wrap"
                                                Visibility="{Binding ShouldShowContractDateWarning, Converter={StaticResource BoolToVisibility}}"/>
                                 </StackPanel>
-                                <TextBlock Grid.Column="3" Text="기준 월임대료" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBlock Grid.Column="3" Text="월 기준금액" VerticalAlignment="Center" Margin="0,0,4,8"/>
                                 <TextBox Grid.Column="4" Text="{Binding MonthlyAmount, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
                             </Grid>
                             <Grid Grid.Row="5">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="220"/>
-                                    <ColumnDefinition Width="20"/>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="220"/>
+                                    <ColumnDefinition Width="104"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="104"/>
+                                    <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="제출서류" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBlock Grid.Column="0" Text="청구일" VerticalAlignment="Center" Margin="0,0,4,8"/>
                                 <TextBox Grid.Column="1" Text="{Binding SubmissionDocuments, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                                <TextBlock Grid.Column="3" Text="메모" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBlock Grid.Column="3" Text="메모" VerticalAlignment="Center" Margin="0,0,4,8"/>
                                 <TextBox Grid.Column="4" Text="{Binding Notes, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
                             </Grid>
                             <Grid Grid.Row="6">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="220"/>
-                                    <ColumnDefinition Width="20"/>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="220"/>
+                                    <ColumnDefinition Width="104"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="104"/>
+                                    <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="서류 발송 규칙" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBlock Grid.Column="0" Text="서류 발송 규칙" VerticalAlignment="Center" Margin="0,0,4,8"/>
                                 <ComboBox Grid.Column="1" ItemsSource="{Binding DocumentIssueModeOptions}" SelectedItem="{Binding DocumentIssueMode}" Margin="0,0,0,8"/>
-                                <TextBlock Grid.Column="3" Text="선행일수" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBlock Grid.Column="3" Text="선행일수" VerticalAlignment="Center" Margin="0,0,4,8"/>
                                 <TextBox Grid.Column="4"
                                          Text="{Binding DocumentLeadDays, UpdateSourceTrigger=PropertyChanged}"
                                          IsEnabled="{Binding IsDocumentLeadDaysVisible}"
@@ -349,7 +353,6 @@
                             <TextBlock Grid.Row="0" Margin="0,42,0,0" Foreground="#90CAF9" Text="{Binding ApplySelectedAssetsHint}" TextWrapping="Wrap"/>
                             <DataGrid Grid.Row="1" ItemsSource="{Binding TemplateItems}" SelectedItem="{Binding SelectedTemplateItem}" BorderThickness="0">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="표시 품목명" Binding="{Binding DisplayItemName, UpdateSourceTrigger=PropertyChanged}" Width="190"/>
                                     <DataGridTemplateColumn Header="라인유형" Width="90">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
@@ -358,9 +361,13 @@
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="품명" Binding="{Binding DisplayItemName, UpdateSourceTrigger=PropertyChanged}" Width="160"/>
+                                    <DataGridTextColumn Header="규격" Binding="{Binding Specification, UpdateSourceTrigger=PropertyChanged}" Width="160"/>
                                     <DataGridTextColumn Header="수량" Binding="{Binding Quantity, UpdateSourceTrigger=PropertyChanged}" Width="80"/>
+                                    <DataGridTextColumn Header="단위" Binding="{Binding Unit, UpdateSourceTrigger=PropertyChanged}" Width="62"/>
                                     <DataGridTextColumn Header="단가" Binding="{Binding UnitPrice, UpdateSourceTrigger=PropertyChanged}" Width="110"/>
                                     <DataGridTextColumn Header="금액" Binding="{Binding Amount, UpdateSourceTrigger=PropertyChanged}" Width="110"/>
+                                    <DataGridTextColumn Header="자재번호" Binding="{Binding MaterialNumber, UpdateSourceTrigger=PropertyChanged}" Width="110"/>
                                     <DataGridTextColumn Header="연결 장비" Binding="{Binding IncludedAssetSummary}" Width="250" IsReadOnly="True"/>
                                     <DataGridTextColumn Header="비고" Binding="{Binding Note, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
                                 </DataGrid.Columns>
@@ -368,7 +375,7 @@
                             <Border Grid.Row="3" Background="#223754" CornerRadius="6" Padding="12">
                                 <StackPanel>
                                     <TextBlock Text="청구항목 요약" Foreground="#4FC3F7" FontWeight="Bold"/>
-                                    <TextBlock Text="{Binding BillingPreviewPeriod, StringFormat=표시 기준 회차: {0}}" Margin="0,6,0,0"/>
+                                    <TextBlock Text="{Binding BillingPreviewPeriod, StringFormat=청구 대상 기간: {0}}" Margin="0,6,0,0"/>
                                     <TextBlock Text="{Binding ExpectedBillingAmountText, StringFormat=이번 회차 예상 청구액: {0}}" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding ApplySelectedAssetsHint}" Margin="0,4,0,0" Foreground="#90CAF9" TextWrapping="Wrap"/>
                                 </StackPanel>
@@ -386,20 +393,20 @@
                             </Grid.RowDefinitions>
                             <Border Grid.Row="0" Background="#223754" CornerRadius="6" Padding="12" Margin="0,0,0,8">
                                 <StackPanel>
-                                    <TextBlock Text="거래처 정보" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                    <TextBlock Text="렌탈 / 청구 정보" Foreground="#4FC3F7" FontWeight="Bold"/>
                                     <TextBlock Text="{Binding CustomerName, StringFormat=거래처명: {0}}" Margin="0,6,0,0"/>
-                                    <TextBlock Text="{Binding BusinessNumber, StringFormat=사업자번호: {0}}" Margin="0,4,0,0"/>
-                                    <TextBlock Text="{Binding ContactPerson, StringFormat=담당자: {0}}" Margin="0,4,0,0"/>
-                                    <TextBlock Text="{Binding Phone, StringFormat=연락처: {0}}" Margin="0,4,0,0"/>
+                                    <TextBlock Text="{Binding BillingStartDate, StringFormat=계약 체결일: {0:yyyy-MM-dd}}" Margin="0,4,0,0"/>
+                                    <TextBlock Text="{Binding BillingStartDate, StringFormat=계약 체결일: {0:yyyy-MM-dd}}" Margin="0,4,0,0"/>
+                                    <TextBlock Text="{Binding BillingStartDate, StringFormat=계약 체결일: {0:yyyy-MM-dd}}" Margin="0,4,0,0"/>
                                 </StackPanel>
                             </Border>
                             <Border Grid.Row="1" Background="#223754" CornerRadius="6" Padding="12" Margin="0,0,0,8">
                                 <StackPanel>
                                     <TextBlock Text="렌탈 / 청구 정보" Foreground="#4FC3F7" FontWeight="Bold"/>
                                     <TextBlock Text="{Binding InstallLocation, StringFormat=설치위치: {0}}" Margin="0,6,0,0"/>
-                                    <TextBlock Text="{Binding BillingStartDate, StringFormat=계약 체결일: {0:yyyy-MM-dd}}" Margin="0,4,0,0"/>
+                                    <TextBlock Text="{Binding ExpectedBillingAmountText, StringFormat=예상 청구 금액: {0}}" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding BillingCycleMonths, StringFormat=청구주기: {0}개월}" Margin="0,4,0,0"/>
-                                    <TextBlock Text="{Binding BillingPreviewPeriod, StringFormat=청구 대상 기간: {0}}" Margin="0,4,0,0"/>
+                                    <TextBlock Text="{Binding ExpectedBillingAmountText, StringFormat=예상 청구 금액: {0}}" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding ExpectedBillingAmountText, StringFormat=예상 청구 금액: {0}}" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding BillingSchedulePreviewText}" Margin="0,4,0,0" TextWrapping="Wrap"/>
                                     <TextBlock Text="{Binding DocumentIssuePreviewText}" Margin="0,4,0,0" TextWrapping="Wrap"/>

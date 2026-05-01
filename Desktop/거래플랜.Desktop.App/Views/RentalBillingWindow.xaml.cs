@@ -141,7 +141,27 @@ public partial class RentalBillingWindow : Window
         catch (Exception ex)
         {
             _closeInProgress = false;
-            viewModel.StatusMessage = $"자동저장 후 창을 닫지 못했습니다. {ex.Message}";
+            AppLogger.Error("UI", "렌탈 청구관리 창 닫기 전 자동저장 실패", ex);
+            var detail = ex.InnerException?.Message ?? ex.Message;
+            viewModel.StatusMessage = $"자동저장에 실패했습니다. {detail}";
+
+            var discard = MessageBox.Show(
+                this,
+                $"자동저장에 실패했습니다.{Environment.NewLine}{detail}{Environment.NewLine}{Environment.NewLine}저장되지 않은 변경사항이 있을 수 있습니다. 저장하지 않고 창을 닫을까요?",
+                "렌탈 청구관리",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (discard == MessageBoxResult.Yes)
+            {
+                _allowClose = true;
+                _ = Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
+                {
+                    if (IsLoaded)
+                        Close();
+                }));
+            }
+
             return;
         }
 

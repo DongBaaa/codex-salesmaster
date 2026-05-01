@@ -153,6 +153,7 @@ public static partial class DbInitializer
         await CleanupDeletedInvoiceChainAsync(dbContext, cancellationToken);
         await MigrateStoredFilesToCentralStorageAsync(dbContext, fileStorage, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await new RentalAssignmentHistorySeedService(dbContext).ApplyWorkbookSeedAsync(cancellationToken);
         await new RentalAssignmentHistoryService(dbContext).RefreshAsync(cancellationToken);
         await new InventoryLedgerService(dbContext).RebuildAsync(cancellationToken);
         await EnsureUnitsUniqueIndexAsync(dbContext, cancellationToken);
@@ -180,6 +181,7 @@ public static partial class DbInitializer
             await CleanupDeletedInvoiceChainAsync(tenantDbContext, cancellationToken);
             await MigrateStoredFilesToCentralStorageAsync(tenantDbContext, fileStorage, cancellationToken);
             await tenantDbContext.SaveChangesAsync(cancellationToken);
+            await new RentalAssignmentHistorySeedService(tenantDbContext).ApplyWorkbookSeedAsync(cancellationToken);
             await new RentalAssignmentHistoryService(tenantDbContext).RefreshAsync(cancellationToken);
             await new InventoryLedgerService(tenantDbContext).RebuildAsync(cancellationToken);
             await EnsureUnitsUniqueIndexAsync(tenantDbContext, cancellationToken);
@@ -226,11 +228,13 @@ public static partial class DbInitializer
         await EnsureCustomerOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureCustomerTenantCodeColumnAsync(dbContext, cancellationToken);
         await EnsureOperationalResponsibleOfficeColumnsAsync(dbContext, cancellationToken);
+        await EnsureCustomerExtendedDetailColumnsAsync(dbContext, cancellationToken);
         await EnsureItemOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureItemTenantCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceTenantCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceTaxInvoiceIssuedColumnAsync(dbContext, cancellationToken);
+        await EnsureInvoiceVatModeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceVersionColumnsAsync(dbContext, cancellationToken);
         await EnsureRecycleBinPurgeRecordsTableAsync(dbContext, cancellationToken);
         await EnsureCustomerContractStoragePathColumnAsync(dbContext, cancellationToken);
@@ -1638,6 +1642,7 @@ public static partial class DbInitializer
             await dbContext.RentalManagementCompanies.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.RentalBillingProfiles.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.RentalAssets.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.RentalBillingLogs.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Invoices.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Payments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0
@@ -2270,6 +2275,54 @@ public static partial class DbInitializer
                     """,
                     cancellationToken);
             }
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task EnsureCustomerExtendedDetailColumnsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var columns = new[]
+        {
+            "DetailAddress",
+            "MobilePhone",
+            "FaxNumber",
+            "HomePage",
+            "Recipient",
+            "PriceGrade"
+        };
+
+        foreach (var column in columns)
+        {
+            await EnsureColumnAsync(
+                dbContext,
+                "Customers",
+                column,
+                "TEXT NOT NULL DEFAULT ''",
+                "text NOT NULL DEFAULT ''",
+                cancellationToken);
+        }
+    }
+
+    private static async Task EnsureInvoiceVatModeColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureColumnAsync(
+            dbContext,
+            "Invoices",
+            "VatMode",
+            $"TEXT NOT NULL DEFAULT '{InvoiceVatModes.Included}'",
+            $"text NOT NULL DEFAULT '{InvoiceVatModes.Included}'",
+            cancellationToken);
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                $"UPDATE \"Invoices\" SET \"VatMode\" = '{InvoiceVatModes.Included}' WHERE \"VatMode\" IS NULL OR TRIM(\"VatMode\") = '';",
+                cancellationToken);
         }
         catch
         {

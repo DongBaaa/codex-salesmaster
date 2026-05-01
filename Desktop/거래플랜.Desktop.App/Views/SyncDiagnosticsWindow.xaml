@@ -23,6 +23,8 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Padding" Value="8,5"/>
             <Setter Property="Height" Value="34"/>
+            <Setter Property="MinWidth" Value="140"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -30,6 +32,8 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Padding" Value="8,1"/>
             <Setter Property="Height" Value="30"/>
+            <Setter Property="MinWidth" Value="140"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="CheckBox">
             <Setter Property="Foreground" Value="#EAF2FF"/>

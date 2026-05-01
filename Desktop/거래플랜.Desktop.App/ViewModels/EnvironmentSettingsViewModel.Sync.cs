@@ -383,13 +383,13 @@ public sealed partial class EnvironmentSettingsViewModel
         {
             StatusMessage = "동기화를 실행하는 중...";
             var syncOk = await _sync.TrySyncAsync();
-            var dirtyCount = await _local.CountDirtyAsync();
+            var dirtyCount = await _local.CountDirtyAsync(_session);
             if (syncOk && dirtyCount == 0)
                 await _sync.RefreshSharedMirrorFromServerAsync();
 
             await RefreshSyncStateAsync();
             StatusMessage = dirtyCount > 0
-                ? await _local.GetPendingSyncWaitingMessageAsync("동기화 작업은 완료됐지만")
+                ? await _local.GetPendingSyncWaitingMessageAsync(_session, "동기화 작업은 완료됐지만")
                     ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다. 동기화 진단을 확인하세요."
                 : syncOk
                     ? "동기화를 완료했습니다."
@@ -549,22 +549,42 @@ public sealed partial class EnvironmentSettingsViewModel
         if (owner is not null)
             window.Owner = owner;
 
+        window.NonClosingActionRequested += async (_, args) =>
+        {
+            try
+            {
+                await HandleDataIntegrityAlertActionAsync(args.Action, args.Summary, window);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    window,
+                    $"운영 점검 바로가기를 열지 못했습니다.{Environment.NewLine}{ex.Message}",
+                    "운영 점검",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        };
+
         if (window.ShowDialog() == true)
-            await HandleDataIntegrityAlertActionAsync(window.RequestedAction, window.RequestedSummary);
+            await HandleDataIntegrityAlertActionAsync(window.RequestedAction, window.RequestedSummary, owner);
         else
             StatusMessage = $"운영 점검 알림 {result.TotalIssueCount:N0}건을 확인했습니다.";
 
         await RefreshSyncStateAsync();
     }
 
-    private async Task HandleDataIntegrityAlertActionAsync(DataIntegrityAlertAction action, DataIntegrityIssueSummary? summary)
+    private async Task HandleDataIntegrityAlertActionAsync(
+        DataIntegrityAlertAction action,
+        DataIntegrityIssueSummary? summary,
+        Window? ownerOverride = null)
     {
         if (action == DataIntegrityAlertAction.None)
             return;
 
         if (action == DataIntegrityAlertAction.Details)
         {
-            await OpenDataIntegrityIssueWindowAsync(summary?.Code);
+            await OpenDataIntegrityIssueWindowAsync(summary?.Code, ownerOverride);
             return;
         }
 
@@ -573,7 +593,7 @@ public sealed partial class EnvironmentSettingsViewModel
 
         if (summary is null)
         {
-            await OpenDataIntegrityIssueWindowAsync(null);
+            await OpenDataIntegrityIssueWindowAsync(null, ownerOverride);
             return;
         }
 
@@ -583,34 +603,34 @@ public sealed partial class EnvironmentSettingsViewModel
             .ToList();
         if (issues.Count == 1)
         {
-            await OpenDataIntegrityFixTargetAsync(issues[0]);
+            await OpenDataIntegrityFixTargetAsync(issues[0], ownerOverride);
             return;
         }
 
-        await OpenDataIntegrityIssueWindowAsync(summary.Code);
+        await OpenDataIntegrityIssueWindowAsync(summary.Code, ownerOverride);
     }
 
-    private async Task OpenDataIntegrityIssueWindowAsync(string? initialCode)
+    private async Task OpenDataIntegrityIssueWindowAsync(string? initialCode, Window? ownerOverride = null)
     {
         var viewModel = new DataIntegrityIssueViewModel(_dataIntegrity, _session, initialCode);
         await viewModel.LoadAsync();
 
-        var owner = ResolveActiveWindow();
+        var owner = ownerOverride ?? ResolveActiveWindow();
         var window = new DataIntegrityIssueWindow(viewModel);
         if (owner is not null)
             window.Owner = owner;
 
         if (window.ShowDialog() == true && window.RequestedIssue is not null)
-            await OpenDataIntegrityFixTargetAsync(window.RequestedIssue);
+            await OpenDataIntegrityFixTargetAsync(window.RequestedIssue, ownerOverride);
         else
             StatusMessage = string.IsNullOrWhiteSpace(initialCode)
                 ? "운영 점검 상세 창을 열었습니다."
                 : "선택한 운영 점검 유형 상세를 열었습니다.";
     }
 
-    private async Task OpenDataIntegrityFixTargetAsync(DataIntegrityIssueDetail issue)
+    private async Task OpenDataIntegrityFixTargetAsync(DataIntegrityIssueDetail issue, Window? ownerOverride = null)
     {
-        var owner = ResolveActiveWindow();
+        var owner = ownerOverride ?? ResolveActiveWindow();
         switch (issue.DirectActionKind)
         {
             case DataIntegrityDirectActionKind.OpenRentalBillingProfile when issue.ProfileId.HasValue:
@@ -684,7 +704,7 @@ public sealed partial class EnvironmentSettingsViewModel
         var dirtyCount = await _local.CountDirtyAsync(_session);
         if (dirtyCount > 0)
         {
-            var waitingMessage = await _local.GetPendingSyncWaitingMessageAsync("미동기화 변경이 남아 있어 전체 재동기화를 바로 실행할 수 없습니다.");
+            var waitingMessage = await _local.GetPendingSyncWaitingMessageAsync(_session, "미동기화 변경이 남아 있어 전체 재동기화를 바로 실행할 수 없습니다.");
             StatusMessage = waitingMessage ?? $"미동기화 변경 {dirtyCount:N0}건이 남아 있어 전체 재동기화를 바로 실행할 수 없습니다.";
             MessageBox.Show(
                 StatusMessage + Environment.NewLine + Environment.NewLine + "먼저 동기화를 완료한 뒤 다시 실행하세요.",

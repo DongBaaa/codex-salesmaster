@@ -21,6 +21,8 @@ namespace 거래플랜.Desktop.App.Services;
 
 public sealed partial class LocalStateService
 {
+	private const string ManualStockAdjustmentMovementType = "StockAdjustmentManual";
+
 	private sealed record CompanyProfileDefaultDefinition(string ProfileName, string OfficeCode, string TradeName, string Representative, string BusinessNumber, string Address, string ContactNumber);
 
 	public enum ServerWriteAwaitResult
@@ -120,7 +122,7 @@ public sealed partial class LocalStateService
 		public int SkippedOutOfScopeCount { get; set; }
 	}
 
-	private sealed record InventoryTimelineEntry(DateOnly OccurredDate, DateTime SortUtc, int Sequence, LocalInvoice? Invoice, LocalInventoryTransfer? Transfer);
+	private sealed record InventoryTimelineEntry(DateOnly OccurredDate, DateTime SortUtc, int Sequence, LocalInvoice? Invoice, LocalInventoryTransfer? Transfer, LocalInventoryMovement? ManualAdjustment);
 	private const string CompanyProfileAssignmentPrefix = "CompanyProfile.Assigned.";
 
 	private const long MaxCustomerContractFileSizeBytes = 15728640L;
@@ -270,6 +272,23 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	{
 		Interlocked.Increment(ref _suppressSyncDispatchCount);
 		return new SyncDispatchSuppressionScope(this);
+	}
+
+	public async Task<T> RunInTransactionAsync<T>(Func<CancellationToken, Task<T>> operation, CancellationToken ct = default(CancellationToken))
+	{
+		ArgumentNullException.ThrowIfNull(operation);
+		await using IDbContextTransaction transaction = await _db.Database.BeginTransactionAsync(ct);
+		try
+		{
+			T result = await operation(ct);
+			await transaction.CommitAsync(ct);
+			return result;
+		}
+		catch
+		{
+			await transaction.RollbackAsync(CancellationToken.None);
+			throw;
+		}
 	}
 
 	private static bool CanModifySharedBusinessData(SessionState? session)
@@ -1149,11 +1168,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		IQueryable<LocalRentalBillingProfile> query = (from profile in _db.RentalBillingProfiles.IgnoreQueryFilters()
 			where profile.IsDirty
 			select profile).AsNoTracking();
-		if (CanWriteAllScopedData(session))
-		{
-			return await query.ToListAsync(ct);
-		}
-		return (await query.ToListAsync(ct)).Where((LocalRentalBillingProfile profile) => CanWriteRentalScope(session, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode)).ToList();
+		return (await query.ToListAsync(ct)).Where((LocalRentalBillingProfile profile) => CanWriteRentalEntityScope(session, profile.TenantCode, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode)).ToList();
 	}
 
 	public async Task<List<LocalRentalAsset>> GetDirtyRentalAssetsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
@@ -1161,11 +1176,15 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		IQueryable<LocalRentalAsset> query = (from asset in _db.RentalAssets.IgnoreQueryFilters()
 			where asset.IsDirty
 			select asset).AsNoTracking();
-		if (CanWriteAllScopedData(session))
-		{
-			return await query.ToListAsync(ct);
-		}
-		return (await query.ToListAsync(ct)).Where((LocalRentalAsset asset) => CanWriteRentalScope(session, asset.ResponsibleOfficeCode, asset.ManagementCompanyCode)).ToList();
+		return (await query.ToListAsync(ct)).Where((LocalRentalAsset asset) => CanWriteRentalEntityScope(session, asset.TenantCode, asset.ResponsibleOfficeCode, asset.ManagementCompanyCode)).ToList();
+	}
+
+	public async Task<List<LocalRentalAssetAssignmentHistory>> GetDirtyRentalAssetAssignmentHistoriesForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
+	{
+		IQueryable<LocalRentalAssetAssignmentHistory> query = (from history in _db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+			where history.IsDirty
+			select history).AsNoTracking();
+		return (await query.ToListAsync(ct)).Where((LocalRentalAssetAssignmentHistory history) => CanWriteRentalEntityScope(session, history.TenantCode, history.ResponsibleOfficeCode)).ToList();
 	}
 
 	public async Task<List<LocalRentalBillingLog>> GetDirtyRentalBillingLogsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
@@ -1173,11 +1192,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		IQueryable<LocalRentalBillingLog> query = (from log in _db.RentalBillingLogs.IgnoreQueryFilters()
 			where log.IsDirty
 			select log).AsNoTracking();
-		if (CanWriteAllScopedData(session))
-		{
-			return await query.ToListAsync(ct);
-		}
-		return (await query.ToListAsync(ct)).Where((LocalRentalBillingLog log) => CanWriteRentalScope(session, log.ResponsibleOfficeCode)).ToList();
+		return (await query.ToListAsync(ct)).Where((LocalRentalBillingLog log) => CanWriteRentalEntityScope(session, log.TenantCode, log.ResponsibleOfficeCode)).ToList();
 	}
 
 	public async Task<List<LocalTransaction>> GetDirtyTransactionsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
@@ -1601,6 +1616,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		string warehouseCode = ResolvePrimaryWarehouseCode(officeCode);
 		List<LocalItemWarehouseStock> stocks = await _db.ItemWarehouseStocks.Where((LocalItemWarehouseStock stock) => stock.ItemId == itemId).ToListAsync(ct);
 		var targetStock = stocks.FirstOrDefault((LocalItemWarehouseStock stock) => string.Equals(stock.WarehouseCode, warehouseCode, StringComparison.OrdinalIgnoreCase));
+		var previousQuantity = targetStock?.Quantity ?? 0m;
+		var quantityDelta = quantity - previousQuantity;
+		var now = DateTime.UtcNow;
 		if (quantity == 0m)
 		{
 			if (targetStock != null)
@@ -1616,7 +1634,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				ItemId = itemId,
 				WarehouseCode = warehouseCode,
 				Quantity = quantity,
-				UpdatedAtUtc = DateTime.UtcNow
+				UpdatedAtUtc = now
 			};
 			_db.ItemWarehouseStocks.Add(targetStock);
 			stocks.Add(targetStock);
@@ -1624,11 +1642,31 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		else
 		{
 			targetStock.Quantity = quantity;
-			targetStock.UpdatedAtUtc = DateTime.UtcNow;
+			targetStock.UpdatedAtUtc = now;
+		}
+		if (quantityDelta != 0m && ItemOperationalPolicy.SupportsInventory(item.TrackingType))
+		{
+			var unitCost = Math.Max(0m, item.PurchasePrice);
+			_db.InventoryMovements.Add(new LocalInventoryMovement
+			{
+				Id = Guid.NewGuid(),
+				ItemId = itemId,
+				WarehouseCode = warehouseCode,
+				MovementType = ManualStockAdjustmentMovementType,
+				QuantityDelta = quantityDelta,
+				UnitCost = unitCost,
+				Amount = Math.Round(Math.Abs(quantityDelta) * unitCost, 2, MidpointRounding.AwayFromZero),
+				OccurredDate = DateOnly.FromDateTime(DateTime.Today),
+				IsSettledCost = true,
+				IsActive = true,
+				Note = $"수동 재고조정: {previousQuantity:N2} → {quantity:N2}",
+				CreatedByUsername = "local-user",
+				CreatedAtUtc = now
+			});
 		}
 		item.CurrentStock = stocks.Sum((LocalItemWarehouseStock stock) => stock.Quantity);
 		item.IsDirty = true;
-		item.UpdatedAtUtc = DateTime.UtcNow;
+		item.UpdatedAtUtc = now;
 		await _db.SaveChangesAsync(ct);
 		RaiseInventoryStateChanged();
 		return item;
@@ -4743,7 +4781,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		int num14 = count;
 		count = num14 + await _db.RentalAssets.IgnoreQueryFilters().CountAsync((LocalRentalAsset entity) => entity.IsDirty, ct);
 		int num15 = count;
-		return num15 + await _db.RentalBillingLogs.IgnoreQueryFilters().CountAsync((LocalRentalBillingLog entity) => entity.IsDirty, ct);
+		count = num15 + await _db.RentalAssetAssignmentHistories.IgnoreQueryFilters().CountAsync((LocalRentalAssetAssignmentHistory entity) => entity.IsDirty, ct);
+		int num16 = count;
+		return num16 + await _db.RentalBillingLogs.IgnoreQueryFilters().CountAsync((LocalRentalBillingLog entity) => entity.IsDirty, ct);
 	}
 
 	public async Task<int> CountDirtyAsync(SessionState session, CancellationToken ct = default(CancellationToken))
@@ -4788,6 +4828,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			int syncableDirtyRentalAssetCount = (await GetDirtyRentalAssetsForSyncAsync(session, ct)).Count;
 			count = count - dirtyRentalAssetCount + syncableDirtyRentalAssetCount;
+		}
+		int dirtyRentalAssetAssignmentHistoryCount = await _db.RentalAssetAssignmentHistories.IgnoreQueryFilters().CountAsync((LocalRentalAssetAssignmentHistory entity) => entity.IsDirty, ct);
+		if (dirtyRentalAssetAssignmentHistoryCount > 0)
+		{
+			int syncableDirtyRentalAssetAssignmentHistoryCount = (await GetDirtyRentalAssetAssignmentHistoriesForSyncAsync(session, ct)).Count;
+			count = count - dirtyRentalAssetAssignmentHistoryCount + syncableDirtyRentalAssetAssignmentHistoryCount;
 		}
 		int dirtyRentalBillingLogCount = await _db.RentalBillingLogs.IgnoreQueryFilters().CountAsync((LocalRentalBillingLog entity) => entity.IsDirty, ct);
 		if (dirtyRentalBillingLogCount > 0)
@@ -5111,6 +5157,57 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			}
 		}
 		return false;
+	}
+
+	private static bool CanWriteRentalEntityScope(SessionState? session, string? tenantCode, string? responsibleOfficeCode, string? managementCompanyCode = null)
+	{
+		if (session == null || !session.IsLoggedIn)
+		{
+			return false;
+		}
+		string sessionTenantCode = ResolveCurrentTenantCode(session);
+		string entityTenantCode = ResolveRentalEntityTenantCode(tenantCode, managementCompanyCode, responsibleOfficeCode);
+		if (!string.Equals(entityTenantCode, sessionTenantCode, StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+		HashSet<string> writableOfficeCodes = GetWritableRentalOfficeCodes(session);
+		string?[] array = new string?[2] { responsibleOfficeCode, managementCompanyCode };
+		foreach (string? officeCode in array)
+		{
+			string text = NormalizeOfficeScope(officeCode, string.Empty);
+			if (string.IsNullOrWhiteSpace(text))
+			{
+				continue;
+			}
+			if (IsSharedOfficeScope(text))
+			{
+				if (CanWriteSharedOfficeScope(session))
+				{
+					return true;
+				}
+				continue;
+			}
+			string officeTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, text);
+			if (string.Equals(officeTenantCode, sessionTenantCode, StringComparison.OrdinalIgnoreCase) && writableOfficeCodes.Contains(text))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static string ResolveRentalEntityTenantCode(string? tenantCode, string? managementCompanyCode, string? responsibleOfficeCode)
+	{
+		if (TenantScopeCatalog.TryNormalizeTenantCode(tenantCode, out string normalizedTenantCode))
+		{
+			return normalizedTenantCode;
+		}
+		if (!string.IsNullOrWhiteSpace(managementCompanyCode))
+		{
+			return TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, managementCompanyCode, null, responsibleOfficeCode);
+		}
+		return TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, responsibleOfficeCode);
 	}
 
 	private static HashSet<string> GetReadableRentalOfficeCodes(SessionState? session)
@@ -5606,6 +5703,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private async Task RebuildInventorySnapshotsAsync(InvoiceSaveContext context, CancellationToken ct)
 	{
+		List<LocalInventoryMovement> manualStockAdjustments = await _db.InventoryMovements.AsNoTracking()
+			.Where((LocalInventoryMovement movement) => movement.IsActive && movement.ItemId.HasValue && movement.MovementType == ManualStockAdjustmentMovementType)
+			.OrderBy((LocalInventoryMovement movement) => movement.OccurredDate)
+			.ThenBy((LocalInventoryMovement movement) => movement.CreatedAtUtc)
+			.ToListAsync(ct);
 		await _db.InventoryMovements.ExecuteDeleteAsync(ct);
 		await _db.StockLayers.ExecuteDeleteAsync(ct);
 		await _db.CostAllocations.ExecuteDeleteAsync(ct);
@@ -5625,7 +5727,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		Dictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>> layerMap = new Dictionary<(Guid, string), List<LocalStockLayer>>();
 		Dictionary<string, LocalSerialLedger> serialMap = new Dictionary<string, LocalSerialLedger>(StringComparer.OrdinalIgnoreCase);
 		Dictionary<Guid, string> itemTrackingMap = await BuildItemTrackingMapAsync(ct);
-		List<InventoryTimelineEntry> timeline = (from inventoryTimelineEntry in invoices.Select((LocalInvoice invoice) => new InventoryTimelineEntry(invoice.InvoiceDate, (invoice.LastSavedAtUtc == default(DateTime)) ? invoice.CreatedAtUtc : invoice.LastSavedAtUtc, 0, invoice, null)).Concat(transfers.Select((LocalInventoryTransfer transfer) => new InventoryTimelineEntry(transfer.TransferDate, (transfer.LastSavedAtUtc == default(DateTime)) ? transfer.CreatedAtUtc : transfer.LastSavedAtUtc, 1, null, transfer)))
+		List<InventoryTimelineEntry> timeline = (from inventoryTimelineEntry in invoices
+					.Select((LocalInvoice invoice) => new InventoryTimelineEntry(invoice.InvoiceDate, (invoice.LastSavedAtUtc == default(DateTime)) ? invoice.CreatedAtUtc : invoice.LastSavedAtUtc, 0, invoice, null, null))
+					.Concat(transfers.Select((LocalInventoryTransfer transfer) => new InventoryTimelineEntry(transfer.TransferDate, (transfer.LastSavedAtUtc == default(DateTime)) ? transfer.CreatedAtUtc : transfer.LastSavedAtUtc, 1, null, transfer, null)))
+					.Concat(manualStockAdjustments.Select((LocalInventoryMovement movement) => new InventoryTimelineEntry(movement.OccurredDate, movement.CreatedAtUtc, 2, null, null, movement)))
 			orderby inventoryTimelineEntry.OccurredDate, inventoryTimelineEntry.SortUtc, inventoryTimelineEntry.Sequence
 			select inventoryTimelineEntry).ToList();
 		foreach (InventoryTimelineEntry entry in timeline)
@@ -5637,6 +5742,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			else if (entry.Transfer != null)
 			{
 				ApplyInventoryTransferEntry(entry.Transfer, stockMap, layerMap);
+			}
+			else if (entry.ManualAdjustment != null)
+			{
+				ApplyManualStockAdjustmentEntry(entry.ManualAdjustment, stockMap, layerMap);
 			}
 		}
 		var normalizedStocks = (from anon in Enumerable.Select(stockMap, (KeyValuePair<(Guid ItemId, string WarehouseCode), decimal> keyValuePair) => new
@@ -5826,6 +5935,67 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return ItemTrackingTypes.Normalize(value);
 		}
 		return line.ItemId.HasValue ? "재고" : "비재고";
+	}
+
+	private void ApplyManualStockAdjustmentEntry(LocalInventoryMovement adjustment, IDictionary<(Guid ItemId, string WarehouseCode), decimal> stockMap, IDictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>> layerMap)
+	{
+		if (!adjustment.ItemId.HasValue || adjustment.QuantityDelta == 0m || !adjustment.IsActive)
+		{
+			return;
+		}
+
+		Guid itemId = adjustment.ItemId.Value;
+		string warehouseCode = NormalizeWarehouseCode(
+			adjustment.WarehouseCode,
+			ResolveOfficeCodeFromWarehouseCode(adjustment.WarehouseCode),
+			DomainConstants.OfficeUsenet);
+		adjustment.WarehouseCode = warehouseCode;
+		(Guid, string) key = (itemId, warehouseCode);
+		EnsureStockKey(stockMap, key);
+
+		if (adjustment.QuantityDelta > 0m)
+		{
+			stockMap[key] += adjustment.QuantityDelta;
+			var layer = new LocalStockLayer
+			{
+				Id = Guid.NewGuid(),
+				ItemId = itemId,
+				WarehouseCode = warehouseCode,
+				SourceInvoiceId = null,
+				SourceInvoiceLineId = null,
+				ReceiptDate = adjustment.OccurredDate,
+				UnitCost = Math.Max(0m, adjustment.UnitCost),
+				OriginalQuantity = adjustment.QuantityDelta,
+				RemainingQuantity = adjustment.QuantityDelta,
+				IsNegativePlaceholder = adjustment.UnitCost <= 0m,
+				CreatedAtUtc = adjustment.CreatedAtUtc == default(DateTime) ? DateTime.UtcNow : adjustment.CreatedAtUtc
+			};
+			_db.StockLayers.Add(layer);
+			EnsureLayerList(layerMap, key).Add(layer);
+		}
+		else
+		{
+			decimal remaining = Math.Abs(adjustment.QuantityDelta);
+			foreach (LocalStockLayer layer in EnsureLayerList(layerMap, key)
+				         .Where((LocalStockLayer currentLayer) => currentLayer.RemainingQuantity > 0m)
+				         .OrderBy((LocalStockLayer currentLayer) => currentLayer.ReceiptDate)
+				         .ThenBy((LocalStockLayer currentLayer) => currentLayer.CreatedAtUtc)
+				         .ToList())
+			{
+				if (remaining <= 0m)
+				{
+					break;
+				}
+
+				decimal consumed = Math.Min(layer.RemainingQuantity, remaining);
+				layer.RemainingQuantity -= consumed;
+				remaining -= consumed;
+			}
+
+			stockMap[key] -= Math.Abs(adjustment.QuantityDelta);
+		}
+
+		_db.InventoryMovements.Add(adjustment);
 	}
 
 	private void ApplyInvoiceInventoryEntry(LocalInvoice invoice, InvoiceSaveContext context, IDictionary<(Guid ItemId, string WarehouseCode), decimal> stockMap, IDictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>> layerMap, IDictionary<string, LocalSerialLedger> serialMap, IReadOnlyDictionary<Guid, string> itemTrackingMap)

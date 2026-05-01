@@ -145,22 +145,44 @@ public sealed partial class LocalStateService
 
         AppendBuckets(
             buckets,
-            await _db.RentalBillingProfiles
+            (await _db.RentalBillingProfiles
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(entity => entity.IsDirty)
-                .Select(entity => new DirtyScopeRow(entity.ResponsibleOfficeCode, entity.ManagementCompanyCode))
-                .ToListAsync(ct),
+                .Select(entity => new
+                {
+                    entity.TenantCode,
+                    entity.OfficeCode,
+                    entity.ManagementCompanyCode,
+                    entity.ResponsibleOfficeCode
+                })
+                .ToListAsync(ct))
+                .Select(entity => ResolveRentalDirtyScope(
+                    entity.TenantCode,
+                    entity.OfficeCode,
+                    entity.ManagementCompanyCode,
+                    entity.ResponsibleOfficeCode)),
             "렌탈 청구설정 변경");
 
         AppendBuckets(
             buckets,
-            await _db.RentalAssets
+            (await _db.RentalAssets
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(entity => entity.IsDirty)
-                .Select(entity => new DirtyScopeRow(entity.ResponsibleOfficeCode, entity.ManagementCompanyCode))
-                .ToListAsync(ct),
+                .Select(entity => new
+                {
+                    entity.TenantCode,
+                    entity.OfficeCode,
+                    entity.ManagementCompanyCode,
+                    entity.ResponsibleOfficeCode
+                })
+                .ToListAsync(ct))
+                .Select(entity => ResolveRentalDirtyScope(
+                    entity.TenantCode,
+                    entity.OfficeCode,
+                    entity.ManagementCompanyCode,
+                    entity.ResponsibleOfficeCode)),
             "렌탈 자산 변경");
 
         AppendBuckets(
@@ -191,6 +213,30 @@ public sealed partial class LocalStateService
             return null;
 
         return summary.BuildWaitingMessage(prefix);
+    }
+
+    public async Task<string?> GetPendingSyncWaitingMessageAsync(
+        SessionState session,
+        string? prefix = null,
+        CancellationToken ct = default)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return await GetPendingSyncWaitingMessageAsync(prefix, ct);
+
+        var summary = await GetPendingSyncSummaryAsync(ct);
+        if (summary.TotalCount <= 0)
+            return null;
+
+        var scopedBuckets = summary.Buckets
+            .Where(bucket => IsCurrentSessionPendingBucket(bucket, session))
+            .ToList();
+        if (scopedBuckets.Count == 0)
+            return null;
+
+        return new PendingSyncSummary(
+                scopedBuckets.Sum(bucket => bucket.Count),
+                scopedBuckets)
+            .BuildWaitingMessage(prefix);
     }
 
     public async Task<PendingSyncBlockingReason?> GetPendingSyncBlockingReasonAsync(
@@ -224,8 +270,13 @@ public sealed partial class LocalStateService
             return null;
 
         var summary = await GetPendingSyncSummaryAsync(ct);
-        var primary = summary.PrimaryBucket;
-        if (summary.TotalCount <= 0 || primary is null)
+        var primary = summary.Buckets
+            .Where(bucket => IsCurrentSessionPendingBucket(bucket, session))
+            .OrderByDescending(bucket => bucket.Count)
+            .ThenBy(bucket => bucket.ScopeDisplayName, StringComparer.Ordinal)
+            .ThenBy(bucket => bucket.EntityDisplayName, StringComparer.Ordinal)
+            .FirstOrDefault();
+        if (primary is null)
             return null;
 
         return await BuildPendingSyncBlockingReasonAsync(session, primary, primary.Count, ct);
@@ -360,6 +411,21 @@ public sealed partial class LocalStateService
         return ("SHARED", "공용");
     }
 
+    private static DirtyScopeRow ResolveRentalDirtyScope(
+        string? tenantCode,
+        string? officeCode,
+        string? managementCompanyCode,
+        string? responsibleOfficeCode)
+    {
+        var scope = RentalScopeNormalizer.ResolveScope(
+            tenantCode,
+            officeCode,
+            managementCompanyCode,
+            responsibleOfficeCode,
+            officeCode);
+        return new DirtyScopeRow(scope.ResponsibleOfficeCode, scope.TenantCode);
+    }
+
     private static string ResolveRequiredOfficeCode(string scopeKey)
     {
         if (scopeKey.StartsWith("OFFICE:", StringComparison.OrdinalIgnoreCase))
@@ -393,6 +459,52 @@ public sealed partial class LocalStateService
         }
 
         return false;
+    }
+
+    private static bool IsCurrentSessionPendingBucket(PendingSyncBucket bucket, SessionState session)
+    {
+        if (string.Equals(bucket.ScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
+            return session.HasAdministrativePrivileges || CanWriteSharedOfficeScope(session);
+
+        var writableOfficeCodes = GetCurrentLoginSyncOfficeCodes(session);
+
+        if (bucket.ScopeKey.StartsWith("OFFICE:", StringComparison.OrdinalIgnoreCase))
+        {
+            var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(bucket.ScopeKey[7..], string.Empty);
+            return !string.IsNullOrWhiteSpace(officeCode) && writableOfficeCodes.Contains(officeCode);
+        }
+
+        if (bucket.ScopeKey.StartsWith("TENANT:", StringComparison.OrdinalIgnoreCase))
+        {
+            var tenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(bucket.ScopeKey[7..], string.Empty);
+            return TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode)
+                .Any(writableOfficeCodes.Contains);
+        }
+
+        var currentOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, string.Empty);
+        var currentTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
+        return IsCurrentPendingScope(bucket.ScopeKey, currentOfficeCode, currentTenantCode);
+    }
+
+    private static HashSet<string> GetCurrentLoginSyncOfficeCodes(SessionState session)
+    {
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            session.AuthenticatedTenantCode,
+            session.OfficeCode);
+        var scopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(session.ScopeType);
+
+        if (session.HasAdministrativePrivileges ||
+            string.Equals(scopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(scopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            return TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return
+        [
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, string.Empty)
+        ];
     }
 
     private static string ResolveCredentialDisplayName(string requiredOfficeCode, string fallbackScopeDisplayName)

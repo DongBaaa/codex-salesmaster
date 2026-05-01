@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -161,6 +161,8 @@ public sealed partial class MainViewModel : ObservableObject
     private bool _suppressFilterAutoSave;
     private DateOnly _invoiceDefaultFrom = new(DateTime.Today.Year, DateTime.Today.Month, 1);
     private DateOnly _invoiceDefaultTo = DateOnly.FromDateTime(DateTime.Today);
+    private DateOnly _invoiceLegacyMonthDefaultFrom = new(DateTime.Today.Year, DateTime.Today.Month, 1);
+    private DateOnly _invoiceLegacyMonthDefaultTo = DateOnly.FromDateTime(DateTime.Today);
     private const string InvoiceFilterFromSettingKey = "InvoiceFilter.From";
     private const string InvoiceFilterToSettingKey = "InvoiceFilter.To";
     private const string InvoiceFilterCustomerSettingKey = "InvoiceFilter.CustomerName";
@@ -168,6 +170,7 @@ public sealed partial class MainViewModel : ObservableObject
     private const string InvoiceFilterOfficeCodeSettingKey = "InvoiceFilter.OfficeCode";
     private const string InvoiceFilterMinAmountSettingKey = "InvoiceFilter.MinAmount";
     private const string InvoiceFilterMaxAmountSettingKey = "InvoiceFilter.MaxAmount";
+    private const string InvoiceFilterFullRangeDefaultMigrationKey = "InvoiceFilter.FullRangeDefaultMigrated.v1";
     private const string FavoriteInvoiceIdsSettingKey = "InvoiceFavorites.Ids";
 
     // ?? Invoice Editor (?꾪몴 ?묒꽦) ??????????????????????????????????????????
@@ -180,6 +183,7 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private decimal _editTotalAmount;
     [ObservableProperty] private decimal _editSupplyAmount;
     [ObservableProperty] private decimal _editVatAmount;
+    [ObservableProperty] private string _editVatMode = InvoiceVatModes.Included;
     private string _editConcurrencyStamp = string.Empty;
     public ObservableCollection<InvoiceLineEditModel> EditLines { get; } = new();
     public Array VoucherTypes => Enum.GetValues<VoucherType>();
@@ -266,21 +270,22 @@ public sealed partial class MainViewModel : ObservableObject
             return status;
         }
 
-        var dirtyCount = await _local.CountDirtyAsync();
+        var dirtyCount = await _local.CountDirtyAsync(_session);
         if (dirtyCount <= 0)
             return status;
 
         if (status.StartsWith("동기화 오류", StringComparison.Ordinal))
-            return await _local.GetPendingSyncWaitingMessageAsync($"{status} /", CancellationToken.None)
+            return await _local.GetPendingSyncWaitingMessageAsync(_session, $"{status} /", CancellationToken.None)
                    ?? $"{status} / 서버 반영 대기 데이터 {dirtyCount:N0}건";
 
-        return await _local.GetPendingSyncWaitingMessageAsync("동기화 작업은 완료됐지만", CancellationToken.None)
+        return await _local.GetPendingSyncWaitingMessageAsync(_session, "동기화 작업은 완료됐지만", CancellationToken.None)
                ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다.";
     }
 
     public async Task LoadAsync()
     {
         await LoadCustomersAsync();
+        await RefreshInvoiceDefaultDateRangeFromDataAsync();
         await LoadInvoiceFilterSettingsAsync();
         await LoadInvoiceListAsync();
         await LoadCompanyProfileAsync();
@@ -291,8 +296,10 @@ public sealed partial class MainViewModel : ObservableObject
 
     public void SetInvoiceDefaultDateRange(DateOnly serverToday)
     {
-        _invoiceDefaultFrom = new DateOnly(serverToday.Year, serverToday.Month, 1);
-        _invoiceDefaultTo = serverToday;
+        _invoiceLegacyMonthDefaultFrom = new DateOnly(serverToday.Year, serverToday.Month, 1);
+        _invoiceLegacyMonthDefaultTo = serverToday;
+        _invoiceDefaultFrom = _invoiceLegacyMonthDefaultFrom;
+        _invoiceDefaultTo = _invoiceLegacyMonthDefaultTo;
         FilterFrom = _invoiceDefaultFrom;
         FilterTo = _invoiceDefaultTo;
     }
@@ -371,7 +378,7 @@ public sealed partial class MainViewModel : ObservableObject
 
             if (dirtyAfter > 0)
             {
-                var pendingMessage = await _local.GetPendingSyncWaitingMessageAsync(ct: CancellationToken.None);
+                var pendingMessage = await _local.GetPendingSyncWaitingMessageAsync(_session, ct: CancellationToken.None);
                 SyncStatus = string.IsNullOrWhiteSpace(pendingMessage)
                     ? $"서버 반영 대기 데이터 {dirtyAfter:N0}건이 남아 있습니다. 환경설정 > 동기화에서 확인해 주세요."
                     : $"{pendingMessage} 환경설정 > 동기화에서 확인해 주세요.";
@@ -472,6 +479,7 @@ public sealed partial class MainViewModel : ObservableObject
     partial void OnSelectedVoucherTypeFilterChanged(string value) => HandleInvoiceFilterChanged();
     partial void OnFilterMinAmountTextChanged(string value) => HandleInvoiceFilterChanged();
     partial void OnFilterMaxAmountTextChanged(string value) => HandleInvoiceFilterChanged();
+    partial void OnEditVatModeChanged(string value) => RecalcTotals();
 
     [RelayCommand]
     private async Task ResetInvoiceFiltersAsync()
@@ -829,13 +837,23 @@ public sealed partial class MainViewModel : ObservableObject
         _suppressFilterAutoSave = true;
 
         InitializeInvoiceOfficeFilterOptions();
+        var fromValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterFromSettingKey));
+        var toValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterToSettingKey));
         var customerNameValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterCustomerSettingKey));
         var voucherTypeValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterVoucherTypeSettingKey));
         var officeCodeValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterOfficeCodeSettingKey));
         var minAmountValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMinAmountSettingKey));
         var maxAmountValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMaxAmountSettingKey));
-        FilterFrom = _invoiceDefaultFrom;
-        FilterTo = _invoiceDefaultTo;
+        var migrationDone = string.Equals(
+            await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterFullRangeDefaultMigrationKey)),
+            "1",
+            StringComparison.Ordinal);
+        var hasSavedFrom = TryParseInvoiceFilterDate(fromValue, out var savedFrom);
+        var hasSavedTo = TryParseInvoiceFilterDate(toValue, out var savedTo);
+        FilterFrom = hasSavedFrom ? savedFrom : _invoiceDefaultFrom;
+        FilterTo = hasSavedTo ? savedTo : _invoiceDefaultTo;
+        if (FilterTo < FilterFrom)
+            FilterTo = FilterFrom;
 
         FilterCustomerName = customerNameValue ?? string.Empty;
         SelectedVoucherTypeFilter = VoucherTypeFilterOptions.Contains(voucherTypeValue ?? string.Empty)
@@ -849,8 +867,58 @@ public sealed partial class MainViewModel : ObservableObject
         FilterMinAmountText = minAmountValue ?? string.Empty;
         FilterMaxAmountText = maxAmountValue ?? string.Empty;
 
+        var noNonDateFilter = string.IsNullOrWhiteSpace(FilterCustomerName)
+            && string.Equals(SelectedVoucherTypeFilter, "전체", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(FilterMinAmountText)
+            && string.IsNullOrWhiteSpace(FilterMaxAmountText);
+        var savedLegacyMonthDefault = hasSavedFrom
+            && hasSavedTo
+            && savedFrom == _invoiceLegacyMonthDefaultFrom
+            && savedTo == _invoiceLegacyMonthDefaultTo;
+        var shouldApplyFullRangeDefault = !hasSavedFrom
+            || !hasSavedTo
+            || (!migrationDone && noNonDateFilter && savedLegacyMonthDefault);
+        if (shouldApplyFullRangeDefault)
+        {
+            FilterFrom = _invoiceDefaultFrom;
+            FilterTo = _invoiceDefaultTo;
+        }
+
         _suppressFilterAutoSave = false;
+
+        if (shouldApplyFullRangeDefault)
+        {
+            await PersistInvoiceFiltersAsync();
+            await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterFullRangeDefaultMigrationKey), "1");
+            if (_invoiceDefaultFrom != _invoiceLegacyMonthDefaultFrom || _invoiceDefaultTo != _invoiceLegacyMonthDefaultTo)
+            {
+                SyncStatus = $"거래내역 기본 조회기간을 전체 기간({FilterFrom:yyyy-MM-dd}~{FilterTo:yyyy-MM-dd})으로 설정했습니다.";
+                AppLogger.Info("MAIN", $"전표 기본 조회기간 전체 기간 적용: {FilterFrom:yyyy-MM-dd}~{FilterTo:yyyy-MM-dd}");
+            }
+        }
     }
+
+    private async Task RefreshInvoiceDefaultDateRangeFromDataAsync()
+    {
+        var allInvoices = await _local.GetInvoicesAsync(from: null, to: null, customerId: null, session: _session);
+        var activeInvoices = allInvoices
+            .Where(invoice => !invoice.IsDeleted)
+            .ToList();
+        if (activeInvoices.Count == 0)
+            return;
+
+        var firstDate = activeInvoices.Min(invoice => invoice.InvoiceDate);
+        var lastDate = activeInvoices.Max(invoice => invoice.InvoiceDate);
+        var defaultTo = lastDate > _invoiceLegacyMonthDefaultTo
+            ? lastDate
+            : _invoiceLegacyMonthDefaultTo;
+
+        _invoiceDefaultFrom = firstDate;
+        _invoiceDefaultTo = defaultTo;
+    }
+
+    private static bool TryParseInvoiceFilterDate(string? raw, out DateOnly value)
+        => DateOnly.TryParseExact(raw?.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out value);
 
     private static decimal? ParseAmountFilter(string? raw)
     {
@@ -935,6 +1003,7 @@ public sealed partial class MainViewModel : ObservableObject
         EditTotalAmount = 0;
         EditSupplyAmount = 0;
         EditVatAmount = 0;
+        EditVatMode = InvoiceVatModes.Included;
         EditLines.Clear();
         AddNewLine();
     }
@@ -954,6 +1023,7 @@ public sealed partial class MainViewModel : ObservableObject
         EditTotalAmount = inv.TotalAmount;
         EditSupplyAmount = inv.SupplyAmount;
         EditVatAmount = inv.VatAmount;
+        EditVatMode = InvoiceVatModes.Normalize(inv.VatMode);
 
         EditCustomer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId)
             ?? await _local.GetCustomerAsync(inv.CustomerId);
@@ -988,6 +1058,7 @@ public sealed partial class MainViewModel : ObservableObject
             InvoiceDate = EditInvoiceDate,
             VoucherType = EditVoucherType,
             Memo = EditMemo,
+            VatMode = InvoiceVatModes.Normalize(EditVatMode),
             TaxInvoiceIssued = existingInvoice?.TaxInvoiceIssued ?? false,
             ResponsibleOfficeCode = responsibleOfficeCode,
             SourceWarehouseCode = sourceWarehouseCode,
@@ -1081,9 +1152,10 @@ public sealed partial class MainViewModel : ObservableObject
 
     public void RecalcTotals()
     {
-        EditTotalAmount = EditLines.Sum(l => l.LineAmount);
-        EditSupplyAmount = Math.Round(EditTotalAmount / 1.1m, 0, MidpointRounding.AwayFromZero);
-        EditVatAmount = EditTotalAmount - EditSupplyAmount;
+        var totals = InvoiceVatModes.CalculateTotals(EditLines.Select(l => l.LineAmount), EditVatMode);
+        EditTotalAmount = totals.TotalAmount;
+        EditSupplyAmount = totals.SupplyAmount;
+        EditVatAmount = totals.VatAmount;
     }
 
     // ?? Payments ??????????????????????????????????????????????????????????
@@ -1260,6 +1332,7 @@ public sealed partial class MainViewModel : ObservableObject
         bool printWithDate,
         bool printWithPrice)
     {
+        var defaultModel = _invoicePrintService.CreateDefaultModel(invoice, customer, company, printWithDate, printWithPrice);
         var payload = await _local.GetInvoicePrintPayloadAsync(invoice.Id);
         if (!string.IsNullOrWhiteSpace(payload))
         {
@@ -1274,12 +1347,7 @@ public sealed partial class MainViewModel : ObservableObject
                     if (invoice.VoucherType == VoucherType.Procurement)
                         saved.DocumentTitle = saved.DocumentTitle is "납품서" or "의뢰서" ? saved.DocumentTitle : "발주서";
 
-                    if (saved.Lines.Count == 0)
-                    {
-                        saved.Lines = _invoicePrintService
-                            .CreateDefaultModel(invoice, customer, company, printWithDate, printWithPrice)
-                            .Lines;
-                    }
+                    InvoicePrintLineSynchronizer.AlignToInvoiceLineOrder(saved, defaultModel);
 
                     return saved;
                 }
@@ -1290,7 +1358,7 @@ public sealed partial class MainViewModel : ObservableObject
             }
         }
 
-        var model = _invoicePrintService.CreateDefaultModel(invoice, customer, company, printWithDate, printWithPrice);
+        var model = defaultModel;
         if (invoice.VoucherType == VoucherType.Procurement)
             model.DocumentTitle = model.DocumentTitle is "납품서" or "의뢰서" ? model.DocumentTitle : "발주서";
         return model;
@@ -1374,8 +1442,8 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task LoadLegacyMigrationSettingsAsync()
     {
         var defaultDb = GetDefaultLegacySourceDbPath();
-        var defaultCustomerExcel = Path.Combine(AppContext.BaseDirectory, "거래처 목록.xlsx");
-        var defaultItemExcel = Path.Combine(AppContext.BaseDirectory, "제품 목록.xlsx");
+        var defaultCustomerExcel = Path.Combine(AppPaths.UserDownloadsDir, "거래처 목록.xlsx");
+        var defaultItemExcel = Path.Combine(AppPaths.UserDownloadsDir, "제품 목록.xlsx");
 
         LegacySourceDbPath = await _local.GetSettingAsync(LegacySourceDbPathSettingKey) ?? defaultDb;
         LegacyCustomerExcelPath = await _local.GetSettingAsync(LegacyCustomerExcelPathSettingKey) ?? defaultCustomerExcel;
@@ -1426,7 +1494,7 @@ public sealed partial class MainViewModel : ObservableObject
     {
         var initialDirectory = Path.GetDirectoryName(LegacyCustomerExcelPath);
         if (string.IsNullOrWhiteSpace(initialDirectory) || !Directory.Exists(initialDirectory))
-            initialDirectory = AppContext.BaseDirectory;
+            initialDirectory = AppPaths.UserDownloadsDir;
 
         var dialog = new SaveFileDialog
         {
@@ -1450,7 +1518,7 @@ public sealed partial class MainViewModel : ObservableObject
     {
         var initialDirectory = Path.GetDirectoryName(LegacyItemExcelPath);
         if (string.IsNullOrWhiteSpace(initialDirectory) || !Directory.Exists(initialDirectory))
-            initialDirectory = AppContext.BaseDirectory;
+            initialDirectory = AppPaths.UserDownloadsDir;
 
         var dialog = new SaveFileDialog
         {
@@ -1525,7 +1593,32 @@ public sealed partial class MainViewModel : ObservableObject
                 return;
             }
 
-            LegacyMigrationStatus = "엑셀 데이터를 거래플랜으로 가져오는 중...";
+            LegacyMigrationStatus = "엑셀 가져오기 미리보기 생성 중...";
+            var preview = await _legacyMigrationService.PreviewExcelImportAsync(
+                LegacyCustomerExcelPath,
+                LegacyItemExcelPath);
+            var confirm = MessageBox.Show(
+                "엑셀 가져오기 미리보기" + Environment.NewLine + Environment.NewLine +
+                preview.ToDisplayText() + Environment.NewLine + Environment.NewLine +
+                "현재 DB 백업을 만든 뒤 위 내용대로 반영합니다. 계속하시겠습니까?",
+                "데이터 가져오기",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.Yes)
+            {
+                LegacyMigrationStatus = "엑셀 데이터 가져오기를 취소했습니다.";
+                return;
+            }
+
+            var backupPath = await _backup.BackupNowWithPathAsync();
+            if (string.IsNullOrWhiteSpace(backupPath))
+            {
+                LegacyMigrationStatus = "엑셀 가져오기 전에 현재 DB 백업을 생성하지 못했습니다. 백업 상태를 확인한 뒤 다시 시도하세요.";
+                MessageBox.Show(LegacyMigrationStatus, "데이터 가져오기", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            LegacyMigrationStatus = $"현재 DB 백업 완료: {Path.GetFileName(backupPath)}. 엑셀 데이터를 거래플랜으로 가져오는 중...";
             var result = await _legacyMigrationService.ImportFromExcelAsync(
                 LegacyCustomerExcelPath,
                 LegacyItemExcelPath);
@@ -1582,14 +1675,14 @@ public sealed partial class MainViewModel : ObservableObject
     {
         SyncStatus = "수동 동기화 중...";
         var syncOk = await _sync.TrySyncAsync();
-        var dirtyCount = await _local.CountDirtyAsync();
+        var dirtyCount = await _local.CountDirtyAsync(_session);
         if (syncOk && dirtyCount == 0)
             await _sync.RefreshSharedMirrorFromServerAsync();
         await LoadCustomersAsync();
         await LoadInvoiceListAsync();
 
         SyncStatus = dirtyCount > 0
-            ? await _local.GetPendingSyncWaitingMessageAsync("동기화 작업은 완료됐지만", CancellationToken.None)
+            ? await _local.GetPendingSyncWaitingMessageAsync(_session, "동기화 작업은 완료됐지만", CancellationToken.None)
                 ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다."
             : syncOk
                 ? $"동기화 완료 {DateTime.Now:HH:mm:ss}"

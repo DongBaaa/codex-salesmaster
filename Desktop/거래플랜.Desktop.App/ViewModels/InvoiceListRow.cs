@@ -19,6 +19,7 @@ public sealed class InvoiceListRow
     public decimal TotalAmount { get; init; }
     public decimal SupplyAmount { get; init; }
     public decimal VatAmount { get; init; }
+    public string VatMode { get; init; } = InvoiceVatModes.Included;
     public decimal ReceiptAmount { get; init; }
     public decimal PaymentAmount { get; init; }
     public decimal BalanceAmount => TotalAmount - (VoucherType == VoucherType.Purchase ? PaymentAmount : ReceiptAmount);
@@ -27,7 +28,7 @@ public sealed class InvoiceListRow
 
     public string DisplayNumber => string.IsNullOrEmpty(InvoiceNumber) ? LocalTempNumber : InvoiceNumber;
     public string InvoiceDateDisplay => InvoiceDate.ToString("yyyy/MM/dd");
-    public string TaxInvoiceDisplay => TaxInvoiceIssued ? "발행완료" : string.Empty;
+    public string TaxInvoiceDisplay => TaxInvoiceIssued ? "V" : string.Empty;
 
     public string VoucherTypeDisplay => VoucherType switch
     {
@@ -56,6 +57,7 @@ public sealed class InvoiceListRow
             TotalAmount = inv.TotalAmount,
             SupplyAmount = inv.SupplyAmount,
             VatAmount = inv.VatAmount,
+            VatMode = InvoiceVatModes.Normalize(inv.VatMode),
             ReceiptAmount = inv.VoucherType == VoucherType.Sales ? settledAmount : 0m,
             PaymentAmount = inv.VoucherType == VoucherType.Purchase ? settledAmount : 0m,
             TaxInvoiceIssued = inv.TaxInvoiceIssued,

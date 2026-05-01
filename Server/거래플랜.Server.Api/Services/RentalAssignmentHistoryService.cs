@@ -24,9 +24,15 @@ public sealed class RentalAssignmentHistoryService
             .OrderBy(asset => asset.Id)
             .ToListAsync(cancellationToken);
 
-        var currentRows = await _dbContext.RentalAssetAssignmentHistories
-            .Where(history => history.IsCurrent)
+        var allHistoryRows = await _dbContext.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
             .ToListAsync(cancellationToken);
+        var currentRows = allHistoryRows
+            .Where(history => history.IsCurrent)
+            .ToList();
+        var historyById = allHistoryRows
+            .GroupBy(history => history.Id)
+            .ToDictionary(group => group.Key, group => group.First());
         var currentByAssetId = currentRows
             .GroupBy(history => history.AssetId)
             .ToDictionary(group => group.Key, group => group.OrderByDescending(row => row.LinkedAtUtc).ToList());
@@ -53,6 +59,8 @@ public sealed class RentalAssignmentHistoryService
                 {
                     stale.IsCurrent = false;
                     stale.UnlinkedAtUtc ??= NormalizeUtc(asset.LastAssignmentClearedAtUtc ?? now);
+                    stale.ChangeReason = "자산 연결 해제";
+                    ApplySnapshot(stale, asset);
                 }
 
                 continue;
@@ -62,12 +70,17 @@ public sealed class RentalAssignmentHistoryService
             {
                 stale.IsCurrent = false;
                 stale.UnlinkedAtUtc ??= now;
+                stale.ChangeReason = "재임대/연결 변경";
+                ApplySnapshot(stale, asset);
             }
 
             if (matchingCurrent is not null)
+            {
+                ApplySnapshot(matchingCurrent, asset);
                 continue;
+            }
 
-            var linkedAtUtc = NormalizeUtc(asset.UpdatedAtUtc == default ? now : asset.UpdatedAtUtc);
+            var linkedAtUtc = ResolveAssignmentLinkedAtUtc(asset, now);
             var deterministicHistoryId = SyncIdentityGenerator.CreateRentalAssetAssignmentHistoryId(
                 asset.Id,
                 linkedAtUtc,
@@ -76,19 +89,37 @@ public sealed class RentalAssignmentHistoryService
                 desiredCustomerName,
                 desiredInstallLocation);
 
-            _dbContext.RentalAssetAssignmentHistories.Add(new RentalAssetAssignmentHistory
+            var newHistoryId = deterministicHistoryId == Guid.Empty ? Guid.NewGuid() : deterministicHistoryId;
+            if (!historyById.TryGetValue(newHistoryId, out var newHistory))
             {
-                Id = deterministicHistoryId == Guid.Empty ? Guid.NewGuid() : deterministicHistoryId,
-                AssetId = asset.Id,
-                BillingProfileId = asset.BillingProfileId,
-                CustomerId = asset.CustomerId,
-                TenantCode = asset.TenantCode,
-                ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
-                CustomerName = desiredCustomerName,
-                InstallLocation = desiredInstallLocation,
-                IsCurrent = true,
-                LinkedAtUtc = linkedAtUtc
-            });
+                newHistory = new RentalAssetAssignmentHistory { Id = newHistoryId, CreatedAtUtc = now };
+                historyById[newHistoryId] = newHistory;
+                _dbContext.RentalAssetAssignmentHistories.Add(newHistory);
+            }
+
+            newHistory.AssetId = asset.Id;
+            newHistory.BillingProfileId = asset.BillingProfileId;
+            newHistory.CustomerId = asset.CustomerId;
+            newHistory.TenantCode = asset.TenantCode;
+            newHistory.OfficeCode = asset.OfficeCode;
+            newHistory.ResponsibleOfficeCode = asset.ResponsibleOfficeCode;
+            newHistory.CustomerName = desiredCustomerName;
+            newHistory.InstallLocation = desiredInstallLocation;
+            newHistory.BillingProfileDisplay = BuildBillingProfileDisplay(asset);
+            newHistory.ItemName = asset.ItemName;
+            newHistory.MachineNumber = asset.MachineNumber;
+            newHistory.ManagementNumber = asset.ManagementNumber;
+            newHistory.MonthlyFee = Math.Max(0m, asset.MonthlyFee);
+            newHistory.ContractStartDate = asset.ContractStartDate ?? asset.InstallDate;
+            newHistory.ContractEndDate = asset.RentalEndDate;
+            newHistory.ChangeReason = "서버 자산 상태 반영";
+            newHistory.IsCurrent = true;
+            newHistory.IsDeleted = false;
+            newHistory.LinkedAtUtc = linkedAtUtc;
+            newHistory.UnlinkedAtUtc = null;
+            if (newHistory.CreatedAtUtc == default)
+                newHistory.CreatedAtUtc = now;
+            newHistory.UpdatedAtUtc = now;
         }
 
         var activeAssetIds = assets.Select(asset => asset.Id).ToHashSet();
@@ -96,6 +127,7 @@ public sealed class RentalAssignmentHistoryService
         {
             stale.IsCurrent = false;
             stale.UnlinkedAtUtc ??= now;
+            stale.ChangeReason = "자산 삭제/비활성";
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -114,6 +146,48 @@ public sealed class RentalAssignmentHistoryService
 
         return !string.IsNullOrWhiteSpace(desiredCustomerName)
                || !string.IsNullOrWhiteSpace(desiredInstallLocation);
+    }
+
+    private static void ApplySnapshot(RentalAssetAssignmentHistory history, RentalAsset asset)
+    {
+        history.TenantCode = asset.TenantCode;
+        history.OfficeCode = asset.OfficeCode;
+        history.ResponsibleOfficeCode = asset.ResponsibleOfficeCode;
+        history.BillingProfileDisplay = string.IsNullOrWhiteSpace(history.BillingProfileDisplay)
+            ? BuildBillingProfileDisplay(asset)
+            : history.BillingProfileDisplay;
+        history.ItemName = string.IsNullOrWhiteSpace(history.ItemName) ? asset.ItemName : history.ItemName;
+        history.MachineNumber = string.IsNullOrWhiteSpace(history.MachineNumber) ? asset.MachineNumber : history.MachineNumber;
+        history.ManagementNumber = string.IsNullOrWhiteSpace(history.ManagementNumber) ? asset.ManagementNumber : history.ManagementNumber;
+        if (history.MonthlyFee <= 0m)
+            history.MonthlyFee = Math.Max(0m, asset.MonthlyFee);
+        history.ContractStartDate ??= asset.ContractStartDate ?? asset.InstallDate;
+        history.ContractEndDate ??= asset.RentalEndDate;
+    }
+
+    private static DateTime ResolveAssignmentLinkedAtUtc(RentalAsset asset, DateTime fallbackUtc)
+    {
+        if (asset.InstallDate.HasValue)
+            return CreateUtcDate(asset.InstallDate.Value);
+        if (asset.ContractStartDate.HasValue)
+            return CreateUtcDate(asset.ContractStartDate.Value);
+        if (asset.UpdatedAtUtc != default)
+            return NormalizeUtc(asset.UpdatedAtUtc);
+        if (asset.CreatedAtUtc != default)
+            return NormalizeUtc(asset.CreatedAtUtc);
+        return NormalizeUtc(fallbackUtc);
+    }
+
+    private static DateTime CreateUtcDate(DateOnly date)
+        => new(date.Year, date.Month, date.Day, 0, 0, 0, DateTimeKind.Utc);
+
+    private static string BuildBillingProfileDisplay(RentalAsset asset)
+    {
+        var customerName = NormalizeText(string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName);
+        var itemName = NormalizeText(asset.ItemName);
+        if (!string.IsNullOrWhiteSpace(customerName) && !string.IsNullOrWhiteSpace(itemName))
+            return $"{customerName} · {itemName}";
+        return string.IsNullOrWhiteSpace(customerName) ? itemName : customerName;
     }
 
     private static DateTime NormalizeUtc(DateTime value)

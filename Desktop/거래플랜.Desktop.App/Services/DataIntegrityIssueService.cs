@@ -22,10 +22,20 @@ public static class DataIntegrityIssueCodes
     public const string RentalAssetTemplateMonthlyMismatch = "rental_asset_template_monthly_mismatch";
     public const string RentalAssetProfileScopeMismatch = "rental_asset_profile_scope_mismatch";
     public const string RentalOperationalScopeMismatch = "rental_operational_scope_mismatch";
+    public const string RentalCustomerNameMismatch = "rental_customer_name_mismatch";
     public const string RentalAssetInMultipleProfileTemplates = "rental_asset_in_multiple_profile_templates";
     public const string RentalProfileWithoutLinkedAssets = "rental_profile_without_linked_assets";
     public const string RentalBillableAssetWithoutMonthlyFee = "rental_billable_asset_without_monthly_fee";
     public const string RentalAssetMissingBillingProfile = "rental_asset_missing_billing_profile";
+    public const string RentalAssignmentMissingReference = "rental_assignment_missing_reference";
+    public const string RentalAssetMultipleCurrentAssignments = "rental_asset_multiple_current_assignments";
+    public const string CustomerDuplicateCandidate = "customer_duplicate_candidate";
+    public const string ItemDuplicateCandidate = "item_duplicate_candidate";
+    public const string WarehouseDuplicateCandidate = "warehouse_duplicate_candidate";
+    public const string InvoiceAmountMismatch = "invoice_amount_mismatch";
+    public const string InvoiceOverSettled = "invoice_over_settled";
+    public const string InventoryStockSnapshotMismatch = "inventory_stock_snapshot_mismatch";
+    public const string InventoryWarehouseReferenceMissing = "inventory_warehouse_reference_missing";
 }
 
 public sealed class DataIntegrityIssueDefinition
@@ -186,6 +196,13 @@ public sealed class DataIntegrityIssueService
             "렌탈 범위",
             "청구 프로필 또는 자산의 tenant·owner·담당지점 값이 서로 맞지 않아 다른 점검 기준도 왜곡될 수 있습니다.",
             "청구관리 또는 자산 화면에서 담당지점을 다시 저장해 canonical scope로 맞추세요."),
+        [DataIntegrityIssueCodes.RentalCustomerNameMismatch] = new(
+            DataIntegrityIssueCodes.RentalCustomerNameMismatch,
+            "거래처명 표시 불일치",
+            "Warning",
+            "렌탈 거래처",
+            "렌탈 청구/자산에 저장된 거래처 표시명과 연결된 거래처 마스터명이 다릅니다.",
+            "기관/지점이 맞는지 확인한 뒤 청구관리 또는 자산 화면에서 개별 저장으로 정리하세요."),
         [DataIntegrityIssueCodes.RentalAssetInMultipleProfileTemplates] = new(
             DataIntegrityIssueCodes.RentalAssetInMultipleProfileTemplates,
             "자산 중복 청구 연결",
@@ -213,7 +230,70 @@ public sealed class DataIntegrityIssueService
             "Error",
             "렌탈 연결",
             "자산에 저장된 청구 프로필 ID가 현재 DB에 없습니다.",
-            "자산 화면에서 청구 연결을 해제하거나 올바른 청구 프로필로 다시 연결하세요.")
+            "자산 화면에서 청구 연결을 해제하거나 올바른 청구 프로필로 다시 연결하세요."),
+        [DataIntegrityIssueCodes.RentalAssignmentMissingReference] = new(
+            DataIntegrityIssueCodes.RentalAssignmentMissingReference,
+            "임대이력 참조 누락",
+            "Error",
+            "렌탈 이력",
+            "렌탈 임대이력이 존재하지 않거나 삭제된 자산/거래처/청구 프로필을 참조합니다.",
+            "임대이력 상세를 확인한 뒤 자산·거래처·청구 프로필을 재연결하거나 과거 이력으로 보존 처리하세요."),
+        [DataIntegrityIssueCodes.RentalAssetMultipleCurrentAssignments] = new(
+            DataIntegrityIssueCodes.RentalAssetMultipleCurrentAssignments,
+            "현재 임대이력 중복",
+            "Error",
+            "렌탈 이력",
+            "하나의 렌탈 자산에 현재 임대중으로 표시된 이력이 여러 개 있습니다.",
+            "임대이력에서 실제 현재 이력 1건만 남기고 나머지는 과거 이력으로 수정하세요."),
+        [DataIntegrityIssueCodes.CustomerDuplicateCandidate] = new(
+            DataIntegrityIssueCodes.CustomerDuplicateCandidate,
+            "거래처 중복 후보",
+            "Warning",
+            "거래처",
+            "같은 테넌트/담당지점 안에 이름 또는 사업자번호가 같은 거래처가 여러 개 있습니다.",
+            "목록을 확인한 뒤 실제 같은 거래처인 항목만 수동 병합 또는 정리하세요."),
+        [DataIntegrityIssueCodes.ItemDuplicateCandidate] = new(
+            DataIntegrityIssueCodes.ItemDuplicateCandidate,
+            "품목 중복 후보",
+            "Warning",
+            "품목",
+            "같은 테넌트/소속 안에 품명·규격이 같은 품목이 여러 개 있습니다.",
+            "판매·구매·재고 참조를 확인한 뒤 실제 같은 품목만 병합하거나 사용하지 않는 품목을 정리하세요."),
+        [DataIntegrityIssueCodes.WarehouseDuplicateCandidate] = new(
+            DataIntegrityIssueCodes.WarehouseDuplicateCandidate,
+            "창고 중복 후보",
+            "Warning",
+            "다중창고",
+            "같은 담당지점 안에 창고 코드 또는 창고명이 중복된 후보가 있습니다.",
+            "창고별 재고를 확인한 뒤 실제 같은 창고만 정리하세요."),
+        [DataIntegrityIssueCodes.InvoiceAmountMismatch] = new(
+            DataIntegrityIssueCodes.InvoiceAmountMismatch,
+            "전표 금액 계산 불일치",
+            "Warning",
+            "판매/구매/회계",
+            "전표의 품목 합계, 공급가, 부가세, 합계금액이 현재 계산 기준과 다릅니다.",
+            "전표를 열어 부가세 옵션과 품목 금액을 확인한 뒤 저장해 재계산하세요."),
+        [DataIntegrityIssueCodes.InvoiceOverSettled] = new(
+            DataIntegrityIssueCodes.InvoiceOverSettled,
+            "수금/지불 초과",
+            "Warning",
+            "회계경리",
+            "전표 합계금액보다 수금 또는 지불 합계가 큽니다.",
+            "수금/지불 내역 중 중복 입력이나 잘못된 금액이 있는지 확인하세요."),
+        [DataIntegrityIssueCodes.InventoryStockSnapshotMismatch] = new(
+            DataIntegrityIssueCodes.InventoryStockSnapshotMismatch,
+            "품목 재고 스냅샷 불일치",
+            "Warning",
+            "재고",
+            "품목 현재재고와 창고별 재고 합계가 다릅니다.",
+            "품목/재고 화면에서 창고별 재고와 수동 조정 이력을 확인한 뒤 재계산 또는 수동 조정하세요."),
+        [DataIntegrityIssueCodes.InventoryWarehouseReferenceMissing] = new(
+            DataIntegrityIssueCodes.InventoryWarehouseReferenceMissing,
+            "삭제/누락 창고 참조",
+            "Warning",
+            "다중창고",
+            "재고 스냅샷 또는 재고 이동 이력이 존재하지 않거나 비활성인 창고 코드를 참조합니다.",
+            "창고를 복구하거나 해당 재고/이동 이력의 창고 코드를 올바른 창고로 수정하세요.")
     };
 
     private readonly LocalDbContext _db;
@@ -233,6 +313,35 @@ public sealed class DataIntegrityIssueService
             .AsNoTracking()
             .Where(asset => !asset.IsDeleted)
             .ToListAsync(ct);
+        var activeAssignmentHistories = await _db.RentalAssetAssignmentHistories
+            .AsNoTracking()
+            .Where(history => !history.IsDeleted)
+            .ToListAsync(ct);
+        var activeCustomers = await _db.Customers
+            .AsNoTracking()
+            .Where(customer => !customer.IsDeleted)
+            .ToListAsync(ct);
+        var activeItems = await _db.Items
+            .AsNoTracking()
+            .Where(item => !item.IsDeleted)
+            .ToListAsync(ct);
+        var activeWarehouses = await _db.Warehouses
+            .AsNoTracking()
+            .Where(warehouse => !warehouse.IsDeleted && warehouse.IsActive)
+            .ToListAsync(ct);
+        var activeInvoices = await _db.Invoices
+            .AsNoTracking()
+            .Include(invoice => invoice.Lines)
+            .Include(invoice => invoice.Payments)
+            .Where(invoice => !invoice.IsDeleted && invoice.IsLatestVersion)
+            .ToListAsync(ct);
+        var itemWarehouseStocks = await _db.ItemWarehouseStocks
+            .AsNoTracking()
+            .ToListAsync(ct);
+        var inventoryMovements = await _db.InventoryMovements
+            .AsNoTracking()
+            .Where(movement => movement.IsActive)
+            .ToListAsync(ct);
 
         var scopedProfiles = activeProfiles
             .Where(profile =>
@@ -251,7 +360,99 @@ public sealed class DataIntegrityIssueService
 
         var allAssetsById = activeAssets.ToDictionary(asset => asset.Id);
         var activeProfilesById = activeProfiles.ToDictionary(profile => profile.Id);
+        var linkedCustomerIds = activeProfiles
+            .Where(profile => profile.CustomerId.HasValue && profile.CustomerId.Value != Guid.Empty)
+            .Select(profile => profile.CustomerId!.Value)
+            .Concat(activeAssets
+                .Where(asset => asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
+                .Select(asset => asset.CustomerId!.Value))
+            .Concat(activeAssignmentHistories
+                .Where(history => history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty)
+                .Select(history => history.CustomerId!.Value))
+            .Distinct()
+            .ToList();
+        var activeCustomersById = linkedCustomerIds.Count == 0
+            ? new Dictionary<Guid, LocalCustomer>()
+            : await _db.Customers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(customer => linkedCustomerIds.Contains(customer.Id) && !customer.IsDeleted)
+                .ToDictionaryAsync(customer => customer.Id, ct);
         var details = new List<DataIntegrityIssueDetail>();
+        var scopedAssignmentHistories = activeAssignmentHistories
+            .Where(history => IsInSessionScope(history.TenantCode, history.ResponsibleOfficeCode, session))
+            .ToList();
+        var scopedCustomers = activeCustomers
+            .Where(customer => IsInSessionScope(customer.TenantCode, ResolveCustomerOfficeCode(customer), session))
+            .ToList();
+        var scopedItems = activeItems
+            .Where(item => IsInSessionScope(item.TenantCode, item.OfficeCode, session))
+            .ToList();
+        var scopedWarehouses = activeWarehouses
+            .Where(warehouse => IsInSessionScope(null, warehouse.OfficeCode, session))
+            .ToList();
+        var scopedInvoices = activeInvoices
+            .Where(invoice => IsInSessionScope(invoice.TenantCode, invoice.ResponsibleOfficeCode, session))
+            .ToList();
+
+        AddMasterDataAndLedgerIssues(
+            details,
+            scopedCustomers,
+            scopedItems,
+            scopedWarehouses,
+            scopedInvoices,
+            itemWarehouseStocks,
+            inventoryMovements,
+            session);
+
+        foreach (var history in scopedAssignmentHistories)
+        {
+            allAssetsById.TryGetValue(history.AssetId, out var historyAsset);
+            LocalRentalBillingProfile? historyProfile = null;
+            if (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty)
+                activeProfilesById.TryGetValue(history.BillingProfileId.Value, out historyProfile);
+
+            var missingReferences = new List<string>();
+            if (history.AssetId == Guid.Empty || historyAsset is null)
+                missingReferences.Add($"자산 {FormatNullableGuid(history.AssetId)}");
+            if (history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty && !activeCustomersById.ContainsKey(history.CustomerId.Value))
+                missingReferences.Add($"거래처 {history.CustomerId.Value:D}");
+            if (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty && historyProfile is null)
+                missingReferences.Add($"청구 프로필 {history.BillingProfileId.Value:D}");
+
+            if (missingReferences.Count > 0)
+            {
+                AddHistoryIssue(details, DataIntegrityIssueCodes.RentalAssignmentMissingReference, history, historyAsset, historyProfile,
+                    currentValue: string.Join(" / ", missingReferences),
+                    expectedValue: "활성 자산·거래처·청구 프로필 참조",
+                    message: $"{BuildHistoryDisplay(history)} 임대이력이 누락/삭제된 참조를 포함합니다.");
+            }
+        }
+
+        foreach (var group in scopedAssignmentHistories
+                     .Where(history => history.IsCurrent)
+                     .GroupBy(history => history.AssetId)
+                     .Where(group => group.Key != Guid.Empty && group.Count() > 1))
+        {
+            allAssetsById.TryGetValue(group.Key, out var asset);
+            var profile = group
+                .Select(history => history.BillingProfileId)
+                .Where(id => id.HasValue && id.Value != Guid.Empty)
+                .Select(id => activeProfilesById.TryGetValue(id!.Value, out var found) ? found : null)
+                .FirstOrDefault(found => found is not null);
+            var currentDisplays = group
+                .OrderByDescending(history => history.LinkedAtUtc)
+                .Take(5)
+                .Select(BuildHistoryDisplay)
+                .ToList();
+            var representativeHistory = group.OrderByDescending(history => history.LinkedAtUtc).First();
+
+            AddHistoryIssue(details, DataIntegrityIssueCodes.RentalAssetMultipleCurrentAssignments, representativeHistory, asset, profile,
+                currentValue: $"{group.Count():N0}건 / {string.Join(" / ", currentDisplays)}",
+                expectedValue: "현재 임대이력 1건",
+                message: $"{FormatNullableGuid(group.Key)} 자산에 현재 임대이력이 {group.Count():N0}건 있습니다.");
+        }
+
         var assetTemplateRefs = new Dictionary<Guid, List<AssetTemplateReference>>();
 
         foreach (var profile in scopedProfiles)
@@ -264,6 +465,22 @@ public sealed class DataIntegrityIssueService
                     currentValue: BuildStoredProfileScopeDisplay(profile),
                     expectedValue: BuildProfileScopeDisplay(profile),
                     message: $"{BuildProfileDisplay(profile)} 프로필의 tenant/owner/담당지점 범위가 내부적으로 섞여 있습니다.",
+                    directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile);
+            }
+
+            if (TryGetLinkedCustomerNameMismatch(
+                    profile.CustomerId,
+                    activeCustomersById,
+                    new[] { profile.CustomerName },
+                    out var profileMasterCustomerName,
+                    out var profileStoredCustomerName))
+            {
+                AddIssue(details, DataIntegrityIssueCodes.RentalCustomerNameMismatch, profile, null,
+                    entityType: "청구 프로필",
+                    entityId: profile.Id,
+                    currentValue: profileStoredCustomerName,
+                    expectedValue: profileMasterCustomerName,
+                    message: $"{BuildProfileDisplay(profile)} 프로필의 거래처 표시명이 거래처 마스터명과 다릅니다.",
                     directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile);
             }
 
@@ -355,12 +572,10 @@ public sealed class DataIntegrityIssueService
 
                     refs.Add(new AssetTemplateReference(profile.Id, BuildProfileDisplay(profile), item.DisplayItemName));
 
-                    var profileScope = ResolveProfileScope(profile);
-                    var assetScope = ResolveAssetScope(asset);
-                    var profileIdMatches = !asset.BillingProfileId.HasValue || asset.BillingProfileId == profile.Id;
-                    var tenantMatches = string.Equals(profileScope.TenantCode, assetScope.TenantCode, StringComparison.OrdinalIgnoreCase);
-                    var officeMatches = string.Equals(profileScope.ResponsibleOfficeCode, assetScope.ResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase);
-                    if (!profileIdMatches || !tenantMatches || !officeMatches)
+                    var hasConflictingProfile = asset.BillingProfileId.HasValue &&
+                                                asset.BillingProfileId.Value != Guid.Empty &&
+                                                asset.BillingProfileId.Value != profile.Id;
+                    if (hasConflictingProfile)
                     {
                         AddIssue(details, DataIntegrityIssueCodes.RentalAssetProfileScopeMismatch, profile, asset,
                             entityType: "자산 연결",
@@ -434,6 +649,22 @@ public sealed class DataIntegrityIssueService
                     directActionKind: DataIntegrityDirectActionKind.OpenRentalAsset);
             }
 
+            if (TryGetLinkedCustomerNameMismatch(
+                    asset.CustomerId,
+                    activeCustomersById,
+                    new[] { asset.CustomerName, asset.CurrentCustomerName },
+                    out var assetMasterCustomerName,
+                    out var assetStoredCustomerName))
+            {
+                AddIssue(details, DataIntegrityIssueCodes.RentalCustomerNameMismatch, null, asset,
+                    entityType: "렌탈 자산",
+                    entityId: asset.Id,
+                    currentValue: assetStoredCustomerName,
+                    expectedValue: assetMasterCustomerName,
+                    message: $"{BuildAssetDisplay(asset)} 자산의 거래처 표시명이 거래처 마스터명과 다릅니다.",
+                    directActionKind: DataIntegrityDirectActionKind.OpenRentalAsset);
+            }
+
             if (asset.BillingProfileId.HasValue && !activeProfilesById.ContainsKey(asset.BillingProfileId.Value))
             {
                 AddIssue(details, DataIntegrityIssueCodes.RentalAssetMissingBillingProfile, null, asset,
@@ -487,6 +718,201 @@ public sealed class DataIntegrityIssueService
             ? definition
             : new DataIntegrityIssueDefinition(code, code, "Warning", "기타", "정의되지 않은 점검 항목입니다.", "상세 내용을 확인하세요.");
 
+    private static void AddMasterDataAndLedgerIssues(
+        ICollection<DataIntegrityIssueDetail> issues,
+        IReadOnlyCollection<LocalCustomer> customers,
+        IReadOnlyCollection<LocalItem> items,
+        IReadOnlyCollection<LocalWarehouse> warehouses,
+        IReadOnlyCollection<LocalInvoice> invoices,
+        IReadOnlyCollection<LocalItemWarehouseStock> itemWarehouseStocks,
+        IReadOnlyCollection<LocalInventoryMovement> inventoryMovements,
+        SessionState session)
+    {
+        foreach (var group in customers
+                     .Select(customer => new
+                     {
+                         Customer = customer,
+                         Key = RentalCatalogValueNormalizer.NormalizeLooseKey(customer.NameOriginal),
+                         OfficeCode = ResolveCustomerOfficeCode(customer),
+                         TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, ResolveCustomerOfficeCode(customer))
+                     })
+                     .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
+                     .GroupBy(entry => $"{entry.TenantCode}|{entry.OfficeCode}|NAME|{entry.Key}", StringComparer.OrdinalIgnoreCase)
+                     .Where(group => group.Count() > 1))
+        {
+            var rows = group.Select(entry => entry.Customer).OrderBy(customer => customer.NameOriginal).ToList();
+            AddGeneralIssue(issues, DataIntegrityIssueCodes.CustomerDuplicateCandidate,
+                entityType: "거래처",
+                entityId: rows[0].Id,
+                customerName: rows[0].NameOriginal,
+                officeCode: ResolveCustomerOfficeCode(rows[0]),
+                currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal}({row.Id:N})")),
+                expectedValue: "같은 거래처이면 1건으로 정리",
+                message: $"거래처명 '{rows[0].NameOriginal}' 기준 중복 후보 {rows.Count:N0}건이 있습니다.");
+        }
+
+        foreach (var group in customers
+                     .Select(customer => new
+                     {
+                         Customer = customer,
+                         Key = NormalizeBusinessNumber(customer.BusinessNumber),
+                         OfficeCode = ResolveCustomerOfficeCode(customer),
+                         TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, ResolveCustomerOfficeCode(customer))
+                     })
+                     .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
+                     .GroupBy(entry => $"{entry.TenantCode}|{entry.OfficeCode}|BIZ|{entry.Key}", StringComparer.OrdinalIgnoreCase)
+                     .Where(group => group.Count() > 1))
+        {
+            var rows = group.Select(entry => entry.Customer).OrderBy(customer => customer.NameOriginal).ToList();
+            AddGeneralIssue(issues, DataIntegrityIssueCodes.CustomerDuplicateCandidate,
+                entityType: "거래처",
+                entityId: rows[0].Id,
+                customerName: rows[0].NameOriginal,
+                officeCode: ResolveCustomerOfficeCode(rows[0]),
+                currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal} / {row.BusinessNumber}({row.Id:N})")),
+                expectedValue: "같은 사업자이면 1건으로 정리",
+                message: $"사업자번호 '{rows[0].BusinessNumber}' 기준 거래처 중복 후보 {rows.Count:N0}건이 있습니다.");
+        }
+
+        foreach (var group in items
+                     .Select(item => new
+                     {
+                         Item = item,
+                         NameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal),
+                         SpecKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.SpecificationOriginal),
+                         OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared),
+                         TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(item.TenantCode, item.OfficeCode)
+                     })
+                     .Where(entry => !string.IsNullOrWhiteSpace(entry.NameKey))
+                     .GroupBy(entry => $"{entry.TenantCode}|{entry.OfficeCode}|{entry.NameKey}|{entry.SpecKey}", StringComparer.OrdinalIgnoreCase)
+                     .Where(group => group.Count() > 1))
+        {
+            var rows = group.Select(entry => entry.Item).OrderBy(item => item.NameOriginal).ThenBy(item => item.SpecificationOriginal).ToList();
+            AddGeneralIssue(issues, DataIntegrityIssueCodes.ItemDuplicateCandidate,
+                entityType: "품목",
+                entityId: rows[0].Id,
+                itemName: rows[0].NameOriginal,
+                officeCode: OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(rows[0].OfficeCode, OfficeCodeCatalog.Shared),
+                currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal} / {row.SpecificationOriginal}({row.Id:N})")),
+                expectedValue: "같은 품목이면 1건으로 정리",
+                message: $"품목 '{rows[0].NameOriginal}' / 규격 '{rows[0].SpecificationOriginal}' 중복 후보 {rows.Count:N0}건이 있습니다.");
+        }
+
+        foreach (var group in warehouses
+                     .Select(warehouse => new
+                     {
+                         Warehouse = warehouse,
+                         OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(warehouse.OfficeCode, session.OfficeCode),
+                         CodeKey = RentalCatalogValueNormalizer.NormalizeLooseKey(warehouse.Code),
+                         NameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(warehouse.Name)
+                     })
+                     .SelectMany(entry => new[]
+                     {
+                         new { entry.Warehouse, entry.OfficeCode, Key = $"CODE|{entry.CodeKey}" },
+                         new { entry.Warehouse, entry.OfficeCode, Key = $"NAME|{entry.NameKey}" }
+                     })
+                     .Where(entry => !entry.Key.EndsWith("|", StringComparison.Ordinal))
+                     .GroupBy(entry => $"{entry.OfficeCode}|{entry.Key}", StringComparer.OrdinalIgnoreCase)
+                     .Where(group => group.Select(entry => entry.Warehouse.Id).Distinct().Count() > 1))
+        {
+            var rows = group.Select(entry => entry.Warehouse).GroupBy(warehouse => warehouse.Id).Select(grouping => grouping.First()).OrderBy(warehouse => warehouse.Name).ToList();
+            AddGeneralIssue(issues, DataIntegrityIssueCodes.WarehouseDuplicateCandidate,
+                entityType: "창고",
+                entityId: rows[0].Id,
+                officeCode: rows[0].OfficeCode,
+                currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.Code} / {row.Name}({row.Id:N})")),
+                expectedValue: "같은 창고이면 1건으로 정리",
+                message: $"담당지점 {rows[0].OfficeCode} 창고 중복 후보 {rows.Count:N0}건이 있습니다.");
+        }
+
+        foreach (var invoice in invoices)
+        {
+            var activeLines = invoice.Lines.Where(line => !line.IsDeleted).ToList();
+            var totals = InvoiceVatModes.CalculateTotals(activeLines.Select(line => line.LineAmount), invoice.VatMode);
+            if (AmountDiffers(invoice.TotalAmount, totals.TotalAmount) ||
+                AmountDiffers(invoice.SupplyAmount, totals.SupplyAmount) ||
+                AmountDiffers(invoice.VatAmount, totals.VatAmount))
+            {
+                AddGeneralIssue(issues, DataIntegrityIssueCodes.InvoiceAmountMismatch,
+                    entityType: "전표",
+                    entityId: invoice.Id,
+                    officeCode: invoice.ResponsibleOfficeCode,
+                    currentValue: $"공급 {invoice.SupplyAmount:N0} / 부가세 {invoice.VatAmount:N0} / 합계 {invoice.TotalAmount:N0}",
+                    expectedValue: $"공급 {totals.SupplyAmount:N0} / 부가세 {totals.VatAmount:N0} / 합계 {totals.TotalAmount:N0}",
+                    message: $"{invoice.InvoiceDate:yyyy-MM-dd} {FormatVoucherType(invoice.VoucherType)} 전표 {NormalizeDisplay(invoice.InvoiceNumber, invoice.Id.ToString("N"))} 금액 계산이 품목 합계와 다릅니다.");
+            }
+
+            var settlementTotal = invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount);
+            if (settlementTotal - invoice.TotalAmount >= 1m)
+            {
+                AddGeneralIssue(issues, DataIntegrityIssueCodes.InvoiceOverSettled,
+                    entityType: "전표",
+                    entityId: invoice.Id,
+                    officeCode: invoice.ResponsibleOfficeCode,
+                    currentValue: $"전표 {invoice.TotalAmount:N0} / 수금·지불 {settlementTotal:N0}",
+                    expectedValue: "수금·지불 합계가 전표 합계 이하",
+                    message: $"{invoice.InvoiceDate:yyyy-MM-dd} {FormatVoucherType(invoice.VoucherType)} 전표 {NormalizeDisplay(invoice.InvoiceNumber, invoice.Id.ToString("N"))}의 수금/지불 합계가 전표 금액보다 큽니다.");
+            }
+        }
+
+        var scopedItemIds = items.Select(item => item.Id).ToHashSet();
+        var stockByItem = itemWarehouseStocks
+            .Where(stock => scopedItemIds.Contains(stock.ItemId))
+            .GroupBy(stock => stock.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(stock => stock.Quantity));
+        foreach (var item in items.Where(item => ItemOperationalPolicy.SupportsInventory(item.TrackingType)))
+        {
+            stockByItem.TryGetValue(item.Id, out var stockTotal);
+            if (!AmountDiffers(item.CurrentStock, stockTotal))
+                continue;
+
+            AddGeneralIssue(issues, DataIntegrityIssueCodes.InventoryStockSnapshotMismatch,
+                entityType: "품목",
+                entityId: item.Id,
+                itemName: item.NameOriginal,
+                officeCode: item.OfficeCode,
+                currentValue: $"품목 현재재고 {item.CurrentStock:N2}",
+                expectedValue: $"창고별 합계 {stockTotal:N2}",
+                message: $"{NormalizeDisplay(item.NameOriginal, "품목")} 품목의 현재재고와 창고별 재고 합계가 다릅니다.");
+        }
+
+        var activeWarehouseCodes = warehouses
+            .Select(warehouse => OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(warehouse.Code, warehouse.OfficeCode))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var stock in itemWarehouseStocks.Where(stock => scopedItemIds.Contains(stock.ItemId)))
+        {
+            var warehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(stock.WarehouseCode, session.OfficeCode);
+            if (activeWarehouseCodes.Contains(warehouseCode))
+                continue;
+
+            AddGeneralIssue(issues, DataIntegrityIssueCodes.InventoryWarehouseReferenceMissing,
+                entityType: "재고",
+                entityId: stock.ItemId,
+                itemName: items.FirstOrDefault(item => item.Id == stock.ItemId)?.NameOriginal ?? string.Empty,
+                officeCode: ResolveOfficeCodeFromWarehouseCode(warehouseCode, session.OfficeCode),
+                currentValue: warehouseCode,
+                expectedValue: "활성 창고 코드",
+                message: $"품목 재고 스냅샷이 존재하지 않거나 비활성인 창고 '{warehouseCode}'를 참조합니다.");
+        }
+
+        foreach (var movement in inventoryMovements.Where(movement => movement.ItemId.HasValue && scopedItemIds.Contains(movement.ItemId.Value)))
+        {
+            var warehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(movement.WarehouseCode, session.OfficeCode);
+            if (activeWarehouseCodes.Contains(warehouseCode))
+                continue;
+
+            AddGeneralIssue(issues, DataIntegrityIssueCodes.InventoryWarehouseReferenceMissing,
+                entityType: "재고 이동",
+                entityId: movement.Id,
+                itemName: movement.ItemId.HasValue ? items.FirstOrDefault(item => item.Id == movement.ItemId.Value)?.NameOriginal ?? string.Empty : string.Empty,
+                officeCode: ResolveOfficeCodeFromWarehouseCode(warehouseCode, session.OfficeCode),
+                currentValue: warehouseCode,
+                expectedValue: "활성 창고 코드",
+                message: $"재고 이동 이력이 존재하지 않거나 비활성인 창고 '{warehouseCode}'를 참조합니다.");
+        }
+    }
+
     private static void AddIssue(
         ICollection<DataIntegrityIssueDetail> issues,
         string code,
@@ -523,6 +949,122 @@ public sealed class DataIntegrityIssueService
         });
     }
 
+    private static void AddHistoryIssue(
+        ICollection<DataIntegrityIssueDetail> issues,
+        string code,
+        LocalRentalAssetAssignmentHistory history,
+        LocalRentalAsset? asset,
+        LocalRentalBillingProfile? profile,
+        string currentValue,
+        string expectedValue,
+        string message)
+    {
+        var definition = GetDefinition(code);
+        var directActionKind = asset is not null
+            ? DataIntegrityDirectActionKind.OpenRentalAsset
+            : profile is not null
+                ? DataIntegrityDirectActionKind.OpenRentalBillingProfile
+                : DataIntegrityDirectActionKind.None;
+
+        issues.Add(new DataIntegrityIssueDetail
+        {
+            Code = definition.Code,
+            Title = definition.Title,
+            Severity = definition.Severity,
+            Area = definition.Area,
+            EntityType = "임대이력",
+            EntityId = history.Id,
+            ProfileId = profile?.Id ?? history.BillingProfileId,
+            AssetId = asset?.Id ?? (history.AssetId == Guid.Empty ? null : history.AssetId),
+            CustomerName = NormalizeDisplay(history.CustomerName, asset?.CurrentCustomerName ?? asset?.CustomerName ?? profile?.CustomerName ?? string.Empty),
+            ItemName = NormalizeDisplay(history.ItemName, asset?.ItemName ?? profile?.ItemName ?? string.Empty),
+            AssetDisplayName = asset is null ? BuildHistoryDisplay(history) : BuildAssetDisplay(asset),
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(history.ResponsibleOfficeCode, asset is null ? profile?.ResponsibleOfficeCode : ResolveAssetOfficeCode(asset)),
+            CurrentValue = currentValue,
+            ExpectedValue = expectedValue,
+            Message = message,
+            SuggestedAction = definition.SuggestedAction,
+            DirectActionKind = directActionKind
+        });
+    }
+
+    private static void AddGeneralIssue(
+        ICollection<DataIntegrityIssueDetail> issues,
+        string code,
+        string entityType,
+        Guid? entityId,
+        string? customerName = null,
+        string? itemName = null,
+        string? assetDisplayName = null,
+        string? officeCode = null,
+        string currentValue = "",
+        string expectedValue = "",
+        string message = "")
+    {
+        var definition = GetDefinition(code);
+        issues.Add(new DataIntegrityIssueDetail
+        {
+            Code = definition.Code,
+            Title = definition.Title,
+            Severity = definition.Severity,
+            Area = definition.Area,
+            EntityType = entityType,
+            EntityId = entityId,
+            CustomerName = NormalizeDisplay(customerName, string.Empty),
+            ItemName = NormalizeDisplay(itemName, string.Empty),
+            AssetDisplayName = NormalizeDisplay(assetDisplayName, string.Empty),
+            OfficeCode = NormalizeDisplay(officeCode, string.Empty),
+            CurrentValue = currentValue,
+            ExpectedValue = expectedValue,
+            Message = message,
+            SuggestedAction = definition.SuggestedAction,
+            DirectActionKind = DataIntegrityDirectActionKind.None
+        });
+    }
+
+    private static string ResolveCustomerOfficeCode(LocalCustomer customer)
+        => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            string.IsNullOrWhiteSpace(customer.ResponsibleOfficeCode) ? customer.OfficeCode : customer.ResponsibleOfficeCode,
+            DomainConstants.OfficeUsenet);
+
+    private static string ResolveOfficeCodeFromWarehouseCode(string? warehouseCode, string fallbackOfficeCode)
+    {
+        var normalized = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(warehouseCode, fallbackOfficeCode);
+        return normalized switch
+        {
+            OfficeCodeCatalog.ItworldMainWarehouse => OfficeCodeCatalog.Itworld,
+            OfficeCodeCatalog.YeonsuMainWarehouse => OfficeCodeCatalog.Yeonsu,
+            _ => OfficeCodeCatalog.Usenet
+        };
+    }
+
+    private static string NormalizeBusinessNumber(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : new string(value.Where(char.IsDigit).ToArray());
+
+    private static string BuildDuplicateDisplay(IEnumerable<string> values)
+    {
+        var rows = values
+            .Select(value => NormalizeDisplay(value, string.Empty))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .Take(6)
+            .ToList();
+        return string.Join(" / ", rows);
+    }
+
+    private static string FormatVoucherType(VoucherType voucherType)
+        => voucherType switch
+        {
+            VoucherType.Sales => "판매",
+            VoucherType.Purchase => "구매",
+            VoucherType.Procurement => "발주",
+            VoucherType.Expense => "경비",
+            VoucherType.Collection => "수금",
+            _ => voucherType.ToString()
+        };
+
     private static ParsedTemplateItems ParseTemplateItems(LocalRentalBillingProfile profile)
     {
         if (string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
@@ -538,6 +1080,7 @@ public sealed class DataIntegrityIssueService
                     ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
                     DisplayItemName = NormalizeDisplay(item.DisplayItemName, profile.ItemName),
                     BillingLineMode = item.BillingLineMode ?? string.Empty,
+                    RepresentativeAssetId = item.RepresentativeAssetId,
                     Quantity = item.Quantity <= 0m ? 1m : item.Quantity,
                     UnitPrice = Math.Max(0m, item.UnitPrice),
                     Amount = Math.Max(0m, item.Amount),
@@ -555,21 +1098,14 @@ public sealed class DataIntegrityIssueService
 
     private static bool IsInSessionScope(string? tenantCode, string? officeCode, SessionState session)
     {
-        if (session.HasGlobalDataScope)
-            return true;
-
         var normalizedOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, session.OfficeCode);
         var normalizedTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, normalizedOffice);
         var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
         if (!string.Equals(normalizedTenant, sessionTenant, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        var offices = TenantScopeCatalog.ResolveScopedOfficeCodes(
-            session.OfficeCode,
-            session.TenantCode,
-            session.ScopeType,
-            hasGlobalScope: false,
-            hasTenantScope: string.Equals(TenantScopeCatalog.NormalizeScopeTypeOrDefault(session.ScopeType), TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase));
+        var offices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(sessionTenant)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         return offices.Contains(normalizedOffice);
     }
 
@@ -634,6 +1170,22 @@ public sealed class DataIntegrityIssueService
         return string.Join(" / ", new[] { number, customer, item }.Where(value => !string.IsNullOrWhiteSpace(value)));
     }
 
+    private static string BuildHistoryDisplay(LocalRentalAssetAssignmentHistory history)
+    {
+        var number = NormalizeDisplay(history.ManagementNumber, history.MachineNumber);
+        var customer = NormalizeDisplay(history.CustomerName, "거래처 미지정");
+        var item = NormalizeDisplay(history.ItemName, "품목 미지정");
+        var period = string.Join("~", new[]
+        {
+            history.ContractStartDate?.ToString("yyyy-MM-dd") ?? string.Empty,
+            history.ContractEndDate?.ToString("yyyy-MM-dd") ?? string.Empty
+        }.Where(value => !string.IsNullOrWhiteSpace(value)));
+        return string.Join(" / ", new[] { number, customer, item, period }.Where(value => !string.IsNullOrWhiteSpace(value)));
+    }
+
+    private static string FormatNullableGuid(Guid value)
+        => value == Guid.Empty ? "미지정" : value.ToString("D");
+
     private static bool IsProfileScopeInconsistent(LocalRentalBillingProfile profile)
     {
         var canonicalScope = ResolveProfileScope(profile);
@@ -689,6 +1241,51 @@ public sealed class DataIntegrityIssueService
         => !TenantScopeCatalog.TryNormalizeTenantCode(currentTenantCode, out var normalizedTenantCode) ||
            !string.Equals(normalizedTenantCode, expectedTenantCode, StringComparison.OrdinalIgnoreCase) ||
            !string.Equals((currentTenantCode ?? string.Empty).Trim(), expectedTenantCode, StringComparison.OrdinalIgnoreCase);
+
+    private static bool TryGetLinkedCustomerNameMismatch(
+        Guid? customerId,
+        IReadOnlyDictionary<Guid, LocalCustomer> customersById,
+        IEnumerable<string?> storedCustomerNames,
+        out string masterCustomerName,
+        out string storedCustomerName)
+    {
+        masterCustomerName = string.Empty;
+        storedCustomerName = string.Empty;
+        if (!customerId.HasValue || customerId.Value == Guid.Empty)
+            return false;
+
+        if (!customersById.TryGetValue(customerId.Value, out var customer))
+            return false;
+
+        masterCustomerName = NormalizeDisplay(customer.NameOriginal, string.Empty);
+        if (string.IsNullOrWhiteSpace(masterCustomerName))
+            return false;
+
+        var masterKey = RentalCatalogValueNormalizer.NormalizeLooseKey(masterCustomerName);
+        if (string.IsNullOrWhiteSpace(masterKey))
+            return false;
+
+        var distinctDisplays = storedCustomerNames
+            .Select(value => NormalizeDisplay(value, string.Empty))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        if (distinctDisplays.Count == 0)
+        {
+            storedCustomerName = "(비어 있음)";
+            return true;
+        }
+
+        var mismatches = distinctDisplays
+            .Where(value => !string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(value), masterKey, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (mismatches.Count == 0)
+            return false;
+
+        storedCustomerName = string.Join(" / ", mismatches);
+        return true;
+    }
 
     private static string NormalizeDisplay(string? value, string fallback)
     {

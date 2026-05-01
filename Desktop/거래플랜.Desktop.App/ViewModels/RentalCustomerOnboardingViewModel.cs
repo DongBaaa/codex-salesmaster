@@ -198,15 +198,6 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     partial void OnBillingAdvanceModeChanged(string value) => UpdateBillingPreview();
     partial void OnBillingTypeChanged(string value)
     {
-        if (string.Equals((value ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal))
-        {
-            UpdateTemplateTotals();
-            return;
-        }
-
-        foreach (var item in TemplateItems)
-            item.BillingLineMode = NormalizeBillingLineModeValue(value);
-
         UpdateTemplateTotals();
     }
     partial void OnMonthlyAmountChanged(decimal value)
@@ -447,7 +438,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 CustomerName = CustomerName.Trim(),
                 BusinessNumber = (BusinessNumber ?? string.Empty).Trim(),
                 InstallSiteName = (InstallLocation ?? string.Empty).Trim(),
-                BillingType = BillingType,
+                BillingType = ResolveProfileBillingTypeFromTemplateItems(ToTemplateModels(), BillingType),
                 BillingAdvanceMode = BillingAdvanceMode,
                 ManagementCompanyCode = OfficeCode,
                 ResponsibleOfficeCode = OfficeCode,
@@ -635,6 +626,8 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 AssetId = asset.Id,
                 ManagementNumber = asset.ManagementNumber,
                 ItemName = asset.ItemName,
+                ItemCategoryName = asset.ItemCategoryName,
+                Manufacturer = asset.Manufacturer,
                 MachineNumber = asset.MachineNumber,
                 CurrentCustomerName = string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName,
                 InstallLocation = string.IsNullOrWhiteSpace(asset.InstallSiteName) ? asset.InstallLocation : asset.InstallSiteName,
@@ -805,9 +798,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         var item = new RentalBillingTemplateEditorItem
         {
             DisplayItemName = "렌탈 임대료",
-            BillingLineMode = string.Equals((BillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal)
-                ? string.Empty
-                : NormalizeBillingLineModeValue(BillingType),
+            BillingLineMode = ResolveDefaultTemplateBillingLineMode(BillingType),
             Quantity = 1m,
             UnitPrice = MonthlyAmount,
             Amount = MonthlyAmount
@@ -821,9 +812,10 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         {
             ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
             DisplayItemName = (item.DisplayItemName ?? string.Empty).Trim(),
-            BillingLineMode = string.Equals((BillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal)
-                ? NormalizeBillingLineModeValue(item.BillingLineMode)
-                : NormalizeBillingLineModeValue(BillingType),
+            BillingLineMode = ResolveTemplateBillingLineMode(item.BillingLineMode, BillingType),
+            Specification = (item.Specification ?? string.Empty).Trim(),
+            Unit = (item.Unit ?? string.Empty).Trim(),
+            MaterialNumber = (item.MaterialNumber ?? string.Empty).Trim(),
             Quantity = item.Quantity <= 0m ? 1m : item.Quantity,
             UnitPrice = Math.Max(0m, item.UnitPrice),
             Amount = item.Amount > 0m ? item.Amount : item.EffectiveAmount,
@@ -846,22 +838,48 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             return false;
         }
 
-        if (string.Equals((BillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal))
+        if (TemplateItems.Any(item => string.IsNullOrWhiteSpace(NormalizeBillingLineModeValue(item.BillingLineMode))))
         {
-            if (TemplateItems.Any(item => string.IsNullOrWhiteSpace(NormalizeBillingLineModeValue(item.BillingLineMode))))
-            {
-                message = "혼합 청구는 모든 청구항목에 라인유형(묶음/개별)을 지정해야 합니다.";
-                return false;
-            }
-
-            return true;
+            message = "모든 청구항목에 청구 유형(묶음/개별)을 지정해야 합니다.";
+            return false;
         }
 
-        var normalizedMode = NormalizeBillingLineModeValue(BillingType);
-        foreach (var item in TemplateItems)
-            item.BillingLineMode = normalizedMode;
-
+        var effectiveBillingType = ResolveProfileBillingTypeFromTemplateItems(ToTemplateModels(), BillingType);
+        if (!string.Equals(BillingType, effectiveBillingType, StringComparison.Ordinal))
+            BillingType = effectiveBillingType;
         return true;
+    }
+
+    private static string ResolveDefaultTemplateBillingLineMode(string? defaultBillingType)
+    {
+        var normalizedDefault = NormalizeBillingLineModeValue(defaultBillingType);
+        return string.IsNullOrWhiteSpace(normalizedDefault) ? "묶음" : normalizedDefault;
+    }
+
+    private static string ResolveTemplateBillingLineMode(string? itemBillingLineMode, string? defaultBillingType)
+    {
+        var normalizedItemMode = NormalizeBillingLineModeValue(itemBillingLineMode);
+        return string.IsNullOrWhiteSpace(normalizedItemMode)
+            ? ResolveDefaultTemplateBillingLineMode(defaultBillingType)
+            : normalizedItemMode;
+    }
+
+    private static string ResolveProfileBillingTypeFromTemplateItems(
+        IEnumerable<RentalBillingTemplateItemModel> templateItems,
+        string? defaultBillingType)
+    {
+        var modes = (templateItems ?? Enumerable.Empty<RentalBillingTemplateItemModel>())
+            .Select(item => ResolveTemplateBillingLineMode(item.BillingLineMode, defaultBillingType))
+            .Where(mode => !string.IsNullOrWhiteSpace(mode))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        return modes.Count switch
+        {
+            0 => ResolveDefaultTemplateBillingLineMode(defaultBillingType),
+            1 => modes[0],
+            _ => "혼합"
+        };
     }
 
     private static string NormalizeBillingLineModeValue(string? value)

@@ -1,4 +1,4 @@
-﻿<Window x:Class="거래플랜.Desktop.App.Views.SalesWindow"
+<Window x:Class="거래플랜.Desktop.App.Views.SalesWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:거래플랜.Desktop.App.Converters"
@@ -34,6 +34,8 @@
             <Setter Property="TextWrapping" Value="NoWrap"/>
             <Setter Property="AcceptsReturn" Value="False"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -45,6 +47,8 @@
             <Setter Property="MinHeight" Value="30"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="DatePicker">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -56,6 +60,8 @@
             <Setter Property="Padding" Value="8,3"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="184"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -125,6 +131,27 @@
             <Setter Property="BorderBrush" Value="#A0A0A0"/>
             <Setter Property="BorderThickness" Value="0,0,1,1"/>
         </Style>
+        <Style x:Key="GridCellTextBlockStyle" TargetType="{x:Type TextBlock}">
+            <Setter Property="Foreground" Value="Black"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Padding" Value="2,0"/>
+        </Style>
+        <Style x:Key="RightGridCellTextBlockStyle" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource GridCellTextBlockStyle}">
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="TextAlignment" Value="Right"/>
+        </Style>
+        <Style x:Key="GridCellTextBoxStyle" TargetType="{x:Type TextBox}" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="MinHeight" Value="0"/>
+            <Setter Property="Height" Value="Auto"/>
+            <Setter Property="Padding" Value="3,0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="RightGridCellTextBoxStyle" TargetType="{x:Type TextBox}" BasedOn="{StaticResource GridCellTextBoxStyle}">
+            <Setter Property="TextAlignment" Value="Right"/>
+        </Style>
     </Window.Resources>
 
     <DockPanel>
@@ -176,11 +203,11 @@
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" SharedSizeGroup="SalesInfoLabelPrimary"/>
-                        <ColumnDefinition Width="236"/>
+                        <ColumnDefinition Width="1.6*"/>
                         <ColumnDefinition Width="Auto" SharedSizeGroup="SalesInfoLabelSecondary"/>
-                        <ColumnDefinition Width="170"/>
+                        <ColumnDefinition Width="1.05*"/>
                         <ColumnDefinition Width="Auto" SharedSizeGroup="SalesInfoLabelTertiary"/>
-                        <ColumnDefinition Width="154"/>
+                        <ColumnDefinition Width="0.95*"/>
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -239,6 +266,15 @@
                     <TextBlock Grid.Row="2" Grid.Column="4" Text="부가세" Margin="0,0,0,6"/>
                     <TextBox Grid.Row="2" Grid.Column="5" Text="{Binding VatAmount, StringFormat={}{0:N0}}" IsReadOnly="True" FontWeight="Bold" Margin="0,0,0,6"/>
 
+                    <CheckBox Grid.Row="4"
+                              Grid.Column="4"
+                              Grid.ColumnSpan="2"
+                                    Content="이전기록불러오기"
+                              IsChecked="{Binding IsVatNone, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                              Foreground="#EAF2FF"
+                              VerticalAlignment="Center"
+                              Margin="0,4,0,0"/>
+
                     <TextBlock Grid.Row="3" Grid.Column="0" Text="{Binding WarehouseLabelText}"/>
                     <ComboBox Grid.Row="3"
                               Grid.Column="1"
@@ -282,11 +318,11 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="Auto" SharedSizeGroup="SalesDocLabel"/>
-                                <ColumnDefinition Width="170"/>
+                                <ColumnDefinition Width="180"/>
                                 <ColumnDefinition Width="152"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto" SharedSizeGroup="SalesDocLabel"/>
-                                <ColumnDefinition Width="160"/>
+                                <ColumnDefinition Width="1.2*"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Text="{Binding DocumentSectionTitleText}" FontWeight="Bold" Margin="0,0,12,0"/>
                             <TextBlock Grid.Column="1" Text="전표일자" HorizontalAlignment="Left"/>
@@ -331,15 +367,15 @@
 
                         <Grid>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
+                                <ColumnDefinition Width="2*" MinWidth="180"/>
                                 <ColumnDefinition Width="38"/>
-                                <ColumnDefinition Width="190"/>
-                                <ColumnDefinition Width="60"/>
-                                <ColumnDefinition Width="48"/>
-                                <ColumnDefinition Width="84"/>
-                                <ColumnDefinition Width="96"/>
-                                <ColumnDefinition Width="140"/>
-                                <ColumnDefinition Width="264"/>
+                                <ColumnDefinition Width="1.25*" MinWidth="140"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="62"/>
+                                <ColumnDefinition Width="132"/>
+                                <ColumnDefinition Width="142"/>
+                                <ColumnDefinition Width="1.05*" MinWidth="110"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
@@ -357,18 +393,19 @@
                             <TextBox x:Name="InputItemNameTextBox" Grid.Row="1" Grid.Column="0" Height="30"
                                      Text="{Binding InputItemName, UpdateSourceTrigger=PropertyChanged}"
                                      KeyDown="InputItemNameTextBox_KeyDown"/>
-                            <Button Grid.Row="1" Grid.Column="1" Style="{StaticResource BaseButtonStyle}" Height="30" Margin="4,0,0,0" Padding="0"
+                            <Button Grid.Row="1" Grid.Column="1" Style="{StaticResource BaseButtonStyle}" Height="30" Width="34" MinWidth="34" Margin="4,0,0,0" Padding="0"
                                     Content="..." Click="ItemLookupButton_Click"/>
-                            <TextBox Grid.Row="1" Grid.Column="2" Height="30" Text="{Binding InputSpec, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
-                            <TextBox Grid.Row="1" Grid.Column="3" Height="30" Text="{Binding InputQty, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" TextAlignment="Right"/>
-                            <TextBox Grid.Row="1" Grid.Column="4" Height="30" Text="{Binding InputUnit, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
-                            <TextBox Grid.Row="1" Grid.Column="5" Height="30" Text="{Binding InputUnitPrice, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" TextAlignment="Right"/>
+                            <TextBox Grid.Row="1" Grid.Column="2" Height="30" MinWidth="0" Text="{Binding InputSpec, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
+                            <TextBox Grid.Row="1" Grid.Column="3" Height="30" MinWidth="0" Text="{Binding InputQty, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" TextAlignment="Right"/>
+                            <TextBox Grid.Row="1" Grid.Column="4" Height="30" MinWidth="0" Text="{Binding InputUnit, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
+                            <TextBox Grid.Row="1" Grid.Column="5" Height="30" MinWidth="0" Text="{Binding InputUnitPrice, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" TextAlignment="Right"/>
                             <TextBox Grid.Row="1" Grid.Column="6"
                                      Height="30"
+                                     MinWidth="0"
                                      Text="{Binding InputLineAmount, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"
                                      Margin="4,0,0,0"
                                      TextAlignment="Right"/>
-                            <TextBox Grid.Row="1" Grid.Column="7" Height="30" Text="{Binding InputRemark, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
+                            <TextBox Grid.Row="1" Grid.Column="7" Height="30" MinWidth="0" Text="{Binding InputRemark, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
 
                             <StackPanel Grid.Row="1" Grid.Column="8" Orientation="Horizontal" Margin="6,0,0,0" HorizontalAlignment="Left">
                                 <Button Style="{StaticResource BaseButtonStyle}" Content="항목추가" MinWidth="80" Margin="0,0,6,0" Command="{Binding AddLineCommand}"/>
@@ -379,17 +416,17 @@
                     </StackPanel>
                 </Border>
 
-                <Border Grid.Row="1" Grid.Column="0" Margin="0,0,10,0" Background="#1A2B4A" BorderBrush="#2E4060" BorderThickness="1">
+                <Border Grid.Row="1" Grid.Column="0" Margin="0,0,4,0" Background="#1A2B4A" BorderBrush="#2E4060" BorderThickness="1">
                     <DataGrid ItemsSource="{Binding Lines}" SelectedItem="{Binding SelectedLine}" IsReadOnly="False" BorderThickness="0">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="No" Width="42" IsReadOnly="True" Binding="{Binding RowNo}"/>
-                            <DataGridTextColumn Header="품명" Width="*" Binding="{Binding ItemName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                            <DataGridTextColumn Header="규격" Width="188" Binding="{Binding Specification, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                            <DataGridTextColumn Header="수량" Width="60" Binding="{Binding Quantity, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, StringFormat=N0}"/>
-                            <DataGridTextColumn Header="단위" Width="52" Binding="{Binding Unit, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                            <DataGridTextColumn Header="단가" Width="92" Binding="{Binding UnitPrice, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, StringFormat=N0}"/>
-                            <DataGridTextColumn Header="금액" Width="98" Binding="{Binding LineAmount, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, StringFormat=N0}"/>
-                            <DataGridTextColumn Header="비고" Width="150" Binding="{Binding Remark, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                            <DataGridTextColumn Header="No" Width="42" IsReadOnly="True" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" Binding="{Binding RowNo}"/>
+                            <DataGridTextColumn Header="품명" Width="*" MinWidth="220" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding ItemName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                            <DataGridTextColumn Header="규격" Width="220" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding Specification, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                            <DataGridTextColumn Header="수량" Width="78" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" EditingElementStyle="{StaticResource RightGridCellTextBoxStyle}" Binding="{Binding Quantity, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}"/>
+                            <DataGridTextColumn Header="단위" Width="64" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding Unit, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                            <DataGridTextColumn Header="단가" Width="124" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" EditingElementStyle="{StaticResource RightGridCellTextBoxStyle}" Binding="{Binding UnitPrice, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}"/>
+                            <DataGridTextColumn Header="금액" Width="132" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" EditingElementStyle="{StaticResource RightGridCellTextBoxStyle}" Binding="{Binding LineAmount, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}"/>
+                            <DataGridTextColumn Header="비고" Width="170" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding Remark, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </Border>
@@ -415,7 +452,7 @@
                                     Padding="8"
                                     Margin="0,0,0,8"
                                     Visibility="{Binding ShowPurchasePrintHint, Converter={StaticResource BoolToVisibilityConverter}}">
-                                <TextBlock Text="구매 전표는 매입 명세서 양식으로 바로 출력됩니다."
+                                <TextBlock Text="견적/발주 전표는 선택한 제목의 발주서 양식으로 바로 출력됩니다."
                                            Foreground="#EAF2FF"
                                            TextWrapping="Wrap"/>
                             </Border>
@@ -431,12 +468,12 @@
                             </Border>
 
                             <Button Style="{StaticResource BaseButtonStyle}" Content="인쇄하기[F9]" Margin="0,0,0,6" Command="{Binding PrintCommand}"/>
-                            <Button Style="{StaticResource BaseButtonStyle}" Content="출력물 편집"
+                            <Button Style="{StaticResource BaseButtonStyle}" Content="세금계산인쇄"
                                     Margin="0,0,0,6"
                                     Command="{Binding EditPrintOutputCommand}"
                                     Visibility="{Binding CanEditPrintOutput, Converter={StaticResource BoolToVisibilityConverter}}"/>
                             <CheckBox Content="세금계산서 발행 완료"
-                                      IsChecked="{Binding TaxInvoiceIssued}"
+                                      IsChecked="{Binding TaxInvoiceIssued, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                       Visibility="{Binding ShowTaxInvoiceIssuedOption, Converter={StaticResource BoolToVisibilityConverter}}"
                                       Margin="0,0,0,10"
                                       Foreground="#EAF2FF"
@@ -464,7 +501,7 @@
                     <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
                         <TextBlock Text="[전표 입력 가능 품목 - 재고/비재고 청구항목]" FontWeight="Bold" Margin="0,0,12,0"/>
                         <TextBlock Text="검색" Margin="0,0,6,0"/>
-                        <TextBox Width="220" Text="{Binding ItemSearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBox Width="320" Text="{Binding ItemSearchText, UpdateSourceTrigger=PropertyChanged}"/>
                     </StackPanel>
 
                     <DataGrid Grid.Row="1" ItemsSource="{Binding ItemSearchResults}" SelectedItem="{Binding SelectedInputItem}" IsReadOnly="True" BorderThickness="0" FontSize="12" MouseDoubleClick="ItemSearchResultsDataGrid_MouseDoubleClick">

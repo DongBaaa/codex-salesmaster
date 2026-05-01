@@ -1,4 +1,6 @@
-﻿using System.Linq;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -237,6 +239,7 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(dashboardMessage))
         {
             MessageBox.Show(
+                this,
                 dashboardMessage,
                 "대시보드 알림",
                 MessageBoxButton.OK,
@@ -376,17 +379,77 @@ public partial class MainWindow : Window
 
             if (result.WarningRequired && !string.IsNullOrWhiteSpace(result.WarningMessage))
             {
-                MessageBox.Show(
-                    this,
-                    result.WarningMessage,
-                    "주기 무결성 점검",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
+                if (string.IsNullOrWhiteSpace(result.DetailReportPath))
+                {
+                    MessageBox.Show(
+                        this,
+                        result.WarningMessage,
+                        "주기 무결성 점검",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+                else
+                {
+                    var response = MessageBox.Show(
+                        this,
+                        result.WarningMessage + Environment.NewLine + Environment.NewLine + "상세 내역과 수정 방법을 지금 열까요?",
+                        "주기 무결성 점검",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Warning);
+                    if (response == MessageBoxResult.Yes)
+                        OpenPeriodicIntegrityReport(result.DetailReportPath);
+                }
             }
         }
         finally
         {
             _runtimeSafetyCheckInProgress = false;
+        }
+    }
+
+    private void OpenPeriodicIntegrityReport(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            if (!File.Exists(path))
+            {
+                MessageBox.Show(
+                    this,
+                    $"무결성 상세 리포트 파일을 찾을 수 없습니다.{Environment.NewLine}{path}",
+                    "주기 무결성 점검",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = path,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("RUNTIME", $"주기 무결성 상세 리포트 열기 실패: {ex.Message}");
+            var folder = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(folder) && Directory.Exists(folder))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = folder,
+                    UseShellExecute = true
+                });
+            }
+
+            MessageBox.Show(
+                this,
+                $"리포트를 직접 열지 못했습니다. 폴더에서 파일을 확인하세요.{Environment.NewLine}{path}{Environment.NewLine}{Environment.NewLine}{ex.Message}",
+                "주기 무결성 점검",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
         }
     }
 
@@ -478,12 +541,25 @@ public partial class MainWindow : Window
             Owner = this,
             DataContext = vm
         };
+        win.NonClosingActionRequested += (_, args) =>
+        {
+            UiTaskHelper.Forget(
+                HandleDataIntegrityAlertActionAsync(args.Action, args.Summary, win),
+                "INTEGRITY",
+                "운영 점검 바로수정",
+                ex => MessageBox.Show(
+                    win,
+                    $"운영 점검 바로가기를 열지 못했습니다.{Environment.NewLine}{ex.Message}",
+                    "운영 점검",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning));
+        };
 
         if (win.ShowDialog() != true)
             return;
 
         UiTaskHelper.Forget(
-            HandleDataIntegrityAlertActionAsync(win.RequestedAction, win.RequestedSummary),
+            HandleDataIntegrityAlertActionAsync(win.RequestedAction, win.RequestedSummary, this),
             "INTEGRITY",
             "운영 점검 바로가기",
             ex => MessageBox.Show(
@@ -494,14 +570,17 @@ public partial class MainWindow : Window
                 MessageBoxImage.Warning));
     }
 
-    private async Task HandleDataIntegrityAlertActionAsync(DataIntegrityAlertAction action, DataIntegrityIssueSummary? summary)
+    private async Task HandleDataIntegrityAlertActionAsync(
+        DataIntegrityAlertAction action,
+        DataIntegrityIssueSummary? summary,
+        Window? ownerOverride = null)
     {
         if (action == DataIntegrityAlertAction.None)
             return;
 
         if (action == DataIntegrityAlertAction.Details)
         {
-            await OpenDataIntegrityIssueWindowAsync(summary?.Code);
+            await OpenDataIntegrityIssueWindowAsync(summary?.Code, ownerOverride);
             return;
         }
 
@@ -510,7 +589,7 @@ public partial class MainWindow : Window
 
         if (summary is null)
         {
-            await OpenDataIntegrityIssueWindowAsync(null);
+            await OpenDataIntegrityIssueWindowAsync(null, ownerOverride);
             return;
         }
 
@@ -520,14 +599,14 @@ public partial class MainWindow : Window
             .ToList();
         if (issues.Count == 1)
         {
-            await OpenDataIntegrityFixTargetAsync(issues[0]);
+            await OpenDataIntegrityFixTargetAsync(issues[0], ownerOverride);
             return;
         }
 
-        await OpenDataIntegrityIssueWindowAsync(summary.Code);
+        await OpenDataIntegrityIssueWindowAsync(summary.Code, ownerOverride);
     }
 
-    private async Task OpenDataIntegrityIssueWindowAsync(string? initialCode)
+    private async Task OpenDataIntegrityIssueWindowAsync(string? initialCode, Window? ownerOverride = null)
     {
         var vm = new DataIntegrityIssueViewModel(_dataIntegrity, _session, initialCode);
         await OperationTiming.MeasureAsync(
@@ -538,28 +617,28 @@ public partial class MainWindow : Window
 
         var win = new DataIntegrityIssueWindow(vm)
         {
-            Owner = this
+            Owner = ownerOverride ?? this
         };
         if (win.ShowDialog() == true && win.RequestedIssue is not null)
-            await OpenDataIntegrityFixTargetAsync(win.RequestedIssue);
+            await OpenDataIntegrityFixTargetAsync(win.RequestedIssue, ownerOverride);
     }
 
-    private async Task OpenDataIntegrityFixTargetAsync(DataIntegrityIssueDetail issue)
+    private async Task OpenDataIntegrityFixTargetAsync(DataIntegrityIssueDetail issue, Window? ownerOverride = null)
     {
         switch (issue.DirectActionKind)
         {
             case DataIntegrityDirectActionKind.OpenRentalBillingProfile when issue.ProfileId.HasValue:
-                await OpenRentalBillingWindowAsync(issue.ProfileId.Value);
+                await OpenRentalBillingWindowAsync(issue.ProfileId.Value, ownerOverride);
                 break;
             case DataIntegrityDirectActionKind.OpenRentalAsset when issue.AssetId.HasValue:
-                await OpenRentalAssetWindowAsync(issue.AssetId.Value);
+                await OpenRentalAssetWindowAsync(issue.AssetId.Value, ownerOverride);
                 break;
             case DataIntegrityDirectActionKind.OpenRentalBillingProfile when issue.AssetId.HasValue:
-                await OpenRentalAssetWindowAsync(issue.AssetId.Value);
+                await OpenRentalAssetWindowAsync(issue.AssetId.Value, ownerOverride);
                 break;
             default:
                 MessageBox.Show(
-                    this,
+                    ownerOverride ?? this,
                     "이 항목은 원본 화면 바로가기를 지원하지 않습니다. 상세 내용을 기준으로 수동 확인하세요.",
                     "운영 점검",
                     MessageBoxButton.OK,
@@ -1198,13 +1277,13 @@ public partial class MainWindow : Window
         await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
 
-    private async Task OpenRentalBillingWindowAsync(Guid? targetProfileId = null)
+    private async Task OpenRentalBillingWindowAsync(Guid? targetProfileId = null, Window? ownerOverride = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalBillingViewModel(_rental, _local, _session);
         var win = new RentalBillingWindow(vm)
         {
-            Owner = this
+            Owner = ownerOverride ?? this
         };
         ShowDialogWithDeferredLoad(
             win,
@@ -1222,13 +1301,13 @@ public partial class MainWindow : Window
         await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
     }
 
-    private async Task OpenRentalAssetWindowAsync(Guid? targetAssetId = null)
+    private async Task OpenRentalAssetWindowAsync(Guid? targetAssetId = null, Window? ownerOverride = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalAssetViewModel(_rental, _local, _rentalDocuments, _invoicePrintService, _session);
         var win = new RentalAssetWindow(vm)
         {
-            Owner = this
+            Owner = ownerOverride ?? this
         };
         ShowDialogWithDeferredLoad(
             win,

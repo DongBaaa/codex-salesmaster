@@ -592,36 +592,59 @@ public sealed partial class EnvironmentSettingsViewModel
             return mirrorResult;
 
         var remainingTargets = targets.Values.ToList();
-        foreach (var batch in remainingTargets.Chunk(RecycleBinServerMutationBatchSize))
+        var groupedTargets = remainingTargets
+            .GroupBy(current => ResolveRecycleBinMutationDatabaseName(current.Entry), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        foreach (var targetGroup in groupedTargets)
         {
-            var batchTargets = batch.ToDictionary(
-                current => (current.Entry.EntityId, NormalizeServerRecycleBinKind(current.Target.Kind)),
-                current => (current.Entry, current.Target));
-
-            try
+            var businessDatabaseName = targetGroup.Key;
+            var groupTargets = targetGroup.ToList();
+            foreach (var batch in groupTargets.Chunk(RecycleBinServerMutationBatchSize))
             {
-                var result = string.Equals(action, "복원", StringComparison.Ordinal)
-                    ? await _api.RestoreRecycleBinAsync(batchTargets.Values
-                        .Select(current => current.Target)
-                        .ToList())
-                    : await _api.PurgeRecycleBinAsync(batchTargets.Values
-                        .Select(current => current.Target)
-                        .ToList());
+                var batchTargets = batch.ToDictionary(
+                    current => (current.Entry.EntityId, NormalizeServerRecycleBinKind(current.Target.Kind)),
+                    current => (current.Entry, current.Target));
 
-                ApplyRecycleBinServerMutationBatchResult(action, batchTargets, result, mirrorResult);
-            }
-            catch (Exception ex)
-            {
-                mirrorResult.Failures.Add(
-                    $"NAS 서버 {action} 반영 실패: {ex.Message}" +
-                    (remainingTargets.Count > batch.Length
-                        ? " 일부 남은 항목 처리는 중단했습니다."
-                        : string.Empty));
-                break;
+                try
+                {
+                    var mutationTargets = batchTargets.Values
+                        .Select(current => current.Target)
+                        .ToList();
+                    var result = string.Equals(action, "복원", StringComparison.Ordinal)
+                        ? await _api.RestoreRecycleBinAsync(mutationTargets, businessDatabaseName)
+                        : await _api.PurgeRecycleBinAsync(mutationTargets, businessDatabaseName);
+
+                    ApplyRecycleBinServerMutationBatchResult(action, batchTargets, result, mirrorResult);
+                }
+                catch (Exception ex)
+                {
+                    mirrorResult.Failures.Add(
+                        $"NAS 서버 {action} 반영 실패({FormatRecycleBinMutationDatabaseLabel(businessDatabaseName)}): {ex.Message}" +
+                        (groupTargets.Count > batch.Length
+                            ? " 일부 남은 항목 처리는 중단했습니다."
+                            : string.Empty));
+                    break;
+                }
             }
         }
 
         return mirrorResult;
+    }
+
+    private string ResolveRecycleBinMutationDatabaseName(RecycleBinEntry entry)
+    {
+        if (!string.IsNullOrWhiteSpace(entry.BusinessDatabaseName))
+            return TenantScopeCatalog.GetDatabaseName(entry.BusinessDatabaseName);
+        if (!string.IsNullOrWhiteSpace(_session.SelectedBusinessDatabaseName))
+            return TenantScopeCatalog.GetDatabaseName(_session.SelectedBusinessDatabaseName);
+        return TenantScopeCatalog.GetDatabaseName(_session.TenantCode);
+    }
+
+    private static string FormatRecycleBinMutationDatabaseLabel(string businessDatabaseName)
+    {
+        var databaseName = TenantScopeCatalog.GetDatabaseName(businessDatabaseName);
+        var displayName = TenantScopeCatalog.GetBusinessDatabaseDisplayName(databaseName);
+        return TenantScopeCatalog.FormatBusinessDatabaseLabel(displayName, databaseName);
     }
 
     private void ApplyRecycleBinServerMutationBatchResult(

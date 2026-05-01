@@ -162,8 +162,14 @@ public sealed class Customer : TrackedEntity
     public string BusinessType { get; set; } = string.Empty;
     public string BusinessItem { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
+    public string DetailAddress { get; set; } = string.Empty;
     public string Phone { get; set; } = string.Empty;
+    public string MobilePhone { get; set; } = string.Empty;
+    public string FaxNumber { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
+    public string HomePage { get; set; } = string.Empty;
+    public string Recipient { get; set; } = string.Empty;
+    public string PriceGrade { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
     public ICollection<CustomerContract> Contracts { get; set; } = new List<CustomerContract>();
     public ICollection<Invoice> Invoices { get; set; } = new List<Invoice>();
@@ -240,6 +246,7 @@ public sealed class Invoice : TrackedEntity
     public decimal TotalAmount { get; set; }
     public decimal SupplyAmount { get; set; }
     public decimal VatAmount { get; set; }
+    public string VatMode { get; set; } = InvoiceVatModes.Included;
     public bool TaxInvoiceIssued { get; set; }
     public string Memo { get; set; } = string.Empty;
     public ICollection<InvoiceLine> Lines { get; set; } = new List<InvoiceLine>();

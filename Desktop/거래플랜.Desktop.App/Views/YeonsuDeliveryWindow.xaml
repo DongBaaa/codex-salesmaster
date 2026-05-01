@@ -1,4 +1,4 @@
-<Window x:Class="거래플랜.Desktop.App.Views.YeonsuDeliveryWindow"
+﻿<Window x:Class="거래플랜.Desktop.App.Views.YeonsuDeliveryWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:거래플랜.Desktop.App.Converters"
@@ -29,6 +29,8 @@
             <Setter Property="Height" Value="34"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="FontSize" Value="13"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -39,6 +41,8 @@
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="DatePicker">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -50,6 +54,8 @@
             <Setter Property="Padding" Value="8,4"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="184"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -107,7 +113,7 @@
         <Style x:Key="RightAlignedCellTextStyle" TargetType="TextBlock">
             <Setter Property="TextAlignment" Value="Right"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
-            <Setter Property="Padding" Value="0,0,6,0"/>
+            <Setter Property="Padding" Value="0,0,4,0"/>
         </Style>
         <Style TargetType="DataGrid">
             <Setter Property="Background" Value="#1E2D40"/>
@@ -176,25 +182,25 @@
                     <Border Grid.Column="0" Style="{StaticResource SummaryCardStyle}">
                         <StackPanel>
                             <TextBlock Text="거래건수" Style="{StaticResource SummaryLabelStyle}"/>
-                            <TextBlock Text="{Binding SummaryCount, StringFormat={}{0:N0}건}" Style="{StaticResource SummaryValueStyle}"/>
+                            <TextBlock Text="{Binding SummaryPurchaseAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
                         </StackPanel>
                     </Border>
                     <Border Grid.Column="1" Style="{StaticResource SummaryCardStyle}">
                         <StackPanel>
                             <TextBlock Text="매입금액 합계" Style="{StaticResource SummaryLabelStyle}"/>
-                            <TextBlock Text="{Binding SummaryPurchaseAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
+                            <TextBlock Text="{Binding SummarySalesAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
                         </StackPanel>
                     </Border>
                     <Border Grid.Column="2" Style="{StaticResource SummaryCardStyle}">
                         <StackPanel>
                             <TextBlock Text="매출금액 합계" Style="{StaticResource SummaryLabelStyle}"/>
-                            <TextBlock Text="{Binding SummarySalesAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
+                            <TextBlock Text="{Binding SummaryProfitAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
                         </StackPanel>
                     </Border>
                     <Border Grid.Column="3" Style="{StaticResource SummaryCardStyle}">
                         <StackPanel>
                             <TextBlock Text="수익금액 합계" Style="{StaticResource SummaryLabelStyle}"/>
-                            <TextBlock Text="{Binding SummaryProfitAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
+                            <TextBlock Text="{Binding SummaryFeeAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
                         </StackPanel>
                     </Border>
                     <Border Grid.Column="4" Style="{StaticResource SummaryCardStyle}" Margin="0">
@@ -232,7 +238,7 @@
                              Text="{Binding CustomerSearchText, UpdateSourceTrigger=PropertyChanged}"
                              Margin="0,0,16,0"/>
                     <TextBlock Grid.Row="0" Grid.Column="2"
-                               Text="조회대상"
+                               Text="내역구분"
                                VerticalAlignment="Center"
                                Margin="0,0,12,0"/>
                     <ComboBox Grid.Row="0" Grid.Column="3"
@@ -240,7 +246,7 @@
                               SelectedItem="{Binding SelectedViewTarget}"
                               Margin="0,0,16,0"/>
                     <TextBlock Grid.Row="0" Grid.Column="4"
-                               Text="내역구분"
+                               Text="조회대상"
                                VerticalAlignment="Center"
                                Margin="0,0,12,0"/>
                     <ComboBox Grid.Row="0" Grid.Column="5"
@@ -248,7 +254,7 @@
                               SelectedItem="{Binding SelectedEntryCategory}"
                               Margin="0,0,16,0"/>
                     <TextBlock Grid.Row="0" Grid.Column="6"
-                               Text="수수료율"
+                               Text="내역구분"
                                VerticalAlignment="Center"
                                Margin="0,0,12,0"/>
                     <TextBox Grid.Row="0" Grid.Column="7"
@@ -270,7 +276,7 @@
                             Command="{Binding ResetFiltersCommand}"/>
 
                     <TextBlock Grid.Row="1" Grid.Column="0"
-                               Text="기간"
+                               Text="수수료율"
                                VerticalAlignment="Center"
                                Margin="0,8,12,0"/>
                     <DatePicker Grid.Row="1" Grid.Column="1"
@@ -296,7 +302,7 @@
                         </DatePicker.Resources>
                     </DatePicker>
                     <TextBlock Grid.Row="1" Grid.Column="4"
-                               Text="창고"
+                               Text="기간"
                                VerticalAlignment="Center"
                                Margin="0,8,12,0"/>
                     <ComboBox Grid.Row="1" Grid.Column="5"

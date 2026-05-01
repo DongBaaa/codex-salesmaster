@@ -37,6 +37,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _statusMessage = "렌탈 자산을 불러오는 중입니다.";
     [ObservableProperty] private RentalAssetViewRow? _selectedRow;
+    [ObservableProperty] private RentalAssetAssignmentHistoryViewItem? _selectedAssignmentHistory;
 
     [ObservableProperty] private Guid _editId = Guid.NewGuid();
     [ObservableProperty] private Guid? _editCustomerId;
@@ -452,10 +453,125 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         StatusMessage = "렌탈계약서 작성창을 열었습니다.";
     }
 
+    [RelayCommand]
+    private async Task AddAssignmentHistoryAsync()
+    {
+        if (SelectedRow is null)
+        {
+            StatusMessage = "임대이력을 추가할 렌탈 자산을 먼저 선택하세요.";
+            return;
+        }
+
+        var request = await _rental.CreateAssetAssignmentHistoryEditRequestAsync(SelectedRow.Source.Id);
+        if (request is null)
+        {
+            StatusMessage = "임대이력 추가 정보를 만들 수 없습니다.";
+            return;
+        }
+
+        if (!ShowAssignmentHistoryDialog(request, "임대이력 추가"))
+            return;
+
+        await SaveAssignmentHistoryRequestAsync(request);
+    }
+
+    [RelayCommand]
+    private async Task EditAssignmentHistoryAsync()
+    {
+        if (SelectedRow is null || SelectedAssignmentHistory is null)
+        {
+            StatusMessage = "수정할 임대이력을 먼저 선택하세요.";
+            return;
+        }
+
+        var request = await _rental.CreateAssetAssignmentHistoryEditRequestAsync(
+            SelectedRow.Source.Id,
+            SelectedAssignmentHistory.HistoryId);
+        if (request is null)
+        {
+            StatusMessage = "수정할 임대이력을 찾을 수 없습니다.";
+            return;
+        }
+
+        if (!ShowAssignmentHistoryDialog(request, "임대이력 수정"))
+            return;
+
+        await SaveAssignmentHistoryRequestAsync(request);
+    }
+
+    [RelayCommand]
+    private async Task DeleteAssignmentHistoryAsync()
+    {
+        if (SelectedAssignmentHistory is null)
+        {
+            StatusMessage = "삭제할 임대이력을 먼저 선택하세요.";
+            return;
+        }
+
+        var confirmation = MessageBox.Show(
+            "선택한 임대이력을 삭제하시겠습니까?\n자산 자체는 삭제되지 않고, 임대이력만 삭제됩니다.",
+            "임대이력 삭제",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+        if (confirmation != MessageBoxResult.OK)
+            return;
+
+        var assetId = SelectedAssignmentHistory.AssetId;
+        IsBusy = true;
+        try
+        {
+            var result = await _rental.DeleteAssetAssignmentHistoryAsync(SelectedAssignmentHistory.HistoryId, _session);
+            StatusMessage = result.Message;
+            if (!result.Success)
+            {
+                MessageBox.Show(result.Message, "임대이력 삭제", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            await LoadAssignmentHistoriesAsync(assetId);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private bool ShowAssignmentHistoryDialog(RentalAssetAssignmentHistoryEditRequest request, string title)
+    {
+        var dialog = new RentalAssignmentHistoryEditWindow(request)
+        {
+            Owner = GetActiveWindow(),
+            Title = title
+        };
+        return dialog.ShowDialog() == true;
+    }
+
+    private async Task SaveAssignmentHistoryRequestAsync(RentalAssetAssignmentHistoryEditRequest request)
+    {
+        IsBusy = true;
+        try
+        {
+            var result = await _rental.SaveAssetAssignmentHistoryAsync(request, _session);
+            StatusMessage = result.Message;
+            if (!result.Success)
+            {
+                MessageBox.Show(result.Message, "임대이력 저장", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            await LoadAssignmentHistoriesAsync(request.AssetId);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
     partial void OnSelectedRowChanged(RentalAssetViewRow? value)
     {
         if (value is null)
         {
+            SelectedAssignmentHistory = null;
             AssignmentHistories.Clear();
             EditLastCustomerName = string.Empty;
             EditLastInstallLocation = string.Empty;
@@ -530,6 +646,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         if (assetId == Guid.Empty)
         {
+            SelectedAssignmentHistory = null;
             AssignmentHistories.Clear();
             return;
         }
@@ -538,6 +655,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         if (SelectedRow?.Source.Id != assetId)
             return;
 
+        SelectedAssignmentHistory = null;
         AssignmentHistories.Clear();
         foreach (var history in histories)
             AssignmentHistories.Add(history);

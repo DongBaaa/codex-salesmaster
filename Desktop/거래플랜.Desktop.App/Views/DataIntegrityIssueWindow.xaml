@@ -25,6 +25,8 @@
             <Setter Property="Foreground" Value="#071222"/>
             <Setter Property="BorderBrush" Value="#405D7A"/>
             <Setter Property="Padding" Value="8"/>
+            <Setter Property="MinWidth" Value="140"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="FontFamily" Value="맑은 고딕"/>
@@ -32,6 +34,8 @@
             <Setter Property="Background" Value="#DDE7F2"/>
             <Setter Property="Foreground" Value="#071222"/>
             <Setter Property="MinHeight" Value="34"/>
+            <Setter Property="MinWidth" Value="140"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="DataGrid">
             <Setter Property="FontFamily" Value="맑은 고딕"/>
@@ -81,6 +85,7 @@
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Content="새로고침(F5)" Command="{Binding RefreshCommand}" Background="#1976A8"/>
+                    <Button Content="엑셀 저장" Command="{Binding ExportExcelCommand}" Background="#1565C0"/>
                     <Button Content="닫기(F12)" Click="CloseButton_Click" Background="#455A64"/>
                 </StackPanel>
             </Grid>

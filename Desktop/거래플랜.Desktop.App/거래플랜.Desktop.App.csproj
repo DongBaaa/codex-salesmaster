@@ -2,7 +2,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\거래플랜.Shared.Contracts\거래플랜.Shared.Contracts.csproj" />
   </ItemGroup>
-
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="ClosedXML" Version="0.104.2" />
@@ -17,7 +16,6 @@
     <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
   </ItemGroup>
-
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
@@ -27,33 +25,24 @@
     <AssemblyTitle>거래플랜</AssemblyTitle>
     <Product>거래플랜</Product>
     <ApplicationIcon>..\..\AppIcons\tradeplan-windows.ico</ApplicationIcon>
-    <Version>1.1.178</Version>
-    <FileVersion>1.1.178.0</FileVersion>
+    <Version>1.1.198</Version>
+    <FileVersion>1.1.198.0</FileVersion>
   </PropertyGroup>
-
-  <ItemGroup>
-  </ItemGroup>
-
+  <ItemGroup></ItemGroup>
   <ItemGroup>
     <None Update="appsettings.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>
-
   <ItemGroup>
     <Page Remove="Views\Backup\**\*.xaml" />
     <None Include="Views\Backup\**\*.xaml" />
   </ItemGroup>
-
-  <Target Name="ClearStaleWpfTempArtifacts"
-          BeforeTargets="GenerateTemporaryTargetAssembly;MarkupCompilePass1"
-          Condition="'$(MSBuildProjectFile)' == '거래플랜.Desktop.App.csproj'">
+  <Target Name="ClearStaleWpfTempArtifacts" BeforeTargets="GenerateTemporaryTargetAssembly;MarkupCompilePass1" Condition="'$(MSBuildProjectFile)' == '거래플랜.Desktop.App.csproj'">
     <ItemGroup>
       <StaleWpfTempArtifacts Include="$(IntermediateOutputPath)*_wpftmp*" />
       <StaleWpfTempArtifacts Include="$(IntermediateOutputPath)**\*_wpftmp*" />
     </ItemGroup>
-
-    <Delete Files="@(StaleWpfTempArtifacts)"
-            ContinueOnError="WarnAndContinue" />
+    <Delete Files="@(StaleWpfTempArtifacts)" ContinueOnError="WarnAndContinue" />
   </Target>
 </Project>

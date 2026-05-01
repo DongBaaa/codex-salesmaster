@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.IO;
 using System.Text;
 using ClosedXML.Excel;
@@ -274,7 +274,7 @@ public sealed partial class LegacyDataMigrationService
             itemExcelPath);
     }
 
-        public async Task<LegacyImportResult> ImportFromExcelAsync(
+    public async Task<LegacyImportPreviewResult> PreviewExcelImportAsync(
         string customerExcelPath,
         string itemExcelPath,
         CancellationToken ct = default)
@@ -282,7 +282,7 @@ public sealed partial class LegacyDataMigrationService
         if (string.IsNullOrWhiteSpace(customerExcelPath) || !File.Exists(customerExcelPath))
             throw new FileNotFoundException("거래처 엑셀 파일을 찾을 수 없습니다.", customerExcelPath);
         if (string.IsNullOrWhiteSpace(itemExcelPath) || !File.Exists(itemExcelPath))
-            throw new FileNotFoundException("제품 엑셀 파일을 찾을 수 없습니다.", itemExcelPath);
+            throw new FileNotFoundException("품목 엑셀 파일을 찾을 수 없습니다.", itemExcelPath);
 
         var customerRows = await Task.Run(() => ReadCustomersFromWorkbook(customerExcelPath), ct);
         var itemRows = await Task.Run(() => ReadItemsFromWorkbook(itemExcelPath), ct);
@@ -295,11 +295,13 @@ public sealed partial class LegacyDataMigrationService
         var createdCustomers = 0;
         var updatedCustomers = 0;
         var skippedCustomers = 0;
+        var previewDetails = new List<string>();
         foreach (var row in customerRows)
         {
             if (string.IsNullOrWhiteSpace(row.Name))
             {
                 skippedCustomers++;
+                AddPreviewDetail(previewDetails, "거래처 건너뜀: 거래처명이 비어 있는 행");
                 continue;
             }
 
@@ -312,19 +314,20 @@ public sealed partial class LegacyDataMigrationService
             var changed = MergeCustomer(target!, source, preferIncoming: true);
             if (isNew)
             {
-                await _local.UpsertCustomerAsync(target!, ct);
                 RegisterCustomerLookup(customerLookup, target!);
                 createdCustomers++;
+                AddPreviewDetail(previewDetails, $"거래처 신규: {target!.NameOriginal}");
             }
             else if (changed)
             {
-                await _local.UpsertCustomerAsync(target!, ct);
                 RegisterCustomerLookup(customerLookup, target!);
                 updatedCustomers++;
+                AddPreviewDetail(previewDetails, $"거래처 수정: {target!.NameOriginal}");
             }
             else
             {
                 skippedCustomers++;
+                AddPreviewDetail(previewDetails, $"거래처 건너뜀: 변경 없음 - {target!.NameOriginal}");
             }
         }
 
@@ -336,6 +339,7 @@ public sealed partial class LegacyDataMigrationService
             if (string.IsNullOrWhiteSpace(row.Name))
             {
                 skippedItems++;
+                AddPreviewDetail(previewDetails, "품목 건너뜀: 품목명이 비어 있는 행");
                 continue;
             }
 
@@ -348,29 +352,143 @@ public sealed partial class LegacyDataMigrationService
             var changed = MergeItem(target!, source, preferIncoming: true);
             if (isNew)
             {
-                await _local.UpsertItemAsync(target!, ct);
                 RegisterItemLookup(itemLookup, target!);
                 createdItems++;
+                AddPreviewDetail(previewDetails, $"품목 신규: {target!.NameOriginal} / {target.SpecificationOriginal}");
             }
             else if (changed)
             {
-                await _local.UpsertItemAsync(target!, ct);
                 RegisterItemLookup(itemLookup, target!);
                 updatedItems++;
+                AddPreviewDetail(previewDetails, $"품목 수정: {target!.NameOriginal} / {target.SpecificationOriginal}");
             }
             else
             {
                 skippedItems++;
+                AddPreviewDetail(previewDetails, $"품목 건너뜀: 변경 없음 - {target!.NameOriginal} / {target.SpecificationOriginal}");
             }
         }
 
-        return new LegacyImportResult(
+        return new LegacyImportPreviewResult(
+            customerRows.Count,
+            itemRows.Count,
             createdCustomers,
             updatedCustomers,
             skippedCustomers,
             createdItems,
             updatedItems,
-            skippedItems);
+            skippedItems,
+            previewDetails);
+    }
+    public async Task<LegacyImportResult> ImportFromExcelAsync(
+        string customerExcelPath,
+        string itemExcelPath,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(customerExcelPath) || !File.Exists(customerExcelPath))
+            throw new FileNotFoundException("거래처 엑셀 파일을 찾을 수 없습니다.", customerExcelPath);
+        if (string.IsNullOrWhiteSpace(itemExcelPath) || !File.Exists(itemExcelPath))
+            throw new FileNotFoundException("제품 엑셀 파일을 찾을 수 없습니다.", itemExcelPath);
+
+        var customerRows = await Task.Run(() => ReadCustomersFromWorkbook(customerExcelPath), ct);
+        var itemRows = await Task.Run(() => ReadItemsFromWorkbook(itemExcelPath), ct);
+
+        return await _local.RunInTransactionAsync(async token =>
+        {
+            var existingCustomers = await _local.GetCustomersAsync(token);
+            var existingItems = await _local.GetItemsAsync(token);
+            var customerLookup = BuildCustomerLookup(existingCustomers);
+            var itemLookup = BuildItemLookup(existingItems);
+
+            var createdCustomers = 0;
+            var updatedCustomers = 0;
+            var skippedCustomers = 0;
+            foreach (var row in customerRows)
+            {
+                if (string.IsNullOrWhiteSpace(row.Name))
+                {
+                    skippedCustomers++;
+                    continue;
+                }
+
+                var source = BuildImportedCustomer(row);
+                var target = FindMatchingCustomer(customerLookup, source);
+                var isNew = target is null;
+                if (isNew)
+                    target = CreateNewCustomerShell(source);
+
+                var changed = MergeCustomer(target!, source, preferIncoming: true);
+                if (isNew)
+                {
+                    await _local.UpsertCustomerAsync(target!, token);
+                    RegisterCustomerLookup(customerLookup, target!);
+                    createdCustomers++;
+                }
+                else if (changed)
+                {
+                    await _local.UpsertCustomerAsync(target!, token);
+                    RegisterCustomerLookup(customerLookup, target!);
+                    updatedCustomers++;
+                }
+                else
+                {
+                    skippedCustomers++;
+                }
+            }
+
+            var createdItems = 0;
+            var updatedItems = 0;
+            var skippedItems = 0;
+            foreach (var row in itemRows)
+            {
+                if (string.IsNullOrWhiteSpace(row.Name))
+                {
+                    skippedItems++;
+                    continue;
+                }
+
+                var source = BuildImportedItem(row);
+                var target = FindMatchingItem(itemLookup, source);
+                var isNew = target is null;
+                if (isNew)
+                    target = CreateNewItemShell(source);
+
+                var changed = MergeItem(target!, source, preferIncoming: true);
+                if (isNew)
+                {
+                    await _local.UpsertItemAsync(target!, token);
+                    RegisterItemLookup(itemLookup, target!);
+                    createdItems++;
+                }
+                else if (changed)
+                {
+                    await _local.UpsertItemAsync(target!, token);
+                    RegisterItemLookup(itemLookup, target!);
+                    updatedItems++;
+                }
+                else
+                {
+                    skippedItems++;
+                }
+            }
+
+            return new LegacyImportResult(
+                createdCustomers,
+                updatedCustomers,
+                skippedCustomers,
+                createdItems,
+                updatedItems,
+                skippedItems);
+        }, ct);
+    }
+
+    private static void AddPreviewDetail(ICollection<string> details, string message)
+    {
+        if (details.Count >= 30)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(message))
+            details.Add(message.Trim());
     }
 
     public async Task<CustomerWorkbookImportResult> ImportCustomerWorkbookAsync(
@@ -1263,6 +1381,31 @@ public sealed class ItemWorkbookImportResult
     public List<string> Messages { get; } = new();
 }
 
+public sealed record LegacyImportPreviewResult(
+    int TotalCustomers,
+    int TotalItems,
+    int CreatedCustomers,
+    int UpdatedCustomers,
+    int SkippedCustomers,
+    int CreatedItems,
+    int UpdatedItems,
+    int SkippedItems,
+    IReadOnlyList<string> Details)
+{
+    public bool HasChanges => CreatedCustomers + UpdatedCustomers + CreatedItems + UpdatedItems > 0;
+
+    public string ToDisplayText()
+    {
+        var summary = $"거래처: 전체 {TotalCustomers:N0}, 신규 {CreatedCustomers:N0}, 수정 {UpdatedCustomers:N0}, 건너뜀 {SkippedCustomers:N0}" + Environment.NewLine +
+                      $"품목: 전체 {TotalItems:N0}, 신규 {CreatedItems:N0}, 수정 {UpdatedItems:N0}, 건너뜀 {SkippedItems:N0}";
+        if (Details.Count == 0)
+            return summary;
+
+        return summary + Environment.NewLine + Environment.NewLine +
+               "[미리보기 상세 상위 30건]" + Environment.NewLine +
+               string.Join(Environment.NewLine, Details.Select(detail => "- " + detail));
+    }
+}
 public sealed record LegacyImportResult(
     int CreatedCustomers,
     int UpdatedCustomers,

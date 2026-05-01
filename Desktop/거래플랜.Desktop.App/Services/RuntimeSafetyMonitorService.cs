@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using 거래플랜.Desktop.App.Infrastructure;
 
@@ -14,7 +15,8 @@ public sealed record PeriodicIntegrityMonitorResult(
     bool Executed,
     bool WarningRequired,
     string StatusMessage,
-    string WarningMessage);
+    string WarningMessage,
+    string DetailReportPath = "");
 
 public sealed class RuntimeSafetyMonitorService
 {
@@ -181,10 +183,25 @@ public sealed class RuntimeSafetyMonitorService
                 WarningMessage: string.Empty);
         }
 
+        var detailReportPath = await WritePeriodicIntegrityReportAsync(
+            report,
+            autoRecoveryAttempted,
+            autoRecoverySucceeded,
+            backupPath,
+            ct);
+
         var warningMessage = autoRecoveryAttempted && !autoRecoverySucceeded
             ? "주기 무결성 점검 중 자동 재동기화를 시도했지만 완료하지 못했습니다."
             : "주기 무결성 점검에서 수동 확인이 필요한 항목이 남아 있습니다.";
         warningMessage += Environment.NewLine + Environment.NewLine + report.BuildSummaryText();
+        if (!string.IsNullOrWhiteSpace(detailReportPath))
+        {
+            warningMessage +=
+                Environment.NewLine + Environment.NewLine +
+                "상세 내역과 수정 방법 리포트를 저장했습니다." +
+                Environment.NewLine +
+                detailReportPath;
+        }
 
         await _diagnostics.RecordIssueAsync(
             phase: "runtime-periodic-integrity",
@@ -208,7 +225,44 @@ public sealed class RuntimeSafetyMonitorService
             Executed: true,
             WarningRequired: warningRequired,
             StatusMessage: statusMessage,
-            WarningMessage: warningMessage);
+            WarningMessage: warningMessage,
+            DetailReportPath: detailReportPath);
+    }
+
+    private static async Task<string> WritePeriodicIntegrityReportAsync(
+        LocalIntegrityReport report,
+        bool autoRecoveryAttempted,
+        bool autoRecoverySucceeded,
+        string? backupPath,
+        CancellationToken ct)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.DiagnosticsDir);
+            var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            var path = Path.Combine(AppPaths.DiagnosticsDir, $"periodic-integrity-{stamp}.md");
+            var builder = new StringBuilder();
+            builder.AppendLine("# 주기 무결성 점검 상세 내역");
+            builder.AppendLine();
+            builder.AppendLine($"- 생성시각: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            builder.AppendLine($"- 자동 재동기화 시도: {(autoRecoveryAttempted ? "예" : "아니오")}");
+            builder.AppendLine($"- 자동 재동기화 완료: {(autoRecoverySucceeded ? "예" : "아니오")}");
+            if (!string.IsNullOrWhiteSpace(backupPath))
+                builder.AppendLine($"- 자동 재동기화 전 백업: {backupPath}");
+            builder.AppendLine();
+            builder.AppendLine("이 리포트는 주기 무결성 점검 팝업에서 자동 저장되었습니다. `수정 방법`과 `상세 내역`을 기준으로 원본 화면에서 정리하세요.");
+            builder.AppendLine();
+            builder.AppendLine(report.ToMarkdown().Trim());
+            builder.AppendLine();
+
+            await File.WriteAllTextAsync(path, builder.ToString(), Encoding.UTF8, ct);
+            return path;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("RUNTIME", $"주기 무결성 상세 리포트 저장 실패: {ex.Message}");
+            return string.Empty;
+        }
     }
 
     private async Task<bool> IsPeriodicRunDueAsync(LocalStateService local, CancellationToken ct)

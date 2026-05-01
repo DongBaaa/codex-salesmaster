@@ -42,7 +42,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
     private const string MergeDuplicateItemsStepKey = "Migration.MergeDuplicateItems.v3";
     private const string NormalizeRentalBillingScheduleRulesStepKey = "Migration.NormalizeRentalBillingScheduleRules.v2";
     private const string CleanupDeletedInvoiceChainStepKey = "Migration.CleanupDeletedInvoiceChain.v1";
-    private const string NormalizeRentalAssetActiveUniqueIndexesStepKey = "Migration.NormalizeRentalAssetActiveUniqueIndexes.v1";
+    private const string NormalizeRentalAssetActiveUniqueIndexesStepKey = "Migration.NormalizeRentalAssetActiveUniqueIndexes.v2";
     private const string BackfillItemScopeFieldsStepKey = "Migration.BackfillItemScopeFields.v1";
     private const string BackfillItemOperationalFieldsStepKey = "Migration.BackfillItemOperationalFields.v1";
     private const string BackfillOperationalOwnerOfficeFieldsStepKey = "Migration.BackfillOperationalOwnerOfficeFields.v1";
@@ -391,10 +391,14 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             ("LastSavedAtUtc", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'"),
             ("ConcurrencyStamp", "TEXT NOT NULL DEFAULT ''"),
             ("CostStatus", "TEXT NOT NULL DEFAULT '미확인'"),
+            ("VatMode", $"TEXT NOT NULL DEFAULT '{InvoiceVatModes.Included}'"),
             ("TaxInvoiceIssued", "INTEGER NOT NULL DEFAULT 0"),
         };
         foreach (var (col, def) in invoiceCols)
             await TryAddColumnAsync(db, "Invoices", col, def);
+        await TryExecuteSqlAsync(
+            db,
+            $"UPDATE \"Invoices\" SET \"VatMode\" = '{InvoiceVatModes.Included}' WHERE \"VatMode\" IS NULL OR TRIM(\"VatMode\") = '';");
 
         var invoiceLineCols = new (string col, string def)[]
         {
@@ -433,6 +437,24 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         // Keep retired columns as empty compatibility columns so older deployed binaries
         // or lingering query paths do not fail with "no such column" during startup/sync.
         await TryAddColumnAsync(db, "RentalAssets", "BillToCustomerName", "TEXT NOT NULL DEFAULT ''");
+
+        var rentalAssignmentHistoryCols = new (string col, string def)[]
+        {
+            ("OfficeCode", "TEXT NOT NULL DEFAULT 'SHARED'"),
+            ("BillingProfileDisplay", "TEXT NOT NULL DEFAULT ''"),
+            ("ItemName", "TEXT NOT NULL DEFAULT ''"),
+            ("MachineNumber", "TEXT NOT NULL DEFAULT ''"),
+            ("ManagementNumber", "TEXT NOT NULL DEFAULT ''"),
+            ("MonthlyFee", "REAL NOT NULL DEFAULT 0"),
+            ("ContractStartDate", "TEXT NULL"),
+            ("ContractEndDate", "TEXT NULL"),
+            ("ChangeReason", "TEXT NOT NULL DEFAULT ''"),
+            ("IsDeleted", "INTEGER NOT NULL DEFAULT 0"),
+            ("Revision", "INTEGER NOT NULL DEFAULT 0"),
+            ("IsDirty", "INTEGER NOT NULL DEFAULT 0")
+        };
+        foreach (var (col, def) in rentalAssignmentHistoryCols)
+            await TryAddColumnAsync(db, "RentalAssetAssignmentHistories", col, def);
 
         var rentalBillingProfileCols = new (string col, string def)[]
         {
@@ -512,6 +534,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_ResponsibleOfficeCode\" ON \"RentalBillingProfiles\" (\"ResponsibleOfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_OfficeCode\" ON \"RentalAssets\" (\"OfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_ResponsibleOfficeCode\" ON \"RentalAssets\" (\"ResponsibleOfficeCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_Revision\" ON \"RentalAssetAssignmentHistories\" (\"Revision\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingLogs_OfficeCode\" ON \"RentalBillingLogs\" (\"OfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingLogs_ResponsibleOfficeCode\" ON \"RentalBillingLogs\" (\"ResponsibleOfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId\" ON \"CustomerContracts\" (\"CustomerId\");");
@@ -2091,6 +2114,18 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
     private static string QuoteSqlIdentifier(string value)
         => "\"" + value + "\"";
 
+    private static async Task TryExecuteSqlAsync(LocalDbContext db, string sql)
+    {
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(sql);
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
     private static async Task TryCreateIndexAsync(LocalDbContext db, string sql)
     {
         try
@@ -3263,9 +3298,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                                );
                                """;
             await db.Database.ExecuteSqlRawAsync(sql);
-            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_AssetKey\" ON \"RentalAssets\" (\"AssetKey\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"AssetKey\"), '') <> '';");
-            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"ManagementId\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementId\"), '') <> '';");
-            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"ManagementNumber\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementNumber\"), '') <> '';");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_AssetKey\" ON \"RentalAssets\" (\"TenantCode\", \"AssetKey\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"AssetKey\"), '') <> '';");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"TenantCode\", \"ManagementId\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementId\"), '') <> '';");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"TenantCode\", \"ManagementNumber\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementNumber\"), '') <> '';");
         }
         catch
         {
@@ -3279,9 +3314,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             await TryCreateIndexAsync(db, "DROP INDEX IF EXISTS \"IX_RentalAssets_AssetKey\";");
             await TryCreateIndexAsync(db, "DROP INDEX IF EXISTS \"IX_RentalAssets_ManagementId\";");
             await TryCreateIndexAsync(db, "DROP INDEX IF EXISTS \"IX_RentalAssets_ManagementNumber\";");
-            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_AssetKey\" ON \"RentalAssets\" (\"AssetKey\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"AssetKey\"), '') <> '';");
-            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"ManagementId\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementId\"), '') <> '';");
-            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"ManagementNumber\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementNumber\"), '') <> '';");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_AssetKey\" ON \"RentalAssets\" (\"TenantCode\", \"AssetKey\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"AssetKey\"), '') <> '';");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"TenantCode\", \"ManagementId\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementId\"), '') <> '';");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"TenantCode\", \"ManagementNumber\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementNumber\"), '') <> '';");
         }
         catch (Exception ex)
         {
@@ -3300,6 +3335,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                                    "BillingProfileId" TEXT NULL,
                                    "CustomerId" TEXT NULL,
                                    "TenantCode" TEXT NOT NULL DEFAULT 'USENET_GROUP',
+                                   "OfficeCode" TEXT NOT NULL DEFAULT 'SHARED',
                                    "ResponsibleOfficeCode" TEXT NOT NULL DEFAULT 'USENET',
                                    "CustomerName" TEXT NOT NULL DEFAULT '',
                                    "InstallLocation" TEXT NOT NULL DEFAULT '',
@@ -3315,13 +3351,17 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                                    "LinkedAtUtc" TEXT NOT NULL,
                                    "UnlinkedAtUtc" TEXT NULL,
                                    "CreatedAtUtc" TEXT NOT NULL,
-                                   "UpdatedAtUtc" TEXT NOT NULL
+                                   "UpdatedAtUtc" TEXT NOT NULL,
+                                   "Revision" INTEGER NOT NULL DEFAULT 0,
+                                   "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                                   "IsDirty" INTEGER NOT NULL DEFAULT 0
                                );
                                """;
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_AssetId_IsCurrent\" ON \"RentalAssetAssignmentHistories\" (\"AssetId\", \"IsCurrent\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_BillingProfileId\" ON \"RentalAssetAssignmentHistories\" (\"BillingProfileId\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_LinkedAtUtc\" ON \"RentalAssetAssignmentHistories\" (\"LinkedAtUtc\");");
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_Revision\" ON \"RentalAssetAssignmentHistories\" (\"Revision\");");
         }
         catch (Exception ex)
         {

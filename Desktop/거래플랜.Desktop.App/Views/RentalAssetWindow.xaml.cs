@@ -1,5 +1,6 @@
 ﻿using System.ComponentModel;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using 거래플랜.Desktop.App.Data;
@@ -63,6 +64,29 @@ public partial class RentalAssetWindow : Window
 
     private void ItemLookupButton_Click(object sender, RoutedEventArgs e)
         => UiTaskHelper.Run(this, OpenItemLookupAsync, "UI", "렌탈 자산 품목 조회", "자산 품목 조회 중 오류가 발생했습니다.");
+
+    private void AssignmentHistoryGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (FindVisualParent<DataGridRow>(e.OriginalSource as DependencyObject) is not { } row)
+            return;
+
+        row.IsSelected = true;
+        AssignmentHistoryGrid.SelectedItem = row.Item;
+    }
+
+    private static T? FindVisualParent<T>(DependencyObject? current)
+        where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T match)
+                return match;
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
+    }
 
     private async Task OpenItemLookupAsync()
     {

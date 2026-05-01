@@ -184,6 +184,7 @@ public sealed class LocalInvoice : LocalSyncEntity
     public decimal TotalAmount { get; set; }
     public decimal SupplyAmount { get; set; }
     public decimal VatAmount { get; set; }
+    public string VatMode { get; set; } = InvoiceVatModes.Included;
     public bool TaxInvoiceIssued { get; set; }
     public string Memo { get; set; } = string.Empty;
     public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUsenet;
@@ -618,9 +619,8 @@ public sealed class LocalRentalAsset : LocalSyncEntity
     public string Notes { get; set; } = string.Empty;
 }
 
-public sealed class LocalRentalAssetAssignmentHistory
+public sealed class LocalRentalAssetAssignmentHistory : LocalSyncEntity
 {
-    public Guid Id { get; set; } = Guid.NewGuid();
     public Guid AssetId { get; set; }
     public Guid? BillingProfileId { get; set; }
     public Guid? CustomerId { get; set; }
@@ -639,8 +639,6 @@ public sealed class LocalRentalAssetAssignmentHistory
     public bool IsCurrent { get; set; } = true;
     public DateTime LinkedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UnlinkedAtUtc { get; set; }
-    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
-    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
 public sealed class LocalRentalBillingLog : LocalSyncEntity

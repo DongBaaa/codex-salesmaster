@@ -299,7 +299,7 @@ public sealed partial class SyncDiagnosticsViewModel
             AddExtension = true,
             DefaultExt = ".xlsx",
             FileName = BuildServerIntegrityDetailExportFileName(SelectedServerIntegrityIssue),
-            InitialDirectory = AppPaths.DiagnosticsDir
+            InitialDirectory = AppPaths.UserDownloadsDir
         };
 
         if (dialog.ShowDialog() != true)
@@ -491,14 +491,14 @@ public sealed partial class SyncDiagnosticsViewModel
             return builder.ToString();
         }
 
-        builder.AppendLine("| 심각도 | 코드 | 건수 | 내용 |");
-        builder.AppendLine("| --- | --- | ---: | --- |");
+        builder.AppendLine("| 심각도 | 코드 | 건수 | 내용 | 수정 방법 |");
+        builder.AppendLine("| --- | --- | ---: | --- | --- |");
         foreach (var issue in serverReport.Issues
                      .OrderByDescending(current => GetSeverityWeight(current.Severity))
                      .ThenByDescending(current => current.Count)
                      .ThenBy(current => current.Message, StringComparer.CurrentCulture))
         {
-            builder.AppendLine($"| {issue.Severity} | {issue.Code} | {issue.Count:N0} | {EscapeMarkdown(issue.Message)} |");
+            builder.AppendLine($"| {issue.Severity} | {issue.Code} | {issue.Count:N0} | {EscapeMarkdown(issue.Message)} | {EscapeMarkdown(IntegrityIssueGuidance.GetSuggestedAction(issue.Code, issue.Message))} |");
         }
 
         return builder.ToString();

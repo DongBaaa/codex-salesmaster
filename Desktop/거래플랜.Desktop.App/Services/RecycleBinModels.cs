@@ -26,6 +26,11 @@ public sealed partial class RecycleBinEntry : ObservableObject
     public Guid EntityId { get; init; }
     public RecycleBinEntityKind Kind { get; init; }
     [ObservableProperty] private bool _isMarked;
+    public string TenantCode { get; init; } = string.Empty;
+    public string OfficeCode { get; init; } = string.Empty;
+    public string ResponsibleOfficeCode { get; init; } = string.Empty;
+    public string ManagementCompanyCode { get; init; } = string.Empty;
+    public string BusinessDatabaseName { get; init; } = string.Empty;
 
     public string KindText => Kind switch
     {

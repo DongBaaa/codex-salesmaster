@@ -10,11 +10,16 @@ public sealed partial class RentalBillingTemplateEditorItem : ObservableObject
     [ObservableProperty] private Guid _itemId = Guid.NewGuid();
     [ObservableProperty] private string _displayItemName = string.Empty;
     [ObservableProperty] private string _billingLineMode = string.Empty;
+    [ObservableProperty] private string _specification = string.Empty;
+    [ObservableProperty] private string _unit = string.Empty;
+    [ObservableProperty] private string _materialNumber = string.Empty;
+    [ObservableProperty] private Guid? _representativeAssetId;
     [ObservableProperty] private decimal _quantity = 1m;
     [ObservableProperty] private decimal _unitPrice;
     [ObservableProperty] private decimal _amount;
     [ObservableProperty] private string _note = string.Empty;
     [ObservableProperty] private string _includedAssetSummary = string.Empty;
+    [ObservableProperty] private string _representativeAssetSummary = "대표자산 미지정";
 
     public ObservableCollection<Guid> IncludedAssetIds { get; } = new();
 
@@ -65,6 +70,8 @@ public sealed partial class RentalBillingAssetOption : ObservableObject
     [ObservableProperty] private Guid? _billingProfileId;
     [ObservableProperty] private string _managementNumber = string.Empty;
     [ObservableProperty] private string _itemName = string.Empty;
+    [ObservableProperty] private string _itemCategoryName = string.Empty;
+    [ObservableProperty] private string _manufacturer = string.Empty;
     [ObservableProperty] private string _machineNumber = string.Empty;
     [ObservableProperty] private string _currentCustomerName = string.Empty;
     [ObservableProperty] private string _targetCustomerName = string.Empty;
@@ -83,6 +90,7 @@ public sealed partial class RentalBillingAssetOption : ObservableObject
     [ObservableProperty] private DateTime? _installDate;
     [ObservableProperty] private bool _isLinkedToCurrentProfile;
     [ObservableProperty] private bool _isLinkedToAnotherProfile;
+    [ObservableProperty] private bool _isRepresentativeAsset;
     [ObservableProperty] private bool _isSelected;
 
     public string PurchaseDateDisplay => PurchaseDate?.ToString("yyyy-MM-dd") ?? string.Empty;

@@ -49,6 +49,7 @@ public sealed partial class SalesViewModel : ObservableObject
     [ObservableProperty] private decimal _customerBalance;   // 총미수금/미지불
     [ObservableProperty] private decimal _customerAdvanceBalance;
     [ObservableProperty] private bool _taxInvoiceIssued;
+    [ObservableProperty] private bool _isVatNone;
     [ObservableProperty] private string _selectedResponsibleOfficeCode = DomainConstants.OfficeUsenet;
     [ObservableProperty] private string _selectedWarehouseCode = DomainConstants.WarehouseUsenetMain;
     // ?? ?꾪몴 ?ㅻ뜑 ?????????????????????????????????????????????????????????
@@ -339,6 +340,7 @@ public sealed partial class SalesViewModel : ObservableObject
         CustomerBalance = 0;
         CustomerAdvanceBalance = 0;
         TaxInvoiceIssued = false;
+        IsVatNone = false;
         InvoiceMemo = string.Empty;
         WorkDate = DateOnly.FromDateTime(DateTime.Today);
         VoucherType = _newInvoiceVoucherType;
@@ -394,6 +396,11 @@ public sealed partial class SalesViewModel : ObservableObject
         OnPropertyChanged(nameof(PaymentActionButtonText));
         OnPropertyChanged(nameof(PaymentSummaryTitleText));
         RequestRefreshPaymentSummary();
+    }
+
+    partial void OnIsVatNoneChanged(bool value)
+    {
+        RecalcTotals();
     }
 
     public LocalStateService LocalStateService => _local;
@@ -828,19 +835,21 @@ public sealed partial class SalesViewModel : ObservableObject
 
     public void RecalcTotals()
     {
-        var totals = CalculateTaxInclusiveTotals(Lines.Select(l => l.LineAmount));
+        var totals = CalculateTotals(Lines.Select(l => l.LineAmount), IsVatNone);
         SupplyAmount = totals.SupplyAmount;
         VatAmount = totals.VatAmount;
         TotalAmount = totals.TotalAmount;
     }
 
+    private static (decimal SupplyAmount, decimal VatAmount, decimal TotalAmount) CalculateTotals(
+        IEnumerable<decimal> lineAmounts,
+        bool isVatNone)
+        => InvoiceVatModes.CalculateTotals(
+            lineAmounts,
+            isVatNone ? InvoiceVatModes.None : InvoiceVatModes.Included);
+
     private static (decimal SupplyAmount, decimal VatAmount, decimal TotalAmount) CalculateTaxInclusiveTotals(IEnumerable<decimal> lineAmounts)
-    {
-        var totalAmount = lineAmounts.Sum();
-        var supplyAmount = Math.Round(totalAmount / 1.1m, 0, MidpointRounding.AwayFromZero);
-        var vatAmount = totalAmount - supplyAmount;
-        return (supplyAmount, vatAmount, totalAmount);
-    }
+        => InvoiceVatModes.CalculateTotals(lineAmounts, InvoiceVatModes.Included);
 
     // ?? ?곹뭹 寃???????????????????????????????????????????????????????????
     partial void OnItemSearchTextChanged(string value)
@@ -885,6 +894,8 @@ public sealed partial class SalesViewModel : ObservableObject
             .Append('|').Append(effectiveResponsibleOfficeCode)
             .Append('|').Append(SelectedWarehouseCode ?? string.Empty)
             .Append('|').Append(InvoiceMemo ?? string.Empty)
+            .Append('|').Append(IsVatNone ? InvoiceVatModes.None : InvoiceVatModes.Included)
+            .Append('|').Append(TaxInvoiceIssued ? "1" : "0")
             .Append('|').Append(InputItemName ?? string.Empty)
             .Append('|').Append(InputSpec ?? string.Empty)
             .Append('|').Append(InputUnit ?? string.Empty)
@@ -965,8 +976,13 @@ public sealed partial class SalesViewModel : ObservableObject
             }
         }
 
-        if (string.IsNullOrWhiteSpace(InvoiceMemo) && selectedInvoices.Count == 1)
-            InvoiceMemo = selectedInvoices[0].Memo;
+        if (selectedInvoices.Count == 1)
+        {
+            if (string.IsNullOrWhiteSpace(InvoiceMemo))
+                InvoiceMemo = selectedInvoices[0].Memo;
+            if (replaceExistingLines)
+                IsVatNone = InvoiceVatModes.IsNone(selectedInvoices[0].VatMode);
+        }
 
         RecalcTotals();
         StatusMessage = $"{selectedInvoices.Count}건의 이전 기록을 불러왔습니다.";
@@ -1112,6 +1128,7 @@ public sealed partial class SalesViewModel : ObservableObject
             InvoiceDate = WorkDate,
             VoucherType = VoucherType,
             Memo = InvoiceMemo,
+            VatMode = IsVatNone ? InvoiceVatModes.None : InvoiceVatModes.Included,
             TaxInvoiceIssued = TaxInvoiceIssued,
             ResponsibleOfficeCode = SelectedResponsibleOfficeCode,
             SourceWarehouseCode = SelectedWarehouseCode,
@@ -1206,6 +1223,7 @@ public sealed partial class SalesViewModel : ObservableObject
         WorkDate = inv.InvoiceDate;
         VoucherType = inv.VoucherType;
         InvoiceMemo = inv.Memo;
+        IsVatNone = InvoiceVatModes.IsNone(inv.VatMode);
         TaxInvoiceIssued = inv.TaxInvoiceIssued;
         _linkedRentalBillingProfileId = inv.LinkedRentalBillingProfileId;
         _linkedRentalBillingRunId = inv.LinkedRentalBillingRunId;
@@ -1554,6 +1572,17 @@ public sealed partial class SalesViewModel : ObservableObject
                 return;
             }
 
+            if (InvoiceVatModes.IsNone(inv.VatMode))
+            {
+                var confirm = System.Windows.MessageBox.Show(
+                    "이 전표는 '부가세 없음'으로 설정되어 있습니다.\n세금계산서도 부가세 0원으로 출력됩니다. 계속하시겠습니까?",
+                    "세금계산서 인쇄 확인",
+                    System.Windows.MessageBoxButton.YesNo,
+                    System.Windows.MessageBoxImage.Question);
+                if (confirm != System.Windows.MessageBoxResult.Yes)
+                    return;
+            }
+
             var document = BuildTaxInvoicePrintDocument(inv, customer, company);
             var printed = PrintPreviewHelper.ShowPreviewAndPrint(
                 document,
@@ -1580,6 +1609,7 @@ public sealed partial class SalesViewModel : ObservableObject
         LocalCustomer customer,
         LocalCompanyProfile company)
     {
+        var defaultModel = _invoicePrintService.CreateDefaultModel(invoice, customer, company, PrintWithDate, PrintWithPrice);
         var payload = await _local.GetInvoicePrintPayloadAsync(invoice.Id);
         if (!string.IsNullOrWhiteSpace(payload))
         {
@@ -1589,13 +1619,21 @@ public sealed partial class SalesViewModel : ObservableObject
                 if (saved is not null)
                 {
                     saved.InvoiceId = invoice.Id;
+                    NormalizeInvoicePrintSnapshotMetadata(saved, defaultModel);
                     if (invoice.VoucherType == VoucherType.Procurement)
                         saved.DocumentTitle = NormalizeProcurementDocumentTitle(saved.DocumentTitle);
-                    if (saved.Lines.Count == 0)
+                    InvoicePrintLineSynchronizer.AlignToInvoiceLineOrder(saved, defaultModel);
+                    if (!string.Equals(
+                            InvoiceVatModes.Normalize(saved.VatMode),
+                            InvoiceVatModes.Normalize(defaultModel.VatMode),
+                            StringComparison.Ordinal))
                     {
-                        saved.Lines = _invoicePrintService
-                            .CreateDefaultModel(invoice, customer, company, PrintWithDate, PrintWithPrice)
-                            .Lines;
+                        saved.VatMode = defaultModel.VatMode;
+                        saved.SupplyAmount = defaultModel.SupplyAmount;
+                        saved.VatAmount = defaultModel.VatAmount;
+                        saved.TotalAmount = defaultModel.TotalAmount;
+                        saved.PaidAmount = defaultModel.PaidAmount;
+                        saved.BalanceAmount = defaultModel.BalanceAmount;
                     }
 
                     return saved;
@@ -1607,16 +1645,37 @@ public sealed partial class SalesViewModel : ObservableObject
             }
         }
 
-        var model = _invoicePrintService.CreateDefaultModel(invoice, customer, company, PrintWithDate, PrintWithPrice);
+        var model = defaultModel;
         if (invoice.VoucherType == VoucherType.Procurement)
             model.DocumentTitle = NormalizeProcurementDocumentTitle(SelectedProcurementDocumentTitle);
+        await SaveInvoicePrintModelAsync(model);
         return model;
     }
 
     private async Task SaveInvoicePrintModelAsync(InvoicePrintModel model)
     {
+        NormalizeInvoicePrintSnapshotMetadata(model, null);
+        model.SnapshotLastSavedAtUtc = DateTime.UtcNow;
         var payload = JsonSerializer.Serialize(model, PrintModelJsonOptions);
         await _local.SaveInvoicePrintPayloadAsync(model.InvoiceId, payload);
+    }
+
+    private static void NormalizeInvoicePrintSnapshotMetadata(InvoicePrintModel model, InvoicePrintModel? fallback)
+    {
+        if (model.SnapshotCreatedAtUtc == default)
+        {
+            var fallbackCreatedAtUtc = fallback?.SnapshotCreatedAtUtc ?? default;
+            model.SnapshotCreatedAtUtc = fallbackCreatedAtUtc == default ? DateTime.UtcNow : fallbackCreatedAtUtc;
+        }
+
+        if (model.SnapshotLastSavedAtUtc == default)
+        {
+            var fallbackLastSavedAtUtc = fallback?.SnapshotLastSavedAtUtc ?? default;
+            model.SnapshotLastSavedAtUtc = fallbackLastSavedAtUtc == default ? model.SnapshotCreatedAtUtc : fallbackLastSavedAtUtc;
+        }
+
+        if (string.IsNullOrWhiteSpace(model.SnapshotPolicy))
+            model.SnapshotPolicy = InvoicePrintModel.DefaultSnapshotPolicy;
     }
 
     private static string NormalizeProcurementDocumentTitle(string? title)
@@ -2014,6 +2073,7 @@ public sealed partial class SalesViewModel : ObservableObject
         {
             decimal distributedSupply = 0;
             decimal distributedVat = 0;
+            var vatMode = InvoiceVatModes.Normalize(invoice.VatMode);
 
             for (var i = 0; i < lines.Count; i++)
             {
@@ -2028,8 +2088,9 @@ public sealed partial class SalesViewModel : ObservableObject
                 }
                 else
                 {
-                    lineSupply = Math.Round(line.LineAmount / 1.1m, 0, MidpointRounding.AwayFromZero);
-                    lineVat = line.LineAmount - lineSupply;
+                    var split = InvoiceVatModes.SplitLineAmount(line.LineAmount, vatMode);
+                    lineSupply = split.SupplyAmount;
+                    lineVat = split.VatAmount;
                     distributedSupply += lineSupply;
                     distributedVat += lineVat;
                 }

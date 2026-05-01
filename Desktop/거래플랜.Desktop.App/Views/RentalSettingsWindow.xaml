@@ -24,6 +24,8 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Padding" Value="8,4"/>
             <Setter Property="Height" Value="34"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="Button">
             <Setter Property="Foreground" Value="White"/>
@@ -105,18 +107,18 @@
 
                     <TextBlock Grid.Row="0" Grid.ColumnSpan="3" Text="알림/가져오기 설정" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
 
-                    <TextBlock Grid.Row="1" Grid.Column="0" Text="알림 기준" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="알림 기준" VerticalAlignment="Center" Margin="0,0,4,8"/>
                     <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding AlertDaysText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,8"/>
                     <Button Grid.Row="1" Grid.Column="2" Content="저장" Background="#1B5E20" BorderBrush="#1B5E20" Command="{Binding SaveAlertSettingsCommand}"/>
 
-                    <TextBlock Grid.Row="2" Grid.Column="0" Text="청구 파일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="청구 파일" VerticalAlignment="Center" Margin="0,0,4,8"/>
                     <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding BillingWorkbookPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,8"/>
                     <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal">
                         <Button Content="찾기" Width="70" MinWidth="70" Margin="0,0,6,0" Command="{Binding BrowseBillingWorkbookCommand}"/>
                         <Button Content="가져오기" Width="88" MinWidth="88" Background="#1565C0" BorderBrush="#1565C0" Command="{Binding ImportBillingWorkbookCommand}"/>
                     </StackPanel>
 
-                    <TextBlock Grid.Row="3" Grid.Column="0" Text="자산 파일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="자산 파일" VerticalAlignment="Center" Margin="0,0,4,8"/>
                     <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding AssetWorkbookPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,8"/>
                     <StackPanel Grid.Row="3" Grid.Column="2" Orientation="Horizontal">
                         <Button Content="찾기" Width="70" MinWidth="70" Margin="0,0,6,0" Command="{Binding BrowseAssetWorkbookCommand}"/>

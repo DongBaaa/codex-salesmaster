@@ -1193,7 +1193,10 @@ public static partial class LocalDbInitializer
     private static void MarkStartupMaintenanceChange(ILocalSyncEntity entity, DateTime updatedAtUtc)
     {
         entity.UpdatedAtUtc = updatedAtUtc;
-        entity.IsDirty = true;
+        // 시작 보정은 로컬 캐시의 표시/연결 품질을 정리하기 위한 작업이다.
+        // 조회 전용으로 내려온 타 계정(예: USENET 로그인 중 ITWORLD 렌탈 자산)까지
+        // 새 서버 반영 대기 항목으로 만들면 한 계정만 로그인한 PC에서 동기화가 계속 보류된다.
+        // 이미 사용자가 수정해 dirty 상태인 항목은 그대로 보존하고, 깨끗한 항목은 dirty로 승격하지 않는다.
     }
 
     private static string ExtractImportedAssetNoteValue(string? notes, string label)

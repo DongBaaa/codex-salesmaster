@@ -152,10 +152,19 @@ public sealed class CustomerContractCacheStore
             TradeType = customer.TradeType,
             Department = customer.Department,
             ContactPerson = customer.ContactPerson,
+            Representative = customer.Representative,
             BusinessNumber = customer.BusinessNumber,
+            BusinessType = customer.BusinessType,
+            BusinessItem = customer.BusinessItem,
             Address = customer.Address,
+            DetailAddress = customer.DetailAddress,
             Phone = customer.Phone,
+            MobilePhone = customer.MobilePhone,
+            FaxNumber = customer.FaxNumber,
             Email = customer.Email,
+            HomePage = customer.HomePage,
+            Recipient = customer.Recipient,
+            PriceGrade = customer.PriceGrade,
             Notes = customer.Notes
         };
     }

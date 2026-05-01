@@ -229,10 +229,20 @@ public sealed class CustomersController : ControllerBase
         dto.TradeType = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.TradeType, dto.TradeType);
         dto.Department = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Department, dto.Department);
         dto.ContactPerson = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.ContactPerson, dto.ContactPerson);
+        dto.Representative = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Representative, dto.Representative);
+        dto.BusinessNumber = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.BusinessNumber, dto.BusinessNumber);
+        dto.BusinessType = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.BusinessType, dto.BusinessType);
+        dto.BusinessItem = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.BusinessItem, dto.BusinessItem);
         dto.Address = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Address, dto.Address);
+        dto.DetailAddress = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.DetailAddress, dto.DetailAddress);
         dto.Notes = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Notes, dto.Notes);
         dto.Phone = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Phone, dto.Phone);
+        dto.MobilePhone = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.MobilePhone, dto.MobilePhone);
+        dto.FaxNumber = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.FaxNumber, dto.FaxNumber);
         dto.Email = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Email, dto.Email);
+        dto.HomePage = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.HomePage, dto.HomePage);
+        dto.Recipient = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.Recipient, dto.Recipient);
+        dto.PriceGrade = TextIntegrityGuard.PreferExistingIfIncomingLooksLossy(entity.PriceGrade, dto.PriceGrade);
     }
 
     private static void NormalizeCustomerClassification(CustomerDto dto)

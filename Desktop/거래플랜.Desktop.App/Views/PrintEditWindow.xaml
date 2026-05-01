@@ -19,6 +19,8 @@
             <Setter Property="Padding" Value="6,4"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="MinHeight" Value="28"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="#EAF2FF"/>
@@ -41,6 +43,8 @@
             <Setter Property="Padding" Value="8,1"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="184"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -282,7 +286,7 @@
                                 </Grid.RowDefinitions>
                                 <TextBlock Grid.Row="0" Grid.Column="0" Text="견적기간"/>
                                 <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EstimateValidityText, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="1" Grid.Column="0" Text="특이사항" Margin="0,6,0,0"/>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="부가세" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Text="{Binding EstimateRemarks, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock Grid.Row="2"
                                            Grid.Column="1"
@@ -301,7 +305,7 @@
                             Margin="0,0,0,8"
                             Visibility="{Binding IsPaymentClaimPreviewSelected, Converter={StaticResource BoolToVisibilityConverter}}">
                         <StackPanel>
-                            <TextBlock Text="대금청구서 편집" FontWeight="Bold" Margin="0,0,0,6"/>
+                            <TextBlock Text="공급자 정보" FontWeight="Bold" Margin="0,0,0,6"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="90"/>
@@ -314,7 +318,7 @@
                                 </Grid.RowDefinitions>
                                 <TextBlock Grid.Row="0" Grid.Column="0" Text="용역명"/>
                                 <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Memo, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="1" Grid.Column="0" Text="계좌문구" Margin="0,6,0,0"/>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="특이사항" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Text="{Binding BankAccountText, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock Grid.Row="2"
                                            Grid.Column="1"
@@ -332,7 +336,7 @@
                             Padding="8"
                             Visibility="{Binding IsStatementPreviewSelected, Converter={StaticResource BoolToVisibilityConverter}}">
                         <StackPanel>
-                            <TextBlock Text="출력 옵션" FontWeight="Bold" Margin="0,0,0,6"/>
+                            <TextBlock Text="공급받는자 정보" FontWeight="Bold" Margin="0,0,0,6"/>
                             <CheckBox Content="날짜 인쇄" IsChecked="{Binding PrintWithDate}" Foreground="#EAF2FF" Margin="0,0,0,4"/>
                             <CheckBox Content="단가/금액 인쇄" IsChecked="{Binding PrintWithPrice}" Foreground="#EAF2FF"/>
                         </StackPanel>
@@ -383,7 +387,7 @@
                         Visibility="{Binding ShowLineEditor, Converter={StaticResource BoolToVisibilityConverter}}">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-                            <TextBlock Text="{Binding LineEditorTitleText}" FontWeight="Bold" Margin="0,0,10,0"/>
+                            <TextBlock Text="{Binding LineEditorTitleText}" FontWeight="Bold" Margin="0,0,4,0"/>
                             <Button Content="행 추가" Command="{Binding AddLineCommand}" Padding="8,3"/>
                         </StackPanel>
                         <DataGrid ItemsSource="{Binding Lines}"
@@ -417,5 +421,3 @@
         </Grid>
     </DockPanel>
 </Window>
-
-

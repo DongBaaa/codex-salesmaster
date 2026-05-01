@@ -318,9 +318,9 @@ public sealed class SyncService : IDisposable
         if (IsServerSyncDisabled())
             return true;
 
-        if (await _local.HasPendingSyncChangesAsync(ct))
+        if (await _local.CountDirtyAsync(_session, ct) > 0)
         {
-            var pendingMessage = await _local.GetPendingSyncWaitingMessageAsync("로컬 미동기화 변경이 남아 있어 중앙 서버 기준 캐시를 다시 불러올 수 없습니다.");
+            var pendingMessage = await _local.GetPendingSyncWaitingMessageAsync(_session, "로컬 미동기화 변경이 남아 있어 중앙 서버 기준 캐시를 다시 불러올 수 없습니다.");
             SetStatus(pendingMessage ?? "로컬 미동기화 변경이 남아 있어 중앙 서버 기준 캐시를 다시 불러올 수 없습니다.");
             return false;
         }
@@ -444,6 +444,7 @@ public sealed class SyncService : IDisposable
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
+                    _db.ChangeTracker.Clear();
                     AppLogger.Warn(
                         "SYNC",
                         $"관리자 전체 업체 캐시 병합 실패: db={businessDatabaseName}, detail={ex.InnerException?.Message ?? ex.Message}");
@@ -593,7 +594,7 @@ public sealed class SyncService : IDisposable
             await ClearStaleDirtyWithStoredOfficeSessionsAsync(ct);
             await ExecuteWithRetryAsync(PullNewAsync, "다운로드", ct);
 
-            var remainingDirtyCount = await _local.CountDirtyAsync(ct);
+            var remainingDirtyCount = await _local.CountDirtyAsync(_session, ct);
 
             await TrySetSettingSafeAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
             await TrySetSettingSafeAsync("Sync.LastError", string.Empty, CancellationToken.None);
@@ -616,6 +617,7 @@ public sealed class SyncService : IDisposable
             if (!ct.IsCancellationRequested)
                 await TryClearStaleDirtyAfterFailureAsync(ct);
 
+            _db.ChangeTracker.Clear();
             var detail = ex.InnerException?.Message ?? ex.Message;
             if (detail.Length > 220)
                 detail = detail[..220] + "...";
@@ -1025,6 +1027,7 @@ public sealed class SyncService : IDisposable
             clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyInventoryTransfersForSyncAsync(session, ct), pull.InventoryTransfers, ct);
             clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyRentalBillingProfilesForSyncAsync(session, ct), pull.RentalBillingProfiles, ct);
             clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyRentalAssetsForSyncAsync(session, ct), pull.RentalAssets, ct);
+            clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyRentalAssetAssignmentHistoriesForSyncAsync(session, ct), pull.RentalAssetAssignmentHistories, ct);
             clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyRentalBillingLogsForSyncAsync(session, ct), pull.RentalBillingLogs, ct);
             clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyInvoicesForSyncAsync(session, ct), pull.Invoices, ct);
             clearedCount += await ClearStaleDirtyEntitiesAsync(await _local.GetDirtyPaymentsForSyncAsync(session, ct), pull.Payments, ct);
@@ -1162,6 +1165,7 @@ public sealed class SyncService : IDisposable
             LocalRentalManagementCompany value => LocalMappings.ToDto(value),
             LocalRentalBillingProfile value => LocalMappings.ToDto(value),
             LocalRentalAsset value => LocalMappings.ToDto(value),
+            LocalRentalAssetAssignmentHistory value => LocalMappings.ToDto(value),
             LocalRentalBillingLog value => LocalMappings.ToDto(value),
             LocalInvoice value => LocalMappings.ToDto(value),
             LocalPayment value => LocalMappings.ToDto(value),
@@ -1268,6 +1272,7 @@ public sealed class SyncService : IDisposable
         List<RentalManagementCompanyDto> ManagementCompanies,
         List<RentalBillingProfileDto> BillingProfiles,
         List<RentalAssetDto> Assets,
+        List<RentalAssetAssignmentHistoryDto> AssignmentHistories,
         List<RentalBillingLogDto> BillingLogs);
 
     private async Task PushDirtyAsync(
@@ -1436,6 +1441,7 @@ public sealed class SyncService : IDisposable
             : [];
         var dirtyRentalBillingProfiles = await _local.GetDirtyRentalBillingProfilesForSyncAsync(session, ct);
         var dirtyRentalAssets = await _local.GetDirtyRentalAssetsForSyncAsync(session, ct);
+        var dirtyRentalAssetAssignmentHistories = await _local.GetDirtyRentalAssetAssignmentHistoriesForSyncAsync(session, ct);
         var dirtyRentalBillingLogs = await _local.GetDirtyRentalBillingLogsForSyncAsync(session, ct);
         var dirtyInvoices = await _local.GetDirtyInvoicesForSyncAsync(session, ct);
         var dirtyPayments = await _local.GetDirtyPaymentsForSyncAsync(session, ct);
@@ -1489,6 +1495,7 @@ public sealed class SyncService : IDisposable
             .Select(group => LocalMappings.ToDto(group.First()))
             .ToList();
         var rentalAssets = dirtyRentalAssets.Select(LocalMappings.ToDto).ToList();
+        var rentalAssetAssignmentHistories = dirtyRentalAssetAssignmentHistories.Select(LocalMappings.ToDto).ToList();
         var rentalBillingLogs = dirtyRentalBillingLogs.Select(LocalMappings.ToDto).ToList();
         var invoices = dirtyInvoices.Select(LocalMappings.ToDto).ToList();
         if (invoices.Count > 0)
@@ -1536,6 +1543,7 @@ public sealed class SyncService : IDisposable
             RentalManagementCompanies = rentalManagementCompanies,
             RentalBillingProfiles = rentalBillingProfiles,
             RentalAssets = rentalAssets,
+            RentalAssetAssignmentHistories = rentalAssetAssignmentHistories,
             RentalBillingLogs = rentalBillingLogs,
             Invoices = invoices,
             Payments = payments
@@ -1550,6 +1558,7 @@ public sealed class SyncService : IDisposable
                 rentalManagementCompanies,
                 rentalBillingProfiles,
                 rentalAssets,
+                rentalAssetAssignmentHistories,
                 rentalBillingLogs);
             if (rentalTenantPayloads.Count > 0)
             {
@@ -1558,6 +1567,7 @@ public sealed class SyncService : IDisposable
                     req.RentalManagementCompanies = currentPayload.ManagementCompanies;
                     req.RentalBillingProfiles = currentPayload.BillingProfiles;
                     req.RentalAssets = currentPayload.Assets;
+                    req.RentalAssetAssignmentHistories = currentPayload.AssignmentHistories;
                     req.RentalBillingLogs = currentPayload.BillingLogs;
                     rentalTenantPayloads.Remove(currentBusinessDatabaseName);
                 }
@@ -1566,6 +1576,7 @@ public sealed class SyncService : IDisposable
                     req.RentalManagementCompanies = [];
                     req.RentalBillingProfiles = [];
                     req.RentalAssets = [];
+                    req.RentalAssetAssignmentHistories = [];
                     req.RentalBillingLogs = [];
                 }
 
@@ -1586,6 +1597,7 @@ public sealed class SyncService : IDisposable
                 RentalManagementCompanies = additionalRequest.ManagementCompanies,
                 RentalBillingProfiles = additionalRequest.BillingProfiles,
                 RentalAssets = additionalRequest.Assets,
+                RentalAssetAssignmentHistories = additionalRequest.AssignmentHistories,
                 RentalBillingLogs = additionalRequest.BillingLogs
             };
             StampOutgoingMutations(supplementalRequest, supplementalRequest.DeviceId);
@@ -1615,6 +1627,7 @@ public sealed class SyncService : IDisposable
            req.RentalManagementCompanies.Count +
            req.RentalBillingProfiles.Count +
            req.RentalAssets.Count +
+           req.RentalAssetAssignmentHistories.Count +
            req.RentalBillingLogs.Count +
            req.Invoices.Count +
            req.Payments.Count == 0;
@@ -1792,6 +1805,7 @@ public sealed class SyncService : IDisposable
             await MarkCleanAsync<LocalRentalManagementCompany>(req.RentalManagementCompanies.Select(entity => entity.Id).ToList(), ct);
             await MarkCleanAsync<LocalRentalBillingProfile>(req.RentalBillingProfiles.Select(entity => entity.Id).ToList(), ct);
             await MarkCleanAsync<LocalRentalAsset>(req.RentalAssets.Select(entity => entity.Id).ToList(), ct);
+            await MarkCleanAsync<LocalRentalAssetAssignmentHistory>(req.RentalAssetAssignmentHistories.Select(entity => entity.Id).ToList(), ct);
             await MarkCleanAsync<LocalRentalBillingLog>(req.RentalBillingLogs.Select(entity => entity.Id).ToList(), ct);
             await MarkCleanInvoicesAsync(req.Invoices.Select(entity => entity.Id).ToList(), ct);
             await MarkCleanAsync<LocalPayment>(req.Payments.Select(entity => entity.Id).ToList(), ct);
@@ -1808,6 +1822,7 @@ public sealed class SyncService : IDisposable
         IReadOnlyCollection<RentalManagementCompanyDto> managementCompanies,
         IReadOnlyCollection<RentalBillingProfileDto> billingProfiles,
         IReadOnlyCollection<RentalAssetDto> assets,
+        IReadOnlyCollection<RentalAssetAssignmentHistoryDto> assignmentHistories,
         IReadOnlyCollection<RentalBillingLogDto> billingLogs)
     {
         var payloads = new Dictionary<string, RentalTenantSyncPayload>(StringComparer.OrdinalIgnoreCase);
@@ -1830,6 +1845,12 @@ public sealed class SyncService : IDisposable
             payload.Assets.Add(dto);
         }
 
+        foreach (var dto in assignmentHistories)
+        {
+            var payload = GetOrCreateRentalTenantPayload(payloads, ResolveRentalBusinessDatabaseName(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode));
+            payload.AssignmentHistories.Add(dto);
+        }
+
         foreach (var dto in billingLogs)
         {
             var payload = GetOrCreateRentalTenantPayload(payloads, ResolveRentalBusinessDatabaseName(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode));
@@ -1848,6 +1869,7 @@ public sealed class SyncService : IDisposable
 
         payload = new RentalTenantSyncPayload(
             businessDatabaseName,
+            [],
             [],
             [],
             [],
@@ -2051,6 +2073,9 @@ public sealed class SyncService : IDisposable
                     break;
                 case "RentalAsset":
                     await MarkServerNewerConflictsCleanAsync<LocalRentalAsset>(ids, ct);
+                    break;
+                case "RentalAssetAssignmentHistory":
+                    await MarkServerNewerConflictsCleanAsync<LocalRentalAssetAssignmentHistory>(ids, ct);
                     break;
                 case "RentalBillingLog":
                     await MarkServerNewerConflictsCleanAsync<LocalRentalBillingLog>(ids, ct);
@@ -4043,7 +4068,9 @@ public sealed class SyncService : IDisposable
             .Where(dto => dto.Id != Guid.Empty && dto.AssetId != Guid.Empty)
             .GroupBy(dto => dto.Id)
             .Select(group => group
-                .OrderByDescending(dto => dto.IsCurrent)
+                .OrderByDescending(dto => dto.Revision)
+                .ThenByDescending(dto => dto.UpdatedAtUtc)
+                .ThenByDescending(dto => dto.IsCurrent)
                 .ThenByDescending(dto => dto.UnlinkedAtUtc ?? dto.LinkedAtUtc)
                 .ThenByDescending(dto => dto.LinkedAtUtc)
                 .First())
@@ -4051,28 +4078,20 @@ public sealed class SyncService : IDisposable
         if (dedupedDtos.Count == 0)
             return;
 
-        var assetIds = dedupedDtos
-            .Select(dto => dto.AssetId)
+        var historyIds = dedupedDtos
+            .Select(dto => dto.Id)
             .Distinct()
             .ToList();
         var existingRows = await _db.RentalAssetAssignmentHistories
-            .Where(history => assetIds.Contains(history.AssetId))
+            .IgnoreQueryFilters()
+            .Where(history => historyIds.Contains(history.Id))
             .ToListAsync(ct);
 
         foreach (var dto in dedupedDtos)
         {
             var local = LocalMappings.ToLocal(dto);
+            local.IsDirty = false;
             var existing = existingRows.FirstOrDefault(history => history.Id == local.Id);
-            if (existing is null)
-            {
-                existing = existingRows.FirstOrDefault(history =>
-                    history.AssetId == local.AssetId &&
-                    history.BillingProfileId == local.BillingProfileId &&
-                    history.CustomerId == local.CustomerId &&
-                    string.Equals(history.CustomerName, local.CustomerName, StringComparison.Ordinal) &&
-                    string.Equals(history.InstallLocation, local.InstallLocation, StringComparison.Ordinal) &&
-                    history.LinkedAtUtc == local.LinkedAtUtc);
-            }
 
             if (existing is null)
             {
@@ -4081,26 +4100,8 @@ public sealed class SyncService : IDisposable
                 continue;
             }
 
-            if (existing.Id != local.Id)
-            {
-                _db.RentalAssetAssignmentHistories.Remove(existing);
-                _db.RentalAssetAssignmentHistories.Add(local);
-                existingRows.Remove(existing);
-                existingRows.Add(local);
-                continue;
-            }
-
-            local.BillingProfileDisplay = string.IsNullOrWhiteSpace(existing.BillingProfileDisplay)
-                ? local.BillingProfileDisplay
-                : existing.BillingProfileDisplay;
-            local.ItemName = string.IsNullOrWhiteSpace(existing.ItemName) ? local.ItemName : existing.ItemName;
-            local.MachineNumber = string.IsNullOrWhiteSpace(existing.MachineNumber) ? local.MachineNumber : existing.MachineNumber;
-            local.ManagementNumber = string.IsNullOrWhiteSpace(existing.ManagementNumber) ? local.ManagementNumber : existing.ManagementNumber;
-            local.MonthlyFee = existing.MonthlyFee > 0m ? existing.MonthlyFee : local.MonthlyFee;
-            local.ContractStartDate ??= existing.ContractStartDate;
-            local.ContractEndDate ??= existing.ContractEndDate;
-            local.ChangeReason = string.IsNullOrWhiteSpace(existing.ChangeReason) ? local.ChangeReason : existing.ChangeReason;
-            _db.Entry(existing).CurrentValues.SetValues(local);
+            if (!existing.IsDirty || local.Revision >= existing.Revision)
+                _db.Entry(existing).CurrentValues.SetValues(local);
         }
 
         await _db.SaveChangesAsync(ct);
@@ -4147,7 +4148,7 @@ public sealed class SyncService : IDisposable
     {
         foreach (var group in kept.Values
                      .Where(dto => !dto.IsDeleted)
-                     .GroupBy(dto => NormalizeRentalAssetNaturalKey(keySelector(dto)), StringComparer.OrdinalIgnoreCase)
+                     .GroupBy(dto => BuildScopedRentalAssetNaturalKey(dto, keySelector(dto)), StringComparer.OrdinalIgnoreCase)
                      .Where(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1)
                      .ToList())
         {
@@ -4546,13 +4547,13 @@ public sealed class SyncService : IDisposable
 
         var incomingByManagementNumber = BuildIncomingRentalAssetLookup(
             dtos,
-            dto => dto.ManagementNumber);
+            dto => BuildScopedRentalAssetNaturalKey(dto, dto.ManagementNumber));
         var incomingByManagementId = BuildIncomingRentalAssetLookup(
             dtos,
-            dto => dto.ManagementId);
+            dto => BuildScopedRentalAssetNaturalKey(dto, dto.ManagementId));
         var incomingByAssetKey = BuildIncomingRentalAssetLookup(
             dtos,
-            dto => dto.AssetKey);
+            dto => BuildScopedRentalAssetNaturalKey(dto, dto.AssetKey));
 
         if (incomingByManagementNumber.Count == 0 &&
             incomingByManagementId.Count == 0 &&
@@ -4561,9 +4562,9 @@ public sealed class SyncService : IDisposable
             return [];
         }
 
-        var managementNumbers = incomingByManagementNumber.Keys.ToList();
-        var managementIds = incomingByManagementId.Keys.ToList();
-        var assetKeys = incomingByAssetKey.Keys.ToList();
+        var managementNumbers = BuildIncomingRentalAssetCandidateKeys(dtos, dto => dto.ManagementNumber);
+        var managementIds = BuildIncomingRentalAssetCandidateKeys(dtos, dto => dto.ManagementId);
+        var assetKeys = BuildIncomingRentalAssetCandidateKeys(dtos, dto => dto.AssetKey);
 
         var candidateQuery = _db.RentalAssets.IgnoreQueryFilters().Where(asset =>
             (managementNumbers.Count > 0 && managementNumbers.Contains(asset.ManagementNumber)) ||
@@ -4659,6 +4660,7 @@ public sealed class SyncService : IDisposable
 
         return matchingIncoming.Any(dto =>
             !dto.IsDeleted &&
+            RentalAssetBusinessDatabaseMatches(candidate, dto) &&
             (
                 NaturalKeysMatch(candidate.ManagementNumber, dto.ManagementNumber) ||
                 NaturalKeysMatch(candidate.ManagementId, dto.ManagementId) ||
@@ -4721,6 +4723,47 @@ public sealed class SyncService : IDisposable
         return lookup;
     }
 
+    private static List<string> BuildIncomingRentalAssetCandidateKeys(
+        IReadOnlyList<RentalAssetDto> dtos,
+        Func<RentalAssetDto, string?> keySelector)
+        => dtos
+            .Select(dto => NormalizeRentalAssetNaturalKey(keySelector(dto)))
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static string BuildScopedRentalAssetNaturalKey(RentalAssetDto dto, string? value)
+    {
+        var normalizedKey = NormalizeRentalAssetNaturalKey(value);
+        if (string.IsNullOrWhiteSpace(normalizedKey))
+            return string.Empty;
+
+        var businessDatabaseName = ResolveRentalBusinessDatabaseName(
+            dto.TenantCode,
+            dto.OfficeCode,
+            dto.ResponsibleOfficeCode);
+        return $"{businessDatabaseName}|{normalizedKey}";
+    }
+
+    private static string BuildScopedRentalAssetNaturalKey(LocalRentalAsset asset, string? value)
+    {
+        var normalizedKey = NormalizeRentalAssetNaturalKey(value);
+        if (string.IsNullOrWhiteSpace(normalizedKey))
+            return string.Empty;
+
+        var businessDatabaseName = ResolveRentalBusinessDatabaseName(
+            asset.TenantCode,
+            asset.OfficeCode,
+            asset.ResponsibleOfficeCode);
+        return $"{businessDatabaseName}|{normalizedKey}";
+    }
+
+    private static bool RentalAssetBusinessDatabaseMatches(LocalRentalAsset candidate, RentalAssetDto dto)
+        => string.Equals(
+            ResolveRentalBusinessDatabaseName(candidate.TenantCode, candidate.OfficeCode, candidate.ResponsibleOfficeCode),
+            ResolveRentalBusinessDatabaseName(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode),
+            StringComparison.OrdinalIgnoreCase);
+
     private static HashSet<Guid> GetMatchingIncomingRentalAssetIds(
         LocalRentalAsset candidate,
         IReadOnlyDictionary<string, HashSet<Guid>> incomingByManagementNumber,
@@ -4729,9 +4772,18 @@ public sealed class SyncService : IDisposable
     {
         var matchingIds = new HashSet<Guid>();
 
-        AddIncomingRentalAssetIds(matchingIds, incomingByManagementNumber, candidate.ManagementNumber);
-        AddIncomingRentalAssetIds(matchingIds, incomingByManagementId, candidate.ManagementId);
-        AddIncomingRentalAssetIds(matchingIds, incomingByAssetKey, candidate.AssetKey);
+        AddIncomingRentalAssetIds(
+            matchingIds,
+            incomingByManagementNumber,
+            BuildScopedRentalAssetNaturalKey(candidate, candidate.ManagementNumber));
+        AddIncomingRentalAssetIds(
+            matchingIds,
+            incomingByManagementId,
+            BuildScopedRentalAssetNaturalKey(candidate, candidate.ManagementId));
+        AddIncomingRentalAssetIds(
+            matchingIds,
+            incomingByAssetKey,
+            BuildScopedRentalAssetNaturalKey(candidate, candidate.AssetKey));
 
         return matchingIds;
     }
@@ -5458,6 +5510,7 @@ public sealed class SyncService : IDisposable
         }
         catch (Exception ex)
         {
+            _db.ChangeTracker.Clear();
             AppLogger.Warn("SYNC", $"설정값 저장 실패 무시 ({key}): {ex.Message}");
         }
     }
@@ -5491,6 +5544,7 @@ public sealed class SyncService : IDisposable
         StampOutgoingMutations(request.RentalManagementCompanies, nameof(LocalRentalManagementCompany), deviceId);
         StampOutgoingMutations(request.RentalBillingProfiles, nameof(LocalRentalBillingProfile), deviceId);
         StampOutgoingMutations(request.RentalAssets, nameof(LocalRentalAsset), deviceId);
+        StampOutgoingMutations(request.RentalAssetAssignmentHistories, nameof(LocalRentalAssetAssignmentHistory), deviceId);
         StampOutgoingMutations(request.RentalBillingLogs, nameof(LocalRentalBillingLog), deviceId);
         StampOutgoingMutations(request.Invoices, nameof(LocalInvoice), deviceId);
         StampOutgoingMutations(request.Payments, nameof(LocalPayment), deviceId);
@@ -5543,6 +5597,8 @@ public sealed class SyncService : IDisposable
             yield return (nameof(LocalRentalBillingProfile), entity);
         foreach (var entity in request.RentalAssets)
             yield return (nameof(LocalRentalAsset), entity);
+        foreach (var entity in request.RentalAssetAssignmentHistories)
+            yield return (nameof(LocalRentalAssetAssignmentHistory), entity);
         foreach (var entity in request.RentalBillingLogs)
             yield return (nameof(LocalRentalBillingLog), entity);
         foreach (var entity in request.Invoices)
@@ -5718,6 +5774,7 @@ public sealed class SyncService : IDisposable
             RentalManagementCompanyDto dto => NormalizePreparedMutationScope(dto.TenantCode, OfficeCodeCatalog.Shared, session.OfficeCode, session, OfficeCodeCatalog.Shared),
             RentalBillingProfileDto dto => NormalizePreparedMutationScope(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode, session, dto.OfficeCode),
             RentalAssetDto dto => NormalizePreparedMutationScope(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode, session, dto.OfficeCode),
+            RentalAssetAssignmentHistoryDto dto => NormalizePreparedMutationScope(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode, session, dto.OfficeCode),
             RentalBillingLogDto dto => NormalizePreparedMutationScope(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode, session, dto.OfficeCode),
             InvoiceDto dto => NormalizePreparedMutationScope(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode, session, dto.OfficeCode),
             PaymentDto dto when lookup.InvoiceScopeById.TryGetValue(dto.InvoiceId, out var invoiceScope) => invoiceScope,

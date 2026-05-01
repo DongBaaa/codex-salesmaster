@@ -1,11 +1,18 @@
-﻿namespace 거래플랜.Desktop.App.Printing;
+using 거래플랜.Shared.Contracts;
+
+namespace 거래플랜.Desktop.App.Printing;
 
 public sealed class InvoicePrintModel
 {
+    public const string DefaultSnapshotPolicy = "IssuedValueSnapshot";
+
     public Guid InvoiceId { get; set; }
     public string InvoiceNumber { get; set; } = string.Empty;
     public DateOnly InvoiceDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public string VoucherType { get; set; } = string.Empty;
+    public DateTime SnapshotCreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime SnapshotLastSavedAtUtc { get; set; } = DateTime.UtcNow;
+    public string SnapshotPolicy { get; set; } = DefaultSnapshotPolicy;
 
     public string SupplierBusinessNumber { get; set; } = string.Empty;
     public string SupplierName { get; set; } = string.Empty;
@@ -32,6 +39,7 @@ public sealed class InvoicePrintModel
     public bool PrintWithDate { get; set; } = true;
     public bool PrintWithPrice { get; set; } = true;
 
+    public string VatMode { get; set; } = InvoiceVatModes.Included;
     public decimal SupplyAmount { get; set; }
     public decimal VatAmount { get; set; }
     public decimal TotalAmount { get; set; }
@@ -43,6 +51,7 @@ public sealed class InvoicePrintModel
 
 public sealed class InvoicePrintLineModel
 {
+    public Guid? SourceLineId { get; set; }
     public int No { get; set; }
     public string ItemName { get; set; } = string.Empty;
     public string Specification { get; set; } = string.Empty;

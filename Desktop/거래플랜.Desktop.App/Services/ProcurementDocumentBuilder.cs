@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.IO;
 using 거래플랜.Desktop.App.Printing;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -337,8 +338,9 @@ public static class ProcurementDocumentBuilder
         if (isFinalPage && model.TotalAmount == 0)
         {
             var lineTotal = lines.Sum(line => line.Amount);
-            supplyAmount = Math.Round(lineTotal / 1.1m, 0, MidpointRounding.AwayFromZero);
-            vatAmount = lineTotal - supplyAmount;
+            var totals = InvoiceVatModes.CalculateTotals([lineTotal], model.VatMode);
+            supplyAmount = totals.SupplyAmount;
+            vatAmount = totals.VatAmount;
             totalAmount = lineTotal;
             supplyText = FormatMoney(supplyAmount);
             vatText = FormatMoney(vatAmount);
@@ -555,9 +557,10 @@ public static class ProcurementDocumentBuilder
         if (source is null)
             return [];
 
-        return source
+        var lines = source
             .Select((line, index) => new InvoicePrintLineModel
             {
+                SourceLineId = line.SourceLineId,
                 No = line.No > 0 ? line.No : index + 1,
                 ItemName = line.ItemName ?? string.Empty,
                 Specification = line.Specification ?? string.Empty,
@@ -573,8 +576,12 @@ public static class ProcurementDocumentBuilder
                 line.Quantity != 0 ||
                 line.UnitPrice != 0 ||
                 line.Amount != 0)
-            .OrderBy(line => line.No)
             .ToList();
+
+        for (var i = 0; i < lines.Count; i++)
+            lines[i].No = i + 1;
+
+        return lines;
     }
 
     private static string ResolveTitle(string? documentTitle)

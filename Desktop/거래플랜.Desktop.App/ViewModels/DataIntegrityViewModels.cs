@@ -1,6 +1,9 @@
 ﻿using System.Collections.ObjectModel;
+using ClosedXML.Excel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.Win32;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 
 namespace 거래플랜.Desktop.App.ViewModels;
@@ -104,6 +107,115 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
         }
     }
 
+    [RelayCommand]
+    private void ExportExcel()
+    {
+        if (IsBusy)
+            return;
+
+        if (Issues.Count == 0)
+        {
+            StatusMessage = "엑셀로 저장할 점검 항목이 없습니다.";
+            return;
+        }
+
+        var dialog = new SaveFileDialog
+        {
+            Title = "운영 점검 내역 엑셀 저장",
+            Filter = "Excel 통합 문서 (*.xlsx)|*.xlsx",
+            FileName = $"거래플랜_운영점검_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx",
+            InitialDirectory = AppPaths.UserDownloadsDir
+        };
+
+        if (dialog.ShowDialog() != true)
+            return;
+
+        using var workbook = new XLWorkbook();
+        var summarySheet = workbook.Worksheets.Add("요약");
+        summarySheet.Cell(1, 1).Value = "점검 시각";
+        summarySheet.Cell(1, 2).Value = _lastScanResult?.ScannedAtText ?? DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        summarySheet.Cell(2, 1).Value = "필터 결과";
+        summarySheet.Cell(2, 2).Value = Issues.Count;
+        summarySheet.Cell(4, 1).Value = "유형코드";
+        summarySheet.Cell(4, 2).Value = "유형";
+        summarySheet.Cell(4, 3).Value = "등급";
+        summarySheet.Cell(4, 4).Value = "영역";
+        summarySheet.Cell(4, 5).Value = "건수";
+        summarySheet.Cell(4, 6).Value = "설명";
+        summarySheet.Cell(4, 7).Value = "권장 조치";
+
+        var summaryRow = 5;
+        foreach (var summary in Summaries)
+        {
+            summarySheet.Cell(summaryRow, 1).Value = summary.Code;
+            summarySheet.Cell(summaryRow, 2).Value = summary.Title;
+            summarySheet.Cell(summaryRow, 3).Value = summary.SeverityDisplay;
+            summarySheet.Cell(summaryRow, 4).Value = summary.Area;
+            summarySheet.Cell(summaryRow, 5).Value = summary.Count;
+            summarySheet.Cell(summaryRow, 6).Value = summary.Description;
+            summarySheet.Cell(summaryRow, 7).Value = summary.SuggestedAction;
+            summaryRow++;
+        }
+
+        var detailSheet = workbook.Worksheets.Add("상세");
+        var headers = new[]
+        {
+            "등급",
+            "유형코드",
+            "유형",
+            "영역",
+            "대상유형",
+            "거래처",
+            "품목",
+            "자산",
+            "담당지점",
+            "현재값",
+            "기준값",
+            "내용",
+            "권장 조치",
+            "바로가기"
+        };
+
+        for (var i = 0; i < headers.Length; i++)
+            detailSheet.Cell(1, i + 1).Value = headers[i];
+
+        var detailRow = 2;
+        foreach (var issue in Issues)
+        {
+            detailSheet.Cell(detailRow, 1).Value = issue.SeverityDisplay;
+            detailSheet.Cell(detailRow, 2).Value = issue.Code;
+            detailSheet.Cell(detailRow, 3).Value = issue.Title;
+            detailSheet.Cell(detailRow, 4).Value = issue.Area;
+            detailSheet.Cell(detailRow, 5).Value = issue.EntityType;
+            detailSheet.Cell(detailRow, 6).Value = issue.CustomerName;
+            detailSheet.Cell(detailRow, 7).Value = issue.ItemName;
+            detailSheet.Cell(detailRow, 8).Value = issue.AssetDisplayName;
+            detailSheet.Cell(detailRow, 9).Value = issue.OfficeCode;
+            detailSheet.Cell(detailRow, 10).Value = issue.CurrentValue;
+            detailSheet.Cell(detailRow, 11).Value = issue.ExpectedValue;
+            detailSheet.Cell(detailRow, 12).Value = issue.Message;
+            detailSheet.Cell(detailRow, 13).Value = issue.SuggestedAction;
+            detailSheet.Cell(detailRow, 14).Value = issue.DirectActionText;
+            detailRow++;
+        }
+
+        foreach (var worksheet in workbook.Worksheets)
+        {
+            worksheet.Row(1).Style.Font.Bold = true;
+            worksheet.Columns().AdjustToContents();
+            worksheet.SheetView.FreezeRows(1);
+        }
+
+        try
+        {
+            workbook.SaveAs(dialog.FileName);
+            StatusMessage = $"운영 점검 내역 {Issues.Count:N0}건을 엑셀로 저장했습니다.";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"엑셀 저장에 실패했습니다. 파일이 열려 있거나 저장 권한이 없는지 확인하세요. {ex.Message}";
+        }
+    }
     partial void OnSearchTextChanged(string value) => ApplyFilter();
     partial void OnSelectedIssueTypeChanged(DataIntegrityIssueFilterOption? value) => ApplyFilter();
     partial void OnSelectedSeverityChanged(string value) => ApplyFilter();

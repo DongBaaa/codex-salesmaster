@@ -23,7 +23,7 @@ public sealed partial class SyncDiagnosticsViewModel
             AddExtension = true,
             DefaultExt = ".xlsx",
             FileName = $"sync-diagnostics-{DateTime.Now:yyyyMMdd_HHmmss}.xlsx",
-            InitialDirectory = AppPaths.DiagnosticsDir
+            InitialDirectory = AppPaths.UserDownloadsDir
         };
 
         if (dialog.ShowDialog() != true)

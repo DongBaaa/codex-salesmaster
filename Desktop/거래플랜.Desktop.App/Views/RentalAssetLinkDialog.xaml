@@ -22,6 +22,8 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Padding" Value="8,4"/>
             <Setter Property="Height" Value="34"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style x:Key="ReadOnlyInfoTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
             <Setter Property="IsReadOnly" Value="True"/>
@@ -35,6 +37,8 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Padding" Value="8,1"/>
             <Setter Property="Height" Value="28"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="DatePicker">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -43,6 +47,8 @@
             <Setter Property="Height" Value="28"/>
             <Setter Property="Padding" Value="8,1"/>
             <Setter Property="SelectedDateFormat" Value="Short"/>
+            <Setter Property="MinWidth" Value="184"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -126,7 +132,15 @@
             <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
                 <DataGrid ItemsSource="{Binding Assets}" SelectedItem="{Binding SelectedAsset}" BorderThickness="0">
                     <DataGrid.Columns>
-                        <DataGridCheckBoxColumn Header="선택" Binding="{Binding IsSelected, Mode=TwoWay}" Width="54"/>
+                        <DataGridTemplateColumn Header="선택" Width="54">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTextColumn Header="시리얼번호" Binding="{Binding MachineNumber}" Width="150"/>
                         <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="150"/>
                         <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, StringFormat=N0}" Width="90"/>
@@ -164,38 +178,38 @@
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
-                            <TextBlock Grid.Row="0" Grid.Column="0" Text="연결 거래처" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="연결 거래처" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding SelectedAsset.TargetCustomerName}" Style="{StaticResource ReadOnlyInfoTextBoxStyle}" Margin="0,0,0,8"/>
 
-                            <TextBlock Grid.Row="1" Grid.Column="0" Text="현재 청구프로필" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="현재 청구프로필" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding SelectedAsset.CurrentBillingProfileDisplay}" Style="{StaticResource ReadOnlyInfoTextBoxStyle}" Margin="0,0,0,8"/>
 
-                            <TextBlock Grid.Row="2" Grid.Column="0" Text="설치위치" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="설치위치" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding SelectedAsset.InstallLocation, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
 
-                            <TextBlock Grid.Row="3" Grid.Column="0" Text="월 렌탈료" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="3" Grid.Column="0" Text="월 렌탈료" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding SelectedAsset.MonthlyFee, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
 
-                            <TextBlock Grid.Row="4" Grid.Column="0" Text="계약 시작일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="계약 시작일" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <DatePicker Grid.Row="4" Grid.Column="1" SelectedDate="{Binding SelectedAsset.ContractStartDate}" SelectedDateFormat="Short" Margin="0,0,0,8">
                                 <DatePicker.Resources>
                                     <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
                                 </DatePicker.Resources>
                             </DatePicker>
 
-                            <TextBlock Grid.Row="5" Grid.Column="0" Text="청구상태" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="5" Grid.Column="0" Text="청구상태" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding SelectedAsset.BillingEligibilityStatus}" Style="{StaticResource ReadOnlyInfoTextBoxStyle}" Margin="0,0,0,8"/>
 
-                            <TextBlock Grid.Row="6" Grid.Column="0" Text="기계 매입일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="6" Grid.Column="0" Text="기계 매입일" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding SelectedAsset.PurchaseDateDisplay, Mode=OneWay}" Style="{StaticResource ReadOnlyInfoTextBoxStyle}" Margin="0,0,0,8"/>
 
-                            <TextBlock Grid.Row="7" Grid.Column="0" Text="설치일" VerticalAlignment="Center" Margin="0,0,10,8"/>
+                            <TextBlock Grid.Row="7" Grid.Column="0" Text="설치일" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding SelectedAsset.InstallDateDisplay, Mode=OneWay}" Style="{StaticResource ReadOnlyInfoTextBoxStyle}" Margin="0,0,0,8"/>
 
-                            <TextBlock Grid.Row="8" Grid.Column="0" Text="메모" VerticalAlignment="Top" Margin="0,0,10,0"/>
+                            <TextBlock Grid.Row="8" Grid.Column="0" Text="메모" VerticalAlignment="Top" Margin="0,0,4,0"/>
                             <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding SelectedAsset.Notes, UpdateSourceTrigger=PropertyChanged}" Height="84" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Margin="0,0,0,8"/>
 
-                            <TextBlock Grid.Row="9" Grid.Column="0" Text="자산소속" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBlock Grid.Row="9" Grid.Column="0" Text="자산소속" VerticalAlignment="Center" Margin="0,0,4,0"/>
                             <TextBox Grid.Row="9" Grid.Column="1" Text="{Binding SelectedAsset.AssetScopeDisplay}" Style="{StaticResource ReadOnlyInfoTextBoxStyle}"/>
                         </Grid>
 

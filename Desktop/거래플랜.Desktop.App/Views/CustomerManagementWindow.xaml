@@ -1,4 +1,4 @@
-<Window x:Class="거래플랜.Desktop.App.Views.CustomerManagementWindow"
+﻿<Window x:Class="거래플랜.Desktop.App.Views.CustomerManagementWindow"
         x:Name="Root"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -27,6 +27,8 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="Padding" Value="8,3"/>
             <Setter Property="Height" Value="32"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -36,6 +38,8 @@
             <Setter Property="Height" Value="32"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="Button">
             <Setter Property="Foreground" Value="White"/>
@@ -108,7 +112,7 @@
                 BorderBrush="#2E4060"
                 BorderThickness="1">
             <StackPanel>
-                <TextBlock Text="거래처 관리"
+                <TextBlock Text="거래처 등록, 수정, 담당지점 변경 즉시저장과 계약서 만료 현황을 관리합니다."
                            FontSize="22"
                            FontWeight="Bold"
                            Foreground="#4FC3F7"/>
@@ -146,8 +150,8 @@
                     </Grid.ColumnDefinitions>
 
                     <TextBlock Grid.Column="0"
-                               Text="검색"
-                               Margin="0,0,10,0"
+                               Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                               Margin="0,0,4,0"
                                VerticalAlignment="Center"
                                Foreground="#9FB3C8"/>
                     <TextBox Grid.Column="1"
@@ -160,8 +164,8 @@
                             Command="{Binding SearchCommand}"
                             VerticalAlignment="Center"/>
                     <TextBlock Grid.Column="3"
-                               Text="고객분류"
-                               Margin="0,0,10,0"
+                               Text="검색"
+                               Margin="0,0,4,0"
                                VerticalAlignment="Center"
                                Foreground="#9FB3C8"/>
                     <ComboBox Grid.Column="4"
@@ -178,7 +182,7 @@
                               SelectedItem="{Binding SelectedOfficeFilter}"
                               VerticalAlignment="Center"/>
                     <TextBlock Grid.Column="7"
-                               Text="정렬"
+                               Text="고객분류"
                                Margin="12,0,10,0"
                                VerticalAlignment="Center"
                                Foreground="#9FB3C8"/>
@@ -192,12 +196,12 @@
                             Orientation="Horizontal"
                             HorizontalAlignment="Right"
                             Margin="0,8,0,0">
-                    <Button Content="거래처 신규 등록"
+                    <Button Content="선택 거래처 수정"
                             Background="#1565C0"
                             BorderBrush="#1565C0"
                             Margin="0,0,6,0"
                             Click="CreateCustomerButton_Click"/>
-                    <Button Content="선택 거래처 수정"
+                    <Button Content="선택 거래처 삭제"
                             Background="#8E24AA"
                             BorderBrush="#8E24AA"
                             Margin="0,0,6,0"
@@ -212,7 +216,7 @@
                                Fill="#3E5875"
                                Margin="4,0,10,0"
                                VerticalAlignment="Center"/>
-                    <Button Content="미저장 변경 저장"
+                    <Button Content="새로고침"
                             Background="#1B5E20"
                             BorderBrush="#1B5E20"
                             Margin="0,0,6,0"
@@ -267,11 +271,11 @@
                                             Binding="{Binding ContractType}"
                                             Width="120"
                                             ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                        <DataGridTextColumn Header="만료일"
+                        <DataGridTextColumn Header="상태"
                                             Binding="{Binding ExpireDate}"
                                             Width="110"
                                             ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                        <DataGridTextColumn Header="상태"
+                        <DataGridTextColumn Header="만료일"
                                             Binding="{Binding AlertText}"
                                             Width="2*"
                                             ElementStyle="{StaticResource CustomerGridTextStyle}"/>
@@ -301,32 +305,32 @@
                             </DataTemplate>
                         </DataGridTemplateColumn.CellTemplate>
                     </DataGridTemplateColumn>
-                    <DataGridTextColumn Header="고객분류"
+                        <DataGridTextColumn Header="상태"
                                         Binding="{Binding CategoryName, Mode=OneWay}"
                                         Width="120"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                    <DataGridTextColumn Header="거래구분"
+                    <DataGridTextColumn Header="고객분류"
                                         Binding="{Binding TradeType, Mode=OneWay}"
                                         Width="110"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                    <DataGridTextColumn Header="사업자번호"
+                    <DataGridTextColumn Header="대표전화"
                                         Binding="{Binding BusinessNumber, Mode=OneWay}"
                                         Width="160"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                    <DataGridTextColumn Header="대표전화"
+                    <DataGridTextColumn Header="계약서"
                                         Binding="{Binding Phone, Mode=OneWay}"
                                         Width="140"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                    <DataGridTextColumn Header="계약서"
+                    <DataGridTextColumn Header="계약상태"
                                         Binding="{Binding ContractPresenceText, Mode=OneWay}"
                                         Width="82"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                    <DataGridTextColumn Header="계약상태"
+                    <DataGridTextColumn Header="거래구분"
                                         Binding="{Binding ContractStatusText, Mode=OneWay}"
                                         Width="130"
                                         IsReadOnly="True"

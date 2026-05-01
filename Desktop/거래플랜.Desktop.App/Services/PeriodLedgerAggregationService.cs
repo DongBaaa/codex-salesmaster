@@ -40,7 +40,7 @@ public sealed class PeriodLedgerAggregationService
         {
             PeriodLedgerType.ReceiptPayment => BuildPaymentLedgerResult(query, invoices, transactions, customerNameMap),
             PeriodLedgerType.YeonsuDelivery => await BuildYeonsuDeliveryResultAsync(query, session, ct),
-            _ => BuildBlockLedgerResult(query, invoices, customerNameMap)
+            _ => BuildBlockLedgerResult(query, invoices, transactions, customerNameMap)
         };
     }
 
@@ -66,10 +66,17 @@ public sealed class PeriodLedgerAggregationService
     private PeriodLedgerBuildResult BuildBlockLedgerResult(
         PeriodLedgerQuery query,
         IReadOnlyList<LocalInvoice> invoices,
+        IReadOnlyList<LocalTransaction> transactions,
         IReadOnlyDictionary<Guid, string> customerNameMap)
     {
+        var searchText = NormalizeSearchText(query.SearchText);
+        var transactionById = transactions
+            .Where(transaction => !transaction.IsDeleted)
+            .GroupBy(transaction => transaction.Id)
+            .ToDictionary(group => group.Key, group => group.First());
         var filtered = invoices
             .Where(i => IsMatchLedgerType(query.LedgerType, i.VoucherType))
+            .Where(i => InvoiceMatchesSearch(i, searchText, transactionById))
             .ToList();
 
         var profitContext = query.IncludeProfit
@@ -87,7 +94,7 @@ public sealed class PeriodLedgerAggregationService
 
             var lineRows = invoice.Lines
                 .Where(l => !l.IsDeleted)
-                .Select(ToItemRow)
+                .Select(line => ToItemRow(line, invoice.VatMode))
                 .ToList();
 
             var summary = BuildInvoiceSummary(invoice, lineRows.Count);
@@ -114,12 +121,19 @@ public sealed class PeriodLedgerAggregationService
                 Note = invoice.Memo?.Trim() ?? string.Empty,
                 IsInvoiceSummary = true,
                 InvoiceId = invoice.Id,
+                PaymentId = null,
+                TransactionId = null,
+                MemoSource = PeriodLedgerMemoSource.Invoice,
                 Items = lineRows
             });
 
             foreach (var payment in invoice.Payments.Where(p => !p.IsDeleted && p.Amount > 0))
             {
                 var isPurchaseInvoice = invoice.VoucherType == VoucherType.Purchase;
+                transactionById.TryGetValue(payment.Id, out var linkedTransaction);
+                var note = linkedTransaction is not null && !string.IsNullOrWhiteSpace(linkedTransaction.Memo)
+                    ? linkedTransaction.Memo.Trim()
+                    : payment.Note?.Trim() ?? string.Empty;
                 AddRawEvent(rawByCustomer, new PeriodLedgerRawEvent
                 {
                     CustomerId = invoice.CustomerId,
@@ -133,9 +147,14 @@ public sealed class PeriodLedgerAggregationService
                     ReceiptAmount = isPurchaseInvoice ? 0m : payment.Amount,
                     PaymentAmount = isPurchaseInvoice ? payment.Amount : 0m,
                     ProfitAmount = null,
-                    Note = invoice.Memo?.Trim() ?? string.Empty,
+                    Note = note,
                     IsInvoiceSummary = false,
                     InvoiceId = invoice.Id,
+                    PaymentId = payment.Id,
+                    TransactionId = linkedTransaction?.Id,
+                    MemoSource = linkedTransaction is not null
+                        ? PeriodLedgerMemoSource.Transaction
+                        : PeriodLedgerMemoSource.Payment,
                     Items = []
                 });
             }
@@ -182,17 +201,19 @@ public sealed class PeriodLedgerAggregationService
             _ => false
         };
 
-    private static PeriodLedgerItemRow ToItemRow(LocalInvoiceLine line)
+    private static PeriodLedgerItemRow ToItemRow(LocalInvoiceLine line, string? vatMode)
     {
-        var vat = Math.Max(0m, line.LineAmount - Math.Round(line.LineAmount / 1.1m, 0, MidpointRounding.AwayFromZero));
+        var split = InvoiceVatModes.SplitLineAmount(line.LineAmount, vatMode);
         return new PeriodLedgerItemRow
         {
+            LineId = line.Id,
             ItemName = line.ItemNameOriginal?.Trim() ?? string.Empty,
             Specification = line.SpecificationOriginal?.Trim() ?? string.Empty,
             Quantity = line.Quantity,
             UnitPrice = line.UnitPrice,
             LineAmount = line.LineAmount,
-            VatAmount = vat
+            VatAmount = Math.Max(0m, split.VatAmount),
+            ItemNote = line.Remark?.Trim() ?? string.Empty
         };
     }
 
@@ -207,6 +228,52 @@ public sealed class PeriodLedgerAggregationService
 
         return lineCount == 1 ? first : $"{first} 외 {lineCount - 1}건";
     }
+
+    private static string NormalizeSearchText(string? searchText)
+        => (searchText ?? string.Empty).Trim();
+
+    private static bool InvoiceMatchesSearch(
+        LocalInvoice invoice,
+        string searchText,
+        IReadOnlyDictionary<Guid, LocalTransaction>? transactionById = null)
+    {
+        if (string.IsNullOrWhiteSpace(searchText))
+            return true;
+
+        if (ContainsSearch(invoice.Memo, searchText) ||
+            ContainsSearch(invoice.InvoiceNumber, searchText) ||
+            ContainsSearch(invoice.LocalTempNumber, searchText))
+        {
+            return true;
+        }
+
+        if (invoice.Lines.Any(line =>
+                !line.IsDeleted &&
+                (ContainsSearch(line.ItemNameOriginal, searchText) ||
+                 ContainsSearch(line.SpecificationOriginal, searchText) ||
+                 ContainsSearch(line.Remark, searchText))))
+        {
+            return true;
+        }
+
+        return invoice.Payments.Any(payment =>
+        {
+            if (payment.IsDeleted)
+                return false;
+
+            if (ContainsSearch(payment.Note, searchText))
+                return true;
+
+            return transactionById is not null &&
+                   transactionById.TryGetValue(payment.Id, out var linkedTransaction) &&
+                   (ContainsSearch(linkedTransaction.Memo, searchText) ||
+                    ContainsSearch(linkedTransaction.Note, searchText));
+        });
+    }
+
+    private static bool ContainsSearch(string? value, string searchText)
+        => !string.IsNullOrWhiteSpace(value) &&
+           value.Contains(searchText, StringComparison.CurrentCultureIgnoreCase);
 
     private static void AddRawEvent(
         IDictionary<Guid, List<PeriodLedgerRawEvent>> byCustomer,
@@ -271,6 +338,9 @@ public sealed class PeriodLedgerAggregationService
                     IsInvoiceSummary = row.IsInvoiceSummary,
                     IsSubTotal = false,
                     InvoiceId = row.InvoiceId,
+                    PaymentId = row.PaymentId,
+                    TransactionId = row.TransactionId,
+                    MemoSource = row.MemoSource,
                     SubTotalQuantity = null,
                     SubTotalAmount = null,
                     SubTotalVat = null,
@@ -294,6 +364,9 @@ public sealed class PeriodLedgerAggregationService
                         IsInvoiceSummary = false,
                         IsSubTotal = true,
                         InvoiceId = row.InvoiceId,
+                        PaymentId = null,
+                        TransactionId = null,
+                        MemoSource = PeriodLedgerMemoSource.None,
                         SubTotalQuantity = row.Items.Sum(i => i.Quantity),
                         SubTotalAmount = row.Items.Sum(i => i.LineAmount),
                         SubTotalVat = row.Items.Sum(i => i.VatAmount),
@@ -441,6 +514,11 @@ public sealed class PeriodLedgerAggregationService
     {
         var allEvents = new List<PeriodPaymentEvent>();
         var dedup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var searchText = NormalizeSearchText(query.SearchText);
+        var transactionById = transactions
+            .Where(transaction => !transaction.IsDeleted)
+            .GroupBy(transaction => transaction.Id)
+            .ToDictionary(group => group.Key, group => group.First());
 
         foreach (var invoice in invoices)
         {
@@ -457,6 +535,7 @@ public sealed class PeriodLedgerAggregationService
                 if (!dedup.Add(key))
                     continue;
 
+                transactionById.TryGetValue(payment.Id, out var linkedTransaction);
                 allEvents.Add(new PeriodPaymentEvent
                 {
                     CustomerId = invoice.CustomerId,
@@ -467,9 +546,17 @@ public sealed class PeriodLedgerAggregationService
                     TradeAmount = 0m,
                     ReceiptAmount = payment.Amount,
                     PaymentAmount = 0m,
-                    Note = invoice.Memo?.Trim() ?? string.Empty,
+                    Note = linkedTransaction is not null && !string.IsNullOrWhiteSpace(linkedTransaction.Memo)
+                        ? linkedTransaction.Memo.Trim()
+                        : payment.Note?.Trim() ?? string.Empty,
                     DedupKey = key,
-                    Priority = 1
+                    Priority = 1,
+                    InvoiceId = invoice.Id,
+                    PaymentId = payment.Id,
+                    TransactionId = linkedTransaction?.Id,
+                    MemoSource = linkedTransaction is not null
+                        ? PeriodLedgerMemoSource.Transaction
+                        : PeriodLedgerMemoSource.Payment
                 });
             }
 
@@ -495,7 +582,11 @@ public sealed class PeriodLedgerAggregationService
                     PaymentAmount = 0m,
                     Note = invoice.Memo?.Trim() ?? string.Empty,
                     DedupKey = key,
-                    Priority = 2
+                    Priority = 2,
+                    InvoiceId = invoice.Id,
+                    PaymentId = null,
+                    TransactionId = null,
+                    MemoSource = PeriodLedgerMemoSource.Invoice
                 });
             }
         }
@@ -525,7 +616,11 @@ public sealed class PeriodLedgerAggregationService
                         PaymentAmount = 0m,
                         Note = tx.Memo?.Trim() ?? string.Empty,
                         DedupKey = key,
-                        Priority = 3
+                        Priority = 3,
+                        InvoiceId = tx.LinkedInvoiceId,
+                        PaymentId = null,
+                        TransactionId = tx.Id,
+                        MemoSource = PeriodLedgerMemoSource.Transaction
                     });
                 }
             }
@@ -548,13 +643,18 @@ public sealed class PeriodLedgerAggregationService
                         PaymentAmount = tx.PaymentTotal,
                         Note = tx.Memo?.Trim() ?? string.Empty,
                         DedupKey = key,
-                        Priority = 3
+                        Priority = 3,
+                        InvoiceId = tx.LinkedInvoiceId,
+                        PaymentId = null,
+                        TransactionId = tx.Id,
+                        MemoSource = PeriodLedgerMemoSource.Transaction
                     });
                 }
             }
         }
 
         var ordered = allEvents
+            .Where(e => PaymentEventMatchesSearch(e, searchText))
             .OrderByDescending(e => e.Date)
             .ThenBy(e => e.Priority)
             .ThenBy(e => e.CustomerName, StringComparer.CurrentCultureIgnoreCase)
@@ -592,7 +692,11 @@ public sealed class PeriodLedgerAggregationService
                 RunningBalance = running.Trade - running.Receipt + running.Payment,
                 ReceivableBalance = periodSalesTotal - running.Receipt,
                 CustomerName = ev.CustomerName,
-                Note = ev.Note
+                Note = ev.Note,
+                InvoiceId = ev.InvoiceId,
+                PaymentId = ev.PaymentId,
+                TransactionId = ev.TransactionId,
+                MemoSource = ev.MemoSource
             });
         }
 
@@ -627,6 +731,17 @@ public sealed class PeriodLedgerAggregationService
         };
     }
 
+    private static bool PaymentEventMatchesSearch(PeriodPaymentEvent paymentEvent, string searchText)
+    {
+        if (string.IsNullOrWhiteSpace(searchText))
+            return true;
+
+        return ContainsSearch(paymentEvent.CustomerName, searchText) ||
+               ContainsSearch(paymentEvent.Division, searchText) ||
+               ContainsSearch(paymentEvent.Summary, searchText) ||
+               ContainsSearch(paymentEvent.Note, searchText);
+    }
+
     private async Task<PeriodLedgerBuildResult> BuildYeonsuDeliveryResultAsync(
         PeriodLedgerQuery query,
         SessionState session,
@@ -648,6 +763,22 @@ public sealed class PeriodLedgerAggregationService
         var customerMap = await _local.GetCustomerNameMapAsync(
             invoices.Select(invoice => invoice.CustomerId).Distinct(),
             ct);
+        var searchText = NormalizeSearchText(query.SearchText);
+
+        if (!string.IsNullOrWhiteSpace(searchText))
+        {
+            invoices = invoices
+                .Where(invoice =>
+                {
+                    var customerName = customerMap.TryGetValue(invoice.CustomerId, out var resolvedName)
+                        ? resolvedName
+                        : string.Empty;
+                    return InvoiceMatchesSearch(invoice, searchText) ||
+                           ContainsSearch(customerName, searchText) ||
+                           ContainsSearch(ResolveWarehouseName(invoice.SourceWarehouseCode), searchText);
+                })
+                .ToList();
+        }
 
         if (query.Scope == PeriodLedgerScope.AllCustomers && query.SortByCustomerName)
         {
@@ -666,6 +797,7 @@ public sealed class PeriodLedgerAggregationService
         var rows = invoices
             .Select((invoice, index) => new PeriodLedgerYeonsuDeliveryRow
             {
+                InvoiceId = invoice.Id,
                 No = index + 1,
                 DeliveryDate = invoice.InvoiceDate,
                 CustomerName = customerMap.TryGetValue(invoice.CustomerId, out var name) && !string.IsNullOrWhiteSpace(name)

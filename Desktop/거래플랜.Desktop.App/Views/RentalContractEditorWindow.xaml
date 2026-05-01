@@ -20,6 +20,8 @@
             <Setter Property="Padding" Value="6,4"/>
             <Setter Property="MinHeight" Value="28"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style x:Key="EditableTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
             <Setter Property="IsReadOnly" Value="True"/>
@@ -39,6 +41,8 @@
             <Setter Property="Padding" Value="6,4"/>
             <Setter Property="MinHeight" Value="28"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style x:Key="EditableComboBoxStyle" TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
             <Setter Property="IsEnabled" Value="False"/>
@@ -66,6 +70,8 @@
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="SelectedDateFormat" Value="Short"/>
             <Setter Property="IsEnabled" Value="False"/>
+            <Setter Property="MinWidth" Value="184"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
             <Style.Triggers>
                 <DataTrigger Binding="{Binding DataContext.IsEditMode, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
                     <Setter Property="IsEnabled" Value="True"/>
@@ -117,9 +123,9 @@
 
         <Grid Margin="10">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="560"/>
+                <ColumnDefinition Width="42*" MinWidth="560"/>
                 <ColumnDefinition Width="8"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="58*"/>
             </Grid.ColumnDefinitions>
 
             <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
@@ -129,7 +135,7 @@
                             <TextBlock Text="계약 기본 정보" FontWeight="Bold" Foreground="#4FC3F7" Margin="0,0,0,8"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="110"/>
+                                    <ColumnDefinition Width="96"/>
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <Grid.RowDefinitions>
@@ -190,7 +196,7 @@
                             <TextBlock Text="계약 일정 / 요금" FontWeight="Bold" Foreground="#4FC3F7" Margin="0,0,0,8"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="110"/>
+                                    <ColumnDefinition Width="96"/>
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <Grid.RowDefinitions>
@@ -208,7 +214,7 @@
                                         <Style TargetType="{x:Type Button}" BasedOn="{StaticResource DatePickerButtonStyle}"/>
                                     </DatePicker.Resources>
                                 </DatePicker>
-                                <TextBlock Grid.Row="1" Text="계약시작" Margin="0,6,0,0"/>
+                                <TextBlock Grid.Row="1" Text="사업자번호" Margin="0,6,0,0"/>
                                 <DatePicker Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" SelectedDate="{Binding ContractStartDate}">
                                     <DatePicker.Resources>
                                         <Style TargetType="{x:Type Button}" BasedOn="{StaticResource DatePickerButtonStyle}"/>
@@ -220,7 +226,7 @@
                                         <Style TargetType="{x:Type Button}" BasedOn="{StaticResource DatePickerButtonStyle}"/>
                                     </DatePicker.Resources>
                                 </DatePicker>
-                                <TextBlock Grid.Row="3" Text="설치위치" Margin="0,6,0,0"/>
+                                <TextBlock Grid.Row="3" Text="담당자" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" Text="{Binding InstallLocation, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock Grid.Row="4" Text="보증금" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" Text="{Binding DepositText, UpdateSourceTrigger=PropertyChanged}"/>

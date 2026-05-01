@@ -1,6 +1,7 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Services;
+using 거래플랜.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 
@@ -110,6 +111,7 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<Invoice>().Property(x => x.TotalAmount).HasPrecision(18, 2);
         modelBuilder.Entity<Invoice>().Property(x => x.SupplyAmount).HasPrecision(18, 2);
         modelBuilder.Entity<Invoice>().Property(x => x.VatAmount).HasPrecision(18, 2);
+        modelBuilder.Entity<Invoice>().Property(x => x.VatMode).HasMaxLength(20).HasDefaultValue(InvoiceVatModes.Included);
         modelBuilder.Entity<Item>().Property(x => x.CurrentStock).HasPrecision(18, 2);
         modelBuilder.Entity<Item>().Property(x => x.SafetyStock).HasPrecision(18, 2);
         modelBuilder.Entity<Item>().Property(x => x.PurchasePrice).HasPrecision(18, 2);
@@ -146,6 +148,7 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<RentalAsset>().Property(x => x.PurchasePrice).HasPrecision(18, 2);
         modelBuilder.Entity<RentalAsset>().Property(x => x.SalePrice).HasPrecision(18, 2);
         modelBuilder.Entity<RentalAsset>().Property(x => x.MonthlyFee).HasPrecision(18, 2);
+        modelBuilder.Entity<RentalAssetAssignmentHistory>().Property(x => x.MonthlyFee).HasPrecision(18, 2);
         modelBuilder.Entity<RentalBillingLog>().Property(x => x.BilledAmount).HasPrecision(18, 2);
         modelBuilder.Entity<InventoryLedgerEntry>().Property(x => x.QuantityDelta).HasPrecision(18, 2);
 
@@ -198,6 +201,7 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<InventoryLedgerEntry>().HasIndex(x => x.WarehouseCode);
         modelBuilder.Entity<RentalAssetAssignmentHistory>().HasIndex(x => new { x.AssetId, x.IsCurrent });
         modelBuilder.Entity<RentalAssetAssignmentHistory>().HasIndex(x => x.BillingProfileId);
+        modelBuilder.Entity<RentalAssetAssignmentHistory>().HasIndex(x => x.Revision);
         modelBuilder.Entity<ActiveEditSession>().HasIndex(x => new { x.EntityType, x.EntityId, x.ExpiresAtUtc });
         modelBuilder.Entity<ActiveEditSession>().HasIndex(x => x.LastHeartbeatUtc);
         modelBuilder.Entity<ActiveEditSession>().HasIndex(x => x.Username);
@@ -226,6 +230,7 @@ public sealed class AppDbContext : DbContext
         ApplySoftDeleteFilter<RentalManagementCompany>(modelBuilder);
         ApplySoftDeleteFilter<RentalBillingProfile>(modelBuilder);
         ApplySoftDeleteFilter<RentalAsset>(modelBuilder);
+        ApplySoftDeleteFilter<RentalAssetAssignmentHistory>(modelBuilder);
         ApplySoftDeleteFilter<RentalBillingLog>(modelBuilder);
         ApplySoftDeleteFilter<Invoice>(modelBuilder);
         ApplySoftDeleteFilter<Payment>(modelBuilder);
@@ -294,7 +299,6 @@ public sealed class AppDbContext : DbContext
                and not ConflictLog
                and not ProcessedSyncMutation
                and not InventoryLedgerEntry
-               and not RentalAssetAssignmentHistory
                and not ActiveEditSession;
     }
 

@@ -33,6 +33,8 @@
             <Setter Property="CaretBrush" Value="Black"/>
             <Setter Property="MinHeight" Value="34"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -43,6 +45,8 @@
             <Setter Property="MinHeight" Value="28"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="DatePicker">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -53,6 +57,8 @@
             <Setter Property="MinHeight" Value="28"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="184"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -76,7 +82,7 @@
         <Style TargetType="Label">
             <Setter Property="Foreground" Value="#B0BEC5"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
-            <Setter Property="Padding" Value="0,0,6,0"/>
+            <Setter Property="Padding" Value="0,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="HorizontalContentAlignment" Value="Right"/>
@@ -116,11 +122,11 @@
                                Foreground="#4FC3F7"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Content="새 이동 (F6)"
+                    <Button Content="저장 (F8)"
                             Background="#1B5E20"
                             Margin="0,0,6,0"
                             Command="{Binding NewTransferCommand}"/>
-                    <Button Content="저장 (F8)"
+                    <Button Content="삭제"
                             Background="#0D47A1"
                             Margin="0,0,6,0"
                             Command="{Binding SaveTransferCommand}"/>
@@ -360,7 +366,7 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <Label Grid.Column="0" Content="규격"/>
+                                    <Label Grid.Column="0" Content="품목검색"/>
                                     <TextBox Grid.Column="1"
                                              Height="34"
                                              Text="{Binding InputSpec, UpdateSourceTrigger=PropertyChanged}"/>
@@ -383,7 +389,7 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <Label Grid.Column="0" Content="단위"/>
+                                    <Label Grid.Column="0" Content="규격"/>
                                     <TextBox Grid.Column="1"
                                              Height="34"
                                              Text="{Binding InputUnit, UpdateSourceTrigger=PropertyChanged}"/>
@@ -403,7 +409,7 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <Label Grid.Column="0" Content="수령메모"/>
+                                    <Label Grid.Column="0" Content="단위"/>
                                     <TextBox Grid.Column="1"
                                              Height="34"
                                              Text="{Binding InputReceiptRemark, UpdateSourceTrigger=PropertyChanged}"/>
@@ -424,13 +430,13 @@
                                                VerticalAlignment="Center"
                                                TextWrapping="Wrap"/>
                                     <Button Grid.Column="1"
-                                            Content="행 추가"
+                                            Content="행 수정"
                                             Background="#1B5E20"
                                             Margin="0,0,6,0"
                                             IsEnabled="{Binding CanAddLine}"
                                             Command="{Binding AddLineCommand}"/>
                                     <Button Grid.Column="2"
-                                            Content="행 수정"
+                                            Content="행 삭제"
                                             Background="#0D47A1"
                                             Margin="0,0,6,0"
                                             IsEnabled="{Binding CanUpdateLine}"
@@ -481,7 +487,7 @@
                                              Text="{Binding RejectReason, UpdateSourceTrigger=PropertyChanged}"/>
                                 </Grid>
                                 <StackPanel Grid.Row="2" Margin="0,6,0,0">
-                                    <TextBlock Text="문서 전체의 수령확정 메모와 반려사유를 기록합니다."
+                                    <TextBlock Text="도착지 담당자 또는 관리자만 처리할 수 있습니다."
                                                Foreground="#9FB3C8"
                                                TextWrapping="Wrap"/>
                                     <TextBlock Text="도착지 담당자 또는 관리자만 처리할 수 있습니다."
@@ -541,5 +547,3 @@
         </Grid>
     </DockPanel>
 </Window>
-
-

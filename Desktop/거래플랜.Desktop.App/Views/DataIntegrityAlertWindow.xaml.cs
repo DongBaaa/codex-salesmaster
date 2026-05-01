@@ -19,6 +19,8 @@ public partial class DataIntegrityAlertWindow : Window
         InitializeComponent();
     }
 
+    public event EventHandler<DataIntegrityAlertActionRequestedEventArgs>? NonClosingActionRequested;
+
     public DataIntegrityAlertAction RequestedAction { get; private set; }
     public DataIntegrityIssueSummary? RequestedSummary { get; private set; }
 
@@ -26,7 +28,15 @@ public partial class DataIntegrityAlertWindow : Window
         => Complete(DataIntegrityAlertAction.Details, (sender as FrameworkElement)?.DataContext as DataIntegrityIssueSummary);
 
     private void FixButton_Click(object sender, RoutedEventArgs e)
-        => Complete(DataIntegrityAlertAction.Fix, (sender as FrameworkElement)?.DataContext as DataIntegrityIssueSummary);
+    {
+        var summary = (sender as FrameworkElement)?.DataContext as DataIntegrityIssueSummary;
+        RequestedAction = DataIntegrityAlertAction.Fix;
+        RequestedSummary = summary;
+        if (NonClosingActionRequested is null)
+            Complete(DataIntegrityAlertAction.Fix, summary);
+        else
+            NonClosingActionRequested.Invoke(this, new DataIntegrityAlertActionRequestedEventArgs(DataIntegrityAlertAction.Fix, summary));
+    }
 
     private void AllDetailsButton_Click(object sender, RoutedEventArgs e)
         => Complete(DataIntegrityAlertAction.Details, null);
@@ -49,4 +59,16 @@ public partial class DataIntegrityAlertWindow : Window
         RequestedSummary = summary;
         DialogResult = true;
     }
+}
+
+public sealed class DataIntegrityAlertActionRequestedEventArgs : EventArgs
+{
+    public DataIntegrityAlertActionRequestedEventArgs(DataIntegrityAlertAction action, DataIntegrityIssueSummary? summary)
+    {
+        Action = action;
+        Summary = summary;
+    }
+
+    public DataIntegrityAlertAction Action { get; }
+    public DataIntegrityIssueSummary? Summary { get; }
 }

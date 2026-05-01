@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Printing;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
@@ -15,6 +16,9 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
     private readonly Func<InvoicePrintModel, string, FixedDocument> _previewBuilder;
     private readonly UiDebouncer _previewDebouncer = new();
     private readonly Guid _invoiceId;
+    private DateTime _snapshotCreatedAtUtc;
+    private DateTime _snapshotLastSavedAtUtc;
+    private string _snapshotPolicy = InvoicePrintModel.DefaultSnapshotPolicy;
     private string _baselineStateSignature = string.Empty;
     private bool _isInitializing;
 
@@ -51,6 +55,7 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _printWithDate = true;
     [ObservableProperty] private bool _printWithPrice = true;
 
+    [ObservableProperty] private string _vatMode = InvoiceVatModes.Included;
     [ObservableProperty] private decimal _supplyAmount;
     [ObservableProperty] private decimal _vatAmount;
     [ObservableProperty] private decimal _totalAmount;
@@ -121,6 +126,11 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
         _saveAction = saveAction;
         _previewBuilder = previewBuilder;
         _invoiceId = model.InvoiceId;
+        _snapshotCreatedAtUtc = model.SnapshotCreatedAtUtc == default ? DateTime.UtcNow : model.SnapshotCreatedAtUtc;
+        _snapshotLastSavedAtUtc = model.SnapshotLastSavedAtUtc;
+        _snapshotPolicy = string.IsNullOrWhiteSpace(model.SnapshotPolicy)
+            ? InvoicePrintModel.DefaultSnapshotPolicy
+            : model.SnapshotPolicy.Trim();
         _isInitializing = true;
         Lines.CollectionChanged += Lines_CollectionChanged;
         PropertyChanged += PrintEditViewModel_PropertyChanged;
@@ -147,13 +157,14 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
         BankAccountText = model.BankAccountText ?? string.Empty;
         PrintWithDate = model.PrintWithDate;
         PrintWithPrice = model.PrintWithPrice;
+        VatMode = InvoiceVatModes.Normalize(model.VatMode);
         SupplyAmount = model.SupplyAmount;
         VatAmount = model.VatAmount;
         TotalAmount = model.TotalAmount;
         PaidAmount = model.PaidAmount;
         BalanceAmount = model.BalanceAmount;
 
-        foreach (var line in model.Lines.OrderBy(l => l.No))
+        foreach (var line in model.Lines)
         {
             Lines.Add(InvoicePrintLineEditModel.FromModel(line));
         }
@@ -301,6 +312,11 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
             InvoiceNumber = InvoiceNumber?.Trim() ?? string.Empty,
             InvoiceDate = DateOnly.FromDateTime(InvoiceDate == default ? DateTime.Today : InvoiceDate),
             VoucherType = VoucherType?.Trim() ?? string.Empty,
+            SnapshotCreatedAtUtc = _snapshotCreatedAtUtc,
+            SnapshotLastSavedAtUtc = _snapshotLastSavedAtUtc,
+            SnapshotPolicy = string.IsNullOrWhiteSpace(_snapshotPolicy)
+                ? InvoicePrintModel.DefaultSnapshotPolicy
+                : _snapshotPolicy,
             SupplierBusinessNumber = SupplierBusinessNumber?.Trim() ?? string.Empty,
             SupplierName = SupplierName?.Trim() ?? string.Empty,
             SupplierRepresentative = SupplierRepresentative?.Trim() ?? string.Empty,
@@ -320,6 +336,7 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
             BankAccountText = BankAccountText?.Trim() ?? string.Empty,
             PrintWithDate = PrintWithDate,
             PrintWithPrice = PrintWithPrice,
+            VatMode = InvoiceVatModes.Normalize(VatMode),
             SupplyAmount = SupplyAmount,
             VatAmount = VatAmount,
             TotalAmount = TotalAmount,
@@ -386,15 +403,17 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
             .Append('|').Append(model.BankAccountText ?? string.Empty)
             .Append('|').Append(model.PrintWithDate)
             .Append('|').Append(model.PrintWithPrice)
+            .Append('|').Append(InvoiceVatModes.Normalize(model.VatMode))
             .Append('|').Append(model.SupplyAmount)
             .Append('|').Append(model.VatAmount)
             .Append('|').Append(model.TotalAmount)
             .Append('|').Append(model.PaidAmount)
             .Append('|').Append(model.BalanceAmount);
 
-        foreach (var line in model.Lines.OrderBy(line => line.No))
+        foreach (var line in model.Lines)
         {
-            builder.Append('|').Append(line.No)
+            builder.Append('|').Append(line.SourceLineId?.ToString("N") ?? string.Empty)
+                .Append(':').Append(line.No)
                 .Append(':').Append(line.ItemName ?? string.Empty)
                 .Append(':').Append(line.Specification ?? string.Empty)
                 .Append(':').Append(line.Unit ?? string.Empty)
@@ -491,6 +510,8 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
 
 public sealed partial class InvoicePrintLineEditModel : ObservableObject
 {
+    public Guid? SourceLineId { get; set; }
+
     [ObservableProperty] private int _no;
     [ObservableProperty] private string _itemName = string.Empty;
     [ObservableProperty] private string _specification = string.Empty;
@@ -504,6 +525,7 @@ public sealed partial class InvoicePrintLineEditModel : ObservableObject
     {
         return new InvoicePrintLineEditModel
         {
+            SourceLineId = model.SourceLineId,
             No = model.No,
             ItemName = model.ItemName ?? string.Empty,
             Specification = model.Specification ?? string.Empty,
@@ -519,6 +541,7 @@ public sealed partial class InvoicePrintLineEditModel : ObservableObject
     {
         return new InvoicePrintLineModel
         {
+            SourceLineId = SourceLineId,
             No = no,
             ItemName = ItemName?.Trim() ?? string.Empty,
             Specification = Specification?.Trim() ?? string.Empty,

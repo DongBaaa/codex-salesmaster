@@ -24,7 +24,9 @@ public partial class App : Application
     private ServiceProvider? _services;
     private bool _shutdownInProgress;
     private readonly SemaphoreSlim _saveCycleLock = new(1, 1);
-    private static readonly TimeSpan PostLoginSyncPopupSoftLimit = TimeSpan.FromSeconds(8);
+    // 시작 동기화는 백그라운드에서 계속할 수 있으므로, 메인 창이 뜬 뒤 시작 알림이 늦게 밀리지 않도록
+    // 대기 팝업을 아주 짧게만 붙잡습니다.
+    private static readonly TimeSpan PostLoginSyncPopupSoftLimit = TimeSpan.FromMilliseconds(800);
     private DispatcherTimer? _autoSaveTimer;
     private int _unexpectedErrorDialogOpen;
     private bool _restartToLoginRequested;
@@ -90,6 +92,7 @@ public partial class App : Application
         DispatcherUnhandledException += HandleDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += HandleAppDomainUnhandledException;
         TaskScheduler.UnobservedTaskException += HandleTaskSchedulerUnhandledException;
+        DataGridAutoColumnWidthService.RegisterGlobal();
 
         try
         {
@@ -298,7 +301,9 @@ public partial class App : Application
                     startupSyncPopup = ShowActivityPopup(
                         mainWin,
                         "거래플랜 동기화",
-                        "로그인 후 화면과 데이터를 준비하고 있습니다.\n잠시만 기다려 주세요.");
+                        "로그인 후 화면과 데이터를 준비하고 있습니다.\n잠시만 기다려 주세요.",
+                        topmost: false,
+                        showActivated: false);
                 }, DispatcherPriority.Send);
 
                 await Dispatcher.InvokeAsync(() =>
@@ -735,9 +740,11 @@ public partial class App : Application
         Window? startupSyncPopup,
         bool showDeferredStartupNotifications)
     {
+        Task? syncTask = null;
+        var integrityPromptReason = session.IsOfflineMode ? "오프라인 로컬 점검" : "로그인 후 동기화";
         try
         {
-            await RunPostLoginSyncWithPopupAsync(mainWin, mainVm, session, startupSyncPopup);
+            syncTask = await StartPostLoginSyncWithPopupAsync(mainWin, mainVm, session, startupSyncPopup);
         }
         finally
         {
@@ -748,15 +755,17 @@ public partial class App : Application
                     DispatcherPriority.Background);
             }
         }
+
+        if (syncTask is not null)
+            QueuePostLoginSyncContinuation(mainWin, syncTask, integrityPromptReason);
     }
 
-    private async Task RunPostLoginSyncWithPopupAsync(MainWindow mainWin, MainViewModel mainVm, SessionState session, Window? existingPopup = null)
+    private async Task<Task?> StartPostLoginSyncWithPopupAsync(MainWindow mainWin, MainViewModel mainVm, SessionState session, Window? existingPopup = null)
     {
         if (session.IsOfflineMode)
         {
-            await mainVm.RunPostLoginSyncAsync();
-            await mainWin.RunDataIntegrityScanAndPromptAsync("오프라인 로컬 점검");
-            return;
+            mainVm.SyncStatus = "오프라인 모드입니다. 로컬 점검은 백그라운드에서 진행합니다.";
+            return mainVm.RunPostLoginSyncAsync();
         }
 
         bool showBlockingPopup;
@@ -774,9 +783,7 @@ public partial class App : Application
         {
             CloseStartupSyncPopup(mainWin, existingPopup);
             mainVm.SyncStatus = "로그인 완료. 시작 동기화는 백그라운드에서 확인합니다.";
-            await mainVm.RunPostLoginSyncAsync();
-            await mainWin.RunDataIntegrityScanAndPromptAsync("로그인 후 동기화");
-            return;
+            return mainVm.RunPostLoginSyncAsync();
         }
 
         Window? popup = existingPopup;
@@ -791,7 +798,9 @@ public partial class App : Application
                     popup = ShowActivityPopup(
                         mainWin,
                         "거래플랜 동기화",
-                        "로그인 후 데이터를 불러오고 있습니다.\n오래 걸리면 화면을 먼저 열고 백그라운드에서 계속 진행합니다.");
+                        "로그인 후 데이터를 불러오고 있습니다.\n오래 걸리면 화면을 먼저 열고 백그라운드에서 계속 진행합니다.",
+                        topmost: false,
+                        showActivated: false);
                 }, DispatcherPriority.Send);
             }
             else
@@ -813,7 +822,7 @@ public partial class App : Application
             var completedTask = await Task.WhenAny(syncTask, Task.Delay(PostLoginSyncPopupSoftLimit));
             if (!ReferenceEquals(completedTask, syncTask))
             {
-                mainVm.SyncStatus = "초기 동기화가 계속 진행 중입니다. 화면은 먼저 사용할 수 있으며 완료되면 자동 반영됩니다.";
+                mainVm.SyncStatus = "초기 동기화가 계속 진행 중입니다. 시작 알림을 먼저 표시하고 완료되면 자동 반영됩니다.";
                 AppLogger.Info("APP", "로그인 후 동기화가 지연되어 대기 팝업을 닫고 백그라운드 진행으로 전환합니다.");
             }
         }
@@ -831,14 +840,27 @@ public partial class App : Application
                 }
 
                 mainWin.IsEnabled = true;
-                mainWin.Activate();
             }, DispatcherPriority.Background);
         }
 
-        if (syncTask is not null)
-            await syncTask;
+        return syncTask;
+    }
 
-        await mainWin.RunDataIntegrityScanAndPromptAsync("로그인 후 동기화");
+    private static void QueuePostLoginSyncContinuation(MainWindow mainWin, Task syncTask, string integrityPromptReason)
+    {
+        UiTaskHelper.Forget(
+            CompletePostLoginSyncAndIntegrityAsync(mainWin, syncTask, integrityPromptReason),
+            "APP",
+            "로그인 후 자동 동기화 후속 점검",
+            ex => AppLogger.Error("APP", "Post-login sync continuation failure", ex));
+    }
+
+    private static async Task CompletePostLoginSyncAndIntegrityAsync(MainWindow mainWin, Task syncTask, string integrityPromptReason)
+    {
+        await syncTask;
+
+        if (mainWin.IsLoaded)
+            await mainWin.RunDataIntegrityScanAndPromptAsync(integrityPromptReason);
     }
 
     private static void CloseStartupSyncPopup(MainWindow mainWin, Window? popup)
@@ -855,7 +877,6 @@ public partial class App : Application
         if (mainWin.IsLoaded)
         {
             mainWin.IsEnabled = true;
-            mainWin.Activate();
         }
     }
 
@@ -892,12 +913,12 @@ public partial class App : Application
                 AppLogger.Warn("APP", $"Background save completed but backup failed. isShutdown={isShutdown}");
 
             var localState = sp.GetRequiredService<LocalStateService>();
-            var remainingDirtyCount = await localState.CountDirtyAsync(sp.GetRequiredService<SessionState>());
+            var remainingDirtyCount = await localState.CountDirtyAsync(session);
 
             if (isShutdown)
             {
                 var pendingMessage = remainingDirtyCount > 0
-                    ? await localState.GetPendingSyncWaitingMessageAsync(ct: CancellationToken.None)
+                    ? await localState.GetPendingSyncWaitingMessageAsync(session, ct: CancellationToken.None)
                     : null;
                 mainVm.SyncStatus = remainingDirtyCount == 0
                     ? "저장이 완료되었습니다. 종료합니다."
@@ -919,7 +940,7 @@ public partial class App : Application
     private static Window ShowShutdownSavingPopup(Window owner)
         => ShowActivityPopup(owner, "거래플랜", "종료 전 저장 중입니다.\n데이터를 서버와 동기화하고 있습니다...");
 
-    private static Window ShowActivityPopup(Window owner, string title, string message)
+    private static Window ShowActivityPopup(Window owner, string title, string message, bool topmost = true, bool showActivated = true)
     {
         var heading = new TextBlock
         {
@@ -993,7 +1014,8 @@ public partial class App : Application
             AllowsTransparency = true,
             SizeToContent = SizeToContent.WidthAndHeight,
             Background = Brushes.Transparent,
-            Topmost = true
+            Topmost = topmost,
+            ShowActivated = showActivated
         };
 
         popup.Show();

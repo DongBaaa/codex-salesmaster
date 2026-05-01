@@ -258,8 +258,14 @@ public sealed class CustomerDto : SyncEntityDto
     public string BusinessType { get; set; } = string.Empty;
     public string BusinessItem { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
+    public string DetailAddress { get; set; } = string.Empty;
     public string Phone { get; set; } = string.Empty;
+    public string MobilePhone { get; set; } = string.Empty;
+    public string FaxNumber { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
+    public string HomePage { get; set; } = string.Empty;
+    public string Recipient { get; set; } = string.Empty;
+    public string PriceGrade { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
 }
 
@@ -332,6 +338,7 @@ public sealed class InvoiceDto : SyncEntityDto
     public decimal TotalAmount { get; set; }
     public decimal SupplyAmount { get; set; }
     public decimal VatAmount { get; set; }
+    public string VatMode { get; set; } = InvoiceVatModes.Included;
     public bool TaxInvoiceIssued { get; set; }
     public string Memo { get; set; } = string.Empty;
     public List<InvoiceLineDto> Lines { get; set; } = new();
@@ -587,16 +594,24 @@ public sealed class RentalBillingLogDto : SyncEntityDto
     public string Note { get; set; } = string.Empty;
 }
 
-public sealed class RentalAssetAssignmentHistoryDto
+public sealed class RentalAssetAssignmentHistoryDto : SyncEntityDto
 {
-    public Guid Id { get; set; }
     public Guid AssetId { get; set; }
     public Guid? BillingProfileId { get; set; }
     public Guid? CustomerId { get; set; }
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
+    public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
     public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public string CustomerName { get; set; } = string.Empty;
     public string InstallLocation { get; set; } = string.Empty;
+    public string BillingProfileDisplay { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
+    public string MachineNumber { get; set; } = string.Empty;
+    public string ManagementNumber { get; set; } = string.Empty;
+    public decimal MonthlyFee { get; set; }
+    public DateOnly? ContractStartDate { get; set; }
+    public DateOnly? ContractEndDate { get; set; }
+    public string ChangeReason { get; set; } = string.Empty;
     public bool IsCurrent { get; set; }
     public DateTime LinkedAtUtc { get; set; }
     public DateTime? UnlinkedAtUtc { get; set; }
@@ -705,6 +720,7 @@ public sealed class SyncPushRequest
     public List<RentalManagementCompanyDto> RentalManagementCompanies { get; set; } = new();
     public List<RentalBillingProfileDto> RentalBillingProfiles { get; set; } = new();
     public List<RentalAssetDto> RentalAssets { get; set; } = new();
+    public List<RentalAssetAssignmentHistoryDto> RentalAssetAssignmentHistories { get; set; } = new();
     public List<RentalBillingLogDto> RentalBillingLogs { get; set; } = new();
     public List<InvoiceDto> Invoices { get; set; } = new();
     public List<PaymentDto> Payments { get; set; } = new();

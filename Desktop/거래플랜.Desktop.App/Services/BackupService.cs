@@ -21,7 +21,7 @@ public sealed record BackupSnapshotInfo(
 public sealed class BackupService
 {
     private const string PendingRestoreMarkerFileName = "pending-db-restore.txt";
-    private const int MaxManagedBackupCount = 12;
+    private const int DailyManagedBackupRetentionDays = 30;
 
     public async Task<bool> BackupNowAsync(CancellationToken ct = default)
         => await BackupNowWithPathAsync(ct) is not null;
@@ -52,6 +52,7 @@ public sealed class BackupService
     public IReadOnlyList<BackupSnapshotInfo> GetBackupSnapshots()
     {
         Directory.CreateDirectory(AppPaths.BackupDir);
+        TrimManagedBackups();
 
         return Directory.EnumerateFiles(AppPaths.BackupDir, "*.db", SearchOption.TopDirectoryOnly)
             .Select(path => new FileInfo(path))
@@ -274,14 +275,19 @@ public sealed class BackupService
 
     public static void TrimManagedBackups()
     {
+        Directory.CreateDirectory(AppPaths.BackupDir);
+
+        var protectedBackupPaths = GetProtectedBackupPaths();
         var backups = Directory.EnumerateFiles(AppPaths.BackupDir, "*.db", SearchOption.TopDirectoryOnly)
             .Select(path => new FileInfo(path))
             .Where(file => IsManagedBackupFileName(file.Name))
-            .OrderByDescending(file => file.LastWriteTimeUtc)
-            .Skip(MaxManagedBackupCount)
             .ToList();
+        var backupsToDelete = SelectManagedBackupsToDeleteForRetention(
+            backups,
+            DateTime.Now,
+            protectedBackupPaths);
 
-        foreach (var old in backups)
+        foreach (var old in backupsToDelete)
         {
             try
             {
@@ -299,4 +305,62 @@ public sealed class BackupService
            || fileName.StartsWith("거래플랜-", StringComparison.OrdinalIgnoreCase)
            || fileName.StartsWith("salesmaster_", StringComparison.OrdinalIgnoreCase)
            || fileName.StartsWith("salesmaster-", StringComparison.OrdinalIgnoreCase);
+
+    private static HashSet<string> GetProtectedBackupPaths()
+    {
+        var protectedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var markerPath = GetPendingRestoreMarkerPath();
+            if (!File.Exists(markerPath))
+                return protectedPaths;
+
+            var pendingBackupPath = ValidateBackupPath(File.ReadAllText(markerPath).Trim());
+            if (!string.IsNullOrWhiteSpace(pendingBackupPath))
+                protectedPaths.Add(Path.GetFullPath(pendingBackupPath));
+        }
+        catch
+        {
+            // 복원 예약 파일 확인 실패가 백업 정리를 막지는 않음
+        }
+
+        return protectedPaths;
+    }
+
+    private static IReadOnlyList<FileInfo> SelectManagedBackupsToDeleteForRetention(
+        IEnumerable<FileInfo> managedBackups,
+        DateTime now,
+        ISet<string>? protectedBackupPaths = null)
+    {
+        var today = now.Date;
+        var retentionStartDate = today.AddDays(-DailyManagedBackupRetentionDays);
+        var deleteTargets = new List<FileInfo>();
+
+        foreach (var group in managedBackups
+                     .Where(file => !IsProtectedBackup(file, protectedBackupPaths))
+                     .GroupBy(file => file.LastWriteTime.Date))
+        {
+            var backupDate = group.Key;
+            var ordered = group
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .ToList();
+
+            if (backupDate >= today)
+                continue;
+
+            if (backupDate < retentionStartDate)
+            {
+                deleteTargets.AddRange(ordered);
+                continue;
+            }
+
+            deleteTargets.AddRange(ordered.Skip(1));
+        }
+
+        return deleteTargets;
+    }
+
+    private static bool IsProtectedBackup(FileInfo file, ISet<string>? protectedBackupPaths)
+        => protectedBackupPaths is not null &&
+           protectedBackupPaths.Contains(Path.GetFullPath(file.FullName));
 }

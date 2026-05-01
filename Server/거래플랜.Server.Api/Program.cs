@@ -303,7 +303,24 @@ app.MapGet("/healthz", () => Results.Ok(new
     utc = DateTime.UtcNow
 })).AllowAnonymous();
 
-await DbInitializer.InitializeAsync(app.Services);
+var databaseInitializationTask = Task.Run(async () =>
+{
+    try
+    {
+        await DbInitializer.InitializeAsync(app.Services);
+        app.Logger.LogInformation("Database initialization completed.");
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogCritical(ex, "Database initialization failed.");
+    }
+});
+
+app.Lifetime.ApplicationStopping.Register(() =>
+{
+    if (!databaseInitializationTask.IsCompleted)
+        app.Logger.LogWarning("Database initialization is still running while the application is stopping.");
+});
 
 app.Run();
 

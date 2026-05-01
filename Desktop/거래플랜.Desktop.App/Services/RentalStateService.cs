@@ -19,6 +19,11 @@ public sealed partial class RentalStateService
     private const string AssetWorkbookPathSettingKey = "Rental.ImportAssetWorkbookPath";
     private const string BillingEditorDraftSettingPrefix = "Rental.BillingEditorDraft";
     private const string OnboardingDraftSettingPrefix = "Rental.OnboardingDraft";
+    private const string BillingEligibilityExcluded = "청구제외";
+    private const string BillingEligibilityTarget = "청구대상";
+    private const string BillingEligibilityUnconfirmed = "미확인";
+    private const string BillingListCleanupExclusionReason = "청구관리 목록 정리";
+    private const string BillingProfileDeleteExclusionReason = "청구 프로필 삭제로 청구목록 제외";
     private static readonly TimeZoneInfo KoreaTimeZone = ResolveKoreaTimeZone();
     private static readonly SemaphoreSlim AssetSaveLock = new(1, 1);
     private static readonly JsonSerializerOptions RentalJsonOptions = new()
@@ -583,6 +588,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
                         .Where(asset => !asset.IsDeleted)
                         .Where(asset => !asset.BillingProfileId.HasValue || asset.BillingProfileId == Guid.Empty)
+                        .Where(asset => asset.BillingEligibilityStatus == null || asset.BillingEligibilityStatus != BillingEligibilityExcluded)
                         .Where(asset => asset.AssetStatus != "회수" && asset.AssetStatus != "폐기" && asset.AssetStatus != "대기"),
                     filter)
                 .OrderBy(asset => asset.CustomerName)
@@ -733,7 +739,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 filter.ReferenceDate)));
         }
 
-        rows = GroupBillingRowsByCustomer(rows);
+        if (!filter.ExpandCustomerSummaryRows)
+            rows = GroupBillingRowsByCustomer(rows);
 
         if (filter.DueOnly)
         {
@@ -818,6 +825,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             {
                 DisplayItemName = string.IsNullOrWhiteSpace(asset.ItemName) ? "렌탈 임대료" : asset.ItemName.Trim(),
                 BillingLineMode = "묶음",
+                RepresentativeAssetId = asset.Id == Guid.Empty ? null : asset.Id,
                 Quantity = 1m,
                 UnitPrice = monthlyAmount,
                 Amount = monthlyAmount,
@@ -1605,6 +1613,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 저장할 수 없습니다.");
 
         var templateItems = GetBillingTemplateItems(profile, Array.Empty<LocalRentalAsset>());
+        profile.BillingType = ResolveProfileBillingTypeFromTemplateItems(templateItems, profile.BillingType);
         var outOfScopeLinkedAssets = await GetOutOfScopeBillingProfileAssetsAsync(
             templateItems,
             assetLinkEdits,
@@ -1709,11 +1718,59 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
 
+        var now = DateTime.UtcNow;
+        var linkedAssets = await _db.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => !asset.IsDeleted && asset.BillingProfileId == profileId)
+            .ToListAsync(ct);
+        foreach (var asset in linkedAssets)
+        {
+            var previousBillingProfileId = asset.BillingProfileId;
+            await ApplyAssignmentClearedSnapshotAsync(asset, previousBillingProfileId, now, ct);
+            asset.BillingEligibilityStatus = BillingEligibilityExcluded;
+            asset.BillingExclusionReason = BillingProfileDeleteExclusionReason;
+            asset.IsDirty = true;
+            asset.UpdatedAtUtc = now;
+        }
+
         profile.IsDeleted = true;
         profile.IsDirty = true;
-        profile.UpdatedAtUtc = DateTime.UtcNow;
+        profile.UpdatedAtUtc = now;
         await _db.SaveChangesAsync(ct);
+        await RefreshLocalRentalAssetAssignmentHistoriesAsync(linkedAssets.Select(asset => asset.Id), now, "청구 프로필 삭제", ct);
         return LocalMutationResult.Ok(profileId, "렌탈 청구 프로필을 삭제했습니다.");
+    }
+
+    public async Task<LocalMutationResult> ExcludeUnlinkedBillingAssetFromBillingListAsync(
+        Guid assetId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (assetId == Guid.Empty)
+            return LocalMutationResult.Missing("청구 목록에서 제외할 렌탈 자산을 찾을 수 없습니다.");
+
+        var asset = await _db.RentalAssets.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == assetId, ct);
+        if (asset is null || asset.IsDeleted)
+            return LocalMutationResult.Missing("청구 목록에서 제외할 렌탈 자산을 찾을 수 없습니다.");
+
+        var officeCode = RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+            asset.TenantCode,
+            asset.OfficeCode,
+            asset.ManagementCompanyCode,
+            asset.ResponsibleOfficeCode,
+            session.OfficeCode);
+        if (!CanEditAssetScope(officeCode, session))
+            return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 청구 목록에서 제외할 수 없습니다.");
+
+        if (asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
+            return LocalMutationResult.Denied("이미 청구 프로필에 연결된 장비입니다. 청구 프로필 삭제 또는 내부 포함 장비 삭제로 정리하세요.");
+
+        asset.BillingEligibilityStatus = BillingEligibilityExcluded;
+        asset.BillingExclusionReason = BillingListCleanupExclusionReason;
+        asset.IsDirty = true;
+        asset.UpdatedAtUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return LocalMutationResult.Ok(assetId, "청구 프로필이 없는 설치처를 청구 목록에서 제외했습니다. 자산 정보는 삭제되지 않습니다.");
     }
 
     public async Task<LocalMutationResult> StartBillingAsync(
@@ -2072,15 +2129,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
             session.TenantCode,
             session.OfficeCode);
         var profileId = billingProfileId.GetValueOrDefault();
-        var query = ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+        var query = ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
             .Where(asset => !asset.IsDeleted)
-            .Where(asset => asset.TenantCode == normalizedTenantCode)
             .Where(asset =>
-                asset.ResponsibleOfficeCode == normalizedOfficeCode ||
-                asset.ManagementCompanyCode == normalizedOfficeCode)
-            .Where(asset =>
-                (billingProfileId.HasValue && billingProfileId.Value != Guid.Empty && asset.BillingProfileId == profileId) ||
-                assetIds.Contains(asset.Id));
+                assetIds.Contains(asset.Id) ||
+                (
+                    billingProfileId.HasValue &&
+                    billingProfileId.Value != Guid.Empty &&
+                    asset.BillingProfileId == profileId &&
+                    asset.TenantCode == normalizedTenantCode &&
+                    (
+                        asset.ResponsibleOfficeCode == normalizedOfficeCode ||
+                        asset.ManagementCompanyCode == normalizedOfficeCode
+                    )
+                ));
 
         var includedAssets = await query
             .OrderBy(asset => asset.CustomerName)
@@ -2128,8 +2190,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var query = (includeOtherOfficeAssets
                 ? ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
                 : ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session))
-            .Where(asset => !asset.IsDeleted)
-            .Where(asset => asset.TenantCode == normalizedTenantCode);
+            .Where(asset => !asset.IsDeleted);
+
+        if (!includeOtherOfficeAssets)
+            query = query.Where(asset => asset.TenantCode == normalizedTenantCode);
 
         if (!includeOtherOfficeAssets && !string.IsNullOrWhiteSpace(normalizedOfficeCode))
             query = query.Where(asset =>
@@ -2205,8 +2269,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (assetId == Guid.Empty)
             return [];
 
-        await RefreshLocalRentalAssetAssignmentHistoriesAsync([assetId], DateTime.UtcNow, "이력 조회", ct);
-
         var histories = await _db.RentalAssetAssignmentHistories
             .AsNoTracking()
             .Where(history => history.AssetId == assetId)
@@ -2244,6 +2306,182 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ThenByDescending(history => history.LinkedAtUtc)
             .Select(history => BuildAssignmentHistoryViewItem(history, asset, profileLookup))
             .ToList();
+    }
+
+    public async Task<RentalAssetAssignmentHistoryEditRequest?> CreateAssetAssignmentHistoryEditRequestAsync(
+        Guid assetId,
+        Guid? historyId = null,
+        CancellationToken ct = default)
+    {
+        if (assetId == Guid.Empty)
+            return null;
+
+        var asset = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == assetId, ct);
+        if (asset is null)
+            return null;
+
+        if (historyId.HasValue && historyId.Value != Guid.Empty)
+        {
+            var history = await _db.RentalAssetAssignmentHistories
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(current => current.Id == historyId.Value && current.AssetId == assetId, ct);
+            if (history is null)
+                return null;
+
+            return new RentalAssetAssignmentHistoryEditRequest
+            {
+                HistoryId = history.Id,
+                AssetId = history.AssetId,
+                IsCurrent = history.IsCurrent,
+                LinkedAtLocal = NormalizeHistoryUtc(history.LinkedAtUtc).ToLocalTime(),
+                UnlinkedAtLocal = history.UnlinkedAtUtc.HasValue ? NormalizeHistoryUtc(history.UnlinkedAtUtc.Value).ToLocalTime() : null,
+                CustomerName = history.CustomerName,
+                InstallLocation = history.InstallLocation,
+                BillingProfileDisplay = history.BillingProfileDisplay,
+                ItemName = FirstNonEmpty(history.ItemName, asset.ItemName),
+                MachineNumber = FirstNonEmpty(history.MachineNumber, asset.MachineNumber),
+                ManagementNumber = FirstNonEmpty(history.ManagementNumber, asset.ManagementNumber),
+                MonthlyFee = history.MonthlyFee > 0m ? history.MonthlyFee : Math.Max(0m, asset.MonthlyFee),
+                ChangeReason = history.ChangeReason
+            };
+        }
+
+        var customerName = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
+            asset.CurrentCustomerName,
+            asset.CustomerName));
+        var installLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
+            asset.InstallLocation,
+            asset.InstallSiteName));
+
+        return new RentalAssetAssignmentHistoryEditRequest
+        {
+            AssetId = asset.Id,
+            IsCurrent = false,
+            LinkedAtLocal = DateTime.Today,
+            UnlinkedAtLocal = DateTime.Today,
+            CustomerName = customerName,
+            InstallLocation = installLocation,
+            BillingProfileDisplay = await ResolveLastBillingProfileDisplayAsync(asset.BillingProfileId, asset, ct),
+            ItemName = asset.ItemName,
+            MachineNumber = asset.MachineNumber,
+            ManagementNumber = asset.ManagementNumber,
+            MonthlyFee = Math.Max(0m, asset.MonthlyFee),
+            ChangeReason = "수동 추가"
+        };
+    }
+
+    public async Task<LocalMutationResult> SaveAssetAssignmentHistoryAsync(
+        RentalAssetAssignmentHistoryEditRequest request,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (request is null)
+            throw new ArgumentNullException(nameof(request));
+        if (request.AssetId == Guid.Empty)
+            return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
+
+        var asset = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == request.AssetId, ct);
+        if (asset is null)
+            return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
+
+        if (!CanEditAssetScope(asset.ResponsibleOfficeCode, session))
+            return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산의 임대이력을 수정할 수 없습니다.");
+
+        LocalRentalAssetAssignmentHistory? existing = null;
+        if (request.HistoryId != Guid.Empty)
+        {
+            existing = await _db.RentalAssetAssignmentHistories
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == request.HistoryId && current.AssetId == request.AssetId, ct);
+            if (existing is null)
+                return LocalMutationResult.Missing("임대이력을 찾을 수 없습니다.");
+        }
+
+        var now = DateTime.UtcNow;
+        var linkedAtUtc = ConvertLocalHistoryDateToUtc(request.LinkedAtLocal);
+        var unlinkedAtUtc = request.IsCurrent || request.UnlinkedAtLocal is null
+            ? (DateTime?)null
+            : ConvertLocalHistoryDateToUtc(request.UnlinkedAtLocal.Value);
+        if (!request.IsCurrent && unlinkedAtUtc is null)
+            unlinkedAtUtc = linkedAtUtc;
+        if (unlinkedAtUtc.HasValue && linkedAtUtc > unlinkedAtUtc.Value)
+            linkedAtUtc = unlinkedAtUtc.Value.AddSeconds(-1);
+
+        var history = existing ?? new LocalRentalAssetAssignmentHistory
+        {
+            Id = request.HistoryId == Guid.Empty ? Guid.NewGuid() : request.HistoryId,
+            AssetId = asset.Id,
+            CreatedAtUtc = now
+        };
+
+        history.AssetId = asset.Id;
+        history.BillingProfileId = asset.BillingProfileId;
+        history.CustomerId = asset.CustomerId;
+        history.TenantCode = asset.TenantCode;
+        history.ResponsibleOfficeCode = asset.ResponsibleOfficeCode;
+        history.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(request.CustomerName);
+        history.InstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(request.InstallLocation);
+        history.BillingProfileDisplay = RentalCatalogValueNormalizer.NormalizeDisplayText(request.BillingProfileDisplay);
+        history.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(FirstNonEmpty(request.ItemName, asset.ItemName));
+        history.MachineNumber = (FirstNonEmpty(request.MachineNumber, asset.MachineNumber) ?? string.Empty).Trim();
+        history.ManagementNumber = (FirstNonEmpty(request.ManagementNumber, asset.ManagementNumber) ?? string.Empty).Trim();
+        history.MonthlyFee = Math.Max(0m, request.MonthlyFee);
+        history.ContractStartDate = asset.ContractStartDate ?? asset.InstallDate;
+        history.ContractEndDate = asset.RentalEndDate;
+        history.ChangeReason = RentalCatalogValueNormalizer.NormalizeDisplayText(request.ChangeReason);
+        history.IsCurrent = request.IsCurrent;
+        history.LinkedAtUtc = linkedAtUtc;
+        history.UnlinkedAtUtc = unlinkedAtUtc;
+        history.IsDeleted = false;
+        history.IsDirty = true;
+        history.UpdatedAtUtc = now;
+
+        if (existing is null)
+            _db.RentalAssetAssignmentHistories.Add(history);
+
+        await _db.SaveChangesAsync(ct);
+        return LocalMutationResult.Ok(history.Id, "임대이력을 저장했습니다.");
+    }
+
+    public async Task<LocalMutationResult> DeleteAssetAssignmentHistoryAsync(
+        Guid historyId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (historyId == Guid.Empty)
+            return LocalMutationResult.Missing("임대이력을 찾을 수 없습니다.");
+
+        var history = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == historyId, ct);
+        if (history is null)
+            return LocalMutationResult.Missing("임대이력을 찾을 수 없습니다.");
+
+        var asset = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == history.AssetId, ct);
+        if (asset is null)
+            return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
+
+        if (!CanEditAssetScope(asset.ResponsibleOfficeCode, session))
+            return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산의 임대이력을 삭제할 수 없습니다.");
+
+        history.IsDeleted = true;
+        history.IsDirty = true;
+        history.IsCurrent = false;
+        history.UnlinkedAtUtc ??= DateTime.UtcNow;
+        history.ChangeReason = string.IsNullOrWhiteSpace(history.ChangeReason)
+            ? "수동 삭제"
+            : history.ChangeReason;
+        history.UpdatedAtUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return LocalMutationResult.Ok(history.Id, "임대이력을 삭제했습니다.");
     }
 
     public async Task<LocalMutationResult> SaveAssetAsync(
@@ -2554,11 +2792,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
         changed |= SetIfDifferent(value => history.MachineNumber = value, history.MachineNumber, asset.MachineNumber);
         changed |= SetIfDifferent(value => history.ManagementNumber = value, history.ManagementNumber, asset.ManagementNumber);
         changed |= SetIfDifferent(value => history.MonthlyFee = value, history.MonthlyFee, Math.Max(0m, asset.MonthlyFee));
-        changed |= SetIfDifferent(value => history.ContractStartDate = value, history.ContractStartDate, asset.ContractStartDate);
+        changed |= SetIfDifferent(value => history.ContractStartDate = value, history.ContractStartDate, asset.ContractStartDate ?? asset.InstallDate);
         changed |= SetIfDifferent(value => history.ContractEndDate = value, history.ContractEndDate, asset.RentalEndDate);
         changed |= SetIfDifferent(value => history.ChangeReason = value, history.ChangeReason, reason);
         if (changed)
+        {
+            history.IsDirty = true;
             history.UpdatedAtUtc = nowUtc;
+        }
         return changed;
     }
 
@@ -2624,7 +2865,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             MachineNumber = asset.MachineNumber,
             ManagementNumber = asset.ManagementNumber,
             MonthlyFee = Math.Max(0m, asset.MonthlyFee),
-            ContractStartDate = asset.ContractStartDate,
+            ContractStartDate = asset.ContractStartDate ?? asset.InstallDate,
             ContractEndDate = asset.RentalEndDate,
             ChangeReason = reason,
             IsCurrent = false,
@@ -2654,7 +2895,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         changed |= SetIfDifferent(value => history.MachineNumber = value, history.MachineNumber, asset.MachineNumber);
         changed |= SetIfDifferent(value => history.ManagementNumber = value, history.ManagementNumber, asset.ManagementNumber);
         if (changed)
+        {
+            history.IsDirty = true;
             history.UpdatedAtUtc = nowUtc;
+        }
         return changed;
     }
 
@@ -2691,12 +2935,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private static DateTime ResolveAssignmentLinkedAtUtc(LocalRentalAsset asset, DateTime fallbackUtc)
     {
-        if (asset.UpdatedAtUtc != default)
-            return NormalizeHistoryUtc(asset.UpdatedAtUtc);
-        if (asset.ContractStartDate.HasValue)
-            return CreateUtcDate(asset.ContractStartDate.Value);
         if (asset.InstallDate.HasValue)
             return CreateUtcDate(asset.InstallDate.Value);
+        if (asset.ContractStartDate.HasValue)
+            return CreateUtcDate(asset.ContractStartDate.Value);
+        if (asset.UpdatedAtUtc != default)
+            return NormalizeHistoryUtc(asset.UpdatedAtUtc);
         if (asset.CreatedAtUtc != default)
             return NormalizeHistoryUtc(asset.CreatedAtUtc);
         return NormalizeHistoryUtc(fallbackUtc);
@@ -2720,12 +2964,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var responsibleOfficeCode = string.IsNullOrWhiteSpace(history.ResponsibleOfficeCode)
             ? asset?.ResponsibleOfficeCode
             : history.ResponsibleOfficeCode;
+        var isLinkedAtEstimated = IsEstimatedAssignmentHistoryStart(history, linkedAtUtc, unlinkedAtUtc);
 
         return new RentalAssetAssignmentHistoryViewItem
         {
             HistoryId = history.Id,
             AssetId = history.AssetId,
             IsCurrent = history.IsCurrent,
+            IsLinkedAtEstimated = isLinkedAtEstimated,
             LinkedAtLocal = linkedAtUtc.ToLocalTime(),
             UnlinkedAtLocal = unlinkedAtUtc?.ToLocalTime(),
             CustomerName = FirstNonEmpty(history.CustomerName, asset?.CurrentCustomerName, asset?.CustomerName),
@@ -2738,6 +2984,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
             MonthlyFee = history.MonthlyFee > 0m ? history.MonthlyFee : Math.Max(0m, asset?.MonthlyFee ?? 0m),
             ChangeReason = history.ChangeReason
         };
+    }
+
+    private static bool IsEstimatedAssignmentHistoryStart(
+        LocalRentalAssetAssignmentHistory history,
+        DateTime linkedAtUtc,
+        DateTime? unlinkedAtUtc)
+    {
+        if (history.IsCurrent || !unlinkedAtUtc.HasValue)
+            return false;
+
+        var elapsed = unlinkedAtUtc.Value - linkedAtUtc;
+        if (elapsed <= TimeSpan.Zero || elapsed > TimeSpan.FromMinutes(1))
+            return false;
+
+        return (history.ChangeReason ?? string.Empty).Contains("회수이력", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildAssignmentHistoryLogicalKey(LocalRentalAssetAssignmentHistory history)
@@ -2785,6 +3046,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (value.Kind == DateTimeKind.Local)
             return value.ToUniversalTime();
         return DateTime.SpecifyKind(value, DateTimeKind.Utc);
+    }
+
+    private static DateTime ConvertLocalHistoryDateToUtc(DateTime value)
+    {
+        if (value == default)
+            return DateTime.UtcNow;
+        if (value.Kind == DateTimeKind.Utc)
+            return value;
+        if (value.Kind == DateTimeKind.Local)
+            return value.ToUniversalTime();
+        return DateTime.SpecifyKind(value, DateTimeKind.Local).ToUniversalTime();
     }
 
     private static bool NullableHistoryUtcEquals(DateTime? current, DateTime expected)
@@ -4249,12 +4521,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         if (parsed is null || parsed.Count == 0)
         {
+            var representativeAssetId = profileBillingType == "묶음"
+                ? legacyIncludedAssetIds.FirstOrDefault(id => id != Guid.Empty)
+                : Guid.Empty;
             parsed =
             [
                 new RentalBillingTemplateItemModel
                 {
                     DisplayItemName = string.IsNullOrWhiteSpace(profile.ItemName) ? "렌탈 임대료" : profile.ItemName,
-                    BillingLineMode = profileBillingType == "혼합" ? string.Empty : profileBillingType,
+                    BillingLineMode = ResolveTemplateBillingLineMode(string.Empty, profileBillingType),
+                    RepresentativeAssetId = representativeAssetId == Guid.Empty ? null : representativeAssetId,
                     Quantity = 1m,
                     UnitPrice = Math.Max(0m, profile.MonthlyAmount),
                     Amount = Math.Max(0m, profile.MonthlyAmount),
@@ -4278,14 +4554,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Where(id => id != Guid.Empty)
                 .Distinct()
                 .ToList();
-            var billingLineMode = NormalizeBillingLineMode(current.BillingLineMode);
-            if (!string.Equals(profileBillingType, "혼합", StringComparison.OrdinalIgnoreCase))
-                billingLineMode = profileBillingType;
+            var billingLineMode = ResolveTemplateBillingLineMode(current.BillingLineMode, profileBillingType);
+            var representativeAssetId = current.RepresentativeAssetId.HasValue &&
+                                        includedAssetIds.Contains(current.RepresentativeAssetId.Value) &&
+                                        string.Equals(billingLineMode, "묶음", StringComparison.OrdinalIgnoreCase)
+                ? current.RepresentativeAssetId
+                : null;
             normalized.Add(new RentalBillingTemplateItemModel
             {
                 ItemId = current.ItemId == Guid.Empty ? Guid.NewGuid() : current.ItemId,
                 DisplayItemName = string.IsNullOrWhiteSpace(displayItemName) ? "렌탈 임대료" : displayItemName,
                 BillingLineMode = billingLineMode,
+                Specification = (current.Specification ?? string.Empty).Trim(),
+                Unit = (current.Unit ?? string.Empty).Trim(),
+                MaterialNumber = (current.MaterialNumber ?? string.Empty).Trim(),
+                RepresentativeAssetId = representativeAssetId,
                 Quantity = quantity,
                 UnitPrice = unitPrice,
                 Amount = Math.Max(0m, amount),
@@ -4299,17 +4582,30 @@ WHERE ""AssignedUsername"" <> '';", ct);
             normalized.All(item => item.IncludedAssetIds.Count == 0))
         {
             normalized[0].IncludedAssetIds = legacyIncludedAssetIds;
+            var currentRepresentativeAssetId = normalized[0].RepresentativeAssetId;
+            if (string.Equals(normalized[0].BillingLineMode, "묶음", StringComparison.OrdinalIgnoreCase) &&
+                (!currentRepresentativeAssetId.HasValue ||
+                 !legacyIncludedAssetIds.Contains(currentRepresentativeAssetId.GetValueOrDefault())))
+            {
+                var representativeAssetId = legacyIncludedAssetIds.FirstOrDefault(id => id != Guid.Empty);
+                normalized[0].RepresentativeAssetId = representativeAssetId == Guid.Empty ? null : representativeAssetId;
+            }
         }
 
         if (normalized.Count == 0)
         {
+            var representativeAssetId = profileBillingType == "묶음"
+                ? legacyIncludedAssetIds.FirstOrDefault(id => id != Guid.Empty)
+                : Guid.Empty;
             normalized.Add(new RentalBillingTemplateItemModel
             {
                 DisplayItemName = string.IsNullOrWhiteSpace(profile.ItemName) ? "렌탈 임대료" : profile.ItemName,
-                BillingLineMode = profileBillingType == "혼합" ? string.Empty : profileBillingType,
+                BillingLineMode = ResolveTemplateBillingLineMode(string.Empty, profileBillingType),
+                RepresentativeAssetId = representativeAssetId == Guid.Empty ? null : representativeAssetId,
                 Quantity = 1m,
                 UnitPrice = Math.Max(0m, profile.MonthlyAmount),
-                Amount = Math.Max(0m, profile.MonthlyAmount)
+                Amount = Math.Max(0m, profile.MonthlyAmount),
+                IncludedAssetIds = legacyIncludedAssetIds
             });
         }
 
@@ -4401,6 +4697,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
                 DisplayItemName = item.DisplayItemName,
                 BillingLineMode = item.BillingLineMode,
+                Specification = item.Specification,
+                Unit = item.Unit,
+                MaterialNumber = item.MaterialNumber,
+                RepresentativeAssetId = item.RepresentativeAssetId,
                 Quantity = item.Quantity,
                 UnitPrice = item.UnitPrice,
                 Amount = ResolveTemplateMonthlyAmount(item),
@@ -4434,6 +4734,36 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private static decimal CalculateTemplateLineAmount(decimal quantity, decimal unitPrice)
         => Math.Max(0m, NormalizeTemplateQuantity(quantity)) * Math.Max(0m, unitPrice);
+
+    private static string ResolveTemplateBillingLineMode(string? itemBillingLineMode, string? defaultBillingType)
+    {
+        var normalizedItemMode = NormalizeBillingLineMode(itemBillingLineMode);
+        if (!string.IsNullOrWhiteSpace(normalizedItemMode))
+            return normalizedItemMode;
+
+        var normalizedDefault = NormalizeBillingType(defaultBillingType);
+        return string.Equals(normalizedDefault, "혼합", StringComparison.OrdinalIgnoreCase)
+            ? "묶음"
+            : normalizedDefault;
+    }
+
+    private static string ResolveProfileBillingTypeFromTemplateItems(
+        IEnumerable<RentalBillingTemplateItemModel> templateItems,
+        string? defaultBillingType)
+    {
+        var modes = (templateItems ?? Enumerable.Empty<RentalBillingTemplateItemModel>())
+            .Select(item => ResolveTemplateBillingLineMode(item.BillingLineMode, defaultBillingType))
+            .Where(mode => !string.IsNullOrWhiteSpace(mode))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        return modes.Count switch
+        {
+            0 => ResolveTemplateBillingLineMode(null, defaultBillingType),
+            1 => modes[0],
+            _ => "혼합"
+        };
+    }
 
     private static string NormalizeBillingLineMode(string? value)
     {
@@ -4502,14 +4832,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         foreach (var templateItem in templateItems)
         {
-            var lineMode = string.Equals(profileBillingType, "혼합", StringComparison.OrdinalIgnoreCase)
-                ? NormalizeBillingLineMode(templateItem.BillingLineMode)
-                : profileBillingType;
+            var lineMode = ResolveTemplateBillingLineMode(templateItem.BillingLineMode, profileBillingType);
 
             if (string.IsNullOrWhiteSpace(lineMode))
             {
                 return (false,
-                    $"청구항목 '{templateItem.DisplayItemName}'의 라인유형이 지정되지 않아 판매전표를 만들 수 없습니다.",
+                    $"청구항목 '{templateItem.DisplayItemName}'의 청구 유형이 지정되지 않아 판매전표를 만들 수 없습니다.",
                     new List<LocalInvoiceLine>());
             }
 
@@ -4599,7 +4927,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         new List<LocalInvoiceLine>());
                 }
 
-                if (asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != profile.Id)
+                if (asset.BillingProfileId.HasValue &&
+                    asset.BillingProfileId.Value != profile.Id &&
+                    RentalAssetCanTransferToBillingProfileScope(asset, profile.TenantCode))
                 {
                     return (false,
                         $"장비 '{asset.ItemName}'가 다른 렌탈 청구설정에 연결되어 있어 판매전표를 만들 수 없습니다.",
@@ -4610,7 +4940,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     ? GetDefaultBillingEligibilityStatus(asset)
                     : asset.BillingEligibilityStatus.Trim();
 
-                if (string.Equals(eligibilityStatus, "청구제외", StringComparison.OrdinalIgnoreCase) ||
+                if (string.Equals(eligibilityStatus, BillingEligibilityExcluded, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(asset.AssetStatus, "대기", StringComparison.OrdinalIgnoreCase))
@@ -4625,7 +4955,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             if (string.Equals(lineMode, "묶음", StringComparison.OrdinalIgnoreCase))
             {
-                var representativeAsset = SelectRepresentativeBillingAsset(templateAssets);
+                var representativeAsset = SelectRepresentativeBillingAsset(templateAssets, templateItem.RepresentativeAssetId);
                 if (representativeAsset is null)
                 {
                     return (false,
@@ -4636,17 +4966,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 var monthlyAmount = ResolveTemplateMonthlyAmount(templateItem);
                 foreach (var billingMonth in billingMonths)
                 {
+                    var specification = ResolveBundleInvoiceSpecification(templateItem, representativeAsset, templateAssets);
                     lines.Add(new LocalInvoiceLine
                     {
                         Id = Guid.NewGuid(),
                         ItemId = null,
                         ItemTrackingType = ItemTrackingTypes.NonStock,
-                        ItemNameOriginal = BuildMonthlyRentalInvoiceItemName(billingMonth),
-                        SpecificationOriginal = representativeAsset.ItemName.Trim(),
-                        Unit = string.Empty,
+                        ItemNameOriginal = BuildMonthlyRentalInvoiceItemName(billingMonth, templateItem.DisplayItemName),
+                        SpecificationOriginal = specification,
+                        Unit = (templateItem.Unit ?? string.Empty).Trim(),
                         Quantity = 1m,
                         UnitPrice = monthlyAmount,
                         LineAmount = monthlyAmount,
+                        MaterialNumber = FirstNonEmpty(templateItem.MaterialNumber, representativeAsset.ManagementNumber),
+                        SerialNumber = representativeAsset.MachineNumber?.Trim() ?? string.Empty,
+                        InstallLocation = FirstNonEmpty(representativeAsset.InstallLocation, representativeAsset.InstallSiteName),
                         Remark = (templateItem.Note ?? string.Empty).Trim()
                     });
                 }
@@ -4664,38 +4998,29 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 }
             }
 
-            var groupedAssets = templateAssets
-                .GroupBy(
-                    asset => new
-                    {
-                        ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName),
-                        UnitPrice = asset.MonthlyFee
-                    })
-                .OrderBy(group => group.Key.ItemName, StringComparer.CurrentCultureIgnoreCase)
-                .ThenBy(group => group.Key.UnitPrice)
-                .ToList();
-
             foreach (var billingMonth in billingMonths)
             {
-                foreach (var assetGroup in groupedAssets)
+                foreach (var asset in templateAssets
+                             .OrderBy(asset => RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName), StringComparer.CurrentCultureIgnoreCase)
+                             .ThenBy(asset => asset.MachineNumber, StringComparer.CurrentCultureIgnoreCase)
+                             .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase))
                 {
-                    var firstAsset = assetGroup.FirstOrDefault();
-                    if (firstAsset is null)
-                        continue;
-
-                    var quantity = assetGroup.Count();
-                    var unitPrice = firstAsset.MonthlyFee;
+                    var quantity = 1m;
+                    var unitPrice = asset.MonthlyFee;
                     lines.Add(new LocalInvoiceLine
                     {
                         Id = Guid.NewGuid(),
                         ItemId = null,
                         ItemTrackingType = ItemTrackingTypes.NonStock,
-                        ItemNameOriginal = BuildMonthlyRentalInvoiceItemName(billingMonth),
-                        SpecificationOriginal = firstAsset.ItemName.Trim(),
-                        Unit = string.Empty,
+                        ItemNameOriginal = BuildMonthlyRentalInvoiceItemName(billingMonth, templateItem.DisplayItemName),
+                        SpecificationOriginal = ResolveIndividualInvoiceSpecification(templateItem, asset),
+                        Unit = (templateItem.Unit ?? string.Empty).Trim(),
                         Quantity = quantity,
                         UnitPrice = unitPrice,
                         LineAmount = quantity * unitPrice,
+                        MaterialNumber = FirstNonEmpty(templateItem.MaterialNumber, asset.ManagementNumber),
+                        SerialNumber = asset.MachineNumber?.Trim() ?? string.Empty,
+                        InstallLocation = FirstNonEmpty(asset.InstallLocation, asset.InstallSiteName),
                         Remark = (templateItem.Note ?? string.Empty).Trim()
                     });
                 }
@@ -4730,8 +5055,154 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ThenBy(asset => asset.MachineNumber, StringComparer.CurrentCultureIgnoreCase)
             .FirstOrDefault();
 
-    private static string BuildMonthlyRentalInvoiceItemName(DateOnly billingMonth)
-        => $"사무기기 렌탈대금[{billingMonth.Month}월]";
+    private static LocalRentalAsset? SelectRepresentativeBillingAsset(
+        IReadOnlyList<LocalRentalAsset> assets,
+        Guid? representativeAssetId)
+    {
+        if (representativeAssetId.HasValue && representativeAssetId.Value != Guid.Empty)
+        {
+            var selected = assets.FirstOrDefault(asset => asset.Id == representativeAssetId.Value);
+            if (selected is not null)
+                return selected;
+        }
+
+        return SelectRepresentativeBillingAsset(assets);
+    }
+
+    private static string BuildMonthlyRentalInvoiceItemName(DateOnly billingMonth, string? displayItemName = null)
+    {
+        var baseName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(displayItemName ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(baseName) ||
+            string.Equals(baseName, "렌탈 임대료", StringComparison.CurrentCultureIgnoreCase) ||
+            string.Equals(baseName, "렌탈료", StringComparison.CurrentCultureIgnoreCase))
+        {
+            baseName = "사무기기 렌탈대금";
+        }
+
+        return baseName.Contains("[", StringComparison.Ordinal)
+            ? baseName
+            : $"{baseName}[{billingMonth.Month}월]";
+    }
+
+    private static string ResolveIndividualInvoiceSpecification(RentalBillingTemplateItemModel templateItem, LocalRentalAsset asset)
+    {
+        var generatedSpecification = BuildAssetInvoiceSpecification(asset);
+        var explicitSpecification = (templateItem.Specification ?? string.Empty).Trim();
+        var legacySpecification = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName);
+        return ShouldUseExplicitInvoiceSpecification(explicitSpecification, generatedSpecification, legacySpecification)
+            ? explicitSpecification
+            : FirstNonEmpty(generatedSpecification, explicitSpecification, legacySpecification);
+    }
+
+    private static string ResolveBundleInvoiceSpecification(
+        RentalBillingTemplateItemModel templateItem,
+        LocalRentalAsset representativeAsset,
+        IReadOnlyCollection<LocalRentalAsset> templateAssets)
+    {
+        var generatedSpecification = BuildBundleInvoiceSpecification(
+            representativeAsset,
+            templateAssets,
+            templateItem.DisplayItemName);
+        var explicitSpecification = (templateItem.Specification ?? string.Empty).Trim();
+        var legacySpecification = BuildLegacyBundleInvoiceSpecification(representativeAsset, templateAssets);
+        if (ShouldUseExplicitInvoiceSpecification(explicitSpecification, generatedSpecification, legacySpecification))
+            return explicitSpecification;
+
+        return generatedSpecification;
+    }
+
+    private static string BuildBundleInvoiceSpecification(
+        LocalRentalAsset representativeAsset,
+        IReadOnlyCollection<LocalRentalAsset> templateAssets,
+        string? fallbackItemName = null)
+    {
+        var representativeName = FirstNonEmpty(
+            BuildAssetInvoiceSpecification(representativeAsset),
+            RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(fallbackItemName ?? string.Empty),
+            "대표 장비");
+        var otherAssets = templateAssets
+            .Where(asset => asset.Id != representativeAsset.Id)
+            .ToList();
+        if (otherAssets.Count == 0)
+            return representativeName;
+
+        var distinctOtherCategories = otherAssets
+            .Select(asset => (asset.ItemCategoryName ?? string.Empty).Trim())
+            .Where(category => !string.IsNullOrWhiteSpace(category))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (distinctOtherCategories.Count == 1)
+            return $"{representativeName} 외 {distinctOtherCategories[0]}";
+
+        return $"{representativeName} 외 {otherAssets.Count:N0}대";
+    }
+
+    private static string BuildLegacyBundleInvoiceSpecification(
+        LocalRentalAsset representativeAsset,
+        IReadOnlyCollection<LocalRentalAsset> templateAssets)
+    {
+        var representativeName = FirstNonEmpty(
+            RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(representativeAsset.ItemName),
+            "대표 장비");
+        var otherAssets = templateAssets
+            .Where(asset => asset.Id != representativeAsset.Id)
+            .ToList();
+        if (otherAssets.Count == 0)
+            return representativeName;
+
+        var distinctOtherCategories = otherAssets
+            .Select(asset => (asset.ItemCategoryName ?? string.Empty).Trim())
+            .Where(category => !string.IsNullOrWhiteSpace(category))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (distinctOtherCategories.Count == 1)
+            return $"{representativeName} 외 {distinctOtherCategories[0]}";
+
+        return $"{representativeName} 외 {otherAssets.Count:N0}대";
+    }
+
+    private static bool ShouldUseExplicitInvoiceSpecification(
+        string explicitSpecification,
+        string generatedSpecification,
+        string legacySpecification)
+    {
+        if (string.IsNullOrWhiteSpace(explicitSpecification))
+            return false;
+
+        if (string.Equals(explicitSpecification, generatedSpecification, StringComparison.CurrentCultureIgnoreCase))
+            return true;
+
+        if (IsInvoiceSpecificationPlaceholder(explicitSpecification))
+            return false;
+
+        return string.IsNullOrWhiteSpace(legacySpecification) ||
+               string.Equals(legacySpecification, generatedSpecification, StringComparison.CurrentCultureIgnoreCase) ||
+               !string.Equals(explicitSpecification, legacySpecification, StringComparison.CurrentCultureIgnoreCase);
+    }
+
+    private static bool IsInvoiceSpecificationPlaceholder(string specification)
+        => string.Equals(specification, "대표 장비", StringComparison.CurrentCultureIgnoreCase) ||
+           specification.Trim().StartsWith("대표 장비 외 ", StringComparison.CurrentCultureIgnoreCase) ||
+           string.Equals(specification, "장비별 개별 표시", StringComparison.CurrentCultureIgnoreCase);
+
+    private static string BuildAssetInvoiceSpecification(LocalRentalAsset asset)
+    {
+        var normalizedItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName);
+        var normalizedManufacturer = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.Manufacturer);
+        if (string.IsNullOrWhiteSpace(normalizedManufacturer) || string.IsNullOrWhiteSpace(normalizedItemName))
+            return normalizedItemName;
+
+        var itemKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedItemName);
+        var manufacturerKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedManufacturer);
+        if (string.IsNullOrWhiteSpace(manufacturerKey) ||
+            itemKey.StartsWith(manufacturerKey, StringComparison.OrdinalIgnoreCase) ||
+            itemKey.Contains(manufacturerKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return normalizedItemName;
+        }
+
+        return $"{normalizedManufacturer} {normalizedItemName}".Trim();
+    }
 
     private static string BuildProfileItemName(LocalRentalBillingProfile profile, IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
     {
@@ -4847,12 +5318,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             issues.Add("장비 월요금 없음");
         if (HasBillingAssetMonthlyFeeMismatch(assets, templateItems))
             issues.Add("자산/청구 월요금 불일치");
-        if (string.Equals(profileBillingType, "혼합", StringComparison.OrdinalIgnoreCase) &&
-            templateItems.Any(item => string.IsNullOrWhiteSpace(NormalizeBillingLineMode(item.BillingLineMode))))
+        if (templateItems.Any(item => string.IsNullOrWhiteSpace(ResolveTemplateBillingLineMode(item.BillingLineMode, profileBillingType))))
         {
-            issues.Add("혼합 라인유형 미지정");
+            issues.Add("청구 유형 미지정");
         }
-        if (assets.Any(asset => string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) || string.Equals(asset.BillingEligibilityStatus, "미확인", StringComparison.OrdinalIgnoreCase)))
+        if (assets.Any(asset => string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) || string.Equals(asset.BillingEligibilityStatus, BillingEligibilityUnconfirmed, StringComparison.OrdinalIgnoreCase)))
             issues.Add("청구대상 검토 필요");
         return issues.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
@@ -4972,7 +5442,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         asset.InstallLocation = string.Empty;
         asset.InstallSiteName = string.Empty;
         asset.BillingProfileId = null;
-        asset.BillingEligibilityStatus = "청구제외";
+        asset.BillingEligibilityStatus = BillingEligibilityExcluded;
 
         if (string.IsNullOrWhiteSpace(asset.BillingExclusionReason))
             asset.BillingExclusionReason = RentalAssetStatusRules.BuildAutoExclusionReason(asset.AssetStatus);
@@ -5037,10 +5507,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private static string GetDefaultBillingEligibilityStatus(LocalRentalAsset asset)
     {
         if (asset.BillingProfileId.HasValue && !RentalAssetStatusRules.IsNonOperating(asset.AssetStatus))
-            return "청구대상";
+            return BillingEligibilityTarget;
         if (RentalAssetStatusRules.IsNonOperating(asset.AssetStatus))
-            return "청구제외";
-        return "미확인";
+            return BillingEligibilityExcluded;
+        return BillingEligibilityUnconfirmed;
     }
 
     private async Task<List<LocalRentalAsset>> GetOutOfScopeBillingProfileAssetsAsync(
@@ -5073,23 +5543,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Where(asset => assetIds.Contains(asset.Id) && !asset.IsDeleted)
             .ToListAsync(ct);
 
-        return assets
-            .Where(asset =>
-            {
-                if (templateAssetIds.Contains(asset.Id) &&
-                    !explicitLinkAssetIds.Contains(asset.Id) &&
-                    !RentalAssetMatchesBillingProfileScope(
-                        asset,
-                        profileTenantCode,
-                        profileResponsibleOfficeCode))
-                {
-                    return true;
-                }
-
-                return explicitLinkAssetIds.Contains(asset.Id) &&
-                       !RentalAssetCanTransferToBillingProfileScope(asset, profileTenantCode);
-            })
-            .ToList();
+        // 렌탈 자산은 설치/소유 기준으로 전 업체가 공유 조회될 수 있고,
+        // 청구 프로필은 외부 자산을 "원본 자산 변경 없는 참조"로 포함할 수 있다.
+        // 따라서 거래처/품목/전표 소유 범위와 달리 자산 연결 자체는 프로필 범위와
+        // 다르다는 이유만으로 차단하지 않는다.
+        _ = assets;
+        return [];
     }
 
     private static bool RentalAssetMatchesBillingProfileScope(
@@ -5233,9 +5692,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 continue;
 
             var totalMonthlyFee = itemAssets.Sum(asset => Math.Max(0m, asset.MonthlyFee));
-            var effectiveLineMode = string.Equals(profileBillingType, "혼합", StringComparison.OrdinalIgnoreCase)
-                ? NormalizeBillingLineMode(templateItem.BillingLineMode)
-                : profileBillingType;
+            var effectiveLineMode = ResolveTemplateBillingLineMode(templateItem.BillingLineMode, profileBillingType);
             var distinctPositiveFees = itemAssets
                 .Select(asset => Math.Max(0m, asset.MonthlyFee))
                 .Where(fee => fee > 0m)
@@ -5361,22 +5818,24 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var previousBillingProfileId = asset.BillingProfileId;
             var shouldInclude = includedAssetIds.Contains(asset.Id);
             assetLinkEditMap.TryGetValue(asset.Id, out var edit);
-            var hasExplicitAssetLinkEdit = edit is not null;
-            var matchesProfileScope = RentalAssetMatchesBillingProfileScope(
-                asset,
-                normalizedTenantCode,
-                normalizedOfficeCode);
-            var canTransferToProfileScope = hasExplicitAssetLinkEdit &&
-                                            RentalAssetCanTransferToBillingProfileScope(asset, normalizedTenantCode);
+            var matchesProfileTenant = RentalAssetCanTransferToBillingProfileScope(asset, normalizedTenantCode);
 
-            if (!matchesProfileScope && !canTransferToProfileScope)
+            if (shouldInclude && !matchesProfileTenant)
+            {
+                // 외부 업체 자산은 청구 프로필 템플릿의 IncludedAssetIds로만 참조한다.
+                // 자산 원본의 거래처/품목/소유 지점/청구 프로필 연결은 해당 업체 데이터로
+                // 남겨 두어야 계정별 동기화와 이력이 섞이지 않는다.
+                continue;
+            }
+
+            if (!matchesProfileTenant)
             {
                 if (asset.BillingProfileId == profile.Id)
                 {
                     await ApplyAssignmentClearedSnapshotAsync(asset, previousBillingProfileId, now, ct);
                     asset.BillingEligibilityStatus = RentalAssetStatusRules.IsNonOperating(asset.AssetStatus)
-                        ? "청구제외"
-                        : "미확인";
+                        ? BillingEligibilityExcluded
+                        : BillingEligibilityUnconfirmed;
                     asset.IsDirty = true;
                     asset.UpdatedAtUtc = now;
                     touchedAssetIds.Add(asset.Id);
@@ -5431,9 +5890,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     normalizedTenantCode,
                     normalizedOfficeCode);
                 asset.BillingEligibilityStatus = RentalAssetStatusRules.IsNonOperating(asset.AssetStatus)
-                    ? "청구제외"
-                    : "청구대상";
-                if (string.Equals(asset.BillingEligibilityStatus, "청구대상", StringComparison.Ordinal) &&
+                    ? BillingEligibilityExcluded
+                    : BillingEligibilityTarget;
+                if (string.Equals(asset.BillingEligibilityStatus, BillingEligibilityTarget, StringComparison.Ordinal) &&
                     !string.IsNullOrWhiteSpace(asset.BillingExclusionReason))
                 {
                     asset.BillingExclusionReason = string.Empty;
@@ -5450,8 +5909,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             {
                 await ApplyAssignmentClearedSnapshotAsync(asset, previousBillingProfileId, now, ct);
                 asset.BillingEligibilityStatus = RentalAssetStatusRules.IsNonOperating(asset.AssetStatus)
-                    ? "청구제외"
-                    : "미확인";
+                    ? BillingEligibilityExcluded
+                    : BillingEligibilityUnconfirmed;
                 touchedAssetIds.Add(asset.Id);
             }
 

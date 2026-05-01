@@ -639,10 +639,10 @@ public sealed class RentalDocumentService
     private static Grid CreateTwoColumnSummary(params (string Label, string Value)[] items)
     {
         var grid = new Grid { Margin = new Thickness(0, 0, 0, 10) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(108) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(92) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(108) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(92) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         var rowCount = (int)Math.Ceiling(items.Length / 2d);
@@ -954,7 +954,7 @@ public sealed class RentalDocumentService
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(34) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(46) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(46) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(64) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.35, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(64) });
 
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -997,7 +997,7 @@ public sealed class RentalDocumentService
             AddEquipmentValueCell(grid, ValueOrDash(row.FreeSupplyItems), rowIndex, 10);
             AddEquipmentValueCell(grid, ValueOrDash(row.PaidSupplyItems), rowIndex, 11);
             AddEquipmentValueCell(grid, ValueOrDash(FormatDate(row.ContractStartDate)), rowIndex, 12, TextAlignment.Center);
-            AddEquipmentValueCell(grid, ValueOrDash(row.InstallLocation), rowIndex, 13);
+            AddEquipmentValueCell(grid, ValueOrDash(row.InstallLocation), rowIndex, 13, autoShrink: true);
         }
 
         return grid;

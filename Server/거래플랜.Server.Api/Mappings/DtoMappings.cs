@@ -292,7 +292,15 @@ public static class DtoMappings
             BusinessType = entity.BusinessType,
             BusinessItem = entity.BusinessItem,
             Address = entity.Address,
-            Phone = entity.Phone, Email = entity.Email, Notes = entity.Notes
+            DetailAddress = entity.DetailAddress,
+            Phone = entity.Phone,
+            MobilePhone = entity.MobilePhone,
+            FaxNumber = entity.FaxNumber,
+            Email = entity.Email,
+            HomePage = entity.HomePage,
+            Recipient = entity.Recipient,
+            PriceGrade = entity.PriceGrade,
+            Notes = entity.Notes
         };
 
     public static void Apply(this Customer entity, CustomerDto dto)
@@ -307,7 +315,15 @@ public static class DtoMappings
         entity.BusinessNumber = dto.BusinessNumber;
         entity.BusinessType = dto.BusinessType;
         entity.BusinessItem = dto.BusinessItem;
-        entity.Address = dto.Address; entity.Phone = dto.Phone; entity.Email = dto.Email;
+        entity.Address = dto.Address;
+        entity.DetailAddress = dto.DetailAddress;
+        entity.Phone = dto.Phone;
+        entity.MobilePhone = dto.MobilePhone;
+        entity.FaxNumber = dto.FaxNumber;
+        entity.Email = dto.Email;
+        entity.HomePage = dto.HomePage;
+        entity.Recipient = dto.Recipient;
+        entity.PriceGrade = NormalizePriceGrade(dto.PriceGrade);
         entity.Notes = dto.Notes; entity.IsDeleted = dto.IsDeleted;
         entity.ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(
             dto.ResponsibleOfficeCode,
@@ -911,17 +927,63 @@ public static class DtoMappings
         new()
         {
             Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
             AssetId = entity.AssetId,
             BillingProfileId = entity.BillingProfileId,
             CustomerId = entity.CustomerId,
-            TenantCode = NormalizeOperationalTenantCode(entity.TenantCode, entity.ResponsibleOfficeCode, entity.ResponsibleOfficeCode),
-            ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(entity.ResponsibleOfficeCode, entity.ResponsibleOfficeCode, OfficeCodeCatalog.Usenet),
+            TenantCode = NormalizeOperationalTenantCode(entity.TenantCode, entity.OfficeCode, entity.ResponsibleOfficeCode),
+            OfficeCode = NormalizeOwningOfficeCode(entity.OfficeCode, entity.ResponsibleOfficeCode, OfficeCodeCatalog.Usenet),
+            ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(entity.ResponsibleOfficeCode, entity.OfficeCode, OfficeCodeCatalog.Usenet),
             CustomerName = entity.CustomerName,
             InstallLocation = entity.InstallLocation,
+            BillingProfileDisplay = entity.BillingProfileDisplay,
+            ItemName = entity.ItemName,
+            MachineNumber = entity.MachineNumber,
+            ManagementNumber = entity.ManagementNumber,
+            MonthlyFee = entity.MonthlyFee,
+            ContractStartDate = entity.ContractStartDate,
+            ContractEndDate = entity.ContractEndDate,
+            ChangeReason = entity.ChangeReason,
             IsCurrent = entity.IsCurrent,
             LinkedAtUtc = NormalizeUtc(entity.LinkedAtUtc),
             UnlinkedAtUtc = NormalizeUtc(entity.UnlinkedAtUtc)
         };
+
+    public static void Apply(this RentalAssetAssignmentHistory entity, RentalAssetAssignmentHistoryDto dto)
+    {
+        entity.AssetId = dto.AssetId;
+        entity.BillingProfileId = dto.BillingProfileId;
+        entity.CustomerId = dto.CustomerId;
+        entity.CustomerName = dto.CustomerName?.Trim() ?? string.Empty;
+        entity.InstallLocation = dto.InstallLocation?.Trim() ?? string.Empty;
+        entity.BillingProfileDisplay = dto.BillingProfileDisplay?.Trim() ?? string.Empty;
+        entity.ItemName = dto.ItemName?.Trim() ?? string.Empty;
+        entity.MachineNumber = dto.MachineNumber?.Trim() ?? string.Empty;
+        entity.ManagementNumber = dto.ManagementNumber?.Trim() ?? string.Empty;
+        entity.MonthlyFee = dto.MonthlyFee;
+        entity.ContractStartDate = dto.ContractStartDate;
+        entity.ContractEndDate = dto.ContractEndDate;
+        entity.ChangeReason = dto.ChangeReason?.Trim() ?? string.Empty;
+        entity.IsCurrent = dto.IsCurrent;
+        entity.LinkedAtUtc = NormalizeUtc(dto.LinkedAtUtc);
+        entity.UnlinkedAtUtc = NormalizeUtc(dto.UnlinkedAtUtc);
+        entity.IsDeleted = dto.IsDeleted;
+        entity.ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(
+            dto.ResponsibleOfficeCode,
+            dto.OfficeCode,
+            entity.ResponsibleOfficeCode);
+        entity.OfficeCode = NormalizeOwningOfficeCode(
+            dto.OfficeCode,
+            entity.ResponsibleOfficeCode,
+            entity.OfficeCode);
+        entity.TenantCode = NormalizeOperationalTenantCode(
+            dto.TenantCode,
+            entity.OfficeCode,
+            entity.ResponsibleOfficeCode);
+    }
 
     public static void Apply(this RentalBillingLog entity, RentalBillingLogDto dto)
     {
@@ -968,7 +1030,7 @@ public static class DtoMappings
             IsLatestVersion = entity.IsLatestVersion,
             VoucherType = entity.VoucherType,
             InvoiceDate = entity.InvoiceDate, TotalAmount = entity.TotalAmount,
-            SupplyAmount = entity.SupplyAmount, VatAmount = entity.VatAmount, TaxInvoiceIssued = entity.TaxInvoiceIssued, Memo = entity.Memo,
+            SupplyAmount = entity.SupplyAmount, VatAmount = entity.VatAmount, VatMode = InvoiceVatModes.Normalize(entity.VatMode), TaxInvoiceIssued = entity.TaxInvoiceIssued, Memo = entity.Memo,
             Lines = entity.Lines.Where(x => !x.IsDeleted).OrderBy(x => x.Id).Select(x => x.ToDto()).ToList(),
             Payments = entity.Payments.Where(x => !x.IsDeleted).OrderByDescending(x => x.PaymentDate).Select(x => x.ToDto()).ToList()
         };
@@ -990,7 +1052,7 @@ public static class DtoMappings
         entity.CustomerId = dto.CustomerId; entity.InvoiceNumber = dto.InvoiceNumber;
         entity.LocalTempNumber = dto.LocalTempNumber; entity.VoucherType = dto.VoucherType;
         entity.SourceWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(dto.SourceWarehouseCode, dto.ResponsibleOfficeCode, dto.OfficeCode);
-        entity.InvoiceDate = dto.InvoiceDate; entity.TaxInvoiceIssued = dto.TaxInvoiceIssued; entity.Memo = dto.Memo; entity.IsDeleted = dto.IsDeleted;
+        entity.InvoiceDate = dto.InvoiceDate; entity.VatMode = InvoiceVatModes.Normalize(dto.VatMode); entity.TaxInvoiceIssued = dto.TaxInvoiceIssued; entity.Memo = dto.Memo; entity.IsDeleted = dto.IsDeleted;
         entity.LinkedRentalBillingProfileId = dto.LinkedRentalBillingProfileId;
         entity.LinkedRentalBillingRunId = dto.LinkedRentalBillingRunId;
         entity.VersionGroupId = dto.VersionGroupId == Guid.Empty ? dto.Id : dto.VersionGroupId;
@@ -1010,9 +1072,10 @@ public static class DtoMappings
             entity.OfficeCode,
             entity.ResponsibleOfficeCode);
         var lines = dto.Lines ?? [];
-        entity.TotalAmount = lines.Sum(x => x.LineAmount);
-        entity.SupplyAmount = Math.Round(entity.TotalAmount / 1.1m, 0, MidpointRounding.AwayFromZero);
-        entity.VatAmount = entity.TotalAmount - entity.SupplyAmount;
+        var totals = InvoiceVatModes.CalculateTotals(lines.Select(x => x.LineAmount), entity.VatMode);
+        entity.TotalAmount = totals.TotalAmount;
+        entity.SupplyAmount = totals.SupplyAmount;
+        entity.VatAmount = totals.VatAmount;
     }
 
     private static string NormalizeResponsibleOfficeCode(string? responsibleOfficeCode, string? ownerOfficeCode = null, string? fallbackOfficeCode = null)
@@ -1027,6 +1090,9 @@ public static class DtoMappings
             NormalizeOwningOfficeCode(ownerOfficeCode, responsibleOfficeCode),
             tenantCode,
             NormalizeResponsibleOfficeCode(responsibleOfficeCode, ownerOfficeCode));
+
+    private static string NormalizePriceGrade(string? priceGrade)
+        => string.IsNullOrWhiteSpace(priceGrade) ? "매출단가" : priceGrade.Trim();
 
     public static RecycleBinPurgeRecordDto ToDto(this RecycleBinPurgeRecord entity) =>
         new()

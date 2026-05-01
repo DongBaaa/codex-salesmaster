@@ -1,6 +1,8 @@
 ﻿using 거래플랜.Desktop.App.Data;
 using 거래플랜.Shared.Contracts;
 
+using System.Text.Json.Serialization;
+
 namespace 거래플랜.Desktop.App.Services;
 
 public sealed class RentalBillingFilter
@@ -9,6 +11,7 @@ public sealed class RentalBillingFilter
     public string OfficeCode { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public bool DueOnly { get; set; }
+    public bool ExpandCustomerSummaryRows { get; set; }
     public DateOnly ReferenceDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
 }
 
@@ -53,11 +56,12 @@ public sealed class RentalAssetAssignmentHistoryViewItem
     public Guid HistoryId { get; init; }
     public Guid AssetId { get; init; }
     public bool IsCurrent { get; init; }
+    public bool IsLinkedAtEstimated { get; init; }
     public string StatusDisplay => IsCurrent ? "현재 임대" : "종료";
     public DateTime LinkedAtLocal { get; init; }
     public DateTime? UnlinkedAtLocal { get; init; }
-    public string LinkedAtDisplay => LinkedAtLocal.ToString("yyyy-MM-dd HH:mm");
-    public string UnlinkedAtDisplay => IsCurrent ? "현재" : UnlinkedAtLocal?.ToString("yyyy-MM-dd HH:mm") ?? "-";
+    public string LinkedAtDisplay => IsLinkedAtEstimated ? "시작일 미상" : LinkedAtLocal.ToString("yyyy-MM-dd");
+    public string UnlinkedAtDisplay => IsCurrent ? "현재" : UnlinkedAtLocal?.ToString("yyyy-MM-dd") ?? "-";
     public string PeriodDisplay => $"{LinkedAtDisplay} ~ {UnlinkedAtDisplay}";
     public string CustomerName { get; init; } = string.Empty;
     public string InstallLocation { get; init; } = string.Empty;
@@ -68,6 +72,24 @@ public sealed class RentalAssetAssignmentHistoryViewItem
     public string ManagementNumber { get; init; } = string.Empty;
     public decimal MonthlyFee { get; init; }
     public string ChangeReason { get; init; } = string.Empty;
+}
+
+public sealed class RentalAssetAssignmentHistoryEditRequest
+{
+    public Guid HistoryId { get; set; }
+    public Guid AssetId { get; set; }
+    public bool IsNew => HistoryId == Guid.Empty;
+    public bool IsCurrent { get; set; }
+    public DateTime LinkedAtLocal { get; set; } = DateTime.Today;
+    public DateTime? UnlinkedAtLocal { get; set; } = DateTime.Today;
+    public string CustomerName { get; set; } = string.Empty;
+    public string InstallLocation { get; set; } = string.Empty;
+    public string BillingProfileDisplay { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
+    public string MachineNumber { get; set; } = string.Empty;
+    public string ManagementNumber { get; set; } = string.Empty;
+    public decimal MonthlyFee { get; set; }
+    public string ChangeReason { get; set; } = string.Empty;
 }
 
 public sealed class RentalLinkReviewItem
@@ -234,6 +256,11 @@ public sealed class RentalBillingTemplateItemModel
     public Guid ItemId { get; set; } = Guid.NewGuid();
     public string DisplayItemName { get; set; } = string.Empty;
     public string BillingLineMode { get; set; } = string.Empty;
+    public string Specification { get; set; } = string.Empty;
+    public string Unit { get; set; } = string.Empty;
+    public string MaterialNumber { get; set; } = string.Empty;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? RepresentativeAssetId { get; set; }
     public decimal Quantity { get; set; } = 1m;
     public decimal UnitPrice { get; set; }
     public decimal Amount { get; set; }

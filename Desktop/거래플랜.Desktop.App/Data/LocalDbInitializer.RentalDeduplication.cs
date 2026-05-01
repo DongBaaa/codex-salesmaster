@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Data;
@@ -774,11 +775,15 @@ public static partial class LocalDbInitializer
             if (amount <= 0m && includedAssetIds.Count == 0)
                 return "[]";
 
+            var representativeAssetId = string.Equals(NormalizeTemplateBillingLineMode(profile.BillingType), "묶음", StringComparison.OrdinalIgnoreCase)
+                ? includedAssetIds.FirstOrDefault(id => id != Guid.Empty)
+                : Guid.Empty;
             templateItems.Add(new BillingTemplateItemSnapshot
             {
                 ItemId = Guid.Empty,
                 DisplayItemName = displayItemName,
                 BillingLineMode = NormalizeTemplateBillingLineMode(profile.BillingType),
+                RepresentativeAssetId = representativeAssetId == Guid.Empty ? null : representativeAssetId,
                 Quantity = 1m,
                 UnitPrice = amount,
                 Amount = amount,
@@ -800,6 +805,7 @@ public static partial class LocalDbInitializer
             if (templateItems.Count == 1)
             {
                 templateItems[0].IncludedAssetIds = mergedIncludedAssetIds;
+                EnsureSnapshotRepresentativeAsset(templateItems[0]);
             }
             else
             {
@@ -811,6 +817,7 @@ public static partial class LocalDbInitializer
                         .ToList();
                     if (templateItemAssetIds.Count == 0)
                         templateItem.IncludedAssetIds = mergedIncludedAssetIds;
+                    EnsureSnapshotRepresentativeAsset(templateItem);
                 }
             }
         }
@@ -835,6 +842,31 @@ public static partial class LocalDbInitializer
 
     private static string SerializeBillingTemplateItems(IEnumerable<BillingTemplateItemSnapshot> items)
         => JsonSerializer.Serialize((items ?? Enumerable.Empty<BillingTemplateItemSnapshot>()).ToList());
+
+    private static void EnsureSnapshotRepresentativeAsset(BillingTemplateItemSnapshot item)
+    {
+        if (!string.Equals(NormalizeTemplateBillingLineMode(item.BillingLineMode), "묶음", StringComparison.OrdinalIgnoreCase))
+        {
+            item.RepresentativeAssetId = null;
+            return;
+        }
+
+        var includedAssetIds = (item.IncludedAssetIds ?? new List<Guid>())
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (includedAssetIds.Count == 0)
+        {
+            item.RepresentativeAssetId = null;
+            return;
+        }
+
+        if (!item.RepresentativeAssetId.HasValue ||
+            !includedAssetIds.Contains(item.RepresentativeAssetId.Value))
+        {
+            item.RepresentativeAssetId = includedAssetIds[0];
+        }
+    }
 
     private static decimal ResolveTemplateAmount(BillingTemplateItemSnapshot item)
         => item.Amount > 0m
@@ -889,6 +921,8 @@ public static partial class LocalDbInitializer
         public Guid ItemId { get; set; }
         public string DisplayItemName { get; set; } = string.Empty;
         public string BillingLineMode { get; set; } = string.Empty;
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public Guid? RepresentativeAssetId { get; set; }
         public decimal Quantity { get; set; } = 1m;
         public decimal UnitPrice { get; set; }
         public decimal Amount { get; set; }

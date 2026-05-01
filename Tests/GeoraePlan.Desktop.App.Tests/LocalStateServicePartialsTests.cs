@@ -213,7 +213,7 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public async Task RentalStateService_GetAssetLinkCandidates_ExpandedScopeIncludesSameTenantOwnerAssets()
+    public async Task RentalStateService_GetAssetLinkCandidates_ExpandedScopeIncludesCrossTenantAssets()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-link-candidates-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -306,13 +306,18 @@ public sealed class LocalStateServicePartialsTests
 
             Assert.DoesNotContain(currentOfficeOnly, candidate => candidate.Source.Id == usenetOwnedAssetId);
             Assert.Contains(currentOfficeOnly, candidate => candidate.Source.Id == yeonsuAssetId);
-            Assert.DoesNotContain(expanded, candidate => candidate.Source.Id == itworldAssetId);
+            Assert.Contains(expanded, candidate => candidate.Source.Id == itworldAssetId);
             Assert.Contains(itworldExpanded, candidate => candidate.Source.Id == itworldAssetId);
 
             var expandedUsenetAsset = Assert.Single(expanded, candidate => candidate.Source.Id == usenetOwnedAssetId);
             Assert.True(expandedUsenetAsset.IsOutsideCurrentOffice);
             Assert.Equal("USENET", expandedUsenetAsset.ManagementCompanyName);
             Assert.Equal("USENET", expandedUsenetAsset.AssetScopeDisplay);
+
+            var expandedItworldAsset = Assert.Single(expanded, candidate => candidate.Source.Id == itworldAssetId);
+            Assert.True(expandedItworldAsset.IsOutsideCurrentOffice);
+            Assert.Equal("ITWORLD", expandedItworldAsset.ManagementCompanyName);
+            Assert.Equal("ITWORLD", expandedItworldAsset.AssetScopeDisplay);
         }
         finally
         {
@@ -580,7 +585,7 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public async Task RentalStateService_SaveBillingProfile_DeniesCrossTenantAssetTransfer()
+    public async Task RentalStateService_SaveBillingProfile_AllowsCrossTenantAssetReferenceWithoutTransfer()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-link-cross-tenant-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -652,8 +657,7 @@ public sealed class LocalStateServicePartialsTests
                     }
                 ]);
 
-            Assert.False(result.Success);
-            Assert.Contains("다른 업체/담당지점", result.Message, StringComparison.Ordinal);
+            Assert.True(result.Success, result.Message);
 
             var persistedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
             Assert.Null(persistedAsset.BillingProfileId);
@@ -693,6 +697,118 @@ public sealed class LocalStateServicePartialsTests
         Assert.Contains("# 무결성 점검 리포트", markdown, StringComparison.Ordinal);
         Assert.Contains("sync_outbox_failed_pending", markdown, StringComparison.Ordinal);
         Assert.Contains("out_of_scope_items", markdown, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task LocalStateService_BuildIntegrityReport_ScopesRentalOrphansByTenant()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-integrity-tenant-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetCustomerId = Guid.Parse("91411111-1111-1111-1111-111111111111");
+            var usenetItemId = Guid.Parse("91422222-2222-2222-2222-222222222222");
+            var missingItworldCustomerId = Guid.Parse("91433333-3333-3333-3333-333333333333");
+            var missingItworldItemId = Guid.Parse("91444444-4444-4444-4444-444444444444");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = usenetCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "USENET Customer",
+                NameMatchKey = "USENETCUSTOMER",
+                IsDirty = false
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = usenetItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "USENET Item",
+                NameMatchKey = "USENETITEM",
+                SpecificationOriginal = "A4",
+                SpecificationMatchKey = "A4",
+                IsDirty = false
+            });
+            db.RentalAssets.AddRange(
+                new LocalRentalAsset
+                {
+                    Id = Guid.Parse("91455555-5555-5555-5555-555555555555"),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = "USENET|OK|ASSET",
+                    CustomerId = usenetCustomerId,
+                    ItemId = usenetItemId,
+                    CustomerName = "USENET Customer",
+                    CurrentCustomerName = "USENET Customer",
+                    ItemName = "USENET Item",
+                    MachineNumber = "USENET-OK",
+                    IsDirty = false
+                },
+                new LocalRentalAsset
+                {
+                    Id = Guid.Parse("91466666-6666-6666-6666-666666666666"),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    AssetKey = "ITWORLD|ORPHAN|ASSET",
+                    CustomerId = missingItworldCustomerId,
+                    ItemId = missingItworldItemId,
+                    CustomerName = "ITWORLD Customer",
+                    CurrentCustomerName = "ITWORLD Customer",
+                    ItemName = "ITWORLD Item",
+                    MachineNumber = "ITWORLD-ORPHAN",
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var usenetSession = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), usenetSession);
+            var usenetReport = await service.BuildIntegrityReportAsync(usenetSession);
+            var itworldReport = await service.BuildIntegrityReportAsync(CreateItworldAdminSession());
+
+            Assert.DoesNotContain(usenetReport.Issues, issue => issue.Code == "orphan_rental_asset_customer_refs");
+            Assert.DoesNotContain(usenetReport.Issues, issue => issue.Code == "orphan_rental_asset_item_refs");
+
+            Assert.Contains(itworldReport.Issues, issue =>
+                issue.Code == "orphan_rental_asset_customer_refs" &&
+                issue.Count == 1);
+            Assert.Contains(itworldReport.Issues, issue =>
+                issue.Code == "orphan_rental_asset_item_refs" &&
+                issue.Count == 1);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public void RentalAssetLinkDialog_SelectionCheckbox_UpdatesSourceImmediately()
+    {
+        var xamlPath = Path.Combine(
+            FindRepositoryRoot(),
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "RentalAssetLinkDialog.xaml");
+
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.DoesNotContain("DataGridCheckBoxColumn Header=\"선택\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("IsChecked=\"{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}\"", xaml, StringComparison.Ordinal);
     }
 
     private static bool IsFinancialSummaryInvoice(
@@ -1666,7 +1782,7 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public async Task SaveBillingProfileAsync_RejectsCrossTenantIncludedAsset()
+    public async Task SaveBillingProfileAsync_AllowsCrossTenantIncludedAssetReference()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-profile-asset-scope-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -1734,10 +1850,13 @@ public sealed class LocalStateServicePartialsTests
             var rental = new RentalStateService(db);
             var result = await rental.SaveBillingProfileAsync(profile, session);
 
-            Assert.False(result.Success);
-            Assert.True(result.PermissionDenied);
-            Assert.Contains("다른 업체/담당지점", result.Message, StringComparison.Ordinal);
-            Assert.Empty(await db.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync());
+            Assert.True(result.Success, result.Message);
+            Assert.Single(await db.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync());
+
+            var persistedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == crossTenantAssetId);
+            Assert.Null(persistedAsset.BillingProfileId);
+            Assert.Equal(TenantScopeCatalog.Itworld, persistedAsset.TenantCode);
+            Assert.Equal(OfficeCodeCatalog.Itworld, persistedAsset.ResponsibleOfficeCode);
         }
         finally
         {
@@ -2070,18 +2189,18 @@ public sealed class LocalStateServicePartialsTests
             Assert.Equal(OfficeCodeCatalog.Itworld, fixedProfile.OfficeCode);
             Assert.Equal(OfficeCodeCatalog.Itworld, fixedProfile.ManagementCompanyCode);
             Assert.Equal(OfficeCodeCatalog.Itworld, fixedProfile.ResponsibleOfficeCode);
-            Assert.True(fixedProfile.IsDirty);
+            Assert.False(fixedProfile.IsDirty);
 
             Assert.Equal(TenantScopeCatalog.Itworld, fixedAsset.TenantCode);
             Assert.Equal(OfficeCodeCatalog.Itworld, fixedAsset.OfficeCode);
             Assert.Equal(OfficeCodeCatalog.Itworld, fixedAsset.ManagementCompanyCode);
             Assert.Equal(OfficeCodeCatalog.Itworld, fixedAsset.ResponsibleOfficeCode);
-            Assert.True(fixedAsset.IsDirty);
+            Assert.False(fixedAsset.IsDirty);
 
             Assert.Equal(TenantScopeCatalog.Itworld, fixedLog.TenantCode);
             Assert.Equal(OfficeCodeCatalog.Itworld, fixedLog.OfficeCode);
             Assert.Equal(OfficeCodeCatalog.Itworld, fixedLog.ResponsibleOfficeCode);
-            Assert.True(fixedLog.IsDirty);
+            Assert.False(fixedLog.IsDirty);
 
             Assert.Equal(TenantScopeCatalog.UsenetGroup, yeonsuProfile.TenantCode);
             Assert.Equal(OfficeCodeCatalog.Usenet, yeonsuProfile.OfficeCode);
@@ -2158,18 +2277,8 @@ public sealed class LocalStateServicePartialsTests
             });
             await db.SaveChangesAsync();
 
-            var session = new SessionState();
-            session.SetOfflineSession(new UserSessionDto
-            {
-                Username = "admin",
-                Role = DomainConstants.RoleAdmin,
-                TenantCode = TenantScopeCatalog.UsenetGroup,
-                OfficeCode = OfficeCodeCatalog.Usenet,
-                ScopeType = TenantScopeCatalog.ScopeAdmin
-            });
-
             var service = new DataIntegrityIssueService(db);
-            var result = await service.ScanAsync(session);
+            var result = await service.ScanAsync(CreateAdminSession());
 
             Assert.True(result.HasIssues);
             Assert.Contains(result.Summaries, summary => summary.Code == DataIntegrityIssueCodes.RentalProfileMonthlyAmountMismatch);
@@ -2244,18 +2353,8 @@ public sealed class LocalStateServicePartialsTests
             });
             await db.SaveChangesAsync();
 
-            var session = new SessionState();
-            session.SetOfflineSession(new UserSessionDto
-            {
-                Username = "admin",
-                Role = DomainConstants.RoleAdmin,
-                TenantCode = TenantScopeCatalog.UsenetGroup,
-                OfficeCode = OfficeCodeCatalog.Usenet,
-                ScopeType = TenantScopeCatalog.ScopeAdmin
-            });
-
             var service = new DataIntegrityIssueService(db);
-            var result = await service.ScanAsync(session);
+            var result = await service.ScanAsync(CreateItworldAdminSession());
 
             Assert.DoesNotContain(result.Issues, issue =>
                 issue.Code == DataIntegrityIssueCodes.RentalAssetProfileScopeMismatch &&
@@ -2361,6 +2460,34 @@ public sealed class LocalStateServicePartialsTests
             ScopeType = TenantScopeCatalog.ScopeAdmin
         });
         return session;
+    }
+
+    private static SessionState CreateItworldAdminSession()
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "itworld",
+            Role = DomainConstants.RoleAdmin,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "거래플랜.sln")))
+                return directory.FullName;
+
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("거래플랜.sln을 찾을 수 없습니다.");
     }
 
     private static T InvokePrivateStatic<T>(string methodName, params object?[]? args)

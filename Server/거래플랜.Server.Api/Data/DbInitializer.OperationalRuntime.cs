@@ -83,12 +83,25 @@ public static partial class DbInitializer
                     "BillingProfileId" TEXT NULL,
                     "CustomerId" TEXT NULL,
                     "TenantCode" TEXT NOT NULL DEFAULT 'USENET_GROUP',
+                    "OfficeCode" TEXT NOT NULL DEFAULT 'SHARED',
                     "ResponsibleOfficeCode" TEXT NOT NULL DEFAULT 'USENET',
                     "CustomerName" TEXT NOT NULL DEFAULT '',
                     "InstallLocation" TEXT NOT NULL DEFAULT '',
+                    "BillingProfileDisplay" TEXT NOT NULL DEFAULT '',
+                    "ItemName" TEXT NOT NULL DEFAULT '',
+                    "MachineNumber" TEXT NOT NULL DEFAULT '',
+                    "ManagementNumber" TEXT NOT NULL DEFAULT '',
+                    "MonthlyFee" TEXT NOT NULL DEFAULT '0',
+                    "ContractStartDate" TEXT NULL,
+                    "ContractEndDate" TEXT NULL,
+                    "ChangeReason" TEXT NOT NULL DEFAULT '',
                     "IsCurrent" INTEGER NOT NULL DEFAULT 1,
                     "LinkedAtUtc" TEXT NOT NULL,
-                    "UnlinkedAtUtc" TEXT NULL
+                    "UnlinkedAtUtc" TEXT NULL,
+                    "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                    "CreatedAtUtc" TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z',
+                    "UpdatedAtUtc" TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z',
+                    "Revision" INTEGER NOT NULL DEFAULT 0
                 );
                 """,
                 cancellationToken);
@@ -156,12 +169,25 @@ public static partial class DbInitializer
                     "BillingProfileId" uuid NULL,
                     "CustomerId" uuid NULL,
                     "TenantCode" text NOT NULL DEFAULT 'USENET_GROUP',
+                    "OfficeCode" text NOT NULL DEFAULT 'SHARED',
                     "ResponsibleOfficeCode" text NOT NULL DEFAULT 'USENET',
                     "CustomerName" text NOT NULL DEFAULT '',
                     "InstallLocation" text NOT NULL DEFAULT '',
+                    "BillingProfileDisplay" text NOT NULL DEFAULT '',
+                    "ItemName" text NOT NULL DEFAULT '',
+                    "MachineNumber" text NOT NULL DEFAULT '',
+                    "ManagementNumber" text NOT NULL DEFAULT '',
+                    "MonthlyFee" numeric(18,2) NOT NULL DEFAULT 0,
+                    "ContractStartDate" date NULL,
+                    "ContractEndDate" date NULL,
+                    "ChangeReason" text NOT NULL DEFAULT '',
                     "IsCurrent" boolean NOT NULL DEFAULT true,
                     "LinkedAtUtc" timestamp with time zone NOT NULL,
-                    "UnlinkedAtUtc" timestamp with time zone NULL
+                    "UnlinkedAtUtc" timestamp with time zone NULL,
+                    "IsDeleted" boolean NOT NULL DEFAULT false,
+                    "CreatedAtUtc" timestamp with time zone NOT NULL DEFAULT TIMESTAMPTZ '1970-01-01 00:00:00+00',
+                    "UpdatedAtUtc" timestamp with time zone NOT NULL DEFAULT TIMESTAMPTZ '1970-01-01 00:00:00+00',
+                    "Revision" bigint NOT NULL DEFAULT 0
                 );
                 """,
                 cancellationToken);
@@ -187,6 +213,20 @@ public static partial class DbInitializer
                 cancellationToken);
         }
 
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "OfficeCode", "TEXT NOT NULL DEFAULT 'SHARED'", "text NOT NULL DEFAULT 'SHARED'", cancellationToken);
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "BillingProfileDisplay", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "ItemName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "MachineNumber", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "ManagementNumber", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "MonthlyFee", "TEXT NOT NULL DEFAULT '0'", "numeric(18,2) NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "ContractStartDate", "TEXT NULL", "date NULL", cancellationToken);
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "ContractEndDate", "TEXT NULL", "date NULL", cancellationToken);
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "ChangeReason", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "IsDeleted", "INTEGER NOT NULL DEFAULT 0", "boolean NOT NULL DEFAULT false", cancellationToken);
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "CreatedAtUtc", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'", "timestamp with time zone NOT NULL DEFAULT TIMESTAMPTZ '1970-01-01 00:00:00+00'", cancellationToken);
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "UpdatedAtUtc", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'", "timestamp with time zone NOT NULL DEFAULT TIMESTAMPTZ '1970-01-01 00:00:00+00'", cancellationToken);
+        await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "Revision", "INTEGER NOT NULL DEFAULT 0", "bigint NOT NULL DEFAULT 0", cancellationToken);
+
         var conflictStatusBackfillSql = providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase)
             ? "UPDATE \"ConflictLogs\" SET \"Status\" = CASE WHEN \"ResolvedAtUtc\" IS NOT NULL THEN 'Resolved' ELSE COALESCE(NULLIF(TRIM(\"Status\"), ''), 'Open') END;"
             : "UPDATE \"ConflictLogs\" SET \"Status\" = CASE WHEN \"ResolvedAtUtc\" IS NOT NULL THEN 'Resolved' ELSE COALESCE(NULLIF(TRIM(\"Status\"), ''), 'Open') END;";
@@ -200,6 +240,7 @@ public static partial class DbInitializer
                      "CREATE INDEX IF NOT EXISTS \"IX_InventoryLedgerEntries_WarehouseCode\" ON \"InventoryLedgerEntries\" (\"WarehouseCode\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_AssetId_IsCurrent\" ON \"RentalAssetAssignmentHistories\" (\"AssetId\", \"IsCurrent\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_BillingProfileId\" ON \"RentalAssetAssignmentHistories\" (\"BillingProfileId\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_Revision\" ON \"RentalAssetAssignmentHistories\" (\"Revision\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_ActiveEditSessions_EntityType_EntityId_ExpiresAtUtc\" ON \"ActiveEditSessions\" (\"EntityType\", \"EntityId\", \"ExpiresAtUtc\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_ActiveEditSessions_LastHeartbeatUtc\" ON \"ActiveEditSessions\" (\"LastHeartbeatUtc\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_ActiveEditSessions_Username\" ON \"ActiveEditSessions\" (\"Username\");"

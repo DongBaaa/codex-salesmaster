@@ -17,6 +17,14 @@ public enum PeriodLedgerScope
     AllCustomers = 1
 }
 
+public enum PeriodLedgerMemoSource
+{
+    None = 0,
+    Invoice = 1,
+    Payment = 2,
+    Transaction = 3
+}
+
 public sealed class PeriodLedgerQuery
 {
     public DateOnly From { get; init; }
@@ -26,6 +34,7 @@ public sealed class PeriodLedgerQuery
     public Guid? CustomerId { get; init; }
     public bool SortByCustomerName { get; init; }
     public bool IncludeProfit { get; init; }
+    public string SearchText { get; init; } = string.Empty;
 }
 
 public sealed class PeriodLedgerBuildResult
@@ -42,6 +51,7 @@ public sealed class PeriodLedgerBuildResult
 
 public sealed class PeriodLedgerYeonsuDeliveryRow
 {
+    public Guid InvoiceId { get; init; }
     public int No { get; init; }
     public required DateOnly DeliveryDate { get; init; }
     public required string CustomerName { get; init; }
@@ -77,6 +87,9 @@ public sealed class PeriodLedgerRow
     public bool IsInvoiceSummary { get; init; }
     public bool IsSubTotal { get; init; }
     public Guid? InvoiceId { get; init; }
+    public Guid? PaymentId { get; init; }
+    public Guid? TransactionId { get; init; }
+    public PeriodLedgerMemoSource MemoSource { get; init; } = PeriodLedgerMemoSource.None;
     public decimal? SubTotalQuantity { get; init; }
     public decimal? SubTotalAmount { get; init; }
     public decimal? SubTotalVat { get; init; }
@@ -85,12 +98,15 @@ public sealed class PeriodLedgerRow
 
 public sealed class PeriodLedgerItemRow
 {
+    public Guid LineId { get; init; }
     public required string ItemName { get; init; }
     public required string Specification { get; init; }
     public decimal Quantity { get; init; }
     public decimal UnitPrice { get; init; }
+    public decimal SupplyAmount => LineAmount - VatAmount;
     public decimal LineAmount { get; init; }
     public decimal VatAmount { get; init; }
+    public required string ItemNote { get; init; }
 }
 
 public sealed class PeriodLedgerPaymentRow
@@ -106,6 +122,10 @@ public sealed class PeriodLedgerPaymentRow
     public decimal ReceivableBalance { get; init; }
     public required string CustomerName { get; init; }
     public required string Note { get; init; }
+    public Guid? InvoiceId { get; init; }
+    public Guid? PaymentId { get; init; }
+    public Guid? TransactionId { get; init; }
+    public PeriodLedgerMemoSource MemoSource { get; init; } = PeriodLedgerMemoSource.None;
 }
 
 public sealed class PeriodLedgerTotals
@@ -132,6 +152,9 @@ internal sealed class PeriodLedgerRawEvent
     public required string Note { get; init; }
     public bool IsInvoiceSummary { get; init; }
     public Guid? InvoiceId { get; init; }
+    public Guid? PaymentId { get; init; }
+    public Guid? TransactionId { get; init; }
+    public PeriodLedgerMemoSource MemoSource { get; init; } = PeriodLedgerMemoSource.None;
     public required IReadOnlyList<PeriodLedgerItemRow> Items { get; init; }
 }
 
@@ -148,6 +171,10 @@ internal sealed class PeriodPaymentEvent
     public required string Note { get; init; }
     public required string DedupKey { get; init; }
     public int Priority { get; init; }
+    public Guid? InvoiceId { get; init; }
+    public Guid? PaymentId { get; init; }
+    public Guid? TransactionId { get; init; }
+    public PeriodLedgerMemoSource MemoSource { get; init; } = PeriodLedgerMemoSource.None;
 }
 
 internal sealed class PeriodProfitContext

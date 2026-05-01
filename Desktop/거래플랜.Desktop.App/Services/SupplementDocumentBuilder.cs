@@ -10,6 +10,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Printing;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -779,12 +780,13 @@ public static class SupplementDocumentBuilder
                 : printModel.Lines.Sum(line => line.Amount);
             if (modelTotal > 0)
             {
+                var modelCalculated = InvoiceVatModes.CalculateTotals([modelTotal], printModel.VatMode);
                 var modelSupply = printModel.SupplyAmount > 0
                     ? printModel.SupplyAmount
-                    : Math.Round(modelTotal / 1.1m, 0, MidpointRounding.AwayFromZero);
+                    : modelCalculated.SupplyAmount;
                 var modelVat = printModel.VatAmount > 0
                     ? printModel.VatAmount
-                    : modelTotal - modelSupply;
+                    : modelCalculated.VatAmount;
                 return (modelSupply, modelVat, modelTotal);
             }
         }
@@ -794,12 +796,13 @@ public static class SupplementDocumentBuilder
         if (total <= 0)
             return (0m, 0m, 0m);
 
+        var calculated = InvoiceVatModes.CalculateTotals([total], invoice.VatMode);
         var supply = invoice.SupplyAmount > 0
             ? invoice.SupplyAmount
-            : Math.Round(total / 1.1m, 0, MidpointRounding.AwayFromZero);
+            : calculated.SupplyAmount;
         var vat = invoice.VatAmount > 0
             ? invoice.VatAmount
-            : total - supply;
+            : calculated.VatAmount;
 
         return (supply, vat, total);
     }
@@ -809,10 +812,16 @@ public static class SupplementDocumentBuilder
         if (printModel?.Lines is { Count: > 0 })
         {
             return printModel.Lines
-                .OrderBy(line => line.No)
-                .Select(line => new EstimatePrintLine
+                .Where(line =>
+                    !string.IsNullOrWhiteSpace(line.ItemName) ||
+                    !string.IsNullOrWhiteSpace(line.Specification) ||
+                    line.Quantity != 0 ||
+                    line.UnitPrice != 0 ||
+                    line.Amount != 0 ||
+                    !string.IsNullOrWhiteSpace(line.Remark))
+                .Select((line, index) => new EstimatePrintLine
                 {
-                    No = line.No,
+                    No = index + 1,
                     ItemName = line.ItemName ?? string.Empty,
                     Specification = line.Specification ?? string.Empty,
                     Unit = line.Unit ?? string.Empty,

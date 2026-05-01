@@ -1,5 +1,6 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Infrastructure;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Data;
 
@@ -69,6 +70,7 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalRentalManagementCompany>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalRentalBillingProfile>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalRentalAsset>().HasQueryFilter(e => !e.IsDeleted);
+        model.Entity<LocalRentalAssetAssignmentHistory>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalRentalBillingLog>().HasQueryFilter(e => !e.IsDeleted);
 
         // InvoiceLine: no ILocalSyncEntity, filter inline
@@ -93,6 +95,7 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalRentalManagementCompany>().HasIndex(e => e.Revision);
         model.Entity<LocalRentalBillingProfile>().HasIndex(e => e.Revision);
         model.Entity<LocalRentalAsset>().HasIndex(e => e.Revision);
+        model.Entity<LocalRentalAssetAssignmentHistory>().HasIndex(e => e.Revision);
         model.Entity<LocalRentalBillingLog>().HasIndex(e => e.Revision);
 
         // InvoiceLine owned by Invoice
@@ -190,6 +193,10 @@ public sealed class LocalDbContext : DbContext
             .HasIndex(i => i.ResponsibleOfficeCode);
         model.Entity<LocalInvoice>()
             .HasIndex(i => i.OfficeCode);
+        model.Entity<LocalInvoice>()
+            .Property(i => i.VatMode)
+            .HasMaxLength(20)
+            .HasDefaultValue(InvoiceVatModes.Included);
 
         model.Entity<LocalInvoiceLineSerial>()
             .HasIndex(s => new { s.InvoiceId, s.InvoiceLineId });
@@ -222,7 +229,19 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalRentalBillingProfile>()
             .HasIndex(profile => profile.ResponsibleOfficeCode);
         model.Entity<LocalRentalAsset>()
-            .HasIndex(asset => asset.AssetKey)
+            .HasIndex(asset => new { asset.TenantCode, asset.AssetKey })
+            .HasDatabaseName("IX_RentalAssets_AssetKey")
+            .HasFilter("COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"AssetKey\"), '') <> ''")
+            .IsUnique();
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.TenantCode, asset.ManagementId })
+            .HasDatabaseName("IX_RentalAssets_ManagementId")
+            .HasFilter("COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementId\"), '') <> ''")
+            .IsUnique();
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.TenantCode, asset.ManagementNumber })
+            .HasDatabaseName("IX_RentalAssets_ManagementNumber")
+            .HasFilter("COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementNumber\"), '') <> ''")
             .IsUnique();
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => asset.OfficeCode);

@@ -27,6 +27,13 @@ public sealed partial class LocalStateService
         {
             EntityId = customer.Id,
             Kind = RecycleBinEntityKind.Customer,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            BusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(
+                customer.TenantCode,
+                customer.OfficeCode,
+                customer.ResponsibleOfficeCode),
             Title = customer.NameOriginal,
             Subtitle = JoinSegments(customer.BusinessNumber, customer.Phone),
             Detail = JoinSegments(customer.Address, customer.ContactPerson, customer.Notes),
@@ -49,6 +56,9 @@ public sealed partial class LocalStateService
         {
             EntityId = item.Id,
             Kind = RecycleBinEntityKind.Item,
+            TenantCode = item.TenantCode,
+            OfficeCode = item.OfficeCode,
+            BusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(item.TenantCode, item.OfficeCode),
             Title = item.NameOriginal,
             Subtitle = JoinSegments(item.SpecificationOriginal, item.CategoryName, item.Unit),
             Detail = JoinSegments(
@@ -166,6 +176,13 @@ public sealed partial class LocalStateService
             {
                 EntityId = invoice.Id,
                 Kind = RecycleBinEntityKind.Invoice,
+                TenantCode = invoice.TenantCode,
+                OfficeCode = invoice.OfficeCode,
+                ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
+                BusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(
+                    invoice.TenantCode,
+                    invoice.OfficeCode,
+                    invoice.ResponsibleOfficeCode),
                 Title = $"{customerName} · {invoice.InvoiceDate:yyyy-MM-dd}",
                 Subtitle = JoinSegments(GetVoucherTypeLabel(invoice.VoucherType), displayNumber),
                 Detail = JoinSegments(
@@ -208,6 +225,13 @@ public sealed partial class LocalStateService
             {
                 EntityId = contract.Id,
                 Kind = RecycleBinEntityKind.CustomerContract,
+                TenantCode = customer.TenantCode,
+                OfficeCode = customer.OfficeCode,
+                ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                BusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(
+                    customer.TenantCode,
+                    customer.OfficeCode,
+                    customer.ResponsibleOfficeCode),
                 Title = $"{customer.NameOriginal} · {contract.FileName}",
                 Subtitle = JoinSegments(contract.ContractType, contract.IsPrimary ? "대표 계약서" : null),
                 Detail = JoinSegments(
@@ -262,6 +286,13 @@ public sealed partial class LocalStateService
             {
                 EntityId = payment.Id,
                 Kind = RecycleBinEntityKind.Payment,
+                TenantCode = invoice.TenantCode,
+                OfficeCode = invoice.OfficeCode,
+                ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
+                BusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(
+                    invoice.TenantCode,
+                    invoice.OfficeCode,
+                    invoice.ResponsibleOfficeCode),
                 Title = $"{customerName} · {payment.Amount:N0}원",
                 Subtitle = JoinSegments($"전표 {displayNumber}", payment.PaymentDate.ToString("yyyy-MM-dd")),
                 Detail = string.IsNullOrWhiteSpace(payment.Note) ? "삭제된 수금/지급 기록" : payment.Note,
@@ -296,6 +327,13 @@ public sealed partial class LocalStateService
             {
                 EntityId = transaction.Id,
                 Kind = RecycleBinEntityKind.Transaction,
+                TenantCode = transaction.TenantCode,
+                OfficeCode = transaction.OfficeCode,
+                ResponsibleOfficeCode = transaction.ResponsibleOfficeCode,
+                BusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(
+                    transaction.TenantCode,
+                    transaction.OfficeCode,
+                    transaction.ResponsibleOfficeCode),
                 Title = $"{customerName} · {GetTransactionKindLabel(transaction.TransactionKind)}",
                 Subtitle = JoinSegments(transaction.TransactionDate.ToString("yyyy-MM-dd"), totalAmount > 0m ? $"{totalAmount:N0}원" : null),
                 Detail = JoinSegments(transaction.Note, transaction.Memo),
@@ -335,11 +373,15 @@ public sealed partial class LocalStateService
             .ToListAsync(ct);
 
         entries.AddRange(deletedManagementCompanies
-            .Where(_ => CanManageRentalSettingsForRecycleBin(session))
+            .Where(company => CanManageRentalSettingsRecycleBinScope(session, company.Code))
             .Select(company => new RecycleBinEntry
             {
                 EntityId = company.Id,
                 Kind = RecycleBinEntityKind.RentalManagementCompany,
+                OfficeCode = company.Code,
+                ResponsibleOfficeCode = company.Code,
+                ManagementCompanyCode = company.Code,
+                BusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(null, company.Code, company.Code, company.Code),
                 Title = string.IsNullOrWhiteSpace(company.Name) ? company.Code : company.Name,
                 Subtitle = company.Code,
                 Detail = company.IsSystemDefault ? "기본 렌탈 관리업체" : string.Empty,
@@ -355,11 +397,25 @@ public sealed partial class LocalStateService
             .ToListAsync(ct);
 
         entries.AddRange(deletedRentalProfiles
-            .Where(profile => CanWriteRentalScope(session, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode))
+            .Where(profile => CanWriteRentalRecycleBinScope(
+                session,
+                profile.TenantCode,
+                profile.OfficeCode,
+                profile.ResponsibleOfficeCode,
+                profile.ManagementCompanyCode))
             .Select(profile => new RecycleBinEntry
             {
                 EntityId = profile.Id,
                 Kind = RecycleBinEntityKind.RentalBillingProfile,
+                TenantCode = profile.TenantCode,
+                OfficeCode = profile.OfficeCode,
+                ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
+                ManagementCompanyCode = profile.ManagementCompanyCode,
+                BusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(
+                    profile.TenantCode,
+                    profile.OfficeCode,
+                    profile.ResponsibleOfficeCode,
+                    profile.ManagementCompanyCode),
                 Title = string.IsNullOrWhiteSpace(profile.CustomerName) ? "(거래처 미상)" : profile.CustomerName,
                 Subtitle = JoinSegments(profile.InstallSiteName, profile.ItemName),
                 Detail = JoinSegments(
@@ -378,11 +434,25 @@ public sealed partial class LocalStateService
             .ToListAsync(ct);
 
         entries.AddRange(deletedRentalAssets
-            .Where(asset => CanWriteRentalScope(session, asset.ResponsibleOfficeCode, asset.ManagementCompanyCode))
+            .Where(asset => CanWriteRentalRecycleBinScope(
+                session,
+                asset.TenantCode,
+                asset.OfficeCode,
+                asset.ResponsibleOfficeCode,
+                asset.ManagementCompanyCode))
             .Select(asset => new RecycleBinEntry
             {
                 EntityId = asset.Id,
                 Kind = RecycleBinEntityKind.RentalAsset,
+                TenantCode = asset.TenantCode,
+                OfficeCode = asset.OfficeCode,
+                ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+                ManagementCompanyCode = asset.ManagementCompanyCode,
+                BusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(
+                    asset.TenantCode,
+                    asset.OfficeCode,
+                    asset.ResponsibleOfficeCode,
+                    asset.ManagementCompanyCode),
                 Title = string.IsNullOrWhiteSpace(asset.ManagementNumber)
                     ? string.IsNullOrWhiteSpace(asset.ItemName) ? "(렌탈 자산)" : asset.ItemName
                     : $"{asset.ManagementNumber} · {asset.ItemName}".Trim(),
@@ -416,10 +486,16 @@ public sealed partial class LocalStateService
                 .ToDictionaryAsync(profile => profile.Id, ct);
 
         entries.AddRange(deletedRentalLogs
-            .Where(log => CanWriteRentalScope(
-                session,
-                deletedRentalLogProfiles.TryGetValue(log.BillingProfileId, out var profile) ? profile.ResponsibleOfficeCode : log.ResponsibleOfficeCode,
-                deletedRentalLogProfiles.TryGetValue(log.BillingProfileId, out profile) ? profile.ManagementCompanyCode : null))
+            .Where(log =>
+            {
+                deletedRentalLogProfiles.TryGetValue(log.BillingProfileId, out var profile);
+                return CanWriteRentalRecycleBinScope(
+                    session,
+                    profile?.TenantCode ?? log.TenantCode,
+                    profile?.OfficeCode ?? log.OfficeCode,
+                    profile?.ResponsibleOfficeCode ?? log.ResponsibleOfficeCode,
+                    profile?.ManagementCompanyCode);
+            })
             .Select(log =>
             {
                 deletedRentalLogProfiles.TryGetValue(log.BillingProfileId, out var profile);
@@ -430,6 +506,15 @@ public sealed partial class LocalStateService
                 {
                     EntityId = log.Id,
                     Kind = RecycleBinEntityKind.RentalBillingLog,
+                    TenantCode = profile?.TenantCode ?? log.TenantCode,
+                    OfficeCode = profile?.OfficeCode ?? log.OfficeCode,
+                    ResponsibleOfficeCode = profile?.ResponsibleOfficeCode ?? log.ResponsibleOfficeCode,
+                    ManagementCompanyCode = profile?.ManagementCompanyCode ?? string.Empty,
+                    BusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(
+                        profile?.TenantCode ?? log.TenantCode,
+                        profile?.OfficeCode ?? log.OfficeCode,
+                        profile?.ResponsibleOfficeCode ?? log.ResponsibleOfficeCode,
+                        profile?.ManagementCompanyCode),
                     Title = title,
                     Subtitle = JoinSegments(
                         log.ScheduledDate.ToString("yyyy-MM-dd"),
@@ -1725,7 +1810,12 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("복원할 렌탈 청구프로필을 찾을 수 없습니다.");
         if (!profile.IsDeleted)
             return OfficeMutationResult.Ok(profile.Id, "이미 활성 상태인 렌탈 청구프로필입니다.");
-        if (!CanWriteRentalScope(session, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode))
+        if (!CanWriteRentalRecycleBinScope(
+                session,
+                profile.TenantCode,
+                profile.OfficeCode,
+                profile.ResponsibleOfficeCode,
+                profile.ManagementCompanyCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 청구프로필을 복원할 수 없습니다.");
 
         var now = DateTime.UtcNow;
@@ -1768,7 +1858,12 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("복원할 렌탈 자산을 찾을 수 없습니다.");
         if (!asset.IsDeleted)
             return OfficeMutationResult.Ok(asset.Id, "이미 활성 상태인 렌탈 자산입니다.");
-        if (!CanWriteRentalScope(session, asset.ResponsibleOfficeCode, asset.ManagementCompanyCode))
+        if (!CanWriteRentalRecycleBinScope(
+                session,
+                asset.TenantCode,
+                asset.OfficeCode,
+                asset.ResponsibleOfficeCode,
+                asset.ManagementCompanyCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 자산을 복원할 수 없습니다.");
 
         var activeConflict = await FindActiveRentalAssetRestoreConflictAsync(asset, ct);
@@ -1848,13 +1943,24 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("복원할 렌탈 청구로그를 찾을 수 없습니다.");
         if (!log.IsDeleted)
             return OfficeMutationResult.Ok(log.Id, "이미 활성 상태인 렌탈 청구로그입니다.");
-        if (!CanWriteRentalScope(session, log.ResponsibleOfficeCode))
+        if (!CanWriteRentalRecycleBinScope(
+                session,
+                log.TenantCode,
+                log.OfficeCode,
+                log.ResponsibleOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 청구로그를 복원할 수 없습니다.");
 
         var profile = await _db.RentalBillingProfiles
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == log.BillingProfileId, ct);
-        if (profile is not null && profile.IsDeleted && CanWriteRentalScope(session, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode))
+        if (profile is not null &&
+            profile.IsDeleted &&
+            CanWriteRentalRecycleBinScope(
+                session,
+                profile.TenantCode,
+                profile.OfficeCode,
+                profile.ResponsibleOfficeCode,
+                profile.ManagementCompanyCode))
         {
             RestoreEntity(profile, DateTime.UtcNow);
         }
@@ -1966,7 +2072,12 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("영구삭제할 렌탈 청구프로필을 찾을 수 없습니다.");
         if (!profile.IsDeleted)
             return OfficeMutationResult.Denied("활성 상태의 렌탈 청구프로필은 휴지통에서 영구삭제할 수 없습니다.");
-        if (!CanWriteRentalScope(session, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode))
+        if (!CanWriteRentalRecycleBinScope(
+                session,
+                profile.TenantCode,
+                profile.OfficeCode,
+                profile.ResponsibleOfficeCode,
+                profile.ManagementCompanyCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 청구프로필을 영구삭제할 수 없습니다.");
 
         var hasInvoices = await _db.Invoices
@@ -2026,7 +2137,12 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("영구삭제할 렌탈 자산을 찾을 수 없습니다.");
         if (!asset.IsDeleted)
             return OfficeMutationResult.Denied("활성 상태의 렌탈 자산은 휴지통에서 영구삭제할 수 없습니다.");
-        if (!CanWriteRentalScope(session, asset.ResponsibleOfficeCode, asset.ManagementCompanyCode))
+        if (!CanWriteRentalRecycleBinScope(
+                session,
+                asset.TenantCode,
+                asset.OfficeCode,
+                asset.ResponsibleOfficeCode,
+                asset.ManagementCompanyCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 자산을 영구삭제할 수 없습니다.");
 
         var now = DateTime.UtcNow;
@@ -2067,7 +2183,11 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("영구삭제할 렌탈 청구로그를 찾을 수 없습니다.");
         if (!log.IsDeleted)
             return OfficeMutationResult.Denied("활성 상태의 렌탈 청구로그는 휴지통에서 영구삭제할 수 없습니다.");
-        if (!CanWriteRentalScope(session, log.ResponsibleOfficeCode))
+        if (!CanWriteRentalRecycleBinScope(
+                session,
+                log.TenantCode,
+                log.OfficeCode,
+                log.ResponsibleOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 청구로그를 영구삭제할 수 없습니다.");
 
         var billingProfileId = log.BillingProfileId;
@@ -2121,14 +2241,13 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct)
     {
-        if (!CanManageRentalSettingsForRecycleBin(session))
-            return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 관리업체를 복원할 수 없습니다.");
-
         var company = await _db.RentalManagementCompanies
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == companyId, ct);
         if (company is null)
             return OfficeMutationResult.Missing("복원할 렌탈 관리업체를 찾을 수 없습니다.");
+        if (!CanManageRentalSettingsRecycleBinScope(session, company.Code))
+            return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 관리업체를 복원할 수 없습니다.");
         if (!company.IsDeleted)
             return OfficeMutationResult.Ok(company.Id, "이미 활성 상태인 렌탈 관리업체입니다.");
 
@@ -2332,9 +2451,6 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct)
     {
-        if (!CanManageRentalSettingsForRecycleBin(session))
-            return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 관리업체를 영구삭제할 수 없습니다.");
-
         return await NormalizeLocalMutationResultAsync(async () =>
         {
             var company = await _db.RentalManagementCompanies
@@ -2342,6 +2458,8 @@ public sealed partial class LocalStateService
                 .FirstOrDefaultAsync(current => current.Id == companyId, ct);
             if (company is null)
                 return LocalMutationResult.Missing("영구삭제할 렌탈 관리업체를 찾을 수 없습니다.");
+            if (!CanManageRentalSettingsRecycleBinScope(session, company.Code))
+                return LocalMutationResult.Denied("권한이 없어 해당 렌탈 관리업체를 영구삭제할 수 없습니다.");
             if (!company.IsDeleted)
                 return LocalMutationResult.Denied("활성 상태 렌탈 관리업체는 휴지통에서 영구삭제할 수 없습니다.");
 
@@ -2368,6 +2486,78 @@ public sealed partial class LocalStateService
 
     private static bool CanManageSharedRecycleBin(SessionState? session)
         => session is not null && session.IsLoggedIn && (session.HasAdministrativePrivileges || session.HasGlobalDataScope);
+
+    private static bool CanManageRentalSettingsRecycleBinScope(SessionState? session, string? managementCompanyCode)
+        => CanManageRentalSettingsForRecycleBin(session) &&
+           RecycleBinEntityBelongsToCurrentBusinessDatabase(
+               session,
+               tenantCode: null,
+               officeCode: managementCompanyCode,
+               responsibleOfficeCode: managementCompanyCode,
+               managementCompanyCode: managementCompanyCode);
+
+    private static bool CanWriteRentalRecycleBinScope(
+        SessionState? session,
+        string? tenantCode,
+        string? officeCode,
+        string? responsibleOfficeCode,
+        string? managementCompanyCode = null)
+    {
+        if (!RecycleBinEntityBelongsToCurrentBusinessDatabase(
+                session,
+                tenantCode,
+                officeCode,
+                responsibleOfficeCode,
+                managementCompanyCode))
+        {
+            return false;
+        }
+
+        return CanWriteRentalScope(session, responsibleOfficeCode, managementCompanyCode);
+    }
+
+    private static bool RecycleBinEntityBelongsToCurrentBusinessDatabase(
+        SessionState? session,
+        string? tenantCode,
+        string? officeCode,
+        string? responsibleOfficeCode = null,
+        string? managementCompanyCode = null)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return false;
+
+        var currentDatabaseName = ResolveSessionRecycleBinBusinessDatabaseName(session);
+        var entityDatabaseName = ResolveRecycleBinBusinessDatabaseName(
+            tenantCode,
+            officeCode,
+            responsibleOfficeCode,
+            managementCompanyCode);
+        return string.Equals(currentDatabaseName, entityDatabaseName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveSessionRecycleBinBusinessDatabaseName(SessionState session)
+    {
+        if (!string.IsNullOrWhiteSpace(session.SelectedBusinessDatabaseName))
+            return TenantScopeCatalog.GetDatabaseName(session.SelectedBusinessDatabaseName);
+
+        return ResolveRecycleBinBusinessDatabaseName(session.TenantCode, session.OfficeCode);
+    }
+
+    private static string ResolveRecycleBinBusinessDatabaseName(
+        string? tenantCode,
+        string? officeCode,
+        string? responsibleOfficeCode = null,
+        string? managementCompanyCode = null)
+    {
+        var fallbackOfficeCode = !string.IsNullOrWhiteSpace(responsibleOfficeCode)
+            ? responsibleOfficeCode
+            : managementCompanyCode;
+        return TenantScopeCatalog.GetDatabaseName(
+            TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                tenantCode,
+                officeCode,
+                fallbackOfficeCode: fallbackOfficeCode));
+    }
 
     private static OfficeMutationResult NormalizeLocalMutationResult(LocalMutationResult result)
     {

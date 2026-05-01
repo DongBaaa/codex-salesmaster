@@ -340,7 +340,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     {
         var initialDirectory = Path.GetDirectoryName(LegacyCustomerExcelPath);
         if (string.IsNullOrWhiteSpace(initialDirectory) || !Directory.Exists(initialDirectory))
-            initialDirectory = AppContext.BaseDirectory;
+            initialDirectory = AppPaths.UserDownloadsDir;
 
         var dialog = new SaveFileDialog
         {
@@ -364,7 +364,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     {
         var initialDirectory = Path.GetDirectoryName(LegacyItemExcelPath);
         if (string.IsNullOrWhiteSpace(initialDirectory) || !Directory.Exists(initialDirectory))
-            initialDirectory = AppContext.BaseDirectory;
+            initialDirectory = AppPaths.UserDownloadsDir;
 
         var dialog = new SaveFileDialog
         {
@@ -436,6 +436,24 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             if (string.IsNullOrWhiteSpace(LegacyItemExcelPath) || !File.Exists(LegacyItemExcelPath))
             {
                 StatusMessage = "이전 품목 엑셀 파일 경로를 확인하세요.";
+                return;
+            }
+
+            LegacyMigrationStatus = "엑셀 가져오기 미리보기 생성 중...";
+            var preview = await _legacyMigrationService.PreviewExcelImportAsync(
+                LegacyCustomerExcelPath,
+                LegacyItemExcelPath);
+            var confirm = MessageBox.Show(
+                "엑셀 가져오기 미리보기" + Environment.NewLine + Environment.NewLine +
+                preview.ToDisplayText() + Environment.NewLine + Environment.NewLine +
+                "현재 DB 백업을 만든 뒤 위 내용대로 반영합니다. 계속하시겠습니까?",
+                "이전 데이터 가져오기",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.Yes)
+            {
+                LegacyMigrationStatus = "이전 데이터 가져오기를 취소했습니다.";
+                StatusMessage = LegacyMigrationStatus;
                 return;
             }
 
@@ -706,8 +724,8 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     private async Task LoadLegacyMigrationSettingsAsync()
     {
         var defaultDb = GetDefaultLegacySourceDbPath();
-        var defaultCustomerExcel = Path.Combine(AppContext.BaseDirectory, "거래처 목록.xlsx");
-        var defaultItemExcel = Path.Combine(AppContext.BaseDirectory, "제품 목록.xlsx");
+        var defaultCustomerExcel = Path.Combine(AppPaths.UserDownloadsDir, "거래처 목록.xlsx");
+        var defaultItemExcel = Path.Combine(AppPaths.UserDownloadsDir, "제품 목록.xlsx");
 
         LegacySourceDbPath = await _local.GetSettingAsync(LegacySourceDbPathSettingKey) ?? defaultDb;
         LegacyCustomerExcelPath = await _local.GetSettingAsync(LegacyCustomerExcelPathSettingKey) ?? defaultCustomerExcel;
@@ -941,5 +959,4 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         => Guid.TryParse(value, out var profileId) ? profileId : null;
 
 }
-
 

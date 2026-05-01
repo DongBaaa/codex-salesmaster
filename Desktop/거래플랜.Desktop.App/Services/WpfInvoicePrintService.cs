@@ -42,19 +42,10 @@ public sealed class WpfInvoicePrintService : IPrintService
         var isPurchase = invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement;
         var lines = invoice.Lines
             .Where(l => !l.IsDeleted)
-            .Select((line, index) => new InvoicePrintLineModel
-            {
-                No = index + 1,
-                ItemName = line.ItemNameOriginal ?? string.Empty,
-                Specification = line.SpecificationOriginal ?? string.Empty,
-                Unit = line.Unit ?? string.Empty,
-                Quantity = line.Quantity,
-                UnitPrice = line.UnitPrice,
-                Amount = line.LineAmount,
-                Remark = line.Remark ?? string.Empty
-            })
+            .Select((line, index) => InvoicePrintLineSynchronizer.FromInvoiceLine(line, index + 1))
             .ToList();
 
+        var snapshotAtUtc = DateTime.UtcNow;
         return new InvoicePrintModel
         {
             InvoiceId = invoice.Id,
@@ -63,6 +54,9 @@ public sealed class WpfInvoicePrintService : IPrintService
                 : invoice.InvoiceNumber,
             InvoiceDate = invoice.InvoiceDate,
             VoucherType = invoice.VoucherType.ToString(),
+            SnapshotCreatedAtUtc = snapshotAtUtc,
+            SnapshotLastSavedAtUtc = snapshotAtUtc,
+            SnapshotPolicy = InvoicePrintModel.DefaultSnapshotPolicy,
             SupplierBusinessNumber = isPurchase ? customer.BusinessNumber ?? string.Empty : company.BusinessNumber ?? string.Empty,
             SupplierName = isPurchase ? customer.NameOriginal ?? string.Empty : company.TradeName ?? string.Empty,
             SupplierRepresentative = isPurchase ? customer.Representative ?? string.Empty : company.Representative ?? string.Empty,
@@ -84,6 +78,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             SupplierStampImage = company.StampImage,
             PrintWithDate = printWithDate,
             PrintWithPrice = printWithPrice,
+            VatMode = InvoiceVatModes.Normalize(invoice.VatMode),
             SupplyAmount = invoice.SupplyAmount,
             VatAmount = invoice.VatAmount,
             TotalAmount = invoice.TotalAmount,
@@ -172,17 +167,7 @@ public sealed class WpfInvoicePrintService : IPrintService
             return new List<InvoicePrintLineModel>();
 
         var lines = source
-            .Select(line => new InvoicePrintLineModel
-            {
-                No = line.No,
-                ItemName = line.ItemName ?? string.Empty,
-                Specification = line.Specification ?? string.Empty,
-                Unit = line.Unit ?? string.Empty,
-                Quantity = line.Quantity,
-                UnitPrice = line.UnitPrice,
-                Amount = line.Amount,
-                Remark = line.Remark ?? string.Empty
-            })
+            .Select(InvoicePrintLineSynchronizer.CloneLine)
             .Where(line =>
                 !string.IsNullOrWhiteSpace(line.ItemName) ||
                 !string.IsNullOrWhiteSpace(line.Specification) ||
@@ -190,7 +175,6 @@ public sealed class WpfInvoicePrintService : IPrintService
                 line.UnitPrice != 0 ||
                 line.Amount != 0 ||
                 !string.IsNullOrWhiteSpace(line.Remark))
-            .OrderBy(line => line.No)
             .ToList();
 
         for (var i = 0; i < lines.Count; i++)

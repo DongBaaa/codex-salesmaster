@@ -480,12 +480,18 @@ public sealed class ErpApiClient
     public async Task<RecycleBinMutationResultDto?> RestoreRecycleBinAsync(
         IReadOnlyList<RecycleBinMutationTargetDto> items,
         CancellationToken ct = default)
+        => await RestoreRecycleBinAsync(items, businessDatabaseNameOverride: null, ct);
+
+    public async Task<RecycleBinMutationResultDto?> RestoreRecycleBinAsync(
+        IReadOnlyList<RecycleBinMutationTargetDto> items,
+        string? businessDatabaseNameOverride,
+        CancellationToken ct = default)
     {
         return await ExecuteWithRetryAsync(
             operationName: "휴지통 복원(recycle-bin/restore)",
             sendAsync: async token =>
             {
-                SetAuthHeader(includeBusinessDatabaseHeader: true);
+                SetAuthHeader(includeBusinessDatabaseHeader: true, businessDatabaseNameOverride);
                 return await _http.PostAsJsonAsync(
                     "recycle-bin/restore",
                     new RecycleBinMutationRequest { Items = items.ToList() },
@@ -498,12 +504,18 @@ public sealed class ErpApiClient
     public async Task<RecycleBinMutationResultDto?> PurgeRecycleBinAsync(
         IReadOnlyList<RecycleBinMutationTargetDto> items,
         CancellationToken ct = default)
+        => await PurgeRecycleBinAsync(items, businessDatabaseNameOverride: null, ct);
+
+    public async Task<RecycleBinMutationResultDto?> PurgeRecycleBinAsync(
+        IReadOnlyList<RecycleBinMutationTargetDto> items,
+        string? businessDatabaseNameOverride,
+        CancellationToken ct = default)
     {
         return await ExecuteWithRetryAsync(
             operationName: "휴지통 영구삭제(recycle-bin/purge)",
             sendAsync: async token =>
             {
-                SetAuthHeader(includeBusinessDatabaseHeader: true);
+                SetAuthHeader(includeBusinessDatabaseHeader: true, businessDatabaseNameOverride);
                 return await _http.PostAsJsonAsync(
                     "recycle-bin/purge",
                     new RecycleBinMutationRequest { Items = items.ToList() },

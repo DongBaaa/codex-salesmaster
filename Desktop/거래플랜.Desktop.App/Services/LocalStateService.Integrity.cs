@@ -7,6 +7,8 @@ namespace 거래플랜.Desktop.App.Services;
 
 public sealed partial class LocalStateService
 {
+    private const int LocalIntegrityDetailRowLimit = 1_000;
+
     public async Task<LocalIntegrityReport> BuildIntegrityReportAsync(SessionState session, CancellationToken ct = default)
     {
         var createdAtUtc = DateTime.UtcNow;
@@ -20,6 +22,9 @@ public sealed partial class LocalStateService
 
         if (session is null || !session.IsLoggedIn)
             return new LocalIntegrityReport(createdAtUtc, officeCode, tenantCode, dirtyCount, pendingServerMirrorRefresh, issues);
+
+        var integrityTenantCode = ResolveIntegrityTenantCode(session);
+        var integrityOfficeCodes = ResolveIntegrityOfficeCodes(integrityTenantCode);
 
         var customerQuery = _db.Customers
             .IgnoreQueryFilters()
@@ -120,7 +125,24 @@ public sealed partial class LocalStateService
             failedOutboxCount,
             "실패 상태의 sync outbox가 남아 있어 수동 재시도 또는 원인 확인이 필요합니다.");
 
-        var duplicateRentalProfileKeyCount = await _db.RentalBillingProfiles
+        var integrityRentalProfileQuery = ApplyIntegrityRentalProfileScope(
+            _db.RentalBillingProfiles.IgnoreQueryFilters(),
+            integrityTenantCode,
+            integrityOfficeCodes);
+        var integrityRentalAssetQuery = ApplyIntegrityRentalAssetScope(
+            _db.RentalAssets.IgnoreQueryFilters(),
+            integrityTenantCode,
+            integrityOfficeCodes);
+        var integrityCustomerQuery = ApplyIntegrityCustomerScope(
+            _db.Customers.IgnoreQueryFilters(),
+            integrityTenantCode,
+            integrityOfficeCodes);
+        var integrityItemQuery = ApplyIntegrityItemScope(
+            _db.Items.IgnoreQueryFilters(),
+            integrityTenantCode,
+            integrityOfficeCodes);
+
+        var duplicateRentalProfileKeyCount = await integrityRentalProfileQuery
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(profile => !profile.IsDeleted && !string.IsNullOrWhiteSpace(profile.ProfileKey))
@@ -135,7 +157,7 @@ public sealed partial class LocalStateService
             "중복된 렌탈 청구 프로필 키가 남아 있습니다.",
             severity: "Error");
 
-        var duplicateRentalAssetKeyCount = await _db.RentalAssets
+        var duplicateRentalAssetKeyCount = await integrityRentalAssetQuery
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(asset => !asset.IsDeleted && !string.IsNullOrWhiteSpace(asset.AssetKey))
@@ -158,16 +180,14 @@ public sealed partial class LocalStateService
             .IgnoreQueryFilters()
             .Where(category => !category.IsDeleted)
             .Select(category => category.Id);
-        var activeCustomerIds = _db.Customers
-            .IgnoreQueryFilters()
+        var activeCustomerIds = integrityCustomerQuery
             .Where(customer => !customer.IsDeleted)
             .Select(customer => customer.Id);
         var activeRentalProfileIds = _db.RentalBillingProfiles
             .IgnoreQueryFilters()
             .Where(profile => !profile.IsDeleted)
             .Select(profile => profile.Id);
-        var activeItemIds = _db.Items
-            .IgnoreQueryFilters()
+        var activeItemIds = integrityItemQuery
             .Where(item => !item.IsDeleted)
             .Select(item => item.Id);
         var activeInvoiceIds = _db.Invoices
@@ -346,53 +366,139 @@ public sealed partial class LocalStateService
             "거래처가 존재하지 않는 거래처 분류를 참조하고 있습니다.",
             severity: "Error");
 
-        var orphanRentalProfileCustomerCount = await _db.RentalBillingProfiles
+        var orphanRentalProfileCustomerQuery = integrityRentalProfileQuery
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(profile => !profile.IsDeleted && profile.CustomerId.HasValue && !activeCustomerIds.Contains(profile.CustomerId.Value))
-            .CountAsync(ct);
+            .Where(profile => !profile.IsDeleted && profile.CustomerId.HasValue && !activeCustomerIds.Contains(profile.CustomerId.Value));
+        var orphanRentalProfileCustomerCount = await orphanRentalProfileCustomerQuery.CountAsync(ct);
+        var orphanRentalProfileCustomerRows = await orphanRentalProfileCustomerQuery
+            .OrderBy(profile => profile.CustomerName)
+            .ThenBy(profile => profile.ProfileKey)
+            .Take(LocalIntegrityDetailRowLimit + 1)
+            .Select(profile => new
+            {
+                profile.ProfileKey,
+                profile.CustomerName,
+                profile.InstallSiteName,
+                profile.CustomerId,
+                profile.ResponsibleOfficeCode,
+                profile.TenantCode
+            })
+            .ToListAsync(ct);
         AddIssueIfNeeded(
             issues,
             "orphan_rental_profile_customer_refs",
             orphanRentalProfileCustomerCount,
             "렌탈 청구 프로필이 존재하지 않는 거래처를 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            detailRows: BuildIntegrityDetailRows(
+                orphanRentalProfileCustomerRows,
+                orphanRentalProfileCustomerCount,
+                row => $"프로필키={FormatDetailValue(row.ProfileKey)} / 거래처명={FormatDetailValue(row.CustomerName)} / 설치처={FormatDetailValue(row.InstallSiteName)} / 누락 CustomerId={FormatDetailGuid(row.CustomerId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"));
 
-        var orphanRentalAssetCustomerCount = await _db.RentalAssets
+        var orphanRentalAssetCustomerQuery = integrityRentalAssetQuery
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(asset => !asset.IsDeleted && asset.CustomerId.HasValue && !activeCustomerIds.Contains(asset.CustomerId.Value))
-            .CountAsync(ct);
+            .Where(asset => !asset.IsDeleted && asset.CustomerId.HasValue && !activeCustomerIds.Contains(asset.CustomerId.Value));
+        var orphanRentalAssetCustomerCount = await orphanRentalAssetCustomerQuery.CountAsync(ct);
+        var orphanRentalAssetCustomerRows = await orphanRentalAssetCustomerQuery
+            .OrderBy(asset => asset.CustomerName)
+            .ThenBy(asset => asset.ItemName)
+            .ThenBy(asset => asset.MachineNumber)
+            .Take(LocalIntegrityDetailRowLimit + 1)
+            .Select(asset => new
+            {
+                asset.AssetKey,
+                asset.ManagementNumber,
+                asset.MachineNumber,
+                asset.ItemName,
+                asset.CustomerName,
+                asset.CurrentCustomerName,
+                asset.InstallLocation,
+                asset.CustomerId,
+                asset.ResponsibleOfficeCode,
+                asset.TenantCode
+            })
+            .ToListAsync(ct);
         AddIssueIfNeeded(
             issues,
             "orphan_rental_asset_customer_refs",
             orphanRentalAssetCustomerCount,
             "렌탈 자산이 존재하지 않는 거래처를 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            detailRows: BuildIntegrityDetailRows(
+                orphanRentalAssetCustomerRows,
+                orphanRentalAssetCustomerCount,
+                row => $"자산키={FormatDetailValue(row.AssetKey)} / 관리번호={FormatDetailValue(row.ManagementNumber)} / 시리얼={FormatDetailValue(row.MachineNumber)} / 품목={FormatDetailValue(row.ItemName)} / 거래처={FormatDetailValue(row.CustomerName, row.CurrentCustomerName)} / 설치위치={FormatDetailValue(row.InstallLocation)} / 누락 CustomerId={FormatDetailGuid(row.CustomerId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"));
 
-        var orphanRentalAssetProfileCount = await _db.RentalAssets
+        var orphanRentalAssetProfileQuery = integrityRentalAssetQuery
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && !activeRentalProfileIds.Contains(asset.BillingProfileId.Value))
-            .CountAsync(ct);
+            .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && !activeRentalProfileIds.Contains(asset.BillingProfileId.Value));
+        var orphanRentalAssetProfileCount = await orphanRentalAssetProfileQuery.CountAsync(ct);
+        var orphanRentalAssetProfileRows = await orphanRentalAssetProfileQuery
+            .OrderBy(asset => asset.CustomerName)
+            .ThenBy(asset => asset.ItemName)
+            .ThenBy(asset => asset.MachineNumber)
+            .Take(LocalIntegrityDetailRowLimit + 1)
+            .Select(asset => new
+            {
+                asset.AssetKey,
+                asset.ManagementNumber,
+                asset.MachineNumber,
+                asset.ItemName,
+                asset.CustomerName,
+                asset.InstallLocation,
+                asset.BillingProfileId,
+                asset.ResponsibleOfficeCode,
+                asset.TenantCode
+            })
+            .ToListAsync(ct);
         AddIssueIfNeeded(
             issues,
             "orphan_rental_asset_profile_refs",
             orphanRentalAssetProfileCount,
             "렌탈 자산이 존재하지 않는 청구 프로필을 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            detailRows: BuildIntegrityDetailRows(
+                orphanRentalAssetProfileRows,
+                orphanRentalAssetProfileCount,
+                row => $"자산키={FormatDetailValue(row.AssetKey)} / 관리번호={FormatDetailValue(row.ManagementNumber)} / 시리얼={FormatDetailValue(row.MachineNumber)} / 품목={FormatDetailValue(row.ItemName)} / 거래처={FormatDetailValue(row.CustomerName)} / 설치위치={FormatDetailValue(row.InstallLocation)} / 누락 BillingProfileId={FormatDetailGuid(row.BillingProfileId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"));
 
-        var orphanRentalAssetItemCount = await _db.RentalAssets
+        var orphanRentalAssetItemQuery = integrityRentalAssetQuery
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(asset => !asset.IsDeleted && asset.ItemId.HasValue && !activeItemIds.Contains(asset.ItemId.Value))
-            .CountAsync(ct);
+            .Where(asset => !asset.IsDeleted && asset.ItemId.HasValue && !activeItemIds.Contains(asset.ItemId.Value));
+        var orphanRentalAssetItemCount = await orphanRentalAssetItemQuery.CountAsync(ct);
+        var orphanRentalAssetItemRows = await orphanRentalAssetItemQuery
+            .OrderBy(asset => asset.ItemName)
+            .ThenBy(asset => asset.CustomerName)
+            .ThenBy(asset => asset.MachineNumber)
+            .Take(LocalIntegrityDetailRowLimit + 1)
+            .Select(asset => new
+            {
+                asset.AssetKey,
+                asset.ManagementNumber,
+                asset.MachineNumber,
+                asset.ItemName,
+                asset.Manufacturer,
+                asset.CustomerName,
+                asset.InstallLocation,
+                asset.ItemId,
+                asset.ResponsibleOfficeCode,
+                asset.TenantCode
+            })
+            .ToListAsync(ct);
         AddIssueIfNeeded(
             issues,
             "orphan_rental_asset_item_refs",
             orphanRentalAssetItemCount,
             "렌탈 자산이 존재하지 않는 품목을 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            detailRows: BuildIntegrityDetailRows(
+                orphanRentalAssetItemRows,
+                orphanRentalAssetItemCount,
+                row => $"자산키={FormatDetailValue(row.AssetKey)} / 관리번호={FormatDetailValue(row.ManagementNumber)} / 시리얼={FormatDetailValue(row.MachineNumber)} / 품목={FormatDetailValue(row.ItemName)} / 제조사={FormatDetailValue(row.Manufacturer)} / 거래처={FormatDetailValue(row.CustomerName)} / 설치위치={FormatDetailValue(row.InstallLocation)} / 누락 ItemId={FormatDetailGuid(row.ItemId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"));
 
         var missingInvoiceCustomerCount = await _db.Invoices
             .IgnoreQueryFilters()
@@ -464,13 +570,163 @@ public sealed partial class LocalStateService
         return new LocalIntegrityReport(createdAtUtc, officeCode, tenantCode, dirtyCount, pendingServerMirrorRefresh, issues);
     }
 
-    private static void AddIssueIfNeeded(ICollection<LocalIntegrityIssue> issues, string code, int count, string message, string severity = "Warning")
+    private static string ResolveIntegrityTenantCode(SessionState session)
+        => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
+
+    private static List<string> ResolveIntegrityOfficeCodes(string tenantCode)
+        => TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode)
+            .Select(officeCode => NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet))
+            .Where(officeCode => !string.IsNullOrWhiteSpace(officeCode))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static IQueryable<LocalCustomer> ApplyIntegrityCustomerScope(
+        IQueryable<LocalCustomer> query,
+        string tenantCode,
+        IReadOnlyCollection<string> officeCodes)
+    {
+        if (string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase))
+        {
+            return query.Where(customer =>
+                customer.TenantCode == TenantScopeCatalog.Itworld ||
+                customer.OfficeCode == OfficeCodeCatalog.Itworld ||
+                customer.ResponsibleOfficeCode == OfficeCodeCatalog.Itworld);
+        }
+
+        return query.Where(customer =>
+            customer.TenantCode != TenantScopeCatalog.Itworld &&
+            customer.OfficeCode != OfficeCodeCatalog.Itworld &&
+            customer.ResponsibleOfficeCode != OfficeCodeCatalog.Itworld &&
+            (
+                customer.ResponsibleOfficeCode == "ALL" ||
+                customer.OfficeCode == "ALL" ||
+                officeCodes.Contains(customer.ResponsibleOfficeCode) ||
+                officeCodes.Contains(customer.OfficeCode) ||
+                customer.TenantCode == tenantCode
+            ));
+    }
+
+    private static IQueryable<LocalItem> ApplyIntegrityItemScope(
+        IQueryable<LocalItem> query,
+        string tenantCode,
+        IReadOnlyCollection<string> officeCodes)
+    {
+        if (string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase))
+        {
+            return query.Where(item =>
+                item.TenantCode == TenantScopeCatalog.Itworld ||
+                item.OfficeCode == OfficeCodeCatalog.Itworld);
+        }
+
+        return query.Where(item =>
+            item.TenantCode != TenantScopeCatalog.Itworld &&
+            item.OfficeCode != OfficeCodeCatalog.Itworld &&
+            (
+                item.OfficeCode == "ALL" ||
+                officeCodes.Contains(item.OfficeCode) ||
+                item.TenantCode == tenantCode
+            ));
+    }
+
+    private static IQueryable<LocalRentalBillingProfile> ApplyIntegrityRentalProfileScope(
+        IQueryable<LocalRentalBillingProfile> query,
+        string tenantCode,
+        IReadOnlyCollection<string> officeCodes)
+    {
+        if (string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase))
+        {
+            return query.Where(profile =>
+                profile.TenantCode == TenantScopeCatalog.Itworld ||
+                profile.OfficeCode == OfficeCodeCatalog.Itworld ||
+                profile.ManagementCompanyCode == OfficeCodeCatalog.Itworld ||
+                profile.ResponsibleOfficeCode == OfficeCodeCatalog.Itworld);
+        }
+
+        return query.Where(profile =>
+            profile.TenantCode != TenantScopeCatalog.Itworld &&
+            profile.OfficeCode != OfficeCodeCatalog.Itworld &&
+            profile.ManagementCompanyCode != OfficeCodeCatalog.Itworld &&
+            profile.ResponsibleOfficeCode != OfficeCodeCatalog.Itworld &&
+            (
+                profile.TenantCode == tenantCode ||
+                officeCodes.Contains(profile.OfficeCode) ||
+                officeCodes.Contains(profile.ManagementCompanyCode) ||
+                officeCodes.Contains(profile.ResponsibleOfficeCode)
+            ));
+    }
+
+    private static IQueryable<LocalRentalAsset> ApplyIntegrityRentalAssetScope(
+        IQueryable<LocalRentalAsset> query,
+        string tenantCode,
+        IReadOnlyCollection<string> officeCodes)
+    {
+        if (string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase))
+        {
+            return query.Where(asset =>
+                asset.TenantCode == TenantScopeCatalog.Itworld ||
+                asset.OfficeCode == OfficeCodeCatalog.Itworld ||
+                asset.ManagementCompanyCode == OfficeCodeCatalog.Itworld ||
+                asset.ResponsibleOfficeCode == OfficeCodeCatalog.Itworld);
+        }
+
+        return query.Where(asset =>
+            asset.TenantCode != TenantScopeCatalog.Itworld &&
+            asset.OfficeCode != OfficeCodeCatalog.Itworld &&
+            asset.ManagementCompanyCode != OfficeCodeCatalog.Itworld &&
+            asset.ResponsibleOfficeCode != OfficeCodeCatalog.Itworld &&
+            (
+                asset.TenantCode == tenantCode ||
+                officeCodes.Contains(asset.OfficeCode) ||
+                officeCodes.Contains(asset.ManagementCompanyCode) ||
+                officeCodes.Contains(asset.ResponsibleOfficeCode)
+            ));
+    }
+
+    private static void AddIssueIfNeeded(
+        ICollection<LocalIntegrityIssue> issues,
+        string code,
+        int count,
+        string message,
+        string severity = "Warning",
+        IReadOnlyList<string>? detailRows = null)
     {
         if (count <= 0)
             return;
 
-        issues.Add(new LocalIntegrityIssue(code, severity, count, message));
+        issues.Add(new LocalIntegrityIssue(code, severity, count, message, detailRows));
     }
+
+    private static IReadOnlyList<string> BuildIntegrityDetailRows<T>(
+        IReadOnlyList<T> rows,
+        int totalCount,
+        Func<T, string> formatter)
+    {
+        var details = rows
+            .Take(LocalIntegrityDetailRowLimit)
+            .Select(formatter)
+            .Where(row => !string.IsNullOrWhiteSpace(row))
+            .ToList();
+
+        var hiddenCount = Math.Max(0, totalCount - LocalIntegrityDetailRowLimit);
+        if (hiddenCount > 0)
+            details.Add($"... 외 {hiddenCount:N0}건은 원본 화면 또는 서버 무결성 상세 목록에서 추가 확인하세요.");
+
+        return details;
+    }
+
+    private static string FormatDetailValue(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                return value.Trim();
+        }
+
+        return "-";
+    }
+
+    private static string FormatDetailGuid(Guid? value)
+        => value.HasValue ? value.Value.ToString("N") : "-";
 
     private static bool IsCrossTenantInventoryTransferRoute(string? fromWarehouseCode, string? toWarehouseCode)
     {

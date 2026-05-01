@@ -30,6 +30,8 @@
             <Setter Property="CaretBrush" Value="Black"/>
             <Setter Property="Height" Value="30"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -40,6 +42,8 @@
             <Setter Property="Height" Value="30"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="DatePicker">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -50,6 +54,8 @@
             <Setter Property="Height" Value="30"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="MinWidth" Value="184"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -73,7 +79,7 @@
         <Style TargetType="Label">
             <Setter Property="Foreground" Value="#B0BEC5"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
-            <Setter Property="Padding" Value="0,0,6,0"/>
+            <Setter Property="Padding" Value="0,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="HorizontalContentAlignment" Value="Right"/>
         </Style>
@@ -224,7 +230,7 @@
                     <Label Grid.Row="0" Grid.Column="2" Content="대표자명"/>
                     <TextBox Grid.Row="0" Grid.Column="3" Text="{Binding Representative, UpdateSourceTrigger=PropertyChanged}"/>
 
-                    <Label Grid.Row="1" Grid.Column="0" Content="업태"/>
+                    <Label Grid.Row="1" Grid.Column="0" Content="대표전화"/>
                     <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding BusinessType, UpdateSourceTrigger=PropertyChanged}"/>
                     <Label Grid.Row="1" Grid.Column="2" Content="종목"/>
                     <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding BusinessItem, UpdateSourceTrigger=PropertyChanged}"/>
@@ -242,9 +248,9 @@
                         <RowDefinition Height="30"/>
                     </Grid.RowDefinitions>
 
-                    <Label Grid.Row="0" Grid.Column="0" Content="업체주소"/>
+                    <Label Grid.Row="0" Grid.Column="0" Content="사업자번호"/>
                     <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Address, UpdateSourceTrigger=PropertyChanged}"/>
-                    <Label Grid.Row="1" Grid.Column="0" Content="상세주소"/>
+                    <Label Grid.Row="1" Grid.Column="0" Content="업태"/>
                     <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding DetailAddress, UpdateSourceTrigger=PropertyChanged}"/>
                 </Grid>
 
@@ -292,11 +298,11 @@
                         <Grid Grid.Row="0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="1.1*"/>
                                 <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="170"/>
                                 <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="170"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
@@ -420,7 +426,7 @@
 
                     <Label Grid.Row="0" Grid.Column="0" Content="받는분"/>
                     <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Recipient, UpdateSourceTrigger=PropertyChanged}"/>
-                    <Label Grid.Row="0" Grid.Column="2" Content="등록일자"/>
+                    <Label Grid.Row="0" Grid.Column="2" Content="대표자명"/>
                     <DatePicker Grid.Row="0"
                                 Grid.Column="3"
                                 SelectedDate="{Binding RegisterDate, Converter={StaticResource DateOnlyConverter}}"
@@ -446,4 +452,3 @@
         </ScrollViewer>
     </DockPanel>
 </Window>
-
