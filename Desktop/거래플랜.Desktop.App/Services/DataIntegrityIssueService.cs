@@ -1104,9 +1104,37 @@ public sealed class DataIntegrityIssueService
         if (!string.Equals(normalizedTenant, sessionTenant, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        var offices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(sessionTenant)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var offices = ResolveOperationalAlertOfficeCodes(session, sessionTenant);
         return offices.Contains(normalizedOffice);
+    }
+
+    private static HashSet<string> ResolveOperationalAlertOfficeCodes(SessionState session, string? normalizedTenantCode = null)
+    {
+        var sessionOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, DomainConstants.OfficeUsenet);
+        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeOrDefault(normalizedTenantCode, session.TenantCode);
+
+        if (string.Equals(sessionTenant, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(sessionOffice, OfficeCodeCatalog.Itworld, StringComparison.OrdinalIgnoreCase))
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                OfficeCodeCatalog.Itworld
+            };
+        }
+
+        if (string.Equals(sessionOffice, OfficeCodeCatalog.Yeonsu, StringComparison.OrdinalIgnoreCase))
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                OfficeCodeCatalog.Yeonsu
+            };
+        }
+
+        return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            OfficeCodeCatalog.Usenet,
+            OfficeCodeCatalog.Yeonsu
+        };
     }
 
     private static bool IsBillableOperatingAsset(LocalRentalAsset asset)

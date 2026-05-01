@@ -2293,6 +2293,76 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task DataIntegrityIssueService_ScanAsync_YeonsuSessionShowsOnlyYeonsuAlerts()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-data-integrity-yeonsu-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetProfileId = Guid.Parse("81111111-1111-1111-1111-111111111111");
+            var yeonsuAssetId = Guid.Parse("82222222-2222-2222-2222-222222222222");
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = usenetProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "USENET Customer",
+                InstallSiteName = "USENET Site",
+                ItemName = "USENET Printer",
+                MonthlyAmount = 50_000m,
+                BillingTemplateJson = "[]",
+                IsDirty = false
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = yeonsuAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "USENET|YEONSU-ZERO|SN-YEONSU-ZERO",
+                CurrentCustomerName = "YEONSU Customer",
+                CustomerName = "YEONSU Customer",
+                InstallSiteName = "YEONSU Site",
+                InstallLocation = "YEONSU Site",
+                ItemName = "YEONSU Printer",
+                ManagementNumber = "YEONSU-ZERO",
+                MachineNumber = "SN-YEONSU-ZERO",
+                AssetStatus = "ACTIVE",
+                BillingEligibilityStatus = string.Empty,
+                MonthlyFee = 0m,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var service = new DataIntegrityIssueService(db);
+            var result = await service.ScanAsync(CreateYeonsuAdminSession());
+
+            Assert.True(result.HasIssues);
+            Assert.DoesNotContain(result.Issues, issue => string.Equals(issue.OfficeCode, OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(result.Issues, issue => issue.ProfileId == usenetProfileId || issue.EntityId == usenetProfileId);
+
+            var yeonsuIssue = Assert.Single(result.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.RentalBillableAssetWithoutMonthlyFee &&
+                issue.AssetId == yeonsuAssetId);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, yeonsuIssue.OfficeCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task DataIntegrityIssueService_ScanAsync_UsesCanonicalScopeForMixedItworldProfile()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-data-integrity-itworld-scope-{Guid.NewGuid():N}");
@@ -2457,6 +2527,20 @@ public sealed class LocalStateServicePartialsTests
             Role = DomainConstants.RoleAdmin,
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+    private static SessionState CreateYeonsuAdminSession()
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "yeonsu",
+            Role = DomainConstants.RoleAdmin,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
             ScopeType = TenantScopeCatalog.ScopeAdmin
         });
         return session;
