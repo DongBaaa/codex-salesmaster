@@ -2647,6 +2647,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (IsTemplateSpecificationPlaceholder(current))
             return true;
 
+        if (IsBundleRepresentativeOnlySpecification(item, current, defaultSpecification))
+            return true;
+
         var legacyDefaultSpecification = BuildLegacyTemplateSpecification(item);
         return !string.IsNullOrWhiteSpace(legacyDefaultSpecification) &&
                !string.Equals(legacyDefaultSpecification, defaultSpecification, StringComparison.CurrentCultureIgnoreCase) &&
@@ -2655,6 +2658,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private static bool IsTemplateSpecificationPlaceholder(string specification)
         => string.Equals(specification, "대표 장비", StringComparison.CurrentCultureIgnoreCase) ||
+           string.Equals(specification.Trim(), "대표 장비 외", StringComparison.CurrentCultureIgnoreCase) ||
            specification.Trim().StartsWith("대표 장비 외 ", StringComparison.CurrentCultureIgnoreCase) ||
            string.Equals(specification, "장비별 개별 표시", StringComparison.CurrentCultureIgnoreCase);
 
@@ -2687,20 +2691,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 .Where(id => !resolvedRepresentativeAssetId.HasValue || id != resolvedRepresentativeAssetId.Value)
                 .Distinct()
                 .Count();
-            var otherCategories = includedAssetIds
-                .Where(id => !resolvedRepresentativeAssetId.HasValue || id != resolvedRepresentativeAssetId.Value)
-                .Select(FindBillingAssetOption)
-                .Where(asset => asset is not null)
-                .Select(asset => asset!.ItemCategoryName?.Trim() ?? string.Empty)
-                .Where(category => !string.IsNullOrWhiteSpace(category))
-                .Distinct(StringComparer.CurrentCultureIgnoreCase)
-                .ToList();
-            if (otherCategories.Count == 1)
-                return $"{representativeSpecification} 외 {otherCategories[0]}";
 
             return otherCount <= 0
                 ? representativeSpecification
-                : $"{representativeSpecification} 외 {otherCount:N0}대";
+                : $"{representativeSpecification} 외";
         }
 
         if (includedAssetIds.Count == 1)
@@ -2710,6 +2704,43 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         return "장비별 개별 표시";
+    }
+
+    private bool IsBundleRepresentativeOnlySpecification(
+        RentalBillingTemplateEditorItem item,
+        string currentSpecification,
+        string defaultSpecification)
+    {
+        if (!IsTemplateItemBundleMode(item) ||
+            string.IsNullOrWhiteSpace(currentSpecification) ||
+            string.IsNullOrWhiteSpace(defaultSpecification))
+        {
+            return false;
+        }
+
+        var includedAssetIds = item.IncludedAssetIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (includedAssetIds.Count <= 1)
+            return false;
+
+        var representativeAssetId = ResolveTemplateRepresentativeAssetId(item);
+        var representativeAsset = representativeAssetId.HasValue
+            ? FindBillingAssetOption(representativeAssetId.Value)
+            : null;
+        representativeAsset ??= includedAssetIds
+            .Select(FindBillingAssetOption)
+            .FirstOrDefault(asset => asset is not null);
+
+        var representativeSpecification = BuildAssetInvoiceSpecification(representativeAsset);
+        if (string.IsNullOrWhiteSpace(representativeSpecification))
+            representativeSpecification = FirstNonEmpty(
+                RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(item.DisplayItemName),
+                "대표 장비");
+
+        return string.Equals(currentSpecification.Trim(), representativeSpecification, StringComparison.CurrentCultureIgnoreCase) &&
+               string.Equals(defaultSpecification.Trim(), $"{representativeSpecification} 외", StringComparison.CurrentCultureIgnoreCase);
     }
 
     private string BuildLegacyTemplateSpecification(RentalBillingTemplateEditorItem item)

@@ -41,7 +41,7 @@ public sealed class RentalBillingSpecificationTests
 
         InvokePrivateInstance(vm, "ApplyTemplateSalesFieldDefaults", item);
 
-        Assert.Equal("\uB9AC\uCF54 IMC 2000 \uC678 \uD504\uB9B0\uD130", item.Specification);
+        Assert.Equal("\uB9AC\uCF54 IMC 2000 \uC678", item.Specification);
     }
 
     [Fact]
@@ -92,6 +92,18 @@ public sealed class RentalBillingSpecificationTests
     }
 
     [Fact]
+    public void RentalStateService_RentalInvoiceItemNameUsesOfficeEquipmentRentalFee()
+    {
+        var itemName = InvokePrivateStatic<string>(
+            typeof(RentalStateService),
+            "BuildMonthlyRentalInvoiceItemName",
+            new DateOnly(2026, 5, 1),
+            "IMC2010");
+
+        Assert.Equal("\uC0AC\uBB34\uAE30\uAE30 \uB80C\uD0C8\uB300\uAE08[5\uC6D4]", itemName);
+    }
+
+    [Fact]
     public void RentalStateService_InvoiceSpecificationRefreshesLegacyBundlePlaceholder()
     {
         var representativeAssetId = Guid.Parse("44444444-4444-4444-4444-444444444444");
@@ -122,7 +134,42 @@ public sealed class RentalBillingSpecificationTests
             representativeAsset,
             new List<LocalRentalAsset> { representativeAsset, otherAsset });
 
-        Assert.Equal("\uB9AC\uCF54 IMC 2000 \uC678 \uD504\uB9B0\uD130", specification);
+        Assert.Equal("\uB9AC\uCF54 IMC 2000 \uC678", specification);
+    }
+
+    [Fact]
+    public void RentalStateService_BundleSpecificationAddsPlainEtcWhenExplicitSpecIsRepresentativeOnly()
+    {
+        var representativeAssetId = Guid.Parse("99999999-9999-9999-9999-999999999999");
+        var otherAssetId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var templateItem = new RentalBillingTemplateItemModel
+        {
+            DisplayItemName = "IMC2010",
+            Specification = "\uB9AC\uCF54\uCF54\uB9AC\uC544 IMC2010"
+        };
+        var representativeAsset = new LocalRentalAsset
+        {
+            Id = representativeAssetId,
+            ItemName = "IMC2010",
+            Manufacturer = "\uB9AC\uCF54\uCF54\uB9AC\uC544",
+            ItemCategoryName = "\uBCF5\uD569\uAE30"
+        };
+        var otherAsset = new LocalRentalAsset
+        {
+            Id = otherAssetId,
+            ItemName = "IMC2010",
+            Manufacturer = "\uB9AC\uCF54\uCF54\uB9AC\uC544",
+            ItemCategoryName = "\uBCF5\uD569\uAE30"
+        };
+
+        var specification = InvokePrivateStatic<string>(
+            typeof(RentalStateService),
+            "ResolveBundleInvoiceSpecification",
+            templateItem,
+            representativeAsset,
+            new List<LocalRentalAsset> { representativeAsset, otherAsset });
+
+        Assert.Equal("\uB9AC\uCF54\uCF54\uB9AC\uC544 IMC2010 \uC678", specification);
     }
 
     [Fact]
@@ -158,7 +205,7 @@ public sealed class RentalBillingSpecificationTests
             representativeAsset,
             assets);
 
-        Assert.Equal("IMC2000 \uC678 7\uB300", specification);
+        Assert.Equal("IMC2000 \uC678", specification);
     }
 
     [Fact]
@@ -193,7 +240,7 @@ public sealed class RentalBillingSpecificationTests
 
         InvokePrivateInstance(vm, "ApplyTemplateSalesFieldDefaults", item);
 
-        Assert.Equal("IMC2000 \uC678 1\uB300", item.Specification);
+        Assert.Equal("IMC2000 \uC678", item.Specification);
     }
 
     private static T GetPrivateField<T>(object target, string fieldName)
