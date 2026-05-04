@@ -461,6 +461,43 @@
                                     CornerRadius="4"
                                     Padding="8"
                                     Margin="0,0,0,8"
+                                    Visibility="{Binding ShowPurchaseReceivingOptions, Converter={StaticResource BoolToVisibilityConverter}}">
+                                <StackPanel>
+                                    <TextBlock Text="입고/배송 확인"
+                                               Foreground="#EAF2FF"
+                                               FontWeight="Bold"
+                                               Margin="0,0,0,6"/>
+                                    <CheckBox Content="입고확인 필요"
+                                              IsChecked="{Binding PurchaseReceivingRequired, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              Foreground="#EAF2FF"
+                                              Margin="0,0,0,6"/>
+                                    <TextBlock Text="{Binding PurchaseReceivingStatusDisplay}"
+                                               Foreground="#FFD54F"
+                                               FontWeight="Bold"
+                                               Margin="0,0,0,4"/>
+                                    <TextBlock Text="{Binding PurchaseReceivingMetaDisplay}"
+                                               Foreground="#B7D8FF"
+                                               TextWrapping="Wrap"
+                                               FontSize="12"
+                                               Margin="0,0,0,6"/>
+                                    <TextBox Text="{Binding PurchaseReceivingMemo, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             MinWidth="0"
+                                             MinHeight="58"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             VerticalScrollBarVisibility="Auto"
+                                             Margin="0,0,0,6"
+                                             ToolTip="송장번호, 배송 확인 메모, 입고 특이사항을 기록합니다."/>
+                                    <Button Style="{StaticResource BaseButtonStyle}"
+                                            Content="입고확인"
+                                            Command="{Binding ConfirmPurchaseReceivingCommand}"/>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Background="#18314C"
+                                    CornerRadius="4"
+                                    Padding="8"
+                                    Margin="0,0,0,8"
                                     Visibility="{Binding ShowProcurementPrintHint, Converter={StaticResource BoolToVisibilityConverter}}">
                                 <TextBlock Text="견적/발주 전표는 선택한 제목의 발주서 양식으로 바로 출력됩니다."
                                            Foreground="#EAF2FF"

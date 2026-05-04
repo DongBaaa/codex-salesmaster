@@ -50,6 +50,28 @@ public sealed partial class SalesViewModel : ObservableObject
     [ObservableProperty] private decimal _customerAdvanceBalance;
     [ObservableProperty] private bool _taxInvoiceIssued;
     [ObservableProperty] private bool _isVatNone;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PurchaseReceivingStatusDisplay))]
+    [NotifyPropertyChangedFor(nameof(PurchaseReceivingMetaDisplay))]
+    [NotifyCanExecuteChangedFor(nameof(ConfirmPurchaseReceivingCommand))]
+    private bool _purchaseReceivingRequired;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PurchaseReceivingStatusDisplay))]
+    [NotifyCanExecuteChangedFor(nameof(ConfirmPurchaseReceivingCommand))]
+    private string _purchaseReceivingStatus = InvoiceReceivingStatuses.NotApplicable;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PurchaseReceivingMetaDisplay))]
+    private DateTime? _purchaseReceivedAtUtc;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PurchaseReceivingMetaDisplay))]
+    private string _purchaseReceivedByUsername = string.Empty;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PurchaseReceivingMetaDisplay))]
+    private string _purchaseReceivingOfficeCode = string.Empty;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PurchaseReceivingMetaDisplay))]
+    private string _purchaseReceivingWarehouseCode = string.Empty;
+    [ObservableProperty] private string _purchaseReceivingMemo = string.Empty;
     [ObservableProperty] private string _selectedResponsibleOfficeCode = DomainConstants.OfficeUsenet;
     [ObservableProperty] private string _selectedWarehouseCode = DomainConstants.WarehouseUsenetMain;
     // ?? ?꾪몴 ?ㅻ뜑 ?????????????????????????????????????????????????????????
@@ -81,6 +103,10 @@ public sealed partial class SalesViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(CustomerBalanceLabelText))]
     [NotifyPropertyChangedFor(nameof(CustomerReserveLabelText))]
     [NotifyPropertyChangedFor(nameof(ShowTaxInvoiceIssuedOption))]
+    [NotifyPropertyChangedFor(nameof(ShowPurchaseReceivingOptions))]
+    [NotifyPropertyChangedFor(nameof(PurchaseReceivingStatusDisplay))]
+    [NotifyPropertyChangedFor(nameof(PurchaseReceivingMetaDisplay))]
+    [NotifyCanExecuteChangedFor(nameof(ConfirmPurchaseReceivingCommand))]
     private VoucherType _voucherType = VoucherType.Sales;
     public Array VoucherTypes => Enum.GetValues<VoucherType>();
 
@@ -153,6 +179,31 @@ public sealed partial class SalesViewModel : ObservableObject
     public bool CanPrintTaxInvoice => IsSalesDocument;
     public bool ShowPaymentAction => IsSalesDocument || IsPurchaseDocument;
     public bool ShowTaxInvoiceIssuedOption => IsSalesDocument || IsPurchaseDocument;
+    public bool ShowPurchaseReceivingOptions => IsPurchaseDocument;
+    public string PurchaseReceivingStatusDisplay => IsPurchaseDocument
+        ? InvoiceReceivingStatuses.Normalize(PurchaseReceivingStatus, true, PurchaseReceivingRequired)
+        : string.Empty;
+    public string PurchaseReceivingMetaDisplay
+    {
+        get
+        {
+            if (!IsPurchaseDocument)
+                return string.Empty;
+
+            if (InvoiceReceivingStatuses.IsConfirmed(PurchaseReceivingStatus))
+            {
+                var confirmedAt = PurchaseReceivedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "시간 미기록";
+                var confirmedBy = string.IsNullOrWhiteSpace(PurchaseReceivedByUsername) ? "확인자 미기록" : PurchaseReceivedByUsername;
+                var office = string.IsNullOrWhiteSpace(PurchaseReceivingOfficeCode) ? SelectedResponsibleOfficeCode : PurchaseReceivingOfficeCode;
+                var warehouse = string.IsNullOrWhiteSpace(PurchaseReceivingWarehouseCode) ? SelectedWarehouseCode : PurchaseReceivingWarehouseCode;
+                return $"{confirmedAt} / {confirmedBy} / {office} / {warehouse}";
+            }
+
+            return PurchaseReceivingRequired
+                ? $"입고 사무실/창고: {SelectedResponsibleOfficeCode} / {SelectedWarehouseCode}"
+                : "이 구매전표는 입고확인 대상에서 제외됩니다.";
+        }
+    }
     public string PaymentActionButtonText => IsPurchaseDocument ? "지급 입력" : "수금 입력";
     public string PaymentSummaryTitleText => IsPurchaseDocument ? "지급 요약" : "수금 요약";
     public string CustomerBalanceLabelText => IsPurchaseDocument ? "총미지불" : "총미수금";
@@ -344,6 +395,7 @@ public sealed partial class SalesViewModel : ObservableObject
         InvoiceMemo = string.Empty;
         WorkDate = DateOnly.FromDateTime(DateTime.Today);
         VoucherType = _newInvoiceVoucherType;
+        ResetPurchaseReceivingState(VoucherType);
         SelectedProcurementDocumentTitle = "발주서";
         _linkedRentalBillingProfileId = null;
         _linkedRentalBillingRunId = null;
@@ -395,12 +447,60 @@ public sealed partial class SalesViewModel : ObservableObject
         OnPropertyChanged(nameof(ShowPaymentAction));
         OnPropertyChanged(nameof(PaymentActionButtonText));
         OnPropertyChanged(nameof(PaymentSummaryTitleText));
+        OnPropertyChanged(nameof(ShowPurchaseReceivingOptions));
+        OnPropertyChanged(nameof(PurchaseReceivingStatusDisplay));
+        OnPropertyChanged(nameof(PurchaseReceivingMetaDisplay));
+        ConfirmPurchaseReceivingCommand.NotifyCanExecuteChanged();
         RequestRefreshPaymentSummary();
     }
 
     partial void OnIsVatNoneChanged(bool value)
     {
         RecalcTotals();
+    }
+
+    partial void OnPurchaseReceivingRequiredChanged(bool value)
+    {
+        if (!value && IsPurchaseDocument)
+        {
+            PurchaseReceivingStatus = InvoiceReceivingStatuses.NotRequired;
+            PurchaseReceivedAtUtc = null;
+            PurchaseReceivedByUsername = string.Empty;
+        }
+        else
+        {
+            PurchaseReceivingStatus = InvoiceReceivingStatuses.Normalize(
+                PurchaseReceivingStatus,
+                IsPurchaseDocument,
+                value);
+        }
+        OnPropertyChanged(nameof(PurchaseReceivingStatusDisplay));
+        OnPropertyChanged(nameof(PurchaseReceivingMetaDisplay));
+        ConfirmPurchaseReceivingCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnPurchaseReceivingStatusChanged(string value)
+    {
+        OnPropertyChanged(nameof(PurchaseReceivingStatusDisplay));
+        OnPropertyChanged(nameof(PurchaseReceivingMetaDisplay));
+        ConfirmPurchaseReceivingCommand.NotifyCanExecuteChanged();
+    }
+
+    private void ResetPurchaseReceivingState(VoucherType voucherType)
+    {
+        var isPurchase = voucherType == VoucherType.Purchase;
+        PurchaseReceivingRequired = isPurchase;
+        PurchaseReceivingStatus = isPurchase
+            ? InvoiceReceivingStatuses.Pending
+            : InvoiceReceivingStatuses.NotApplicable;
+        PurchaseReceivedAtUtc = null;
+        PurchaseReceivedByUsername = string.Empty;
+        PurchaseReceivingOfficeCode = string.Empty;
+        PurchaseReceivingWarehouseCode = string.Empty;
+        PurchaseReceivingMemo = string.Empty;
+        OnPropertyChanged(nameof(PurchaseReceivingStatusDisplay));
+        OnPropertyChanged(nameof(PurchaseReceivingMetaDisplay));
+        ConfirmPurchaseReceivingCommand.NotifyCanExecuteChanged();
     }
 
     public LocalStateService LocalStateService => _local;
@@ -671,6 +771,7 @@ public sealed partial class SalesViewModel : ObservableObject
                 SelectedResponsibleOfficeCode = officeCode;
             }
 
+            OnPropertyChanged(nameof(PurchaseReceivingMetaDisplay));
             return;
         }
 
@@ -685,6 +786,13 @@ public sealed partial class SalesViewModel : ObservableObject
         {
             SelectedWarehouseCode = ResolveDefaultWarehouseCode(officeCode);
         }
+
+        OnPropertyChanged(nameof(PurchaseReceivingMetaDisplay));
+    }
+
+    partial void OnSelectedWarehouseCodeChanged(string value)
+    {
+        OnPropertyChanged(nameof(PurchaseReceivingMetaDisplay));
     }
 
     private string ResolveDefaultWarehouseCode(string? officeCode)
@@ -874,6 +982,50 @@ public sealed partial class SalesViewModel : ObservableObject
     private async Task SaveAsync()
         => await SaveCoreAsync();
 
+    private bool CanConfirmPurchaseReceiving()
+        => IsPurchaseDocument &&
+           PurchaseReceivingRequired &&
+           !InvoiceReceivingStatuses.IsConfirmed(PurchaseReceivingStatus);
+
+    [RelayCommand(CanExecute = nameof(CanConfirmPurchaseReceiving))]
+    private async Task ConfirmPurchaseReceivingAsync()
+    {
+        if (!IsPurchaseDocument)
+            return;
+
+        var previousStatus = PurchaseReceivingStatus;
+        var previousReceivedAt = PurchaseReceivedAtUtc;
+        var previousReceivedBy = PurchaseReceivedByUsername;
+        var previousOffice = PurchaseReceivingOfficeCode;
+        var previousWarehouse = PurchaseReceivingWarehouseCode;
+
+        PurchaseReceivingRequired = true;
+        PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed;
+        PurchaseReceivedAtUtc = DateTime.UtcNow;
+        PurchaseReceivedByUsername = _session.User?.Username ?? Environment.UserName;
+        PurchaseReceivingOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            SelectedResponsibleOfficeCode,
+            _session.OfficeCode);
+        PurchaseReceivingWarehouseCode = string.IsNullOrWhiteSpace(SelectedWarehouseCode)
+            ? ResolveDefaultWarehouseCode(PurchaseReceivingOfficeCode)
+            : SelectedWarehouseCode;
+
+        var saved = await SaveCoreAsync(
+            statusPrefix: "입고확인",
+            waitForServerWrite: false);
+        if (saved)
+        {
+            StatusMessage = "입고확인이 저장되었습니다. 서버 동기화는 백그라운드에서 이어집니다.";
+            return;
+        }
+
+        PurchaseReceivingStatus = previousStatus;
+        PurchaseReceivedAtUtc = previousReceivedAt;
+        PurchaseReceivedByUsername = previousReceivedBy;
+        PurchaseReceivingOfficeCode = previousOffice;
+        PurchaseReceivingWarehouseCode = previousWarehouse;
+    }
+
     public bool HasPendingChanges => !string.Equals(
         _baselineStateSignature,
         BuildStateSignature(),
@@ -896,6 +1048,13 @@ public sealed partial class SalesViewModel : ObservableObject
             .Append('|').Append(InvoiceMemo ?? string.Empty)
             .Append('|').Append(IsVatNone ? InvoiceVatModes.None : InvoiceVatModes.Included)
             .Append('|').Append(TaxInvoiceIssued ? "1" : "0")
+            .Append('|').Append(PurchaseReceivingRequired ? "1" : "0")
+            .Append('|').Append(PurchaseReceivingStatus ?? string.Empty)
+            .Append('|').Append(PurchaseReceivedAtUtc?.ToString("O") ?? string.Empty)
+            .Append('|').Append(PurchaseReceivedByUsername ?? string.Empty)
+            .Append('|').Append(PurchaseReceivingOfficeCode ?? string.Empty)
+            .Append('|').Append(PurchaseReceivingWarehouseCode ?? string.Empty)
+            .Append('|').Append(PurchaseReceivingMemo ?? string.Empty)
             .Append('|').Append(InputItemName ?? string.Empty)
             .Append('|').Append(InputSpec ?? string.Empty)
             .Append('|').Append(InputUnit ?? string.Empty)
@@ -1130,6 +1289,16 @@ public sealed partial class SalesViewModel : ObservableObject
             Memo = InvoiceMemo,
             VatMode = IsVatNone ? InvoiceVatModes.None : InvoiceVatModes.Included,
             TaxInvoiceIssued = TaxInvoiceIssued,
+            PurchaseReceivingRequired = IsPurchaseDocument && PurchaseReceivingRequired,
+            PurchaseReceivingStatus = InvoiceReceivingStatuses.Normalize(
+                PurchaseReceivingStatus,
+                IsPurchaseDocument,
+                PurchaseReceivingRequired),
+            PurchaseReceivedAtUtc = PurchaseReceivedAtUtc,
+            PurchaseReceivedByUsername = PurchaseReceivedByUsername,
+            PurchaseReceivingOfficeCode = PurchaseReceivingOfficeCode,
+            PurchaseReceivingWarehouseCode = PurchaseReceivingWarehouseCode,
+            PurchaseReceivingMemo = PurchaseReceivingMemo,
             ResponsibleOfficeCode = SelectedResponsibleOfficeCode,
             SourceWarehouseCode = SelectedWarehouseCode,
             LinkedRentalBillingProfileId = _linkedRentalBillingProfileId,
@@ -1225,6 +1394,19 @@ public sealed partial class SalesViewModel : ObservableObject
         InvoiceMemo = inv.Memo;
         IsVatNone = InvoiceVatModes.IsNone(inv.VatMode);
         TaxInvoiceIssued = inv.TaxInvoiceIssued;
+        PurchaseReceivingRequired = inv.VoucherType == VoucherType.Purchase &&
+                                    (inv.PurchaseReceivingRequired ||
+                                     InvoiceReceivingStatuses.IsConfirmed(inv.PurchaseReceivingStatus) ||
+                                     string.IsNullOrWhiteSpace(inv.PurchaseReceivingStatus));
+        PurchaseReceivingStatus = InvoiceReceivingStatuses.Normalize(
+            inv.PurchaseReceivingStatus,
+            inv.VoucherType == VoucherType.Purchase,
+            PurchaseReceivingRequired);
+        PurchaseReceivedAtUtc = inv.PurchaseReceivedAtUtc;
+        PurchaseReceivedByUsername = inv.PurchaseReceivedByUsername;
+        PurchaseReceivingOfficeCode = inv.PurchaseReceivingOfficeCode;
+        PurchaseReceivingWarehouseCode = inv.PurchaseReceivingWarehouseCode;
+        PurchaseReceivingMemo = inv.PurchaseReceivingMemo;
         _linkedRentalBillingProfileId = inv.LinkedRentalBillingProfileId;
         _linkedRentalBillingRunId = inv.LinkedRentalBillingRunId;
         SelectedResponsibleOfficeCode = string.IsNullOrWhiteSpace(inv.ResponsibleOfficeCode)

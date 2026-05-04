@@ -340,6 +340,13 @@ public sealed class InvoiceDto : SyncEntityDto
     public decimal VatAmount { get; set; }
     public string VatMode { get; set; } = InvoiceVatModes.Included;
     public bool TaxInvoiceIssued { get; set; }
+    public bool PurchaseReceivingRequired { get; set; }
+    public string PurchaseReceivingStatus { get; set; } = InvoiceReceivingStatuses.NotApplicable;
+    public DateTime? PurchaseReceivedAtUtc { get; set; }
+    public string PurchaseReceivedByUsername { get; set; } = string.Empty;
+    public string PurchaseReceivingOfficeCode { get; set; } = string.Empty;
+    public string PurchaseReceivingWarehouseCode { get; set; } = string.Empty;
+    public string PurchaseReceivingMemo { get; set; } = string.Empty;
     public string Memo { get; set; } = string.Empty;
     public List<InvoiceLineDto> Lines { get; set; } = new();
     public List<PaymentDto> Payments { get; set; } = new();

@@ -24,7 +24,8 @@ public sealed partial class LocalStateService
             return new LocalIntegrityReport(createdAtUtc, officeCode, tenantCode, dirtyCount, pendingServerMirrorRefresh, issues);
 
         var integrityTenantCode = ResolveIntegrityTenantCode(session);
-        var integrityOfficeCodes = ResolveIntegrityOfficeCodes(integrityTenantCode);
+        var integrityOfficeCodes = ResolveIntegrityOfficeCodes(session, integrityTenantCode);
+        var integrityWarehouseCodes = ResolveIntegrityWarehouseCodes(integrityOfficeCodes);
 
         var customerQuery = _db.Customers
             .IgnoreQueryFilters()
@@ -141,6 +142,14 @@ public sealed partial class LocalStateService
             _db.Items.IgnoreQueryFilters(),
             integrityTenantCode,
             integrityOfficeCodes);
+        var integrityInvoiceQuery = ApplyIntegrityInvoiceScope(
+            _db.Invoices.IgnoreQueryFilters(),
+            integrityTenantCode,
+            integrityOfficeCodes);
+        var integrityTransactionQuery = ApplyIntegrityTransactionScope(
+            _db.Transactions.IgnoreQueryFilters(),
+            integrityTenantCode,
+            integrityOfficeCodes);
 
         var duplicateRentalProfileKeyCount = await integrityRentalProfileQuery
             .IgnoreQueryFilters()
@@ -190,16 +199,24 @@ public sealed partial class LocalStateService
         var activeItemIds = integrityItemQuery
             .Where(item => !item.IsDeleted)
             .Select(item => item.Id);
-        var activeInvoiceIds = _db.Invoices
+        var activeInvoiceIds = integrityInvoiceQuery
             .IgnoreQueryFilters()
             .Where(invoice => !invoice.IsDeleted)
             .Select(invoice => invoice.Id);
-        var activeTransactionIds = _db.Transactions
+        var allActiveInvoiceIds = _db.Invoices
+            .IgnoreQueryFilters()
+            .Where(invoice => !invoice.IsDeleted)
+            .Select(invoice => invoice.Id);
+        var activeTransactionIds = integrityTransactionQuery
+            .IgnoreQueryFilters()
+            .Where(transaction => !transaction.IsDeleted)
+            .Select(transaction => transaction.Id);
+        var allActiveTransactionIds = _db.Transactions
             .IgnoreQueryFilters()
             .Where(transaction => !transaction.IsDeleted)
             .Select(transaction => transaction.Id);
 
-        var inventoryItemSnapshots = await _db.Items
+        var inventoryItemSnapshots = await integrityItemQuery
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(item => !item.IsDeleted)
@@ -212,9 +229,11 @@ public sealed partial class LocalStateService
             .ToListAsync(ct);
         var warehouseStockSnapshots = await _db.ItemWarehouseStocks
             .AsNoTracking()
+            .Where(stock => integrityWarehouseCodes.Contains(stock.WarehouseCode) || activeItemIds.Contains(stock.ItemId))
             .Select(stock => new
             {
                 stock.ItemId,
+                stock.WarehouseCode,
                 stock.Quantity
             })
             .ToListAsync(ct);
@@ -258,7 +277,9 @@ public sealed partial class LocalStateService
             "재고 미관리 품목에 현재고 또는 창고 재고 스냅샷이 남아 있습니다.",
             severity: "Error");
 
-        var orphanWarehouseStockCount = warehouseStockSnapshots.Count(stock => !inventoryItemIdSet.Contains(stock.ItemId));
+        var orphanWarehouseStockCount = warehouseStockSnapshots.Count(stock =>
+            integrityWarehouseCodes.Contains(OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(stock.WarehouseCode, null)) &&
+            !inventoryItemIdSet.Contains(stock.ItemId));
         AddIssueIfNeeded(
             issues,
             "orphan_item_warehouse_stock_refs",
@@ -268,7 +289,10 @@ public sealed partial class LocalStateService
 
         var orphanStockLayerItemCount = await _db.StockLayers
             .AsNoTracking()
-            .Where(layer => layer.ItemId.HasValue && !activeItemIds.Contains(layer.ItemId.Value))
+            .Where(layer =>
+                integrityWarehouseCodes.Contains(layer.WarehouseCode) &&
+                layer.ItemId.HasValue &&
+                !activeItemIds.Contains(layer.ItemId.Value))
             .CountAsync(ct);
         AddIssueIfNeeded(
             issues,
@@ -279,7 +303,10 @@ public sealed partial class LocalStateService
 
         var orphanInventoryMovementItemCount = await _db.InventoryMovements
             .AsNoTracking()
-            .Where(movement => movement.ItemId.HasValue && !activeItemIds.Contains(movement.ItemId.Value))
+            .Where(movement =>
+                integrityWarehouseCodes.Contains(movement.WarehouseCode) &&
+                movement.ItemId.HasValue &&
+                !activeItemIds.Contains(movement.ItemId.Value))
             .CountAsync(ct);
         AddIssueIfNeeded(
             issues,
@@ -290,7 +317,10 @@ public sealed partial class LocalStateService
 
         var orphanSerialLedgerItemCount = await _db.SerialLedgers
             .AsNoTracking()
-            .Where(ledger => ledger.ItemId.HasValue && !activeItemIds.Contains(ledger.ItemId.Value))
+            .Where(ledger =>
+                integrityWarehouseCodes.Contains(ledger.WarehouseCode) &&
+                ledger.ItemId.HasValue &&
+                !activeItemIds.Contains(ledger.ItemId.Value))
             .CountAsync(ct);
         AddIssueIfNeeded(
             issues,
@@ -320,9 +350,12 @@ public sealed partial class LocalStateService
                     transfer.ToWarehouseCode
                 })
                 .ToListAsync(ct))
-            .Count(transfer => IsCrossTenantInventoryTransferRoute(
-                transfer.FromWarehouseCode,
-                transfer.ToWarehouseCode));
+            .Count(transfer =>
+                (integrityWarehouseCodes.Contains(OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(transfer.FromWarehouseCode, null)) ||
+                 integrityWarehouseCodes.Contains(OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(transfer.ToWarehouseCode, null))) &&
+                IsCrossTenantInventoryTransferRoute(
+                    transfer.FromWarehouseCode,
+                    transfer.ToWarehouseCode));
         AddIssueIfNeeded(
             issues,
             "cross_tenant_inventory_transfers",
@@ -500,7 +533,7 @@ public sealed partial class LocalStateService
                 orphanRentalAssetItemCount,
                 row => $"자산키={FormatDetailValue(row.AssetKey)} / 관리번호={FormatDetailValue(row.ManagementNumber)} / 시리얼={FormatDetailValue(row.MachineNumber)} / 품목={FormatDetailValue(row.ItemName)} / 제조사={FormatDetailValue(row.Manufacturer)} / 거래처={FormatDetailValue(row.CustomerName)} / 설치위치={FormatDetailValue(row.InstallLocation)} / 누락 ItemId={FormatDetailGuid(row.ItemId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"));
 
-        var missingInvoiceCustomerCount = await _db.Invoices
+        var missingInvoiceCustomerCount = await integrityInvoiceQuery
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(invoice => !invoice.IsDeleted && invoice.CustomerId != Guid.Empty && !activeCustomerIds.Contains(invoice.CustomerId))
@@ -512,7 +545,7 @@ public sealed partial class LocalStateService
             "전표가 존재하지 않는 거래처를 참조하고 있습니다.",
             severity: "Error");
 
-        var missingTransactionInvoiceCount = await _db.Transactions
+        var missingTransactionInvoiceCount = await integrityTransactionQuery
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(transaction => !transaction.IsDeleted && transaction.LinkedInvoiceId.HasValue && !activeInvoiceIds.Contains(transaction.LinkedInvoiceId.Value))
@@ -527,7 +560,7 @@ public sealed partial class LocalStateService
         var missingPaymentInvoiceCount = await _db.Payments
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(payment => !payment.IsDeleted && payment.InvoiceId != Guid.Empty && !activeInvoiceIds.Contains(payment.InvoiceId))
+            .Where(payment => !payment.IsDeleted && payment.InvoiceId != Guid.Empty && !allActiveInvoiceIds.Contains(payment.InvoiceId))
             .CountAsync(ct);
         AddIssueIfNeeded(
             issues,
@@ -539,7 +572,7 @@ public sealed partial class LocalStateService
         var missingAttachmentTransactionCount = await _db.TransactionAttachments
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(attachment => !attachment.IsDeleted && attachment.TransactionId != Guid.Empty && !activeTransactionIds.Contains(attachment.TransactionId))
+            .Where(attachment => !attachment.IsDeleted && attachment.TransactionId != Guid.Empty && !allActiveTransactionIds.Contains(attachment.TransactionId))
             .CountAsync(ct);
         AddIssueIfNeeded(
             issues,
@@ -573,12 +606,39 @@ public sealed partial class LocalStateService
     private static string ResolveIntegrityTenantCode(SessionState session)
         => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
 
-    private static List<string> ResolveIntegrityOfficeCodes(string tenantCode)
-        => TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode)
-            .Select(officeCode => NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet))
-            .Where(officeCode => !string.IsNullOrWhiteSpace(officeCode))
+    private static List<string> ResolveIntegrityOfficeCodes(SessionState session, string tenantCode)
+    {
+        var sessionOfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
+        var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode, session.TenantCode);
+
+        if (string.Equals(normalizedTenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(sessionOfficeCode, OfficeCodeCatalog.Itworld, StringComparison.OrdinalIgnoreCase))
+        {
+            return [OfficeCodeCatalog.Itworld];
+        }
+
+        if (string.Equals(sessionOfficeCode, OfficeCodeCatalog.Yeonsu, StringComparison.OrdinalIgnoreCase))
+        {
+            return [OfficeCodeCatalog.Yeonsu];
+        }
+
+        return [OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Yeonsu];
+    }
+
+    private static List<string> ResolveIntegrityWarehouseCodes(IReadOnlyCollection<string> officeCodes)
+        => officeCodes
+            .Select(OfficeCodeCatalog.GetMainWarehouseCode)
+            .Select(warehouseCode => OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(warehouseCode, null))
+            .Where(warehouseCode => !string.IsNullOrWhiteSpace(warehouseCode))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+    private static bool CoversAllTenantOffices(string tenantCode, IReadOnlyCollection<string> officeCodes)
+    {
+        var tenantOfficeCodes = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return tenantOfficeCodes.Count > 0 && tenantOfficeCodes.All(officeCodes.Contains);
+    }
 
     private static IQueryable<LocalCustomer> ApplyIntegrityCustomerScope(
         IQueryable<LocalCustomer> query,
@@ -593,6 +653,7 @@ public sealed partial class LocalStateService
                 customer.ResponsibleOfficeCode == OfficeCodeCatalog.Itworld);
         }
 
+        var coversAllTenantOffices = CoversAllTenantOffices(tenantCode, officeCodes);
         return query.Where(customer =>
             customer.TenantCode != TenantScopeCatalog.Itworld &&
             customer.OfficeCode != OfficeCodeCatalog.Itworld &&
@@ -602,7 +663,7 @@ public sealed partial class LocalStateService
                 customer.OfficeCode == "ALL" ||
                 officeCodes.Contains(customer.ResponsibleOfficeCode) ||
                 officeCodes.Contains(customer.OfficeCode) ||
-                customer.TenantCode == tenantCode
+                (coversAllTenantOffices && customer.TenantCode == tenantCode)
             ));
     }
 
@@ -618,13 +679,14 @@ public sealed partial class LocalStateService
                 item.OfficeCode == OfficeCodeCatalog.Itworld);
         }
 
+        var coversAllTenantOffices = CoversAllTenantOffices(tenantCode, officeCodes);
         return query.Where(item =>
             item.TenantCode != TenantScopeCatalog.Itworld &&
             item.OfficeCode != OfficeCodeCatalog.Itworld &&
             (
                 item.OfficeCode == "ALL" ||
                 officeCodes.Contains(item.OfficeCode) ||
-                item.TenantCode == tenantCode
+                (coversAllTenantOffices && item.TenantCode == tenantCode)
             ));
     }
 
@@ -642,13 +704,14 @@ public sealed partial class LocalStateService
                 profile.ResponsibleOfficeCode == OfficeCodeCatalog.Itworld);
         }
 
+        var coversAllTenantOffices = CoversAllTenantOffices(tenantCode, officeCodes);
         return query.Where(profile =>
             profile.TenantCode != TenantScopeCatalog.Itworld &&
             profile.OfficeCode != OfficeCodeCatalog.Itworld &&
             profile.ManagementCompanyCode != OfficeCodeCatalog.Itworld &&
             profile.ResponsibleOfficeCode != OfficeCodeCatalog.Itworld &&
             (
-                profile.TenantCode == tenantCode ||
+                (coversAllTenantOffices && profile.TenantCode == tenantCode) ||
                 officeCodes.Contains(profile.OfficeCode) ||
                 officeCodes.Contains(profile.ManagementCompanyCode) ||
                 officeCodes.Contains(profile.ResponsibleOfficeCode)
@@ -669,16 +732,67 @@ public sealed partial class LocalStateService
                 asset.ResponsibleOfficeCode == OfficeCodeCatalog.Itworld);
         }
 
+        var coversAllTenantOffices = CoversAllTenantOffices(tenantCode, officeCodes);
         return query.Where(asset =>
             asset.TenantCode != TenantScopeCatalog.Itworld &&
             asset.OfficeCode != OfficeCodeCatalog.Itworld &&
             asset.ManagementCompanyCode != OfficeCodeCatalog.Itworld &&
             asset.ResponsibleOfficeCode != OfficeCodeCatalog.Itworld &&
             (
-                asset.TenantCode == tenantCode ||
+                (coversAllTenantOffices && asset.TenantCode == tenantCode) ||
                 officeCodes.Contains(asset.OfficeCode) ||
                 officeCodes.Contains(asset.ManagementCompanyCode) ||
                 officeCodes.Contains(asset.ResponsibleOfficeCode)
+            ));
+    }
+
+    private static IQueryable<LocalInvoice> ApplyIntegrityInvoiceScope(
+        IQueryable<LocalInvoice> query,
+        string tenantCode,
+        IReadOnlyCollection<string> officeCodes)
+    {
+        if (string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase))
+        {
+            return query.Where(invoice =>
+                invoice.TenantCode == TenantScopeCatalog.Itworld ||
+                invoice.OfficeCode == OfficeCodeCatalog.Itworld ||
+                invoice.ResponsibleOfficeCode == OfficeCodeCatalog.Itworld);
+        }
+
+        var coversAllTenantOffices = CoversAllTenantOffices(tenantCode, officeCodes);
+        return query.Where(invoice =>
+            invoice.TenantCode != TenantScopeCatalog.Itworld &&
+            invoice.OfficeCode != OfficeCodeCatalog.Itworld &&
+            invoice.ResponsibleOfficeCode != OfficeCodeCatalog.Itworld &&
+            (
+                (coversAllTenantOffices && invoice.TenantCode == tenantCode) ||
+                officeCodes.Contains(invoice.OfficeCode) ||
+                officeCodes.Contains(invoice.ResponsibleOfficeCode)
+            ));
+    }
+
+    private static IQueryable<LocalTransaction> ApplyIntegrityTransactionScope(
+        IQueryable<LocalTransaction> query,
+        string tenantCode,
+        IReadOnlyCollection<string> officeCodes)
+    {
+        if (string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase))
+        {
+            return query.Where(transaction =>
+                transaction.TenantCode == TenantScopeCatalog.Itworld ||
+                transaction.OfficeCode == OfficeCodeCatalog.Itworld ||
+                transaction.ResponsibleOfficeCode == OfficeCodeCatalog.Itworld);
+        }
+
+        var coversAllTenantOffices = CoversAllTenantOffices(tenantCode, officeCodes);
+        return query.Where(transaction =>
+            transaction.TenantCode != TenantScopeCatalog.Itworld &&
+            transaction.OfficeCode != OfficeCodeCatalog.Itworld &&
+            transaction.ResponsibleOfficeCode != OfficeCodeCatalog.Itworld &&
+            (
+                (coversAllTenantOffices && transaction.TenantCode == tenantCode) ||
+                officeCodes.Contains(transaction.OfficeCode) ||
+                officeCodes.Contains(transaction.ResponsibleOfficeCode)
             ));
     }
 

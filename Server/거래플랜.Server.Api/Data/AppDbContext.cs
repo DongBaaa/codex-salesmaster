@@ -170,6 +170,7 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<Invoice>().HasIndex(x => x.OfficeCode);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.ResponsibleOfficeCode);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.SourceWarehouseCode);
+        modelBuilder.Entity<Invoice>().HasIndex(x => x.PurchaseReceivingStatus);
         modelBuilder.Entity<ItemWarehouseStock>().HasKey(x => new { x.ItemId, x.WarehouseCode });
         modelBuilder.Entity<ItemWarehouseStock>().HasIndex(x => x.WarehouseCode);
         modelBuilder.Entity<PaymentAttachment>().HasIndex(x => x.PaymentId);

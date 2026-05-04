@@ -24,11 +24,16 @@ public sealed class InvoiceListRow
     public decimal PaymentAmount { get; init; }
     public decimal BalanceAmount => TotalAmount - (VoucherType == VoucherType.Purchase ? PaymentAmount : ReceiptAmount);
     public bool TaxInvoiceIssued { get; init; }
+    public bool PurchaseReceivingRequired { get; init; }
+    public string PurchaseReceivingStatus { get; init; } = InvoiceReceivingStatuses.NotApplicable;
     public bool IsDirty { get; init; }
 
     public string DisplayNumber => string.IsNullOrEmpty(InvoiceNumber) ? LocalTempNumber : InvoiceNumber;
     public string InvoiceDateDisplay => InvoiceDate.ToString("yyyy/MM/dd");
     public string TaxInvoiceDisplay => TaxInvoiceIssued ? "V" : string.Empty;
+    public string PurchaseReceivingDisplay => VoucherType == VoucherType.Purchase
+        ? InvoiceReceivingStatuses.Normalize(PurchaseReceivingStatus, true, PurchaseReceivingRequired)
+        : string.Empty;
 
     public string VoucherTypeDisplay => VoucherType switch
     {
@@ -61,6 +66,17 @@ public sealed class InvoiceListRow
             ReceiptAmount = inv.VoucherType == VoucherType.Sales ? settledAmount : 0m,
             PaymentAmount = inv.VoucherType == VoucherType.Purchase ? settledAmount : 0m,
             TaxInvoiceIssued = inv.TaxInvoiceIssued,
+            PurchaseReceivingRequired = inv.PurchaseReceivingRequired ||
+                                        (inv.VoucherType == VoucherType.Purchase &&
+                                         (InvoiceReceivingStatuses.IsConfirmed(inv.PurchaseReceivingStatus) ||
+                                          string.IsNullOrWhiteSpace(inv.PurchaseReceivingStatus))),
+            PurchaseReceivingStatus = InvoiceReceivingStatuses.Normalize(
+                inv.PurchaseReceivingStatus,
+                inv.VoucherType == VoucherType.Purchase,
+                inv.PurchaseReceivingRequired ||
+                (inv.VoucherType == VoucherType.Purchase &&
+                 (InvoiceReceivingStatuses.IsConfirmed(inv.PurchaseReceivingStatus) ||
+                  string.IsNullOrWhiteSpace(inv.PurchaseReceivingStatus)))),
             IsDirty = inv.IsDirty
         };
     }

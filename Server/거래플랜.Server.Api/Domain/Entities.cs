@@ -248,6 +248,13 @@ public sealed class Invoice : TrackedEntity
     public decimal VatAmount { get; set; }
     public string VatMode { get; set; } = InvoiceVatModes.Included;
     public bool TaxInvoiceIssued { get; set; }
+    public bool PurchaseReceivingRequired { get; set; }
+    public string PurchaseReceivingStatus { get; set; } = InvoiceReceivingStatuses.NotApplicable;
+    public DateTime? PurchaseReceivedAtUtc { get; set; }
+    public string PurchaseReceivedByUsername { get; set; } = string.Empty;
+    public string PurchaseReceivingOfficeCode { get; set; } = string.Empty;
+    public string PurchaseReceivingWarehouseCode { get; set; } = string.Empty;
+    public string PurchaseReceivingMemo { get; set; } = string.Empty;
     public string Memo { get; set; } = string.Empty;
     public ICollection<InvoiceLine> Lines { get; set; } = new List<InvoiceLine>();
     public ICollection<Payment> Payments { get; set; } = new List<Payment>();

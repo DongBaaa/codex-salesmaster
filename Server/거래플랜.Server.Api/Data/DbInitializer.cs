@@ -235,6 +235,7 @@ public static partial class DbInitializer
         await EnsureInvoiceTenantCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceTaxInvoiceIssuedColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceVatModeColumnAsync(dbContext, cancellationToken);
+        await EnsureInvoicePurchaseReceivingColumnsAsync(dbContext, cancellationToken);
         await EnsureInvoiceVersionColumnsAsync(dbContext, cancellationToken);
         await EnsureRecycleBinPurgeRecordsTableAsync(dbContext, cancellationToken);
         await EnsureCustomerContractStoragePathColumnAsync(dbContext, cancellationToken);
@@ -2322,6 +2323,31 @@ public static partial class DbInitializer
         {
             await dbContext.Database.ExecuteSqlRawAsync(
                 $"UPDATE \"Invoices\" SET \"VatMode\" = '{InvoiceVatModes.Included}' WHERE \"VatMode\" IS NULL OR TRIM(\"VatMode\") = '';",
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task EnsureInvoicePurchaseReceivingColumnsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureColumnAsync(dbContext, "Invoices", "PurchaseReceivingRequired", "INTEGER NOT NULL DEFAULT 0", "boolean NOT NULL DEFAULT false", cancellationToken);
+        await EnsureColumnAsync(dbContext, "Invoices", "PurchaseReceivingStatus", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "Invoices", "PurchaseReceivedAtUtc", "TEXT NULL", "timestamp with time zone NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "Invoices", "PurchaseReceivedByUsername", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "Invoices", "PurchaseReceivingOfficeCode", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "Invoices", "PurchaseReceivingWarehouseCode", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "Invoices", "PurchaseReceivingMemo", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                CREATE INDEX IF NOT EXISTS "IX_Invoices_PurchaseReceivingStatus" ON "Invoices" ("PurchaseReceivingStatus");
+                """,
                 cancellationToken);
         }
         catch

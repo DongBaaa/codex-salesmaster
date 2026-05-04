@@ -23,6 +23,9 @@ public sealed class RuntimeSafetyMonitorService
     private const string ClockWarningSettingKey = "Runtime.ClockSkewWarning.LastShownAtUtc";
     private const string PeriodicIntegrityRunSettingKey = "Runtime.PeriodicIntegrity.LastRunAtUtc";
     private const string PeriodicIntegrityWarningSettingKey = "Runtime.PeriodicIntegrity.LastWarningAtUtc";
+    private const string PeriodicIntegrityActiveReportPathSettingKey = "Runtime.PeriodicIntegrity.ActiveReportPath";
+    private const string PeriodicIntegrityActiveReportCreatedAtSettingKey = "Runtime.PeriodicIntegrity.ActiveReportCreatedAtUtc";
+    private const string PeriodicIntegrityActiveReportSignatureSettingKey = "Runtime.PeriodicIntegrity.ActiveReportSignature";
     private static readonly TimeSpan ClockSkewThreshold = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan ClockWarningCooldown = TimeSpan.FromHours(12);
     private static readonly TimeSpan PeriodicIntegrityInterval = TimeSpan.FromHours(6);
@@ -170,11 +173,12 @@ public sealed class RuntimeSafetyMonitorService
 
         if (!report.HasIssues)
         {
+            await ClearActivePeriodicIntegrityReportAsync(local, ct);
             var successMessage = autoRecoveryAttempted
                 ? string.IsNullOrWhiteSpace(backupPath)
                     ? "주기 무결성 점검에서 자동 재동기화까지 완료했습니다."
                     : $"주기 무결성 점검에서 자동 재동기화까지 완료했습니다. 백업: {Path.GetFileName(backupPath)}"
-                : "주기 무결성 점검 결과 이상이 없습니다.";
+                : "현재 주기 무결성 점검 결과 이상이 없습니다. 이전에 저장된 과거 리포트는 알림 대상에서 제외했습니다.";
 
             return new PeriodicIntegrityMonitorResult(
                 Executed: true,
@@ -189,10 +193,11 @@ public sealed class RuntimeSafetyMonitorService
             autoRecoverySucceeded,
             backupPath,
             ct);
+        await MarkActivePeriodicIntegrityReportAsync(local, report, detailReportPath, ct);
 
         var warningMessage = autoRecoveryAttempted && !autoRecoverySucceeded
             ? "주기 무결성 점검 중 자동 재동기화를 시도했지만 완료하지 못했습니다."
-            : "주기 무결성 점검에서 수동 확인이 필요한 항목이 남아 있습니다.";
+            : $"현재 점검({report.CreatedAtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss})에서 수동 확인이 필요한 항목이 남아 있습니다.";
         warningMessage += Environment.NewLine + Environment.NewLine + report.BuildSummaryText();
         if (!string.IsNullOrWhiteSpace(detailReportPath))
         {
@@ -245,12 +250,14 @@ public sealed class RuntimeSafetyMonitorService
             builder.AppendLine("# 주기 무결성 점검 상세 내역");
             builder.AppendLine();
             builder.AppendLine($"- 생성시각: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            builder.AppendLine($"- 리포트 상태: 현재 실행에서 새로 생성된 리포트");
             builder.AppendLine($"- 자동 재동기화 시도: {(autoRecoveryAttempted ? "예" : "아니오")}");
             builder.AppendLine($"- 자동 재동기화 완료: {(autoRecoverySucceeded ? "예" : "아니오")}");
             if (!string.IsNullOrWhiteSpace(backupPath))
                 builder.AppendLine($"- 자동 재동기화 전 백업: {backupPath}");
             builder.AppendLine();
             builder.AppendLine("이 리포트는 주기 무결성 점검 팝업에서 자동 저장되었습니다. `수정 방법`과 `상세 내역`을 기준으로 원본 화면에서 정리하세요.");
+            builder.AppendLine("다음 점검에서 현재 문제가 없어지면 이 파일은 과거 기록으로만 남고, 운영 알림 대상으로 다시 표시하지 않습니다.");
             builder.AppendLine();
             builder.AppendLine(report.ToMarkdown().Trim());
             builder.AppendLine();
@@ -264,6 +271,31 @@ public sealed class RuntimeSafetyMonitorService
             return string.Empty;
         }
     }
+
+    private static async Task MarkActivePeriodicIntegrityReportAsync(
+        LocalStateService local,
+        LocalIntegrityReport report,
+        string detailReportPath,
+        CancellationToken ct)
+    {
+        await local.SetSettingAsync(PeriodicIntegrityActiveReportPathSettingKey, detailReportPath ?? string.Empty, ct);
+        await local.SetSettingAsync(PeriodicIntegrityActiveReportCreatedAtSettingKey, report.CreatedAtUtc.ToString("O"), ct);
+        await local.SetSettingAsync(PeriodicIntegrityActiveReportSignatureSettingKey, BuildReportIssueSignature(report), ct);
+    }
+
+    private static async Task ClearActivePeriodicIntegrityReportAsync(LocalStateService local, CancellationToken ct)
+    {
+        await local.SetSettingAsync(PeriodicIntegrityActiveReportPathSettingKey, string.Empty, ct);
+        await local.SetSettingAsync(PeriodicIntegrityActiveReportCreatedAtSettingKey, string.Empty, ct);
+        await local.SetSettingAsync(PeriodicIntegrityActiveReportSignatureSettingKey, string.Empty, ct);
+    }
+
+    private static string BuildReportIssueSignature(LocalIntegrityReport report)
+        => string.Join(
+            "|",
+            report.Issues
+                .OrderBy(issue => issue.Code, StringComparer.OrdinalIgnoreCase)
+                .Select(issue => $"{issue.Code}:{issue.Count}"));
 
     private async Task<bool> IsPeriodicRunDueAsync(LocalStateService local, CancellationToken ct)
     {

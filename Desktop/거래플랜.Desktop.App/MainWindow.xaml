@@ -425,6 +425,7 @@
                                             </DataGridTextColumn.HeaderTemplate>
                                         </DataGridTextColumn>
                                         <DataGridTextColumn Header="유형" Binding="{Binding VoucherTypeDisplay}" Width="70"/>
+                                        <DataGridTextColumn Header="입고확인" Binding="{Binding PurchaseReceivingDisplay}" Width="110"/>
                                         <DataGridTextColumn Header="공급가" Binding="{Binding SupplyAmount, StringFormat=N0}" Width="100"/>
                                         <DataGridTextColumn Header="부가세" Binding="{Binding VatAmount, StringFormat=N0}" Width="90"/>
                                         <DataGridTextColumn Header="합계" Binding="{Binding TotalAmount, StringFormat=N0}" Width="100"/>

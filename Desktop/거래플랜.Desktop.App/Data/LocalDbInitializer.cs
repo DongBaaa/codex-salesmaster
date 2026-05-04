@@ -393,6 +393,13 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             ("CostStatus", "TEXT NOT NULL DEFAULT '미확인'"),
             ("VatMode", $"TEXT NOT NULL DEFAULT '{InvoiceVatModes.Included}'"),
             ("TaxInvoiceIssued", "INTEGER NOT NULL DEFAULT 0"),
+            ("PurchaseReceivingRequired", "INTEGER NOT NULL DEFAULT 0"),
+            ("PurchaseReceivingStatus", "TEXT NOT NULL DEFAULT ''"),
+            ("PurchaseReceivedAtUtc", "TEXT NULL"),
+            ("PurchaseReceivedByUsername", "TEXT NOT NULL DEFAULT ''"),
+            ("PurchaseReceivingOfficeCode", "TEXT NOT NULL DEFAULT ''"),
+            ("PurchaseReceivingWarehouseCode", "TEXT NOT NULL DEFAULT ''"),
+            ("PurchaseReceivingMemo", "TEXT NOT NULL DEFAULT ''"),
         };
         foreach (var (col, def) in invoiceCols)
             await TryAddColumnAsync(db, "Invoices", col, def);
@@ -522,6 +529,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_LinkedRentalBillingProfileId\" ON \"Invoices\" (\"LinkedRentalBillingProfileId\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_LinkedRentalBillingRunId\" ON \"Invoices\" (\"LinkedRentalBillingRunId\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_SourceWarehouseCode\" ON \"Invoices\" (\"SourceWarehouseCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_PurchaseReceivingStatus\" ON \"Invoices\" (\"PurchaseReceivingStatus\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Customers_OfficeCode\" ON \"Customers\" (\"OfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Customers_ResponsibleOfficeCode\" ON \"Customers\" (\"ResponsibleOfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_OfficeCode\" ON \"Invoices\" (\"OfficeCode\");");
@@ -2212,6 +2220,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryNormalizeDateTimeTextColumnAsync(db, "Invoices", "CreatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "Invoices", "UpdatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "Invoices", "LastSavedAtUtc");
+        await TryNormalizeDateTimeTextColumnAsync(db, "Invoices", "PurchaseReceivedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "Payments", "CreatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "Payments", "UpdatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "RecentSelections", "LastUsedAtUtc");

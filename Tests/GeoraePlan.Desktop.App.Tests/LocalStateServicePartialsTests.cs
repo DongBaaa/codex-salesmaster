@@ -796,6 +796,53 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task LocalStateService_BuildIntegrityReport_YeonsuLoginExcludesUsenetOnlyRentalOrphans()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-integrity-yeonsu-office-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = Guid.Parse("92811111-1111-1111-1111-111111111111"),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "USENET|ORPHAN|ASSET",
+                CustomerId = Guid.Parse("92822222-2222-2222-2222-222222222222"),
+                ItemId = Guid.Parse("92833333-3333-3333-3333-333333333333"),
+                CustomerName = "USENET Only Customer",
+                CurrentCustomerName = "USENET Only Customer",
+                ItemName = "USENET Only Item",
+                MachineNumber = "USENET-ORPHAN",
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), CreateYeonsuAdminSession());
+            var yeonsuReport = await service.BuildIntegrityReportAsync(CreateYeonsuAdminSession());
+            var usenetReport = await service.BuildIntegrityReportAsync(CreateAdminSession());
+
+            Assert.DoesNotContain(yeonsuReport.Issues, issue => issue.Code == "orphan_rental_asset_customer_refs");
+            Assert.DoesNotContain(yeonsuReport.Issues, issue => issue.Code == "orphan_rental_asset_item_refs");
+            Assert.Contains(usenetReport.Issues, issue => issue.Code == "orphan_rental_asset_customer_refs" && issue.Count == 1);
+            Assert.Contains(usenetReport.Issues, issue => issue.Code == "orphan_rental_asset_item_refs" && issue.Count == 1);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public void RentalAssetLinkDialog_SelectionCheckbox_UpdatesSourceImmediately()
     {
         var xamlPath = Path.Combine(

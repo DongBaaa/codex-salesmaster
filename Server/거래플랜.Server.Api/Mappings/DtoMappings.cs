@@ -1029,8 +1029,23 @@ public static class DtoMappings
             PreviousVersionId = entity.PreviousVersionId,
             IsLatestVersion = entity.IsLatestVersion,
             VoucherType = entity.VoucherType,
+            SourceWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(
+                entity.SourceWarehouseCode,
+                entity.ResponsibleOfficeCode,
+                entity.OfficeCode),
             InvoiceDate = entity.InvoiceDate, TotalAmount = entity.TotalAmount,
-            SupplyAmount = entity.SupplyAmount, VatAmount = entity.VatAmount, VatMode = InvoiceVatModes.Normalize(entity.VatMode), TaxInvoiceIssued = entity.TaxInvoiceIssued, Memo = entity.Memo,
+            SupplyAmount = entity.SupplyAmount, VatAmount = entity.VatAmount, VatMode = InvoiceVatModes.Normalize(entity.VatMode), TaxInvoiceIssued = entity.TaxInvoiceIssued,
+            PurchaseReceivingRequired = entity.PurchaseReceivingRequired,
+            PurchaseReceivingStatus = InvoiceReceivingStatuses.Normalize(
+                entity.PurchaseReceivingStatus,
+                entity.VoucherType == VoucherType.Purchase,
+                entity.PurchaseReceivingRequired),
+            PurchaseReceivedAtUtc = entity.PurchaseReceivedAtUtc,
+            PurchaseReceivedByUsername = entity.PurchaseReceivedByUsername,
+            PurchaseReceivingOfficeCode = entity.PurchaseReceivingOfficeCode,
+            PurchaseReceivingWarehouseCode = entity.PurchaseReceivingWarehouseCode,
+            PurchaseReceivingMemo = entity.PurchaseReceivingMemo,
+            Memo = entity.Memo,
             Lines = entity.Lines.Where(x => !x.IsDeleted).OrderBy(x => x.Id).Select(x => x.ToDto()).ToList(),
             Payments = entity.Payments.Where(x => !x.IsDeleted).OrderByDescending(x => x.PaymentDate).Select(x => x.ToDto()).ToList()
         };
@@ -1052,7 +1067,15 @@ public static class DtoMappings
         entity.CustomerId = dto.CustomerId; entity.InvoiceNumber = dto.InvoiceNumber;
         entity.LocalTempNumber = dto.LocalTempNumber; entity.VoucherType = dto.VoucherType;
         entity.SourceWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(dto.SourceWarehouseCode, dto.ResponsibleOfficeCode, dto.OfficeCode);
-        entity.InvoiceDate = dto.InvoiceDate; entity.VatMode = InvoiceVatModes.Normalize(dto.VatMode); entity.TaxInvoiceIssued = dto.TaxInvoiceIssued; entity.Memo = dto.Memo; entity.IsDeleted = dto.IsDeleted;
+        entity.InvoiceDate = dto.InvoiceDate; entity.VatMode = InvoiceVatModes.Normalize(dto.VatMode); entity.TaxInvoiceIssued = dto.TaxInvoiceIssued;
+        entity.PurchaseReceivingRequired = dto.PurchaseReceivingRequired;
+        entity.PurchaseReceivingStatus = InvoiceReceivingStatuses.Normalize(dto.PurchaseReceivingStatus, dto.VoucherType == VoucherType.Purchase, dto.PurchaseReceivingRequired);
+        entity.PurchaseReceivedAtUtc = dto.PurchaseReceivedAtUtc;
+        entity.PurchaseReceivedByUsername = dto.PurchaseReceivedByUsername ?? string.Empty;
+        entity.PurchaseReceivingOfficeCode = dto.PurchaseReceivingOfficeCode ?? string.Empty;
+        entity.PurchaseReceivingWarehouseCode = dto.PurchaseReceivingWarehouseCode ?? string.Empty;
+        entity.PurchaseReceivingMemo = dto.PurchaseReceivingMemo ?? string.Empty;
+        entity.Memo = dto.Memo; entity.IsDeleted = dto.IsDeleted;
         entity.LinkedRentalBillingProfileId = dto.LinkedRentalBillingProfileId;
         entity.LinkedRentalBillingRunId = dto.LinkedRentalBillingRunId;
         entity.VersionGroupId = dto.VersionGroupId == Guid.Empty ? dto.Id : dto.VersionGroupId;

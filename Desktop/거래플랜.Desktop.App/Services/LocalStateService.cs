@@ -2045,15 +2045,26 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		string responsibleOfficeCode = NormalizeOfficeScope((!string.IsNullOrWhiteSpace(invoice.ResponsibleOfficeCode)) ? invoice.ResponsibleOfficeCode : latest?.ResponsibleOfficeCode, customerOfficeCode);
 		string warehouseOfficeCode = (IsSharedOfficeScope(responsibleOfficeCode) ? NormalizeOfficeCode(context.OfficeCode, DomainConstants.OfficeUsenet) : NormalizeOfficeCode(responsibleOfficeCode, customerOfficeCode));
 		string sourceWarehouseCode = NormalizeWarehouseCode(invoice.SourceWarehouseCode, warehouseOfficeCode, warehouseOfficeCode);
+		bool hasIncomingReceivingStatus = !string.IsNullOrWhiteSpace(invoice.PurchaseReceivingStatus);
+		bool purchaseReceivingRequired = invoice.VoucherType == VoucherType.Purchase && (invoice.PurchaseReceivingRequired || (latest?.PurchaseReceivingRequired ?? false) || (!hasIncomingReceivingStatus && latest == null));
+		string purchaseReceivingStatus = InvoiceReceivingStatuses.Normalize(hasIncomingReceivingStatus ? invoice.PurchaseReceivingStatus : latest?.PurchaseReceivingStatus, invoice.VoucherType == VoucherType.Purchase, purchaseReceivingRequired);
+		DateTime? purchaseReceivedAtUtc = InvoiceReceivingStatuses.IsConfirmed(purchaseReceivingStatus) ? (invoice.PurchaseReceivedAtUtc ?? latest?.PurchaseReceivedAtUtc) : null;
+		string purchaseReceivedByUsername = InvoiceReceivingStatuses.IsConfirmed(purchaseReceivingStatus)
+			? ((!string.IsNullOrWhiteSpace(invoice.PurchaseReceivedByUsername)) ? invoice.PurchaseReceivedByUsername : (latest?.PurchaseReceivedByUsername ?? string.Empty))
+			: string.Empty;
+		string purchaseReceivingOfficeCode = (!string.IsNullOrWhiteSpace(invoice.PurchaseReceivingOfficeCode)) ? invoice.PurchaseReceivingOfficeCode : (latest?.PurchaseReceivingOfficeCode ?? string.Empty);
+		string purchaseReceivingWarehouseCode = (!string.IsNullOrWhiteSpace(invoice.PurchaseReceivingWarehouseCode)) ? invoice.PurchaseReceivingWarehouseCode : (latest?.PurchaseReceivingWarehouseCode ?? string.Empty);
+		string purchaseReceivingMemo = invoice.PurchaseReceivingMemo ?? string.Empty;
 		List<LocalInvoiceLine> validLines = (invoice.Lines ?? new List<LocalInvoiceLine>()).Where((LocalInvoiceLine localInvoiceLine) => !localInvoiceLine.IsDeleted && !string.IsNullOrWhiteSpace(localInvoiceLine.ItemNameOriginal)).ToList();
 		Dictionary<Guid, string> itemTrackingMap = await BuildItemTrackingMapAsync(ct);
 		foreach (LocalInvoiceLine line in validLines)
 		{
 			line.ItemTrackingType = ResolveInvoiceLineTrackingType(line, itemTrackingMap);
 		}
-		decimal totalAmount = validLines.Sum((LocalInvoiceLine localInvoiceLine) => localInvoiceLine.LineAmount);
-		decimal supplyAmount = Math.Round(totalAmount / 1.1m, 0, MidpointRounding.AwayFromZero);
-		decimal vatAmount = totalAmount - supplyAmount;
+		var totals = InvoiceVatModes.CalculateTotals(validLines.Select((LocalInvoiceLine localInvoiceLine) => localInvoiceLine.LineAmount), invoice.VatMode);
+		decimal totalAmount = totals.TotalAmount;
+		decimal supplyAmount = totals.SupplyAmount;
+		decimal vatAmount = totals.VatAmount;
 		LocalInvoice newInvoice = new LocalInvoice
 		{
 			Id = targetInvoiceId,
@@ -2065,7 +2076,15 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			TotalAmount = totalAmount,
 			SupplyAmount = supplyAmount,
 			VatAmount = vatAmount,
+			VatMode = InvoiceVatModes.Normalize(invoice.VatMode),
 			TaxInvoiceIssued = invoice.TaxInvoiceIssued,
+			PurchaseReceivingRequired = purchaseReceivingRequired,
+			PurchaseReceivingStatus = purchaseReceivingStatus,
+			PurchaseReceivedAtUtc = purchaseReceivedAtUtc,
+			PurchaseReceivedByUsername = purchaseReceivedByUsername,
+			PurchaseReceivingOfficeCode = purchaseReceivingOfficeCode,
+			PurchaseReceivingWarehouseCode = purchaseReceivingWarehouseCode,
+			PurchaseReceivingMemo = purchaseReceivingMemo,
 			Memo = (invoice.Memo ?? string.Empty),
 			ResponsibleOfficeCode = responsibleOfficeCode,
 			SourceWarehouseCode = sourceWarehouseCode,
@@ -5686,6 +5705,15 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			TotalAmount = invoice.TotalAmount,
 			SupplyAmount = invoice.SupplyAmount,
 			VatAmount = invoice.VatAmount,
+			VatMode = invoice.VatMode,
+			TaxInvoiceIssued = invoice.TaxInvoiceIssued,
+			PurchaseReceivingRequired = invoice.PurchaseReceivingRequired,
+			PurchaseReceivingStatus = invoice.PurchaseReceivingStatus,
+			PurchaseReceivedAtUtc = invoice.PurchaseReceivedAtUtc,
+			PurchaseReceivedByUsername = invoice.PurchaseReceivedByUsername,
+			PurchaseReceivingOfficeCode = invoice.PurchaseReceivingOfficeCode,
+			PurchaseReceivingWarehouseCode = invoice.PurchaseReceivingWarehouseCode,
+			PurchaseReceivingMemo = invoice.PurchaseReceivingMemo,
 			Memo = invoice.Memo,
 			ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
 			SourceWarehouseCode = invoice.SourceWarehouseCode,
