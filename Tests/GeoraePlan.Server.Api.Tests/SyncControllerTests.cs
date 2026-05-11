@@ -2452,6 +2452,67 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_NormalizesUnspecifiedPurchaseReceivedAtUtc_ForInvoice()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "PURCHASE-RECEIVED-CUSTOMER",
+            NameMatchKey = "PURCHASERECEIVEDCUSTOMER",
+            TradeType = "매입"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var unspecifiedReceivedAt = DateTime.SpecifyKind(new DateTime(2026, 5, 4, 8, 30, 0), DateTimeKind.Unspecified);
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-unspecified-received-at",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    VoucherType = VoucherType.Purchase,
+                    InvoiceDate = new DateOnly(2026, 5, 4),
+                    TotalAmount = 1100m,
+                    SupplyAmount = 1000m,
+                    VatAmount = 100m,
+                    PurchaseReceivingRequired = true,
+                    PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed,
+                    PurchaseReceivedAtUtc = unspecifiedReceivedAt,
+                    PurchaseReceivedByUsername = "tester",
+                    CreatedAtUtc = DateTime.SpecifyKind(new DateTime(2026, 5, 4, 8, 20, 0), DateTimeKind.Unspecified),
+                    UpdatedAtUtc = DateTime.SpecifyKind(new DateTime(2026, 5, 4, 8, 31, 0), DateTimeKind.Unspecified),
+                    MutationId = $"device-unspecified-received-at:Invoice:{invoiceId:N}:1",
+                    MutationCreatedAtUtc = DateTime.SpecifyKind(new DateTime(2026, 5, 4, 8, 31, 1), DateTimeKind.Unspecified)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+
+        var storedInvoice = await _dbContext.Invoices.IgnoreQueryFilters().FirstAsync(x => x.Id == invoiceId);
+        Assert.NotNull(storedInvoice.PurchaseReceivedAtUtc);
+        Assert.Equal(DateTimeKind.Utc, storedInvoice.PurchaseReceivedAtUtc.Value.Kind);
+        Assert.Equal(DateTime.SpecifyKind(unspecifiedReceivedAt, DateTimeKind.Utc), storedInvoice.PurchaseReceivedAtUtc.Value);
+    }
+
+    [Fact]
     public async Task Push_ClearsTransactionInvoiceReference_WhenLinkedInvoiceIsMissing()
     {
         var customer = new Customer

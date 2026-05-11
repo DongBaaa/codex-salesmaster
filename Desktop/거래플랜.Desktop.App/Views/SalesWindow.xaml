@@ -269,7 +269,7 @@
                     <CheckBox Grid.Row="4"
                               Grid.Column="4"
                               Grid.ColumnSpan="2"
-                                    Content="이전기록불러오기"
+                                    Content="부가세 없음"
                               IsChecked="{Binding IsVatNone, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                               Foreground="#EAF2FF"
                               VerticalAlignment="Center"

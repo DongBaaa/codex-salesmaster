@@ -1139,8 +1139,6 @@ public sealed partial class SalesViewModel : ObservableObject
         {
             if (string.IsNullOrWhiteSpace(InvoiceMemo))
                 InvoiceMemo = selectedInvoices[0].Memo;
-            if (replaceExistingLines)
-                IsVatNone = InvoiceVatModes.IsNone(selectedInvoices[0].VatMode);
         }
 
         RecalcTotals();

@@ -1070,7 +1070,7 @@ public static class DtoMappings
         entity.InvoiceDate = dto.InvoiceDate; entity.VatMode = InvoiceVatModes.Normalize(dto.VatMode); entity.TaxInvoiceIssued = dto.TaxInvoiceIssued;
         entity.PurchaseReceivingRequired = dto.PurchaseReceivingRequired;
         entity.PurchaseReceivingStatus = InvoiceReceivingStatuses.Normalize(dto.PurchaseReceivingStatus, dto.VoucherType == VoucherType.Purchase, dto.PurchaseReceivingRequired);
-        entity.PurchaseReceivedAtUtc = dto.PurchaseReceivedAtUtc;
+        entity.PurchaseReceivedAtUtc = NormalizeUtc(dto.PurchaseReceivedAtUtc);
         entity.PurchaseReceivedByUsername = dto.PurchaseReceivedByUsername ?? string.Empty;
         entity.PurchaseReceivingOfficeCode = dto.PurchaseReceivingOfficeCode ?? string.Empty;
         entity.PurchaseReceivingWarehouseCode = dto.PurchaseReceivingWarehouseCode ?? string.Empty;
@@ -1145,7 +1145,7 @@ public static class DtoMappings
             entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
         else if (string.IsNullOrWhiteSpace(entity.OfficeCode))
             entity.OfficeCode = OfficeCodeCatalog.Shared;
-        entity.PurgedAtUtc = dto.PurgedAtUtc == default ? DateTime.UtcNow : dto.PurgedAtUtc;
+        entity.PurgedAtUtc = NormalizeUtc(dto.PurgedAtUtc);
         entity.IsDeleted = false;
     }
 
