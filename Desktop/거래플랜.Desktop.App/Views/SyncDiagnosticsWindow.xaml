@@ -345,7 +345,7 @@
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel Margin="12">
                                 <TextBlock Text="원인 요약" Foreground="#9FB3C8" FontSize="11"/>
-                                <TextBox Text="{Binding SelectedEvent.RawMessage}" Margin="0,4,0,10" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="64" Height="Auto" IsReadOnly="True"/>
+                                <TextBox Text="{Binding SelectedEvent.RawMessage}" Margin="0,4,0,10" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="64" MaxHeight="160" VerticalScrollBarVisibility="Auto" IsReadOnly="True"/>
 
                                 <TextBlock Text="분류" Foreground="#9FB3C8" FontSize="11"/>
                                 <Grid Margin="0,4,0,10">
@@ -424,7 +424,7 @@
                                         <Run Text="고객 "/><Run Text="{Binding SelectedEvent.Snapshot.MissingCustomerReferenceCount}"/><Run Text="건 / 전표 "/><Run Text="{Binding SelectedEvent.Snapshot.MissingInvoiceReferenceCount}"/><Run Text="건 / 거래 "/><Run Text="{Binding SelectedEvent.Snapshot.MissingTransactionReferenceCount}"/><Run Text="건 / 렌탈항목 "/><Run Text="{Binding SelectedEvent.Snapshot.MissingRentalItemReferenceCount}"/><Run Text="건"/>
                                     </TextBlock>
                                     <TextBlock Grid.Row="5" Grid.Column="0" Text="마지막 sync 오류" Foreground="#9FB3C8" Margin="0,6,0,0"/>
-                                    <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding SelectedEvent.Snapshot.LastKnownSyncError}" Margin="0,6,0,0" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="54" Height="Auto" IsReadOnly="True"/>
+                                    <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding SelectedEvent.Snapshot.LastKnownSyncError}" Margin="0,6,0,0" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="54" MaxHeight="140" VerticalScrollBarVisibility="Auto" IsReadOnly="True"/>
                                 </Grid>
 
                                 <TextBlock Text="권장 복구" Foreground="#9FB3C8" FontSize="11"/>

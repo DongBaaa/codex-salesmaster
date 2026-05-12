@@ -196,12 +196,12 @@
                             Orientation="Horizontal"
                             HorizontalAlignment="Right"
                             Margin="0,8,0,0">
-                    <Button Content="선택 거래처 수정"
+                    <Button Content="새 거래처 등록"
                             Background="#1565C0"
                             BorderBrush="#1565C0"
                             Margin="0,0,6,0"
                             Click="CreateCustomerButton_Click"/>
-                    <Button Content="선택 거래처 삭제"
+                    <Button Content="선택 거래처 수정"
                             Background="#8E24AA"
                             BorderBrush="#8E24AA"
                             Margin="0,0,6,0"
@@ -216,7 +216,7 @@
                                Fill="#3E5875"
                                Margin="4,0,10,0"
                                VerticalAlignment="Center"/>
-                    <Button Content="새로고침"
+                    <Button Content="담당지점 저장"
                             Background="#1B5E20"
                             BorderBrush="#1B5E20"
                             Margin="0,0,6,0"
@@ -271,11 +271,11 @@
                                             Binding="{Binding ContractType}"
                                             Width="120"
                                             ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                        <DataGridTextColumn Header="상태"
+                        <DataGridTextColumn Header="만료일"
                                             Binding="{Binding ExpireDate}"
                                             Width="110"
                                             ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                        <DataGridTextColumn Header="만료일"
+                        <DataGridTextColumn Header="알림"
                                             Binding="{Binding AlertText}"
                                             Width="2*"
                                             ElementStyle="{StaticResource CustomerGridTextStyle}"/>
@@ -305,32 +305,32 @@
                             </DataTemplate>
                         </DataGridTemplateColumn.CellTemplate>
                     </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="상태"
+                        <DataGridTextColumn Header="고객분류"
                                         Binding="{Binding CategoryName, Mode=OneWay}"
                                         Width="120"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                    <DataGridTextColumn Header="고객분류"
+                    <DataGridTextColumn Header="거래구분"
                                         Binding="{Binding TradeType, Mode=OneWay}"
                                         Width="110"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                    <DataGridTextColumn Header="대표전화"
+                    <DataGridTextColumn Header="사업자번호"
                                         Binding="{Binding BusinessNumber, Mode=OneWay}"
                                         Width="160"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                    <DataGridTextColumn Header="계약서"
+                    <DataGridTextColumn Header="대표전화"
                                         Binding="{Binding Phone, Mode=OneWay}"
                                         Width="140"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                    <DataGridTextColumn Header="계약상태"
+                    <DataGridTextColumn Header="계약서"
                                         Binding="{Binding ContractPresenceText, Mode=OneWay}"
                                         Width="82"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
-                    <DataGridTextColumn Header="거래구분"
+                    <DataGridTextColumn Header="계약상태"
                                         Binding="{Binding ContractStatusText, Mode=OneWay}"
                                         Width="130"
                                         IsReadOnly="True"

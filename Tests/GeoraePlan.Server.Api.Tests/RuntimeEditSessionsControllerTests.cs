@@ -1,4 +1,4 @@
-using 거래플랜.Server.Api.Controllers;
+﻿using 거래플랜.Server.Api.Controllers;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Security;
@@ -266,11 +266,12 @@ public sealed class RuntimeEditSessionsControllerTests : IDisposable
 
         await using var dbContext = CreateDbContext(currentUser);
         var releasedId = Guid.NewGuid();
+        var releasedAppSessionId = Guid.NewGuid();
         dbContext.ActiveEditSessions.AddRange(
             new ActiveEditSession
             {
                 Id = releasedId,
-                AppSessionId = Guid.NewGuid(),
+                AppSessionId = releasedAppSessionId,
                 Username = "alpha",
                 OfficeCode = OfficeCodeCatalog.Usenet,
                 TenantCode = TenantScopeCatalog.UsenetGroup,
@@ -302,11 +303,101 @@ public sealed class RuntimeEditSessionsControllerTests : IDisposable
         var controller = new RuntimeEditSessionsController(dbContext, currentUser);
         var response = await controller.ReleaseAsync(new EditSessionReleaseRequest
         {
-            EditSessionId = releasedId
+            EditSessionId = releasedId,
+            AppSessionId = releasedAppSessionId
         }, CancellationToken.None);
 
         Assert.IsType<OkResult>(response);
         Assert.Empty(await dbContext.ActiveEditSessions.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task HeartbeatAsync_ForExistingSessionOwnedByAnotherUser_ReturnsForbid()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "alpha",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet
+        };
+
+        await using var dbContext = CreateDbContext(currentUser);
+        var stolenSessionId = Guid.NewGuid();
+        var stolenAppSessionId = Guid.NewGuid();
+        dbContext.ActiveEditSessions.Add(new ActiveEditSession
+        {
+            Id = stolenSessionId,
+            AppSessionId = stolenAppSessionId,
+            Username = "beta",
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            ScreenName = "Invoice",
+            EntityType = "Invoice",
+            EntityId = "INVOICE-LOCK",
+            MachineName = "PC-BETA",
+            OpenedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+            LastHeartbeatUtc = DateTime.UtcNow.AddSeconds(-10),
+            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(1)
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new RuntimeEditSessionsController(dbContext, currentUser);
+        var response = await controller.HeartbeatAsync(new EditSessionHeartbeatRequest
+        {
+            EditSessionId = stolenSessionId,
+            AppSessionId = stolenAppSessionId,
+            ScreenName = "Invoice",
+            EntityType = "Invoice",
+            EntityId = "INVOICE-LOCK",
+            MachineName = "PC-ALPHA"
+        }, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(response.Result);
+        var stored = await dbContext.ActiveEditSessions.AsNoTracking().SingleAsync();
+        Assert.Equal("beta", stored.Username);
+        Assert.Equal("PC-BETA", stored.MachineName);
+    }
+
+    [Fact]
+    public async Task ReleaseAsync_DoesNotRemoveSessionOwnedByAnotherUser()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "alpha",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet
+        };
+
+        await using var dbContext = CreateDbContext(currentUser);
+        var betaSessionId = Guid.NewGuid();
+        var betaAppSessionId = Guid.NewGuid();
+        dbContext.ActiveEditSessions.Add(new ActiveEditSession
+        {
+            Id = betaSessionId,
+            AppSessionId = betaAppSessionId,
+            Username = "beta",
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            ScreenName = "Customer",
+            EntityType = "Customer",
+            EntityId = "CUSTOMER-LOCK",
+            MachineName = "PC-BETA",
+            OpenedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+            LastHeartbeatUtc = DateTime.UtcNow.AddSeconds(-10),
+            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(1)
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new RuntimeEditSessionsController(dbContext, currentUser);
+        var response = await controller.ReleaseAsync(new EditSessionReleaseRequest
+        {
+            EditSessionId = betaSessionId,
+            AppSessionId = betaAppSessionId
+        }, CancellationToken.None);
+
+        Assert.IsType<OkResult>(response);
+        var stored = await dbContext.ActiveEditSessions.AsNoTracking().SingleAsync();
+        Assert.Equal("beta", stored.Username);
     }
 
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)

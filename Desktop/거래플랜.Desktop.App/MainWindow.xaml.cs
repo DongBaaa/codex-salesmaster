@@ -892,9 +892,9 @@ public partial class MainWindow : Window
         if (confirm != MessageBoxResult.OK)
             return;
 
-        foreach (var rowId in rows.Select(r => r.Id).Distinct())
+        foreach (var row in rows.GroupBy(r => r.Id).Select(group => group.First()))
         {
-            var deleteInvoiceResult = await _local.DeleteInvoiceAsync(rowId, _session);
+            var deleteInvoiceResult = await _local.DeleteInvoiceAsync(row.Id, _session, row.Revision);
             if (!deleteInvoiceResult.Success)
             {
                 MessageBox.Show(deleteInvoiceResult.Message, "전표 삭제", MessageBoxButton.OK, MessageBoxImage.Warning);

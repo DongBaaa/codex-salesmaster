@@ -185,26 +185,66 @@ public sealed class SyncController : ControllerBase
     {
         var denied = new List<string>();
 
-        if ((request.CompanyProfiles?.Count ?? 0) > 0 && !HasPermission(PermissionNames.CompanyProfileEdit))
-            denied.Add("회사설정");
+        static bool HasAny<T>(IReadOnlyCollection<T>? values) => values is { Count: > 0 };
 
-        if (((request.Units?.Count ?? 0) +
-             (request.CustomerCategories?.Count ?? 0) +
-             (request.PriceGradeOptions?.Count ?? 0) +
-             (request.TradeTypeOptions?.Count ?? 0) +
-             (request.ItemCategoryOptions?.Count ?? 0)) > 0 &&
-            !HasPermission(PermissionNames.SettingsEdit))
+        void Require(bool hasChanges, string permission, string label)
         {
-            denied.Add("환경설정/분류");
+            if (hasChanges && !HasPermission(permission))
+                denied.Add(label);
         }
 
-        if ((request.RentalManagementCompanies?.Count ?? 0) > 0 && !HasPermission(PermissionNames.RentalSettingsEdit))
-            denied.Add("렌탈 관리업체");
+        void RequireAny(bool hasChanges, string label, params string[] permissions)
+        {
+            if (hasChanges && !permissions.Any(HasPermission))
+                denied.Add(label);
+        }
+
+        Require(HasAny(request.CompanyProfiles), PermissionNames.CompanyProfileEdit, "회사설정");
+        Require(
+            HasAny(request.Units) ||
+            HasAny(request.CustomerCategories) ||
+            HasAny(request.PriceGradeOptions) ||
+            HasAny(request.TradeTypeOptions) ||
+            HasAny(request.ItemCategoryOptions),
+            PermissionNames.SettingsEdit,
+            "환경설정/분류");
+        Require(
+            HasAny(request.CustomerMasters) ||
+            HasAny(request.Customers) ||
+            HasAny(request.CustomerContracts),
+            PermissionNames.CustomerEdit,
+            "거래처");
+        Require(
+            HasAny(request.Items) ||
+            HasAny(request.ItemWarehouseStocks),
+            PermissionNames.ItemEdit,
+            "품목/재고");
+        Require(HasAny(request.Invoices), PermissionNames.InvoiceEdit, "전표");
+        Require(
+            HasAny(request.Transactions) ||
+            HasAny(request.TransactionAttachments) ||
+            HasAny(request.Payments),
+            PermissionNames.PaymentEdit,
+            "수금/지급");
+        Require(HasAny(request.InventoryTransfers), PermissionNames.DeliveryEdit, "납품/재고이동");
+        Require(HasAny(request.RentalManagementCompanies), PermissionNames.RentalSettingsEdit, "렌탈 관리업체");
+        RequireAny(
+            HasAny(request.RentalBillingProfiles) ||
+            HasAny(request.RentalBillingLogs),
+            "렌탈 청구",
+            PermissionNames.RentalProfileEdit,
+            PermissionNames.RentalEditAll);
+        RequireAny(
+            HasAny(request.RentalAssets) ||
+            HasAny(request.RentalAssetAssignmentHistories),
+            "렌탈 자산",
+            PermissionNames.RentalAssetEdit,
+            PermissionNames.RentalEditAll);
 
         if (denied.Count == 0)
             return null;
 
-        return $"현재 계정 권한으로 서버 동기화 반영이 허용되지 않는 변경이 포함되어 있습니다: {string.Join(", ", denied.Distinct())}";
+        return $"현재 계정 권한으로 서버 동기화 반영이 허용되지 않는 변경이 포함되어 있습니다: {string.Join(", ", denied.Distinct(StringComparer.OrdinalIgnoreCase))}";
     }
 
     private bool HasPermission(string permission)
@@ -3569,7 +3609,9 @@ public sealed class SyncController : ControllerBase
                 ItemId = dto.ItemId,
                 WarehouseCode = dto.WarehouseCode.Trim(),
                 Quantity = dto.Quantity,
-                UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc)
+                UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc),
+                Revision = dto.Revision,
+                ExpectedRevision = dto.ExpectedRevision
             })
             .GroupBy(dto => new { dto.ItemId, dto.WarehouseCode })
             .Select(group => group.Last())
@@ -3588,12 +3630,33 @@ public sealed class SyncController : ControllerBase
             var desiredCodes = groupedByItem[itemId]
                 .Select(stock => stock.WarehouseCode)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var maxKnownRevision = groupedByItem[itemId]
+                .Select(stock => Math.Max(stock.ExpectedRevision, stock.Revision))
+                .DefaultIfEmpty(0)
+                .Max();
 
             var staleRows = await _officeScopeService.ApplyWarehouseScope(_dbContext.ItemWarehouseStocks)
                 .Where(x => x.ItemId == itemId && !desiredCodes.Contains(x.WarehouseCode))
                 .ToListAsync(cancellationToken);
+            var protectedStaleRows = staleRows
+                .Where(row => maxKnownRevision <= 0 || row.Revision > maxKnownRevision)
+                .ToList();
+            if (protectedStaleRows.Count > 0)
+            {
+                AddNotice(
+                    result,
+                    nameof(ItemWarehouseStock),
+                    itemId,
+                    "item-warehouse-stock-preserve-newer-server-row",
+                    $"재고 수량 {protectedStaleRows.Count:N0}건은 서버에 더 최신 창고 행이 있어 삭제하지 않았습니다.");
+            }
+
+            staleRows = staleRows.Except(protectedStaleRows).ToList();
             if (staleRows.Count > 0)
+            {
                 _dbContext.ItemWarehouseStocks.RemoveRange(staleRows);
+                scopedItem.UpdatedAtUtc = DateTime.UtcNow;
+            }
         }
 
         foreach (var dto in sanitized)
@@ -3633,13 +3696,34 @@ public sealed class SyncController : ControllerBase
                     ItemId = dto.ItemId,
                     WarehouseCode = dto.WarehouseCode,
                     Quantity = dto.Quantity,
-                    UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc)
+                    UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc),
+                    Revision = _revisionClock.NextRevision()
                 });
+                continue;
+            }
+
+            if (dto.ExpectedRevision > 0 && entity.Revision != dto.ExpectedRevision)
+            {
+                AddServerConflict(
+                    dto,
+                    entity,
+                    nameof(ItemWarehouseStock),
+                    BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision),
+                    result);
+                continue;
+            }
+
+            if (dto.ExpectedRevision <= 0 &&
+                dto.Revision > 0 &&
+                entity.Revision > dto.Revision)
+            {
+                AddServerConflict(dto, entity, nameof(ItemWarehouseStock), "Server version is newer.", result);
                 continue;
             }
 
             entity.Quantity = dto.Quantity;
             entity.UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc);
+            entity.Revision = _revisionClock.NextRevision();
         }
 
         if (missingItemCount > 0)
@@ -3851,7 +3935,12 @@ public sealed class SyncController : ControllerBase
             UserId = _currentUserContext.UserId,
             Username = _currentUserContext.Username,
             EntityName = entityName,
-            EntityId = server switch { TrackedEntity tracked => tracked.Id.ToString(), _ => string.Empty },
+            EntityId = server switch
+            {
+                TrackedEntity tracked => tracked.Id.ToString(),
+                ItemWarehouseStock stock => $"{stock.ItemId:D}|{stock.WarehouseCode}",
+                _ => string.Empty
+            },
             ClientJson = JsonSerializer.Serialize(client, ConflictJsonOptions),
             ServerJson = SerializeConflictServerSnapshot(server),
             Reason = reason,
@@ -3871,6 +3960,7 @@ public sealed class SyncController : ControllerBase
             Customer entity => entity.ToDto(),
             CustomerContract entity => entity.ToDto(false),
             Item entity => entity.ToDto(),
+            ItemWarehouseStock entity => entity.ToDto(),
             TransactionRecord entity => entity.ToDto(),
             TransactionAttachment entity => entity.ToDto(false),
             InventoryTransfer entity => entity.ToDto(),
@@ -4099,6 +4189,7 @@ public sealed class SyncController : ControllerBase
         maxRevision = Math.Max(maxRevision, await _dbContext.Customers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.CustomerContracts.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Items.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
+        maxRevision = Math.Max(maxRevision, await _dbContext.ItemWarehouseStocks.Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.Transactions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.TransactionAttachments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
         maxRevision = Math.Max(maxRevision, await _dbContext.InventoryTransfers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);

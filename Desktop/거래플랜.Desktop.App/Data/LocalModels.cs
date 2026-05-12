@@ -395,6 +395,7 @@ public sealed class LocalItemWarehouseStock
     public string WarehouseCode { get; set; } = string.Empty;
     public decimal Quantity { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+    public long Revision { get; set; }
 }
 
 public sealed class LocalSerialLedger

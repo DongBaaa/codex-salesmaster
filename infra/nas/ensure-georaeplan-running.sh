@@ -30,5 +30,5 @@ if wait_for_health "$STARTUP_HEALTH_RETRIES"; then
   exit 0
 fi
 
-log_line "compose_up_failed url=http://127.0.0.1:${API_HOST_PORT}/healthz"
+log_line "compose_up_failed url=http://127.0.0.1:${API_HOST_PORT}/readyz"
 exit 1

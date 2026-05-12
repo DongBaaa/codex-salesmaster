@@ -27,6 +27,7 @@ public sealed class InvoiceListRow
     public bool PurchaseReceivingRequired { get; init; }
     public string PurchaseReceivingStatus { get; init; } = InvoiceReceivingStatuses.NotApplicable;
     public bool IsDirty { get; init; }
+    public long Revision { get; init; }
 
     public string DisplayNumber => string.IsNullOrEmpty(InvoiceNumber) ? LocalTempNumber : InvoiceNumber;
     public string InvoiceDateDisplay => InvoiceDate.ToString("yyyy/MM/dd");
@@ -77,7 +78,8 @@ public sealed class InvoiceListRow
                 (inv.VoucherType == VoucherType.Purchase &&
                  (InvoiceReceivingStatuses.IsConfirmed(inv.PurchaseReceivingStatus) ||
                   string.IsNullOrWhiteSpace(inv.PurchaseReceivingStatus)))),
-            IsDirty = inv.IsDirty
+            IsDirty = inv.IsDirty,
+            Revision = inv.Revision
         };
     }
 

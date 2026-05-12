@@ -31,15 +31,15 @@ http_ok() {
 
 run_daily_checks() {
   local today="$1"
-  local health_status="fail"
+  local readiness_status="fail"
   local manifest_status="fail"
   local backup_status="missing"
   local backup_detail=""
   local replica_status="skipped"
   local replica_detail="disabled"
 
-  if http_ok "$base_url/healthz"; then
-    health_status="ok"
+  if http_ok "$base_url/readyz"; then
+    readiness_status="ok"
   fi
 
   if http_ok "$base_url/updates/manifest?channel=stable"; then
@@ -87,10 +87,10 @@ PY
     fi
   fi
 
-  printf 'date=%s healthz=%s manifest=%s backup=%s latest_backup=%s replica=%s replica_detail=%s\n' "$today" "$health_status" "$manifest_status" "$backup_status" "$backup_detail" "$replica_status" "$replica_detail" | tee "$DAILY_STATUS_FILE" >/dev/null
+  printf 'date=%s readyz=%s manifest=%s backup=%s latest_backup=%s replica=%s replica_detail=%s\n' "$today" "$readiness_status" "$manifest_status" "$backup_status" "$backup_detail" "$replica_status" "$replica_detail" | tee "$DAILY_STATUS_FILE" >/dev/null
   printf 'date=%s backup=%s latest_backup=%s\n' "$today" "$backup_status" "$backup_detail" | tee "$BACKUP_STATUS_FILE" >/dev/null
   printf 'date=%s replica=%s detail=%s\n' "$today" "$replica_status" "$replica_detail" | tee "$REPLICA_STATUS_FILE" >/dev/null
-  log_line "daily_check date=$today healthz=$health_status manifest=$manifest_status backup=$backup_status latest_backup=$backup_detail replica=$replica_status detail=$replica_detail"
+  log_line "daily_check date=$today readyz=$readiness_status manifest=$manifest_status backup=$backup_status latest_backup=$backup_detail replica=$replica_status detail=$replica_detail"
 }
 
 run_weekly_checks() {
@@ -99,7 +99,7 @@ run_weekly_checks() {
   local cert_detail=""
   local external_status="ok"
 
-  if ! http_ok "$base_url/healthz" || ! http_ok "$base_url/updates/manifest?channel=stable"; then
+  if ! http_ok "$base_url/readyz" || ! http_ok "$base_url/updates/manifest?channel=stable"; then
     external_status="fail"
   fi
 

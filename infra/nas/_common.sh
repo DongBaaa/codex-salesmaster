@@ -88,15 +88,28 @@ mirror_dir() {
 
 wait_for_health() {
   local retries="${1:-$HEALTH_CHECK_RETRIES}"
-  local url="http://127.0.0.1:${API_HOST_PORT}/healthz"
+  local ready_url="http://127.0.0.1:${API_HOST_PORT}/readyz"
+  local health_url="http://127.0.0.1:${API_HOST_PORT}/healthz"
+  local status=""
 
   for ((i = 1; i <= retries; i++)); do
-    if command -v curl >/dev/null 2>&1 && curl -fsS "$url" >/dev/null 2>&1; then
-      return 0
+    if command -v curl >/dev/null 2>&1; then
+      status="$(curl -sS -o /dev/null -w '%{http_code}' "$ready_url" 2>/dev/null || true)"
+      if [[ "$status" == "200" ]]; then
+        return 0
+      fi
+      if [[ "$status" == "404" ]] && curl -fsS "$health_url" >/dev/null 2>&1; then
+        return 0
+      fi
     fi
 
-    if command -v wget >/dev/null 2>&1 && wget -qO- "$url" >/dev/null 2>&1; then
-      return 0
+    if command -v wget >/dev/null 2>&1; then
+      if wget -qO- "$ready_url" >/dev/null 2>&1; then
+        return 0
+      fi
+      if command -v curl >/dev/null 2>&1 && [[ "$status" == "404" ]] && wget -qO- "$health_url" >/dev/null 2>&1; then
+        return 0
+      fi
     fi
 
     sleep 2

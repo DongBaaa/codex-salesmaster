@@ -121,7 +121,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public bool CanManageAll => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.RentalEditAll);
     public bool CanSave => SelectedRow is null || (CanEditCurrentSelection && CanEditSelectedRowInEditor);
     public bool CanExpandSelectedSummary => SelectedRow?.IsAggregateRow == true && !ShowIndividualProfiles;
-    public bool CanStartBillingSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanAccessCurrentSelection && !SelectedRow.IsAggregateRow;
+    public bool CanStartBillingSelected => SelectedRow is not null &&
+                                           CanAccessCurrentSelection &&
+                                           (SelectedRow.IsAggregateRow
+                                               ? SelectedRow.GroupedPersistedProfileIds.Any(id => id != Guid.Empty)
+                                               : HasPersistedSelectedProfile);
     public bool CanHoldSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
     public bool CanRegisterSettlementSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
@@ -559,6 +563,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
+        if (SelectedRow.IsAggregateRow)
+        {
+            await StartAggregateBillingAsync(SelectedRow);
+            return;
+        }
+
         if (TryRejectAggregateSelection("청구 시작"))
             return;
 
@@ -601,6 +611,70 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         await ClearAutoSaveDraftAsync();
         await ReloadAsync();
         SelectRow(targetId);
+    }
+
+    private async Task StartAggregateBillingAsync(RentalBillingViewRow aggregateRow)
+    {
+        var targetIds = aggregateRow.GroupedPersistedProfileIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        if (targetIds.Count == 0)
+        {
+            StatusMessage = "요약행에 청구 가능한 개별 프로필이 없습니다. 요약행 펼치기로 프로필을 생성/저장한 뒤 다시 시도하세요.";
+            return;
+        }
+
+        InvoiceToOpenAfterClose = null;
+        var successCount = 0;
+        var relatedInvoiceIds = new List<Guid>();
+        var failureMessages = new List<string>();
+
+        foreach (var targetId in targetIds)
+        {
+            var expectedRevision = aggregateRow.GroupedProfileRevisions.TryGetValue(targetId, out var revision)
+                ? revision
+                : (long?)null;
+            var result = await _rental.StartBillingAsync(targetId, ReferenceDate, _session, expectedRevision: expectedRevision);
+            if (result.Success)
+            {
+                successCount++;
+                if (result.RelatedEntityId != Guid.Empty)
+                    relatedInvoiceIds.Add(result.RelatedEntityId);
+                continue;
+            }
+
+            failureMessages.Add(string.IsNullOrWhiteSpace(result.Message)
+                ? "알 수 없는 오류"
+                : result.Message.Trim());
+        }
+
+        var distinctInvoiceIds = relatedInvoiceIds.Distinct().ToList();
+        if (distinctInvoiceIds.Count == 1)
+            InvoiceToOpenAfterClose = distinctInvoiceIds[0];
+
+        if (successCount > 0)
+            await ClearAutoSaveDraftAsync();
+
+        var aggregateSelectionId = aggregateRow.SelectionId;
+        await ReloadAsync();
+        SelectRow(aggregateSelectionId);
+
+        var skippedUnlinkedText = aggregateRow.GroupedUnlinkedAssetCount > 0
+            ? $" / 프로필 생성 필요 설치처 {aggregateRow.GroupedUnlinkedAssetCount:N0}건 제외"
+            : string.Empty;
+
+        if (failureMessages.Count == 0)
+        {
+            StatusMessage = $"요약행의 개별 청구 프로필 {successCount:N0}건을 청구 시작했습니다.{skippedUnlinkedText}";
+            return;
+        }
+
+        var failureSummary = string.Join(" | ", failureMessages.Distinct().Take(3));
+        StatusMessage = successCount > 0
+            ? $"요약행 청구 일부 완료: 성공 {successCount:N0}건 / 실패 {failureMessages.Count:N0}건{skippedUnlinkedText} - {failureSummary}"
+            : $"요약행 청구 시작 실패 {failureMessages.Count:N0}건{skippedUnlinkedText} - {failureSummary}";
     }
 
     [RelayCommand]
@@ -3044,11 +3118,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             ? "거래처 기준 요약행입니다."
             : value.AggregateSummary;
         AssetCandidateSummary = "요약행에서는 장비 연결 편집을 지원하지 않습니다. 요약행 펼치기로 개별 프로필을 선택하세요.";
-        ApplySelectedAssetsHint = "거래처 기준 요약행입니다. 저장/청구/삭제는 요약행 펼치기 또는 요약행 개별표시 후 개별 프로필에서 진행하세요.";
+        ApplySelectedAssetsHint = value.GroupedPersistedProfileIds.Any(id => id != Guid.Empty)
+            ? "거래처 기준 요약행입니다. 청구 시작은 연결된 개별 프로필을 한 번에 처리하고, 저장/삭제는 요약행 펼치기로 개별 프로필에서 진행하세요."
+            : "거래처 기준 요약행입니다. 청구 가능한 프로필이 없습니다. 요약행 펼치기로 개별 프로필을 생성/저장하세요.";
         _selectedRowBaselineSignature = BuildCurrentEditorSignature();
         StatusMessage = string.IsNullOrWhiteSpace(value.AggregateSummary)
-            ? "거래처 기준 요약행입니다. 요약행 펼치기로 개별 청구 프로필을 표시한 뒤 직접 편집하세요."
-            : $"{value.AggregateSummary} 기준 거래처 요약행입니다. 요약행 펼치기로 개별 청구 프로필을 표시한 뒤 직접 편집하세요.";
+            ? "거래처 기준 요약행입니다. 청구 시작은 연결된 개별 프로필을 한 번에 처리하고, 편집은 요약행 펼치기로 진행하세요."
+            : $"{value.AggregateSummary} 기준 거래처 요약행입니다. 청구 시작은 연결된 개별 프로필을 한 번에 처리하고, 편집은 요약행 펼치기로 진행하세요.";
     }
 
     private bool CanOperateScope(string? officeCode)

@@ -60,11 +60,11 @@ if ! wait_for_health "$HEALTH_CHECK_RETRIES"; then
       printf '%s\n' "$previous_release_id" > "$CURRENT_RELEASE_FILE"
       echo "rollback_release_done release=$previous_release_id"
     else
-      echo "health check still failing after rollback: http://127.0.0.1:${API_HOST_PORT}/healthz" >&2
+      echo "readiness check still failing after rollback: http://127.0.0.1:${API_HOST_PORT}/readyz" >&2
     fi
   fi
 
-  echo "health check failed: http://127.0.0.1:${API_HOST_PORT}/healthz" >&2
+  echo "readiness check failed: http://127.0.0.1:${API_HOST_PORT}/readyz" >&2
   exit 1
 fi
 
@@ -85,4 +85,4 @@ if [[ -f "$FAILED_RELEASE_FILE" ]]; then
   fi
 fi
 
-echo "apply_release_done release=$release_id url=http://127.0.0.1:${API_HOST_PORT}/healthz"
+echo "apply_release_done release=$release_id url=http://127.0.0.1:${API_HOST_PORT}/readyz"

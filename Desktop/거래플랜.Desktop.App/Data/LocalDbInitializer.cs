@@ -2957,10 +2957,12 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                                    "WarehouseCode" TEXT NOT NULL,
                                    "Quantity" REAL NOT NULL,
                                    "UpdatedAtUtc" TEXT NOT NULL,
+                                   "Revision" INTEGER NOT NULL DEFAULT 0,
                                    CONSTRAINT "PK_ItemWarehouseStocks" PRIMARY KEY ("ItemId", "WarehouseCode")
                                );
                                """;
             await db.Database.ExecuteSqlRawAsync(sql);
+            await TryAddColumnAsync(db, "ItemWarehouseStocks", "Revision", "INTEGER NOT NULL DEFAULT 0");
         }
         catch (Exception ex)
         {

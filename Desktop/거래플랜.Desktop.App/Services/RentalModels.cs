@@ -396,6 +396,7 @@ public sealed class RentalBillingViewRow
     public int GroupedUnlinkedAssetCount { get; init; }
     public List<Guid> GroupedSelectionIds { get; init; } = new();
     public List<Guid> GroupedPersistedProfileIds { get; init; } = new();
+    public Dictionary<Guid, long> GroupedProfileRevisions { get; init; } = new();
     public string AggregateSummary { get; init; } = string.Empty;
     public string CustomerDisplayName { get; set; } = string.Empty;
     public string BillingCycleDisplay { get; init; } = string.Empty;

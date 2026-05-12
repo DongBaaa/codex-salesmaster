@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Net.Http;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -2563,6 +2563,468 @@ public sealed class LocalStateServicePartialsTests
             // AppPaths is static for the test process; keep the temp root available
             // until process exit so parallel xUnit tests cannot delete the active DB path.
         }
+    }
+
+    [Fact]
+    public async Task DirtySyncQueries_RequireMatchingDomainEditPermission()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-dirty-permission-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var transactionId = Guid.NewGuid();
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Dirty customer",
+                NameMatchKey = "DIRTYCUSTOMER",
+                IsDirty = true
+            });
+            db.Items.Add(new LocalItem
+            {
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Dirty item",
+                NameMatchKey = "DIRTYITEM",
+                Unit = "EA",
+                IsDirty = true
+            });
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Sales,
+                TotalAmount = 100m,
+                IsDirty = true
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                ReceiptTotal = 100m,
+                IsDirty = true
+            });
+            db.TransactionAttachments.Add(new LocalTransactionAttachment
+            {
+                TransactionId = transactionId,
+                FileName = "receipt.pdf",
+                IsDirty = true
+            });
+            db.Payments.Add(new LocalPayment
+            {
+                InvoiceId = invoiceId,
+                Amount = 100m,
+                IsDirty = true
+            });
+            db.InventoryTransfers.Add(new LocalInventoryTransfer
+            {
+                TransferNumber = "TR-1",
+                FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                IsDirty = true
+            });
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = "PROFILE-1",
+                CustomerName = "Dirty customer",
+                IsDirty = true
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "ASSET-1",
+                ManagementNumber = "A-1",
+                CustomerName = "Dirty customer",
+                ItemName = "Dirty item",
+                IsDirty = true
+            });
+            await db.SaveChangesAsync();
+
+            var noPermissionSession = CreateUserSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), noPermissionSession);
+
+            Assert.Empty(await service.GetDirtyCustomersForSyncAsync(noPermissionSession));
+            Assert.Empty(await service.GetDirtyItemsForSyncAsync(noPermissionSession));
+            Assert.Empty(await service.GetDirtyInvoicesForSyncAsync(noPermissionSession));
+            Assert.Empty(await service.GetDirtyTransactionsForSyncAsync(noPermissionSession));
+            Assert.Empty(await service.GetDirtyTransactionAttachmentsForSyncAsync(noPermissionSession));
+            Assert.Empty(await service.GetDirtyPaymentsForSyncAsync(noPermissionSession));
+            Assert.Empty(await service.GetDirtyInventoryTransfersForSyncAsync(noPermissionSession));
+            Assert.Empty(await service.GetDirtyRentalBillingProfilesForSyncAsync(noPermissionSession));
+            Assert.Empty(await service.GetDirtyRentalAssetsForSyncAsync(noPermissionSession));
+
+            var paymentSession = CreateUserSession(AppPermissionNames.PaymentEdit);
+            Assert.Single(await service.GetDirtyTransactionsForSyncAsync(paymentSession));
+            Assert.Single(await service.GetDirtyTransactionAttachmentsForSyncAsync(paymentSession));
+            Assert.Single(await service.GetDirtyPaymentsForSyncAsync(paymentSession));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task DeleteInvoiceAsync_RejectsStaleExpectedRevision()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-invoice-delete-concurrency-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var invoiceId = Guid.Parse("81111111-1111-1111-1111-111111111111");
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = Guid.Parse("82222222-2222-2222-2222-222222222222"),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Sales,
+                TotalAmount = 100m,
+                Revision = 7,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var result = await service.DeleteInvoiceAsync(invoiceId, session, expectedRevision: 6);
+
+            Assert.False(result.Success);
+            Assert.True(result.ConcurrencyConflict);
+            var stored = await db.Invoices.IgnoreQueryFilters().SingleAsync(invoice => invoice.Id == invoiceId);
+            Assert.False(stored.IsDeleted);
+            Assert.False(stored.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task CustomerContractMutations_RejectStaleExpectedRevision()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-contract-concurrency-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("83333333-3333-3333-3333-333333333333");
+            var updateContractId = Guid.Parse("84444444-4444-4444-4444-444444444444");
+            var deleteContractId = Guid.Parse("85555555-5555-5555-5555-555555555555");
+            var primaryContractId = Guid.Parse("86666666-6666-6666-6666-666666666666");
+            var attachContractId = Guid.Parse("87777777-7777-7777-7777-777777777777");
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Concurrency Customer",
+                NameMatchKey = "CONCURRENCYCUSTOMER",
+                IsDirty = false
+            });
+            db.CustomerContracts.AddRange(
+                new LocalCustomerContract
+                {
+                    Id = updateContractId,
+                    CustomerId = customerId,
+                    ContractType = "거래계약서",
+                    Description = "original",
+                    Revision = 10,
+                    IsDirty = false
+                },
+                new LocalCustomerContract
+                {
+                    Id = deleteContractId,
+                    CustomerId = customerId,
+                    ContractType = "거래계약서",
+                    FileName = "delete.pdf",
+                    Revision = 20,
+                    IsDirty = false
+                },
+                new LocalCustomerContract
+                {
+                    Id = primaryContractId,
+                    CustomerId = customerId,
+                    ContractType = "거래계약서",
+                    Revision = 30,
+                    IsDirty = false
+                },
+                new LocalCustomerContract
+                {
+                    Id = attachContractId,
+                    CustomerId = customerId,
+                    ContractType = "거래계약서",
+                    Revision = 40,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var pdfPath = Path.Combine(tempRoot, "contract.pdf");
+            await File.WriteAllBytesAsync(pdfPath, [0x25, 0x50, 0x44, 0x46, 0x2D, 0x31, 0x2E, 0x34]);
+
+            var updateResult = await service.UpdateCustomerContractAsync(
+                updateContractId,
+                "거래계약서",
+                null,
+                null,
+                "changed",
+                false,
+                session,
+                expectedRevision: 9);
+            var deleteResult = await service.DeleteCustomerContractAsync(deleteContractId, session, expectedRevision: 19);
+            var primaryResult = await service.SetPrimaryCustomerContractAsync(primaryContractId, session, expectedRevision: 29);
+            var attachResult = await service.AttachCustomerContractPdfAsync(
+                attachContractId,
+                pdfPath,
+                "거래계약서",
+                null,
+                null,
+                "attached",
+                false,
+                session,
+                expectedRevision: 39);
+
+            Assert.All(new[] { updateResult, deleteResult, primaryResult, attachResult }, result =>
+            {
+                Assert.False(result.Success);
+                Assert.True(result.ConcurrencyConflict);
+            });
+            var storedUpdate = await db.CustomerContracts.IgnoreQueryFilters().SingleAsync(contract => contract.Id == updateContractId);
+            var storedDelete = await db.CustomerContracts.IgnoreQueryFilters().SingleAsync(contract => contract.Id == deleteContractId);
+            var storedPrimary = await db.CustomerContracts.IgnoreQueryFilters().SingleAsync(contract => contract.Id == primaryContractId);
+            var storedAttach = await db.CustomerContracts.IgnoreQueryFilters().SingleAsync(contract => contract.Id == attachContractId);
+            Assert.Equal("original", storedUpdate.Description);
+            Assert.False(storedDelete.IsDeleted);
+            Assert.False(storedPrimary.IsPrimary);
+            Assert.Equal(0, storedAttach.FileSize);
+            Assert.False(storedUpdate.IsDirty);
+            Assert.False(storedDelete.IsDirty);
+            Assert.False(storedPrimary.IsDirty);
+            Assert.False(storedAttach.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task TransactionAttachmentMutations_RejectStaleExpectedRevision()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-attachment-concurrency-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var transactionId = Guid.Parse("88888888-8888-8888-8888-888888888888");
+            var verifyAttachmentId = Guid.Parse("89999999-9999-9999-9999-999999999999");
+            var deleteAttachmentId = Guid.Parse("8aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = Guid.Parse("8bbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                ReceiptTotal = 100m,
+                IsDirty = false
+            });
+            db.TransactionAttachments.AddRange(
+                new LocalTransactionAttachment
+                {
+                    Id = verifyAttachmentId,
+                    TransactionId = transactionId,
+                    FileName = "verify.pdf",
+                    VerificationStatus = "미확인",
+                    Revision = 15,
+                    IsDirty = false
+                },
+                new LocalTransactionAttachment
+                {
+                    Id = deleteAttachmentId,
+                    TransactionId = transactionId,
+                    FileName = "delete.pdf",
+                    VerificationStatus = "미확인",
+                    Revision = 25,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var verifyResult = await service.UpdateTransactionAttachmentVerificationAsync(
+                verifyAttachmentId,
+                "확인완료",
+                "ok",
+                session,
+                expectedRevision: 14);
+            var deleteResult = await service.DeleteTransactionAttachmentAsync(
+                deleteAttachmentId,
+                session,
+                expectedRevision: 24);
+
+            Assert.False(verifyResult.Success);
+            Assert.True(verifyResult.ConcurrencyConflict);
+            Assert.False(deleteResult.Success);
+            Assert.True(deleteResult.ConcurrencyConflict);
+            var storedVerify = await db.TransactionAttachments.IgnoreQueryFilters().SingleAsync(attachment => attachment.Id == verifyAttachmentId);
+            var storedDelete = await db.TransactionAttachments.IgnoreQueryFilters().SingleAsync(attachment => attachment.Id == deleteAttachmentId);
+            Assert.Equal("미확인", storedVerify.VerificationStatus);
+            Assert.False(storedVerify.IsDirty);
+            Assert.False(storedDelete.IsDeleted);
+            Assert.False(storedDelete.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalBillingAggregateRows_CarryProfileRevisions()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-aggregate-revisions-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.Parse("8ccccccc-cccc-cccc-cccc-cccccccccccc");
+            var firstProfileId = Guid.Parse("8ddddddd-dddd-dddd-dddd-dddddddddddd");
+            var secondProfileId = Guid.Parse("8eeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Rental Aggregate Customer",
+                NameMatchKey = "RENTALAGGREGATECUSTOMER",
+                IsDirty = false
+            });
+            db.RentalBillingProfiles.AddRange(
+                new LocalRentalBillingProfile
+                {
+                    Id = firstProfileId,
+                    CustomerId = customerId,
+                    CustomerName = "Rental Aggregate Customer",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "PROFILE-A",
+                    ItemName = "Rental A",
+                    MonthlyAmount = 100m,
+                    Revision = 101,
+                    IsDirty = false
+                },
+                new LocalRentalBillingProfile
+                {
+                    Id = secondProfileId,
+                    CustomerId = customerId,
+                    CustomerName = "Rental Aggregate Customer",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "PROFILE-B",
+                    ItemName = "Rental B",
+                    MonthlyAmount = 200m,
+                    Revision = 202,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var rows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    ExpandCustomerSummaryRows = false,
+                    ReferenceDate = new DateOnly(2026, 5, 12)
+                },
+                CreateAdminSession());
+
+            var aggregateRow = Assert.Single(rows);
+            Assert.True(aggregateRow.IsAggregateRow);
+            Assert.Equal(101, aggregateRow.GroupedProfileRevisions[firstProfileId]);
+            Assert.Equal(202, aggregateRow.GroupedProfileRevisions[secondProfileId]);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    private static SessionState CreateUserSession(params string[] permissions)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "user",
+            Role = DomainConstants.RoleUser,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions.ToList()
+        });
+        return session;
     }
 
     private static SessionState CreateAdminSession()

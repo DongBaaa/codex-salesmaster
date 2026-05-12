@@ -143,7 +143,7 @@ public static partial class LocalDbInitializer
         {
             selectCommand.Transaction = transaction;
             selectCommand.CommandText = """
-                                        SELECT "WarehouseCode", SUM("Quantity"), MAX(COALESCE("UpdatedAtUtc", ''))
+                                        SELECT "WarehouseCode", SUM("Quantity"), MAX(COALESCE("UpdatedAtUtc", '')), MAX(COALESCE("Revision", 0))
                                         FROM "ItemWarehouseStocks"
                                         WHERE lower("ItemId") = $normalizedId
                                         GROUP BY "WarehouseCode"
@@ -155,7 +155,8 @@ public static partial class LocalDbInitializer
                 stockRows.Add(new CaseVariantItemWarehouseStockRow(
                     reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
                     reader.IsDBNull(1) ? 0m : reader.GetDecimal(1),
-                    reader.IsDBNull(2) ? string.Empty : reader.GetString(2)));
+                    reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                    reader.IsDBNull(3) ? 0L : reader.GetInt64(3)));
             }
         }
 
@@ -175,13 +176,14 @@ public static partial class LocalDbInitializer
             await using var insertCommand = connection.CreateCommand();
             insertCommand.Transaction = transaction;
             insertCommand.CommandText = """
-                                        INSERT INTO "ItemWarehouseStocks" ("ItemId", "WarehouseCode", "Quantity", "UpdatedAtUtc")
-                                        VALUES ($canonicalId, $warehouseCode, $quantity, $updatedAtUtc)
+                                        INSERT INTO "ItemWarehouseStocks" ("ItemId", "WarehouseCode", "Quantity", "UpdatedAtUtc", "Revision")
+                                        VALUES ($canonicalId, $warehouseCode, $quantity, $updatedAtUtc, $revision)
                                         """;
             AddParameter(insertCommand, "$canonicalId", canonicalId);
             AddParameter(insertCommand, "$warehouseCode", stockRow.WarehouseCode);
             AddParameter(insertCommand, "$quantity", stockRow.Quantity);
             AddParameter(insertCommand, "$updatedAtUtc", stockRow.UpdatedAtUtcRaw);
+            AddParameter(insertCommand, "$revision", stockRow.Revision);
             await insertCommand.ExecuteNonQueryAsync();
         }
     }
@@ -234,5 +236,6 @@ public static partial class LocalDbInitializer
     private sealed record CaseVariantItemWarehouseStockRow(
         string WarehouseCode,
         decimal Quantity,
-        string UpdatedAtUtcRaw);
+        string UpdatedAtUtcRaw,
+        long Revision);
 }

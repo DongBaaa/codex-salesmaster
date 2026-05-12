@@ -98,6 +98,7 @@ builder.Services.AddScoped<IJwtTokenFactory, JwtTokenFactory>();
 builder.Services.AddScoped<IInvoiceNumberService, InvoiceNumberService>();
 builder.Services.AddSingleton<RevisionClock>();
 builder.Services.AddSingleton<ICentralFileStorage, CentralFileStorage>();
+builder.Services.AddSingleton<DatabaseInitializationState>();
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -264,6 +265,7 @@ if (securityOptions.AddSecurityHeaders)
         if (securityOptions.RequireHttpsForwardedProto &&
             !app.Environment.IsDevelopment() &&
             !string.Equals(context.Request.Path.Value, "/healthz", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(context.Request.Path.Value, "/readyz", StringComparison.OrdinalIgnoreCase) &&
             !context.Request.IsHttps)
         {
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -303,15 +305,82 @@ app.MapGet("/healthz", () => Results.Ok(new
     utc = DateTime.UtcNow
 })).AllowAnonymous();
 
+app.MapGet("/readyz", async Task<IResult> (
+    DatabaseInitializationState databaseInitializationState,
+    IServiceScopeFactory scopeFactory,
+    CancellationToken cancellationToken) =>
+{
+    var snapshot = databaseInitializationState.CreateSnapshot();
+    if (snapshot.Failed)
+    {
+        return Results.Json(new
+        {
+            status = "not_ready",
+            reason = "database_initialization_failed",
+            databaseInitialization = snapshot,
+            utc = DateTime.UtcNow
+        }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    if (!snapshot.Completed)
+    {
+        return Results.Json(new
+        {
+            status = "starting",
+            reason = snapshot.Started ? "database_initialization_running" : "database_initialization_not_started",
+            databaseInitialization = snapshot,
+            utc = DateTime.UtcNow
+        }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    try
+    {
+        using var scope = scopeFactory.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        if (!await dbContext.Database.CanConnectAsync(cancellationToken))
+        {
+            return Results.Json(new
+            {
+                status = "not_ready",
+                reason = "database_connection_unavailable",
+                databaseInitialization = snapshot,
+                utc = DateTime.UtcNow
+            }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new
+        {
+            status = "not_ready",
+            reason = "database_connection_check_failed",
+            message = ex.Message,
+            databaseInitialization = snapshot,
+            utc = DateTime.UtcNow
+        }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    return Results.Ok(new
+    {
+        status = "ready",
+        databaseInitialization = snapshot,
+        utc = DateTime.UtcNow
+    });
+}).AllowAnonymous();
+
+var databaseInitializationState = app.Services.GetRequiredService<DatabaseInitializationState>();
 var databaseInitializationTask = Task.Run(async () =>
 {
+    databaseInitializationState.MarkStarted();
     try
     {
         await DbInitializer.InitializeAsync(app.Services);
+        databaseInitializationState.MarkCompleted();
         app.Logger.LogInformation("Database initialization completed.");
     }
     catch (Exception ex)
     {
+        databaseInitializationState.MarkFailed(ex);
         app.Logger.LogCritical(ex, "Database initialization failed.");
     }
 });

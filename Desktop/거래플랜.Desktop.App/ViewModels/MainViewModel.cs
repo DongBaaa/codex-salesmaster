@@ -208,7 +208,7 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _companyEmail = string.Empty;
     [ObservableProperty] private string _companyBankAccountText = string.Empty;
     [ObservableProperty] private byte[]? _companyStampImage;
-    [ObservableProperty] private string _companyStampImagePath = "(?놁쓬)";
+    [ObservableProperty] private string _companyStampImagePath = "(없음)";
     [ObservableProperty] private string _legacySourceDbPath = string.Empty;
     [ObservableProperty] private string _legacyCustomerExcelPath = string.Empty;
     [ObservableProperty] private string _legacyItemExcelPath = string.Empty;
@@ -1039,7 +1039,7 @@ public sealed partial class MainViewModel : ObservableObject
     {
         if (EditCustomer is null)
         {
-            System.Windows.MessageBox.Show("嫄곕옒泥섎? ?좏깮?섏꽭??", "알림", System.Windows.MessageBoxButton.OK);
+            System.Windows.MessageBox.Show("거래처를 선택하세요.", "알림", System.Windows.MessageBoxButton.OK);
             return;
         }
 
@@ -1112,14 +1112,14 @@ public sealed partial class MainViewModel : ObservableObject
             System.Windows.MessageBoxButton.YesNo);
         if (confirm != System.Windows.MessageBoxResult.Yes) return;
 
-        var result = await _local.DeleteInvoiceAsync(SelectedInvoiceRow.Id, _session);
+        var result = await _local.DeleteInvoiceAsync(SelectedInvoiceRow.Id, _session, SelectedInvoiceRow.Revision);
         if (!result.Success)
         {
             System.Windows.MessageBox.Show(
                 result.Message,
-                result.PermissionDenied ? "권한 없음" : "삭제 실패",
+                result.ConcurrencyConflict ? "동시 수정 충돌" : result.PermissionDenied ? "권한 없음" : "삭제 실패",
                 System.Windows.MessageBoxButton.OK,
-                result.PermissionDenied
+                result.ConcurrencyConflict || result.PermissionDenied
                     ? System.Windows.MessageBoxImage.Warning
                     : System.Windows.MessageBoxImage.Error);
             return;
@@ -1387,7 +1387,7 @@ public sealed partial class MainViewModel : ObservableObject
         CompanyEmail = profile.Email;
         CompanyBankAccountText = profile.BankAccountText;
         CompanyStampImage = profile.StampImage;
-        CompanyStampImagePath = profile.StampImage is { Length: > 0 } ? "(?대?吏 ?덉쓬)" : "(?놁쓬)";
+        CompanyStampImagePath = profile.StampImage is { Length: > 0 } ? "(이미지 있음)" : "(없음)";
     }
 
     [RelayCommand]
@@ -1424,19 +1424,19 @@ public sealed partial class MainViewModel : ObservableObject
     {
         var dlg = new OpenFileDialog
         {
-            Title = "吏곸씤 ?대?吏 ?좏깮",
-            Filter = "?대?吏 ?뚯씪|*.png;*.jpg;*.jpeg;*.bmp"
+            Title = "직인 이미지 선택",
+            Filter = "이미지 파일|*.png;*.jpg;*.jpeg;*.bmp"
         };
         if (dlg.ShowDialog() != true) return;
         CompanyStampImage = File.ReadAllBytes(dlg.FileName);
-        CompanyStampImagePath = "(?대?吏 ?덉쓬)";
+        CompanyStampImagePath = "(이미지 있음)";
     }
 
     [RelayCommand]
     private void ClearStampImage()
     {
         CompanyStampImage = null;
-        CompanyStampImagePath = "(?놁쓬)";
+        CompanyStampImagePath = "(없음)";
     }
 
     private async Task LoadLegacyMigrationSettingsAsync()

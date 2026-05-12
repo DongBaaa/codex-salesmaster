@@ -681,6 +681,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 GroupedUnlinkedAssetCount = 0,
                 GroupedSelectionIds = new List<Guid> { profile.Id },
                 GroupedPersistedProfileIds = new List<Guid> { profile.Id },
+                GroupedProfileRevisions = new Dictionary<Guid, long> { [profile.Id] = profile.Revision },
                 CustomerDisplayName = customerDisplayName,
                 BillingCycleDisplay = profile.BillingCycleMonths > 0 ? $"{profile.BillingCycleMonths}개월" : string.Empty,
                 ResponsibleOfficeName = ResolveOfficeDisplayName(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode, offices),
@@ -1025,6 +1026,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Where(id => id != Guid.Empty)
             .Distinct()
             .ToList();
+        var groupedProfileRevisions = rows
+            .SelectMany(row => row.GroupedProfileRevisions.Count > 0
+                ? row.GroupedProfileRevisions.AsEnumerable()
+                : row.HasPersistedProfile && row.Source.Id != Guid.Empty
+                    ? new[] { new KeyValuePair<Guid, long>(row.Source.Id, row.Source.Revision) }
+                    : Array.Empty<KeyValuePair<Guid, long>>())
+            .GroupBy(pair => pair.Key)
+            .ToDictionary(group => group.Key, group => group.Max(pair => pair.Value));
         var groupedPersistedProfileCount = groupedPersistedProfileIds.Count;
         var groupedUnlinkedAssetCount = rows.Sum(row => row.GroupedUnlinkedAssetCount);
         var groupedSourceCount = rows.Sum(row => Math.Max(1, row.GroupedSourceCount));
@@ -1080,6 +1089,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             GroupedUnlinkedAssetCount = groupedUnlinkedAssetCount,
             GroupedSelectionIds = groupedSelectionIds,
             GroupedPersistedProfileIds = groupedPersistedProfileIds,
+            GroupedProfileRevisions = groupedProfileRevisions,
             AggregateSummary = aggregateSummary,
             CustomerDisplayName = representative.CustomerDisplayName,
             BillingCycleDisplay = distinctCycles.Count <= 1 ? distinctCycles.FirstOrDefault() ?? string.Empty : $"다중({distinctCycles.Count:N0})",

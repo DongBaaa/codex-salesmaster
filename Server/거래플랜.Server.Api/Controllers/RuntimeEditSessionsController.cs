@@ -65,21 +65,7 @@ public sealed class RuntimeEditSessionsController : ControllerBase
         return Ok(new EditSessionLookupResponse
         {
             ServerUtc = nowUtc,
-            ActiveEditors = sessions.Select(entity => new EditSessionParticipantDto
-            {
-                EditSessionId = entity.Id,
-                AppSessionId = entity.AppSessionId,
-                Username = entity.Username,
-                OfficeCode = entity.OfficeCode,
-                TenantCode = entity.TenantCode,
-                ScreenName = entity.ScreenName,
-                EntityType = entity.EntityType,
-                EntityId = entity.EntityId,
-                EntityDisplayName = entity.EntityDisplayName,
-                MachineName = entity.MachineName,
-                OpenedAtUtc = entity.OpenedAtUtc,
-                LastHeartbeatUtc = entity.LastHeartbeatUtc
-            }).ToList()
+            ActiveEditors = sessions.Select(ToPublicParticipantDto).ToList()
         });
     }
 
@@ -104,6 +90,9 @@ public sealed class RuntimeEditSessionsController : ControllerBase
         var session = await _dbContext.ActiveEditSessions
             .FirstOrDefaultAsync(entity => entity.Id == request.EditSessionId, cancellationToken);
 
+        if (session is not null && !IsOwnedByCurrentCaller(session, request.AppSessionId, request.EditSessionId))
+            return Forbid();
+
         if (session is null)
         {
             session = new ActiveEditSession
@@ -114,7 +103,7 @@ public sealed class RuntimeEditSessionsController : ControllerBase
             _dbContext.ActiveEditSessions.Add(session);
         }
 
-        session.AppSessionId = request.AppSessionId == Guid.Empty ? request.EditSessionId : request.AppSessionId;
+        session.AppSessionId = ResolveRequestAppSessionId(request.AppSessionId, request.EditSessionId);
         session.Username = NormalizeOptionalText(_currentUserContext.Username, 120);
         session.OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_currentUserContext.OfficeCode);
         session.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(_currentUserContext.TenantCode, session.OfficeCode);
@@ -133,11 +122,11 @@ public sealed class RuntimeEditSessionsController : ControllerBase
                 entity.EntityType == normalizedEntityType &&
                 entity.EntityId == normalizedEntityId &&
                 entity.TenantCode == session.TenantCode &&
+                entity.Username == session.Username &&
+                entity.OfficeCode == session.OfficeCode &&
                 (
                     entity.AppSessionId == session.AppSessionId ||
                     (
-                        entity.Username == session.Username &&
-                        entity.OfficeCode == session.OfficeCode &&
                         entity.MachineName == session.MachineName &&
                         entity.LastHeartbeatUtc >= localEditorReplacementThresholdUtc
                     )
@@ -169,21 +158,7 @@ public sealed class RuntimeEditSessionsController : ControllerBase
         return Ok(new EditSessionHeartbeatResponse
         {
             ServerUtc = nowUtc,
-            OtherEditors = others.Select(entity => new EditSessionParticipantDto
-            {
-                EditSessionId = entity.Id,
-                AppSessionId = entity.AppSessionId,
-                Username = entity.Username,
-                OfficeCode = entity.OfficeCode,
-                TenantCode = entity.TenantCode,
-                ScreenName = entity.ScreenName,
-                EntityType = entity.EntityType,
-                EntityId = entity.EntityId,
-                EntityDisplayName = entity.EntityDisplayName,
-                MachineName = entity.MachineName,
-                OpenedAtUtc = entity.OpenedAtUtc,
-                LastHeartbeatUtc = entity.LastHeartbeatUtc
-            }).ToList()
+            OtherEditors = others.Select(ToPublicParticipantDto).ToList()
         });
     }
 
@@ -200,7 +175,7 @@ public sealed class RuntimeEditSessionsController : ControllerBase
         {
             var session = await _dbContext.ActiveEditSessions
                 .FirstOrDefaultAsync(entity => entity.Id == request.EditSessionId, cancellationToken);
-            if (session is not null)
+            if (session is not null && IsOwnedByCurrentCaller(session, request.AppSessionId, request.EditSessionId))
             {
                 _dbContext.ActiveEditSessions.Remove(session);
                 hasChanges = true;
@@ -225,6 +200,42 @@ public sealed class RuntimeEditSessionsController : ControllerBase
         _dbContext.ActiveEditSessions.RemoveRange(expiredSessions);
         return true;
     }
+
+    private bool IsOwnedByCurrentCaller(ActiveEditSession session, Guid requestAppSessionId, Guid requestEditSessionId)
+    {
+        var currentUsername = NormalizeOptionalText(_currentUserContext.Username, 120);
+        var currentOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_currentUserContext.OfficeCode);
+        var currentTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            _currentUserContext.TenantCode,
+            currentOfficeCode);
+        var normalizedRequestAppSessionId = ResolveRequestAppSessionId(requestAppSessionId, requestEditSessionId);
+
+        return normalizedRequestAppSessionId != Guid.Empty &&
+               session.AppSessionId == normalizedRequestAppSessionId &&
+               string.Equals(session.Username, currentUsername, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(session.OfficeCode, currentOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(session.TenantCode, currentTenantCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Guid ResolveRequestAppSessionId(Guid requestAppSessionId, Guid requestEditSessionId)
+        => requestAppSessionId == Guid.Empty ? requestEditSessionId : requestAppSessionId;
+
+    private static EditSessionParticipantDto ToPublicParticipantDto(ActiveEditSession entity)
+        => new()
+        {
+            EditSessionId = Guid.Empty,
+            AppSessionId = Guid.Empty,
+            Username = entity.Username,
+            OfficeCode = entity.OfficeCode,
+            TenantCode = entity.TenantCode,
+            ScreenName = entity.ScreenName,
+            EntityType = entity.EntityType,
+            EntityId = entity.EntityId,
+            EntityDisplayName = entity.EntityDisplayName,
+            MachineName = entity.MachineName,
+            OpenedAtUtc = entity.OpenedAtUtc,
+            LastHeartbeatUtc = entity.LastHeartbeatUtc
+        };
 
     private static string NormalizeRequiredText(string? value, int maxLength)
         => NormalizeOptionalText(value, maxLength);

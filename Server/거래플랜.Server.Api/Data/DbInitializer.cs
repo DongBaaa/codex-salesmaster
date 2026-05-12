@@ -57,6 +57,7 @@ public static partial class DbInitializer
 
         await EnsureBusinessDatabaseSchemaAsync(dbContext, cancellationToken);
         await EnsureOperationalRuntimeSchemaAsync(dbContext, cancellationToken);
+        await VerifyRequiredOperationalSchemaAsync(dbContext, cancellationToken);
         await BackfillCustomerScopeFieldsAsync(dbContext, cancellationToken);
         await BackfillOperationalOfficeOwnershipAsync(dbContext, cancellationToken);
         await BackfillCustomerMasterScopeFieldsAsync(dbContext, cancellationToken);
@@ -69,6 +70,7 @@ public static partial class DbInitializer
             await using var tenantDbContext = CreateDbContext(connectionInfo, revisionClock);
             await EnsureBusinessDatabaseSchemaAsync(tenantDbContext, cancellationToken);
             await EnsureOperationalRuntimeSchemaAsync(tenantDbContext, cancellationToken);
+            await VerifyRequiredOperationalSchemaAsync(tenantDbContext, cancellationToken);
             await BackfillCustomerScopeFieldsAsync(tenantDbContext, cancellationToken);
             await BackfillOperationalOfficeOwnershipAsync(tenantDbContext, cancellationToken);
             await BackfillCustomerMasterScopeFieldsAsync(tenantDbContext, cancellationToken);
@@ -242,6 +244,59 @@ public static partial class DbInitializer
         await EnsurePaymentAttachmentStoragePathColumnAsync(dbContext, cancellationToken);
         await EnsureTransactionAttachmentStoragePathColumnAsync(dbContext, cancellationToken);
     }
+
+    private static async Task VerifyRequiredOperationalSchemaAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        foreach (var (tableName, columnName) in RequiredOperationalSchemaColumns())
+        {
+            if (await HasColumnAsync(dbContext, tableName, columnName, cancellationToken))
+                continue;
+
+            throw new InvalidOperationException(
+                $"Database schema verification failed. Missing required column \"{tableName}\".\"{columnName}\".");
+        }
+    }
+
+    private static (string TableName, string ColumnName)[] RequiredOperationalSchemaColumns() =>
+    [
+        ("Users", "OfficeCode"),
+        ("Users", "TenantCode"),
+        ("Users", "ScopeType"),
+        ("Customers", "TenantCode"),
+        ("Customers", "OfficeCode"),
+        ("Customers", "ResponsibleOfficeCode"),
+        ("Items", "TenantCode"),
+        ("Items", "OfficeCode"),
+        ("Invoices", "TenantCode"),
+        ("Invoices", "OfficeCode"),
+        ("Invoices", "ResponsibleOfficeCode"),
+        ("Invoices", "Revision"),
+        ("Payments", "Revision"),
+        ("CustomerContracts", "Revision"),
+        ("Transactions", "TenantCode"),
+        ("Transactions", "OfficeCode"),
+        ("Transactions", "Revision"),
+        ("TransactionAttachments", "Revision"),
+        ("InventoryTransfers", "Revision"),
+        ("RentalBillingProfiles", "Revision"),
+        ("RentalAssets", "Revision"),
+        ("RentalAssetAssignmentHistories", "Revision"),
+        ("RentalBillingLogs", "Revision"),
+        ("ItemWarehouseStocks", "ItemId"),
+        ("ItemWarehouseStocks", "WarehouseCode"),
+        ("ItemWarehouseStocks", "Quantity"),
+        ("ItemWarehouseStocks", "Revision"),
+        ("ProcessedSyncMutations", "MutationId"),
+        ("ProcessedSyncMutations", "ExpectedRevision"),
+        ("ConflictLogs", "Status"),
+        ("ActiveEditSessions", "AppSessionId"),
+        ("ActiveEditSessions", "Username"),
+        ("ActiveEditSessions", "EntityType"),
+        ("ActiveEditSessions", "EntityId"),
+        ("ActiveEditSessions", "ExpiresAtUtc")
+    ];
 
     private static async Task BackfillCustomerScopeFieldsAsync(
         AppDbContext dbContext,
@@ -1637,6 +1692,7 @@ public static partial class DbInitializer
               await dbContext.Customers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.CustomerContracts.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Items.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+            await dbContext.ItemWarehouseStocks.Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.Transactions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.TransactionAttachments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
             await dbContext.InventoryTransfers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
@@ -2812,6 +2868,7 @@ public static partial class DbInitializer
                         "WarehouseCode" TEXT NOT NULL,
                         "Quantity" REAL NOT NULL DEFAULT 0,
                         "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0,
                         CONSTRAINT "PK_ItemWarehouseStocks" PRIMARY KEY ("ItemId", "WarehouseCode")
                     );
                     """,
@@ -2826,9 +2883,29 @@ public static partial class DbInitializer
                         "WarehouseCode" text NOT NULL,
                         "Quantity" numeric(18,2) NOT NULL DEFAULT 0,
                         "UpdatedAtUtc" timestamp with time zone NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0,
                         CONSTRAINT "PK_ItemWarehouseStocks" PRIMARY KEY ("ItemId", "WarehouseCode")
                     );
                     """,
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"ItemWarehouseStocks\" ADD COLUMN \"Revision\" INTEGER NOT NULL DEFAULT 0;",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"ItemWarehouseStocks\" ADD COLUMN IF NOT EXISTS \"Revision\" bigint NOT NULL DEFAULT 0;",
                     cancellationToken);
             }
         }

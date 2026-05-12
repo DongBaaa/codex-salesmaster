@@ -576,7 +576,8 @@ public static class LocalMappings
         ItemId = dto.ItemId,
         WarehouseCode = dto.WarehouseCode,
         Quantity = dto.Quantity,
-        UpdatedAtUtc = EnsureUtc(dto.UpdatedAtUtc)
+        UpdatedAtUtc = EnsureUtc(dto.UpdatedAtUtc),
+        Revision = dto.Revision
     };
 
     public static ItemWarehouseStockDto ToDto(LocalItemWarehouseStock e) => new()
@@ -584,7 +585,9 @@ public static class LocalMappings
         ItemId = e.ItemId,
         WarehouseCode = e.WarehouseCode,
         Quantity = e.Quantity,
-        UpdatedAtUtc = EnsureUtc(e.UpdatedAtUtc)
+        UpdatedAtUtc = EnsureUtc(e.UpdatedAtUtc),
+        Revision = e.Revision,
+        ExpectedRevision = e.Revision
     };
 
     public static LocalTransaction ToLocal(TransactionDto dto) => new()

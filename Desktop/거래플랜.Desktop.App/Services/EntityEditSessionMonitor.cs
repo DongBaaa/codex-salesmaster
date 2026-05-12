@@ -145,7 +145,8 @@ public sealed class EntityEditSessionMonitor : IDisposable
     {
         await _api.ReleaseEditSessionAsync(new EditSessionReleaseRequest
         {
-            EditSessionId = _editSessionId
+            EditSessionId = _editSessionId,
+            AppSessionId = _session.SessionId
         }, ct);
     }
 

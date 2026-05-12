@@ -1385,37 +1385,42 @@ public sealed class SyncService : IDisposable
                 $"deletedMissingInvoicePayments={paymentRepair.MarkedDeletedMissingInvoiceCount}");
         }
 
-        var dirtyCompanyProfiles = includeSharedDirty
+        var canSyncCompanyProfiles = includeSharedDirty && session.HasPermission(AppPermissionNames.CompanyProfileEdit);
+        var canSyncSettings = includeSharedDirty && session.HasPermission(AppPermissionNames.SettingsEdit);
+        var canSyncItemWarehouseStocks = includeSharedDirty && session.HasPermission(AppPermissionNames.ItemEdit);
+        var canSyncRentalSettings = includeSharedDirty && session.HasPermission(AppPermissionNames.RentalSettingsEdit);
+
+        var dirtyCompanyProfiles = canSyncCompanyProfiles
             ? await _db.CompanyProfiles.IgnoreQueryFilters()
                 .Where(entity => entity.IsDirty)
                 .AsNoTracking()
                 .ToListAsync(ct)
             : [];
-        var dirtyUnits = includeSharedDirty
+        var dirtyUnits = canSyncSettings
             ? await _db.Units.IgnoreQueryFilters()
                 .Where(entity => entity.IsDirty)
                 .AsNoTracking()
                 .ToListAsync(ct)
             : [];
-        var dirtyCustomerCategories = includeSharedDirty
+        var dirtyCustomerCategories = canSyncSettings
             ? await _db.CustomerCategories.IgnoreQueryFilters()
                 .Where(entity => entity.IsDirty)
                 .AsNoTracking()
                 .ToListAsync(ct)
             : [];
-        var dirtyPriceGradeOptions = includeSharedDirty
+        var dirtyPriceGradeOptions = canSyncSettings
             ? await _db.PriceGradeOptions.IgnoreQueryFilters()
                 .Where(entity => entity.IsDirty)
                 .AsNoTracking()
                 .ToListAsync(ct)
             : [];
-        var dirtyTradeTypeOptions = includeSharedDirty
+        var dirtyTradeTypeOptions = canSyncSettings
             ? await _db.TradeTypeOptions.IgnoreQueryFilters()
                 .Where(entity => entity.IsDirty)
                 .AsNoTracking()
                 .ToListAsync(ct)
             : [];
-        var dirtyItemCategoryOptions = includeSharedDirty
+        var dirtyItemCategoryOptions = canSyncSettings
             ? await _db.ItemCategoryOptions.IgnoreQueryFilters()
                 .Where(entity => entity.IsDirty)
                 .AsNoTracking()
@@ -1425,7 +1430,7 @@ public sealed class SyncService : IDisposable
         var dirtyCustomers = await _local.GetDirtyCustomersForSyncAsync(session, ct);
         var dirtyCustomerContracts = await _local.GetDirtyCustomerContractsForSyncAsync(session, ct);
         var dirtyItems = await _local.GetDirtyItemsForSyncAsync(session, ct);
-        var dirtyItemWarehouseStocks = includeSharedDirty
+        var dirtyItemWarehouseStocks = canSyncItemWarehouseStocks
             ? await _db.ItemWarehouseStocks
                 .AsNoTracking()
                 .ToListAsync(ct)
@@ -1433,7 +1438,7 @@ public sealed class SyncService : IDisposable
         var dirtyTransactions = await _local.GetDirtyTransactionsForSyncAsync(session, ct);
         var dirtyTransactionAttachments = await _local.GetDirtyTransactionAttachmentsForSyncAsync(session, ct);
         var dirtyInventoryTransfers = await _local.GetDirtyInventoryTransfersForSyncAsync(session, ct);
-        var dirtyRentalManagementCompanies = includeSharedDirty
+        var dirtyRentalManagementCompanies = canSyncRentalSettings
             ? await _db.RentalManagementCompanies.IgnoreQueryFilters()
                 .Where(entity => entity.IsDirty)
                 .AsNoTracking()

@@ -331,7 +331,8 @@ public sealed partial class CustomerEditViewModel : ObservableObject
                 expireDate,
                 description,
                 isPrimary,
-                _session);
+                _session,
+                editingContract.Revision);
 
         StatusMessage = result.Message;
         if (!result.Success)
@@ -382,7 +383,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         }
 
         var selectedId = SelectedContract.Id;
-        var result = await _local.SetPrimaryCustomerContractAsync(selectedId, _session);
+        var result = await _local.SetPrimaryCustomerContractAsync(selectedId, _session, SelectedContract.Revision);
         StatusMessage = result.Message;
         if (!result.Success)
             return;
@@ -409,7 +410,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             return;
 
         var deletedId = SelectedContract.Id;
-        var result = await _local.DeleteCustomerContractAsync(deletedId, _session);
+        var result = await _local.DeleteCustomerContractAsync(deletedId, _session, SelectedContract.Revision);
         StatusMessage = result.Message;
         if (!result.Success)
             return;
@@ -561,7 +562,8 @@ public sealed partial class CustomerEditViewModel : ObservableObject
                 ContractExpireDate,
                 ContractDescription,
                 NewContractIsPrimary,
-                _session);
+                _session,
+                SelectedContract.Revision);
 
             StatusMessage = updateResult.Message;
             if (!updateResult.Success)

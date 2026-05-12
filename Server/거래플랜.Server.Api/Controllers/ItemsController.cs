@@ -172,7 +172,9 @@ public sealed class ItemsController : ControllerBase
                 ItemId = entity.Id,
                 WarehouseCode = "전체",
                 Quantity = entity.CurrentStock,
-                UpdatedAtUtc = entity.UpdatedAtUtc
+                UpdatedAtUtc = entity.UpdatedAtUtc,
+                Revision = entity.Revision,
+                ExpectedRevision = entity.Revision
             });
         }
 

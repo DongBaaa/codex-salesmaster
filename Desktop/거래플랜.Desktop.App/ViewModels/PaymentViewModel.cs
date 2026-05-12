@@ -127,12 +127,14 @@ public sealed partial class PaymentViewModel : ObservableObject
             ? "기본값은 잔액 전체입니다. 분할 수금/지급이면 이번 처리분만 입력하세요."
             : string.Empty;
 
-    public bool CanAddAttachment => SelectedHistory is not null;
-    public bool CanEditHistory => SelectedHistory is not null && !IsSaving;
-    public bool CanDeleteHistory => SelectedHistory is not null && !IsSaving;
+    public bool CanEditPayments => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.PaymentEdit);
+    public bool CanAddAttachment => CanEditPayments && SelectedHistory is not null;
+    public bool CanEditHistory => CanEditPayments && SelectedHistory is not null && !IsSaving;
+    public bool CanDeleteHistory => CanEditPayments && SelectedHistory is not null && !IsSaving;
     public bool CanCancelHistoryEdit => IsEditingHistory && !IsSaving;
     public bool CanPreviewAttachment => SelectedAttachment is not null && File.Exists(SelectedAttachment.StoredPath);
     public bool CanDeleteAttachment =>
+        CanEditPayments &&
         SelectedAttachment is not null &&
         (_session.HasAdministrativePrivileges || !string.Equals(SelectedAttachment.VerificationStatus, "확인완료", StringComparison.OrdinalIgnoreCase));
     public bool CanVerifyAttachment => _session.HasAdministrativePrivileges && SelectedAttachment is not null;
@@ -869,7 +871,7 @@ public sealed partial class PaymentViewModel : ObservableObject
         }
     }
 
-    private bool CanSave() => !IsSaving;
+    private bool CanSave() => CanEditPayments && !IsSaving;
 
     [RelayCommand]
     private async Task ApplyFullSettlementAmountAsync()
@@ -913,6 +915,12 @@ public sealed partial class PaymentViewModel : ObservableObject
     {
         if (IsSaving)
             return;
+
+        if (!CanEditPayments)
+        {
+            StatusMessage = "권한이 없어 수금/지급을 저장할 수 없습니다.";
+            return;
+        }
 
         if (SelectedCustomer is null)
         {
@@ -1210,6 +1218,12 @@ public sealed partial class PaymentViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanEditHistory))]
     private async Task EditHistoryAsync()
     {
+        if (!CanEditPayments)
+        {
+            StatusMessage = "권한이 없어 수금/지급 내역을 수정할 수 없습니다.";
+            return;
+        }
+
         if (SelectedHistory is null)
         {
             StatusMessage = "수정할 최근 처리내역을 선택하세요.";
@@ -1222,6 +1236,12 @@ public sealed partial class PaymentViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanDeleteHistory))]
     private async Task DeleteHistoryAsync()
     {
+        if (!CanEditPayments)
+        {
+            StatusMessage = "권한이 없어 수금/지급 내역을 삭제할 수 없습니다.";
+            return;
+        }
+
         if (SelectedHistory is null)
         {
             StatusMessage = "삭제할 최근 처리내역을 선택하세요.";
@@ -1296,11 +1316,17 @@ public sealed partial class PaymentViewModel : ObservableObject
         StatusMessage = "최근 처리내역 수정이 취소되었습니다.";
     }
 
-    private bool CanAddAttachmentAction() => !IsSaving && SelectedHistory is not null;
+    private bool CanAddAttachmentAction() => !IsSaving && CanAddAttachment;
 
     [RelayCommand(CanExecute = nameof(CanAddAttachmentAction))]
     private async Task AddAttachmentAsync()
     {
+        if (!CanEditPayments)
+        {
+            StatusMessage = "권한이 없어 수금/지급 증빙을 첨부할 수 없습니다.";
+            return;
+        }
+
         if (SelectedHistory is null)
         {
             StatusMessage = "증빙을 첨부할 수금/지급 내역을 먼저 선택하세요.";
@@ -1355,6 +1381,12 @@ public sealed partial class PaymentViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanDeleteAttachmentAction))]
     private async Task DeleteAttachmentAsync()
     {
+        if (!CanEditPayments)
+        {
+            StatusMessage = "권한이 없어 수금/지급 증빙을 삭제할 수 없습니다.";
+            return;
+        }
+
         if (SelectedAttachment is null)
         {
             StatusMessage = "삭제할 증빙을 선택하세요.";
@@ -1370,7 +1402,9 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (confirm != System.Windows.MessageBoxResult.Yes)
             return;
 
-        var result = await _local.DeleteTransactionAttachmentAsync(SelectedAttachment.Id, _session);
+        var selectedAttachmentId = SelectedAttachment.Id;
+        var expectedRevision = SelectedAttachment.Revision;
+        var result = await _local.DeleteTransactionAttachmentAsync(selectedAttachmentId, _session, expectedRevision);
         StatusMessage = result.Message;
         if (!result.Success)
             return;
@@ -1391,12 +1425,14 @@ public sealed partial class PaymentViewModel : ObservableObject
         }
 
         var selectedAttachmentId = SelectedAttachment.Id;
+        var expectedRevision = SelectedAttachment.Revision;
 
         var result = await _local.UpdateTransactionAttachmentVerificationAsync(
             selectedAttachmentId,
             "확인완료",
             AttachmentDescription,
-            _session);
+            _session,
+            expectedRevision);
 
         StatusMessage = result.Message;
         if (!result.Success)
@@ -1421,12 +1457,14 @@ public sealed partial class PaymentViewModel : ObservableObject
         }
 
         var selectedAttachmentId = SelectedAttachment.Id;
+        var expectedRevision = SelectedAttachment.Revision;
 
         var result = await _local.UpdateTransactionAttachmentVerificationAsync(
             selectedAttachmentId,
             "반려",
             AttachmentDescription,
-            _session);
+            _session,
+            expectedRevision);
 
         StatusMessage = result.Message;
         if (!result.Success)
@@ -1546,4 +1584,3 @@ public sealed partial class PaymentViewModel : ObservableObject
         return 0m;
     }
 }
-

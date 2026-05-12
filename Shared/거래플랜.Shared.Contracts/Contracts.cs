@@ -630,6 +630,8 @@ public sealed class ItemWarehouseStockDto
     public string WarehouseCode { get; set; } = string.Empty;
     public decimal Quantity { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+    public long Revision { get; set; }
+    public long ExpectedRevision { get; set; }
 }
 
 public sealed class CustomerDetailDto
@@ -773,6 +775,7 @@ public sealed class EditSessionHeartbeatRequest
 public sealed class EditSessionReleaseRequest
 {
     public Guid EditSessionId { get; set; }
+    public Guid AppSessionId { get; set; }
 }
 
 public sealed class EditSessionParticipantDto

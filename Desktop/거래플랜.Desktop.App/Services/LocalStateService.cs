@@ -298,22 +298,48 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private static bool CanManageCustomerContracts(SessionState? session)
 	{
-		return session != null && (session.HasAdministrativePrivileges || session.HasPermission("Customer.Edit"));
+		return session != null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.CustomerEdit));
 	}
 
 	private static bool CanEditItems(SessionState? session)
 	{
-		return session != null && (session.HasAdministrativePrivileges || session.HasPermission("Item.Edit"));
+		return session != null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.ItemEdit));
 	}
 
 	private static bool CanResetInventoryValue(SessionState? session)
 	{
-		return session != null && (session.HasAdministrativePrivileges || session.HasPermission("Inventory.Reset"));
+		return session != null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.InventoryReset));
 	}
 
 	private static bool CanSaveInvoices(SessionState? session)
 	{
-		return session != null && (session.HasAdministrativePrivileges || session.HasPermission("Invoice.Edit"));
+		return session != null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.InvoiceEdit));
+	}
+
+	private static bool CanEditPayments(SessionState? session)
+	{
+		return session != null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.PaymentEdit));
+	}
+
+	private static bool CanEditDeliveries(SessionState? session)
+	{
+		return session != null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.DeliveryEdit));
+	}
+
+	private static bool CanEditRentalProfiles(SessionState? session)
+	{
+		return session != null &&
+		       (session.HasAdministrativePrivileges ||
+		        session.HasPermission(AppPermissionNames.RentalProfileEdit) ||
+		        session.HasPermission(AppPermissionNames.RentalEditAll));
+	}
+
+	private static bool CanEditRentalAssets(SessionState? session)
+	{
+		return session != null &&
+		       (session.HasAdministrativePrivileges ||
+		        session.HasPermission(AppPermissionNames.RentalAssetEdit) ||
+		        session.HasPermission(AppPermissionNames.RentalEditAll));
 	}
 
 	public Task<List<LocalCustomer>> GetCustomersAsync(CancellationToken ct = default(CancellationToken))
@@ -713,7 +739,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return OfficeMutationResult.Ok(contract.Id, "계약서 초안을 저장했습니다.");
 	}
 
-	public async Task<OfficeMutationResult> AttachCustomerContractPdfAsync(Guid contractId, string sourceFilePath, string contractType, DateOnly? signedDate, DateOnly? expireDate, string? description, bool isPrimary, SessionState session, CancellationToken ct = default(CancellationToken))
+	public async Task<OfficeMutationResult> AttachCustomerContractPdfAsync(Guid contractId, string sourceFilePath, string contractType, DateOnly? signedDate, DateOnly? expireDate, string? description, bool isPrimary, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		if (!CanManageCustomerContracts(session))
 		{
@@ -738,6 +764,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (!CanAccessCustomer(customer, session))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처 계약서를 수정할 수 없습니다.");
+		}
+		if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(contract, expectedRevision, "거래처 계약서", out string conflictMessage))
+		{
+			return OfficeMutationResult.Conflict(conflictMessage);
 		}
 		DateTime now = DateTime.UtcNow;
 		byte[] fileBytes = await File.ReadAllBytesAsync(sourceFilePath, ct);
@@ -764,7 +794,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return OfficeMutationResult.Ok(contract.Id, "계약서 PDF를 등록했습니다.");
 	}
 
-	public async Task<OfficeMutationResult> UpdateCustomerContractAsync(Guid contractId, string contractType, DateOnly? signedDate, DateOnly? expireDate, string? description, bool isPrimary, SessionState session, CancellationToken ct = default(CancellationToken))
+	public async Task<OfficeMutationResult> UpdateCustomerContractAsync(Guid contractId, string contractType, DateOnly? signedDate, DateOnly? expireDate, string? description, bool isPrimary, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		if (!CanManageCustomerContracts(session))
 		{
@@ -783,6 +813,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (!CanAccessCustomer(customer, session))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처 계약서를 수정할 수 없습니다.");
+		}
+		if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(contract, expectedRevision, "거래처 계약서", out string conflictMessage))
+		{
+			return OfficeMutationResult.Conflict(conflictMessage);
 		}
 		DateTime now = DateTime.UtcNow;
 		contract.ContractType = NormalizeCustomerContractType(contractType);
@@ -875,7 +909,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		});
 	}
 
-	public async Task<OfficeMutationResult> DeleteCustomerContractAsync(Guid contractId, SessionState session, CancellationToken ct = default(CancellationToken))
+	public async Task<OfficeMutationResult> DeleteCustomerContractAsync(Guid contractId, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		if (!CanManageCustomerContracts(session))
 		{
@@ -894,6 +928,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (!CanAccessCustomer(customer, session))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처 계약서를 삭제할 수 없습니다.");
+		}
+		if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(contract, expectedRevision, "거래처 계약서", out string conflictMessage))
+		{
+			return OfficeMutationResult.Conflict(conflictMessage);
 		}
 		contract.IsDeleted = true;
 		contract.IsDirty = true;
@@ -915,7 +953,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return OfficeMutationResult.Ok(contract.Id, "거래처 계약서를 삭제했습니다.");
 	}
 
-	public async Task<OfficeMutationResult> SetPrimaryCustomerContractAsync(Guid contractId, SessionState session, CancellationToken ct = default(CancellationToken))
+	public async Task<OfficeMutationResult> SetPrimaryCustomerContractAsync(Guid contractId, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		if (!CanManageCustomerContracts(session))
 		{
@@ -934,6 +972,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (!CanAccessCustomer(customer, session))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처 계약서를 변경할 수 없습니다.");
+		}
+		if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(contract, expectedRevision, "거래처 계약서", out string conflictMessage))
+		{
+			return OfficeMutationResult.Conflict(conflictMessage);
 		}
 		await ClearPrimaryCustomerContractAsync(contract.CustomerId, contract.Id, ct);
 		contract.IsPrimary = true;
@@ -988,6 +1030,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public Task<List<LocalItem>> GetDirtyItemsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditItems(session))
+		{
+			return Task.FromResult(new List<LocalItem>());
+		}
 		IQueryable<LocalItem> source = (from item in _db.Items.IgnoreQueryFilters()
 			where item.IsDirty
 			select item).AsNoTracking();
@@ -1003,6 +1049,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalCustomer>> GetDirtyCustomersForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanManageCustomerContracts(session))
+		{
+			return new List<LocalCustomer>();
+		}
 		IQueryable<LocalCustomer> query = (from customer in _db.Customers.IgnoreQueryFilters()
 			where customer.IsDirty
 			select customer).AsNoTracking();
@@ -1015,6 +1065,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalCustomerMaster>> GetDirtyCustomerMastersForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanManageCustomerContracts(session))
+		{
+			return new List<LocalCustomerMaster>();
+		}
 		IQueryable<LocalCustomerMaster> query = (from customerMaster in _db.CustomerMasters.IgnoreQueryFilters()
 			where customerMaster.IsDirty
 			select customerMaster).AsNoTracking();
@@ -1144,6 +1198,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalCustomerContract>> GetDirtyCustomerContractsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanManageCustomerContracts(session))
+		{
+			return new List<LocalCustomerContract>();
+		}
 		List<LocalCustomerContract> dirtyContracts = await (from contract in _db.CustomerContracts.IgnoreQueryFilters()
 			where contract.IsDirty
 			select contract).AsNoTracking().ToListAsync(ct);
@@ -1165,6 +1223,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalRentalBillingProfile>> GetDirtyRentalBillingProfilesForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditRentalProfiles(session))
+		{
+			return new List<LocalRentalBillingProfile>();
+		}
 		IQueryable<LocalRentalBillingProfile> query = (from profile in _db.RentalBillingProfiles.IgnoreQueryFilters()
 			where profile.IsDirty
 			select profile).AsNoTracking();
@@ -1173,6 +1235,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalRentalAsset>> GetDirtyRentalAssetsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditRentalAssets(session))
+		{
+			return new List<LocalRentalAsset>();
+		}
 		IQueryable<LocalRentalAsset> query = (from asset in _db.RentalAssets.IgnoreQueryFilters()
 			where asset.IsDirty
 			select asset).AsNoTracking();
@@ -1181,6 +1247,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalRentalAssetAssignmentHistory>> GetDirtyRentalAssetAssignmentHistoriesForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditRentalAssets(session))
+		{
+			return new List<LocalRentalAssetAssignmentHistory>();
+		}
 		IQueryable<LocalRentalAssetAssignmentHistory> query = (from history in _db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
 			where history.IsDirty
 			select history).AsNoTracking();
@@ -1189,6 +1259,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalRentalBillingLog>> GetDirtyRentalBillingLogsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditRentalProfiles(session))
+		{
+			return new List<LocalRentalBillingLog>();
+		}
 		IQueryable<LocalRentalBillingLog> query = (from log in _db.RentalBillingLogs.IgnoreQueryFilters()
 			where log.IsDirty
 			select log).AsNoTracking();
@@ -1197,6 +1271,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalTransaction>> GetDirtyTransactionsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditPayments(session))
+		{
+			return new List<LocalTransaction>();
+		}
 		IQueryable<LocalTransaction> query = (from transaction in _db.Transactions.IgnoreQueryFilters()
 			where transaction.IsDirty
 			select transaction).AsNoTracking();
@@ -1209,6 +1287,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalTransactionAttachment>> GetDirtyTransactionAttachmentsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditPayments(session))
+		{
+			return new List<LocalTransactionAttachment>();
+		}
 		List<LocalTransactionAttachment> dirtyAttachments = await (from attachment in _db.TransactionAttachments.IgnoreQueryFilters()
 			where attachment.IsDirty
 			select attachment).AsNoTracking().ToListAsync(ct);
@@ -1228,6 +1310,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalPayment>> GetDirtyPaymentsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditPayments(session))
+		{
+			return new List<LocalPayment>();
+		}
 		List<LocalPayment> dirtyPayments = await (from payment in _db.Payments.IgnoreQueryFilters()
 			where payment.IsDirty
 			select payment).AsNoTracking().ToListAsync(ct);
@@ -1247,6 +1333,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalInvoice>> GetDirtyInvoicesForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanSaveInvoices(session))
+		{
+			return new List<LocalInvoice>();
+		}
 		IQueryable<LocalInvoice> query = (from invoice in _db.Invoices.IgnoreQueryFilters().Include((LocalInvoice invoice) => invoice.Lines).Include((LocalInvoice invoice) => invoice.Payments)
 			where invoice.IsDirty
 			select invoice).AsNoTracking();
@@ -1259,6 +1349,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalInventoryTransfer>> GetDirtyInventoryTransfersForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditDeliveries(session))
+		{
+			return new List<LocalInventoryTransfer>();
+		}
 		IQueryable<LocalInventoryTransfer> query = (from transfer in _db.InventoryTransfers.IgnoreQueryFilters().Include((LocalInventoryTransfer transfer) => transfer.Lines)
 			where transfer.IsDirty
 			select transfer).AsNoTracking();
@@ -2193,7 +2287,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}, ct);
 	}
 
-	public async Task<OfficeMutationResult> DeleteInvoiceAsync(Guid id, SessionState session, CancellationToken ct = default(CancellationToken))
+	public async Task<OfficeMutationResult> DeleteInvoiceAsync(Guid id, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		if (!CanSaveInvoices(session))
 		{
@@ -2207,6 +2301,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (!CanAccessInvoice(target, session))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 전표를 삭제할 수 없습니다.");
+		}
+		if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(target, expectedRevision, "전표", out string conflictMessage))
+		{
+			return OfficeMutationResult.Conflict(conflictMessage);
 		}
 		DateTime now = DateTime.UtcNow;
 		Guid versionGroupId = ((target.VersionGroupId == Guid.Empty) ? target.Id : target.VersionGroupId);
@@ -3603,6 +3701,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			throw new ArgumentNullException("transaction");
 		}
+		if (!CanEditPayments(session))
+		{
+			return OfficeMutationResult.Denied("권한이 없어 수금/지급을 저장할 수 없습니다.");
+		}
 		string requestedTransactionKind = transaction.TransactionKind;
 		string requestedResponsibleOfficeCode = transaction.ResponsibleOfficeCode;
 		decimal requestedSettlementAmount = transaction.SettlementAmount;
@@ -3864,6 +3966,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<OfficeMutationResult> DeleteTransactionAsync(Guid transactionId, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditPayments(session))
+		{
+			return OfficeMutationResult.Denied("권한이 없어 수금/지급 내역을 삭제할 수 없습니다.");
+		}
 		var transaction = await _db.Transactions.IgnoreQueryFilters().FirstOrDefaultAsync((LocalTransaction current) => current.Id == transactionId, ct);
 		if (transaction == null)
 		{
@@ -4206,6 +4312,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<OfficeMutationResult> SaveTransactionAttachmentAsync(Guid transactionId, string sourceFilePath, string attachmentType, string? description, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditPayments(session))
+		{
+			return OfficeMutationResult.Denied("권한이 없어 수금/지급 증빙을 첨부할 수 없습니다.");
+		}
 		if (transactionId == Guid.Empty)
 		{
 			return OfficeMutationResult.Denied("증빙을 연결할 수금/지급 내역을 먼저 선택하세요.");
@@ -4271,8 +4381,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return OfficeMutationResult.Ok(attachment.Id, "수금/지급 증빙을 첨부했습니다.");
 	}
 
-	public async Task<OfficeMutationResult> DeleteTransactionAttachmentAsync(Guid attachmentId, SessionState session, CancellationToken ct = default(CancellationToken))
+	public async Task<OfficeMutationResult> DeleteTransactionAttachmentAsync(Guid attachmentId, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditPayments(session))
+		{
+			return OfficeMutationResult.Denied("권한이 없어 수금/지급 증빙을 삭제할 수 없습니다.");
+		}
 		var attachment = await _db.TransactionAttachments.IgnoreQueryFilters().FirstOrDefaultAsync((LocalTransactionAttachment current) => current.Id == attachmentId, ct);
 		if (attachment == null)
 		{
@@ -4286,6 +4400,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (!CanAccessTransaction(transaction, session))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 증빙을 삭제할 수 없습니다.");
+		}
+		if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(attachment, expectedRevision, "수금/지급 증빙", out string conflictMessage))
+		{
+			return OfficeMutationResult.Conflict(conflictMessage);
 		}
 		if (string.Equals(attachment.VerificationStatus, "확인완료", StringComparison.OrdinalIgnoreCase) && !session.HasAdministrativePrivileges)
 		{
@@ -4310,7 +4428,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return OfficeMutationResult.Ok(attachment.Id, "수금/지급 증빙을 삭제했습니다.");
 	}
 
-	public async Task<OfficeMutationResult> UpdateTransactionAttachmentVerificationAsync(Guid attachmentId, string verificationStatus, string? verificationMemo, SessionState session, CancellationToken ct = default(CancellationToken))
+	public async Task<OfficeMutationResult> UpdateTransactionAttachmentVerificationAsync(Guid attachmentId, string verificationStatus, string? verificationMemo, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		if (!session.HasAdministrativePrivileges)
 		{
@@ -4324,6 +4442,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (await _db.Transactions.IgnoreQueryFilters().FirstOrDefaultAsync((LocalTransaction current) => current.Id == attachment.TransactionId, ct) == null)
 		{
 			return OfficeMutationResult.Missing("증빙과 연결된 수금/지급 내역을 찾을 수 없습니다.");
+		}
+		if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(attachment, expectedRevision, "수금/지급 증빙", out string conflictMessage))
+		{
+			return OfficeMutationResult.Conflict(conflictMessage);
 		}
 		string normalizedStatus = NormalizeAttachmentVerificationStatus(verificationStatus);
 		string beforeJson = JsonSerializer.Serialize(new { attachment.VerificationStatus, attachment.VerifiedByUsername, attachment.VerifiedAtUtc, attachment.VerificationMemo }, AuditJsonOptions);
@@ -5809,7 +5931,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		await _db.SaveChangesAsync(ct);
 		foreach (var stock in normalizedStocks)
 		{
-			await _db.Database.ExecuteSqlInterpolatedAsync($"\nINSERT INTO ItemWarehouseStocks (ItemId, WarehouseCode, Quantity, UpdatedAtUtc)\nVALUES ({stock.ItemId}, {stock.WarehouseCode}, {stock.Quantity}, {DateTime.UtcNow})\nON CONFLICT(ItemId, WarehouseCode) DO UPDATE SET\n    Quantity = excluded.Quantity,\n    UpdatedAtUtc = excluded.UpdatedAtUtc;", ct);
+			await _db.Database.ExecuteSqlInterpolatedAsync($"\nINSERT INTO ItemWarehouseStocks (ItemId, WarehouseCode, Quantity, UpdatedAtUtc, Revision)\nVALUES ({stock.ItemId}, {stock.WarehouseCode}, {stock.Quantity}, {DateTime.UtcNow}, {0L})\nON CONFLICT(ItemId, WarehouseCode) DO UPDATE SET\n    Quantity = excluded.Quantity,\n    UpdatedAtUtc = excluded.UpdatedAtUtc;", ct);
 		}
 		RaiseInventoryStateChanged();
 	}

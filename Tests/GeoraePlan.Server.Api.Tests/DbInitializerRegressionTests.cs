@@ -104,6 +104,34 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task VerifyRequiredOperationalSchemaAsync_Throws_WhenCriticalSchemaColumnMissing()
+    {
+        await _dbContext.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS \"ItemWarehouseStocks\";");
+        await _dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE "ItemWarehouseStocks" (
+                "ItemId" TEXT NOT NULL,
+                "WarehouseCode" TEXT NOT NULL,
+                "Quantity" REAL NOT NULL DEFAULT 0,
+                "UpdatedAtUtc" TEXT NOT NULL,
+                CONSTRAINT "PK_ItemWarehouseStocks" PRIMARY KEY ("ItemId", "WarehouseCode")
+            );
+            """);
+
+        var method = typeof(DbInitializer).GetMethod(
+            "VerifyRequiredOperationalSchemaAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => task!);
+        Assert.Contains("ItemWarehouseStocks", exception.Message);
+        Assert.Contains("Revision", exception.Message);
+    }
+
+    [Fact]
     public async Task NormalizeInventoryTransferIntegrityAsync_RemovesCrossTenantTransfers()
     {
         var transferId = Guid.NewGuid();

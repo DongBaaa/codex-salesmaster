@@ -1241,7 +1241,9 @@ public static class DtoMappings
             ItemId = entity.ItemId,
             WarehouseCode = entity.WarehouseCode,
             Quantity = entity.Quantity,
-            UpdatedAtUtc = entity.UpdatedAtUtc
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            ExpectedRevision = entity.Revision
         };
 
     public static AuditLogDto ToDto(this AuditLog entity) =>

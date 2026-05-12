@@ -1,8 +1,10 @@
 ﻿using 거래플랜.Server.Api.Controllers;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
+using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
 using 거래플랜.Shared.Contracts;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -48,6 +50,89 @@ public sealed class SyncControllerTests : IDisposable
             revisionClock,
             new InventoryLedgerService(_dbContext),
             new RentalAssignmentHistoryService(_dbContext));
+    }
+
+    [Fact]
+    public async Task Push_ReturnsForbidden_WhenDomainPermissionMissing()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "limited-user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = []
+        };
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var itemId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-permission-denied",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "Permissionless item",
+                    NameMatchKey = "Permissionlessitem",
+                    Unit = "EA",
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        };
+
+        var response = await controller.Push(request, CancellationToken.None);
+        var forbidden = Assert.IsType<ObjectResult>(response.Result);
+
+        Assert.Equal(StatusCodes.Status403Forbidden, forbidden.StatusCode);
+        Assert.False(await scopedDb.Items.IgnoreQueryFilters().AnyAsync(item => item.Id == itemId));
+    }
+
+    [Fact]
+    public async Task Push_AllowsDomainChanges_WhenRequiredPermissionExists()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "item-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.ItemEdit]
+        };
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var itemId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-permission-allowed",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "Permitted item",
+                    NameMatchKey = "Permitteditem",
+                    Unit = "EA",
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        };
+
+        var response = await controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.True(await scopedDb.Items.IgnoreQueryFilters().AnyAsync(item => item.Id == itemId));
     }
 
     [Fact]
@@ -3397,6 +3482,119 @@ public sealed class SyncControllerTests : IDisposable
         Assert.False(await scopedDb.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == item.Id));
     }
 
+    [Fact]
+    public async Task Push_RejectsStaleItemWarehouseStockExpectedRevision()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Stock item",
+            NameMatchKey = "STOCKITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 200
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-stock-stale",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 99m,
+                    UpdatedAtUtc = DateTime.UtcNow,
+                    Revision = 199,
+                    ExpectedRevision = 199
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        var stored = await _dbContext.ItemWarehouseStocks.FirstAsync(stock => stock.ItemId == itemId);
+        Assert.Equal(10m, stored.Quantity);
+        Assert.Equal(200, stored.Revision);
+    }
+
+    [Fact]
+    public async Task Push_PreservesNewerServerItemWarehouseStockRows_WhenClientOmitsThem()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Multi warehouse item",
+            NameMatchKey = "MULTIWAREHOUSEITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        });
+        _dbContext.ItemWarehouseStocks.AddRange(
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 10m,
+                UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+                Revision = 200
+            },
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                Quantity = 5m,
+                UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                Revision = 300
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-stock-preserve",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 11m,
+                    UpdatedAtUtc = DateTime.UtcNow,
+                    Revision = 200,
+                    ExpectedRevision = 200
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Contains(result.Notices, notice => notice.Code == "item-warehouse-stock-preserve-newer-server-row");
+        Assert.True(await _dbContext.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse));
+        var updated = await _dbContext.ItemWarehouseStocks.FirstAsync(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
+        Assert.Equal(11m, updated.Quantity);
+        Assert.True(updated.Revision > 200);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();
@@ -3441,8 +3639,22 @@ public sealed class SyncControllerTests : IDisposable
         public string OfficeCode { get; init; } = OfficeCodeCatalog.Usenet;
         public string ScopeType { get; init; } = TenantScopeCatalog.ScopeOfficeOnly;
         public bool IsAdmin { get; init; }
+        private static readonly IReadOnlyCollection<string> DefaultPermissions =
+        [
+            PermissionNames.CompanyProfileEdit,
+            PermissionNames.SettingsEdit,
+            PermissionNames.CustomerEdit,
+            PermissionNames.ItemEdit,
+            PermissionNames.InvoiceEdit,
+            PermissionNames.PaymentEdit,
+            PermissionNames.DeliveryEdit,
+            PermissionNames.RentalSettingsEdit,
+            PermissionNames.RentalProfileEdit,
+            PermissionNames.RentalAssetEdit
+        ];
+
         public bool IsGodMode { get; init; }
-        public IReadOnlyCollection<string> Permissions { get; init; } = [];
+        public IReadOnlyCollection<string> Permissions { get; init; } = DefaultPermissions;
 
         public bool HasPermission(string permission)
             => IsAdmin || IsGodMode || Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);

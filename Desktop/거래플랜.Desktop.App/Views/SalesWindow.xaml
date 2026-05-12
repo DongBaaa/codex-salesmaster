@@ -9,6 +9,7 @@
         Closing="Window_Closing">
     <Window.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
+        <conv:DecimalToStringConverter x:Key="DecimalToString"/>
         <conv:DateOnlyConverter x:Key="DateOnlyConverter"/>
         <conv:VoucherTypeConverter x:Key="VoucherTypeConverter"/>
 
