@@ -238,22 +238,14 @@ public partial class MainWindow : Window
 
         if (!string.IsNullOrWhiteSpace(dashboardMessage))
         {
-            MessageBox.Show(
-                this,
-                dashboardMessage,
-                "대시보드 알림",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
+            _vm.SyncStatus = "대시보드 확인 항목이 있습니다. 업무는 바로 진행할 수 있으며, 상단 대시보드 카드에서 계약/렌탈 알림을 확인하세요.";
+            AppLogger.Info("DASHBOARD", "초기 대시보드 알림을 상태바로 전환했습니다." + Environment.NewLine + dashboardMessage);
         }
 
         if (!string.IsNullOrWhiteSpace(clockWarningMessage))
         {
-            MessageBox.Show(
-                this,
-                clockWarningMessage,
-                "PC 시간 확인",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
+            _vm.SyncStatus = "PC 시간 확인이 필요합니다. 업무는 바로 진행할 수 있으며, 로그에서 상세 내용을 확인하세요.";
+            AppLogger.Warn("RUNTIME", "초기 PC 시간 경고를 상태바로 전환했습니다. " + clockWarningMessage);
         }
     }
 
@@ -277,7 +269,7 @@ public partial class MainWindow : Window
         await OperationTiming.MeasureAsync(
             "UPDATE",
             "데스크톱 업데이트 확인",
-            () => CheckAndPromptForDesktopUpdateAsync(),
+            () => CheckAndPromptForDesktopUpdateAsync(showPrompt: false),
             warningThreshold: TimeSpan.FromSeconds(2));
 
         if (_isClosingOrClosed)
@@ -286,7 +278,7 @@ public partial class MainWindow : Window
         await OperationTiming.MeasureAsync(
             "APP",
             "주기 안전 점검 초기 실행",
-            () => RunPeriodicRuntimeSafetyCheckAsync(force: false),
+            () => RunPeriodicRuntimeSafetyCheckAsync(force: false, showPrompt: false),
             warningThreshold: TimeSpan.FromSeconds(2));
     }
 
@@ -362,7 +354,7 @@ public partial class MainWindow : Window
             "주기 운영 안전 점검",
             "주기 운영 안전 점검 중 오류가 발생했습니다.");
 
-    private async Task RunPeriodicRuntimeSafetyCheckAsync(bool force)
+    private async Task RunPeriodicRuntimeSafetyCheckAsync(bool force, bool showPrompt = true)
     {
         if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode || _runtimeSafetyCheckInProgress)
             return;
@@ -379,6 +371,13 @@ public partial class MainWindow : Window
 
             if (result.WarningRequired && !string.IsNullOrWhiteSpace(result.WarningMessage))
             {
+                if (!showPrompt)
+                {
+                    _vm.SyncStatus = "운영 안전 점검에서 확인이 필요한 항목이 있습니다. 업무는 바로 진행할 수 있으며, 동기화 진단에서 상세 내용을 확인하세요.";
+                    AppLogger.Warn("RUNTIME", $"초기 운영 안전 점검 알림을 상태바로 전환했습니다: {result.WarningMessage}");
+                    return;
+                }
+
                 if (string.IsNullOrWhiteSpace(result.DetailReportPath))
                 {
                     MessageBox.Show(
@@ -497,7 +496,7 @@ public partial class MainWindow : Window
         }
     }
 
-    public async Task RunDataIntegrityScanAndPromptAsync(string reason, bool forceShow = false)
+    public async Task RunDataIntegrityScanAndPromptAsync(string reason, bool forceShow = false, bool showPrompt = true)
     {
         if (_isClosingOrClosed || _dataIntegrityPromptInProgress)
             return;
@@ -518,6 +517,13 @@ public partial class MainWindow : Window
                 return;
 
             _lastDataIntegrityIssueSignature = result.IssueSignature;
+            if (!showPrompt)
+            {
+                _vm.SyncStatus = "운영 점검에서 확인이 필요한 항목이 있습니다. 업무는 바로 진행할 수 있으며, 동기화 진단에서 상세 내용을 확인하세요.";
+                AppLogger.Warn("INTEGRITY", $"{reason} 운영 점검 알림을 상태바로 전환했습니다. issues={result.Issues.Count:N0}");
+                return;
+            }
+
             await Dispatcher.InvokeAsync(() => ShowDataIntegrityAlert(result), DispatcherPriority.Background);
         }
         catch (Exception ex)
@@ -1408,7 +1414,7 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private async Task CheckAndPromptForDesktopUpdateAsync()
+    private async Task CheckAndPromptForDesktopUpdateAsync(bool showPrompt = true)
     {
         if (_isClosingOrClosed || _updatePromptInProgress || _session.IsOfflineMode)
             return;
@@ -1423,6 +1429,13 @@ public partial class MainWindow : Window
             var lastPromptedVersion = await _local.GetSettingAsync("Update.LastPromptedDesktopVersion");
             if (string.Equals(lastPromptedVersion, result.LatestVersion, StringComparison.OrdinalIgnoreCase))
                 return;
+
+            if (!showPrompt)
+            {
+                _vm.SyncStatus = $"새 PC 버전 {result.LatestVersion}이 준비되어 있습니다. 업무는 바로 진행할 수 있습니다.";
+                AppLogger.Info("UPDATE", $"초기 업데이트 알림을 상태바로 전환했습니다. version={result.LatestVersion}");
+                return;
+            }
 
             var answer = MessageBox.Show(
                 $"새 PC 버전 {result.LatestVersion}이 준비되어 있습니다.{Environment.NewLine}{Environment.NewLine}" +
