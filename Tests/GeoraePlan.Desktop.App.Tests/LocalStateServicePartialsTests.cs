@@ -156,6 +156,217 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task LocalStateService_UpsertCustomer_RenameSynchronizesLinkedRentalCustomerDisplays()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-linked-customer-rename-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.Parse("9aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            var profileId = Guid.Parse("9bbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            var aliasProfileId = Guid.Parse("9ccccccc-cccc-cccc-cccc-cccccccccccc");
+            var assetId = Guid.Parse("9ddddddd-dddd-dddd-dddd-dddddddddddd");
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Old Customer",
+                NameMatchKey = "OLDCUSTOMER",
+                Revision = 3,
+                IsDirty = false
+            });
+            db.RentalBillingProfiles.AddRange(
+                new LocalRentalBillingProfile
+                {
+                    Id = profileId,
+                    CustomerId = customerId,
+                    CustomerName = "Old Customer",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "PROFILE-OLD",
+                    ItemName = "Rental Line",
+                    IsDirty = false
+                },
+                new LocalRentalBillingProfile
+                {
+                    Id = aliasProfileId,
+                    CustomerId = customerId,
+                    CustomerName = "Billing Alias",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "PROFILE-ALIAS",
+                    ItemName = "Rental Line",
+                    IsDirty = false
+                });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ManagementId = "ASSET-OLD",
+                ManagementNumber = "2605-001",
+                ItemName = "Rental Asset",
+                CustomerName = "Old Customer",
+                CurrentCustomerName = "Old Customer",
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), CreateAdminSession());
+            var result = await service.UpsertCustomerAsync(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "New Customer",
+                NameMatchKey = "NEWCUSTOMER",
+                Revision = 3
+            }, CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            var syncedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
+            var aliasProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == aliasProfileId);
+            var syncedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == assetId);
+            Assert.Equal("New Customer", syncedProfile.CustomerName);
+            Assert.True(syncedProfile.IsDirty);
+            Assert.Equal("Billing Alias", aliasProfile.CustomerName);
+            Assert.False(aliasProfile.IsDirty);
+            Assert.Equal("New Customer", syncedAsset.CustomerName);
+            Assert.Equal("New Customer", syncedAsset.CurrentCustomerName);
+            Assert.True(syncedAsset.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_UpsertItem_RenameSynchronizesLinkedRentalAssetItemDisplays()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-linked-item-rename-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.ItemCategoryOptions.AddRange(
+                new LocalItemCategoryOption
+                {
+                    Id = Guid.Parse("9eeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+                    Name = "Old Category",
+                    SortOrder = 10,
+                    IsActive = true,
+                    IsDirty = false
+                },
+                new LocalItemCategoryOption
+                {
+                    Id = Guid.Parse("9fffffff-ffff-ffff-ffff-ffffffffffff"),
+                    Name = "New Category",
+                    SortOrder = 20,
+                    IsActive = true,
+                    IsDirty = false
+                });
+
+            var itemId = Guid.Parse("a1111111-1111-1111-1111-111111111111");
+            var assetId = Guid.Parse("a2222222-2222-2222-2222-222222222222");
+            var aliasAssetId = Guid.Parse("a3333333-3333-3333-3333-333333333333");
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Old Item",
+                NameMatchKey = "OLDITEM",
+                CategoryName = "Old Category",
+                ItemKind = ItemKinds.Asset,
+                TrackingType = ItemTrackingTypes.Asset,
+                Revision = 5,
+                IsDirty = false
+            });
+            db.RentalAssets.AddRange(
+                new LocalRentalAsset
+                {
+                    Id = assetId,
+                    ItemId = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementId = "ASSET-ITEM",
+                    ManagementNumber = "2605-002",
+                    ItemName = "Old Item",
+                    ItemCategoryName = "Old Category",
+                    IsDirty = false
+                },
+                new LocalRentalAsset
+                {
+                    Id = aliasAssetId,
+                    ItemId = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementId = "ASSET-ALIAS",
+                    ManagementNumber = "2605-003",
+                    ItemName = "Custom Item Alias",
+                    ItemCategoryName = "Custom Category",
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), CreateAdminSession());
+            await service.UpsertItemAsync(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "New Item",
+                NameMatchKey = "NEWITEM",
+                CategoryName = "New Category",
+                ItemKind = ItemKinds.Asset,
+                TrackingType = ItemTrackingTypes.Asset,
+                Revision = 5
+            }, CreateAdminSession(), OfficeCodeCatalog.Usenet);
+
+            var syncedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == assetId);
+            var aliasAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == aliasAssetId);
+            Assert.Equal("New Item", syncedAsset.ItemName);
+            Assert.Equal("New Category", syncedAsset.ItemCategoryName);
+            Assert.True(syncedAsset.IsDirty);
+            Assert.Equal("Custom Item Alias", aliasAsset.ItemName);
+            Assert.Equal("Custom Category", aliasAsset.ItemCategoryName);
+            Assert.False(aliasAsset.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RentalStateService_SaveAsset_AdminCanSaveItworldAssetScope()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-asset-itworld-{Guid.NewGuid():N}");

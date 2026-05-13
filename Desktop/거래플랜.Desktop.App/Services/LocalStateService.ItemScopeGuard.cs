@@ -15,7 +15,11 @@ public sealed partial class LocalStateService
         CancellationToken ct = default)
     {
         EnsureCanUpsertItem(item, session, preferredOfficeCode);
-        return await UpsertItemAsync(item, preferredOfficeCode, ct);
+        return await UpsertItemAsync(
+            item,
+            preferredOfficeCode,
+            synchronizeLinkedRentalAssets: CanEditRentalAssets(session),
+            ct);
     }
 
     public void EnsureCanUpsertItem(LocalItem item, SessionState session, string? preferredOfficeCode = null)

@@ -457,6 +457,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		customer.OfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(customer.OfficeCode, customer.ResponsibleOfficeCode, customer.ResponsibleOfficeCode);
 		customer.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customer.ResponsibleOfficeCode);
 		var existing = await _db.Customers.FindAsync(new object[1] { customer.Id }, ct);
+		string previousCustomerName = existing?.NameOriginal ?? string.Empty;
 		DateTime now = DateTime.UtcNow;
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(customer, existing, "거래처", now, out string conflictMessage))
 		{
@@ -469,6 +470,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		else
 		{
 			_db.Entry(existing).CurrentValues.SetValues(customer);
+		}
+		if (existing != null && !AreCustomerDisplayNamesEquivalent(previousCustomerName, customer.NameOriginal))
+		{
+			await SynchronizeLinkedRentalCustomerNamesForCustomerRenameAsync(customer, previousCustomerName, ct);
 		}
 		await _db.SaveChangesAsync(ct);
 		return customer;
@@ -485,6 +490,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		string normalizedOwnerOfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(customer.OfficeCode, normalizedOfficeCode, normalizedOfficeCode);
 		string normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, normalizedOfficeCode);
 		var existing = await _db.Customers.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomer current) => current.Id == customer.Id, ct);
+		string previousCustomerName = existing?.NameOriginal ?? string.Empty;
 		if (existing != null)
 		{
 			NormalizeOfficeScope(existing.ResponsibleOfficeCode, normalizedOfficeCode);
@@ -507,6 +513,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		else
 		{
 			_db.Entry(existing).CurrentValues.SetValues(customer);
+		}
+		if (existing != null && !AreCustomerDisplayNamesEquivalent(previousCustomerName, customer.NameOriginal))
+		{
+			await SynchronizeLinkedRentalCustomerNamesForCustomerRenameAsync(customer, previousCustomerName, ct);
 		}
 		await _db.SaveChangesAsync(ct);
 		_officeAccess.RevokeTemporaryCustomerAccess(session, customer.Id);
@@ -1664,6 +1674,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<LocalItem> UpsertItemAsync(LocalItem item, string? preferredOfficeCode, CancellationToken ct = default(CancellationToken))
 	{
+		return await UpsertItemAsync(item, preferredOfficeCode, synchronizeLinkedRentalAssets: true, ct);
+	}
+
+	private async Task<LocalItem> UpsertItemAsync(LocalItem item, string? preferredOfficeCode, bool synchronizeLinkedRentalAssets, CancellationToken ct = default(CancellationToken))
+	{
 		item.NameOriginal = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(item.NameOriginal);
 		item.NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal);
 		item.SpecificationOriginal = RentalCatalogValueNormalizer.NormalizeDisplayText(item.SpecificationOriginal);
@@ -1673,6 +1688,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		NormalizeItemScope(item, preferredOfficeCode);
 		item.CategoryName = await EnsureItemCategoryOptionExistsAsync(item.CategoryName, ct);
 		var existing = await _db.Items.FindAsync(new object[1] { item.Id }, ct);
+		string previousItemName = existing?.NameOriginal ?? string.Empty;
+		string previousCategoryName = existing?.CategoryName ?? string.Empty;
 		DateTime now = DateTime.UtcNow;
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(item, existing, "품목", now, out string conflictMessage))
 		{
@@ -1685,6 +1702,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		else
 		{
 			_db.Entry(existing).CurrentValues.SetValues(item);
+		}
+		if (synchronizeLinkedRentalAssets && existing != null)
+		{
+			await SynchronizeLinkedRentalAssetItemMetadataForItemSaveAsync(item, previousItemName, previousCategoryName, ct);
 		}
 		await SyncItemWarehouseStocksAsync(item.Id, item.CurrentStock, preferredOfficeCode, !ItemOperationalPolicy.SupportsInventory(item.TrackingType), ct);
 		await _db.SaveChangesAsync(ct);
