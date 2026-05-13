@@ -673,16 +673,21 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task LoadInvoiceListAsync()
     {
         Guid? customerId = SelectedCustomerFilter?.Id;
-        var invoices = await _local.GetInvoicesAsync(FilterFrom, FilterTo, customerId, _session);
+        var queryDateRange = ResolveMainInvoiceQueryDateRange(FilterFrom, FilterTo);
+        var invoices = await _local.GetInvoicesAsync(queryDateRange.From, queryDateRange.To, customerId, _session);
         var customerMap = await _local.GetCustomerNameMapAsync(invoices.Select(invoice => invoice.CustomerId));
         var showCustomerName = customerId is null;
         IEnumerable<LocalInvoice> filteredInvoices = invoices;
+        var hiddenTextFilters = NormalizeHiddenInvoiceTextFilters(
+            FilterCustomerName,
+            FilterMinAmountText,
+            FilterMaxAmountText);
 
         filteredInvoices = filteredInvoices.Where(MatchesSelectedInvoiceOffice);
 
-        if (!string.IsNullOrWhiteSpace(FilterCustomerName))
+        if (!string.IsNullOrWhiteSpace(hiddenTextFilters.CustomerName))
         {
-            var needle = FilterCustomerName.Trim();
+            var needle = hiddenTextFilters.CustomerName.Trim();
             filteredInvoices = filteredInvoices.Where(inv =>
             {
                 var name = customerMap.TryGetValue(inv.CustomerId, out var n) ? n : string.Empty;
@@ -706,8 +711,8 @@ public sealed partial class MainViewModel : ObservableObject
                 filteredInvoices = filteredInvoices.Where(inv => inv.VoucherType == type);
         }
 
-        var minAmount = ParseAmountFilter(FilterMinAmountText);
-        var maxAmount = ParseAmountFilter(FilterMaxAmountText);
+        var minAmount = ParseAmountFilter(hiddenTextFilters.MinAmountText);
+        var maxAmount = ParseAmountFilter(hiddenTextFilters.MaxAmountText);
         if (minAmount.HasValue)
             filteredInvoices = filteredInvoices.Where(inv => inv.TotalAmount >= minAmount.Value);
         if (maxAmount.HasValue)
@@ -836,10 +841,12 @@ public sealed partial class MainViewModel : ObservableObject
         var officeCodeValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterOfficeCodeSettingKey));
         var minAmountValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMinAmountSettingKey));
         var maxAmountValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMaxAmountSettingKey));
+        var hadPersistedHiddenTextFilter = HasHiddenInvoiceTextFilter(customerNameValue, minAmountValue, maxAmountValue);
+        var hiddenTextFilters = NormalizeHiddenInvoiceTextFilters(customerNameValue, minAmountValue, maxAmountValue);
         FilterFrom = _invoiceDefaultFrom;
         FilterTo = _invoiceDefaultTo;
 
-        FilterCustomerName = customerNameValue ?? string.Empty;
+        FilterCustomerName = hiddenTextFilters.CustomerName;
         SelectedVoucherTypeFilter = VoucherTypeFilterOptions.Contains(voucherTypeValue ?? string.Empty)
             ? voucherTypeValue!
             : "전체";
@@ -848,11 +855,34 @@ public sealed partial class MainViewModel : ObservableObject
             string.Equals(option.Code, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
             ? normalizedOfficeCode
             : GetDefaultInvoiceOfficeFilterCode();
-        FilterMinAmountText = minAmountValue ?? string.Empty;
-        FilterMaxAmountText = maxAmountValue ?? string.Empty;
+        FilterMinAmountText = hiddenTextFilters.MinAmountText;
+        FilterMaxAmountText = hiddenTextFilters.MaxAmountText;
 
         _suppressFilterAutoSave = false;
+
+        if (hadPersistedHiddenTextFilter)
+            await PersistInvoiceFiltersAsync();
     }
+
+    private static (DateOnly? From, DateOnly? To) ResolveMainInvoiceQueryDateRange(DateOnly filterFrom, DateOnly filterTo)
+    {
+        // 메인화면에서 기간 조회 UI를 제거했으므로 보이지 않는 내부 날짜값이 거래내역을 숨기면 안 된다.
+        return (null, null);
+    }
+
+    private static (string CustomerName, string MinAmountText, string MaxAmountText) NormalizeHiddenInvoiceTextFilters(
+        string? customerName,
+        string? minAmountText,
+        string? maxAmountText)
+    {
+        // 현재 메인화면에는 거래처명/금액 필터 입력 UI가 없으므로 이전 버전 설정값을 조회 조건에 적용하지 않는다.
+        return (string.Empty, string.Empty, string.Empty);
+    }
+
+    private static bool HasHiddenInvoiceTextFilter(string? customerName, string? minAmountText, string? maxAmountText)
+        => !string.IsNullOrWhiteSpace(customerName)
+           || !string.IsNullOrWhiteSpace(minAmountText)
+           || !string.IsNullOrWhiteSpace(maxAmountText);
 
     private async Task RefreshInvoiceDefaultDateRangeFromDataAsync()
     {

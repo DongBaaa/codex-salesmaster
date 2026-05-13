@@ -87,6 +87,34 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public void MainViewModel_ResolveMainInvoiceQueryDateRange_IgnoresHiddenPeriodFilter()
+    {
+        var result = InvokePrivateStatic<(DateOnly? From, DateOnly? To)>(
+            typeof(MainViewModel),
+            "ResolveMainInvoiceQueryDateRange",
+            new DateOnly(2026, 5, 1),
+            new DateOnly(2026, 5, 31));
+
+        Assert.Null(result.From);
+        Assert.Null(result.To);
+    }
+
+    [Fact]
+    public void MainViewModel_NormalizeHiddenInvoiceTextFilters_ClearsInvisibleFilters()
+    {
+        var result = InvokePrivateStatic<(string CustomerName, string MinAmountText, string MaxAmountText)>(
+            typeof(MainViewModel),
+            "NormalizeHiddenInvoiceTextFilters",
+            "연수구",
+            "100000",
+            "200000");
+
+        Assert.Equal(string.Empty, result.CustomerName);
+        Assert.Equal(string.Empty, result.MinAmountText);
+        Assert.Equal(string.Empty, result.MaxAmountText);
+    }
+
+    [Fact]
     public void RentalAssetViewModel_BuildEditableAssetOfficeCodes_PreservesReadableSelectedOffice()
     {
         var result = InvokePrivateStatic<IReadOnlyList<string>>(
