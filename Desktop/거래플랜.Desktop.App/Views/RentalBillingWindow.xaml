@@ -233,9 +233,9 @@
                     <Button Content="보류" Background="#F9A825" BorderBrush="#F9A825" Margin="0,0,6,6" Command="{Binding HoldBillingCommand}" IsEnabled="{Binding CanHoldSelected}"/>
                     <Button Content="이번 입금 등록" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,6" Click="RegisterSettlementButton_Click" IsEnabled="{Binding CanRegisterSettlementSelected}"/>
                     <Button Content="완납처리" Background="#00695C" BorderBrush="#00695C" Margin="0,0,6,6" Command="{Binding MarkCompletedCommand}" IsEnabled="{Binding CanMarkCompletedSelected}"/>
-                    <Button Content="삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,6" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
-                    <Button Content="요약행 펼치기" Background="#455A64" BorderBrush="#455A64" Margin="0,0,6,6" Command="{Binding ExpandSelectedSummaryCommand}" IsEnabled="{Binding CanExpandSelectedSummary}" ToolTip="요약행을 개별 청구 프로필로 펼칩니다."/>
-                    <Button Content="선택삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,6" Command="{Binding DeleteCheckedCommand}"/>
+                    <Button Content="청구 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,6" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
+                    <Button Content="개별 청구건 보기" Background="#455A64" BorderBrush="#455A64" Margin="0,0,6,6" Command="{Binding ExpandSelectedSummaryCommand}" IsEnabled="{Binding CanExpandSelectedSummary}" ToolTip="거래처 그룹을 개별 청구 프로필로 전환합니다."/>
+                    <Button Content="선택 청구 삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,6" Command="{Binding DeleteCheckedCommand}"/>
                     <Button Content="닫기 (F12)" Click="CloseButton_Click" Margin="0,0,0,6"/>
                 </WrapPanel>
             </DockPanel>
@@ -257,31 +257,31 @@
             </Grid.ColumnDefinitions>
             <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
                 <StackPanel>
-                    <TextBlock Text="이번 조회 건수" Foreground="#9FB3C8"/>
+                    <TextBlock Text="조회 건수" Foreground="#9FB3C8"/>
                     <TextBlock Text="{Binding TotalCount, StringFormat=N0}" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7" Margin="0,4,0,0"/>
                 </StackPanel>
             </Border>
             <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
                 <StackPanel>
-                    <TextBlock Text="이상 데이터" Foreground="#9FB3C8"/>
+                    <TextBlock Text="알림 대상" Foreground="#9FB3C8"/>
                     <TextBlock Text="{Binding DueCount, StringFormat=N0}" FontSize="22" FontWeight="Bold" Foreground="#FFB74D" Margin="0,4,0,0"/>
                 </StackPanel>
             </Border>
             <Border Grid.Column="4" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
                 <StackPanel>
-                    <TextBlock Text="완료 건수" Foreground="#9FB3C8"/>
+                    <TextBlock Text="이상 데이터" Foreground="#9FB3C8"/>
                     <TextBlock Text="{Binding IssueCount, StringFormat=N0}" FontSize="22" FontWeight="Bold" Foreground="#EF5350" Margin="0,4,0,0"/>
                 </StackPanel>
             </Border>
             <Border Grid.Column="6" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
                 <StackPanel>
-                    <TextBlock Text="이상 데이터" Foreground="#9FB3C8"/>
+                    <TextBlock Text="완료 건수" Foreground="#9FB3C8"/>
                     <TextBlock Text="{Binding CompletedCount, StringFormat=N0}" FontSize="22" FontWeight="Bold" Foreground="#66BB6A" Margin="0,4,0,0"/>
                 </StackPanel>
             </Border>
             <Border Grid.Column="8" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
                 <StackPanel>
-                    <TextBlock Text="총 미수금" Foreground="#9FB3C8"/>
+                    <TextBlock Text="부분입금" Foreground="#9FB3C8"/>
                     <TextBlock Text="{Binding PartialSettlementCount, StringFormat=N0}" FontSize="22" FontWeight="Bold" Foreground="#4DD0E1" Margin="0,4,0,0"/>
                 </StackPanel>
             </Border>
@@ -295,14 +295,14 @@
 
         <Border Grid.Row="2" Margin="0,10,0,0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
             <WrapPanel VerticalAlignment="Center">
-                <TextBlock Text="기준일" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBlock Text="검색어" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <TextBox Width="280" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=350}" Margin="0,0,12,0"/>
                 <TextBlock Text="기준일" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <ComboBox Width="180" ItemsSource="{Binding OfficeOptions}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedOfficeFilter}" Margin="0,0,12,0"/>
                 <TextBlock Text="검색" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <ComboBox Width="140" ItemsSource="{Binding StatusOptions}" SelectedItem="{Binding SelectedStatusFilter}" Margin="0,0,12,0"/>
                 <CheckBox Content="알림대상만" IsChecked="{Binding DueOnly}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                <CheckBox Content="요약행 개별표시" IsChecked="{Binding ShowIndividualProfiles}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0" ToolTip="개별 청구 프로필을 모두 표시합니다."/>
+                <CheckBox Content="개별 청구건 모두 보기" IsChecked="{Binding ShowIndividualProfiles}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0" ToolTip="거래처별 묶음 대신 개별 청구 프로필을 모두 표시합니다."/>
                 <TextBlock Text="기준일" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <DatePicker Width="180" SelectedDate="{Binding ReferenceDate, Converter={StaticResource DateOnlyConverter}}" SelectedDateFormat="Short">
                     <DatePicker.Resources>
@@ -407,6 +407,18 @@
                     <StackPanel>
                         <TextBlock Text="렌탈 청구 상세" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
 
+                        <Border Background="#263A55"
+                                BorderBrush="#4FC3F7"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="10"
+                                Margin="0,0,0,10"
+                                Visibility="{Binding IsCustomerGroupSelection, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="거래처 그룹 보기입니다. 이 행은 중복 거래처처럼 보이지 않도록 청구 프로필을 묶어 보여주는 용도이며, 저장/삭제/장비연결 편집은 '개별 청구건 보기'에서 진행합니다."
+                                       Foreground="#B3E5FC"
+                                       TextWrapping="Wrap"/>
+                        </Border>
+
                         <Border Background="#223754" CornerRadius="6" Padding="10" Margin="0,0,0,10">
                             <StackPanel>
                                 <TextBlock Text="선택 청구 요약" Foreground="#4FC3F7" FontWeight="Bold"/>
@@ -437,15 +449,15 @@
                                     </StackPanel>
 
                                     <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,10,0,0">
-                                        <TextBlock Text="마지막수금일" Style="{StaticResource SelectedBillingMetricLabelStyle}"/>
+                                        <TextBlock Text="미수금" Style="{StaticResource SelectedBillingMetricLabelStyle}"/>
                                         <TextBlock Text="{Binding SelectedRow.OutstandingAmount, StringFormat=N0}" Style="{StaticResource SelectedBillingMetricValueStyle}" Foreground="#FFCC80"/>
                                     </StackPanel>
                                     <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,10,0,0">
-                                        <TextBlock Text="미수금" Style="{StaticResource SelectedBillingMetricLabelStyle}"/>
+                                        <TextBlock Text="수금상태" Style="{StaticResource SelectedBillingMetricLabelStyle}"/>
                                         <TextBlock Text="{Binding SelectedRow.SettlementStatus}" Style="{StaticResource SelectedBillingMetricValueStyle}"/>
                                     </StackPanel>
                                     <StackPanel Grid.Row="1" Grid.Column="4" Margin="0,10,0,0">
-                                        <TextBlock Text="수금상태" Style="{StaticResource SelectedBillingMetricLabelStyle}"/>
+                                        <TextBlock Text="마지막수금일" Style="{StaticResource SelectedBillingMetricLabelStyle}"/>
                                         <TextBlock Text="{Binding SelectedRow.LastSettledDate}" Style="{StaticResource SelectedBillingMetricValueStyle}"/>
                                     </StackPanel>
                                 </Grid>
@@ -456,7 +468,7 @@
                             </StackPanel>
                         </Border>
 
-                        <Grid>
+                        <Grid IsEnabled="{Binding CanEditBillingProfileDetails}">
                             <Grid.Resources>
                                 <Style TargetType="TextBlock" BasedOn="{StaticResource BillingDetailLabelStyle}"/>
                                 <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}"/>
@@ -575,14 +587,14 @@
                         </Border>
 
                         <WrapPanel Margin="0,0,0,8">
-                            <Button Content="표시 품목 추가" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,8,0" Command="{Binding AddTemplateItemCommand}"/>
+                            <Button Content="표시 품목 추가" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,8,0" Command="{Binding AddTemplateItemCommand}" IsEnabled="{Binding CanEditBillingProfileDetails}"/>
                             <Button Content="선택 품목 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveTemplateItemCommand}"/>
-                            <Button Content="새 장비연결" Background="#6A1B9A" BorderBrush="#6A1B9A" Click="OpenAssetLinkDialogButton_Click"/>
+                            <Button Content="새 장비연결" Background="#6A1B9A" BorderBrush="#6A1B9A" Click="OpenAssetLinkDialogButton_Click" IsEnabled="{Binding CanOpenAssetLinkDialog}"/>
                         </WrapPanel>
                         <TextBlock Text="{Binding ApplySelectedAssetsHint}" Foreground="#90CAF9" Margin="0,0,0,8" TextWrapping="Wrap"/>
 
                         <TextBlock Text="청구서 표시 품목" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,6"/>
-                        <DataGrid ItemsSource="{Binding TemplateItems}" SelectedItem="{Binding SelectedTemplateItem}" Height="210" Margin="0,0,0,10">
+                        <DataGrid ItemsSource="{Binding TemplateItems}" SelectedItem="{Binding SelectedTemplateItem}" Height="210" Margin="0,0,0,10" IsReadOnly="{Binding IsCustomerGroupSelection}">
                             <DataGrid.Columns>
                                 <DataGridTemplateColumn Header="라인유형" Width="90">
                                     <DataGridTemplateColumn.CellTemplate>
@@ -605,7 +617,7 @@
                             </DataGrid.Columns>
                         </DataGrid>
 
-                        <Expander Header="내부 포함 장비" IsExpanded="False" Margin="0,0,0,10">
+                        <Expander Header="내부 포함 장비" IsExpanded="False" Margin="0,0,0,10" IsEnabled="{Binding CanEditBillingProfileDetails}">
                             <StackPanel>
                                 <WrapPanel Margin="0,8,0,8">
                                     <Button Content="대표자산 지정" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,8,0" Command="{Binding SetRepresentativeAssetCommand}" IsEnabled="{Binding CanSetRepresentativeAsset}"/>

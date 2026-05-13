@@ -112,7 +112,7 @@
                 BorderBrush="#2E4060"
                 BorderThickness="1">
             <StackPanel>
-                <TextBlock Text="거래처 등록, 수정, 담당지점 변경 즉시저장과 계약서 만료 현황을 관리합니다."
+                <TextBlock Text="거래처 관리"
                            FontSize="22"
                            FontWeight="Bold"
                            Foreground="#4FC3F7"/>

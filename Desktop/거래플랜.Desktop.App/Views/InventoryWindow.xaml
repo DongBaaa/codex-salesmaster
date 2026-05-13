@@ -147,7 +147,7 @@
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Style="{StaticResource ToolbarButtonStyle}"
-                            Content="등록 (신규)"
+                            Content="신규 품목"
                             Background="#1B5E20"
                             Command="{Binding NewItemCommand}"/>
                     <Border Background="#0F2034"
@@ -166,20 +166,20 @@
                                   VerticalAlignment="Center"/>
                     </Border>
                     <Button Style="{StaticResource ToolbarButtonStyle}"
-                            Content="삭제"
+                            Content="품목 저장"
                             Background="#0D47A1"
                             Command="{Binding SaveItemCommand}"/>
                     <Button Style="{StaticResource ToolbarButtonStyle}"
-                            Content="저장"
+                            Content="품목 삭제"
                             Background="#B71C1C"
                             Command="{Binding DeleteItemCommand}"/>
                     <Button Style="{StaticResource ToolbarButtonStyle}"
-                            Content="재고이동"
+                            Content="재고 초기화"
                             Background="#E65100"
                             Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}"
                             Click="ResetInventoryButton_Click"/>
                     <Button Style="{StaticResource ToolbarButtonStyle}"
-                            Content="삭제"
+                            Content="재고이동"
                             Background="#6A1B9A"
                             Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}"
                             Click="InventoryTransferButton_Click"/>

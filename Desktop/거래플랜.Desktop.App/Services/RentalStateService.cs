@@ -2745,6 +2745,28 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 asset.CustomerId,
                 desiredCustomerName,
                 desiredInstallLocation);
+            var existingHistory = await FindRentalAssetAssignmentHistoryByIdAsync(historyId, histories, ct);
+            if (existingHistory is not null)
+            {
+                hasChanges |= PrepareCurrentAssignmentHistory(
+                    existingHistory,
+                    asset,
+                    desiredCustomerName,
+                    desiredInstallLocation,
+                    linkedAtUtc,
+                    reason,
+                    nowUtc);
+                hasChanges |= await PopulateAssignmentHistorySnapshotAsync(
+                    existingHistory,
+                    asset,
+                    desiredCustomerName,
+                    desiredInstallLocation,
+                    reason,
+                    nowUtc,
+                    ct);
+                continue;
+            }
+
             var newHistory = new LocalRentalAssetAssignmentHistory
             {
                 Id = historyId == Guid.Empty ? Guid.NewGuid() : historyId,
@@ -2778,6 +2800,64 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (asset.LastAssignmentClearedAtUtc.HasValue)
             return false;
         return !string.IsNullOrWhiteSpace(customerName) || !string.IsNullOrWhiteSpace(installLocation);
+    }
+
+    private async Task<LocalRentalAssetAssignmentHistory?> FindRentalAssetAssignmentHistoryByIdAsync(
+        Guid historyId,
+        List<LocalRentalAssetAssignmentHistory> histories,
+        CancellationToken ct)
+    {
+        if (historyId == Guid.Empty)
+            return null;
+
+        var existing = histories.FirstOrDefault(history => history.Id == historyId);
+        if (existing is not null)
+            return existing;
+
+        existing = _db.RentalAssetAssignmentHistories.Local.FirstOrDefault(history => history.Id == historyId);
+        if (existing is not null)
+        {
+            histories.Add(existing);
+            return existing;
+        }
+
+        existing = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(history => history.Id == historyId, ct);
+        if (existing is not null)
+            histories.Add(existing);
+        return existing;
+    }
+
+    private static bool PrepareCurrentAssignmentHistory(
+        LocalRentalAssetAssignmentHistory history,
+        LocalRentalAsset asset,
+        string customerName,
+        string installLocation,
+        DateTime linkedAtUtc,
+        string reason,
+        DateTime nowUtc)
+    {
+        var changed = false;
+        changed |= SetIfDifferent(value => history.AssetId = value, history.AssetId, asset.Id);
+        changed |= SetIfDifferent(value => history.BillingProfileId = value, history.BillingProfileId, asset.BillingProfileId);
+        changed |= SetIfDifferent(value => history.CustomerId = value, history.CustomerId, asset.CustomerId);
+        changed |= SetIfDifferent(value => history.TenantCode = value, history.TenantCode, asset.TenantCode);
+        changed |= SetIfDifferent(value => history.ResponsibleOfficeCode = value, history.ResponsibleOfficeCode, asset.ResponsibleOfficeCode);
+        changed |= SetIfDifferent(value => history.CustomerName = value, history.CustomerName, customerName);
+        changed |= SetIfDifferent(value => history.InstallLocation = value, history.InstallLocation, installLocation);
+        changed |= SetIfDifferent(value => history.ChangeReason = value, history.ChangeReason, reason);
+        changed |= SetIfDifferent(value => history.IsCurrent = value, history.IsCurrent, true);
+        changed |= SetIfDifferent(value => history.LinkedAtUtc = value, history.LinkedAtUtc, linkedAtUtc);
+        changed |= SetIfDifferent<DateTime?>(value => history.UnlinkedAtUtc = value, history.UnlinkedAtUtc, null);
+        changed |= SetIfDifferent(value => history.IsDeleted = value, history.IsDeleted, false);
+        if (changed)
+        {
+            history.IsDirty = true;
+            history.UpdatedAtUtc = nowUtc;
+        }
+
+        return changed;
     }
 
     private async Task<bool> PopulateAssignmentHistorySnapshotAsync(
@@ -2858,6 +2938,22 @@ WHERE ""AssignedUsername"" <> '';", ct);
             asset.CustomerId,
             customerName,
             installLocation);
+        var existingHistory = await FindRentalAssetAssignmentHistoryByIdAsync(historyId, histories, ct);
+        if (existingHistory is not null)
+        {
+            return await PopulateEndedAssignmentHistoryFromClearedSnapshotAsync(
+                existingHistory,
+                asset,
+                billingProfileId,
+                customerName,
+                installLocation,
+                linkedAtUtc,
+                unlinkedAtUtc,
+                reason,
+                nowUtc,
+                ct);
+        }
+
         var history = new LocalRentalAssetAssignmentHistory
         {
             Id = historyId == Guid.Empty ? Guid.NewGuid() : historyId,
@@ -2887,6 +2983,51 @@ WHERE ""AssignedUsername"" <> '';", ct);
         _db.RentalAssetAssignmentHistories.Add(history);
         histories.Add(history);
         return true;
+    }
+
+    private async Task<bool> PopulateEndedAssignmentHistoryFromClearedSnapshotAsync(
+        LocalRentalAssetAssignmentHistory history,
+        LocalRentalAsset asset,
+        Guid? billingProfileId,
+        string customerName,
+        string installLocation,
+        DateTime linkedAtUtc,
+        DateTime unlinkedAtUtc,
+        string reason,
+        DateTime nowUtc,
+        CancellationToken ct)
+    {
+        var billingProfileDisplay = string.IsNullOrWhiteSpace(asset.LastBillingProfileDisplay)
+            ? await ResolveLastBillingProfileDisplayAsync(billingProfileId, asset, ct)
+            : asset.LastBillingProfileDisplay;
+
+        var changed = false;
+        changed |= SetIfDifferent(value => history.AssetId = value, history.AssetId, asset.Id);
+        changed |= SetIfDifferent(value => history.BillingProfileId = value, history.BillingProfileId, billingProfileId);
+        changed |= SetIfDifferent(value => history.CustomerId = value, history.CustomerId, asset.CustomerId);
+        changed |= SetIfDifferent(value => history.TenantCode = value, history.TenantCode, asset.TenantCode);
+        changed |= SetIfDifferent(value => history.ResponsibleOfficeCode = value, history.ResponsibleOfficeCode, asset.ResponsibleOfficeCode);
+        changed |= SetIfDifferent(value => history.CustomerName = value, history.CustomerName, customerName);
+        changed |= SetIfDifferent(value => history.InstallLocation = value, history.InstallLocation, installLocation);
+        changed |= SetIfDifferent(value => history.BillingProfileDisplay = value, history.BillingProfileDisplay, billingProfileDisplay);
+        changed |= SetIfDifferent(value => history.ItemName = value, history.ItemName, asset.ItemName);
+        changed |= SetIfDifferent(value => history.MachineNumber = value, history.MachineNumber, asset.MachineNumber);
+        changed |= SetIfDifferent(value => history.ManagementNumber = value, history.ManagementNumber, asset.ManagementNumber);
+        changed |= SetIfDifferent(value => history.MonthlyFee = value, history.MonthlyFee, Math.Max(0m, asset.MonthlyFee));
+        changed |= SetIfDifferent(value => history.ContractStartDate = value, history.ContractStartDate, asset.ContractStartDate ?? asset.InstallDate);
+        changed |= SetIfDifferent(value => history.ContractEndDate = value, history.ContractEndDate, asset.RentalEndDate);
+        changed |= SetIfDifferent(value => history.ChangeReason = value, history.ChangeReason, reason);
+        changed |= SetIfDifferent(value => history.IsCurrent = value, history.IsCurrent, false);
+        changed |= SetIfDifferent(value => history.LinkedAtUtc = value, history.LinkedAtUtc, linkedAtUtc);
+        changed |= SetIfDifferent<DateTime?>(value => history.UnlinkedAtUtc = value, history.UnlinkedAtUtc, unlinkedAtUtc);
+        changed |= SetIfDifferent(value => history.IsDeleted = value, history.IsDeleted, false);
+        if (changed)
+        {
+            history.IsDirty = true;
+            history.UpdatedAtUtc = nowUtc;
+        }
+
+        return changed;
     }
 
     private static bool CloseAssignmentHistory(

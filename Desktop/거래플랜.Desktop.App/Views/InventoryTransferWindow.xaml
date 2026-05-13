@@ -122,15 +122,15 @@
                                Foreground="#4FC3F7"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Content="저장 (F8)"
+                    <Button Content="신규 (F6)"
                             Background="#1B5E20"
                             Margin="0,0,6,0"
                             Command="{Binding NewTransferCommand}"/>
-                    <Button Content="삭제"
+                    <Button Content="저장 (F8)"
                             Background="#0D47A1"
                             Margin="0,0,6,0"
                             Command="{Binding SaveTransferCommand}"/>
-                    <Button Content="삭제"
+                    <Button Content="문서 삭제"
                             Background="#B71C1C"
                             Margin="0,0,6,0"
                             IsEnabled="{Binding CanDeleteTransfer}"

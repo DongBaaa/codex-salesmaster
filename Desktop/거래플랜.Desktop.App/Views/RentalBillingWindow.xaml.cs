@@ -97,7 +97,7 @@ public partial class RentalBillingWindow : Window
             if (!viewModel.CanRegisterSettlementSelected)
             {
                 MessageBox.Show(
-                    "거래처 요약행은 바로 수금등록할 수 없습니다. 개별 청구 프로필 정리 후 다시 시도하세요.",
+                    "거래처 그룹은 바로 수금등록할 수 없습니다. 개별 청구건 보기로 전환한 뒤 다시 시도하세요.",
                     "알림",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -267,10 +267,10 @@ public partial class RentalBillingWindow : Window
         if (DataContext is not RentalBillingViewModel viewModel)
             return;
 
-        if (viewModel.SelectedRow?.IsAggregateRow == true)
+        if (!viewModel.CanEditBillingProfileDetails)
         {
             MessageBox.Show(
-                "거래처 요약행에서는 장비 연결을 직접 편집할 수 없습니다. 개별 청구 프로필 정리 후 다시 시도하세요.",
+                "거래처 그룹에서는 장비 연결을 직접 편집할 수 없습니다. 개별 청구건 보기로 전환한 뒤 다시 시도하세요.",
                 "렌탈 자산 연결",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);

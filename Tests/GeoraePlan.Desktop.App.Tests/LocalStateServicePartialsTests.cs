@@ -796,6 +796,125 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task RentalStateService_SaveBillingProfile_RelinkingSameAssetReusesEndedAssignmentHistory()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-history-relink-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("8b111111-1111-1111-1111-111111111111");
+            var assetId = Guid.Parse("8b222222-2222-2222-2222-222222222222");
+            var customerId = Guid.Parse("8b333333-3333-3333-3333-333333333333");
+            var itemId = Guid.Parse("8b444444-4444-4444-4444-444444444444");
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "TEST:HISTORY-RELINK-SN",
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementNumber = "H-RELINK-001",
+                MachineNumber = "HISTORY-RELINK-SN",
+                ItemName = "Printer",
+                CustomerName = "Old Customer",
+                CurrentCustomerName = "Old Customer",
+                InstallLocation = "Old Location",
+                InstallDate = new DateOnly(2026, 1, 15),
+                AssetStatus = "임대진행중",
+                BillingEligibilityStatus = "미확인"
+            });
+            await db.SaveChangesAsync();
+
+            static string BuildTemplateJson(Guid itemId, Guid? includedAssetId)
+                => JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        ItemId = itemId,
+                        DisplayItemName = "Printer",
+                        BillingLineMode = "묶음",
+                        Quantity = 1m,
+                        UnitPrice = 40_000m,
+                        Amount = 40_000m,
+                        IncludedAssetIds = includedAssetId.HasValue
+                            ? new List<Guid> { includedAssetId.Value }
+                            : new List<Guid>()
+                    }
+                });
+
+            LocalRentalBillingProfile BuildProfile(string templateJson) => new()
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                CustomerId = customerId,
+                CustomerName = "Customer A",
+                InstallSiteName = "Office 1",
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = templateJson,
+                MonthlyAmount = 40_000m
+            };
+
+            RentalBillingAssetLinkEdit BuildLinkEdit() => new()
+            {
+                AssetId = assetId,
+                CustomerId = customerId,
+                CustomerName = "Customer A",
+                InstallLocation = "Office 1",
+                MonthlyFee = 40_000m
+            };
+
+            var service = new RentalStateService(db);
+            var linkResult = await service.SaveBillingProfileAsync(
+                BuildProfile(BuildTemplateJson(itemId, assetId)),
+                CreateAdminSession(),
+                [BuildLinkEdit()]);
+            Assert.True(linkResult.Success, linkResult.Message);
+
+            var unlinkResult = await service.SaveBillingProfileAsync(
+                BuildProfile(BuildTemplateJson(itemId, null)),
+                CreateAdminSession(),
+                Array.Empty<RentalBillingAssetLinkEdit>());
+            Assert.True(unlinkResult.Success, unlinkResult.Message);
+
+            var relinkResult = await service.SaveBillingProfileAsync(
+                BuildProfile(BuildTemplateJson(itemId, assetId)),
+                CreateAdminSession(),
+                [BuildLinkEdit()]);
+            Assert.True(relinkResult.Success, relinkResult.Message);
+
+            var histories = await db.RentalAssetAssignmentHistories
+                .IgnoreQueryFilters()
+                .Where(current => current.AssetId == assetId)
+                .ToListAsync();
+            var history = Assert.Single(histories);
+            Assert.True(history.IsCurrent);
+            Assert.Null(history.UnlinkedAtUtc);
+            Assert.Equal(profileId, history.BillingProfileId);
+            Assert.Equal(customerId, history.CustomerId);
+            Assert.Equal("Customer A", history.CustomerName);
+            Assert.Equal("Office 1", history.InstallLocation);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RentalStateService_SaveBillingProfile_AllowsCrossTenantAssetReferenceWithoutTransfer()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-link-cross-tenant-{Guid.NewGuid():N}");

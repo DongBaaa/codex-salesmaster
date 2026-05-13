@@ -62,6 +62,15 @@
             <Setter Property="Padding" Value="8,0,10,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
+        <Style TargetType="{x:Type Calendar}">
+            <Setter Property="FontFamily" Value="Malgun Gothic"/>
+            <Setter Property="MinWidth" Value="320"/>
+            <Setter Property="MinHeight" Value="280"/>
+        </Style>
+        <Style TargetType="{x:Type CalendarItem}">
+            <Setter Property="MinWidth" Value="320"/>
+            <Setter Property="MinHeight" Value="260"/>
+        </Style>
         <Style x:Key="UnifiedDatePickerButtonStyle" TargetType="{x:Type Button}">
             <Setter Property="MinHeight" Value="34"/>
             <Setter Property="Height" Value="34"/>

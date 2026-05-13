@@ -121,10 +121,10 @@
                 </StackPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                     <Button Content="새로고침" Margin="0,0,6,0" Command="{Binding ReloadCommand}"/>
-                    <Button Content="신규" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,6,0" Command="{Binding NewAssetCommand}"/>
-                    <Button Content="저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,6,0" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}"/>
-                    <Button Content="삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,0" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
-                    <Button Content="선택삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,0" Command="{Binding DeleteCheckedCommand}"/>
+                    <Button Content="신규 자산" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,6,0" Command="{Binding NewAssetCommand}"/>
+                    <Button Content="자산 저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,6,0" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}"/>
+                    <Button Content="자산 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,0" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
+                    <Button Content="선택 자산 삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,0" Command="{Binding DeleteCheckedCommand}"/>
                     <Button Content="회수장비내역서" Background="#5D4037" BorderBrush="#5D4037" Margin="0,0,6,0" Command="{Binding OpenReturnReportCommand}"/>
                     <Button Content="렌탈장비내역서" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,0" Command="{Binding OpenEquipmentDetailCommand}"/>
                     <Button Content="계약서 작성" Background="#6A1B9A" BorderBrush="#6A1B9A" Margin="0,0,6,0" Command="{Binding OpenContractWriterCommand}"/>

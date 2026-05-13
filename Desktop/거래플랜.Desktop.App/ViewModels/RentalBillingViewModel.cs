@@ -120,6 +120,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                               _session.HasAssignedPermission(AppPermissionNames.RentalEditAll);
     public bool CanManageAll => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.RentalEditAll);
     public bool CanSave => SelectedRow is null || (CanEditCurrentSelection && CanEditSelectedRowInEditor);
+    public bool IsCustomerGroupSelection => SelectedRow?.IsAggregateRow == true;
+    public bool CanEditBillingProfileDetails => SelectedRow is null || !SelectedRow.IsAggregateRow;
+    public bool CanOpenAssetLinkDialog => CanEditBillingProfileDetails && !string.IsNullOrWhiteSpace(EditCustomerName);
     public bool CanExpandSelectedSummary => SelectedRow?.IsAggregateRow == true && !ShowIndividualProfiles;
     public bool CanStartBillingSelected => SelectedRow is not null &&
                                            CanAccessCurrentSelection &&
@@ -134,22 +137,25 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                             CanEditCurrentSelection &&
                                             !SelectedRow.IsAggregateRow &&
                                             SelectedRow.OutstandingAmount <= 0m;
-    public bool CanRemoveTemplateItem => SelectedTemplateItem is not null;
-    public bool CanRemoveIncludedAsset => SelectedTemplateItem is not null &&
+    public bool CanRemoveTemplateItem => CanEditBillingProfileDetails && SelectedTemplateItem is not null;
+    public bool CanRemoveIncludedAsset => CanEditBillingProfileDetails &&
+                                          SelectedTemplateItem is not null &&
                                           SelectedIncludedAsset is not null &&
                                           SelectedIncludedAsset.AssetId != Guid.Empty;
-    public bool CanSetRepresentativeAsset => SelectedTemplateItem is not null &&
+    public bool CanSetRepresentativeAsset => CanEditBillingProfileDetails &&
+                                             SelectedTemplateItem is not null &&
                                              SelectedIncludedAsset is not null &&
                                              SelectedIncludedAsset.AssetId != Guid.Empty &&
                                              IsTemplateItemBundleMode(SelectedTemplateItem) &&
                                              SelectedTemplateItem.IncludedAssetIds.Contains(SelectedIncludedAsset.AssetId);
-    public bool CanAddIncludedAssetAssignmentHistory => SelectedIncludedAsset is not null &&
+    public bool CanAddIncludedAssetAssignmentHistory => CanEditBillingProfileDetails &&
+                                                        SelectedIncludedAsset is not null &&
                                                         SelectedIncludedAsset.AssetId != Guid.Empty &&
                                                         CanEditCurrentSelection;
     public bool CanEditIncludedAssetAssignmentHistory => CanAddIncludedAssetAssignmentHistory &&
                                                          SelectedIncludedAssetAssignmentHistory is not null;
     public bool CanDeleteIncludedAssetAssignmentHistory => CanEditIncludedAssetAssignmentHistory;
-    public bool CanApplySelectedAssets => SelectedTemplateItem is not null && CandidateAssets.Any(asset => asset.IsSelected);
+    public bool CanApplySelectedAssets => CanEditBillingProfileDetails && SelectedTemplateItem is not null && CandidateAssets.Any(asset => asset.IsSelected);
     public bool CanOpenCustomerContract => EditCustomerId.HasValue && EditCustomerId.Value != Guid.Empty;
     public bool IsFixedBillingDayMode => string.Equals(EditBillingDayMode, RentalBillingScheduleRules.BillingDayModeFixedDay, StringComparison.Ordinal);
     public bool IsDocumentLeadDaysVisible => string.Equals(EditDocumentIssueMode, RentalBillingScheduleRules.DocumentIssueModeDaysBeforeDueDate, StringComparison.Ordinal);
@@ -234,12 +240,15 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     partial void OnDueOnlyChanged(bool value) => RequestFilterReload();
     partial void OnShowIndividualProfilesChanged(bool value)
     {
-        OnPropertyChanged(nameof(CanExpandSelectedSummary));
-        ExpandSelectedSummaryCommand.NotifyCanExecuteChanged();
+        NotifySelectionActionState();
         RequestFilterReload();
     }
     partial void OnReferenceDateChanged(DateOnly value) => RequestFilterReload();
-    partial void OnEditCustomerNameChanged(string value) => OnPropertyChanged(nameof(ShouldShowContractDateWarning));
+    partial void OnEditCustomerNameChanged(string value)
+    {
+        OnPropertyChanged(nameof(ShouldShowContractDateWarning));
+        OnPropertyChanged(nameof(CanOpenAssetLinkDialog));
+    }
     partial void OnEditCustomerIdChanged(Guid? value)
     {
         OnPropertyChanged(nameof(ShouldShowContractDateWarning));
@@ -316,11 +325,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         SyncAssetSelectionFromTemplate();
         SyncIncludedAssetsFromTemplate();
         UpdateTemplateDerivedValues();
+        OnPropertyChanged(nameof(CanRemoveTemplateItem));
         RemoveTemplateItemCommand.NotifyCanExecuteChanged();
         RemoveIncludedAssetCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanRemoveIncludedAsset));
         SetRepresentativeAssetCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanSetRepresentativeAsset));
+        OnPropertyChanged(nameof(CanApplySelectedAssets));
         ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
     }
 
@@ -622,7 +633,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (targetIds.Count == 0)
         {
-            StatusMessage = "요약행에 청구 가능한 개별 프로필이 없습니다. 요약행 펼치기로 프로필을 생성/저장한 뒤 다시 시도하세요.";
+            StatusMessage = "거래처 그룹에 청구 가능한 개별 프로필이 없습니다. 개별 청구건 보기로 프로필을 생성/저장한 뒤 다시 시도하세요.";
             return;
         }
 
@@ -667,14 +678,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (failureMessages.Count == 0)
         {
-            StatusMessage = $"요약행의 개별 청구 프로필 {successCount:N0}건을 청구 시작했습니다.{skippedUnlinkedText}";
+            StatusMessage = $"거래처 그룹의 개별 청구 프로필 {successCount:N0}건을 청구 시작했습니다.{skippedUnlinkedText}";
             return;
         }
 
         var failureSummary = string.Join(" | ", failureMessages.Distinct().Take(3));
         StatusMessage = successCount > 0
-            ? $"요약행 청구 일부 완료: 성공 {successCount:N0}건 / 실패 {failureMessages.Count:N0}건{skippedUnlinkedText} - {failureSummary}"
-            : $"요약행 청구 시작 실패 {failureMessages.Count:N0}건{skippedUnlinkedText} - {failureSummary}";
+            ? $"거래처 그룹 청구 일부 완료: 성공 {successCount:N0}건 / 실패 {failureMessages.Count:N0}건{skippedUnlinkedText} - {failureSummary}"
+            : $"거래처 그룹 청구 시작 실패 {failureMessages.Count:N0}건{skippedUnlinkedText} - {failureSummary}";
     }
 
     [RelayCommand]
@@ -818,14 +829,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (persistedTargets.Count == 0 && unlinkedTargets.Count == 0)
         {
             StatusMessage = skippedAggregateCount > 0
-                ? "거래처 요약행은 선택삭제할 수 없습니다. 개별 청구 프로필 정리 후 다시 시도하세요."
+                ? "거래처 그룹은 선택삭제할 수 없습니다. 개별 청구건 보기에서 정리 후 다시 시도하세요."
                 : "삭제할 수 있는 청구 프로필 또는 미연결 설치처가 없습니다.";
             return;
         }
 
         var confirmation = MessageBox.Show(
             skippedAggregateCount > 0
-                ? $"청구 프로필 {persistedTargets.Count:N0}건은 삭제하고, 프로필 없는 설치처 {unlinkedTargets.Count:N0}건은 청구 목록에서 제외하시겠습니까?\n거래처 요약행 {skippedAggregateCount:N0}건은 제외됩니다."
+                ? $"청구 프로필 {persistedTargets.Count:N0}건은 삭제하고, 프로필 없는 설치처 {unlinkedTargets.Count:N0}건은 청구 목록에서 제외하시겠습니까?\n거래처 그룹 {skippedAggregateCount:N0}건은 제외됩니다."
                 : unlinkedTargets.Count > 0 && persistedTargets.Count > 0
                     ? $"청구 프로필 {persistedTargets.Count:N0}건은 삭제하고, 프로필 없는 설치처 {unlinkedTargets.Count:N0}건은 청구 목록에서 제외하시겠습니까?"
                     : unlinkedTargets.Count > 0
@@ -877,7 +888,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         StatusMessage = failureMessages.Count == 0
             ? BuildDeleteCheckedSuccessMessage(successCount, excludedUnlinkedCount, skippedAggregateCount)
             : skippedAggregateCount > 0
-                ? $"삭제/제외 성공 {successCount + excludedUnlinkedCount:N0}건 / 실패 {failureMessages.Count:N0}건 / 요약행 제외 {skippedAggregateCount:N0}건 - {string.Join(" | ", failureMessages.Take(3))}"
+                ? $"삭제/제외 성공 {successCount + excludedUnlinkedCount:N0}건 / 실패 {failureMessages.Count:N0}건 / 거래처 그룹 제외 {skippedAggregateCount:N0}건 - {string.Join(" | ", failureMessages.Take(3))}"
                 : $"삭제/제외 성공 {successCount + excludedUnlinkedCount:N0}건 / 실패 {failureMessages.Count:N0}건 - {string.Join(" | ", failureMessages.Take(3))}";
 
         if (conflictCount > 0)
@@ -905,7 +916,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var message = string.Join(", ", parts) + " 완료.";
         if (skippedAggregateCount > 0)
-            message += $" 거래처 요약행 {skippedAggregateCount:N0}건은 제외했습니다.";
+            message += $" 거래처 그룹 {skippedAggregateCount:N0}건은 제외했습니다.";
         return message;
     }
 
@@ -1030,6 +1041,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         OnPropertyChanged(nameof(CanDeleteSelected));
         OnPropertyChanged(nameof(CanMarkCompletedSelected));
         ExpandSelectedSummaryCommand.NotifyCanExecuteChanged();
+        NotifySelectionActionState();
     }
 
     [RelayCommand(CanExecute = nameof(CanExpandSelectedSummary))]
@@ -1037,7 +1049,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         if (SelectedRow is null || !SelectedRow.IsAggregateRow)
         {
-            StatusMessage = "거래처 요약행을 먼저 선택하세요.";
+            StatusMessage = "거래처 그룹을 먼저 선택하세요.";
             return;
         }
 
@@ -1063,13 +1075,19 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             SelectRow(targetId);
 
         StatusMessage = SelectedRow is null
-            ? "요약행을 개별 프로필 보기로 전환했습니다. 목록에서 정리할 프로필을 선택하세요."
-            : "요약행을 개별 청구 프로필로 펼쳤습니다. 필요한 프로필을 선택해 삭제/수정하세요.";
+            ? "거래처 그룹을 개별 청구건 보기로 전환했습니다. 목록에서 정리할 프로필을 선택하세요."
+            : "거래처 그룹을 개별 청구건으로 전환했습니다. 필요한 프로필을 선택해 삭제/수정하세요.";
     }
 
     [RelayCommand]
     private void AddTemplateItem()
     {
+        if (!CanEditBillingProfileDetails)
+        {
+            StatusMessage = "거래처 그룹에서는 표시 품목을 직접 편집할 수 없습니다. '개별 청구건 보기'로 전환한 뒤 진행하세요.";
+            return;
+        }
+
         var item = CreateDefaultTemplateItem();
         TemplateItems.Add(item);
         SelectedTemplateItem = item;
@@ -1306,6 +1324,30 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         DeleteIncludedAssetAssignmentHistoryCommand.NotifyCanExecuteChanged();
     }
 
+    private void NotifySelectionActionState()
+    {
+        OnPropertyChanged(nameof(IsCustomerGroupSelection));
+        OnPropertyChanged(nameof(CanEditBillingProfileDetails));
+        OnPropertyChanged(nameof(CanOpenAssetLinkDialog));
+        OnPropertyChanged(nameof(CanSave));
+        OnPropertyChanged(nameof(CanExpandSelectedSummary));
+        OnPropertyChanged(nameof(CanStartBillingSelected));
+        OnPropertyChanged(nameof(CanHoldSelected));
+        OnPropertyChanged(nameof(CanRegisterSettlementSelected));
+        OnPropertyChanged(nameof(CanDeleteSelected));
+        OnPropertyChanged(nameof(CanMarkCompletedSelected));
+        OnPropertyChanged(nameof(CanRemoveTemplateItem));
+        OnPropertyChanged(nameof(CanRemoveIncludedAsset));
+        OnPropertyChanged(nameof(CanSetRepresentativeAsset));
+        OnPropertyChanged(nameof(CanApplySelectedAssets));
+        ExpandSelectedSummaryCommand.NotifyCanExecuteChanged();
+        RemoveTemplateItemCommand.NotifyCanExecuteChanged();
+        RemoveIncludedAssetCommand.NotifyCanExecuteChanged();
+        SetRepresentativeAssetCommand.NotifyCanExecuteChanged();
+        ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
+        NotifyIncludedAssetAssignmentHistoryCommandState();
+    }
+
     private static Window? GetActiveWindow()
         => Application.Current?.Windows.OfType<Window>().FirstOrDefault(window => window.IsActive)
            ?? Application.Current?.MainWindow;
@@ -1350,6 +1392,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanApplySelectedAssets))]
     private void ApplySelectedAssetsToTemplate()
     {
+        if (!CanEditBillingProfileDetails)
+        {
+            StatusMessage = "거래처 그룹에서는 장비 연결을 직접 편집할 수 없습니다. '개별 청구건 보기'로 전환한 뒤 진행하세요.";
+            return;
+        }
+
         if (SelectedTemplateItem is null)
             return;
 
@@ -1377,6 +1425,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     public void ApplyAssetLinkSelections(IReadOnlyList<RentalBillingAssetOption> selectedAssets)
     {
+        if (!CanEditBillingProfileDetails)
+        {
+            StatusMessage = "거래처 그룹에서는 장비 연결을 직접 편집할 수 없습니다. '개별 청구건 보기'로 전환한 뒤 진행하세요.";
+            return;
+        }
+
         if (selectedAssets.Count == 0)
             return;
 
@@ -1556,6 +1610,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             OnPropertyChanged(nameof(CanDeleteSelected));
             OnPropertyChanged(nameof(CanMarkCompletedSelected));
             ExpandSelectedSummaryCommand.NotifyCanExecuteChanged();
+            NotifySelectionActionState();
             return;
         }
 
@@ -1620,6 +1675,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             OnPropertyChanged(nameof(CanDeleteSelected));
             OnPropertyChanged(nameof(CanMarkCompletedSelected));
             ExpandSelectedSummaryCommand.NotifyCanExecuteChanged();
+            NotifySelectionActionState();
             return;
         }
 
@@ -1645,6 +1701,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         OnPropertyChanged(nameof(CanDeleteSelected));
         OnPropertyChanged(nameof(CanMarkCompletedSelected));
         ExpandSelectedSummaryCommand.NotifyCanExecuteChanged();
+        NotifySelectionActionState();
     }
 
     private async Task ReloadFiltersAsync()
@@ -3098,9 +3155,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return false;
 
         var aggregateSummary = string.IsNullOrWhiteSpace(SelectedRow.AggregateSummary)
-            ? "여러 청구 프로필/자산이 묶인 거래처 요약행입니다."
-            : $"{SelectedRow.AggregateSummary} 요약행입니다.";
-        StatusMessage = $"{aggregateSummary} {actionName}은 '요약행 펼치기' 또는 '요약행 개별표시'로 개별 프로필을 표시한 뒤 진행하세요.";
+            ? "여러 청구 프로필/자산이 묶인 거래처 그룹입니다."
+            : $"{SelectedRow.AggregateSummary} 거래처 그룹입니다.";
+        StatusMessage = $"{aggregateSummary} {actionName}은 '개별 청구건 보기'로 개별 프로필을 표시한 뒤 진행하세요.";
         return true;
     }
 
@@ -3115,16 +3172,16 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         IncludedAssets.Clear();
         CandidateAssets.Clear();
         TemplateSummary = string.IsNullOrWhiteSpace(value.AggregateSummary)
-            ? "거래처 기준 요약행입니다."
+            ? "거래처별 묶음 보기입니다."
             : value.AggregateSummary;
-        AssetCandidateSummary = "요약행에서는 장비 연결 편집을 지원하지 않습니다. 요약행 펼치기로 개별 프로필을 선택하세요.";
+        AssetCandidateSummary = "거래처 그룹에서는 장비 연결 편집을 지원하지 않습니다. 개별 청구건 보기로 전환한 뒤 청구 프로필을 선택하세요.";
         ApplySelectedAssetsHint = value.GroupedPersistedProfileIds.Any(id => id != Guid.Empty)
-            ? "거래처 기준 요약행입니다. 청구 시작은 연결된 개별 프로필을 한 번에 처리하고, 저장/삭제는 요약행 펼치기로 개별 프로필에서 진행하세요."
-            : "거래처 기준 요약행입니다. 청구 가능한 프로필이 없습니다. 요약행 펼치기로 개별 프로필을 생성/저장하세요.";
+            ? "거래처별 묶음 보기입니다. 청구 시작은 연결된 개별 프로필을 한 번에 처리하고, 저장/삭제는 개별 청구건 보기에서 진행하세요."
+            : "거래처별 묶음 보기입니다. 청구 가능한 프로필이 없습니다. 개별 청구건 보기에서 프로필을 생성/저장하세요.";
         _selectedRowBaselineSignature = BuildCurrentEditorSignature();
         StatusMessage = string.IsNullOrWhiteSpace(value.AggregateSummary)
-            ? "거래처 기준 요약행입니다. 청구 시작은 연결된 개별 프로필을 한 번에 처리하고, 편집은 요약행 펼치기로 진행하세요."
-            : $"{value.AggregateSummary} 기준 거래처 요약행입니다. 청구 시작은 연결된 개별 프로필을 한 번에 처리하고, 편집은 요약행 펼치기로 진행하세요.";
+            ? "거래처별 묶음 보기입니다. 청구 시작은 연결된 개별 프로필을 한 번에 처리하고, 편집은 개별 청구건 보기로 진행하세요."
+            : $"{value.AggregateSummary} 기준 거래처 그룹입니다. 청구 시작은 연결된 개별 프로필을 한 번에 처리하고, 편집은 개별 청구건 보기로 진행하세요.";
     }
 
     private bool CanOperateScope(string? officeCode)

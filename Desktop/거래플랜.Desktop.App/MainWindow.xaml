@@ -9,7 +9,6 @@
     <Window.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVisibility"/>
         <conv:DecimalToStringConverter x:Key="DecimalToString"/>
-        <conv:DateOnlyConverter x:Key="DateOnlyConverter"/>
         <conv:VoucherTypeConverter x:Key="VoucherTypeConverter"/>
 
         <Style TargetType="TextBlock">
@@ -35,17 +34,6 @@
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="MinWidth" Value="140"/>
-            <Setter Property="HorizontalAlignment" Value="Stretch"/>
-        </Style>
-        <Style TargetType="DatePicker">
-            <Setter Property="Background" Value="#D9E6F5"/>
-            <Setter Property="Foreground" Value="Black"/>
-            <Setter Property="BorderBrush" Value="#4A6382"/>
-            <Setter Property="MinHeight" Value="28"/>
-            <Setter Property="Padding" Value="8,1"/>
-            <Setter Property="VerticalContentAlignment" Value="Center"/>
-            <Setter Property="VerticalAlignment" Value="Center"/>
-            <Setter Property="MinWidth" Value="154"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style TargetType="Button">
@@ -276,35 +264,6 @@
         <DockPanel Margin="10">
                     <Border DockPanel.Dock="Top" Background="#1A2B4A" Padding="10" CornerRadius="6" Margin="0,0,0,8">
                         <WrapPanel>
-                            <TextBlock Text="기간" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                            <DatePicker SelectedDate="{Binding FilterFrom, Converter={StaticResource DateOnlyConverter}}" Width="160" Margin="0,0,8,0">
-                                <DatePicker.Resources>
-                                    <Style TargetType="{x:Type Button}">
-                                        <Setter Property="MinHeight" Value="28"/>
-                                        <Setter Property="Height" Value="28"/>
-                                        <Setter Property="MinWidth" Value="28"/>
-                                        <Setter Property="Padding" Value="0"/>
-                                        <Setter Property="Margin" Value="0"/>
-                                        <Setter Property="BorderThickness" Value="0"/>
-                                        <Setter Property="VerticalAlignment" Value="Stretch"/>
-                                    </Style>
-                                </DatePicker.Resources>
-                            </DatePicker>
-                            <TextBlock Text="~" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                            <DatePicker SelectedDate="{Binding FilterTo, Converter={StaticResource DateOnlyConverter}}" Width="160" Margin="0,0,10,0">
-                                <DatePicker.Resources>
-                                    <Style TargetType="{x:Type Button}">
-                                        <Setter Property="MinHeight" Value="28"/>
-                                        <Setter Property="Height" Value="28"/>
-                                        <Setter Property="MinWidth" Value="28"/>
-                                        <Setter Property="Padding" Value="0"/>
-                                        <Setter Property="Margin" Value="0"/>
-                                        <Setter Property="BorderThickness" Value="0"/>
-                                        <Setter Property="VerticalAlignment" Value="Stretch"/>
-                                    </Style>
-                                </DatePicker.Resources>
-                            </DatePicker>
-
                             <TextBlock Text="유형" VerticalAlignment="Center" Margin="0,0,6,0"/>
                             <ComboBox ItemsSource="{Binding VoucherTypeFilterOptions}" SelectedItem="{Binding SelectedVoucherTypeFilter}" Width="100" Margin="0,0,10,0"/>
 
