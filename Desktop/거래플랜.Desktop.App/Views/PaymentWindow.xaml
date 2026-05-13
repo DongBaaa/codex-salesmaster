@@ -114,11 +114,9 @@
             <Setter Property="MinHeight" Value="30"/>
             <Setter Property="Height" Value="30"/>
             <Setter Property="MinWidth" Value="30"/>
-            <Setter Property="Width" Value="30"/>
             <Setter Property="Padding" Value="0"/>
             <Setter Property="Margin" Value="0"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="HorizontalAlignment" Value="Right"/>
             <Setter Property="VerticalAlignment" Value="Stretch"/>
             <Setter Property="HorizontalContentAlignment" Value="Center"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
@@ -413,11 +411,9 @@
                                         <Setter Property="MinHeight" Value="28"/>
                                         <Setter Property="Height" Value="28"/>
                                         <Setter Property="MinWidth" Value="28"/>
-                                        <Setter Property="Width" Value="28"/>
                                         <Setter Property="Padding" Value="0"/>
                                         <Setter Property="Margin" Value="0"/>
                                         <Setter Property="BorderThickness" Value="0"/>
-                                        <Setter Property="HorizontalAlignment" Value="Right"/>
                                         <Setter Property="VerticalAlignment" Value="Stretch"/>
                                         <Setter Property="HorizontalContentAlignment" Value="Center"/>
                                         <Setter Property="VerticalContentAlignment" Value="Center"/>
@@ -511,11 +507,9 @@
                                         <Setter Property="MinHeight" Value="28"/>
                                         <Setter Property="Height" Value="28"/>
                                         <Setter Property="MinWidth" Value="28"/>
-                                        <Setter Property="Width" Value="28"/>
                                         <Setter Property="Padding" Value="0"/>
                                         <Setter Property="Margin" Value="0"/>
                                         <Setter Property="BorderThickness" Value="0"/>
-                                        <Setter Property="HorizontalAlignment" Value="Right"/>
                                         <Setter Property="VerticalAlignment" Value="Stretch"/>
                                         <Setter Property="HorizontalContentAlignment" Value="Center"/>
                                         <Setter Property="VerticalContentAlignment" Value="Center"/>
