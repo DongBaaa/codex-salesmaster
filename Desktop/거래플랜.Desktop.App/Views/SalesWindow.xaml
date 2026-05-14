@@ -151,6 +151,18 @@
         <Style x:Key="RightGridCellTextBoxStyle" TargetType="{x:Type TextBox}" BasedOn="{StaticResource GridCellTextBoxStyle}">
             <Setter Property="TextAlignment" Value="Right"/>
         </Style>
+        <Style x:Key="ReadOnlyDisplayTextStyle" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="MinHeight" Value="28"/>
+            <Setter Property="Padding" Value="6,3"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+        </Style>
+        <Style x:Key="ReadOnlyMoneyDisplayTextStyle" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource ReadOnlyDisplayTextStyle}">
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="TextAlignment" Value="Right"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+            <Setter Property="Foreground" Value="#FF6B6B"/>
+        </Style>
     </Window.Resources>
 
     <DockPanel>
@@ -202,11 +214,11 @@
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" SharedSizeGroup="SalesInfoLabelPrimary"/>
-                        <ColumnDefinition Width="1.6*"/>
+                        <ColumnDefinition Width="380"/>
                         <ColumnDefinition Width="Auto" SharedSizeGroup="SalesInfoLabelSecondary"/>
-                        <ColumnDefinition Width="1.05*"/>
+                        <ColumnDefinition Width="240"/>
                         <ColumnDefinition Width="Auto" SharedSizeGroup="SalesInfoLabelTertiary"/>
-                        <ColumnDefinition Width="0.95*"/>
+                        <ColumnDefinition Width="220"/>
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -224,35 +236,62 @@
                             Background="#D9E6F5"
                             Foreground="Black"
                             FontWeight="Bold"
-                            HorizontalAlignment="Stretch"
+                            HorizontalAlignment="Left"
+                            HorizontalContentAlignment="Left"
+                            Width="360"
                             Padding="6,2"
                             Margin="0,0,14,6"
                             Click="CustomerSelectButton_Click"/>
                     <TextBlock Grid.Row="0" Grid.Column="2" Text="고객분류" Margin="0,0,0,6"/>
-                    <TextBox Grid.Row="0"
-                             Grid.Column="3"
-                             Text="{Binding CustomerTradeType}"
-                             IsReadOnly="True"
-                             TextAlignment="Left"
-                             Margin="0,0,14,6"/>
+                    <TextBlock Grid.Row="0"
+                               Grid.Column="3"
+                               Text="{Binding CustomerTradeType}"
+                               Style="{StaticResource ReadOnlyDisplayTextStyle}"
+                               Width="180"
+                               Margin="0,0,14,6"/>
                     <TextBlock Grid.Row="0" Grid.Column="4" Text="합계금액" Margin="0,0,0,6"/>
-                    <TextBox Grid.Row="0"
-                             Grid.Column="5"
-                             Text="{Binding TotalAmount, StringFormat={}{0:N0}}"
-                             IsReadOnly="True"
-                             FontWeight="Bold"
-                             Foreground="#C62828"
-                             Margin="0,0,0,6"/>
+                    <TextBlock Grid.Row="0"
+                               Grid.Column="5"
+                               Text="{Binding TotalAmount, StringFormat={}{0:N0}}"
+                               Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}"
+                               Width="140"
+                               Margin="0,0,0,6"/>
 
                     <TextBlock Grid.Row="1" Grid.Column="0" Text="대표전화" Margin="0,0,0,6"/>
-                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding CustomerPhone}" IsReadOnly="True" TextAlignment="Left" Margin="0,0,14,6"/>
+                    <TextBox Grid.Row="1"
+                             Grid.Column="1"
+                             Text="{Binding CustomerPhone}"
+                             IsReadOnly="True"
+                             TextAlignment="Left"
+                             Width="180"
+                             MinWidth="0"
+                             HorizontalAlignment="Left"
+                             Margin="0,0,14,6"/>
                     <TextBlock Grid.Row="1" Grid.Column="2" Text="가격등급" Margin="0,0,0,6"/>
-                    <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding CustomerPriceGrade}" IsReadOnly="True" TextAlignment="Left" Margin="0,0,14,6"/>
+                    <TextBlock Grid.Row="1"
+                               Grid.Column="3"
+                               Text="{Binding CustomerPriceGrade}"
+                               Style="{StaticResource ReadOnlyDisplayTextStyle}"
+                               Width="180"
+                               Margin="0,0,14,6"/>
                     <TextBlock Grid.Row="1" Grid.Column="4" Text="공급가" Margin="0,0,0,6"/>
-                    <TextBox Grid.Row="1" Grid.Column="5" Text="{Binding SupplyAmount, StringFormat={}{0:N0}}" IsReadOnly="True" FontWeight="Bold" Margin="0,0,0,6"/>
+                    <TextBlock Grid.Row="1"
+                               Grid.Column="5"
+                               Text="{Binding SupplyAmount, StringFormat={}{0:N0}}"
+                               Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}"
+                               Width="140"
+                               Margin="0,0,0,6"/>
 
                     <TextBlock Grid.Row="2" Grid.Column="0" Text="휴대폰" Margin="0,0,0,6"/>
-                    <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CustomerMobile}" IsReadOnly="True" TextAlignment="Left" Margin="0,0,14,6"/>
+                    <TextBox Grid.Row="2"
+                             Grid.Column="1"
+                             Text="{Binding CustomerMobile}"
+                             IsReadOnly="True"
+                             TextAlignment="Left"
+                             Width="180"
+                             MinWidth="0"
+                             HorizontalAlignment="Left"
+                             Margin="0,0,14,6"/>
                     <TextBlock Grid.Row="2" Grid.Column="2" Text="담당지점" Margin="0,0,0,6"/>
                     <ComboBox Grid.Row="2"
                               Grid.Column="3"
@@ -260,10 +299,18 @@
                               DisplayMemberPath="Code"
                               SelectedValuePath="Code"
                               SelectedValue="{Binding SelectedResponsibleOfficeCode}"
+                              Width="160"
+                              MinWidth="0"
+                              HorizontalAlignment="Left"
                               Margin="0,0,14,6"
                               MinHeight="28"/>
                     <TextBlock Grid.Row="2" Grid.Column="4" Text="부가세" Margin="0,0,0,6"/>
-                    <TextBox Grid.Row="2" Grid.Column="5" Text="{Binding VatAmount, StringFormat={}{0:N0}}" IsReadOnly="True" FontWeight="Bold" Margin="0,0,0,6"/>
+                    <TextBlock Grid.Row="2"
+                               Grid.Column="5"
+                               Text="{Binding VatAmount, StringFormat={}{0:N0}}"
+                               Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}"
+                               Width="140"
+                               Margin="0,0,0,6"/>
 
                     <CheckBox Grid.Row="4"
                               Grid.Column="4"
@@ -281,22 +328,24 @@
                               DisplayMemberPath="Name"
                               SelectedValuePath="Code"
                               SelectedValue="{Binding SelectedWarehouseCode}"
+                              Width="240"
+                              MinWidth="0"
+                              HorizontalAlignment="Left"
                               Margin="0,0,14,0"
                               MinHeight="28"/>
                     <TextBlock Grid.Row="3" Grid.Column="2" Text="{Binding CustomerBalanceLabelText}"/>
-                    <TextBox Grid.Row="3"
-                             Grid.Column="3"
-                             Text="{Binding CustomerBalance, StringFormat={}{0:N0}}"
-                             IsReadOnly="True"
-                             FontWeight="Bold"
-                             Foreground="#C62828"
-                             Margin="0,0,14,0"/>
+                    <TextBlock Grid.Row="3"
+                               Grid.Column="3"
+                               Text="{Binding CustomerBalance, StringFormat={}{0:N0}}"
+                               Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}"
+                               Width="140"
+                               Margin="0,0,14,0"/>
                     <TextBlock Grid.Row="3" Grid.Column="4" Text="{Binding CustomerReserveLabelText}"/>
-                    <TextBox Grid.Row="3"
-                             Grid.Column="5"
-                             Text="{Binding CustomerAdvanceBalance, StringFormat={}{0:N0}}"
-                             IsReadOnly="True"
-                             FontWeight="Bold"/>
+                    <TextBlock Grid.Row="3"
+                               Grid.Column="5"
+                               Text="{Binding CustomerAdvanceBalance, StringFormat={}{0:N0}}"
+                               Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}"
+                               Width="140"/>
 
                 </Grid>
             </Border>
@@ -350,8 +399,8 @@
                                     Padding="12,6"
                                     IsEnabled="{Binding CanLoadPreviousHistory}"
                                     Click="LoadPreviousHistoryButton_Click"/>
-                            <StackPanel Grid.Column="4" HorizontalAlignment="Center">
-                                <TextBlock Text="{Binding DocumentDetailTitleText}" HorizontalAlignment="Center" FontWeight="Bold"/>
+                            <StackPanel Grid.Column="4" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding DocumentDetailTitleText}" HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="Bold"/>
                                 <ComboBox Width="150"
                                           Margin="0,4,0,0"
                                           ItemsSource="{Binding ProcurementDocumentTitleOptions}"
@@ -367,10 +416,10 @@
                                 <ColumnDefinition Width="2*" MinWidth="180"/>
                                 <ColumnDefinition Width="38"/>
                                 <ColumnDefinition Width="1.25*" MinWidth="140"/>
-                                <ColumnDefinition Width="80"/>
-                                <ColumnDefinition Width="62"/>
-                                <ColumnDefinition Width="132"/>
-                                <ColumnDefinition Width="142"/>
+                                <ColumnDefinition Width="58"/>
+                                <ColumnDefinition Width="54"/>
+                                <ColumnDefinition Width="118"/>
+                                <ColumnDefinition Width="118"/>
                                 <ColumnDefinition Width="1.05*" MinWidth="110"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
@@ -419,10 +468,10 @@
                             <DataGridTextColumn Header="No" Width="42" IsReadOnly="True" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" Binding="{Binding RowNo}"/>
                             <DataGridTextColumn Header="품명" Width="*" MinWidth="220" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding ItemName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                             <DataGridTextColumn Header="규격" Width="220" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding Specification, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                            <DataGridTextColumn Header="수량" Width="78" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" EditingElementStyle="{StaticResource RightGridCellTextBoxStyle}" Binding="{Binding Quantity, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}"/>
-                            <DataGridTextColumn Header="단위" Width="64" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding Unit, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                            <DataGridTextColumn Header="단가" Width="124" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" EditingElementStyle="{StaticResource RightGridCellTextBoxStyle}" Binding="{Binding UnitPrice, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}"/>
-                            <DataGridTextColumn Header="금액" Width="132" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" EditingElementStyle="{StaticResource RightGridCellTextBoxStyle}" Binding="{Binding LineAmount, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}"/>
+                            <DataGridTextColumn Header="수량" Width="64" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" EditingElementStyle="{StaticResource RightGridCellTextBoxStyle}" Binding="{Binding Quantity, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}"/>
+                            <DataGridTextColumn Header="단위" Width="56" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding Unit, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                            <DataGridTextColumn Header="단가" Width="120" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" EditingElementStyle="{StaticResource RightGridCellTextBoxStyle}" Binding="{Binding UnitPrice, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}"/>
+                            <DataGridTextColumn Header="금액" Width="124" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" EditingElementStyle="{StaticResource RightGridCellTextBoxStyle}" Binding="{Binding LineAmount, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}"/>
                             <DataGridTextColumn Header="비고" Width="170" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding Remark, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                         </DataGrid.Columns>
                     </DataGrid>

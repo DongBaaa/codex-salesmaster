@@ -162,7 +162,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
         _filterDebouncer.DebounceAsync(
             TimeSpan.FromMilliseconds(250),
             () => LoadDeliveriesAsync(),
-            ex => StatusMessage = $"매입/매출내역을 다시 불러오지 못했습니다. {ex.Message}");
+            ex => StatusMessage = $"매입/매출 장부를 다시 불러오지 못했습니다. {ex.Message}");
     }
 
     [RelayCommand]
@@ -387,7 +387,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
             UiTaskHelper.Forget(
                 _local.SetSettingAsync(BuildAccountScopedFeeRateSettingKey(), value.ToString(CultureInfo.InvariantCulture)),
                 "LEDGER",
-                "매입/매출내역 수수료율 저장",
+                "매입/매출 장부 수수료율 저장",
                 ex => AppLogger.Warn("LEDGER", $"수수료율 저장 실패: {ex.Message}"));
         }
 

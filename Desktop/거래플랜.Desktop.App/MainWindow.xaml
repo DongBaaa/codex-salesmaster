@@ -129,9 +129,12 @@
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <!-- 재고/거래처 그룹 -->
-                    <Button Content="품목/재고" Background="#1B5E20" Margin="0,0,6,0" Click="InventoryButton_Click"/>
-                    <Button x:Name="NewRentalCustomerButton" Content="신규 렌탈 거래처 등록" Background="#00897B" Margin="0,0,6,0" Click="NewRentalCustomerButton_Click"/>
-                    <Button x:Name="CustomerSettingsButton" Content="거래처 설정" Background="#6D4C41" Margin="0,0,6,0" Click="CustomerSettingsButton_Click">
+                    <Button Content="품목/재고 관리" Background="#1B5E20" Margin="0,0,6,0" Click="InventoryButton_Click"
+                            ToolTip="품목 등록, 가격, 재고 수량과 이동 내역을 관리합니다."/>
+                    <Button x:Name="NewRentalCustomerButton" Content="신규 렌탈 등록" Background="#00897B" Margin="0,0,6,0" Click="NewRentalCustomerButton_Click"
+                            ToolTip="신규 렌탈 거래처와 청구/장비 연결을 단계별로 등록합니다."/>
+                    <Button x:Name="CustomerSettingsButton" Content="거래처 관리" Background="#6D4C41" Margin="0,0,6,0" Click="CustomerSettingsButton_Click"
+                            ToolTip="거래처 등록, 삭제, 담당지점 관리를 선택합니다.">
                         <Button.ContextMenu>
                             <ContextMenu Placement="Bottom" PlacementTarget="{Binding ElementName=CustomerSettingsButton}">
                                 <MenuItem Header="거래처 등록" Click="CustomerRegisterMenuItem_Click"/>
@@ -142,9 +145,12 @@
                     </Button>
                     <Rectangle Width="1" Height="20" Fill="#3E5875" Margin="4,0,10,0" VerticalAlignment="Center"/>
                     <!-- 집계/설정 그룹 -->
-                    <Button Content="매입/매출내역" Background="#5E35B1" Margin="0,0,6,0" Click="YeonsuDeliveryButton_Click"/>
-                    <Button Content="자료집계" Background="#6A1B9A" Margin="0,0,6,0" Click="PeriodLedgerButton_Click"/>
-                    <Button x:Name="RentalManagementButton" Content="렌탈 관리" Background="#1565C0" Margin="0,0,6,0" Click="RentalManagementButton_Click">
+                    <Button Content="매입/매출 장부" Background="#5E35B1" Margin="0,0,6,0" Click="YeonsuDeliveryButton_Click"
+                            ToolTip="매입·매출 전표를 기간/구분별 장부 형태로 조회합니다."/>
+                    <Button Content="기간별 집계" Background="#6A1B9A" Margin="0,0,6,0" Click="PeriodLedgerButton_Click"
+                            ToolTip="거래처별 집계, 판매/구매/수금지불 원장을 조회합니다."/>
+                    <Button x:Name="RentalManagementButton" Content="렌탈 업무" Background="#1565C0" Margin="0,0,6,0" Click="RentalManagementButton_Click"
+                            ToolTip="렌탈 대시보드, 청구관리, 자산/설치현황, 기준설정을 선택합니다.">
                         <Button.ContextMenu>
                             <ContextMenu Placement="Bottom" PlacementTarget="{Binding ElementName=RentalManagementButton}">
                                 <MenuItem Header="렌탈 대시보드" Click="RentalDashboardMenuItem_Click"/>
@@ -156,9 +162,11 @@
                         </Button.ContextMenu>
                     </Button>
                     <Rectangle Width="1" Height="20" Fill="#3E5875" Margin="4,0,10,0" VerticalAlignment="Center"/>
-                    <Button Content="환경설정" Background="#546E7A" Margin="0,0,6,0" Click="EnvironmentSettingsButton_Click"/>
+                    <Button Content="환경설정" Background="#546E7A" Margin="0,0,6,0" Click="EnvironmentSettingsButton_Click"
+                            ToolTip="회사설정, 사용자 권한, 기준정보, 휴지통을 관리합니다."/>
                     <Grid Margin="0,0,6,0">
-                        <Button Content="휴지통" Background="#6D4C41" Click="RecycleBinButton_Click"/>
+                        <Button Content="휴지통" Background="#6D4C41" Click="RecycleBinButton_Click"
+                                ToolTip="삭제 보관된 데이터를 확인하고 복구/영구삭제를 처리합니다."/>
                         <Border Background="#C62828"
                                 CornerRadius="10"
                                 Padding="6,1"
@@ -175,7 +183,8 @@
                     <Rectangle Width="1" Height="20" Fill="#3E5875" Margin="4,0,10,0" VerticalAlignment="Center"/>
                     <!-- 사용자 그룹 -->
                     <TextBlock Text="{Binding CurrentUserDisplay}" Foreground="#9FB3C8" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                    <Button Content="로그아웃" Background="#6C5B7B" Click="LogoutButton_Click"/>
+                    <Button Content="로그아웃" Background="#6C5B7B" Click="LogoutButton_Click"
+                            ToolTip="현재 계정에서 로그아웃하고 로그인 화면으로 돌아갑니다."/>
                 </StackPanel>
             </Grid>
         </Border>
@@ -285,7 +294,7 @@
 
                             <Button Content="판매작성" Background="#1565C0" Click="SalesToolbarButton_Click" Margin="0,0,6,0"/>
                             <Button Content="구매작성" Background="#0277BD" Click="PurchaseToolbarButton_Click" Margin="0,0,6,0"/>
-                            <Button Content="견적 발주" Background="#455A64" Click="ProcurementToolbarButton_Click" Margin="0,0,6,0"/>
+                            <Button Content="견적/발주" Background="#455A64" Click="ProcurementToolbarButton_Click" Margin="0,0,6,0"/>
                             <Button Content="삭제" Background="#E53935" Command="{Binding DeleteInvoiceCommand}" Margin="0,0,6,0"/>
                             <Button Content="수금 입력" Background="#00897B" Click="PaymentEntryButton_Click" Margin="0,0,6,0"/>
                             <Button Content="전표 인쇄[F9]" Background="#1E88E5" Command="{Binding PrintStatementCommand}"/>

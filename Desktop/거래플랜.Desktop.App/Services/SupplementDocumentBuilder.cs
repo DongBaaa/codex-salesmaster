@@ -172,7 +172,7 @@ public static class SupplementDocumentBuilder
         AddLabelCell(grid, 27, 1, 27, 11, "부  가  세  액", fontSize: 13, background: BandFillBrush);
         AddMergedCell(grid, 27, 12, 27, 13, string.Empty);
         AddMergedCell(grid, 27, 14, 27, 16, isFinalPage ? $"{vatAmount:N0}" : string.Empty, bold: true, align: TextAlignment.Right, fontSize: 13);
-        AddMergedCell(grid, 27, 17, 27, 19, isFinalPage ? "." : string.Empty);
+        AddMergedCell(grid, 27, 17, 27, 19, string.Empty);
 
         AddLabelCell(grid, 29, 1, 29, 3, isFinalPage ? "특이사항" : "안내");
         AddMergedCell(grid, 29, 4, 29, 19, isFinalPage ? estimateRemarks : "다음 페이지에 견적 내역이 계속됩니다.", wrap: false);
