@@ -1,7 +1,7 @@
 <Window x:Class="거래플랜.Desktop.App.Views.PeriodLedgerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="자료 기간별 집계"
+        Title="기간별 집계"
         Width="1100"
         Height="840"
         MinWidth="1000"

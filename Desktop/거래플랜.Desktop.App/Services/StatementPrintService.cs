@@ -2,6 +2,7 @@
 using QuestPDF.Helpers;
 using QuestPDF.Infrastructure;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Printing;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -153,8 +154,8 @@ public sealed class StatementPrintService
                     h.Cell().Element(HeaderCell).Text("규격").FontColor("#FFFFFF").Bold();
                     h.Cell().Element(HeaderCell).Text("단위").FontColor("#FFFFFF").Bold();
                     h.Cell().Element(HeaderCell).Text("수량").FontColor("#FFFFFF").Bold();
-                    h.Cell().Element(HeaderCell).Text("단가").FontColor("#FFFFFF").Bold();
-                    h.Cell().Element(HeaderCell).Text("금액").FontColor("#FFFFFF").Bold();
+                    h.Cell().Element(HeaderCell).Text("공급단가").FontColor("#FFFFFF").Bold();
+                    h.Cell().Element(HeaderCell).Text("공급가액").FontColor("#FFFFFF").Bold();
                     h.Cell().Element(HeaderCell).Text("비고").FontColor("#FFFFFF").Bold();
                 });
 
@@ -172,8 +173,8 @@ public sealed class StatementPrintService
                     table.Cell().Element(c => DataCell(c, bg)).AlignLeft().Text(line?.SpecificationOriginal ?? "");
                     table.Cell().Element(c => DataCell(c, bg)).AlignCenter().Text(line?.Unit ?? "");
                     table.Cell().Element(c => DataCell(c, bg)).AlignRight().Text(line is not null ? $"{line.Quantity:N0}" : "");
-                    table.Cell().Element(c => DataCell(c, bg)).AlignRight().Text(line is not null ? $"{line.UnitPrice:N0}" : "");
-                    table.Cell().Element(c => DataCell(c, bg)).AlignRight().Text(line is not null ? $"{line.LineAmount:N0}" : "");
+                    table.Cell().Element(c => DataCell(c, bg)).AlignRight().Text(line is not null ? $"{ResolvePrintedSupplyUnitPrice(line, invoice.VatMode):N0}" : "");
+                    table.Cell().Element(c => DataCell(c, bg)).AlignRight().Text(line is not null ? $"{ResolvePrintedSupplyAmount(line, invoice.VatMode):N0}" : "");
                     table.Cell().Element(c => DataCell(c, bg)).Text(line?.Remark ?? "");
                 }
             });
@@ -206,4 +207,16 @@ public sealed class StatementPrintService
             }
         });
     }
+
+    private static decimal ResolvePrintedSupplyUnitPrice(LocalInvoiceLine line, string? vatMode)
+        => InvoicePrintLineSynchronizer.ResolvePrintedSupplyUnitPrice(
+            line.UnitPrice,
+            line.Quantity,
+            line.LineAmount,
+            vatMode);
+
+    private static decimal ResolvePrintedSupplyAmount(LocalInvoiceLine line, string? vatMode)
+        => InvoicePrintLineSynchronizer.ResolvePrintedSupplyAmount(
+            line.LineAmount,
+            vatMode);
 }

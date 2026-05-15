@@ -1,5 +1,6 @@
 using 거래플랜.Desktop.App.ViewModels;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Printing;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 using Xunit;
@@ -26,6 +27,46 @@ public sealed class InvoiceVatModeTests
         Assert.Equal(110_000m, totals.TotalAmount);
         Assert.Equal(110_000m, totals.SupplyAmount);
         Assert.Equal(0m, totals.VatAmount);
+    }
+
+    [Fact]
+    public void InvoicePrintLineAmounts_SplitTaxIncludedLineForSupplyColumns()
+    {
+        var supplyUnitPrice = InvoicePrintLineSynchronizer.ResolvePrintedSupplyUnitPrice(
+            unitPrice: 88_000m,
+            quantity: 1m,
+            lineAmount: 88_000m,
+            vatMode: InvoiceVatModes.Included);
+        var supplyAmount = InvoicePrintLineSynchronizer.ResolvePrintedSupplyAmount(
+            88_000m,
+            InvoiceVatModes.Included);
+        var vatAmount = InvoicePrintLineSynchronizer.ResolvePrintedVatAmount(
+            88_000m,
+            InvoiceVatModes.Included);
+
+        Assert.Equal(80_000m, supplyUnitPrice);
+        Assert.Equal(80_000m, supplyAmount);
+        Assert.Equal(8_000m, vatAmount);
+    }
+
+    [Fact]
+    public void InvoicePrintLineAmounts_KeepTotalAsSupplyWhenVatNone()
+    {
+        var supplyUnitPrice = InvoicePrintLineSynchronizer.ResolvePrintedSupplyUnitPrice(
+            unitPrice: 88_000m,
+            quantity: 1m,
+            lineAmount: 88_000m,
+            vatMode: InvoiceVatModes.None);
+        var supplyAmount = InvoicePrintLineSynchronizer.ResolvePrintedSupplyAmount(
+            88_000m,
+            InvoiceVatModes.None);
+        var vatAmount = InvoicePrintLineSynchronizer.ResolvePrintedVatAmount(
+            88_000m,
+            InvoiceVatModes.None);
+
+        Assert.Equal(88_000m, supplyUnitPrice);
+        Assert.Equal(88_000m, supplyAmount);
+        Assert.Equal(0m, vatAmount);
     }
 
     [Fact]

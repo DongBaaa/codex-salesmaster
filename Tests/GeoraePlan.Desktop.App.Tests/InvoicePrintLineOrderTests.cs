@@ -102,15 +102,54 @@ public sealed class InvoicePrintLineOrderTests
         Assert.Equal(new[] { 1, 2 }, items.Select(ReadNo).ToArray());
     }
 
+    [Fact]
+    public void SupplementDocumentBuilder_ResolveEstimateLinesUsesSupplyAmountForTaxIncludedPrint()
+    {
+        var result = InvokePrivateStatic<object>(
+            typeof(SupplementDocumentBuilder),
+            "ResolveEstimateLines",
+            new LocalInvoice(),
+            new InvoicePrintModel
+            {
+                VatMode = 거래플랜.Shared.Contracts.InvoiceVatModes.Included,
+                Lines =
+                [
+                    new InvoicePrintLineModel
+                    {
+                        No = 1,
+                        ItemName = "tax included",
+                        Quantity = 1m,
+                        UnitPrice = 88_000m,
+                        Amount = 88_000m
+                    }
+                ]
+            });
+
+        var item = Assert.Single(Assert.IsAssignableFrom<IEnumerable>(result).Cast<object>());
+        Assert.Equal(80_000m, ReadDecimal(item, "SupplyUnitPrice"));
+        Assert.Equal(80_000m, ReadDecimal(item, "SupplyAmount"));
+    }
+
     private static string ReadItemName(object target)
         => Assert.IsType<string>(target.GetType().GetProperty("ItemName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!.GetValue(target));
 
     private static int ReadNo(object target)
         => Assert.IsType<int>(target.GetType().GetProperty("No", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!.GetValue(target));
 
+    private static decimal ReadDecimal(object target, string propertyName)
+        => Assert.IsType<decimal>(target.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!.GetValue(target));
+
     private static T InvokePrivateStatic<T>(Type type, string methodName, params object?[] args)
     {
-        var method = type.GetMethod(methodName, BindingFlags.Static | BindingFlags.NonPublic);
+        var argTypes = args
+            .Select(arg => arg?.GetType() ?? typeof(object))
+            .ToArray();
+        var method = type.GetMethod(
+            methodName,
+            BindingFlags.Static | BindingFlags.NonPublic,
+            binder: null,
+            types: argTypes,
+            modifiers: null);
         Assert.NotNull(method);
         return (T)method!.Invoke(null, args)!;
     }

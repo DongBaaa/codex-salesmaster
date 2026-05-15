@@ -163,6 +163,19 @@
             <Setter Property="HorizontalAlignment" Value="Left"/>
             <Setter Property="Foreground" Value="#FF6B6B"/>
         </Style>
+        <Style x:Key="InfoSectionTitleTextStyle" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="Foreground" Value="#4FC3F7"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+        <Style x:Key="InfoLabelTextStyle" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="Foreground" Value="#9FB3C8"/>
+            <Setter Property="Margin" Value="0,0,8,6"/>
+        </Style>
+        <Style x:Key="InfoValueTextStyle" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource ReadOnlyDisplayTextStyle}">
+            <Setter Property="Margin" Value="0,0,12,6"/>
+        </Style>
     </Window.Resources>
 
     <DockPanel>
@@ -213,143 +226,139 @@
             <Border Grid.Row="0" Background="#1A2B4A" BorderBrush="#2E4060" BorderThickness="1" Padding="8,7" Margin="0,0,0,4">
                 <Grid>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" SharedSizeGroup="SalesInfoLabelPrimary"/>
-                        <ColumnDefinition Width="380"/>
-                        <ColumnDefinition Width="Auto" SharedSizeGroup="SalesInfoLabelSecondary"/>
-                        <ColumnDefinition Width="240"/>
-                        <ColumnDefinition Width="Auto" SharedSizeGroup="SalesInfoLabelTertiary"/>
-                        <ColumnDefinition Width="220"/>
+                        <ColumnDefinition Width="1.45*"/>
+                        <ColumnDefinition Width="1.05*"/>
+                        <ColumnDefinition Width="310"/>
                     </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding CustomerSectionTitleText}" FontWeight="Bold"/>
-                    <Button Grid.Row="0"
-                            Grid.Column="1"
-                            Style="{StaticResource BaseButtonStyle}"
-                            Content="{Binding CustomerName}"
-                            Background="#D9E6F5"
-                            Foreground="Black"
-                            FontWeight="Bold"
-                            HorizontalAlignment="Left"
-                            HorizontalContentAlignment="Left"
-                            Width="360"
-                            Padding="6,2"
-                            Margin="0,0,14,6"
-                            Click="CustomerSelectButton_Click"/>
-                    <TextBlock Grid.Row="0" Grid.Column="2" Text="고객분류" Margin="0,0,0,6"/>
-                    <TextBlock Grid.Row="0"
-                               Grid.Column="3"
-                               Text="{Binding CustomerTradeType}"
-                               Style="{StaticResource ReadOnlyDisplayTextStyle}"
-                               Width="180"
-                               Margin="0,0,14,6"/>
-                    <TextBlock Grid.Row="0" Grid.Column="4" Text="합계금액" Margin="0,0,0,6"/>
-                    <TextBlock Grid.Row="0"
-                               Grid.Column="5"
-                               Text="{Binding TotalAmount, StringFormat={}{0:N0}}"
-                               Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}"
-                               Width="140"
-                               Margin="0,0,0,6"/>
+                    <Border Grid.Column="0" Background="#162640" BorderBrush="#2E4060" BorderThickness="1" Padding="10" Margin="0,0,8,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="92"/>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="82"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="1" Grid.Column="0" Text="대표전화" Margin="0,0,0,6"/>
-                    <TextBox Grid.Row="1"
-                             Grid.Column="1"
-                             Text="{Binding CustomerPhone}"
-                             IsReadOnly="True"
-                             TextAlignment="Left"
-                             Width="180"
-                             MinWidth="0"
-                             HorizontalAlignment="Left"
-                             Margin="0,0,14,6"/>
-                    <TextBlock Grid.Row="1" Grid.Column="2" Text="가격등급" Margin="0,0,0,6"/>
-                    <TextBlock Grid.Row="1"
-                               Grid.Column="3"
-                               Text="{Binding CustomerPriceGrade}"
-                               Style="{StaticResource ReadOnlyDisplayTextStyle}"
-                               Width="180"
-                               Margin="0,0,14,6"/>
-                    <TextBlock Grid.Row="1" Grid.Column="4" Text="공급가" Margin="0,0,0,6"/>
-                    <TextBlock Grid.Row="1"
-                               Grid.Column="5"
-                               Text="{Binding SupplyAmount, StringFormat={}{0:N0}}"
-                               Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}"
-                               Width="140"
-                               Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="0" Grid.ColumnSpan="4" Text="{Binding CustomerSectionTitleText}" Style="{StaticResource InfoSectionTitleTextStyle}"/>
 
-                    <TextBlock Grid.Row="2" Grid.Column="0" Text="휴대폰" Margin="0,0,0,6"/>
-                    <TextBox Grid.Row="2"
-                             Grid.Column="1"
-                             Text="{Binding CustomerMobile}"
-                             IsReadOnly="True"
-                             TextAlignment="Left"
-                             Width="180"
-                             MinWidth="0"
-                             HorizontalAlignment="Left"
-                             Margin="0,0,14,6"/>
-                    <TextBlock Grid.Row="2" Grid.Column="2" Text="담당지점" Margin="0,0,0,6"/>
-                    <ComboBox Grid.Row="2"
-                              Grid.Column="3"
-                              ItemsSource="{Binding Offices}"
-                              DisplayMemberPath="Code"
-                              SelectedValuePath="Code"
-                              SelectedValue="{Binding SelectedResponsibleOfficeCode}"
-                              Width="160"
-                              MinWidth="0"
-                              HorizontalAlignment="Left"
-                              Margin="0,0,14,6"
-                              MinHeight="28"/>
-                    <TextBlock Grid.Row="2" Grid.Column="4" Text="부가세" Margin="0,0,0,6"/>
-                    <TextBlock Grid.Row="2"
-                               Grid.Column="5"
-                               Text="{Binding VatAmount, StringFormat={}{0:N0}}"
-                               Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}"
-                               Width="140"
-                               Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="{Binding CustomerNameLabelText}" Style="{StaticResource InfoLabelTextStyle}"/>
+                            <Button Grid.Row="1"
+                                    Grid.Column="1"
+                                    Grid.ColumnSpan="3"
+                                    Style="{StaticResource BaseButtonStyle}"
+                                    Content="{Binding CustomerName}"
+                                    Background="#D9E6F5"
+                                    Foreground="Black"
+                                    FontWeight="Bold"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Left"
+                                    Padding="8,2"
+                                    Margin="0,0,0,6"
+                                    Click="CustomerSelectButton_Click"/>
 
-                    <CheckBox Grid.Row="4"
-                              Grid.Column="4"
-                              Grid.ColumnSpan="2"
-                                    Content="부가세 없음"
-                              IsChecked="{Binding IsVatNone, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                              Foreground="#EAF2FF"
-                              VerticalAlignment="Center"
-                              Margin="0,4,0,0"/>
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="대표전화" Style="{StaticResource InfoLabelTextStyle}"/>
+                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding CustomerPhone}" Style="{StaticResource InfoValueTextStyle}"/>
+                            <TextBlock Grid.Row="2" Grid.Column="2" Text="휴대폰" Style="{StaticResource InfoLabelTextStyle}"/>
+                            <TextBlock Grid.Row="2" Grid.Column="3" Text="{Binding CustomerMobile}" Style="{StaticResource InfoValueTextStyle}" Margin="0,0,0,6"/>
 
-                    <TextBlock Grid.Row="3" Grid.Column="0" Text="{Binding WarehouseLabelText}"/>
-                    <ComboBox Grid.Row="3"
-                              Grid.Column="1"
-                              ItemsSource="{Binding Warehouses}"
-                              DisplayMemberPath="Name"
-                              SelectedValuePath="Code"
-                              SelectedValue="{Binding SelectedWarehouseCode}"
-                              Width="240"
-                              MinWidth="0"
-                              HorizontalAlignment="Left"
-                              Margin="0,0,14,0"
-                              MinHeight="28"/>
-                    <TextBlock Grid.Row="3" Grid.Column="2" Text="{Binding CustomerBalanceLabelText}"/>
-                    <TextBlock Grid.Row="3"
-                               Grid.Column="3"
-                               Text="{Binding CustomerBalance, StringFormat={}{0:N0}}"
-                               Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}"
-                               Width="140"
-                               Margin="0,0,14,0"/>
-                    <TextBlock Grid.Row="3" Grid.Column="4" Text="{Binding CustomerReserveLabelText}"/>
-                    <TextBlock Grid.Row="3"
-                               Grid.Column="5"
-                               Text="{Binding CustomerAdvanceBalance, StringFormat={}{0:N0}}"
-                               Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}"
-                               Width="140"/>
+                            <TextBlock Grid.Row="3" Grid.Column="0" Text="{Binding CustomerCategoryLabelText}" Style="{StaticResource InfoLabelTextStyle}"/>
+                            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding CustomerCategoryName}" Style="{StaticResource InfoValueTextStyle}"/>
+                            <TextBlock Grid.Row="3" Grid.Column="2" Text="가격등급" Style="{StaticResource InfoLabelTextStyle}"/>
+                            <TextBlock Grid.Row="3" Grid.Column="3" Text="{Binding CustomerPriceGrade}" Style="{StaticResource InfoValueTextStyle}" Margin="0,0,0,6"/>
 
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="거래구분" Style="{StaticResource InfoLabelTextStyle}"/>
+                            <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding CustomerTradeType}" Style="{StaticResource InfoValueTextStyle}"/>
+                            <TextBlock Grid.Row="4" Grid.Column="2" Text="담당지점" Style="{StaticResource InfoLabelTextStyle}"/>
+                            <ComboBox Grid.Row="4"
+                                      Grid.Column="3"
+                                      ItemsSource="{Binding Offices}"
+                                      DisplayMemberPath="Code"
+                                      SelectedValuePath="Code"
+                                      SelectedValue="{Binding SelectedResponsibleOfficeCode}"
+                                      Width="150"
+                                      MinWidth="0"
+                                      HorizontalAlignment="Left"
+                                      Margin="0,0,0,6"
+                                      MinHeight="28"/>
+
+                            <TextBlock Grid.Row="5" Grid.Column="0" Text="{Binding WarehouseLabelText}" Style="{StaticResource InfoLabelTextStyle}" Margin="0,0,8,0"/>
+                            <ComboBox Grid.Row="5"
+                                      Grid.Column="1"
+                                      Grid.ColumnSpan="3"
+                                      ItemsSource="{Binding Warehouses}"
+                                      DisplayMemberPath="Name"
+                                      SelectedValuePath="Code"
+                                      SelectedValue="{Binding SelectedWarehouseCode}"
+                                      Width="240"
+                                      MinWidth="0"
+                                      HorizontalAlignment="Left"
+                                      MinHeight="28"/>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="1" Background="#162640" BorderBrush="#2E4060" BorderThickness="1" Padding="10" Margin="0,0,8,0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="참고사항" Style="{StaticResource InfoSectionTitleTextStyle}"/>
+                            <Border Grid.Row="1" Background="#102039" BorderBrush="#2E4060" BorderThickness="1" Padding="8" MinHeight="112">
+                                <TextBlock Text="{Binding CustomerNoteDisplayText}"
+                                           Foreground="#EAF2FF"
+                                           TextWrapping="Wrap"
+                                           VerticalAlignment="Top"/>
+                            </Border>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="2" Background="#162640" BorderBrush="#2E4060" BorderThickness="1" Padding="10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="금액 요약" Style="{StaticResource InfoSectionTitleTextStyle}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="합계금액" Style="{StaticResource InfoLabelTextStyle}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding TotalAmount, StringFormat={}{0:N0}}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="공급가" Style="{StaticResource InfoLabelTextStyle}"/>
+                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SupplyAmount, StringFormat={}{0:N0}}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="3" Grid.Column="0" Text="부가세" Style="{StaticResource InfoLabelTextStyle}"/>
+                            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding VatAmount, StringFormat={}{0:N0}}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="{Binding CustomerBalanceLabelText}" Style="{StaticResource InfoLabelTextStyle}"/>
+                            <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding CustomerBalance, StringFormat={}{0:N0}}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0,0,0,6"/>
+                            <TextBlock Grid.Row="5" Grid.Column="0" Text="{Binding CustomerReserveLabelText}" Style="{StaticResource InfoLabelTextStyle}" Margin="0,0,8,0"/>
+                            <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding CustomerAdvanceBalance, StringFormat={}{0:N0}}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0"/>
+                            <CheckBox Grid.Row="6"
+                                      Grid.ColumnSpan="2"
+                                      Content="부가세 없음"
+                                      IsChecked="{Binding IsVatNone, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                      Foreground="#EAF2FF"
+                                      VerticalAlignment="Center"
+                                      Margin="0,8,0,0"/>
+                        </Grid>
+                    </Border>
                 </Grid>
             </Border>
-
             <Grid Grid.Row="1" Grid.RowSpan="2" Margin="0,0,0,4">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
@@ -551,7 +560,7 @@
                             </Border>
 
                             <Button Style="{StaticResource BaseButtonStyle}" Content="인쇄하기[F9]" Margin="0,0,0,6" Command="{Binding PrintCommand}"/>
-                            <Button Style="{StaticResource BaseButtonStyle}" Content="세금계산인쇄"
+                            <Button Style="{StaticResource BaseButtonStyle}" Content="출력물 편집"
                                     Margin="0,0,0,6"
                                     Command="{Binding EditPrintOutputCommand}"
                                     Visibility="{Binding CanEditPrintOutput, Converter={StaticResource BoolToVisibilityConverter}}"/>
@@ -561,7 +570,7 @@
                                       Margin="0,0,0,10"
                                       Foreground="#EAF2FF"
                                       VerticalAlignment="Center"/>
-                            <Button Style="{StaticResource BaseButtonStyle}" Content="세금계산인쇄"
+                            <Button Style="{StaticResource BaseButtonStyle}" Content="세금계산서 인쇄"
                                     Margin="0,0,0,6"
                                     Command="{Binding PrintTaxInvoiceCommand}"
                                     Visibility="{Binding CanPrintTaxInvoice, Converter={StaticResource BoolToVisibilityConverter}}"/>

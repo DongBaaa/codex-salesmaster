@@ -51,4 +51,33 @@ public sealed class TaxInvoiceIssuedPersistenceTests
 
         Assert.True(viewModel.HasPendingChanges);
     }
+
+    [Fact]
+    public void SalesViewModel_CounterpartyLabels_DistinguishSalesAndPurchase()
+    {
+        var salesViewModel = new SalesViewModel(
+            local: null!,
+            print: null!,
+            invoicePrintService: null!,
+            session: new SessionState(),
+            newInvoiceVoucherType: VoucherType.Sales);
+        var purchaseViewModel = new SalesViewModel(
+            local: null!,
+            print: null!,
+            invoicePrintService: null!,
+            session: new SessionState(),
+            newInvoiceVoucherType: VoucherType.Purchase);
+
+        Assert.Equal("거래처 정보", salesViewModel.CustomerSectionTitleText);
+        Assert.Equal("고객/거래처", salesViewModel.CustomerNameLabelText);
+        Assert.Equal("고객분류", salesViewModel.CustomerCategoryLabelText);
+        Assert.Equal("총미수금", salesViewModel.CustomerBalanceLabelText);
+        Assert.Equal("선수금", salesViewModel.CustomerReserveLabelText);
+
+        Assert.Equal("거래처 정보", purchaseViewModel.CustomerSectionTitleText);
+        Assert.Equal("거래처", purchaseViewModel.CustomerNameLabelText);
+        Assert.Equal("거래처분류", purchaseViewModel.CustomerCategoryLabelText);
+        Assert.Equal("총미지급금", purchaseViewModel.CustomerBalanceLabelText);
+        Assert.Equal("선지급금", purchaseViewModel.CustomerReserveLabelText);
+    }
 }

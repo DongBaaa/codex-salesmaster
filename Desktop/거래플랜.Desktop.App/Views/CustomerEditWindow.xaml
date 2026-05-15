@@ -184,7 +184,7 @@
                               SelectedValue="{Binding CategoryId}"
                               DisplayMemberPath="Name"/>
 
-                    <Label Grid.Row="1" Grid.Column="0" Content="업태"/>
+                    <Label Grid.Row="1" Grid.Column="0" Content="대표전화"/>
                     <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Phone, UpdateSourceTrigger=PropertyChanged}"/>
                     <Label Grid.Row="1" Grid.Column="2" Content="거래구분"/>
                     <ComboBox Grid.Row="1" Grid.Column="3"
@@ -225,12 +225,12 @@
                         <RowDefinition Height="30"/>
                     </Grid.RowDefinitions>
 
-                    <Label Grid.Row="0" Grid.Column="0" Content="주소"/>
+                    <Label Grid.Row="0" Grid.Column="0" Content="사업자번호"/>
                     <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding BusinessNumber, UpdateSourceTrigger=PropertyChanged}"/>
                     <Label Grid.Row="0" Grid.Column="2" Content="대표자명"/>
                     <TextBox Grid.Row="0" Grid.Column="3" Text="{Binding Representative, UpdateSourceTrigger=PropertyChanged}"/>
 
-                    <Label Grid.Row="1" Grid.Column="0" Content="대표전화"/>
+                    <Label Grid.Row="1" Grid.Column="0" Content="업태"/>
                     <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding BusinessType, UpdateSourceTrigger=PropertyChanged}"/>
                     <Label Grid.Row="1" Grid.Column="2" Content="종목"/>
                     <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding BusinessItem, UpdateSourceTrigger=PropertyChanged}"/>
@@ -248,7 +248,7 @@
                         <RowDefinition Height="30"/>
                     </Grid.RowDefinitions>
 
-                    <Label Grid.Row="0" Grid.Column="0" Content="사업자번호"/>
+                    <Label Grid.Row="0" Grid.Column="0" Content="주소"/>
                     <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Address, UpdateSourceTrigger=PropertyChanged}"/>
                     <Label Grid.Row="1" Grid.Column="0" Content="상세주소"/>
                     <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding DetailAddress, UpdateSourceTrigger=PropertyChanged}"/>

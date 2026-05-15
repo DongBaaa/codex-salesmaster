@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Printing;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -267,8 +268,8 @@ public static class StatementDocumentBuilder
         header.Cells.Add(CreateLabelCell("품 명 / 규 격", accent, center: true));
         header.Cells.Add(CreateLabelCell("단위", accent, center: true));
         header.Cells.Add(CreateLabelCell("수량", accent, center: true));
-        header.Cells.Add(CreateLabelCell("단가", accent, center: true));
-        header.Cells.Add(CreateLabelCell("금액", accent, center: true));
+        header.Cells.Add(CreateLabelCell("공급단가", accent, center: true));
+        header.Cells.Add(CreateLabelCell("공급가액", accent, center: true));
         rows.Rows.Add(header);
 
         var lines = invoice.Lines.Where(line => !line.IsDeleted).ToList();
@@ -286,11 +287,11 @@ public static class StatementDocumentBuilder
                 row.Cells.Add(CreateValueCell(line.Unit, accent, align: TextAlignment.Center));
                 row.Cells.Add(CreateValueCell($"{line.Quantity:N0}", accent, align: TextAlignment.Right));
                 row.Cells.Add(CreateValueCell(
-                    printWithPrice ? $"{line.UnitPrice:N0}" : string.Empty,
+                    printWithPrice ? $"{ResolvePrintedSupplyUnitPrice(line, invoice.VatMode):N0}" : string.Empty,
                     accent,
                     align: TextAlignment.Right));
                 row.Cells.Add(CreateValueCell(
-                    printWithPrice ? $"{line.LineAmount:N0}" : string.Empty,
+                    printWithPrice ? $"{ResolvePrintedSupplyAmount(line, invoice.VatMode):N0}" : string.Empty,
                     accent,
                     align: TextAlignment.Right));
             }
@@ -329,6 +330,18 @@ public static class StatementDocumentBuilder
 
         return $"{itemName} [{spec}]";
     }
+
+    private static decimal ResolvePrintedSupplyUnitPrice(LocalInvoiceLine line, string? vatMode)
+        => InvoicePrintLineSynchronizer.ResolvePrintedSupplyUnitPrice(
+            line.UnitPrice,
+            line.Quantity,
+            line.LineAmount,
+            vatMode);
+
+    private static decimal ResolvePrintedSupplyAmount(LocalInvoiceLine line, string? vatMode)
+        => InvoicePrintLineSynchronizer.ResolvePrintedSupplyAmount(
+            line.LineAmount,
+            vatMode);
 
     private static Table BuildTotalsTable(LocalInvoice invoice, SolidColorBrush accent, bool printWithPrice)
     {
@@ -467,7 +480,7 @@ public static class StatementDocumentBuilder
                 row.Cells.Add(CreateValueCell(FormatItemText(line), BlueAccentBrush, align: TextAlignment.Left, wrap: true));
                 row.Cells.Add(CreateValueCell($"{line.Quantity:N0}", BlueAccentBrush, align: TextAlignment.Right));
                 row.Cells.Add(CreateValueCell(
-                    printWithPrice ? $"{line.LineAmount:N0}" : string.Empty,
+                    printWithPrice ? $"{ResolvePrintedSupplyAmount(line, invoice.VatMode):N0}" : string.Empty,
                     BlueAccentBrush,
                     align: TextAlignment.Right));
             }

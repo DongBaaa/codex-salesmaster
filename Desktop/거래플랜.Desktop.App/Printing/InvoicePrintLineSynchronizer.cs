@@ -1,4 +1,5 @@
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Printing;
 
@@ -84,6 +85,30 @@ public static class InvoicePrintLineSynchronizer
             Remark = line.Remark ?? string.Empty
         };
     }
+
+    public static decimal ResolvePrintedSupplyUnitPrice(
+        decimal unitPrice,
+        decimal quantity,
+        decimal lineAmount,
+        string? vatMode)
+    {
+        if (InvoiceVatModes.IsNone(vatMode))
+            return unitPrice;
+
+        if (quantity != 0m && lineAmount != 0m)
+        {
+            var lineSupplyAmount = ResolvePrintedSupplyAmount(lineAmount, vatMode);
+            return Math.Round(lineSupplyAmount / quantity, 0, MidpointRounding.AwayFromZero);
+        }
+
+        return InvoiceVatModes.SplitLineAmount(unitPrice, vatMode).SupplyAmount;
+    }
+
+    public static decimal ResolvePrintedSupplyAmount(decimal lineAmount, string? vatMode)
+        => InvoiceVatModes.SplitLineAmount(lineAmount, vatMode).SupplyAmount;
+
+    public static decimal ResolvePrintedVatAmount(decimal lineAmount, string? vatMode)
+        => InvoiceVatModes.SplitLineAmount(lineAmount, vatMode).VatAmount;
 
     private static int FindSourceLineMatch(
         IReadOnlyList<InvoicePrintLineModel> saved,

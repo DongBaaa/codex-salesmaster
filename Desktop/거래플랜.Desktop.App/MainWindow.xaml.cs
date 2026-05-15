@@ -740,7 +740,7 @@ public partial class MainWindow : Window
         => RunUiAsync(() => OpenPurchaseWindowAsync(preselectSelectedCustomer: true), "매입 전표 창 열기");
 
     private void ProcurementToolbarButton_Click(object sender, RoutedEventArgs e)
-        => RunUiAsync(() => OpenProcurementWindowAsync(preselectSelectedCustomer: true), "발주 전표 창 열기");
+        => RunUiAsync(() => OpenProcurementWindowAsync(preselectSelectedCustomer: true), "견적/발주 창 열기");
 
     // 전표 목록 더블클릭 수정
     private void InvoiceRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -945,9 +945,9 @@ public partial class MainWindow : Window
     private void PaymentButton_Click(object sender, RoutedEventArgs e)
         => RunUiAsync(OpenPaymentPopupAsync, "수금/지급 창 열기");
 
-    // 자료기간별 집계 버튼(헤더)
+    // 기간별 집계 버튼(헤더)
     private void PeriodLedgerButton_Click(object sender, RoutedEventArgs e)
-        => RunUiAsync(OpenPeriodLedgerWindowAsync, "자료기간별 집계 창 열기");
+        => RunUiAsync(OpenPeriodLedgerWindowAsync, "기간별 집계 창 열기");
 
     private async Task OpenPeriodLedgerWindowAsync()
     {
@@ -959,7 +959,7 @@ public partial class MainWindow : Window
 
         await OperationTiming.MeasureAsync(
             "UI",
-            "자료기간별 집계 창 초기화",
+            "기간별 집계 창 초기화",
             () => vm.InitializeAsync(),
             warningThreshold: TimeSpan.FromSeconds(2));
         var win = new PeriodLedgerWindow(vm) { Owner = this };
@@ -967,7 +967,7 @@ public partial class MainWindow : Window
     }
 
     private void YeonsuDeliveryButton_Click(object sender, RoutedEventArgs e)
-        => RunUiAsync(OpenYeonsuDeliveryWindowAsync, "매입/매출내역 창 열기");
+        => RunUiAsync(OpenYeonsuDeliveryWindowAsync, "매입/매출 장부 창 열기");
 
     private void EnvironmentSettingsButton_Click(object sender, RoutedEventArgs e)
         => RunUiAsync(() => OpenEnvironmentSettingsWindowAsync(), "환경설정 창 열기");
@@ -1170,7 +1170,7 @@ public partial class MainWindow : Window
         var vm = new YeonsuDeliveryViewModel(_local, _session);
         await OperationTiming.MeasureAsync(
             "UI",
-            "매입/매출내역 창 초기화",
+            "매입/매출 장부 창 초기화",
             () => vm.InitializeAsync(),
             warningThreshold: TimeSpan.FromSeconds(2));
         var win = new YeonsuDeliveryWindow(vm, _local, _print, _invoicePrintService, _session)

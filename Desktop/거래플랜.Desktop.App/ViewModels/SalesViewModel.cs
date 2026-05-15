@@ -25,6 +25,7 @@ public sealed partial class SalesViewModel : ObservableObject
     private readonly UiDebouncer _itemSearchDebouncer = new();
     private List<LocalItem> _allItems = new();
     private List<LocalCustomer> _allCustomers = new();
+    private readonly Dictionary<Guid, string> _categoryNameMap = new();
     private readonly Dictionary<string, string> _priceGradeSourceMap = new(StringComparer.CurrentCultureIgnoreCase);
     private readonly Dictionary<string, (bool AllowsSales, bool AllowsPurchase)> _tradeTypeRuleMap = new(StringComparer.CurrentCultureIgnoreCase);
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
@@ -43,9 +44,12 @@ public sealed partial class SalesViewModel : ObservableObject
     [ObservableProperty] private string _customerName = string.Empty;
     [ObservableProperty] private string _customerPhone = string.Empty;
     [ObservableProperty] private string _customerMobile = string.Empty;
+    [ObservableProperty] private string _customerCategoryName = string.Empty;
     [ObservableProperty] private string _customerTradeType = string.Empty;
     [ObservableProperty] private string _customerPriceGrade = string.Empty;
-    [ObservableProperty] private string _customerNote = string.Empty;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CustomerNoteDisplayText))]
+    private string _customerNote = string.Empty;
     [ObservableProperty] private decimal _customerBalance;   // 총미수금/미지불
     [ObservableProperty] private decimal _customerAdvanceBalance;
     [ObservableProperty] private bool _taxInvoiceIssued;
@@ -87,6 +91,8 @@ public sealed partial class SalesViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(HeaderTitleText))]
     [NotifyPropertyChangedFor(nameof(HeaderSubtitleText))]
     [NotifyPropertyChangedFor(nameof(CustomerSectionTitleText))]
+    [NotifyPropertyChangedFor(nameof(CustomerNameLabelText))]
+    [NotifyPropertyChangedFor(nameof(CustomerCategoryLabelText))]
     [NotifyPropertyChangedFor(nameof(DocumentSectionTitleText))]
     [NotifyPropertyChangedFor(nameof(DocumentDetailTitleText))]
     [NotifyPropertyChangedFor(nameof(NewDocumentButtonText))]
@@ -206,8 +212,13 @@ public sealed partial class SalesViewModel : ObservableObject
     }
     public string PaymentActionButtonText => IsPurchaseDocument ? "지급 입력" : "수금 입력";
     public string PaymentSummaryTitleText => IsPurchaseDocument ? "지급 요약" : "수금 요약";
-    public string CustomerBalanceLabelText => IsPurchaseDocument ? "총미지불" : "총미수금";
+    public string CustomerBalanceLabelText => IsPurchaseDocument ? "총미지급금" : "총미수금";
     public string CustomerReserveLabelText => IsPurchaseDocument ? "선지급금" : "선수금";
+    public string CustomerNameLabelText => IsPurchaseLikeDocument ? "거래처" : "고객/거래처";
+    public string CustomerCategoryLabelText => IsPurchaseLikeDocument ? "거래처분류" : "고객분류";
+    public string CustomerNoteDisplayText => string.IsNullOrWhiteSpace(CustomerNote)
+        ? "등록된 참고사항이 없습니다."
+        : CustomerNote.Trim();
     public string WindowTitleText => VoucherType switch
     {
         VoucherType.Purchase => "구매(매입)",
@@ -226,7 +237,7 @@ public sealed partial class SalesViewModel : ObservableObject
         VoucherType.Procurement => "견적/발주 전표작성/수정 - 발주서, 납품서, 의뢰서 출력",
         _ => "판매(매출) 전표작성/수정/삭제 - 거래명세서, 세금계산서, 영수증 발행"
     };
-    public string CustomerSectionTitleText => IsPurchaseLikeDocument ? "매입처/거래처" : "고객/거래처";
+    public string CustomerSectionTitleText => "거래처 정보";
     public string DocumentSectionTitleText => VoucherType switch
     {
         VoucherType.Purchase => "구매작성",
@@ -299,6 +310,15 @@ public sealed partial class SalesViewModel : ObservableObject
 
     private async Task LoadMasterOptionsAsync()
     {
+        _categoryNameMap.Clear();
+        foreach (var category in await _local.GetCategoriesAsync())
+        {
+            if (category.Id == Guid.Empty || string.IsNullOrWhiteSpace(category.Name))
+                continue;
+
+            _categoryNameMap[category.Id] = category.Name.Trim();
+        }
+
         _priceGradeSourceMap.Clear();
         foreach (var option in await _local.GetPriceGradeOptionsAsync())
         {
@@ -385,6 +405,7 @@ public sealed partial class SalesViewModel : ObservableObject
         CustomerName = string.Empty;
         CustomerPhone = string.Empty;
         CustomerMobile = string.Empty;
+        CustomerCategoryName = string.Empty;
         CustomerTradeType = string.Empty;
         CustomerPriceGrade = string.Empty;
         CustomerNote = string.Empty;
@@ -433,6 +454,7 @@ public sealed partial class SalesViewModel : ObservableObject
         CustomerName = customer.NameOriginal;
         CustomerPhone = customer.Phone;
         CustomerMobile = customer.MobilePhone;
+        CustomerCategoryName = ResolveCustomerCategoryName(customer);
         CustomerTradeType = customer.TradeType;
         CustomerPriceGrade = customer.PriceGrade;
         CustomerNote = customer.Notes;
@@ -528,6 +550,20 @@ public sealed partial class SalesViewModel : ObservableObject
     {
         _allCustomers = await _local.GetCustomersForOperationalSelectionAsync(_session);
         await LoadMasterOptionsAsync();
+        if (SelectedCustomer is not null)
+            CustomerCategoryName = ResolveCustomerCategoryName(SelectedCustomer);
+    }
+
+    private string ResolveCustomerCategoryName(LocalCustomer customer)
+    {
+        if (customer.CategoryId.HasValue &&
+            customer.CategoryId.Value != Guid.Empty &&
+            _categoryNameMap.TryGetValue(customer.CategoryId.Value, out var categoryName))
+        {
+            return categoryName;
+        }
+
+        return string.Empty;
     }
 
     public async Task ReloadItemsAsync()

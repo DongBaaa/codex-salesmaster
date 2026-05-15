@@ -352,8 +352,8 @@ public sealed class WpfInvoicePrintService : IPrintService
         AddTableCell(table, 0, 1, "품명 / 규격", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
         AddTableCell(table, 0, 2, "단위", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
         AddTableCell(table, 0, 3, "수량", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
-        AddTableCell(table, 0, 4, "단가", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
-        AddTableCell(table, 0, 5, "금액", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
+        AddTableCell(table, 0, 4, "공급단가", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
+        AddTableCell(table, 0, 5, "공급가액", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
 
         for (var row = 0; row < visibleRows; row++)
         {
@@ -368,8 +368,8 @@ public sealed class WpfInvoicePrintService : IPrintService
             AddTableCell(table, row + 1, 1, itemText, PurchaseBorder, autoShrink: true);
             AddTableCell(table, row + 1, 2, line?.Unit ?? string.Empty, PurchaseBorder, center: true);
             AddTableCell(table, row + 1, 3, line is null ? string.Empty : FormatQuantity(line.Quantity), PurchaseBorder, alignRight: true);
-            AddTableCell(table, row + 1, 4, line is null || !model.PrintWithPrice ? string.Empty : FormatMoney(line.UnitPrice), PurchaseBorder, alignRight: true);
-            AddTableCell(table, row + 1, 5, line is null || !model.PrintWithPrice ? string.Empty : FormatMoney(line.Amount), PurchaseBorder, alignRight: true);
+            AddTableCell(table, row + 1, 4, line is null || !model.PrintWithPrice ? string.Empty : FormatMoney(ResolvePrintedSupplyUnitPrice(line, model.VatMode)), PurchaseBorder, alignRight: true);
+            AddTableCell(table, row + 1, 5, line is null || !model.PrintWithPrice ? string.Empty : FormatMoney(ResolvePrintedSupplyAmount(line, model.VatMode)), PurchaseBorder, alignRight: true);
         }
 
         return new Border
@@ -642,8 +642,8 @@ public sealed class WpfInvoicePrintService : IPrintService
         AddTableCell(table, 0, 2, "규격", accent, isHeader: true, center: true);
         AddTableCell(table, 0, 3, "단위", accent, isHeader: true, center: true);
         AddTableCell(table, 0, 4, "수량", accent, isHeader: true, center: true);
-        AddTableCell(table, 0, 5, "단가", accent, isHeader: true, center: true);
-        AddTableCell(table, 0, 6, "금액", accent, isHeader: true, center: true);
+        AddTableCell(table, 0, 5, "공급단가", accent, isHeader: true, center: true);
+        AddTableCell(table, 0, 6, "공급가액", accent, isHeader: true, center: true);
 
         for (var row = 0; row < SalesRowsPerPage; row++)
         {
@@ -654,8 +654,8 @@ public sealed class WpfInvoicePrintService : IPrintService
             AddTableCell(table, row + 1, 2, line?.Specification ?? string.Empty, accent, autoShrink: true);
             AddTableCell(table, row + 1, 3, line?.Unit ?? string.Empty, accent, center: true);
             AddTableCell(table, row + 1, 4, line is null ? string.Empty : FormatQuantity(line.Quantity), accent, alignRight: true);
-            AddTableCell(table, row + 1, 5, line is null || !model.PrintWithPrice ? string.Empty : FormatMoney(line.UnitPrice), accent, alignRight: true);
-            AddTableCell(table, row + 1, 6, line is null || !model.PrintWithPrice ? string.Empty : FormatMoney(line.Amount), accent, alignRight: true);
+            AddTableCell(table, row + 1, 5, line is null || !model.PrintWithPrice ? string.Empty : FormatMoney(ResolvePrintedSupplyUnitPrice(line, model.VatMode)), accent, alignRight: true);
+            AddTableCell(table, row + 1, 6, line is null || !model.PrintWithPrice ? string.Empty : FormatMoney(ResolvePrintedSupplyAmount(line, model.VatMode)), accent, alignRight: true);
         }
 
         return new Border
@@ -936,6 +936,16 @@ public sealed class WpfInvoicePrintService : IPrintService
 
     private static string FormatMoney(decimal value)
         => $"{Math.Round(value, 0, MidpointRounding.AwayFromZero):N0}";
+
+    private static decimal ResolvePrintedSupplyUnitPrice(InvoicePrintLineModel line, string? vatMode)
+        => InvoicePrintLineSynchronizer.ResolvePrintedSupplyUnitPrice(
+            line.UnitPrice,
+            line.Quantity,
+            line.Amount,
+            vatMode);
+
+    private static decimal ResolvePrintedSupplyAmount(InvoicePrintLineModel line, string? vatMode)
+        => InvoicePrintLineSynchronizer.ResolvePrintedSupplyAmount(line.Amount, vatMode);
 
     private static string FormatSignedMoney(decimal value)
         => value == 0

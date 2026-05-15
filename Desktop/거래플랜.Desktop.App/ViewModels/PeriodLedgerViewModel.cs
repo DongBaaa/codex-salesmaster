@@ -203,9 +203,9 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            AppLogger.Error("PeriodLedger", "자료기간별 집계 실패", ex);
+            AppLogger.Error("PeriodLedger", "기간별 집계 실패", ex);
             StatusMessage = $"오류: {ex.Message}";
-            System.Windows.MessageBox.Show($"자료기간별 집계 중 오류가 발생했습니다.\n{ex.Message}", "오류", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+            System.Windows.MessageBox.Show($"기간별 집계 중 오류가 발생했습니다.\n{ex.Message}", "오류", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
         }
         finally
         {

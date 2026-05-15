@@ -159,8 +159,8 @@ public static class SupplementDocumentBuilder
             AddMergedCell(grid, row, 6, row, 9, line?.Specification ?? string.Empty, fontSize: 10.3, wrap: false, autoShrink: true);
             AddMergedCell(grid, row, 10, row, 10, line?.Unit ?? string.Empty, align: TextAlignment.Center, wrap: false);
             AddMergedCell(grid, row, 11, row, 11, line is null ? string.Empty : $"{line.Quantity:N0}", align: TextAlignment.Right, wrap: false);
-            AddMergedCell(grid, row, 12, row, 13, line is null ? string.Empty : $"{line.UnitPrice:N0}", align: TextAlignment.Right, wrap: false);
-            AddMergedCell(grid, row, 14, row, 16, line is null ? string.Empty : $"{line.LineAmount:N0}", align: TextAlignment.Right, wrap: false);
+            AddMergedCell(grid, row, 12, row, 13, line is null ? string.Empty : $"{line.SupplyUnitPrice:N0}", align: TextAlignment.Right, wrap: false);
+            AddMergedCell(grid, row, 14, row, 16, line is null ? string.Empty : $"{line.SupplyAmount:N0}", align: TextAlignment.Right, wrap: false);
             AddMergedCell(grid, row, 17, row, 19, line?.Remark ?? string.Empty, fontSize: 10.1, wrap: false);
         }
 
@@ -808,6 +808,15 @@ public static class SupplementDocumentBuilder
     }
 
     private static List<EstimatePrintLine> ResolveEstimateLines(LocalInvoice invoice, InvoicePrintModel? printModel)
+        => ResolveEstimateLines(
+            invoice,
+            printModel,
+            InvoiceVatModes.Normalize(printModel?.VatMode ?? invoice.VatMode));
+
+    private static List<EstimatePrintLine> ResolveEstimateLines(
+        LocalInvoice invoice,
+        InvoicePrintModel? printModel,
+        string vatMode)
     {
         if (printModel?.Lines is { Count: > 0 })
         {
@@ -828,6 +837,12 @@ public static class SupplementDocumentBuilder
                     Quantity = line.Quantity,
                     UnitPrice = line.UnitPrice,
                     LineAmount = line.Amount,
+                    SupplyUnitPrice = InvoicePrintLineSynchronizer.ResolvePrintedSupplyUnitPrice(
+                        line.UnitPrice,
+                        line.Quantity,
+                        line.Amount,
+                        vatMode),
+                    SupplyAmount = InvoicePrintLineSynchronizer.ResolvePrintedSupplyAmount(line.Amount, vatMode),
                     Remark = line.Remark ?? string.Empty
                 })
                 .ToList();
@@ -844,6 +859,12 @@ public static class SupplementDocumentBuilder
                 Quantity = line.Quantity,
                 UnitPrice = line.UnitPrice,
                 LineAmount = line.LineAmount,
+                SupplyUnitPrice = InvoicePrintLineSynchronizer.ResolvePrintedSupplyUnitPrice(
+                    line.UnitPrice,
+                    line.Quantity,
+                    line.LineAmount,
+                    vatMode),
+                SupplyAmount = InvoicePrintLineSynchronizer.ResolvePrintedSupplyAmount(line.LineAmount, vatMode),
                 Remark = line.Remark ?? string.Empty
             })
             .ToList();
@@ -858,6 +879,8 @@ public static class SupplementDocumentBuilder
         public decimal Quantity { get; init; }
         public decimal UnitPrice { get; init; }
         public decimal LineAmount { get; init; }
+        public decimal SupplyUnitPrice { get; init; }
+        public decimal SupplyAmount { get; init; }
         public string Remark { get; init; } = string.Empty;
     }
 

@@ -430,13 +430,13 @@
                                                VerticalAlignment="Center"
                                                TextWrapping="Wrap"/>
                                     <Button Grid.Column="1"
-                                            Content="행 수정"
+                                            Content="행 추가"
                                             Background="#1B5E20"
                                             Margin="0,0,6,0"
                                             IsEnabled="{Binding CanAddLine}"
                                             Command="{Binding AddLineCommand}"/>
                                     <Button Grid.Column="2"
-                                            Content="행 삭제"
+                                            Content="행 수정"
                                             Background="#0D47A1"
                                             Margin="0,0,6,0"
                                             IsEnabled="{Binding CanUpdateLine}"
