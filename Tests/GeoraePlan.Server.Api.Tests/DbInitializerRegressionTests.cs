@@ -613,6 +613,96 @@ public sealed class DbInitializerRegressionTests : IDisposable
         Assert.Equal(new[] { firstAssetId, secondAssetId }.OrderBy(value => value), includedAssetIds);
     }
 
+    [Fact]
+    public async Task RepairRentalCustomerLinkageAsync_ResolvesProfileCustomerFromTemplateLinkedAsset()
+    {
+        var customerId = Guid.Parse("9bbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var profileId = Guid.Parse("9ccccccc-cccc-cccc-cccc-cccccccccccc");
+        var assetId = Guid.Parse("9ddddddd-dddd-dddd-dddd-dddddddddddd");
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "????[?????]",
+            NameMatchKey = "?????????"
+        });
+
+        var templateJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                ItemId = Guid.Parse("9eeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+                DisplayItemName = "IMC2010",
+                BillingLineMode = "??",
+                Quantity = 1m,
+                UnitPrice = 240000m,
+                Amount = 240000m,
+                IncludedAssetIds = new[] { assetId }
+            }
+        });
+
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "[???]???-?????",
+            InstallSiteName = "[???]???-?????",
+            ItemName = "IMC2010",
+            BillingType = "??",
+            MonthlyAmount = 240000m,
+            BillingTemplateJson = templateJson,
+            IsActive = true
+        });
+
+        _dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            CustomerId = customerId,
+            AssetKey = "USENET|HEALTH-001|SN-HEALTH",
+            CustomerName = "????[?????]",
+            CurrentCustomerName = "????[?????]",
+            InstallSiteName = "?.??",
+            InstallLocation = "?.??",
+            ItemName = "IMC2010",
+            ManagementNumber = "HEALTH-001",
+            MachineNumber = "SN-HEALTH",
+            AssetStatus = "ACTIVE",
+            MonthlyFee = 90000m
+        });
+
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "RepairRentalCustomerLinkageAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
+
+        var profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
+        Assert.Equal(customerId, profile.CustomerId);
+        Assert.Equal("????[?????]", profile.CustomerName);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, profile.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, profile.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, profile.ManagementCompanyCode);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, profile.ResponsibleOfficeCode);
+        Assert.Equal(90000m, profile.MonthlyAmount);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();

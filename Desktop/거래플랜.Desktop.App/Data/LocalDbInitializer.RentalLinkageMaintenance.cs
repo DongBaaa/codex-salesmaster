@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
@@ -306,7 +307,8 @@ public static partial class LocalDbInitializer
                 var linkedCustomerMatchesScope = MatchesOperationalCustomerScope(
                     linkedCustomer,
                     preferredTenantCode,
-                    preferredResponsibleOfficeCode);
+                    preferredResponsibleOfficeCode) ||
+                    ProfileHasUniqueLinkedAssetCustomer(profile, assets, customerById, linkedCustomer.Id);
                 if (linkedCustomerMatchesScope)
                 {
                     var normalizedMasterName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
@@ -572,6 +574,21 @@ public static partial class LocalDbInitializer
         return changed || profile.MonthlyAmount != normalizedMonthlyAmount;
     }
 
+    private static List<RentalBillingTemplateItemModel>? ParseStartupBillingTemplateItems(string? billingTemplateJson)
+    {
+        if (string.IsNullOrWhiteSpace(billingTemplateJson))
+            return [];
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(billingTemplateJson) ?? [];
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static decimal ResolveStartupTemplateMonthlyAmount(RentalBillingTemplateItemModel item)
     {
         var quantity = item.Quantity <= 0m ? 1m : item.Quantity;
@@ -647,6 +664,9 @@ public static partial class LocalDbInitializer
                 preferredTenantCode,
                 preferredResponsibleOfficeCode))
             return profile.CustomerId;
+
+        if (TryResolveProfileCustomerFromLinkedAssets(profile, assets, customerById, out var linkedAssetResolvedCustomerId))
+            return linkedAssetResolvedCustomerId;
 
         var linkedAssetCustomerIds = assets
             .Where(asset => !asset.IsDeleted && asset.BillingProfileId == profile.Id)
@@ -948,6 +968,87 @@ public static partial class LocalDbInitializer
         }
 
         activeProfileAssetCounts[profileId] = currentCount - 1;
+    }
+
+    private static bool TryResolveProfileCustomerFromLinkedAssets(
+        LocalRentalBillingProfile profile,
+        IReadOnlyCollection<LocalRentalAsset> assets,
+        IReadOnlyDictionary<Guid, LocalCustomer> customerById,
+        out Guid customerId)
+    {
+        customerId = Guid.Empty;
+        var linkedAssets = ResolveProfileLinkedOrTemplateAssets(profile, assets);
+        var customerIds = linkedAssets
+            .Select(asset => asset.CustomerId)
+            .Where(customerId => HasValidCustomerId(customerId, customerById))
+            .Select(customerId => customerId!.Value)
+            .Distinct()
+            .ToList();
+        if (customerIds.Count != 1)
+            return false;
+
+        var candidateCustomerId = customerIds[0];
+        if (!LinkedAssetsMatchCustomerScope(linkedAssets, customerById[candidateCustomerId], candidateCustomerId))
+            return false;
+
+        customerId = candidateCustomerId;
+        return true;
+    }
+
+    private static bool ProfileHasUniqueLinkedAssetCustomer(
+        LocalRentalBillingProfile profile,
+        IReadOnlyCollection<LocalRentalAsset> assets,
+        IReadOnlyDictionary<Guid, LocalCustomer> customerById,
+        Guid customerId)
+        => TryResolveProfileCustomerFromLinkedAssets(profile, assets, customerById, out var resolvedCustomerId) &&
+           resolvedCustomerId == customerId;
+
+    private static List<LocalRentalAsset> ResolveProfileLinkedOrTemplateAssets(
+        LocalRentalBillingProfile profile,
+        IReadOnlyCollection<LocalRentalAsset> assets)
+    {
+        var templateAssetIds = ParseStartupBillingTemplateItems(profile.BillingTemplateJson)
+            ?.SelectMany(item => item.IncludedAssetIds ?? [])
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToHashSet() ?? [];
+
+        return assets
+            .Where(asset => !asset.IsDeleted && asset.Id != Guid.Empty)
+            .Where(asset => asset.BillingProfileId == profile.Id || templateAssetIds.Contains(asset.Id))
+            .GroupBy(asset => asset.Id)
+            .Select(group => group.First())
+            .ToList();
+    }
+
+    private static bool LinkedAssetsMatchCustomerScope(
+        IReadOnlyCollection<LocalRentalAsset> linkedAssets,
+        LocalCustomer customer,
+        Guid customerId)
+    {
+        var matchingAssets = linkedAssets
+            .Where(asset => asset.CustomerId == customerId)
+            .ToList();
+        if (matchingAssets.Count == 0)
+            return false;
+
+        return matchingAssets.All(asset =>
+        {
+            var assetResponsibleOfficeCode = ResolveRentalOperationalOfficeCode(
+                asset.ResponsibleOfficeCode,
+                asset.OfficeCode,
+                asset.ManagementCompanyCode);
+            var assetOwnerOfficeCode = ResolveOperationalOwnerOfficeCode(
+                asset.OfficeCode,
+                assetResponsibleOfficeCode,
+                asset.ManagementCompanyCode,
+                OfficeCodeCatalog.Usenet);
+            var assetTenantCode = NormalizeOperationalTenantCode(
+                asset.TenantCode,
+                assetOwnerOfficeCode,
+                assetResponsibleOfficeCode);
+            return MatchesOperationalCustomerScope(customer, assetTenantCode, assetResponsibleOfficeCode);
+        });
     }
 
     private static bool TryResolveAssetCustomer(
