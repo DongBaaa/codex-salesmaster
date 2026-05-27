@@ -3672,6 +3672,121 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SaveInvoiceAsync_SalesCreate_RejectsWhenLocalStockWouldBecomeNegative()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-local-stock-shortage-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("81222222-2222-2222-2222-222222222222");
+            var itemId = Guid.Parse("81233333-3333-3333-3333-333333333333");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Local stock customer",
+                NameMatchKey = "LOCALSTOCKCUSTOMER"
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Local stock item",
+                NameMatchKey = "LOCALSTOCKITEM",
+                SpecificationOriginal = "A4",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                PurchasePrice = 1000m
+            });
+            await db.SaveChangesAsync();
+
+            await service.SaveInvoiceAsync(new LocalInvoice
+            {
+                Id = Guid.Parse("81244444-4444-4444-4444-444444444444"),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                VoucherType = VoucherType.Purchase,
+                InvoiceDate = new DateOnly(2026, 5, 1),
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemId = itemId,
+                        ItemNameOriginal = "Local stock item",
+                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        Unit = "EA",
+                        Quantity = 1m,
+                        UnitPrice = 1000m,
+                        LineAmount = 1000m
+                    }
+                }
+            });
+
+            var result = await service.SaveInvoiceAsync(
+                new LocalInvoice
+                {
+                    Id = Guid.Parse("81255555-5555-5555-5555-555555555555"),
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 5, 2),
+                    Lines =
+                    {
+                        new LocalInvoiceLine
+                        {
+                            ItemId = itemId,
+                            ItemNameOriginal = "Local stock item",
+                            ItemTrackingType = ItemTrackingTypes.Stock,
+                            Unit = "EA",
+                            Quantity = 2m,
+                            UnitPrice = 1500m,
+                            LineAmount = 3000m
+                        }
+                    }
+                },
+                new InvoiceSaveContext
+                {
+                    Username = "admin",
+                    Role = DomainConstants.RoleAdmin,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ForceOverride = true
+                },
+                session);
+
+            Assert.False(result.Success);
+            Assert.Contains("재고가 부족", result.Message);
+            Assert.Equal(1m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+            Assert.Equal(1, await db.Invoices.CountAsync(invoice => invoice.IsLatestVersion && !invoice.IsDeleted));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RepairMissingItemMastersFromOperationalReferencesAsync_DoesNotRecoverSoftDeletedItems()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-missing-item-repair-{Guid.NewGuid():N}");
@@ -3705,7 +3820,7 @@ public sealed class LocalStateServicePartialsTests
                 OfficeCode = OfficeCodeCatalog.Usenet,
                 NameOriginal = "Hidden item",
                 NameMatchKey = "HIDDENITEM",
-                TrackingType = ItemTrackingTypes.Stock,
+                TrackingType = ItemTrackingTypes.NonStock,
                 Unit = "EA"
             });
             await db.SaveChangesAsync();
@@ -3725,7 +3840,7 @@ public sealed class LocalStateServicePartialsTests
                     {
                         ItemId = itemId,
                         ItemNameOriginal = "Hidden item",
-                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        ItemTrackingType = ItemTrackingTypes.NonStock,
                         Unit = "EA",
                         Quantity = 1m,
                         UnitPrice = 100m,

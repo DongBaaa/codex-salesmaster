@@ -38,4 +38,10 @@ public sealed class InvoiceSaveResult
         NotFound = true,
         Message = message
     };
+
+    public static InvoiceSaveResult Failed(string message) => new()
+    {
+        Success = false,
+        Message = message
+    };
 }
