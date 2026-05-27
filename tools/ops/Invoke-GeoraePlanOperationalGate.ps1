@@ -7,6 +7,7 @@ param(
     [string]$ApprovedTargetsPath = "",
     [string]$NasStateRoot = "\\192.0.2.10\docker\georaeplan\ops\state",
     [string]$OutputDirectory = "",
+    [switch]$UseEphemeralOperationalWrites,
     [switch]$AllowOperationalWrites
 )
 
@@ -343,6 +344,7 @@ $targetCounts = @{}
 $safetyBackupConfirmed = $false
 $safetyRestorePossible = $false
 $safetyApprovedBy = ''
+$hasApprovedTargets = $false
 if (Test-Path -LiteralPath $ApprovedTargetsPath) {
     try {
         $targets = Get-Content -LiteralPath $ApprovedTargetsPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -353,6 +355,7 @@ if (Test-Path -LiteralPath $ApprovedTargetsPath) {
         foreach ($name in @('customers','items','invoices','payments','rentalAssets','rentalBillingProfiles','inventoryTransfers')) {
             $targetCounts[$name] = Get-TargetCount -Targets $targets -PropertyName $name
         }
+        $hasApprovedTargets = (($targetCounts.Values | Measure-Object -Sum).Sum -gt 0)
         Add-Check -Checks $checks -Name 'approved target file' -Status 'PASS' -Detail 'approved target JSON parsed'
     }
     catch {
@@ -360,7 +363,12 @@ if (Test-Path -LiteralPath $ApprovedTargetsPath) {
     }
 }
 else {
-    Add-Check -Checks $checks -Name 'approved target file' -Status 'BLOCKED' -Detail ("not found: {0}" -f $ApprovedTargetsPath)
+    if ($UseEphemeralOperationalWrites.IsPresent) {
+        Add-Check -Checks $checks -Name 'approved target file' -Status 'WARN' -Detail ("not found: {0}; existing-data write skipped, ephemeral write smoke requested" -f $ApprovedTargetsPath)
+    }
+    else {
+        Add-Check -Checks $checks -Name 'approved target file' -Status 'BLOCKED' -Detail ("not found: {0}" -f $ApprovedTargetsPath)
+    }
 }
 
 if ($null -ne $targets) {
@@ -372,10 +380,74 @@ if ($null -ne $targets) {
     }
 }
 else {
-    Add-Check -Checks $checks -Name 'write safety metadata' -Status 'BLOCKED' -Detail 'approved target file is unavailable'
+    if ($UseEphemeralOperationalWrites.IsPresent) {
+        Add-Check -Checks $checks -Name 'write safety metadata' -Status 'WARN' -Detail 'approved target file is unavailable; only temporary create/update/delete smoke will run'
+    }
+    else {
+        Add-Check -Checks $checks -Name 'write safety metadata' -Status 'BLOCKED' -Detail 'approved target file is unavailable'
+    }
 }
 
-if ($AllowOperationalWrites.IsPresent) {
+$ephemeralOperationalWritesReport = ''
+$ephemeralOperationalWritesAccount = ''
+if ($UseEphemeralOperationalWrites.IsPresent) {
+    $ephemeralScript = Join-Path $resolvedRoot 'tools\verification\Invoke-GeoraePlanRepeatedSaveSmoke.ps1'
+    if (-not (Test-Path -LiteralPath $ephemeralScript)) {
+        Add-Check -Checks $checks -Name 'operational writes' -Status 'FAIL' -Detail 'ephemeral write smoke script not found'
+    }
+    elseif ([string]::IsNullOrWhiteSpace([string]$usenet.Username) -or [string]::IsNullOrWhiteSpace([string]$usenet.Password)) {
+        Add-Check -Checks $checks -Name 'operational writes' -Status 'BLOCKED' -Detail 'USENET credentials are required for ephemeral operational write smoke'
+    }
+    else {
+        $ephemeralDirectory = Join-Path $OutputDirectory 'ephemeral-operational-writes'
+        New-Item -ItemType Directory -Force -Path $ephemeralDirectory | Out-Null
+        $ephemeralOperationalWritesAccount = [string]$usenet.Username
+        try {
+            $ephemeralArgs = @(
+                '-NoProfile',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', $ephemeralScript,
+                '-BaseUrl', $BaseUrl,
+                '-Username', ([string]$usenet.Username),
+                '-Password', ([string]$usenet.Password),
+                '-EvidenceDirectory', $ephemeralDirectory,
+                '-RepeatCount', '2'
+            )
+            $scriptOutput = & powershell @ephemeralArgs 2>&1 | Out-String -Width 4096
+            Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "`n## ephemeral operational writes"
+            Add-Content -LiteralPath $logPath -Encoding UTF8 -Value $scriptOutput
+            $reportLine = @($scriptOutput -split "`r?`n" | Where-Object { $_ -like 'repeated_save_smoke_report=*' } | Select-Object -Last 1)
+            if ($reportLine.Count -gt 0) {
+                $ephemeralOperationalWritesReport = ([string]$reportLine[0]).Substring('repeated_save_smoke_report='.Length).Trim()
+            }
+            elseif (Test-Path -LiteralPath $ephemeralDirectory) {
+                $latestReport = Get-ChildItem -LiteralPath $ephemeralDirectory -File -Filter '*.md' -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -First 1
+                if ($null -ne $latestReport) {
+                    $ephemeralOperationalWritesReport = $latestReport.FullName
+                }
+            }
+
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($ephemeralOperationalWritesReport) -and (Test-Path -LiteralPath $ephemeralOperationalWritesReport)) {
+                $reportText = Get-Content -LiteralPath $ephemeralOperationalWritesReport -Raw -Encoding UTF8
+                if ($reportText -match '결과: \*\*PASS\*\*') {
+                    Add-Check -Checks $checks -Name 'operational writes' -Status 'PASS' -Detail ("temporary create/update/delete smoke passed: {0}" -f $ephemeralOperationalWritesReport)
+                }
+                else {
+                    Add-Check -Checks $checks -Name 'operational writes' -Status 'FAIL' -Detail ("temporary write smoke report is not PASS: {0}" -f $ephemeralOperationalWritesReport)
+                }
+            }
+            else {
+                Add-Check -Checks $checks -Name 'operational writes' -Status 'FAIL' -Detail ("temporary write smoke failed, exit={0}" -f $LASTEXITCODE)
+            }
+        }
+        catch {
+            Add-Check -Checks $checks -Name 'operational writes' -Status 'FAIL' -Detail $_.Exception.Message
+        }
+    }
+}
+elseif ($AllowOperationalWrites.IsPresent) {
     Add-Check -Checks $checks -Name 'operational writes' -Status 'BLOCKED' -Detail 'This gate intentionally does not mutate production data. Use a dedicated approved write/rollback runner after all gates pass.'
 }
 else {
@@ -449,14 +521,31 @@ if ($null -ne $targets) {
     }
 }
 else {
-    $reportLines.Add('- 승인 대상 JSON이 없어 운영 쓰기 검증은 차단됨') | Out-Null
+    if ($UseEphemeralOperationalWrites.IsPresent) {
+        $reportLines.Add('- 승인 대상 JSON이 없어 기존 운영 데이터 직접 수정/원복 검증은 생략하고, 임시 데이터 생성/수정/삭제 smoke만 수행함') | Out-Null
+    }
+    else {
+        $reportLines.Add('- 승인 대상 JSON이 없어 운영 쓰기 검증은 차단됨') | Out-Null
+    }
 }
 
 $reportLines.Add('') | Out-Null
 $reportLines.Add('## 4. 운영 데이터 변경 여부') | Out-Null
 $reportLines.Add('') | Out-Null
 $reportLines.Add('- 이 게이트는 기본적으로 운영 데이터를 변경하지 않는다.') | Out-Null
-$reportLines.Add('- 현재 실행에서 운영 데이터 쓰기/원복은 수행되지 않았다.') | Out-Null
+if ($UseEphemeralOperationalWrites.IsPresent) {
+    $reportLines.Add(('- 임시 데이터 생성/반복수정/삭제 smoke 실행: `{0}`' -f (-not [string]::IsNullOrWhiteSpace($ephemeralOperationalWritesReport)))) | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($ephemeralOperationalWritesReport)) {
+        $reportLines.Add(('- 임시 쓰기 검증 리포트: `{0}`' -f $ephemeralOperationalWritesReport)) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ephemeralOperationalWritesAccount)) {
+        $reportLines.Add(('- 임시 쓰기 검증 계정: `{0}`' -f (Mask-Value $ephemeralOperationalWritesAccount))) | Out-Null
+    }
+    $reportLines.Add(('- 기존 운영 데이터 승인 대상 수정/원복은 수행하지 않음: `{0}`' -f (-not $hasApprovedTargets))) | Out-Null
+}
+else {
+    $reportLines.Add('- 현재 실행에서 운영 데이터 쓰기/원복은 수행되지 않았다.') | Out-Null
+}
 $reportLines.Add('- 비밀번호 원문은 보고서와 로그에 기록하지 않는다.') | Out-Null
 
 Set-Content -LiteralPath $reportPath -Value $reportLines -Encoding UTF8
