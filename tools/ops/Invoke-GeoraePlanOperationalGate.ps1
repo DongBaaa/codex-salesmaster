@@ -118,6 +118,96 @@ function Invoke-TextProbe {
     }
 }
 
+function Read-ResponseBody {
+    param($Response)
+
+    if ($null -eq $Response) {
+        return ''
+    }
+
+    try {
+        $stream = $Response.GetResponseStream()
+        if ($null -eq $stream) {
+            return ''
+        }
+
+        $reader = New-Object System.IO.StreamReader($stream)
+        try {
+            return $reader.ReadToEnd()
+        }
+        finally {
+            $reader.Dispose()
+        }
+    }
+    catch {
+        return ''
+    }
+}
+
+function Invoke-JsonApi {
+    param(
+        [ValidateSet('GET','POST')][string]$Method,
+        [string]$Uri,
+        [hashtable]$Headers = @{},
+        [object]$Body = $null,
+        [int]$TimeoutSec = 30
+    )
+
+    $parameters = @{
+        Method = $Method
+        Uri = $Uri
+        UseBasicParsing = $true
+        TimeoutSec = $TimeoutSec
+    }
+
+    if ($Headers.Count -gt 0) {
+        $parameters.Headers = $Headers
+    }
+
+    if ($null -ne $Body) {
+        $parameters.ContentType = 'application/json; charset=utf-8'
+        $parameters.Body = ($Body | ConvertTo-Json -Depth 40 -Compress)
+    }
+
+    try {
+        $response = Invoke-WebRequest @parameters
+        $raw = [string]$response.Content
+        $parsed = $null
+        if (-not [string]::IsNullOrWhiteSpace($raw)) {
+            try {
+                $parsed = $raw | ConvertFrom-Json
+            }
+            catch {
+                $parsed = $raw
+            }
+        }
+
+        return [pscustomobject]@{
+            Success = $true
+            StatusCode = [int]$response.StatusCode
+            Body = $parsed
+            Raw = $raw
+            Error = ''
+        }
+    }
+    catch {
+        $statusCode = 0
+        $raw = ''
+        if ($_.Exception.Response) {
+            try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { $statusCode = 0 }
+            $raw = Read-ResponseBody -Response $_.Exception.Response
+        }
+
+        return [pscustomobject]@{
+            Success = $false
+            StatusCode = $statusCode
+            Body = $null
+            Raw = $raw
+            Error = $_.Exception.Message
+        }
+    }
+}
+
 function Read-SecretFile {
     param([string]$Path)
 
@@ -275,6 +365,77 @@ $usenet = Get-AccountCredential -Secrets $secrets -Alias 'usenet' -UsernameEnvNa
 $yeonsu = Get-AccountCredential -Secrets $secrets -Alias 'yeonsu' -UsernameEnvName 'GEORAEPLAN_SCOPE_YEONSU_USERNAME' -PasswordEnvName 'GEORAEPLAN_SCOPE_YEONSU_PASSWORD'
 $admin = Get-AccountCredential -Secrets $secrets -Alias 'admin' -UsernameEnvName 'GEORAEPLAN_SCOPE_ADMIN_USERNAME' -PasswordEnvName 'GEORAEPLAN_SCOPE_ADMIN_PASSWORD'
 $accounts = @($admin, $itworld, $usenet, $yeonsu)
+
+$integrityReportJsonPath = Join-Path $OutputDirectory 'integrity-report.json'
+$integrityReportSummaryPath = Join-Path $OutputDirectory 'integrity-report-summary.md'
+$integrityCredential = @($usenet, $admin, $itworld, $yeonsu) |
+    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Username) -and -not [string]::IsNullOrWhiteSpace([string]$_.Password) } |
+    Select-Object -First 1
+if ($null -eq $integrityCredential) {
+    Add-Check -Checks $checks -Name 'integrity report' -Status 'BLOCKED' -Detail 'credentials are required to query /integrity/report'
+}
+else {
+    try {
+        $login = Invoke-JsonApi `
+            -Method 'POST' `
+            -Uri ($BaseUrl + '/auth/login') `
+            -Body @{ username = [string]$integrityCredential.Username; password = [string]$integrityCredential.Password } `
+            -TimeoutSec 20
+
+        $token = if ($login.Success -and $null -ne $login.Body) { [string](Get-JsonPropertyValue -Object $login.Body -Name 'token') } else { '' }
+        if (-not $login.Success -or [string]::IsNullOrWhiteSpace($token)) {
+            Add-Check -Checks $checks -Name 'integrity report' -Status 'FAIL' -Detail ("login failed for {0}: status={1}, error={2}" -f $integrityCredential.Alias, $login.StatusCode, $login.Error)
+        }
+        else {
+            $integrity = Invoke-JsonApi `
+                -Method 'GET' `
+                -Uri ($BaseUrl + '/integrity/report') `
+                -Headers @{ Authorization = "Bearer $token" } `
+                -TimeoutSec 120
+
+            if (-not $integrity.Success -or $null -eq $integrity.Body) {
+                Add-Check -Checks $checks -Name 'integrity report' -Status 'FAIL' -Detail ("query failed: status={0}, error={1}" -f $integrity.StatusCode, $integrity.Error)
+            }
+            else {
+                $integrity.Body | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath $integrityReportJsonPath -Encoding UTF8
+                $integrityIssues = @($integrity.Body.issues)
+                $integrityErrors = @($integrityIssues | Where-Object { [string]$_.severity -eq 'Error' })
+                $integrityWarnings = @($integrityIssues | Where-Object { [string]$_.severity -eq 'Warning' })
+                $integrityInfos = @($integrityIssues | Where-Object { [string]$_.severity -eq 'Info' })
+
+                $summaryLines = New-Object System.Collections.Generic.List[string]
+                $summaryLines.Add('# 무결성 리포트 요약') | Out-Null
+                $summaryLines.Add('') | Out-Null
+                $summaryLines.Add(('- 실행시각: {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))) | Out-Null
+                $summaryLines.Add(('- 조회 계정: `{0}`' -f (Mask-Value ([string]$integrityCredential.Username)))) | Out-Null
+                $summaryLines.Add(('- TenantCode: `{0}`' -f ([string](Get-JsonPropertyValue -Object $integrity.Body -Name 'tenantCode')))) | Out-Null
+                $summaryLines.Add(('- OfficeCode: `{0}`' -f ([string](Get-JsonPropertyValue -Object $integrity.Body -Name 'officeCode')))) | Out-Null
+                $summaryLines.Add(('- Error: `{0}` / Warning: `{1}` / Info: `{2}`' -f $integrityErrors.Count, $integrityWarnings.Count, $integrityInfos.Count)) | Out-Null
+                $summaryLines.Add('') | Out-Null
+                $summaryLines.Add('| 심각도 | 코드 | 건수 | 메시지 |') | Out-Null
+                $summaryLines.Add('| --- | --- | ---: | --- |') | Out-Null
+                foreach ($issue in $integrityIssues) {
+                    $summaryLines.Add(('| {0} | {1} | {2} | {3} |' -f ([string]$issue.severity), ([string]$issue.code), ([int]$issue.count), ([string]$issue.message).Replace('|', '\|'))) | Out-Null
+                }
+                Set-Content -LiteralPath $integrityReportSummaryPath -Value $summaryLines -Encoding UTF8
+                Add-Content -LiteralPath $logPath -Encoding UTF8 -Value ("integrity_report account={0} errors={1} warnings={2} infos={3} report={4}" -f $integrityCredential.Alias, $integrityErrors.Count, $integrityWarnings.Count, $integrityInfos.Count, $integrityReportSummaryPath)
+
+                if ($integrityErrors.Count -gt 0) {
+                    Add-Check -Checks $checks -Name 'integrity report' -Status 'FAIL' -Detail ("Error={0}, Warning={1}; {2}" -f $integrityErrors.Count, $integrityWarnings.Count, $integrityReportSummaryPath)
+                }
+                elseif ($integrityWarnings.Count -gt 0) {
+                    Add-Check -Checks $checks -Name 'integrity report' -Status 'WARN' -Detail ("Warning={0}; {1}" -f $integrityWarnings.Count, $integrityReportSummaryPath)
+                }
+                else {
+                    Add-Check -Checks $checks -Name 'integrity report' -Status 'PASS' -Detail ("Error=0, Warning=0; Info={0}; {1}" -f $integrityInfos.Count, $integrityReportSummaryPath)
+                }
+            }
+        }
+    }
+    catch {
+        Add-Check -Checks $checks -Name 'integrity report' -Status 'FAIL' -Detail $_.Exception.Message
+    }
+}
 
 $availableScopeAccounts = @(@($itworld, $usenet, $yeonsu) | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Username) -and -not [string]::IsNullOrWhiteSpace($_.Password) })
 if (@($availableScopeAccounts).Count -gt 0) {

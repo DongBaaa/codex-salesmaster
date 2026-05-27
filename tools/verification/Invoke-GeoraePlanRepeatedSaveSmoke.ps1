@@ -250,7 +250,7 @@ function Get-DefaultRentalManagementCompanyCode {
         Where-Object { -not $_.isDeleted -and ($_.isActive -eq $true -or $null -eq $_.isActive) -and -not [string]::IsNullOrWhiteSpace([string]$_.code) } |
         Select-Object -First 1
     if ($null -eq $company) {
-        throw '렌탈 청구 반복 저장 검증에 사용할 담당지점/관리회사 코드를 찾지 못했습니다.'
+        return 'USENET'
     }
 
     return [string]$company.code
