@@ -130,6 +130,7 @@ builder.Services.AddScoped<IInvoiceNumberService, InvoiceNumberService>();
 builder.Services.AddSingleton<RevisionClock>();
 builder.Services.AddSingleton<ICentralFileStorage, CentralFileStorage>();
 builder.Services.AddSingleton<DatabaseInitializationState>();
+builder.Services.AddHostedService<StartupQueryWarmupService>();
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)

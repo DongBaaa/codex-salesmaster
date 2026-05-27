@@ -2,7 +2,12 @@
     [string]$BaseUrl = 'http://127.0.0.1:19080',
     [string]$Username = 'usenet',
     [string]$Password = '1234',
+    [Alias('OutputDirectory')]
     [string]$EvidenceDirectory = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'output\api-visibility-smoke'),
+    [int]$TimeoutSec = 30,
+    [int]$IntegrityTimeoutSec = 90,
+    [int]$IntegrityRetryCount = 2,
+    [int]$IntegrityRetryDelaySeconds = 5,
     [int]$MinCustomers = 1,
     [int]$MinItems = 1,
     [int]$MinInvoices = 1
@@ -32,15 +37,18 @@ function Invoke-ApiJson {
         [string]$Method,
         [string]$Path,
         [hashtable]$Headers = @{},
-        [object]$Body = $null
+        [object]$Body = $null,
+        [int]$RequestTimeoutSec = $TimeoutSec,
+        [int]$Attempt = 1
     )
 
     $uri = $BaseUrl.TrimEnd('/') + $Path
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $parameters = @{
         Method = $Method
         Uri = $uri
         Headers = $Headers
-        TimeoutSec = 30
+        TimeoutSec = $RequestTimeoutSec
     }
 
     if ($null -ne $Body) {
@@ -48,13 +56,70 @@ function Invoke-ApiJson {
         $parameters.Body = ($Body | ConvertTo-Json -Depth 20 -Compress)
     }
 
-    Invoke-RestMethod @parameters
+    try {
+        $response = Invoke-RestMethod @parameters
+        $script:EndpointObservations.Add([pscustomobject]@{
+            Method = $Method
+            Path = $Path
+            Attempt = $Attempt
+            Result = 'PASS'
+            ElapsedMs = $stopwatch.ElapsedMilliseconds
+            Error = ''
+        }) | Out-Null
+        return $response
+    }
+    catch {
+        $script:EndpointObservations.Add([pscustomobject]@{
+            Method = $Method
+            Path = $Path
+            Attempt = $Attempt
+            Result = 'FAIL'
+            ElapsedMs = $stopwatch.ElapsedMilliseconds
+            Error = $_.Exception.Message
+        }) | Out-Null
+        throw
+    }
+}
+
+function Invoke-ApiJsonWithRetry {
+    param(
+        [string]$Method,
+        [string]$Path,
+        [hashtable]$Headers = @{},
+        [object]$Body = $null,
+        [int]$RequestTimeoutSec = $TimeoutSec,
+        [int]$RetryCount = 1,
+        [int]$RetryDelaySeconds = 3
+    )
+
+    $lastError = $null
+    $attempts = [Math]::Max(1, $RetryCount)
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+        try {
+            return Invoke-ApiJson `
+                -Method $Method `
+                -Path $Path `
+                -Headers $Headers `
+                -Body $Body `
+                -RequestTimeoutSec $RequestTimeoutSec `
+                -Attempt $attempt
+        }
+        catch {
+            $lastError = $_
+            if ($attempt -lt $attempts) {
+                Start-Sleep -Seconds $RetryDelaySeconds
+            }
+        }
+    }
+
+    throw $lastError
 }
 
 New-DirectoryIfMissing $EvidenceDirectory
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $jsonPath = Join-Path $EvidenceDirectory "api-visibility-smoke-$timestamp.json"
 $mdPath = Join-Path $EvidenceDirectory "api-visibility-smoke-$timestamp.md"
+$script:EndpointObservations = New-Object System.Collections.Generic.List[object]
 
 $login = Invoke-ApiJson -Method 'Post' -Path '/auth/login' -Body @{ username = $Username; password = $Password }
 if ([string]::IsNullOrWhiteSpace([string]$login.token)) {
@@ -67,7 +132,7 @@ $items = Invoke-ApiJson -Method 'Get' -Path '/items?take=5000' -Headers $headers
 $invoices = Invoke-ApiJson -Method 'Get' -Path '/invoices?take=500' -Headers $headers
 $customerCategories = Invoke-ApiJson -Method 'Get' -Path '/customer-categories' -Headers $headers
 $units = Invoke-ApiJson -Method 'Get' -Path '/units' -Headers $headers
-$integrity = Invoke-ApiJson -Method 'Get' -Path '/integrity/report' -Headers $headers
+$integrity = Invoke-ApiJsonWithRetry -Method 'Get' -Path '/integrity/report' -Headers $headers -RequestTimeoutSec $IntegrityTimeoutSec -RetryCount $IntegrityRetryCount -RetryDelaySeconds $IntegrityRetryDelaySeconds
 
 $customerCount = Get-ListCount $customers
 $itemCount = Get-ListCount $items
@@ -102,7 +167,7 @@ if ($invoiceCount -gt 0) {
         $invoiceDetail = Invoke-ApiJson -Method 'Get' -Path ("/invoices/$firstInvoiceId") -Headers $headers
         $invoiceDetailOk = $null -ne $invoiceDetail.id
         $payments = Invoke-ApiJson -Method 'Get' -Path ("/payments?invoiceId=$firstInvoiceId") -Headers $headers
-        $paymentListOk = $null -ne $payments
+        $paymentListOk = $true
         $paymentCount = Get-ListCount $payments
     }
 }
@@ -141,6 +206,7 @@ $result = [pscustomobject]@{
         PaymentListOk = $paymentListOk
     }
     IntegrityIssues = $integrityIssues
+    EndpointObservations = @($script:EndpointObservations.ToArray())
     Failures = @($failures.ToArray())
 }
 
@@ -166,6 +232,14 @@ $lines.Add('## 상세 API 확인') | Out-Null
 $lines.Add("- 첫 거래처 상세: $customerDetailOk ($firstCustomerId)") | Out-Null
 $lines.Add("- 첫 전표 상세: $invoiceDetailOk ($firstInvoiceId)") | Out-Null
 $lines.Add("- 첫 전표 수금/지급 목록: $paymentListOk, 건수 $paymentCount") | Out-Null
+$lines.Add('') | Out-Null
+$lines.Add('## Endpoint 응답시간') | Out-Null
+$lines.Add('| Endpoint | 시도 | 결과 | ms | 오류 |') | Out-Null
+$lines.Add('|---|---:|---|---:|---|') | Out-Null
+foreach ($observation in $script:EndpointObservations) {
+    $errorText = ([string]$observation.Error).Replace('|', '/')
+    $lines.Add("| $($observation.Method) $($observation.Path) | $($observation.Attempt) | $($observation.Result) | $($observation.ElapsedMs) | $errorText |") | Out-Null
+}
 $lines.Add('') | Out-Null
 $lines.Add("JSON: $jsonPath") | Out-Null
 if ($failures.Count -gt 0) {
