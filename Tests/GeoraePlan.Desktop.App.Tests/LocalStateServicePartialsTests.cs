@@ -54,8 +54,10 @@ public sealed class LocalStateServicePartialsTests
     [InlineData(null, true)]
     [InlineData("", true)]
     [InlineData("old-epoch", true)]
-    [InlineData("2026-05-27-rental-asset-mirror", false)]
-    [InlineData(" 2026-05-27-rental-asset-mirror ", false)]
+    [InlineData("2026-05-27-rental-asset-mirror", true)]
+    [InlineData(" 2026-05-27-rental-asset-mirror ", true)]
+    [InlineData("2026-05-27-lightweight-full-sync-mirror", false)]
+    [InlineData(" 2026-05-27-lightweight-full-sync-mirror ", false)]
     public void VersionChangeMaintenance_CacheMirrorRepair_RunsUntilCurrentEpochRecorded(
         string? lastRepairEpoch,
         bool expected)

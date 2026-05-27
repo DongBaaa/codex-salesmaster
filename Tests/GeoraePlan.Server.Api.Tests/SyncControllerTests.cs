@@ -2094,6 +2094,49 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Pull_ReturnsCustomerContractMetadataWithoutFileContent()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-CONTRACT-CUSTOMER",
+            NameMatchKey = "SYNCCONTRACTCUSTOMER",
+            TradeType = "매출",
+            Revision = 10
+        };
+        var contract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "거래계약서",
+            FileName = "contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = 4,
+            FileHash = "hash",
+            FileContent = [0x25, 0x50, 0x44, 0x46],
+            IsPrimary = true,
+            UploadedByUsername = "admin",
+            UploadedAtUtc = DateTime.UtcNow,
+            Revision = 11
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.CustomerContracts.Add(contract);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+        var pulled = Assert.Single(result.CustomerContracts, current => current.Id == contract.Id);
+
+        Assert.Equal("contract.pdf", pulled.FileName);
+        Assert.Equal(4, pulled.FileSize);
+        Assert.Empty(pulled.FileContent);
+    }
+
+    [Fact]
     public async Task Pull_OfficeOnlyUser_ReturnsOnlyResponsiblePaymentAndRentalRows()
     {
         var visibleCustomer = new Customer

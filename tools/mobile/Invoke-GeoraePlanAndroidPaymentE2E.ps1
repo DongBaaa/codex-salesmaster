@@ -91,6 +91,28 @@ function Invoke-Adb {
     return $output
 }
 
+function Install-MobileApk {
+    param(
+        [Parameter(Mandatory = $true)][string]$AdbPath,
+        [Parameter(Mandatory = $true)][string]$DeviceId,
+        [Parameter(Mandatory = $true)][string]$ApkPath,
+        [Parameter(Mandatory = $true)][string]$PackageName
+    )
+
+    try {
+        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'install', '-r', $ApkPath) | Out-Null
+    }
+    catch {
+        $message = $_.Exception.Message
+        if ($message -notmatch 'INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match') {
+            throw
+        }
+
+        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'uninstall', $PackageName) | Out-Null
+        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'install', '-r', $ApkPath) | Out-Null
+    }
+}
+
 
 function Start-MobileApp {
     param(
@@ -829,7 +851,7 @@ try {
     $screen = Get-ScreenSize -AdbPath $resolvedAdb -DeviceId $deviceId
 
     if (-not $SkipInstall) {
-        Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'install', '-r', $resolvedApk) | Out-Null
+        Install-MobileApk -AdbPath $resolvedAdb -DeviceId $deviceId -ApkPath $resolvedApk -PackageName $PackageName
         $steps.Add([pscustomobject]@{ Step = 'install'; Result = 'PASS'; Detail = $resolvedApk })
         Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'pm', 'clear', $PackageName) | Out-Null
         $steps.Add([pscustomobject]@{ Step = 'app-data-clear'; Result = 'PASS'; Detail = $PackageName })

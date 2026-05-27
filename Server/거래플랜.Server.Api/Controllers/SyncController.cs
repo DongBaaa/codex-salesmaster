@@ -123,7 +123,7 @@ public sealed class SyncController : ControllerBase
             Customers = await _officeScopeService.ApplySyncCustomerScope(_dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
             CustomerContracts = await _officeScopeService.ApplyCustomerContractScope(_dbContext.CustomerContracts.IgnoreQueryFilters().AsNoTracking().Include(x => x.Customer))
-                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto(true)).ToListAsync(cancellationToken),
+                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto(false)).ToListAsync(cancellationToken),
             Items = await _officeScopeService.ApplySyncItemScope(_dbContext.Items.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
             ItemWarehouseStocks = await _officeScopeService.ApplyItemWarehouseStockScope(_dbContext.ItemWarehouseStocks.AsNoTracking())

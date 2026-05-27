@@ -14,7 +14,7 @@ public static class VersionChangeMaintenanceService
 {
     private const string LastProcessedVersionSettingKey = "System.LastPostUpdateMaintenanceVersion";
     private const string LastCacheMirrorRepairEpochSettingKey = "System.LastCacheMirrorRepairEpoch";
-    private const string CurrentCacheMirrorRepairEpoch = "2026-05-27-rental-asset-mirror";
+    private const string CurrentCacheMirrorRepairEpoch = "2026-05-27-lightweight-full-sync-mirror";
     private static readonly Version FullMirrorRefreshBaselineVersion = new(1, 1, 172);
     private static readonly string[] TransientSettingPrefixes =
     [
