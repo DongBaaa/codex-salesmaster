@@ -142,7 +142,8 @@ public static partial class LocalDbInitializer
                 var linkedCustomerMatchesScope = MatchesOperationalCustomerScope(
                     linkedCustomer,
                     preferredTenantCode,
-                    preferredResponsibleOfficeCode);
+                    preferredResponsibleOfficeCode) ||
+                    CustomerMatchesRentalNames(linkedCustomer, assetCustomerKeys);
                 if (linkedCustomerMatchesScope)
                 {
                     var normalizedMasterName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
@@ -304,10 +305,12 @@ public static partial class LocalDbInitializer
             if (profile.CustomerId.HasValue &&
                 customerById.TryGetValue(profile.CustomerId.Value, out var linkedCustomer))
             {
+                var profileCustomerKeys = BuildRentalCustomerKeys(profile.CustomerName);
                 var linkedCustomerMatchesScope = MatchesOperationalCustomerScope(
                     linkedCustomer,
                     preferredTenantCode,
                     preferredResponsibleOfficeCode) ||
+                    CustomerMatchesRentalNames(linkedCustomer, profileCustomerKeys) ||
                     ProfileHasUniqueLinkedAssetCustomer(profile, assets, customerById, linkedCustomer.Id);
                 if (linkedCustomerMatchesScope)
                 {
@@ -1134,7 +1137,49 @@ public static partial class LocalDbInitializer
         var scopedCustomers = FilterCustomersByOperationalScope(
             customers,
             preferredTenantCode,
-            preferredResponsibleOfficeCode);
+            preferredResponsibleOfficeCode).ToList();
+        if (TryResolveRentalCustomerFromCandidates(
+                scopedCustomers,
+                normalizedBusinessNumber,
+                candidateKeys,
+                out customerId))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(preferredTenantCode))
+        {
+            var tenantCustomers = customers
+                .Where(customer =>
+                    string.Equals(
+                        NormalizeOperationalTenantCode(customer.TenantCode, customer.OfficeCode, customer.ResponsibleOfficeCode),
+                        preferredTenantCode,
+                        StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (tenantCustomers.Count > 0 &&
+                !tenantCustomers.Select(customer => customer.Id).OrderBy(id => id)
+                    .SequenceEqual(scopedCustomers.Select(customer => customer.Id).OrderBy(id => id)) &&
+                TryResolveRentalCustomerFromCandidates(
+                    tenantCustomers,
+                    normalizedBusinessNumber,
+                    candidateKeys,
+                    out customerId))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryResolveRentalCustomerFromCandidates(
+        IReadOnlyCollection<LocalCustomer> candidates,
+        string normalizedBusinessNumber,
+        IReadOnlyCollection<string> candidateKeys,
+        out Guid customerId)
+    {
+        customerId = Guid.Empty;
+        var scopedCustomers = candidates.ToList();
         if (!string.IsNullOrWhiteSpace(normalizedBusinessNumber))
         {
             var businessMatches = scopedCustomers

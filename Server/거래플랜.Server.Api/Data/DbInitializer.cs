@@ -158,7 +158,10 @@ public static partial class DbInitializer
         await NormalizeUnitCatalogAsync(dbContext, cancellationToken);
         await NormalizeInventoryTransferIntegrityAsync(dbContext, cancellationToken);
         await PurgeDeletedInventoryTransferDataAsync(dbContext, cancellationToken);
+        await RepairNegativeItemWarehouseStocksAsync(dbContext, cancellationToken);
         await PurgeDeletedItemWarehouseStocksAsync(dbContext, cancellationToken);
+        if (dbContext.ChangeTracker.HasChanges())
+            await dbContext.SaveChangesAsync(cancellationToken);
         await RepairItemCurrentStockSnapshotsAsync(dbContext, cancellationToken);
         await RepairDeletedCustomerRentalProfileLinksAsync(dbContext, cancellationToken);
         await MergeDuplicateCustomerMastersAsync(dbContext, cancellationToken);
@@ -188,7 +191,10 @@ public static partial class DbInitializer
             await NormalizeUnitCatalogAsync(tenantDbContext, cancellationToken);
             await NormalizeInventoryTransferIntegrityAsync(tenantDbContext, cancellationToken);
             await PurgeDeletedInventoryTransferDataAsync(tenantDbContext, cancellationToken);
+            await RepairNegativeItemWarehouseStocksAsync(tenantDbContext, cancellationToken);
             await PurgeDeletedItemWarehouseStocksAsync(tenantDbContext, cancellationToken);
+            if (tenantDbContext.ChangeTracker.HasChanges())
+                await tenantDbContext.SaveChangesAsync(cancellationToken);
             await RepairItemCurrentStockSnapshotsAsync(tenantDbContext, cancellationToken);
             await RepairDeletedCustomerRentalProfileLinksAsync(tenantDbContext, cancellationToken);
             await MergeDuplicateCustomerMastersAsync(tenantDbContext, cancellationToken);

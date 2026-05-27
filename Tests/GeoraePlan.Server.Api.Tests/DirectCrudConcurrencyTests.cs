@@ -208,6 +208,66 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task DbInitializer_RepairNegativeItemWarehouseStocks_ClampsRowsBeforeSnapshotRecalculation()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Negative stock item",
+            NameMatchKey = "NEGATIVESTOCKITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = -1m
+        };
+        dbContext.Items.Add(item);
+        dbContext.ItemWarehouseStocks.AddRange(
+            new ItemWarehouseStock
+            {
+                ItemId = item.Id,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = -1m,
+                Revision = 1
+            },
+            new ItemWarehouseStock
+            {
+                ItemId = item.Id,
+                WarehouseCode = "USENET_SUB",
+                Quantity = 2m,
+                Revision = 2
+            });
+        await dbContext.SaveChangesAsync();
+
+        var repairNegativeMethod = typeof(DbInitializer).GetMethod(
+            "RepairNegativeItemWarehouseStocksAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        var repairSnapshotMethod = typeof(DbInitializer).GetMethod(
+            "RepairItemCurrentStockSnapshotsAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(repairNegativeMethod);
+        Assert.NotNull(repairSnapshotMethod);
+
+        var repairedNegativeRows = await Assert.IsType<Task<int>>(repairNegativeMethod!.Invoke(null, new object[] { dbContext, CancellationToken.None }));
+        await dbContext.SaveChangesAsync();
+        var repairedSnapshots = await Assert.IsType<Task<int>>(repairSnapshotMethod!.Invoke(null, new object[] { dbContext, CancellationToken.None }));
+        await dbContext.SaveChangesAsync();
+
+        Assert.Equal(1, repairedNegativeRows);
+        Assert.Equal(1, repairedSnapshots);
+        Assert.Equal(0m, await dbContext.ItemWarehouseStocks
+            .Where(row => row.ItemId == item.Id && row.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(row => row.Quantity)
+            .SingleAsync());
+        Assert.Equal(2m, await dbContext.Items.IgnoreQueryFilters()
+            .Where(row => row.Id == item.Id)
+            .Select(row => row.CurrentStock)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task InvoicesController_Update_ReturnsConflict_WhenExpectedRevisionDoesNotMatch()
     {
         var currentUser = CreateAdminUser();

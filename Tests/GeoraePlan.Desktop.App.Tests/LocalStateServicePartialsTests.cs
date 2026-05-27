@@ -3128,6 +3128,105 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task LocalDbInitializer_RepairRentalCustomerLinkage_ResolvesUniqueCustomerAcrossResponsibleOfficeByName()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-cross-office-link-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.Parse("8f111111-1111-1111-1111-111111111111");
+            var profileId = Guid.Parse("8f222222-2222-2222-2222-222222222222");
+            var assetId = Guid.Parse("8f333333-3333-3333-3333-333333333333");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "연수구청[여성아동과]",
+                NameMatchKey = "연수구청[여성아동과]",
+                IsDirty = false
+            });
+
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "연수구청[여성아동과]",
+                InstallSiteName = "사무실",
+                ItemName = "IMC2010",
+                BillingType = "묶음",
+                MonthlyAmount = 300000m,
+                BillingTemplateJson = "[]",
+                IsDirty = false
+            });
+
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = profileId,
+                AssetKey = "USENET|YEONSU-DEPT-001|SN-DEPT",
+                CustomerName = "연수구청[여성아동과]",
+                CurrentCustomerName = "연수구청[여성아동과]",
+                InstallSiteName = "사무실",
+                InstallLocation = "사무실",
+                ItemName = "IMC2010",
+                ManagementNumber = "YEONSU-DEPT-001",
+                MachineNumber = "SN-DEPT",
+                AssetStatus = "ACTIVE",
+                MonthlyFee = 300000m,
+                IsDirty = false
+            });
+
+            await db.SaveChangesAsync();
+
+            var repairMethod = typeof(LocalDbInitializer).GetMethod(
+                "RepairRentalCustomerLinkageAsync",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.NotNull(repairMethod);
+
+            var repairTask = repairMethod!.Invoke(null, new object?[] { db }) as Task;
+            Assert.NotNull(repairTask);
+            await repairTask!;
+            await db.SaveChangesAsync();
+
+            var profile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
+            var asset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
+
+            Assert.Equal(customerId, profile.CustomerId);
+            Assert.Equal("연수구청[여성아동과]", profile.CustomerName);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, profile.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, profile.OfficeCode);
+            Assert.False(profile.IsDirty);
+
+            Assert.Equal(customerId, asset.CustomerId);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, asset.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, asset.OfficeCode);
+            Assert.Equal(profileId, asset.BillingProfileId);
+            Assert.False(asset.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task DataIntegrityIssueService_ScanAsync_FindsRentalRiskSignals()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-data-integrity-scan-{Guid.NewGuid():N}");

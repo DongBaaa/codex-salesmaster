@@ -703,6 +703,85 @@ public sealed class DbInitializerRegressionTests : IDisposable
         Assert.Equal(90000m, profile.MonthlyAmount);
     }
 
+    [Fact]
+    public async Task RepairRentalCustomerLinkageAsync_ResolvesUniqueCustomerAcrossResponsibleOfficeByName()
+    {
+        var customerId = Guid.Parse("9f111111-1111-1111-1111-111111111111");
+        var profileId = Guid.Parse("9f222222-2222-2222-2222-222222222222");
+        var assetId = Guid.Parse("9f333333-3333-3333-3333-333333333333");
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "연수구청[여성아동과]",
+            NameMatchKey = "연수구청[여성아동과]"
+        });
+
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "연수구청[여성아동과]",
+            InstallSiteName = "사무실",
+            ItemName = "IMC2010",
+            BillingType = "묶음",
+            MonthlyAmount = 300000m,
+            BillingTemplateJson = "[]",
+            IsActive = true
+        });
+
+        _dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            BillingProfileId = profileId,
+            AssetKey = "USENET|YEONSU-DEPT-001|SN-DEPT",
+            CustomerName = "연수구청[여성아동과]",
+            CurrentCustomerName = "연수구청[여성아동과]",
+            InstallSiteName = "사무실",
+            InstallLocation = "사무실",
+            ItemName = "IMC2010",
+            ManagementNumber = "YEONSU-DEPT-001",
+            MachineNumber = "SN-DEPT",
+            AssetStatus = "ACTIVE",
+            MonthlyFee = 300000m
+        });
+
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "RepairRentalCustomerLinkageAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
+
+        var profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
+        var asset = await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
+
+        Assert.Equal(customerId, profile.CustomerId);
+        Assert.Equal("연수구청[여성아동과]", profile.CustomerName);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, profile.ResponsibleOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, profile.OfficeCode);
+        Assert.Equal(customerId, asset.CustomerId);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, asset.ResponsibleOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, asset.OfficeCode);
+        Assert.Equal(profileId, asset.BillingProfileId);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();
