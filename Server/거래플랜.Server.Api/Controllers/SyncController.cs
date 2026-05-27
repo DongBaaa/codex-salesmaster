@@ -3969,6 +3969,9 @@ public sealed class SyncController : ControllerBase
 
     private static void ApplyInvoiceLines(Invoice invoice, IEnumerable<InvoiceLineDto> lines)
     {
+        if (invoice.IsDeleted)
+            return;
+
         foreach (var line in lines)
         {
             if (line.IsDeleted)

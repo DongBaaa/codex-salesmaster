@@ -192,6 +192,11 @@ public sealed class InvoicesController : ControllerBase
 
         var previousStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
         entity.IsDeleted = true;
+        foreach (var line in entity.Lines)
+        {
+            line.IsDeleted = true;
+        }
+
         await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
             previousStockDeltas,
             new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
@@ -203,6 +208,9 @@ public sealed class InvoicesController : ControllerBase
 
     private static void ApplyInvoiceLines(Invoice invoice, IEnumerable<InvoiceLineDto>? lines)
     {
+        if (invoice.IsDeleted)
+            return;
+
         foreach (var line in lines ?? [])
         {
             if (line.IsDeleted)
@@ -240,4 +248,3 @@ public sealed class InvoicesController : ControllerBase
         entity.IsDeleted = line.IsDeleted;
     }
 }
-

@@ -174,6 +174,63 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task CleanupDeletedInvoiceChainAsync_MarksActiveLinesUnderDeletedInvoices()
+    {
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted invoice cleanup customer",
+            NameMatchKey = "DELETEDINVOICECLEANUPCUSTOMER",
+            TradeType = "Sales"
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-DELETED-CLEANUP",
+            InvoiceDate = new DateOnly(2026, 5, 28),
+            IsDeleted = true
+        });
+        _dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = lineId,
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "active line under deleted invoice",
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 1000m,
+            LineAmount = 1000m,
+            IsDeleted = false
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "CleanupDeletedInvoiceChainAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
+
+        Assert.True(await _dbContext.InvoiceLines.IgnoreQueryFilters()
+            .Where(line => line.Id == lineId)
+            .Select(line => line.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task MergeBusinessDuplicateCustomersAsync_UsesResponsibleOfficeCode_ForDuplicateKey()
     {
         var duplicateA = new Customer

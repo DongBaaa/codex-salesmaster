@@ -574,6 +574,11 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             .Select(stock => stock.Quantity)
             .SingleAsync());
         Assert.Equal(5m, (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).CurrentStock);
+        Assert.True(await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .AnyAsync(line => line.InvoiceId == invoiceId));
+        Assert.True(await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .Where(line => line.InvoiceId == invoiceId)
+            .AllAsync(line => line.IsDeleted));
     }
 
     [Fact]
@@ -685,6 +690,11 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             .Select(stock => stock.Quantity)
             .SingleAsync());
         Assert.Equal(5m, (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).CurrentStock);
+        Assert.True(await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .AnyAsync(line => line.InvoiceId == invoiceId));
+        Assert.True(await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .Where(line => line.InvoiceId == invoiceId)
+            .AllAsync(line => line.IsDeleted));
     }
 
     [Fact]

@@ -393,9 +393,9 @@ public static partial class DbInitializer
                 payment.IsDeleted = true;
         }
 
-        foreach (var line in await dbContext.InvoiceLines
-                     .Where(current => !current.IsDeleted && deletedInvoiceIds.Contains(current.InvoiceId))
-                     .ToListAsync(cancellationToken))
+        foreach (var line in await dbContext.InvoiceLines.IgnoreQueryFilters()
+                      .Where(current => !current.IsDeleted && deletedInvoiceIds.Contains(current.InvoiceId))
+                      .ToListAsync(cancellationToken))
         {
             line.IsDeleted = true;
         }

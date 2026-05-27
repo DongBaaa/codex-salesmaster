@@ -3460,6 +3460,162 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DoesNotPersistActiveLines_WhenNewInvoiceIsDeleted()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-DELETED-INVOICE-CUSTOMER",
+            NameMatchKey = "SYNCDELETEDINVOICECUSTOMER",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-deleted-invoice-line-create",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    TenantCode = customer.TenantCode,
+                    OfficeCode = customer.OfficeCode,
+                    ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 5, 28),
+                    InvoiceNumber = "INV-SYNC-DELETED-NEW",
+                    IsDeleted = true,
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "line that must not remain active",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 1000m,
+                            LineAmount = 1000m
+                        }
+                    ],
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.True(await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == invoiceId)
+            .Select(invoice => invoice.IsDeleted)
+            .SingleAsync());
+        Assert.False(await _dbContext.InvoiceLines.IgnoreQueryFilters()
+            .AnyAsync(line => line.InvoiceId == invoiceId && !line.IsDeleted));
+    }
+
+    [Fact]
+    public async Task Push_RemovesActiveLines_WhenExistingInvoiceIsDeleted()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-EXISTING-DELETED-INVOICE-CUSTOMER",
+            NameMatchKey = "SYNCEXISTINGDELETEDINVOICECUSTOMER",
+            TradeType = "매출"
+        };
+        var invoiceId = Guid.NewGuid();
+        _dbContext.Customers.Add(customer);
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 5, 28),
+            InvoiceNumber = "INV-SYNC-DELETED-EXISTING"
+        });
+        _dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "existing active line",
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 1000m,
+            LineAmount = 1000m
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var storedInvoice = await _dbContext.Invoices.IgnoreQueryFilters()
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-deleted-invoice-line-update",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    TenantCode = customer.TenantCode,
+                    OfficeCode = customer.OfficeCode,
+                    ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = storedInvoice.InvoiceDate,
+                    InvoiceNumber = storedInvoice.InvoiceNumber,
+                    ExpectedRevision = storedInvoice.Revision,
+                    IsDeleted = true,
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "incoming active line",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 2000m,
+                            LineAmount = 2000m
+                        }
+                    ],
+                    CreatedAtUtc = storedInvoice.CreatedAtUtc,
+                    UpdatedAtUtc = storedInvoice.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.True(await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == invoiceId)
+            .Select(invoice => invoice.IsDeleted)
+            .SingleAsync());
+        Assert.False(await _dbContext.InvoiceLines.IgnoreQueryFilters()
+            .AnyAsync(line => line.InvoiceId == invoiceId && !line.IsDeleted));
+    }
+
+    [Fact]
     public async Task Push_SkipsDeletedTransactionAttachment_WhenTransactionIsAlreadyMissing()
     {
         var request = new SyncPushRequest
