@@ -112,11 +112,15 @@ builder.Services.AddDbContext<AppDbContext>((serviceProvider, options) =>
     var resolvedConnection = serviceProvider.GetRequiredService<ITenantDatabaseConnectionResolver>().ResolveCurrent();
     if (resolvedConnection.UseSqlite)
     {
-        options.UseSqlite(resolvedConnection.ConnectionString);
+        options.UseSqlite(
+            resolvedConnection.ConnectionString,
+            sqliteOptions => sqliteOptions.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery));
     }
     else
     {
-        options.UseNpgsql(resolvedConnection.ConnectionString);
+        options.UseNpgsql(
+            resolvedConnection.ConnectionString,
+            npgsqlOptions => npgsqlOptions.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery));
     }
 });
 

@@ -813,11 +813,15 @@ public static partial class DbInitializer
         var optionsBuilder = new DbContextOptionsBuilder<AppDbContext>();
         if (connectionInfo.UseSqlite)
         {
-            optionsBuilder.UseSqlite(connectionInfo.ConnectionString);
+            optionsBuilder.UseSqlite(
+                connectionInfo.ConnectionString,
+                sqliteOptions => sqliteOptions.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery));
         }
         else
         {
-            optionsBuilder.UseNpgsql(connectionInfo.ConnectionString);
+            optionsBuilder.UseNpgsql(
+                connectionInfo.ConnectionString,
+                npgsqlOptions => npgsqlOptions.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery));
         }
 
         return new AppDbContext(optionsBuilder.Options, SystemCurrentUserContext.Instance, revisionClock);
