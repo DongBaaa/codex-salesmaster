@@ -782,6 +782,145 @@ public sealed class DbInitializerRegressionTests : IDisposable
         Assert.Equal(profileId, asset.BillingProfileId);
     }
 
+    [Fact]
+    public async Task RepairRentalCustomerLinkageAsync_ResolvesKnownPublicOfficeAliasNames()
+    {
+        var waterCustomerId = Guid.Parse("9f444444-4444-4444-4444-444444444444");
+        var waterProfileId = Guid.Parse("9f555555-5555-5555-5555-555555555555");
+        var waterAssetId = Guid.Parse("9f666666-6666-6666-6666-666666666666");
+        var healthCustomerId = Guid.Parse("9f777777-7777-7777-7777-777777777777");
+        var healthProfileId = Guid.Parse("9f888888-8888-8888-8888-888888888888");
+        var healthAssetId = Guid.Parse("9f999999-9999-9999-9999-999999999999");
+
+        const string waterCustomerName = "\uC0C1\uC218\uB3C4\uC0AC\uC5C5\uBCF8\uBD80 \uB9D1\uC740\uBB3C\uC5F0\uAD6C\uC18C";
+        const string waterAliasName = "[\uC0C1\uC218\uB3C4\uC0AC\uC5C5\uC18C]\uB9D1\uC740\uBB3C\uC5F0\uAD6C\uC18C";
+        const string healthCustomerName = "\uC5F0\uC218\uAD6C\uCCAD[\uAC74\uAC15\uC99D\uC9C4\uACFC]";
+        const string healthAliasName = "[\uC5F0\uC218\uAD6C]\uBCF4\uAC74\uC18C-\uAC74\uAC15\uC99D\uC9C4\uACFC";
+
+        _dbContext.Customers.AddRange(
+            new Customer
+            {
+                Id = waterCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = waterCustomerName,
+                NameMatchKey = waterCustomerName
+            },
+            new Customer
+            {
+                Id = healthCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = healthCustomerName,
+                NameMatchKey = healthCustomerName
+            });
+
+        _dbContext.RentalBillingProfiles.AddRange(
+            new RentalBillingProfile
+            {
+                Id = waterProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = "PUBLIC-ALIAS-WATER",
+                CustomerName = waterAliasName,
+                InstallSiteName = "\uC218\uC9C8\uBD84\uC11D\uD300",
+                ItemName = "IMC2010",
+                BillingType = "\uBB36\uC74C",
+                MonthlyAmount = 110000m,
+                BillingTemplateJson = "[]",
+                IsActive = true
+            },
+            new RentalBillingProfile
+            {
+                Id = healthProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = "PUBLIC-ALIAS-HEALTH",
+                CustomerName = healthAliasName,
+                InstallSiteName = healthAliasName,
+                ItemName = "IMC2010",
+                BillingType = "\uBB36\uC74C",
+                MonthlyAmount = 240000m,
+                BillingTemplateJson = "[]",
+                IsActive = true
+            });
+
+        _dbContext.RentalAssets.AddRange(
+            new RentalAsset
+            {
+                Id = waterAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = waterProfileId,
+                AssetKey = "USENET|2311-005|WATER|IMC2010",
+                CustomerName = waterAliasName,
+                CurrentCustomerName = waterAliasName,
+                InstallSiteName = "\uC218\uC9C8\uBD84\uC11D\uD300",
+                InstallLocation = "\uC218\uC9C8\uBD84\uC11D\uD300",
+                ItemName = "IMC2010",
+                ManagementNumber = "2311-005",
+                MachineNumber = "WATER-001",
+                AssetStatus = "ACTIVE",
+                MonthlyFee = 110000m
+            },
+            new RentalAsset
+            {
+                Id = healthAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = healthProfileId,
+                AssetKey = "USENET|2401-011|HEALTH|IMC2010",
+                CustomerName = healthAliasName,
+                CurrentCustomerName = healthAliasName,
+                InstallSiteName = "\uC2E4.\uACFC\uB0B4",
+                InstallLocation = "\uC2E4.\uACFC\uB0B4",
+                ItemName = "IMC2010",
+                ManagementNumber = "2401-011",
+                MachineNumber = "HEALTH-001",
+                AssetStatus = "ACTIVE",
+                MonthlyFee = 90000m
+            });
+
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "RepairRentalCustomerLinkageAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
+
+        var waterProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == waterProfileId);
+        var healthProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == healthProfileId);
+        var waterAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == waterAssetId);
+        var healthAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == healthAssetId);
+
+        Assert.Equal(waterCustomerId, waterProfile.CustomerId);
+        Assert.Equal(waterCustomerName, waterProfile.CustomerName);
+        Assert.Equal(waterCustomerId, waterAsset.CustomerId);
+        Assert.Equal(OfficeCodeCatalog.Usenet, waterProfile.ResponsibleOfficeCode);
+
+        Assert.Equal(healthCustomerId, healthProfile.CustomerId);
+        Assert.Equal(healthCustomerName, healthProfile.CustomerName);
+        Assert.Equal(healthCustomerId, healthAsset.CustomerId);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, healthProfile.ResponsibleOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, healthAsset.ResponsibleOfficeCode);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();

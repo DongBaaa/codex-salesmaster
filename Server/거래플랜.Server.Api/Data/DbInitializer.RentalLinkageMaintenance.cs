@@ -967,6 +967,49 @@ public static partial class DbInitializer
 
         yield return prefix + suffix;
         yield return suffix + prefix;
+
+        foreach (var alias in EnumerateRentalPublicOfficeAliases(prefix, suffix))
+            yield return alias;
+    }
+
+    private static IEnumerable<string> EnumerateRentalPublicOfficeAliases(string prefix, string suffix)
+    {
+        var normalizedPrefix = RentalCatalogValueNormalizer.NormalizeLooseKey(prefix);
+        var normalizedSuffix = RentalCatalogValueNormalizer.NormalizeDisplayText(suffix);
+        if (string.IsNullOrWhiteSpace(normalizedPrefix) || string.IsNullOrWhiteSpace(normalizedSuffix))
+            yield break;
+
+        if (string.Equals(normalizedPrefix, RentalCatalogValueNormalizer.NormalizeLooseKey("\uC0C1\uC218\uB3C4\uC0AC\uC5C5\uC18C"), StringComparison.OrdinalIgnoreCase))
+        {
+            yield return "\uC0C1\uC218\uB3C4\uC0AC\uC5C5\uBCF8\uBD80" + normalizedSuffix;
+            yield return "[\uC0C1\uC218\uB3C4\uC0AC\uC5C5\uBCF8\uBD80]" + normalizedSuffix;
+        }
+
+        if (string.Equals(normalizedPrefix, RentalCatalogValueNormalizer.NormalizeLooseKey("\uC5F0\uC218\uAD6C"), StringComparison.OrdinalIgnoreCase))
+        {
+            var departmentName = TryExtractPublicHealthCenterDepartmentName(normalizedSuffix);
+            if (!string.IsNullOrWhiteSpace(departmentName))
+            {
+                yield return "\uC5F0\uC218\uAD6C\uCCAD[" + departmentName + "]";
+                yield return "\uC5F0\uC218\uAD6C\uCCAD" + departmentName;
+            }
+        }
+    }
+
+    private static string TryExtractPublicHealthCenterDepartmentName(string value)
+    {
+        var normalized = RentalCatalogValueNormalizer.NormalizeDisplayText(value);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return string.Empty;
+
+        const string healthCenterPrefix = "\uBCF4\uAC74\uC18C";
+        if (!normalized.StartsWith(healthCenterPrefix, StringComparison.Ordinal))
+            return string.Empty;
+
+        var departmentName = normalized[healthCenterPrefix.Length..].Trim(' ', '-', '/', '\\');
+        return string.IsNullOrWhiteSpace(departmentName)
+            ? string.Empty
+            : departmentName;
     }
 
     private static bool TryResolveRentalCustomerByNames(

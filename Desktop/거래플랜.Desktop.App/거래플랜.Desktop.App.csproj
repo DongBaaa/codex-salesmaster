@@ -25,8 +25,8 @@
     <AssemblyTitle>거래플랜</AssemblyTitle>
     <Product>거래플랜</Product>
     <ApplicationIcon>..\..\AppIcons\tradeplan-windows.ico</ApplicationIcon>
-    <Version>1.1.242</Version>
-    <FileVersion>1.1.242.0</FileVersion>
+    <Version>1.1.243</Version>
+    <FileVersion>1.1.243.0</FileVersion>
   </PropertyGroup>
   <ItemGroup></ItemGroup>
   <ItemGroup>
