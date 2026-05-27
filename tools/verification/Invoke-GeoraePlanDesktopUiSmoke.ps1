@@ -57,6 +57,22 @@ function Get-FreePort {
     }
 }
 
+function Test-LooksLikeTestRuntimePath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    try {
+        $normalized = [System.IO.Path]::GetFullPath($Path)
+    }
+    catch {
+        $normalized = $Path
+    }
+
+    return $normalized.IndexOf('테스트 시행', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
 function Wait-HttpReady {
     param(
         [string]$Url,
@@ -817,11 +833,13 @@ try {
         $appEnv = @{
             'GEORAEPLAN_APP_ROOT' = $AppDataRoot
             'GEORAEPLAN_DISABLE_LEGACY_MERGE' = '1'
-            'GEORAEPLAN_TEST_MODE' = '1'
         }
+        $shouldUseTestMode = [bool]$StartServer -or (Test-LooksLikeTestRuntimePath -Path $normalizedAppExe)
+        $appEnv['GEORAEPLAN_TEST_MODE'] = if ($shouldUseTestMode) { '1' } else { '' }
         if ($UseInAppSelfTest) {
             $appEnv['GEORAEPLAN_DESKTOP_UI_SMOKE_REPORT'] = $InAppSelfTestReportPath
         }
+        Add-Step -Steps $steps -Name 'test-mode-env' -Passed $true -Detail "GEORAEPLAN_TEST_MODE=$($appEnv['GEORAEPLAN_TEST_MODE']); appExe=$normalizedAppExe"
         foreach ($key in $appEnv.Keys) {
             $previousAppEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
             [Environment]::SetEnvironmentVariable($key, [string]$appEnv[$key], 'Process')
