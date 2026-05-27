@@ -346,6 +346,50 @@ function Wait-MainWindowOnly {
     return $null
 }
 
+function Find-RedirectedAppProcess {
+    param(
+        [string]$OriginalExe,
+        [datetime]$StartedAfter
+    )
+
+    $normalizedOriginalExe = ''
+    try {
+        $normalizedOriginalExe = [System.IO.Path]::GetFullPath($OriginalExe)
+    }
+    catch {
+        $normalizedOriginalExe = $OriginalExe
+    }
+
+    Get-Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            try {
+                if ($_.HasExited -or [string]::IsNullOrWhiteSpace($_.Path)) {
+                    return $false
+                }
+
+                $processPath = [System.IO.Path]::GetFullPath($_.Path)
+                if ([string]::Equals($processPath, $normalizedOriginalExe, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return $false
+                }
+
+                if ($_.StartTime -lt $StartedAfter.AddSeconds(-5)) {
+                    return $false
+                }
+
+                $nameLooksLikeApp = $_.ProcessName.IndexOf('거래플랜', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                    $_.ProcessName.IndexOf('tradeplan', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+                $windowLooksLikeApp = ([string]$_.MainWindowTitle).IndexOf('거래플랜', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+
+                return ($nameLooksLikeApp -or $windowLooksLikeApp)
+            }
+            catch {
+                return $false
+            }
+        } |
+        Sort-Object StartTime -Descending -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+}
+
 function Find-FirstByName {
     param(
         [System.Windows.Automation.AutomationElement]$Root,
@@ -782,6 +826,7 @@ $serverProcess = $null
 $previousAppEnv = @{}
 $passed = $false
 $errorText = ''
+$processLaunchStartedAt = $null
 
 try {
     $normalizedAppExe = [System.IO.Path]::GetFullPath($AppExe)
@@ -845,11 +890,21 @@ try {
             [Environment]::SetEnvironmentVariable($key, [string]$appEnv[$key], 'Process')
         }
 
+        $processLaunchStartedAt = Get-Date
         $process = Start-Process -FilePath $AppExe -WorkingDirectory (Split-Path -Parent $AppExe) -PassThru
         Add-Step -Steps $steps -Name 'start-process' -Passed $true -Detail "pid=$($process.Id)"
     }
 
     $startupWindow = Wait-LoginOrMainWindow -ProcessId $process.Id -TimeoutSec $TimeoutSec
+    if ($startupWindow.Kind -eq 'None' -and -not $AttachExisting -and $null -ne $processLaunchStartedAt) {
+        $redirectedProcess = Find-RedirectedAppProcess -OriginalExe $normalizedAppExe -StartedAfter $processLaunchStartedAt
+        if ($null -ne $redirectedProcess) {
+            Add-Step -Steps $steps -Name 'redirect-process' -Passed $true -Detail "originalPid=$($process.Id); redirectedPid=$($redirectedProcess.Id); path=$($redirectedProcess.Path)"
+            $process = $redirectedProcess
+            $startupWindow = Wait-LoginOrMainWindow -ProcessId $process.Id -TimeoutSec ([Math]::Max(15, [int]($TimeoutSec / 2)))
+        }
+    }
+
     $mainWindow = $null
     if ($startupWindow.Kind -eq 'Login') {
         $loginWindow = $startupWindow.Window
