@@ -678,6 +678,70 @@ function Get-MobileScriptReportPath {
     return ''
 }
 
+function Get-MobileScriptResult {
+    param(
+        [object[]]$Output,
+        [string]$ReportPath
+    )
+
+    $resultLine = @($Output | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^result=(PASS|FAIL)\s*$' } | Select-Object -Last 1)
+    if ($resultLine.Count -gt 0 -and ([string]$resultLine[0]) -match '^result=(PASS|FAIL)\s*$') {
+        return $Matches[1]
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ReportPath) -and (Test-Path -LiteralPath $ReportPath)) {
+        $text = Get-Content -LiteralPath $ReportPath -Raw -Encoding UTF8
+        if ($text -match '(?m)^-\s*결과:\s*(PASS|FAIL)\s*$') {
+            return $Matches[1]
+        }
+
+        $jsonMatch = [regex]::Match($text, '(?m)^JSON:\s*(.+\.json)\s*$')
+        if ($jsonMatch.Success) {
+            $jsonPath = $jsonMatch.Groups[1].Value.Trim()
+            if (Test-Path -LiteralPath $jsonPath) {
+                try {
+                    $json = Get-Content -LiteralPath $jsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $jsonResult = [string]$json.Result
+                    if ($jsonResult -eq 'PASS' -or $jsonResult -eq 'FAIL') {
+                        return $jsonResult
+                    }
+                }
+                catch {
+                }
+            }
+        }
+    }
+
+    return 'UNKNOWN'
+}
+
+function Invoke-MobileScriptStep {
+    param(
+        [string]$Name,
+        [string]$ScriptPath,
+        [hashtable]$Arguments,
+        [string]$ReportPrefix,
+        [string]$EvidenceDirectory
+    )
+
+    $global:LASTEXITCODE = 0
+    $output = & $ScriptPath @Arguments 2>&1
+    $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+    $reportPath = Get-MobileScriptReportPath -Output $output -Prefix $ReportPrefix -EvidenceDirectory $EvidenceDirectory
+    $result = Get-MobileScriptResult -Output $output -ReportPath $reportPath
+    if ($exitCode -ne 0 -and $result -ne 'FAIL') {
+        $result = 'FAIL'
+    }
+
+    [pscustomobject]@{
+        Name = $Name
+        Result = $result
+        ExitCode = $exitCode
+        ReportPath = $reportPath
+        Output = (Convert-OutputText $output)
+    }
+}
+
 function Invoke-MobileE2EChecks {
     param(
         [string]$ProjectRoot,
@@ -717,11 +781,12 @@ function Invoke-MobileE2EChecks {
         IncludeDraftScreens = $true
     }
     foreach ($key in $commonOptionalArgs.Keys) { $smokeArgs[$key] = $commonOptionalArgs[$key] }
-    $smokeOutput = & $smokeScript @smokeArgs 2>&1
-    $steps.Add([pscustomobject]@{
-        Name = 'mobile-smoke'
-        ReportPath = Get-MobileScriptReportPath -Output $smokeOutput -Prefix 'mobile_smoke_report=' -EvidenceDirectory $smokeEvidence
-    }) | Out-Null
+    $steps.Add((Invoke-MobileScriptStep `
+        -Name 'mobile-smoke' `
+        -ScriptPath $smokeScript `
+        -Arguments $smokeArgs `
+        -ReportPrefix 'mobile_smoke_report=' `
+        -EvidenceDirectory $smokeEvidence)) | Out-Null
 
     foreach ($voucherKind in @('Sales', 'Purchase')) {
         $writeEvidence = Join-Path $EvidenceDirectory ("mobile-write-$($voucherKind.ToLowerInvariant())")
@@ -735,11 +800,12 @@ function Invoke-MobileE2EChecks {
             SkipInstall = $true
         }
         foreach ($key in $commonOptionalArgs.Keys) { $writeArgs[$key] = $commonOptionalArgs[$key] }
-        $writeOutput = & $writeScript @writeArgs 2>&1
-        $steps.Add([pscustomobject]@{
-            Name = "mobile-write-$voucherKind"
-            ReportPath = Get-MobileScriptReportPath -Output $writeOutput -Prefix 'mobile_write_e2e_report=' -EvidenceDirectory $writeEvidence
-        }) | Out-Null
+        $steps.Add((Invoke-MobileScriptStep `
+            -Name "mobile-write-$voucherKind" `
+            -ScriptPath $writeScript `
+            -Arguments $writeArgs `
+            -ReportPrefix 'mobile_write_e2e_report=' `
+            -EvidenceDirectory $writeEvidence)) | Out-Null
 
         $paymentEvidence = Join-Path $EvidenceDirectory ("mobile-payment-$($voucherKind.ToLowerInvariant())")
         $paymentArgs = @{
@@ -752,27 +818,34 @@ function Invoke-MobileE2EChecks {
             SkipInstall = $true
         }
         foreach ($key in $commonOptionalArgs.Keys) { $paymentArgs[$key] = $commonOptionalArgs[$key] }
-        $paymentOutput = & $paymentScript @paymentArgs 2>&1
-        $steps.Add([pscustomobject]@{
-            Name = "mobile-payment-$voucherKind"
-            ReportPath = Get-MobileScriptReportPath -Output $paymentOutput -Prefix 'mobile_payment_e2e_report=' -EvidenceDirectory $paymentEvidence
-        }) | Out-Null
+        $steps.Add((Invoke-MobileScriptStep `
+            -Name "mobile-payment-$voucherKind" `
+            -ScriptPath $paymentScript `
+            -Arguments $paymentArgs `
+            -ReportPrefix 'mobile_payment_e2e_report=' `
+            -EvidenceDirectory $paymentEvidence)) | Out-Null
     }
 
     $summaryPath = Join-Path $EvidenceDirectory ('mobile-e2e-summary-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.md')
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add('# 모바일 E2E 통합 결과') | Out-Null
     $lines.Add('') | Out-Null
-    $lines.Add('| 단계 | 리포트 |') | Out-Null
-    $lines.Add('|---|---|') | Out-Null
+    $lines.Add('| 결과 | 단계 | 종료코드 | 리포트 |') | Out-Null
+    $lines.Add('|---|---|---:|---|') | Out-Null
     foreach ($step in $steps) {
         $report = if ([string]::IsNullOrWhiteSpace([string]$step.ReportPath)) { '-' } else { [string]$step.ReportPath }
-        $lines.Add("| $($step.Name) | $report |") | Out-Null
+        $lines.Add("| $($step.Result) | $($step.Name) | $($step.ExitCode) | $report |") | Out-Null
     }
     $lines | Set-Content -LiteralPath $summaryPath -Encoding UTF8
 
+    $failedSteps = @($steps | Where-Object { $_.Result -ne 'PASS' -or $_.ExitCode -ne 0 })
+    if ($failedSteps.Count -gt 0) {
+        $failedNames = ($failedSteps | ForEach-Object { "$($_.Name)=$($_.Result)/exit$($_.ExitCode)" }) -join ', '
+        throw "모바일 E2E 실패: $failedNames (summary: $summaryPath)"
+    }
+
     [pscustomobject]@{
-        Detail = 'PASS'
+        Detail = "PASS ($($steps.Count) checks)"
         ReportPath = $summaryPath
         Output = ($steps | ConvertTo-Json -Depth 6)
     }

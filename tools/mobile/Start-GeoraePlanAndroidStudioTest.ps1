@@ -226,11 +226,14 @@ if (-not $SkipBuild) {
 }
 
 $apk = Resolve-LatestApk -ProjectRoot $ProjectRoot
-& $adbPath -s $deviceId install -r $apk.FullName
+& $adbPath -s $deviceId install -r -d $apk.FullName
 if ($LASTEXITCODE -ne 0) {
-    throw 'APK 설치에 실패했습니다.'
+    & $adbPath -s $deviceId uninstall $PackageName | Out-Null
+    & $adbPath -s $deviceId install -r -d $apk.FullName
+    if ($LASTEXITCODE -ne 0) {
+        throw 'APK 설치에 실패했습니다.'
+    }
 }
-
 & $adbPath -s $deviceId shell monkey -p $PackageName -c android.intent.category.LAUNCHER 1 | Out-Null
 
 Write-Host "android_studio=$androidStudioPath"

@@ -96,17 +96,19 @@ function Install-MobileApk {
         [Parameter(Mandatory = $true)][string]$PackageName
     )
 
+    $installArgs = @('-s', $DeviceId, 'install', '-r', '-d', $ApkPath)
+
     try {
-        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'install', '-r', $ApkPath) | Out-Null
+        Invoke-Adb -AdbPath $AdbPath -Arguments $installArgs | Out-Null
     }
     catch {
         $message = $_.Exception.Message
-        if ($message -notmatch 'INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match') {
+        if ($message -notmatch 'INSTALL_FAILED_UPDATE_INCOMPATIBLE|INSTALL_FAILED_VERSION_DOWNGRADE|Downgrade detected|signatures do not match') {
             throw
         }
 
         Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'uninstall', $PackageName) | Out-Null
-        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'install', '-r', $ApkPath) | Out-Null
+        Invoke-Adb -AdbPath $AdbPath -Arguments $installArgs | Out-Null
     }
 }
 
@@ -561,6 +563,8 @@ $steps = New-Object System.Collections.Generic.List[object]
 if (-not $SkipInstall) {
     Install-MobileApk -AdbPath $resolvedAdb -DeviceId $deviceId -ApkPath $resolvedApk -PackageName $PackageName
     $steps.Add([pscustomobject]@{ Step = 'install'; Result = 'PASS'; Detail = $resolvedApk })
+    Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'pm', 'clear', $PackageName) | Out-Null
+    $steps.Add([pscustomobject]@{ Step = 'app-data-clear'; Result = 'PASS'; Detail = $PackageName })
 }
 
 Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'am', 'force-stop', 'com.google.android.apps.nexuslauncher') | Out-Null

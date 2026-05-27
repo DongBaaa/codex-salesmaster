@@ -99,17 +99,19 @@ function Install-MobileApk {
         [Parameter(Mandatory = $true)][string]$PackageName
     )
 
+    $installArgs = @('-s', $DeviceId, 'install', '-r', '-d', $ApkPath)
+
     try {
-        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'install', '-r', $ApkPath) | Out-Null
+        Invoke-Adb -AdbPath $AdbPath -Arguments $installArgs | Out-Null
     }
     catch {
         $message = $_.Exception.Message
-        if ($message -notmatch 'INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match') {
+        if ($message -notmatch 'INSTALL_FAILED_UPDATE_INCOMPATIBLE|INSTALL_FAILED_VERSION_DOWNGRADE|Downgrade detected|signatures do not match') {
             throw
         }
 
         Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'uninstall', $PackageName) | Out-Null
-        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'install', '-r', $ApkPath) | Out-Null
+        Invoke-Adb -AdbPath $AdbPath -Arguments $installArgs | Out-Null
     }
 }
 
