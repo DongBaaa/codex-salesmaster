@@ -368,11 +368,23 @@ public static partial class LocalDbInitializer
 
             activeAssetsByProfileId.TryGetValue(profile.Id, out var linkedAssets);
             var hasLinkedAssets = linkedAssets is not null && linkedAssets.Count > 0;
-            if (hasLinkedAssets &&
-                TryBackfillBillingTemplate(profile, linkedAssets!, rentalStateService, out var backfilledTemplateJson))
+            var billingTemplateAssets = hasLinkedAssets
+                ? linkedAssets!
+                : ResolveBillingTemplateAssets(profile, assets, rentalStateService);
+            if (billingTemplateAssets.Count > 0 &&
+                TryNormalizeBillingTemplateFromLinkedAssets(profile, billingTemplateAssets, rentalStateService, out var normalizedTemplateJson, out var normalizedMonthlyAmount))
             {
-                profile.BillingTemplateJson = backfilledTemplateJson;
-                changed = true;
+                if (!string.Equals(profile.BillingTemplateJson ?? string.Empty, normalizedTemplateJson, StringComparison.Ordinal))
+                {
+                    profile.BillingTemplateJson = normalizedTemplateJson;
+                    changed = true;
+                }
+
+                if (profile.MonthlyAmount != normalizedMonthlyAmount)
+                {
+                    profile.MonthlyAmount = normalizedMonthlyAmount;
+                    changed = true;
+                }
             }
 
             if (!hasLinkedAssets)
@@ -441,46 +453,145 @@ public static partial class LocalDbInitializer
         }
     }
 
-    private static bool TryBackfillBillingTemplate(
+    private static List<LocalRentalAsset> ResolveBillingTemplateAssets(
+        LocalRentalBillingProfile profile,
+        IReadOnlyCollection<LocalRentalAsset> assets,
+        RentalStateService rentalStateService)
+    {
+        var templateItems = rentalStateService.GetBillingTemplateItems(profile, Array.Empty<LocalRentalAsset>());
+        if (templateItems.Count == 0)
+            return [];
+
+        var includedIds = templateItems
+            .SelectMany(item => item.IncludedAssetIds ?? [])
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (includedIds.Count == 0)
+            return [];
+
+        var assetMap = assets
+            .Where(asset => asset.Id != Guid.Empty && !asset.IsDeleted)
+            .GroupBy(asset => asset.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+
+        return includedIds
+            .Where(assetMap.ContainsKey)
+            .Select(id => assetMap[id])
+            .ToList();
+    }
+
+    private static bool TryNormalizeBillingTemplateFromLinkedAssets(
         LocalRentalBillingProfile profile,
         IReadOnlyList<LocalRentalAsset> linkedAssets,
         RentalStateService rentalStateService,
-        out string backfilledTemplateJson)
+        out string normalizedTemplateJson,
+        out decimal normalizedMonthlyAmount)
     {
-        backfilledTemplateJson = profile.BillingTemplateJson ?? string.Empty;
+        normalizedTemplateJson = profile.BillingTemplateJson ?? string.Empty;
+        normalizedMonthlyAmount = Math.Max(0m, profile.MonthlyAmount);
         if (linkedAssets.Count == 0)
             return false;
 
-        var templateItems = rentalStateService.GetBillingTemplateItems(profile, linkedAssets);
-        if (templateItems.Count != 1)
-            return false;
-
-        var linkedAssetIds = linkedAssets
-            .Select(asset => asset.Id)
-            .Where(id => id != Guid.Empty)
-            .Distinct()
+        var linkedAssetMap = linkedAssets
+            .Where(asset => asset.Id != Guid.Empty && !asset.IsDeleted)
+            .GroupBy(asset => asset.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        var linkedAssetIds = linkedAssetMap.Keys
             .OrderBy(id => id)
             .ToList();
         if (linkedAssetIds.Count == 0)
             return false;
 
-        var templateItem = templateItems[0];
-        var currentIncludedAssetIds = (templateItem.IncludedAssetIds ?? [])
-            .Where(id => id != Guid.Empty)
-            .Distinct()
-            .OrderBy(id => id)
-            .ToList();
-
-        if (linkedAssetIds.SequenceEqual(currentIncludedAssetIds))
+        var templateItems = rentalStateService.GetBillingTemplateItems(profile, linkedAssets);
+        if (templateItems.Count == 0)
             return false;
 
-        templateItem.IncludedAssetIds = linkedAssetIds;
+        if (templateItems.Count == 1)
+        {
+            var currentIds = (templateItems[0].IncludedAssetIds ?? [])
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToList();
+            if (!linkedAssetIds.SequenceEqual(currentIds))
+                templateItems[0].IncludedAssetIds = linkedAssetIds;
+        }
+
+        var changed = false;
+        foreach (var templateItem in templateItems)
+        {
+            var includedAssetIds = (templateItem.IncludedAssetIds ?? [])
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+            if (includedAssetIds.Count == 0)
+                continue;
+
+            var itemAssets = includedAssetIds
+                .Where(linkedAssetMap.ContainsKey)
+                .Select(id => linkedAssetMap[id])
+                .ToList();
+            if (itemAssets.Count == 0)
+                continue;
+
+            var totalMonthlyFee = itemAssets.Sum(asset => Math.Max(0m, asset.MonthlyFee));
+            if (totalMonthlyFee <= 0m)
+                continue;
+
+            var distinctPositiveFees = itemAssets
+                .Select(asset => Math.Max(0m, asset.MonthlyFee))
+                .Where(amount => amount > 0m)
+                .Distinct()
+                .ToList();
+            var lineMode = FirstNonEmptyForStartup(templateItem.BillingLineMode, profile.BillingType);
+            var shouldBundle = itemAssets.Count == 1 ||
+                               string.Equals(lineMode, "\uBB36\uC74C", StringComparison.OrdinalIgnoreCase) ||
+                               distinctPositiveFees.Count != 1;
+            var quantity = shouldBundle ? 1m : itemAssets.Count;
+            var unitPrice = shouldBundle ? totalMonthlyFee : distinctPositiveFees[0];
+            var amount = CalculateStartupTemplateLineAmount(quantity, unitPrice);
+
+            if (templateItem.Quantity != quantity ||
+                templateItem.UnitPrice != unitPrice ||
+                templateItem.Amount != amount)
+            {
+                templateItem.Quantity = quantity;
+                templateItem.UnitPrice = unitPrice;
+                templateItem.Amount = amount;
+                changed = true;
+            }
+        }
+
+        normalizedMonthlyAmount = templateItems.Sum(ResolveStartupTemplateMonthlyAmount);
         var serialized = rentalStateService.SerializeBillingTemplateItems(templateItems);
-        if (string.Equals(serialized, profile.BillingTemplateJson ?? string.Empty, StringComparison.Ordinal))
-            return false;
+        if (!string.Equals(serialized, profile.BillingTemplateJson ?? string.Empty, StringComparison.Ordinal))
+            changed = true;
 
-        backfilledTemplateJson = serialized;
-        return true;
+        normalizedTemplateJson = serialized;
+        return changed || profile.MonthlyAmount != normalizedMonthlyAmount;
+    }
+
+    private static decimal ResolveStartupTemplateMonthlyAmount(RentalBillingTemplateItemModel item)
+    {
+        var quantity = item.Quantity <= 0m ? 1m : item.Quantity;
+        var unitPrice = Math.Max(0m, item.UnitPrice);
+        var calculated = CalculateStartupTemplateLineAmount(quantity, unitPrice);
+        return calculated > 0m ? calculated : Math.Max(0m, item.Amount);
+    }
+
+    private static decimal CalculateStartupTemplateLineAmount(decimal quantity, decimal unitPrice)
+        => Math.Max(0m, quantity) * Math.Max(0m, unitPrice);
+
+    private static string FirstNonEmptyForStartup(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                return value.Trim();
+        }
+
+        return string.Empty;
     }
 
     private static async Task RepairMfcL8900CategoryAsync(LocalDbContext db, DateTime now)

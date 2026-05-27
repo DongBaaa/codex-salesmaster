@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Security;
@@ -490,6 +491,126 @@ public sealed class DbInitializerRegressionTests : IDisposable
         Assert.Equal(OfficeCodeCatalog.Usenet, yeonsuAsset.OfficeCode);
         Assert.Equal(OfficeCodeCatalog.Usenet, yeonsuAsset.ManagementCompanyCode);
         Assert.Equal(OfficeCodeCatalog.Yeonsu, yeonsuAsset.ResponsibleOfficeCode);
+    }
+
+    [Fact]
+    public async Task RepairRentalCustomerLinkageAsync_RecalculatesBillingTemplateAndProfileAmountFromLinkedAssetFees()
+    {
+        var customerId = Guid.Parse("96666666-6666-6666-6666-666666666667");
+        var profileId = Guid.Parse("97777777-7777-7777-7777-777777777777");
+        var firstAssetId = Guid.Parse("98888888-8888-8888-8888-888888888888");
+        var secondAssetId = Guid.Parse("99999999-9999-9999-9999-999999999999");
+
+        var templateJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                ItemId = Guid.Parse("9aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                DisplayItemName = "??? ???",
+                BillingLineMode = "??",
+                Quantity = 1m,
+                UnitPrice = 100m,
+                Amount = 100m,
+                IncludedAssetIds = new[] { firstAssetId }
+            }
+        });
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "?? ??? ??? ???",
+            NameMatchKey = "???????????"
+        });
+
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "?? ??? ??? ???",
+            InstallSiteName = "?? ??? ??? ???",
+            ItemName = "??? ???",
+            BillingType = "??",
+            MonthlyAmount = 100m,
+            BillingTemplateJson = templateJson,
+            IsActive = true
+        });
+
+        _dbContext.RentalAssets.AddRange(
+            new RentalAsset
+            {
+                Id = firstAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = profileId,
+                CustomerId = customerId,
+                AssetKey = "USENET|MONTHLY-001|SN-001",
+                CustomerName = "?? ??? ??? ???",
+                CurrentCustomerName = "?? ??? ??? ???",
+                InstallSiteName = "??? ???",
+                InstallLocation = "??? ???",
+                ItemName = "???",
+                ManagementNumber = "MONTHLY-001",
+                MachineNumber = "SN-001",
+                AssetStatus = "ACTIVE",
+                MonthlyFee = 110000m
+            },
+            new RentalAsset
+            {
+                Id = secondAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = profileId,
+                CustomerId = customerId,
+                AssetKey = "USENET|MONTHLY-002|SN-002",
+                CustomerName = "?? ??? ??? ???",
+                CurrentCustomerName = "?? ??? ??? ???",
+                InstallSiteName = "??? ???",
+                InstallLocation = "??? ???",
+                ItemName = "???",
+                ManagementNumber = "MONTHLY-002",
+                MachineNumber = "SN-002",
+                AssetStatus = "ACTIVE",
+                MonthlyFee = 220000m
+            });
+
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "RepairRentalCustomerLinkageAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
+
+        var profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
+        Assert.Equal(330000m, profile.MonthlyAmount);
+
+        using var document = JsonDocument.Parse(profile.BillingTemplateJson);
+        var item = document.RootElement.EnumerateArray().Single();
+        Assert.Equal(1m, item.GetProperty("Quantity").GetDecimal());
+        Assert.Equal(330000m, item.GetProperty("UnitPrice").GetDecimal());
+        Assert.Equal(330000m, item.GetProperty("Amount").GetDecimal());
+        var includedAssetIds = item.GetProperty("IncludedAssetIds")
+            .EnumerateArray()
+            .Select(value => value.GetGuid())
+            .OrderBy(value => value)
+            .ToList();
+        Assert.Equal(new[] { firstAssetId, secondAssetId }.OrderBy(value => value), includedAssetIds);
     }
 
     public void Dispose()

@@ -345,11 +345,23 @@ public static partial class DbInitializer
 
             activeAssetsByProfileId.TryGetValue(profile.Id, out var linkedAssets);
             var hasLinkedAssets = linkedAssets is not null && linkedAssets.Count > 0;
-            if (hasLinkedAssets &&
-                TryBackfillBillingTemplate(profile, linkedAssets!, out var backfilledTemplateJson))
+            var billingTemplateAssets = hasLinkedAssets
+                ? linkedAssets!
+                : ResolveBillingTemplateAssets(profile, assets);
+            if (billingTemplateAssets.Count > 0 &&
+                TryNormalizeBillingTemplateFromLinkedAssets(profile, billingTemplateAssets, out var normalizedTemplateJson, out var normalizedMonthlyAmount))
             {
-                profile.BillingTemplateJson = backfilledTemplateJson;
-                changed = true;
+                if (!string.Equals(profile.BillingTemplateJson ?? string.Empty, normalizedTemplateJson, StringComparison.Ordinal))
+                {
+                    profile.BillingTemplateJson = normalizedTemplateJson;
+                    changed = true;
+                }
+
+                if (profile.MonthlyAmount != normalizedMonthlyAmount)
+                {
+                    profile.MonthlyAmount = normalizedMonthlyAmount;
+                    changed = true;
+                }
             }
 
             if (!hasLinkedAssets)
@@ -418,86 +430,174 @@ public static partial class DbInitializer
         }
     }
 
-    private static bool TryBackfillBillingTemplate(
+    private static List<RentalAsset> ResolveBillingTemplateAssets(
         RentalBillingProfile profile,
-        IReadOnlyList<RentalAsset> linkedAssets,
-        out string backfilledTemplateJson)
+        IReadOnlyCollection<RentalAsset> assets)
     {
-        backfilledTemplateJson = profile.BillingTemplateJson ?? string.Empty;
-        if (linkedAssets.Count == 0 || !NeedsBillingTemplateBackfill(profile.BillingTemplateJson))
-            return false;
+        var templateItems = ParseStartupBillingTemplateItems(profile.BillingTemplateJson);
+        if (templateItems is null || templateItems.Count == 0)
+            return [];
 
-        var includedAssetIds = linkedAssets
-            .Select(asset => asset.Id)
+        var includedIds = templateItems
+            .SelectMany(item => item.IncludedAssetIds ?? [])
             .Where(id => id != Guid.Empty)
             .Distinct()
             .ToList();
-        if (includedAssetIds.Count == 0)
+        if (includedIds.Count == 0)
+            return [];
+
+        var assetMap = assets
+            .Where(asset => asset.Id != Guid.Empty && !asset.IsDeleted)
+            .GroupBy(asset => asset.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+
+        return includedIds
+            .Where(assetMap.ContainsKey)
+            .Select(id => assetMap[id])
+            .ToList();
+    }
+
+    private static bool TryNormalizeBillingTemplateFromLinkedAssets(
+        RentalBillingProfile profile,
+        IReadOnlyList<RentalAsset> linkedAssets,
+        out string normalizedTemplateJson,
+        out decimal normalizedMonthlyAmount)
+    {
+        normalizedTemplateJson = profile.BillingTemplateJson ?? string.Empty;
+        normalizedMonthlyAmount = Math.Max(0m, profile.MonthlyAmount);
+        if (linkedAssets.Count == 0)
             return false;
 
-        List<RentalBillingTemplateBackfillItem>? items = null;
-        if (!string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
-        {
-            try
-            {
-                items = JsonSerializer.Deserialize<List<RentalBillingTemplateBackfillItem>>(profile.BillingTemplateJson, RentalTemplateJsonOptions);
-            }
-            catch
-            {
-                items = null;
-            }
-        }
+        var linkedAssetMap = linkedAssets
+            .Where(asset => asset.Id != Guid.Empty && !asset.IsDeleted)
+            .GroupBy(asset => asset.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        var linkedAssetIds = linkedAssetMap.Keys
+            .OrderBy(id => id)
+            .ToList();
+        if (linkedAssetIds.Count == 0)
+            return false;
 
-        if (items is null || items.Count == 0)
+        var templateItems = ParseStartupBillingTemplateItems(profile.BillingTemplateJson);
+        if (templateItems is null || templateItems.Count == 0)
         {
-            items =
+            var totalMonthlyFee = linkedAssetMap.Values.Sum(asset => Math.Max(0m, asset.MonthlyFee));
+            if (totalMonthlyFee <= 0m)
+                return false;
+
+            templateItems =
             [
                 new RentalBillingTemplateBackfillItem
                 {
-                    DisplayItemName = string.IsNullOrWhiteSpace(profile.ItemName) ? "렌탈 임대료" : profile.ItemName,
-                    BillingLineMode = string.IsNullOrWhiteSpace(profile.BillingType) ? "묶음" : profile.BillingType,
+                    DisplayItemName = string.IsNullOrWhiteSpace(profile.ItemName) ? "\uB80C\uD0C8\uB8CC" : profile.ItemName,
+                    BillingLineMode = string.IsNullOrWhiteSpace(profile.BillingType) ? "\uBB36\uC74C" : profile.BillingType,
                     Quantity = 1m,
-                    UnitPrice = Math.Max(0m, profile.MonthlyAmount),
-                    Amount = Math.Max(0m, profile.MonthlyAmount),
-                    IncludedAssetIds = includedAssetIds
+                    UnitPrice = totalMonthlyFee,
+                    Amount = totalMonthlyFee,
+                    IncludedAssetIds = linkedAssetIds
                 }
             ];
         }
-        else if (items.Count == 1 && (items[0].IncludedAssetIds is null || items[0].IncludedAssetIds.Count == 0))
+        else if (templateItems.Count == 1)
         {
-            items[0].IncludedAssetIds = includedAssetIds;
-        }
-        else
-        {
-            return false;
+            var currentIds = (templateItems[0].IncludedAssetIds ?? [])
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToList();
+            if (!linkedAssetIds.SequenceEqual(currentIds))
+                templateItems[0].IncludedAssetIds = linkedAssetIds;
         }
 
-        var serialized = JsonSerializer.Serialize(items, RentalTemplateJsonOptions);
-        if (string.Equals(serialized, profile.BillingTemplateJson ?? string.Empty, StringComparison.Ordinal))
-            return false;
+        var changed = false;
+        foreach (var templateItem in templateItems)
+        {
+            var includedAssetIds = (templateItem.IncludedAssetIds ?? [])
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+            if (includedAssetIds.Count == 0)
+                continue;
 
-        backfilledTemplateJson = serialized;
-        return true;
+            var itemAssets = includedAssetIds
+                .Where(linkedAssetMap.ContainsKey)
+                .Select(id => linkedAssetMap[id])
+                .ToList();
+            if (itemAssets.Count == 0)
+                continue;
+
+            var totalMonthlyFee = itemAssets.Sum(asset => Math.Max(0m, asset.MonthlyFee));
+            if (totalMonthlyFee <= 0m)
+                continue;
+
+            var distinctPositiveFees = itemAssets
+                .Select(asset => Math.Max(0m, asset.MonthlyFee))
+                .Where(amount => amount > 0m)
+                .Distinct()
+                .ToList();
+            var lineMode = FirstNonEmptyForStartup(templateItem.BillingLineMode, profile.BillingType);
+            var shouldBundle = itemAssets.Count == 1 ||
+                               string.Equals(lineMode, "\uBB36\uC74C", StringComparison.OrdinalIgnoreCase) ||
+                               distinctPositiveFees.Count != 1;
+            var quantity = shouldBundle ? 1m : itemAssets.Count;
+            var unitPrice = shouldBundle ? totalMonthlyFee : distinctPositiveFees[0];
+            var amount = CalculateStartupTemplateLineAmount(quantity, unitPrice);
+
+            if (templateItem.Quantity != quantity ||
+                templateItem.UnitPrice != unitPrice ||
+                templateItem.Amount != amount)
+            {
+                templateItem.Quantity = quantity;
+                templateItem.UnitPrice = unitPrice;
+                templateItem.Amount = amount;
+                changed = true;
+            }
+        }
+
+        normalizedMonthlyAmount = templateItems.Sum(ResolveStartupTemplateMonthlyAmount);
+        var serialized = JsonSerializer.Serialize(templateItems, RentalTemplateJsonOptions);
+        if (!string.Equals(serialized, profile.BillingTemplateJson ?? string.Empty, StringComparison.Ordinal))
+            changed = true;
+
+        normalizedTemplateJson = serialized;
+        return changed || profile.MonthlyAmount != normalizedMonthlyAmount;
     }
 
-    private static bool NeedsBillingTemplateBackfill(string? billingTemplateJson)
+    private static List<RentalBillingTemplateBackfillItem>? ParseStartupBillingTemplateItems(string? billingTemplateJson)
     {
         if (string.IsNullOrWhiteSpace(billingTemplateJson))
-            return true;
+            return [];
 
         try
         {
-            var items = JsonSerializer.Deserialize<List<RentalBillingTemplateBackfillItem>>(billingTemplateJson, RentalTemplateJsonOptions);
-            if (items is null || items.Count == 0)
-                return true;
-
-            return items.Count == 1 &&
-                   (items[0].IncludedAssetIds is null || items[0].IncludedAssetIds.Count == 0);
+            return JsonSerializer.Deserialize<List<RentalBillingTemplateBackfillItem>>(billingTemplateJson, RentalTemplateJsonOptions) ?? [];
         }
         catch
         {
-            return true;
+            return null;
         }
+    }
+
+    private static decimal ResolveStartupTemplateMonthlyAmount(RentalBillingTemplateBackfillItem item)
+    {
+        var quantity = item.Quantity <= 0m ? 1m : item.Quantity;
+        var unitPrice = Math.Max(0m, item.UnitPrice);
+        var calculated = CalculateStartupTemplateLineAmount(quantity, unitPrice);
+        return calculated > 0m ? calculated : Math.Max(0m, item.Amount);
+    }
+
+    private static decimal CalculateStartupTemplateLineAmount(decimal quantity, decimal unitPrice)
+        => Math.Max(0m, quantity) * Math.Max(0m, unitPrice);
+
+    private static string FirstNonEmptyForStartup(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                return value.Trim();
+        }
+
+        return string.Empty;
     }
 
     private sealed class RentalBillingTemplateBackfillItem
@@ -505,6 +605,10 @@ public static partial class DbInitializer
         public Guid ItemId { get; set; } = Guid.NewGuid();
         public string DisplayItemName { get; set; } = string.Empty;
         public string BillingLineMode { get; set; } = string.Empty;
+        public string Specification { get; set; } = string.Empty;
+        public string Unit { get; set; } = string.Empty;
+        public string MaterialNumber { get; set; } = string.Empty;
+        public Guid? RepresentativeAssetId { get; set; }
         public decimal Quantity { get; set; } = 1m;
         public decimal UnitPrice { get; set; }
         public decimal Amount { get; set; }
