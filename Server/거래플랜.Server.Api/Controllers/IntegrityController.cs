@@ -2,6 +2,7 @@ using System.Text.Json;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Services;
+using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -616,22 +617,109 @@ public sealed class IntegrityController : ControllerBase
             .Where(item => !item.IsDeleted)
             .ToListAsync(cancellationToken);
 
-        return scopedItems
+        var negativeItems = scopedItems
             .Where(item => ItemOperationalPolicy.SupportsInventory(item.TrackingType) && item.CurrentStock < 0m)
             .OrderBy(item => item.NameOriginal, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.SpecificationOriginal, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.Id)
-            .Select(item => CreateDetailRow(
+            .ToList();
+
+        if (negativeItems.Count == 0)
+            return [];
+
+        var itemIds = negativeItems.Select(item => item.Id).ToHashSet();
+        var warehouseStocks = await _officeScopeService.ApplyItemWarehouseStockScope(_dbContext.ItemWarehouseStocks.IgnoreQueryFilters().AsNoTracking())
+            .Where(stock => itemIds.Contains(stock.ItemId))
+            .ToListAsync(cancellationToken);
+        var warehouseStocksByItem = warehouseStocks
+            .GroupBy(stock => stock.ItemId)
+            .ToDictionary(group => group.Key, group => group.ToList());
+
+        var recentInvoiceRows = await (
+                from line in _dbContext.InvoiceLines.IgnoreQueryFilters().AsNoTracking()
+                join invoice in _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                    on line.InvoiceId equals invoice.Id
+                join customer in _dbContext.Customers.IgnoreQueryFilters().AsNoTracking()
+                    on invoice.CustomerId equals customer.Id into customerJoin
+                from customer in customerJoin.DefaultIfEmpty()
+                where line.ItemId.HasValue &&
+                      itemIds.Contains(line.ItemId.Value) &&
+                      !line.IsDeleted &&
+                      !invoice.IsDeleted
+                select new NegativeStockInvoiceEvidence(
+                    line.ItemId!.Value,
+                    invoice.InvoiceNumber,
+                    invoice.InvoiceDate,
+                    invoice.VoucherType,
+                    invoice.SourceWarehouseCode,
+                    invoice.PurchaseReceivingWarehouseCode,
+                    customer == null ? string.Empty : customer.NameOriginal,
+                    line.Quantity,
+                    line.LineAmount))
+            .ToListAsync(cancellationToken);
+        var recentInvoicesByItem = recentInvoiceRows
+            .GroupBy(row => row.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderByDescending(row => row.InvoiceDate)
+                    .ThenByDescending(row => row.InvoiceNumber, StringComparer.OrdinalIgnoreCase)
+                    .Take(3)
+                    .Select(FormatNegativeStockInvoiceEvidence)
+                    .ToList());
+
+        var recentLedgerRows = await _dbContext.InventoryLedgerEntries
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(entry => itemIds.Contains(entry.ItemId))
+            .OrderByDescending(entry => entry.OccurredDate)
+            .ThenByDescending(entry => entry.CreatedAtUtc)
+            .Take(Math.Max(negativeItems.Count * 6, 20))
+            .ToListAsync(cancellationToken);
+        var recentLedgersByItem = recentLedgerRows
+            .GroupBy(entry => entry.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderByDescending(entry => entry.OccurredDate)
+                    .ThenByDescending(entry => entry.CreatedAtUtc)
+                    .Take(3)
+                    .Select(entry => CombineParts(
+                        FormatDate(entry.OccurredDate),
+                        string.IsNullOrWhiteSpace(entry.SourceType) ? null : entry.SourceType,
+                        $"수량 {FormatSignedNumber(entry.QuantityDelta)}",
+                        string.IsNullOrWhiteSpace(entry.WarehouseCode) ? null : $"창고 {entry.WarehouseCode}"))
+                    .ToList());
+
+        return negativeItems
+            .Select(item =>
+            {
+                List<ItemWarehouseStock> itemStocks = warehouseStocksByItem.GetValueOrDefault(item.Id) ?? [];
+                var warehouseBreakdown = itemStocks.Count == 0
+                    ? "창고재고 행 없음"
+                    : "창고재고 " + string.Join(", ", itemStocks
+                        .OrderBy(stock => stock.WarehouseCode, StringComparer.OrdinalIgnoreCase)
+                        .Select(stock => $"{NormalizeCellText(stock.WarehouseCode)}:{FormatNumber(stock.Quantity)}"));
+                List<string> recentInvoices = recentInvoicesByItem.GetValueOrDefault(item.Id) ?? [];
+                List<string> recentLedgers = recentLedgersByItem.GetValueOrDefault(item.Id) ?? [];
+
+                return CreateDetailRow(
                 entityType: "품목",
                 entityIdText: FormatGuid(item.Id),
                 primaryText: item.NameOriginal,
                 secondaryText: CombineParts(item.SpecificationOriginal, item.CategoryName),
-                referenceText: string.IsNullOrWhiteSpace(item.NameMatchKey) ? FormatGuid(item.Id) : $"품명키 {item.NameMatchKey}",
+                    referenceText: CombineParts(
+                        string.IsNullOrWhiteSpace(item.NameMatchKey) ? FormatGuid(item.Id) : $"품명키 {item.NameMatchKey}",
+                        recentInvoices.Count == 0 ? "최근 전표 없음" : $"최근 전표 {string.Join("; ", recentInvoices)}"),
                 scopeText: FormatScope(item.TenantCode, item.OfficeCode),
                 detailText: CombineParts(
                     $"현재재고 {FormatNumber(item.CurrentStock)}",
+                        warehouseBreakdown,
                     string.IsNullOrWhiteSpace(item.TrackingType) ? null : $"재고방식 {item.TrackingType}",
-                    item.SafetyStock > 0m ? $"안전재고 {FormatNumber(item.SafetyStock)}" : null)))
+                        item.SafetyStock > 0m ? $"안전재고 {FormatNumber(item.SafetyStock)}" : null,
+                        recentLedgers.Count == 0 ? "재고이력 없음" : $"재고이력 {string.Join("; ", recentLedgers)}",
+                        "조치: 판매/구매 전표와 재고이동·재고초기화 이력을 확인하세요"));
+            })
             .ToList();
     }
 
@@ -755,18 +843,77 @@ public sealed class IntegrityController : ControllerBase
             .ThenBy(profile => profile.Id)
             .ToListAsync(cancellationToken);
 
+        if (profiles.Count == 0)
+            return [];
+
+        var profileIds = profiles.Select(profile => profile.Id).ToHashSet();
+        var linkedAssets = await _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
+            .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && profileIds.Contains(asset.BillingProfileId.Value))
+            .ToListAsync(cancellationToken);
+        var linkedAssetsByProfile = linkedAssets
+            .GroupBy(asset => asset.BillingProfileId!.Value)
+            .ToDictionary(group => group.Key, group => group.ToList());
+
+        var customerCandidateKeys = profiles
+            .Select(profile => profile.CustomerName)
+            .Concat(linkedAssets.Select(asset => asset.CustomerName))
+            .Concat(linkedAssets.Select(asset => asset.CurrentCustomerName))
+            .Concat(linkedAssets.Select(asset => asset.LastCustomerName))
+            .Select(MatchKeyNormalizer.Normalize)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        List<Customer> customerCandidates = customerCandidateKeys.Count == 0
+            ? []
+            : await _officeScopeService.ApplyCustomerScope(_dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
+                .Where(customer => !customer.IsDeleted && customerCandidateKeys.Contains(customer.NameMatchKey))
+                .ToListAsync(cancellationToken);
+        var customerCandidatesByKey = customerCandidates
+            .GroupBy(customer => customer.NameMatchKey, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+
         return profiles
-            .Select(profile => CreateDetailRow(
+            .Select(profile =>
+            {
+                List<RentalAsset> assets = linkedAssetsByProfile.GetValueOrDefault(profile.Id) ?? [];
+                var candidateKey = MatchKeyNormalizer.Normalize(profile.CustomerName);
+                List<Customer> candidates = string.IsNullOrWhiteSpace(candidateKey)
+                    ? []
+                    : customerCandidatesByKey.GetValueOrDefault(candidateKey) ?? [];
+                var assetSummary = assets.Count == 0
+                    ? "연결 장비 없음"
+                    : "연결 장비 " + string.Join("; ", assets
+                        .OrderBy(asset => FirstNonEmpty(asset.ManagementNumber, asset.AssetKey, asset.ManagementId, FormatGuid(asset.Id)), StringComparer.OrdinalIgnoreCase)
+                        .Take(4)
+                        .Select(asset => CombineParts(
+                            FirstNonEmpty(asset.ManagementNumber, asset.AssetKey, asset.ManagementId, FormatGuid(asset.Id)),
+                            string.IsNullOrWhiteSpace(asset.AssetKey) ? null : $"자산키 {asset.AssetKey}",
+                            asset.CustomerId.HasValue ? $"거래처ID {FormatGuid(asset.CustomerId.Value)}" : "거래처ID 없음",
+                            FirstNonEmpty(asset.CurrentCustomerName, asset.CustomerName, asset.LastCustomerName),
+                            string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
+                            $"월요금 {FormatMoney(asset.MonthlyFee)}")));
+                var candidateSummary = candidates.Count == 0
+                    ? "일치 거래처 없음"
+                    : "일치 거래처 " + string.Join(", ", candidates
+                        .OrderBy(customer => customer.ResponsibleOfficeCode, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(customer => customer.NameOriginal, StringComparer.OrdinalIgnoreCase)
+                        .Take(4)
+                        .Select(customer => CombineParts(customer.NameOriginal, customer.ResponsibleOfficeCode, FormatGuid(customer.Id))));
+
+                return CreateDetailRow(
                 entityType: "렌탈청구프로필",
                 entityIdText: FormatGuid(profile.Id),
                 primaryText: FirstNonEmpty(profile.CustomerName, profile.ProfileKey, FormatGuid(profile.Id)),
                 secondaryText: CombineParts(profile.ItemName, profile.InstallSiteName),
-                referenceText: "거래처 ID 미연결",
+                    referenceText: CombineParts("거래처 ID 미연결", candidateSummary),
                 scopeText: FormatScope(profile.TenantCode, profile.OfficeCode, profile.ResponsibleOfficeCode),
                 detailText: CombineParts(
                     $"월기준금액 {FormatMoney(profile.MonthlyAmount)}",
                     string.IsNullOrWhiteSpace(profile.BillingType) ? null : $"라인유형 {profile.BillingType}",
-                    string.IsNullOrWhiteSpace(profile.BillingStatus) ? null : $"청구상태 {profile.BillingStatus}")))
+                        string.IsNullOrWhiteSpace(profile.BillingStatus) ? null : $"청구상태 {profile.BillingStatus}",
+                        assetSummary,
+                        "조치: 거래처가 등록되어 있으면 렌탈 프로필/장비의 거래처를 지정하고, 없으면 거래처 등록 후 연결하세요"));
+            })
             .ToList();
     }
 
@@ -1542,13 +1689,53 @@ public sealed class IntegrityController : ControllerBase
     private static string FormatNumber(decimal value)
         => value.ToString("#,##0.##");
 
+    private static string FormatSignedNumber(decimal value)
+        => value > 0m ? "+" + FormatNumber(value) : FormatNumber(value);
+
     private static string FormatMoney(decimal value)
         => value.ToString("#,##0.##");
+
+    private static string FormatVoucherType(VoucherType value)
+        => value switch
+        {
+            VoucherType.Sales => "판매",
+            VoucherType.Purchase => "구매",
+            VoucherType.Procurement => "발주",
+            VoucherType.Expense => "경비",
+            VoucherType.Collection => "수금",
+            _ => value.ToString()
+        };
+
+    private static string FormatNegativeStockInvoiceEvidence(NegativeStockInvoiceEvidence evidence)
+    {
+        var warehouseCode = evidence.VoucherType == VoucherType.Purchase && !string.IsNullOrWhiteSpace(evidence.PurchaseReceivingWarehouseCode)
+            ? evidence.PurchaseReceivingWarehouseCode
+            : evidence.SourceWarehouseCode;
+
+        return CombineParts(
+            FormatDate(evidence.InvoiceDate),
+            FormatVoucherType(evidence.VoucherType),
+            string.IsNullOrWhiteSpace(evidence.InvoiceNumber) ? null : $"전표 {evidence.InvoiceNumber}",
+            string.IsNullOrWhiteSpace(evidence.CustomerName) ? null : $"거래처 {evidence.CustomerName}",
+            $"수량 {FormatNumber(evidence.Quantity)}",
+            string.IsNullOrWhiteSpace(warehouseCode) ? null : $"창고 {warehouseCode}");
+    }
 
     private static string FormatUtcDateTime(DateTime value)
         => value == default ? "-" : $"{value:yyyy-MM-dd HH:mm:ss} UTC";
 
     private sealed record IntegrityIssueDefinition(string Code, string Severity, string Message);
+
+    private sealed record NegativeStockInvoiceEvidence(
+        Guid ItemId,
+        string InvoiceNumber,
+        DateOnly InvoiceDate,
+        VoucherType VoucherType,
+        string SourceWarehouseCode,
+        string PurchaseReceivingWarehouseCode,
+        string CustomerName,
+        decimal Quantity,
+        decimal LineAmount);
 
     private sealed record InventoryTransferRouteSnapshot(
         string? TenantCode,

@@ -561,6 +561,37 @@ public sealed class IntegrityControllerTests : IDisposable
             TrackingType = ItemTrackingTypes.Stock,
             CurrentStock = -3m
         });
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = negativeStockItemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = -3m
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-NEG-STOCK",
+            InvoiceDate = new DateOnly(2026, 5, 29),
+            VoucherType = VoucherType.Sales,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Lines =
+            {
+                new InvoiceLine
+                {
+                    Id = Guid.NewGuid(),
+                    ItemId = negativeStockItemId,
+                    ItemNameOriginal = "Negative Stock Item",
+                    Quantity = 3m,
+                    UnitPrice = 1000m,
+                    LineAmount = 3000m,
+                    ItemTrackingType = ItemTrackingTypes.Stock
+                }
+            }
+        });
         dbContext.Invoices.Add(new Invoice
         {
             Id = deletedInvoiceId,
@@ -641,11 +672,24 @@ public sealed class IntegrityControllerTests : IDisposable
         Assert.Equal(1, issues["rental_profile_asset_monthly_amount_mismatch"].Count);
         Assert.Equal(1, issues["rental_asset_template_monthly_mismatch"].Count);
 
+        var negativeDetailsResponse = await controller.GetReportDetails("item_negative_current_stock", CancellationToken.None);
+        var negativeDetailsOk = Assert.IsType<OkObjectResult>(negativeDetailsResponse.Result);
+        var negativeDetails = Assert.IsType<IntegrityIssueDetailResultDto>(negativeDetailsOk.Value);
+        var negativeRow = Assert.Single(negativeDetails.Rows);
+        Assert.Contains("INV-NEG-STOCK", negativeRow.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains(OfficeCodeCatalog.UsenetMainWarehouse, negativeRow.DetailText + negativeRow.ReferenceText, StringComparison.Ordinal);
+
         var lineDetailsResponse = await controller.GetReportDetails("active_invoice_lines_deleted_invoice", CancellationToken.None);
         var lineDetailsOk = Assert.IsType<OkObjectResult>(lineDetailsResponse.Result);
         var lineDetails = Assert.IsType<IntegrityIssueDetailResultDto>(lineDetailsOk.Value);
         Assert.Single(lineDetails.Rows);
         Assert.Contains("삭제 전표", lineDetails.Rows[0].ReferenceText, StringComparison.Ordinal);
+
+        var unlinkedProfileDetailsResponse = await controller.GetReportDetails("rental_profile_customer_unlinked", CancellationToken.None);
+        var unlinkedProfileDetailsOk = Assert.IsType<OkObjectResult>(unlinkedProfileDetailsResponse.Result);
+        var unlinkedProfileDetails = Assert.IsType<IntegrityIssueDetailResultDto>(unlinkedProfileDetailsOk.Value);
+        var unlinkedProfileRow = Assert.Single(unlinkedProfileDetails.Rows);
+        Assert.Contains("ASSET-RISK-001", unlinkedProfileRow.DetailText, StringComparison.Ordinal);
 
         var rentalDetailsResponse = await controller.GetReportDetails("rental_profile_asset_monthly_amount_mismatch", CancellationToken.None);
         var rentalDetailsOk = Assert.IsType<OkObjectResult>(rentalDetailsResponse.Result);
