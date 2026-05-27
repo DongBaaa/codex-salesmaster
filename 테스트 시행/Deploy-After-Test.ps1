@@ -211,17 +211,19 @@ function Resolve-IncludePaths {
 function Get-UntrackedEntriesToStage {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
-        [Parameter(Mandatory = $true)]$Entries,
-        [AllowEmptyCollection()]$ResolvedIncludePaths = @()
+        [AllowNull()][AllowEmptyCollection()]$Entries = @(),
+        [AllowNull()][AllowEmptyCollection()]$ResolvedIncludePaths = @()
     )
 
     $allowed = New-Object System.Collections.Generic.List[object]
     $blocked = New-Object System.Collections.Generic.List[object]
+    $safeEntries = @($Entries)
+    $safeResolvedIncludePaths = @($ResolvedIncludePaths)
 
-    foreach ($entry in ($Entries | Where-Object { $_.IsUntracked })) {
+    foreach ($entry in ($safeEntries | Where-Object { $_.IsUntracked })) {
         $entryFullPath = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot $entry.Path))
         $isAllowed = $false
-        foreach ($includePath in $ResolvedIncludePaths) {
+        foreach ($includePath in $safeResolvedIncludePaths) {
             if (Test-PathInsideRoot -CandidatePath $entryFullPath -RootPath $includePath.FullPath) {
                 $isAllowed = $true
                 break
@@ -314,9 +316,9 @@ if ([string]::IsNullOrWhiteSpace($branch) -or $branch -eq 'HEAD') {
     throw '현재 브랜치를 확인할 수 없습니다. detached HEAD 상태에서는 자동 반영을 진행하지 않습니다.'
 }
 $beforeCommit = Get-CurrentCommit -ProjectRoot $ProjectRoot
-$statusEntries = Get-StatusEntries -ProjectRoot $ProjectRoot
+$statusEntries = @(Get-StatusEntries -ProjectRoot $ProjectRoot)
 $trackedEntries = @($statusEntries | Where-Object { -not $_.IsUntracked })
-$resolvedIncludePaths = Resolve-IncludePaths -ProjectRoot $ProjectRoot -Paths $IncludeUntrackedPaths
+$resolvedIncludePaths = @(Resolve-IncludePaths -ProjectRoot $ProjectRoot -Paths $IncludeUntrackedPaths)
 $untrackedResolution = Get-UntrackedEntriesToStage -ProjectRoot $ProjectRoot -Entries $statusEntries -ResolvedIncludePaths $resolvedIncludePaths
 
 if (-not $SkipGit -and $untrackedResolution.Blocked.Count -gt 0) {
@@ -496,5 +498,4 @@ if (-not $SkipNas) {
     Write-Host "- live 사전 점검 리포트: $livePreflightReport" -ForegroundColor Green
     Write-Host "- live 사후 점검 리포트: $livePostflightReport" -ForegroundColor Green
 }
-
 
