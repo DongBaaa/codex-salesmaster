@@ -68,6 +68,8 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<UserPermission>()
             .HasOne(x => x.User).WithMany(x => x.Permissions)
             .HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<UserPermission>()
+            .HasQueryFilter(x => x.User != null && !x.User.IsDeleted);
         modelBuilder.Entity<UserAccount>().HasIndex(x => x.Username).IsUnique();
         modelBuilder.Entity<UserAccount>().HasIndex(x => new { x.TenantCode, x.OfficeCode });
         modelBuilder.Entity<CompanyProfile>().HasIndex(x => new { x.OfficeCode, x.ProfileName });
@@ -210,6 +212,12 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<Invoice>().HasIndex(x => x.IsLatestVersion);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.LinkedRentalBillingProfileId);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.LinkedRentalBillingRunId);
+        modelBuilder.Entity<InvoiceLine>()
+            .HasQueryFilter(x => !x.IsDeleted && x.Invoice != null && !x.Invoice.IsDeleted);
+        modelBuilder.Entity<InventoryTransferLine>()
+            .HasQueryFilter(x => !x.IsDeleted && x.Transfer != null && !x.Transfer.IsDeleted);
+        modelBuilder.Entity<ItemWarehouseStock>()
+            .HasQueryFilter(x => x.Item != null && !x.Item.IsDeleted);
 
         ApplySoftDeleteFilter<UserAccount>(modelBuilder);
         ApplySoftDeleteFilter<CompanyProfile>(modelBuilder);
