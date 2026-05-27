@@ -28,6 +28,10 @@ public static class GeoraePlanDesktopUiSmokeMouse {
     public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, System.UIntPtr dwExtraInfo);
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(System.IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(System.IntPtr hWnd, System.IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 }
 "@
 
@@ -195,10 +199,23 @@ function Get-ProcessWindow {
     )
 
     while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSec) {
-        $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+        $topLevelWindows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
             [System.Windows.Automation.TreeScope]::Children,
             $condition)
 
+        $nestedWindows = New-Object System.Collections.Generic.List[System.Windows.Automation.AutomationElement]
+        foreach ($topLevelWindow in $topLevelWindows) {
+            $descendantWindows = $topLevelWindow.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                (New-Condition ([System.Windows.Automation.AutomationElement]::ControlTypeProperty) ([System.Windows.Automation.ControlType]::Window)))
+            foreach ($descendantWindow in $descendantWindows) {
+                if ($descendantWindow.Current.ProcessId -eq $ProcessId) {
+                    $nestedWindows.Add($descendantWindow) | Out-Null
+                }
+            }
+        }
+
+        $windows = @($topLevelWindows) + @($nestedWindows)
         foreach ($window in $windows) {
             $currentName = [string]$window.Current.Name
             if ($Contains) {
@@ -207,6 +224,12 @@ function Get-ProcessWindow {
                 }
             }
             elseif ([string]::Equals($currentName, $Name, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $window
+            }
+        }
+
+        foreach ($window in $nestedWindows) {
+            if (Test-NameExists -Root $window -Name $Name) {
                 return $window
             }
         }
@@ -224,13 +247,39 @@ function Get-ProcessWindowNames {
         (New-Condition ([System.Windows.Automation.AutomationElement]::ProcessIdProperty) $ProcessId),
         (New-Condition ([System.Windows.Automation.AutomationElement]::ControlTypeProperty) ([System.Windows.Automation.ControlType]::Window))
     )
-    $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+    $topLevelWindows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
         [System.Windows.Automation.TreeScope]::Children,
         $condition)
 
     $names = @()
-    foreach ($window in $windows) {
-        $names += [string]$window.Current.Name
+    foreach ($window in $topLevelWindows) {
+        $name = [string]$window.Current.Name
+        if (-not [string]::IsNullOrWhiteSpace($name)) {
+            $names += $name
+        }
+
+        $descendantWindows = $window.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            (New-Condition ([System.Windows.Automation.AutomationElement]::ControlTypeProperty) ([System.Windows.Automation.ControlType]::Window)))
+        foreach ($descendantWindow in $descendantWindows) {
+            if ($descendantWindow.Current.ProcessId -ne $ProcessId) {
+                continue
+            }
+
+            $descendantName = [string]$descendantWindow.Current.Name
+            if ([string]::IsNullOrWhiteSpace($descendantName)) {
+                $descendantName = (($descendantWindow.FindAll(
+                    [System.Windows.Automation.TreeScope]::Descendants,
+                    [System.Windows.Automation.Condition]::TrueCondition) |
+                    ForEach-Object { [string]$_.Current.Name } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                    Select-Object -First 1) -join '')
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($descendantName)) {
+                $names += $descendantName
+            }
+        }
     }
 
     $names
@@ -343,6 +392,38 @@ function Find-RootByNameAndControlType {
         )))
 }
 
+function Normalize-WindowForSmoke {
+    param([System.Windows.Automation.AutomationElement]$Window)
+    if ($null -eq $Window) { return }
+
+    try {
+        $handle = [IntPtr]$Window.Current.NativeWindowHandle
+        if ($handle -eq [IntPtr]::Zero) {
+            return
+        }
+
+        [void][GeoraePlanDesktopUiSmokeMouse]::ShowWindow($handle, 9) # SW_RESTORE
+        Start-Sleep -Milliseconds 150
+
+        $workingArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $width = [Math]::Max(900, [Math]::Min(1800, $workingArea.Width - 40))
+        $height = [Math]::Max(700, [Math]::Min(1000, $workingArea.Height - 40))
+        [void][GeoraePlanDesktopUiSmokeMouse]::SetWindowPos(
+            $handle,
+            [IntPtr]::Zero,
+            $workingArea.Left + 20,
+            $workingArea.Top + 20,
+            $width,
+            $height,
+            0x0004) # SWP_NOZORDER
+        [void][GeoraePlanDesktopUiSmokeMouse]::SetForegroundWindow($handle)
+        Start-Sleep -Milliseconds 300
+    }
+    catch {
+        # UI 스모크 보조 동작이므로 창 위치 보정 실패는 본 검증 흐름을 막지 않습니다.
+    }
+}
+
 function Invoke-Element {
     param([System.Windows.Automation.AutomationElement]$Element)
     if ($null -eq $Element) { return $false }
@@ -400,6 +481,54 @@ function Click-Element {
     }
 
     return Invoke-Element $Element
+}
+
+function Click-ElementByCoordinates {
+    param(
+        [System.Windows.Automation.AutomationElement]$Element,
+        [int]$DelayMilliseconds = 700
+    )
+    if ($null -eq $Element) { return $false }
+
+    try {
+        $rect = $Element.Current.BoundingRectangle
+        if ($rect.Width -le 1 -or $rect.Height -le 1) {
+            return $false
+        }
+
+        $x = [int]($rect.Left + ($rect.Width / 2))
+        $y = [int]($rect.Top + ($rect.Height / 2))
+        [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x, $y)
+        Start-Sleep -Milliseconds 120
+        [GeoraePlanDesktopUiSmokeMouse]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 90
+        [GeoraePlanDesktopUiSmokeMouse]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds $DelayMilliseconds
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Invoke-CustomerManagementMenuItem {
+    param([int]$TimeoutSeconds = 4)
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $menuItem = Find-RootByNameAndControlType -Name '거래처 관리' -ControlType ([System.Windows.Automation.ControlType]::MenuItem)
+        if ($null -ne $menuItem) {
+            if (Click-Element $menuItem) {
+                return $true
+            }
+
+            return (Click-ElementByCoordinates -Element $menuItem -DelayMilliseconds 700)
+        }
+
+        Start-Sleep -Milliseconds 200
+    }
+
+    return $false
 }
 
 function Set-ElementText {
@@ -521,6 +650,8 @@ function Open-And-VerifyChildWindow {
         [System.Collections.Generic.List[object]]$Steps
     )
 
+    Normalize-WindowForSmoke -Window $MainWindow
+
     $button = Find-FirstByNameAndControlType -Root $MainWindow -Name $ButtonName -ControlType ([System.Windows.Automation.ControlType]::Button)
     if ($null -eq $button) {
         $button = Find-FirstByName -Root $MainWindow -Name $ButtonName
@@ -566,22 +697,41 @@ function Open-And-VerifyChildWindow {
         # foreground 전환 실패 시에도 UIA/좌표 클릭을 계속 시도합니다.
     }
 
-    if (-not (Click-Element $button)) {
+    $openedViaInvoke = Click-Element $button
+    if (-not $openedViaInvoke -and -not (Click-ElementByCoordinates -Element $button)) {
         Add-Step -Steps $Steps -Name "open-$ButtonName" -Passed $false -Detail 'button click failed'
         return $false
     }
 
+    $menuClicked = $true
     if ($ButtonName -eq '거래처 관리') {
-        $menuItem = Find-RootByNameAndControlType -Name '거래처 관리' -ControlType ([System.Windows.Automation.ControlType]::MenuItem)
-        if ($null -ne $menuItem) {
-            [void](Click-Element $menuItem)
-        }
+        $menuClicked = Invoke-CustomerManagementMenuItem
     }
 
-    $child = Get-ProcessWindow -ProcessId $ProcessId -Name $WindowTitle -Contains -TimeoutSec 25
+    $child = Get-ProcessWindow -ProcessId $ProcessId -Name $WindowTitle -Contains -TimeoutSec 8
+    if ($null -eq $child) {
+        try {
+            $handle = [IntPtr]$MainWindow.Current.NativeWindowHandle
+            if ($handle -ne [IntPtr]::Zero) {
+                [void][GeoraePlanDesktopUiSmokeMouse]::SetForegroundWindow($handle)
+                Start-Sleep -Milliseconds 300
+            }
+            $MainWindow.SetFocus()
+        }
+        catch {
+        }
+
+        $fallbackClicked = Click-ElementByCoordinates -Element $button -DelayMilliseconds 900
+        if ($fallbackClicked -and $ButtonName -eq '거래처 관리') {
+            $menuClicked = Invoke-CustomerManagementMenuItem
+        }
+
+        $child = Get-ProcessWindow -ProcessId $ProcessId -Name $WindowTitle -Contains -TimeoutSec 25
+    }
+
     if ($null -eq $child) {
         $windowNames = Get-ProcessWindowNames -ProcessId $ProcessId
-        Add-Step -Steps $Steps -Name "open-$ButtonName" -Passed $false -Detail "window not found: $WindowTitle; windows=$($windowNames -join ', ')"
+        Add-Step -Steps $Steps -Name "open-$ButtonName" -Passed $false -Detail "window not found: $WindowTitle; windows=$($windowNames -join ', '); invokeClicked=$openedViaInvoke; customerMenuClicked=$menuClicked"
         return $false
     }
 
@@ -731,6 +881,8 @@ try {
         $loginTexts = Get-DescendantNames -Root $loginWindowAfterFailure -Limit 40
         throw "메인 창을 찾지 못했습니다. windows=$($windowNames -join ', '); loginTexts=$($loginTexts -join ', ')"
     }
+
+    Normalize-WindowForSmoke -Window $mainWindow
 
     $requiredMainButtons = @(
         '품목/재고 관리',
