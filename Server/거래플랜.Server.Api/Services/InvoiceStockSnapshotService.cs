@@ -71,6 +71,72 @@ public sealed class InvoiceStockSnapshotService
         return deltas;
     }
 
+    public async Task<IReadOnlyDictionary<InvoiceStockKey, decimal>> BuildInventoryTransferStockDeltasAsync(
+        InventoryTransfer? transfer,
+        CancellationToken cancellationToken = default)
+    {
+        var deltas = new Dictionary<InvoiceStockKey, decimal>();
+        if (transfer is null || transfer.IsDeleted)
+            return deltas;
+
+        var normalizedStatus = InventoryTransferStatusNormalizer.Normalize(
+            transfer.TransferStatus,
+            transfer.ReceivedByUsername,
+            transfer.ReceivedAtUtc,
+            transfer.RejectedByUsername,
+            transfer.RejectedAtUtc);
+        if (string.Equals(normalizedStatus, InventoryTransferStatusNormalizer.Rejected, StringComparison.Ordinal))
+            return deltas;
+
+        var fromWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(
+            transfer.FromWarehouseCode,
+            transfer.SourceOfficeCode,
+            transfer.SourceOfficeCode);
+        var toWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(
+            transfer.ToWarehouseCode,
+            transfer.TargetOfficeCode,
+            transfer.TargetOfficeCode);
+        if (string.Equals(fromWarehouseCode, toWarehouseCode, StringComparison.OrdinalIgnoreCase))
+            return deltas;
+
+        var candidateItemIds = transfer.Lines
+            .Where(line => !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty && line.Quantity > 0m)
+            .Select(line => line.ItemId!.Value)
+            .Distinct()
+            .ToList();
+        if (candidateItemIds.Count == 0)
+            return deltas;
+
+        var itemTrackingMap = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => candidateItemIds.Contains(item.Id) && !item.IsDeleted)
+            .Select(item => new { item.Id, item.TrackingType })
+            .ToDictionaryAsync(item => item.Id, item => item.TrackingType, cancellationToken);
+
+        var isReceived = string.Equals(normalizedStatus, InventoryTransferStatusNormalizer.Received, StringComparison.Ordinal);
+        foreach (var line in transfer.Lines.Where(line => !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty && line.Quantity > 0m))
+        {
+            var itemId = line.ItemId!.Value;
+            if (!itemTrackingMap.TryGetValue(itemId, out var itemTrackingType) ||
+                !ItemOperationalPolicy.SupportsInventory(itemTrackingType))
+            {
+                continue;
+            }
+
+            var transferQuantity = Math.Abs(line.Quantity);
+            AddStockDelta(deltas, new InvoiceStockKey(itemId, fromWarehouseCode), -transferQuantity);
+            if (!isReceived)
+                continue;
+
+            var receivedQuantity = Math.Min(transferQuantity, Math.Max(0m, line.ReceivedQuantity ?? line.Quantity));
+            if (receivedQuantity > 0m)
+                AddStockDelta(deltas, new InvoiceStockKey(itemId, toWarehouseCode), receivedQuantity);
+        }
+
+        return deltas;
+    }
+
     public async Task ApplyInvoiceStockDeltaDifferenceAsync(
         IReadOnlyDictionary<InvoiceStockKey, decimal> previous,
         IReadOnlyDictionary<InvoiceStockKey, decimal> current,
@@ -229,6 +295,19 @@ public sealed class InvoiceStockSnapshotService
             invoice.SourceWarehouseCode,
             invoice.ResponsibleOfficeCode,
             invoice.OfficeCode);
+
+    private static void AddStockDelta(
+        IDictionary<InvoiceStockKey, decimal> deltas,
+        InvoiceStockKey key,
+        decimal quantity)
+    {
+        if (quantity == 0m)
+            return;
+
+        deltas[key] = deltas.TryGetValue(key, out var current)
+            ? current + quantity
+            : quantity;
+    }
 
     public readonly record struct InvoiceStockKey(Guid ItemId, string WarehouseCode);
 

@@ -3926,6 +3926,61 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task RepairNegativeItemWarehouseStocksAsync_ClampsInvalidSnapshotsAndMarksItemDirty()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-repair-negative-stock-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var itemId = Guid.Parse("812bbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Negative stock item",
+                NameMatchKey = "NEGATIVESTOCKITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                CurrentStock = -1m,
+                IsDirty = false,
+                Unit = "EA"
+            });
+            db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = -1m,
+                Revision = 11
+            });
+            await db.SaveChangesAsync();
+
+            var repaired = await service.RepairNegativeItemWarehouseStocksAsync();
+
+            Assert.Equal(2, repaired);
+            Assert.Equal(0m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+            var item = await db.Items.IgnoreQueryFilters().SingleAsync(current => current.Id == itemId);
+            Assert.Equal(0m, item.CurrentStock);
+            Assert.True(item.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RepairMissingItemMastersFromOperationalReferencesAsync_DoesNotRecoverSoftDeletedItems()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-missing-item-repair-{Guid.NewGuid():N}");

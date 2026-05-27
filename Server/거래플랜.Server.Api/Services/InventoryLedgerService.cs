@@ -1,4 +1,4 @@
-﻿using 거래플랜.Server.Api.Data;
+using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
@@ -33,6 +33,20 @@ public sealed class InventoryLedgerService
             .OrderBy(transfer => transfer.TransferDate)
             .ThenBy(transfer => transfer.UpdatedAtUtc)
             .ToListAsync(cancellationToken);
+        var transferItemIds = transfers
+            .SelectMany(transfer => transfer.Lines)
+            .Where(line => !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty)
+            .Select(line => line.ItemId!.Value)
+            .Distinct()
+            .ToList();
+        var transferItemTrackingMap = transferItemIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _dbContext.Items
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(item => transferItemIds.Contains(item.Id) && !item.IsDeleted)
+                .Select(item => new { item.Id, item.TrackingType })
+                .ToDictionaryAsync(item => item.Id, item => item.TrackingType, cancellationToken);
 
         await _dbContext.InventoryLedgerEntries.ExecuteDeleteAsync(cancellationToken);
 
@@ -76,11 +90,30 @@ public sealed class InventoryLedgerService
 
         foreach (var transfer in transfers)
         {
+            var normalizedStatus = InventoryTransferStatusNormalizer.Normalize(
+                transfer.TransferStatus,
+                transfer.ReceivedByUsername,
+                transfer.ReceivedAtUtc,
+                transfer.RejectedByUsername,
+                transfer.RejectedAtUtc);
+            if (string.Equals(normalizedStatus, InventoryTransferStatusNormalizer.Rejected, StringComparison.Ordinal))
+                continue;
+
+            var isReceived = string.Equals(normalizedStatus, InventoryTransferStatusNormalizer.Received, StringComparison.Ordinal);
             var fromWarehouse = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(transfer.FromWarehouseCode, transfer.SourceOfficeCode, transfer.SourceOfficeCode);
             var toWarehouse = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(transfer.ToWarehouseCode, transfer.TargetOfficeCode, transfer.TargetOfficeCode);
+            if (string.Equals(fromWarehouse, toWarehouse, StringComparison.OrdinalIgnoreCase))
+                continue;
+
             foreach (var line in transfer.Lines.Where(line => !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty))
             {
-                var quantity = line.ReceivedQuantity ?? line.Quantity;
+                if (!transferItemTrackingMap.TryGetValue(line.ItemId!.Value, out var trackingType) ||
+                    !ItemOperationalPolicy.SupportsInventory(trackingType))
+                {
+                    continue;
+                }
+
+                var quantity = Math.Abs(line.Quantity);
                 if (quantity == 0m)
                     continue;
 
@@ -89,7 +122,7 @@ public sealed class InventoryLedgerService
                     Id = Guid.NewGuid(),
                     TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(transfer.TenantCode, transfer.SourceOfficeCode),
                     OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(transfer.SourceOfficeCode),
-                    ItemId = line.ItemId!.Value,
+                    ItemId = line.ItemId.Value,
                     WarehouseCode = fromWarehouse,
                     SourceType = "InventoryTransfer:Out",
                     SourceDocumentId = transfer.Id,
@@ -100,17 +133,24 @@ public sealed class InventoryLedgerService
                     CreatedAtUtc = transfer.UpdatedAtUtc == default ? DateTime.UtcNow : transfer.UpdatedAtUtc
                 });
 
+                if (!isReceived)
+                    continue;
+
+                var receivedQuantity = Math.Min(quantity, Math.Max(0m, line.ReceivedQuantity ?? line.Quantity));
+                if (receivedQuantity == 0m)
+                    continue;
+
                 entries.Add(new InventoryLedgerEntry
                 {
                     Id = Guid.NewGuid(),
                     TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(transfer.TenantCode, transfer.TargetOfficeCode),
                     OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(transfer.TargetOfficeCode),
-                    ItemId = line.ItemId!.Value,
+                    ItemId = line.ItemId.Value,
                     WarehouseCode = toWarehouse,
                     SourceType = "InventoryTransfer:In",
                     SourceDocumentId = transfer.Id,
                     SourceLineId = line.Id,
-                    QuantityDelta = quantity,
+                    QuantityDelta = receivedQuantity,
                     OccurredDate = transfer.TransferDate,
                     Note = transfer.TransferNumber,
                     CreatedAtUtc = transfer.UpdatedAtUtc == default ? DateTime.UtcNow : transfer.UpdatedAtUtc

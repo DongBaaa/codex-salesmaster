@@ -50,6 +50,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
     private const string NormalizeRentalOfficeDataStepKey = "Migration.NormalizeRentalOfficeData.v1";
     private const string NormalizeRentalAssetOfficeOwnershipStepKey = "Migration.NormalizeRentalAssetOfficeOwnership.v1";
     private const string DropLegacyRentalAssignedUsernameIndexesStepKey = "Migration.DropLegacyRentalAssignedUsernameIndexes.v1";
+    private const string RepairNegativeItemWarehouseStockSnapshotsStepKey = "Migration.RepairNegativeItemWarehouseStockSnapshots.v1";
     private static readonly Regex SqlIdentifierPattern = new(
         "^[A-Za-z0-9_]+$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -189,6 +190,10 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             db,
             CleanupDeletedInvoiceChainStepKey,
             async () => await CleanupDeletedInvoiceChainAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            RepairNegativeItemWarehouseStockSnapshotsStepKey,
+            async () => await RepairNegativeItemWarehouseStockSnapshotsAsync(db));
         await db.SaveChangesAsync();
         await EnsureUniqueDefaultCompanyProfileIndexAsync(db);
         await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_ItemCategoryOptions_Name_Active\" ON \"ItemCategoryOptions\" (\"Name\") WHERE COALESCE(TRIM(\"Name\"), '') <> '' AND COALESCE(\"IsDeleted\", 0) = 0;");
@@ -1162,6 +1167,62 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
 
         if (cleanedCount > 0)
             AppLogger.Warn("LOCALDB", $"앱 시작 자동 렌탈 보정으로 남아 있던 품목 dirty {cleanedCount}건을 정리했습니다.");
+    }
+
+    private static async Task RepairNegativeItemWarehouseStockSnapshotsAsync(LocalDbContext db)
+    {
+        var now = DateTime.UtcNow;
+        var negativeStocks = await db.ItemWarehouseStocks
+            .Where(stock => stock.Quantity < 0m)
+            .ToListAsync();
+        var negativeCurrentStockItems = await db.Items
+            .IgnoreQueryFilters()
+            .Where(item => item.CurrentStock < 0m)
+            .ToListAsync();
+        if (negativeStocks.Count == 0 && negativeCurrentStockItems.Count == 0)
+            return;
+
+        var affectedItemIds = negativeStocks
+            .Select(stock => stock.ItemId)
+            .Concat(negativeCurrentStockItems.Select(item => item.Id))
+            .Distinct()
+            .ToList();
+
+        foreach (var stock in negativeStocks)
+        {
+            stock.Quantity = 0m;
+            stock.UpdatedAtUtc = now;
+        }
+
+        var affectedStocks = await db.ItemWarehouseStocks
+            .Where(stock => affectedItemIds.Contains(stock.ItemId))
+            .ToListAsync();
+        var stockTotals = affectedStocks
+            .GroupBy(stock => stock.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => Math.Max(0m, group.Sum(stock => Math.Max(0m, stock.Quantity))));
+        var affectedItems = await db.Items
+            .IgnoreQueryFilters()
+            .Where(item => affectedItemIds.Contains(item.Id))
+            .ToListAsync();
+
+        foreach (var item in affectedItems)
+        {
+            var repairedCurrentStock = stockTotals.TryGetValue(item.Id, out var total)
+                ? total
+                : 0m;
+            if (item.CurrentStock == repairedCurrentStock)
+                continue;
+
+            item.CurrentStock = repairedCurrentStock;
+            item.IsDirty = true;
+            item.UpdatedAtUtc = now;
+        }
+
+        AppLogger.Warn(
+            "LOCALDB",
+            $"음수 재고 스냅샷 자동 복구: stockRows={negativeStocks.Count}, itemRows={negativeCurrentStockItems.Count}");
     }
 
     private static async Task NormalizeOfficeReferenceDataAsync(LocalDbContext db)

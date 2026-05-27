@@ -49,6 +49,7 @@ public sealed class SyncControllerTests : IDisposable
             new StubCentralFileStorage(),
             revisionClock,
             new InventoryLedgerService(_dbContext),
+            new InvoiceStockSnapshotService(_dbContext, revisionClock),
             new RentalAssignmentHistoryService(_dbContext));
     }
 
@@ -519,6 +520,146 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(1, result.ConflictCount);
         Assert.Contains(result.Conflicts, conflict => conflict.Reason.Contains("같은 업체 내부 지점 간 이동", StringComparison.Ordinal));
         Assert.False(await _dbContext.InventoryTransfers.IgnoreQueryFilters().AnyAsync(x => x.Id == transferId));
+    }
+
+    [Fact]
+    public async Task Push_RejectsInventoryTransfer_WhenSourceStockWouldBecomeNegative()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "출고 부족 품목",
+            NameMatchKey = "출고부족품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 1m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 1m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var transferId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-transfer-shortage",
+            InventoryTransfers =
+            [
+                new InventoryTransferDto
+                {
+                    Id = transferId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                    TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    TransferNumber = "TR-SHORT-001",
+                    TransferDate = new DateOnly(2026, 5, 28),
+                    FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                    TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                    MutationId = $"device-transfer-shortage:InventoryTransfer:{transferId:N}:1",
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    Lines =
+                    [
+                        new InventoryTransferLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            TransferId = transferId,
+                            ItemId = itemId,
+                            ItemNameOriginal = "출고 부족 품목",
+                            SpecificationOriginal = string.Empty,
+                            Unit = "개",
+                            Quantity = 2m
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.False(await _dbContext.InventoryTransfers.IgnoreQueryFilters().AnyAsync(x => x.Id == transferId));
+        var stock = await _dbContext.ItemWarehouseStocks.SingleAsync(x => x.ItemId == itemId && x.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
+        Assert.Equal(1m, stock.Quantity);
+    }
+
+    [Fact]
+    public async Task Push_AcceptsRejectedInventoryTransfer_WithoutInventoryLedgerRows()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "반려 이동 품목",
+            NameMatchKey = "반려이동품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 0m
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var transferId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-transfer-rejected",
+            InventoryTransfers =
+            [
+                new InventoryTransferDto
+                {
+                    Id = transferId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                    TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    TransferNumber = "TR-REJECT-001",
+                    TransferDate = new DateOnly(2026, 5, 28),
+                    FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                    TransferStatus = InventoryTransferStatusNormalizer.Rejected,
+                    RejectedByUsername = "admin",
+                    RejectedAtUtc = DateTime.UtcNow,
+                    MutationId = $"device-transfer-rejected:InventoryTransfer:{transferId:N}:1",
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    Lines =
+                    [
+                        new InventoryTransferLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            TransferId = transferId,
+                            ItemId = itemId,
+                            ItemNameOriginal = "반려 이동 품목",
+                            SpecificationOriginal = string.Empty,
+                            Unit = "개",
+                            Quantity = 2m,
+                            ReceivedQuantity = 2m
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.True(await _dbContext.InventoryTransfers.IgnoreQueryFilters().AnyAsync(x => x.Id == transferId));
+        Assert.False(await _dbContext.InventoryLedgerEntries.AnyAsync(entry => entry.SourceDocumentId == transferId));
     }
 
     [Fact]
@@ -4375,6 +4516,7 @@ public sealed class SyncControllerTests : IDisposable
             fileStorage ?? new StubCentralFileStorage(),
             revisionClock,
             new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, revisionClock),
             new RentalAssignmentHistoryService(dbContext));
     }
 

@@ -1387,6 +1387,14 @@ public sealed class SyncService : IDisposable
                 $"deletedMissingInvoicePayments={paymentRepair.MarkedDeletedMissingInvoiceCount}");
         }
 
+        var negativeStockRepairCount = await _local.RepairNegativeItemWarehouseStocksAsync(ct);
+        if (negativeStockRepairCount > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 음수 재고 스냅샷 {negativeStockRepairCount}건을 0 이상으로 복구했습니다.");
+        }
+
         var canSyncCompanyProfiles = includeSharedDirty && session.HasPermission(AppPermissionNames.CompanyProfileEdit);
         var canSyncSettings = includeSharedDirty && session.HasPermission(AppPermissionNames.SettingsEdit);
         var canSyncItemWarehouseStocks = includeSharedDirty && session.HasPermission(AppPermissionNames.ItemEdit);
@@ -1435,6 +1443,7 @@ public sealed class SyncService : IDisposable
         var dirtyItemWarehouseStocks = canSyncItemWarehouseStocks
             ? await _db.ItemWarehouseStocks
                 .AsNoTracking()
+                .Where(stock => stock.Quantity >= 0m)
                 .ToListAsync(ct)
             : [];
         var dirtyTransactions = await _local.GetDirtyTransactionsForSyncAsync(session, ct);

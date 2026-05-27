@@ -30,6 +30,7 @@ public sealed class SyncController : ControllerBase
     private readonly ICentralFileStorage _fileStorage;
     private readonly RevisionClock _revisionClock;
     private readonly InventoryLedgerService _inventoryLedgerService;
+    private readonly InvoiceStockSnapshotService _invoiceStockSnapshotService;
     private readonly RentalAssignmentHistoryService _rentalAssignmentHistoryService;
 
     public SyncController(
@@ -40,6 +41,7 @@ public sealed class SyncController : ControllerBase
         ICentralFileStorage fileStorage,
         RevisionClock revisionClock,
         InventoryLedgerService inventoryLedgerService,
+        InvoiceStockSnapshotService invoiceStockSnapshotService,
         RentalAssignmentHistoryService rentalAssignmentHistoryService)
     {
         _dbContext = dbContext;
@@ -49,6 +51,7 @@ public sealed class SyncController : ControllerBase
         _fileStorage = fileStorage;
         _revisionClock = revisionClock;
         _inventoryLedgerService = inventoryLedgerService;
+        _invoiceStockSnapshotService = invoiceStockSnapshotService;
         _rentalAssignmentHistoryService = rentalAssignmentHistoryService;
     }
 
@@ -1639,6 +1642,17 @@ public sealed class SyncController : ControllerBase
                 entity = new InventoryTransfer { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
                 entity.Apply(dto);
                 ApplyInventoryTransferLines(entity, dto.Lines ?? []);
+                var currentStockDeltas = await _invoiceStockSnapshotService.BuildInventoryTransferStockDeltasAsync(entity, cancellationToken);
+                var stockShortages = await _invoiceStockSnapshotService.FindStockShortagesAsync(
+                    new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
+                    currentStockDeltas,
+                    cancellationToken);
+                if (stockShortages.Count > 0)
+                {
+                    AddClientConflict(dto, nameof(InventoryTransfer), InvoiceStockSnapshotService.FormatStockShortageMessage(stockShortages), result);
+                    continue;
+                }
+
                 _dbContext.InventoryTransfers.Add(entity);
                 RegisterProcessedMutation(dto, nameof(InventoryTransfer), deviceId);
                 await ResolveHistoricalConflictsAsync(nameof(InventoryTransfer), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
@@ -1646,6 +1660,7 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            var previousStockDeltas = await _invoiceStockSnapshotService.BuildInventoryTransferStockDeltasAsync(entity, cancellationToken);
             var canWriteExisting =
                 _officeScopeService.CanWriteOfficeForDeliveries(entity.SourceOfficeCode, entity.TenantCode) ||
                 _officeScopeService.CanWriteOfficeForDeliveries(entity.TargetOfficeCode, entity.TenantCode);
@@ -1664,6 +1679,20 @@ public sealed class SyncController : ControllerBase
             if (IsServerEntityNewer(entity, dto))
             {
                 AddServerConflict(dto, entity, nameof(InventoryTransfer), "Server version is newer.", result);
+                continue;
+            }
+
+            var candidate = new InventoryTransfer { Id = entity.Id };
+            candidate.Apply(dto);
+            ApplyInventoryTransferLines(candidate, dto.Lines ?? []);
+            var updatedStockDeltas = await _invoiceStockSnapshotService.BuildInventoryTransferStockDeltasAsync(candidate, cancellationToken);
+            var updateStockShortages = await _invoiceStockSnapshotService.FindStockShortagesAsync(
+                previousStockDeltas,
+                updatedStockDeltas,
+                cancellationToken);
+            if (updateStockShortages.Count > 0)
+            {
+                AddClientConflict(dto, nameof(InventoryTransfer), InvoiceStockSnapshotService.FormatStockShortageMessage(updateStockShortages), result);
                 continue;
             }
 

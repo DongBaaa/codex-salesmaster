@@ -1735,6 +1735,63 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			select stock.Quantity).FirstOrDefaultAsync(ct);
 	}
 
+	public async Task<int> RepairNegativeItemWarehouseStocksAsync(CancellationToken ct = default(CancellationToken))
+	{
+		var now = DateTime.UtcNow;
+		List<LocalItemWarehouseStock> negativeStocks = await _db.ItemWarehouseStocks
+			.Where((LocalItemWarehouseStock stock) => stock.Quantity < 0m)
+			.ToListAsync(ct);
+		List<LocalItem> negativeCurrentStockItems = await _db.Items.IgnoreQueryFilters()
+			.Where((LocalItem item) => item.CurrentStock < 0m)
+			.ToListAsync(ct);
+		if (negativeStocks.Count == 0 && negativeCurrentStockItems.Count == 0)
+		{
+			return 0;
+		}
+
+		List<Guid> affectedItemIds = negativeStocks
+			.Select((LocalItemWarehouseStock stock) => stock.ItemId)
+			.Concat(negativeCurrentStockItems.Select((LocalItem item) => item.Id))
+			.Distinct()
+			.ToList();
+		foreach (LocalItemWarehouseStock stock in negativeStocks)
+		{
+			stock.Quantity = 0m;
+			stock.UpdatedAtUtc = now;
+		}
+
+		List<LocalItemWarehouseStock> affectedStocks = await _db.ItemWarehouseStocks
+			.Where((LocalItemWarehouseStock stock) => affectedItemIds.Contains(stock.ItemId))
+			.ToListAsync(ct);
+		Dictionary<Guid, decimal> stockTotals = affectedStocks
+			.GroupBy((LocalItemWarehouseStock stock) => stock.ItemId)
+			.ToDictionary(
+				group => group.Key,
+				group => Math.Max(0m, group.Sum((LocalItemWarehouseStock stock) => Math.Max(0m, stock.Quantity))));
+		List<LocalItem> affectedItems = await _db.Items.IgnoreQueryFilters()
+			.Where((LocalItem item) => affectedItemIds.Contains(item.Id))
+			.ToListAsync(ct);
+		foreach (LocalItem item in affectedItems)
+		{
+			decimal repairedCurrentStock = stockTotals.TryGetValue(item.Id, out decimal total)
+				? total
+				: 0m;
+			if (item.CurrentStock == repairedCurrentStock)
+			{
+				continue;
+			}
+
+			item.CurrentStock = repairedCurrentStock;
+			item.IsDirty = true;
+			item.UpdatedAtUtc = now;
+		}
+
+		await _db.SaveChangesAsync(ct);
+		RaiseInventoryStateChanged();
+		AppLogger.Warn("SYNC", $"음수 재고 스냅샷 자동 복구: stockRows={negativeStocks.Count}, itemRows={negativeCurrentStockItems.Count}");
+		return negativeStocks.Count + negativeCurrentStockItems.Count;
+	}
+
 	public async Task<LocalItem?> SetItemOfficeStockAsync(Guid itemId, decimal quantity, string? officeCode, CancellationToken ct = default(CancellationToken))
 	{
 		if (quantity < 0m)
