@@ -13,6 +13,7 @@ param(
     [int]$NasSshPort = 0,
     [string]$NasSshKeyPath,
     [string]$NasRemoteOpsPath,
+    [int]$KeepNasReleaseCount = 2,
     [switch]$AllowScheduledApplyTrigger
 )
 
@@ -58,6 +59,60 @@ function Invoke-RobocopyMirror {
     if ($LASTEXITCODE -ge 8) {
         throw "robocopy failed ($LASTEXITCODE): $Source -> $Destination"
     }
+}
+
+function Remove-OldNasReleaseDirectories {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReleasesRoot,
+        [Parameter(Mandatory = $true)][string]$CurrentReleaseId,
+        [Parameter(Mandatory = $true)][int]$KeepReleaseCount
+    )
+
+    if ($KeepReleaseCount -lt 1 -or -not (Test-Path -LiteralPath $ReleasesRoot)) {
+        return @()
+    }
+
+    $resolvedReleasesRoot = (Resolve-Path -LiteralPath $ReleasesRoot).ProviderPath.TrimEnd('\') + '\'
+    $currentReleasePath = Join-Path $ReleasesRoot $CurrentReleaseId
+    $resolvedCurrentReleasePath = if (Test-Path -LiteralPath $currentReleasePath) {
+        (Resolve-Path -LiteralPath $currentReleasePath).ProviderPath
+    }
+    else {
+        ''
+    }
+
+    $directories = Get-ChildItem -LiteralPath $ReleasesRoot -Directory -ErrorAction SilentlyContinue |
+        Sort-Object -Property @{ Expression = 'LastWriteTimeUtc'; Descending = $true }, @{ Expression = 'Name'; Descending = $true }
+
+    $preserve = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    if (-not [string]::IsNullOrWhiteSpace($resolvedCurrentReleasePath)) {
+        [void]$preserve.Add($resolvedCurrentReleasePath)
+    }
+
+    foreach ($directory in $directories) {
+        if ($preserve.Count -ge $KeepReleaseCount) {
+            break
+        }
+
+        [void]$preserve.Add((Resolve-Path -LiteralPath $directory.FullName).ProviderPath)
+    }
+
+    $removed = New-Object System.Collections.Generic.List[string]
+    foreach ($directory in $directories) {
+        $resolvedDirectory = (Resolve-Path -LiteralPath $directory.FullName).ProviderPath
+        if ($preserve.Contains($resolvedDirectory)) {
+            continue
+        }
+
+        if (-not $resolvedDirectory.StartsWith($resolvedReleasesRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "NAS release prune target is outside releases root: $resolvedDirectory"
+        }
+
+        Remove-Item -LiteralPath $resolvedDirectory -Recurse -Force -ErrorAction Stop
+        $removed.Add($directory.Name) | Out-Null
+    }
+
+    return $removed
 }
 
 function Resolve-SshExecutable {
@@ -761,6 +816,13 @@ if ($MirrorToLive) {
     }
     else {
         throw 'MirrorToLive was requested, but NAS SSH settings are incomplete and NAS scheduled apply is disabled. Configure NAS_SSH_USER/HOST/PORT/KEY_PATH/REMOTE_OPS_PATH, set NAS_SCHEDULED_APPLY_ENABLED=true with auto-apply-release.sh configured on the NAS, or use -AllowLegacyLiveMirror only as a temporary fallback.'
+    }
+}
+
+if ($MirrorToLive -and (Test-Path -LiteralPath $NasRoot)) {
+    $removedNasReleases = Remove-OldNasReleaseDirectories -ReleasesRoot (Join-Path $NasRoot 'releases') -CurrentReleaseId $ReleaseId -KeepReleaseCount $KeepNasReleaseCount
+    if ($removedNasReleases.Count -gt 0) {
+        Write-Host "nas_releases_pruned=$($removedNasReleases.Count)"
     }
 }
 

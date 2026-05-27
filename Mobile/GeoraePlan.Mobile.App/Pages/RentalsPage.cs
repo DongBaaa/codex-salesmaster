@@ -1,6 +1,9 @@
+using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
+using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Controls.Shapes;
+using System.Text.Json;
 using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Mobile.App.Pages;
@@ -8,12 +11,16 @@ namespace GeoraePlan.Mobile.App.Pages;
 public sealed class RentalsPage : ContentPage
 {
     private readonly RentalsViewModel _viewModel;
+    private readonly MobileRefreshCoordinator _refreshCoordinator;
+    private int _seenRentalsVersion;
 
     public RentalsPage()
     {
         GeoraePlanTheme.ApplyPage(this, "렌탈");
 
         _viewModel = ServiceHelper.GetRequiredService<RentalsViewModel>();
+        _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
+        _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
 
         var sectionGrid = new Grid
@@ -35,7 +42,7 @@ public sealed class RentalsPage : ContentPage
         assetsButton.SetBinding(Button.BackgroundColorProperty, nameof(RentalsViewModel.AssetsButtonColor));
         assetsButton.Clicked += (_, _) => _viewModel.ShowRentalAssets();
 
-        var logsButton = GeoraePlanTheme.CreateCompactButton("청구로그", GeoraePlanTheme.SecondaryButton);
+        var logsButton = GeoraePlanTheme.CreateCompactButton("청구 이력", GeoraePlanTheme.SecondaryButton);
         logsButton.SetBinding(Button.BackgroundColorProperty, nameof(RentalsViewModel.BillingLogsButtonColor));
         logsButton.Clicked += (_, _) => _viewModel.ShowBillingLogs();
 
@@ -43,7 +50,7 @@ public sealed class RentalsPage : ContentPage
         sectionGrid.Add(assetsButton, 1, 0);
         sectionGrid.Add(logsButton, 2, 0);
 
-        var searchBar = GeoraePlanTheme.CreateSearchBar("거래처 / 모델 / 상태 검색");
+        var searchBar = GeoraePlanTheme.CreateSearchBar("거래처 / 장비 / 청구상태 검색");
         searchBar.SetBinding(SearchBar.TextProperty, nameof(RentalsViewModel.SearchText));
         searchBar.SearchButtonPressed += (_, _) =>
             MobileErrorHandler.FireAndForget(
@@ -102,7 +109,8 @@ public sealed class RentalsPage : ContentPage
                 {
                     GeoraePlanTheme.CreateCompactCard(
                         GeoraePlanTheme.CreateSectionTitle("렌탈", 15),
-                        GeoraePlanTheme.CreateBodyText("같은 서버 sync 데이터 기준으로 청구프로필, 자산, 청구로그를 조회합니다.", true, 12),
+                        GeoraePlanTheme.CreateBodyText("같은 서버 sync 데이터 기준으로 청구프로필, 자산, 청구 이력을 조회합니다.", true, 12),
+                        GeoraePlanTheme.CreateBodyText("모바일 렌탈은 조회 전용입니다. 청구 생성, 입금 등록, 프로필/자산 수정은 PC 렌탈 청구관리에서 처리하세요.", true, 12),
                         sectionGrid,
                         searchBar,
                         actionGrid,
@@ -126,8 +134,24 @@ public sealed class RentalsPage : ContentPage
             {
 if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             await _viewModel.RefreshAsync();
+        _seenRentalsVersion = _refreshCoordinator.RentalsVersion;
             },
             "렌탈 화면 초기화");
+    }
+
+    private void HandleRealtimeRefreshRequested(object? sender, EventArgs e)
+    {
+        MainThread.BeginInvokeOnMainThread(() =>
+            MobileErrorHandler.FireAndForget(
+                async () =>
+                {
+                    if (Shell.Current?.CurrentPage == this && _seenRentalsVersion != _refreshCoordinator.RentalsVersion)
+                    {
+                        await _viewModel.RefreshAsync();
+                        _seenRentalsVersion = _refreshCoordinator.RentalsVersion;
+                    }
+                },
+                "렌탈 실시간 갱신"));
     }
 
     protected override bool OnBackButtonPressed()
@@ -222,7 +246,7 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
         {
             SelectionMode = SelectionMode.None,
             BackgroundColor = Colors.Transparent,
-            EmptyView = GeoraePlanTheme.CreateBodyText("동기화된 청구로그가 없습니다.", true, 12),
+            EmptyView = GeoraePlanTheme.CreateBodyText("동기화된 청구 이력이 없습니다.", true, 12),
             ItemTemplate = new DataTemplate(() =>
             {
                 var title = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 13);
@@ -278,7 +302,7 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             if (value is not RentalBillingProfileDto profile)
                 return string.Empty;
 
-            return $"{Normalize(profile.ItemName, "품명 미지정")} · {Normalize(profile.BillingStatus, "상태 미지정")} · 월 {profile.MonthlyAmount:N0}원";
+            return $"{Normalize(profile.ItemName, "품명 미지정")} · 상태 {Normalize(profile.BillingStatus, "예정")} / 정산 {Normalize(profile.SettlementStatus, "미수")} · 월 {profile.MonthlyAmount:N0}원";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
@@ -292,7 +316,10 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             if (value is not RentalBillingProfileDto profile)
                 return string.Empty;
 
-            return $"청구일 {profile.BillingDay}일 / 지점 {ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode)}";
+            var billingDay = string.Equals(profile.BillingDayMode, RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal)
+                ? "말일"
+                : $"{profile.BillingDay}일";
+            return $"주기 {Math.Max(1, profile.BillingCycleMonths)}개월 / 청구일 {billingDay} / 마지막청구 {FormatDate(profile.LastBilledDate)} / 지점 {ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode)}";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
@@ -305,6 +332,13 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
         {
             if (value is not RentalBillingProfileDto profile)
                 return string.Empty;
+
+            var run = MobileRentalRunSnapshot.ResolveDisplayRun(profile.BillingRunsJson);
+            if (run is not null)
+            {
+                var outstandingAmount = Math.Max(0m, run.BilledAmount - run.SettledAmount);
+                return $"최근 회차 {Normalize(run.PeriodLabel, "기간 미정")} / 예정 {run.ScheduledDate:yyyy-MM-dd} / {Normalize(run.Status, "예정")} / 미수 {outstandingAmount:N0}원";
+            }
 
             return string.IsNullOrWhiteSpace(profile.Notes)
                 ? $"정산 {Normalize(profile.SettlementStatus, "미정")} / 미수 {profile.OutstandingAmount:N0}원"
@@ -385,4 +419,38 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
 
     private static string FormatDate(DateOnly? value)
         => value.HasValue ? value.Value.ToString("yyyy-MM-dd") : "미정";
+
+    private sealed class MobileRentalRunSnapshot
+    {
+        public Guid RunId { get; set; }
+        public string RunKey { get; set; } = string.Empty;
+        public DateOnly ScheduledDate { get; set; }
+        public DateOnly PeriodStartDate { get; set; }
+        public DateOnly PeriodEndDate { get; set; }
+        public int CycleMonths { get; set; }
+        public string PeriodLabel { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public decimal BilledAmount { get; set; }
+        public decimal SettledAmount { get; set; }
+
+        public static MobileRentalRunSnapshot? ResolveDisplayRun(string? billingRunsJson)
+        {
+            if (string.IsNullOrWhiteSpace(billingRunsJson))
+                return null;
+
+            try
+            {
+                var runs = JsonSerializer.Deserialize<List<MobileRentalRunSnapshot>>(billingRunsJson);
+                return runs?
+                    .Where(run => run.RunId != Guid.Empty)
+                    .OrderByDescending(run => run.ScheduledDate)
+                    .ThenByDescending(run => run.PeriodEndDate)
+                    .FirstOrDefault();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
 }

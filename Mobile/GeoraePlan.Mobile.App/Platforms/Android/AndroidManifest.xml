@@ -5,7 +5,7 @@
     android:icon="@mipmap/appicon"
     android:roundIcon="@mipmap/appicon_round"
     android:supportsRtl="true"
-    android:usesCleartextTraffic="false">
+    android:usesCleartextTraffic="${usesCleartextTraffic}">
     <provider
       android:name="androidx.core.content.FileProvider"
       android:authorities="${applicationId}.fileprovider"

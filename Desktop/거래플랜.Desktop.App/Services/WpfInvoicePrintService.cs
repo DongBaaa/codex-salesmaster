@@ -399,9 +399,9 @@ public sealed class WpfInvoicePrintService : IPrintService
         AddTotalsPair(grid, 0, 4, "부가세", isFinalPage ? FormatMoney(model.VatAmount) : string.Empty, PurchaseBorder, true, true, labelBackground: PurchaseHeaderFill);
         AddTotalsPair(grid, 0, 6, "합계", isFinalPage ? FormatMoney(model.TotalAmount) : string.Empty, PurchaseBorder, true, true, labelBackground: PurchaseHeaderFill);
 
-        AddTotalsPair(grid, 1, 0, "전미지불", isFinalPage ? "0" : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
-        AddTotalsPair(grid, 1, 2, "지불액", isFinalPage ? FormatMoney(model.PaidAmount) : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
-        AddTotalsPair(grid, 1, 4, "미지불잔액", isFinalPage ? FormatSignedMoney(model.BalanceAmount) : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
+        AddTotalsPair(grid, 1, 0, "전미지급", isFinalPage ? "0" : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
+        AddTotalsPair(grid, 1, 2, "지급액", isFinalPage ? FormatMoney(model.PaidAmount) : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
+        AddTotalsPair(grid, 1, 4, "미지급잔액", isFinalPage ? FormatSignedMoney(model.BalanceAmount) : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
         AddTotalsPair(grid, 1, 6, string.Empty, isFinalPage ? string.Empty : "다음 페이지 계속", PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
 
         return new Border
@@ -491,10 +491,8 @@ public sealed class WpfInvoicePrintService : IPrintService
 
         return new Border
         {
-            BorderBrush = accent,
-            BorderThickness = new Thickness(1),
             Background = Brushes.White,
-            Padding = new Thickness(8, 6, 8, 6),
+            Padding = new Thickness(6, 3, 6, 2),
             Child = layout
         };
     }
@@ -506,20 +504,25 @@ public sealed class WpfInvoicePrintService : IPrintService
         string copyLabel,
         Brush accent)
     {
-        var header = new Grid { Margin = new Thickness(0, 0, 0, 4) };
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+        var header = new Grid { Margin = new Thickness(2, 0, 2, 4) };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(160) });
         header.ColumnDefinitions.Add(new ColumnDefinition());
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(140) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
 
         var left = new StackPanel();
-        left.Children.Add(CreateText("작성일자", 10, null, accent));
-        left.Children.Add(CreateText(model.PrintWithDate ? model.InvoiceDate.ToString("yyyy-MM-dd") : string.Empty, 11));
+        left.Children.Add(CreateText("관리자", 10, null, Brushes.Black));
+        var dateLine = new StackPanel { Orientation = Orientation.Horizontal };
+        dateLine.Children.Add(CreateText("작성일자", 10, null, accent));
+        dateLine.Children.Add(CreateText($"  {(model.PrintWithDate ? model.InvoiceDate.ToString("yyyy-MM-dd") : string.Empty)}", 11));
+        left.Children.Add(dateLine);
         Grid.SetColumn(left, 0);
         header.Children.Add(left);
 
         var center = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
-        center.Children.Add(CreateText("거 래 명 세 서", 31, FontWeights.Bold, accent, TextAlignment.Center));
-        center.Children.Add(CreateText(copyLabel, 13, FontWeights.Bold, accent, TextAlignment.Center));
+        var title = CreateText("거  래  명  세  서", 29, FontWeights.Normal, accent, TextAlignment.Center);
+        title.TextDecorations = TextDecorations.Underline;
+        center.Children.Add(title);
+        center.Children.Add(CreateText($"[{copyLabel}]", 12, FontWeights.Normal, accent, TextAlignment.Center));
         Grid.SetColumn(center, 1);
         header.Children.Add(center);
 
@@ -534,36 +537,78 @@ public sealed class WpfInvoicePrintService : IPrintService
 
     private static Grid BuildSalesPartySection(InvoicePrintModel model, Brush accent)
     {
-        var section = new Grid { Margin = new Thickness(0, 0, 0, 4) };
-        section.ColumnDefinitions.Add(new ColumnDefinition());
-        section.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
-        section.ColumnDefinitions.Add(new ColumnDefinition());
+        var table = new Grid { Margin = new Thickness(0, 0, 0, 0) };
+        AddSalesPartyColumns(table);
+        table.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
+        table.RowDefinitions.Add(new RowDefinition { Height = new GridLength(23) });
+        table.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
+        table.RowDefinitions.Add(new RowDefinition { Height = new GridLength(34) });
 
-        var supplier = BuildSalesPartyCard(
-            "공급자",
-            model.SupplierBusinessNumber,
-            model.SupplierName,
-            model.SupplierPhone,
-            model.SupplierRepresentative,
-            model.SupplierAddress,
-            model.SupplierStampImage,
-            accent);
-        Grid.SetColumn(supplier, 0);
-        section.Children.Add(supplier);
+        AddSalesParty(table, 0, "공\n급\n자", model.SupplierBusinessNumber, model.SupplierName, model.SupplierPhone, model.SupplierRepresentative, model.SupplierAddress, accent);
+        AddSalesParty(table, 5, "공\n급\n받\n는\n자", model.BuyerBusinessNumber, model.BuyerName, model.BuyerPhone, model.BuyerRepresentative, model.BuyerAddress, accent);
 
-        var buyer = BuildSalesPartyCard(
-            "공급받는자",
-            model.BuyerBusinessNumber,
-            model.BuyerName,
-            model.BuyerPhone,
-            model.BuyerRepresentative,
-            model.BuyerAddress,
-            null,
-            accent);
-        Grid.SetColumn(buyer, 2);
-        section.Children.Add(buyer);
+        var framedTable = new Grid();
+        framedTable.Children.Add(new Border
+        {
+            BorderBrush = accent,
+            BorderThickness = new Thickness(1),
+            Child = table
+        });
 
-        return section;
+        if (model.SupplierStampImage is { Length: > 0 } stampBytes &&
+            TryCreateStampImage(stampBytes) is { } stampImage)
+        {
+            framedTable.Children.Add(new Image
+            {
+                Source = stampImage,
+                Width = 62,
+                Height = 54,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, 46, 28, 0),
+                Stretch = Stretch.Uniform
+            });
+        }
+
+        return framedTable;
+    }
+
+    private static void AddSalesPartyColumns(Grid table)
+    {
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(34) });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(58) });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(34) });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(58) });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) });
+        table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
+    }
+
+    private static void AddSalesParty(
+        Grid table,
+        int columnOffset,
+        string verticalLabel,
+        string businessNumber,
+        string name,
+        string phone,
+        string representative,
+        string address,
+        Brush accent)
+    {
+        AddGridCell(table, 0, columnOffset, verticalLabel, accent, rowSpan: 4, center: true, foreground: accent, fontSize: 11.5, lineHeight: 15);
+        AddGridCell(table, 0, columnOffset + 1, "사업번호", accent, center: true, foreground: accent, fontSize: 10.5);
+        AddGridCell(table, 0, columnOffset + 2, businessNumber, accent, columnSpan: 3, fontSize: 13, autoShrink: true);
+        AddGridCell(table, 1, columnOffset + 1, "상      호", accent, center: true, foreground: accent, fontSize: 10.5);
+        AddGridCell(table, 1, columnOffset + 2, name, accent, columnSpan: 3, fontSize: 11.5, autoShrink: true);
+        AddGridCell(table, 2, columnOffset + 1, "전화번호", accent, center: true, foreground: accent, fontSize: 10.5);
+        AddGridCell(table, 2, columnOffset + 2, phone, accent, fontSize: 10.5, autoShrink: true);
+        AddGridCell(table, 2, columnOffset + 3, "대표자", accent, center: true, foreground: accent, fontSize: 10.5);
+        AddGridCell(table, 2, columnOffset + 4, representative, accent, fontSize: 10.5, autoShrink: true);
+        AddGridCell(table, 3, columnOffset + 1, "주      소", accent, center: true, foreground: accent, fontSize: 10.5);
+        AddGridCell(table, 3, columnOffset + 2, address, accent, columnSpan: 3, wrap: true, fontSize: 10.2);
     }
 
     private static UIElement BuildSalesPartyCard(
@@ -638,12 +683,11 @@ public sealed class WpfInvoicePrintService : IPrintService
             table.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         AddTableCell(table, 0, 0, "순번", accent, isHeader: true, center: true);
-        AddTableCell(table, 0, 1, "품명", accent, isHeader: true, center: true);
-        AddTableCell(table, 0, 2, "규격", accent, isHeader: true, center: true);
-        AddTableCell(table, 0, 3, "단위", accent, isHeader: true, center: true);
-        AddTableCell(table, 0, 4, "수량", accent, isHeader: true, center: true);
-        AddTableCell(table, 0, 5, "공급단가", accent, isHeader: true, center: true);
-        AddTableCell(table, 0, 6, "공급가액", accent, isHeader: true, center: true);
+        AddTableCell(table, 0, 1, "품      명     /    규      격", accent, isHeader: true, center: true, columnSpan: 2);
+        AddTableCell(table, 0, 3, "단   위", accent, isHeader: true, center: true);
+        AddTableCell(table, 0, 4, "수    량", accent, isHeader: true, center: true);
+        AddTableCell(table, 0, 5, "단      가", accent, isHeader: true, center: true);
+        AddTableCell(table, 0, 6, "금      액", accent, isHeader: true, center: true);
 
         for (var row = 0; row < SalesRowsPerPage; row++)
         {
@@ -686,8 +730,8 @@ public sealed class WpfInvoicePrintService : IPrintService
         AddTotalsPair(grid, 0, 4, "부가세", model.PrintWithPrice ? FormatMoney(model.VatAmount) : string.Empty, accent, true, true);
         AddTotalsPair(grid, 0, 6, "합계", model.PrintWithPrice ? FormatMoney(model.TotalAmount) : string.Empty, accent, true, true);
 
-        AddTotalsPair(grid, 1, 0, "비고", string.Empty, accent, false, false);
-        AddTotalsPair(grid, 1, 2, "받은금", model.PrintWithPrice ? FormatMoney(model.PaidAmount) : string.Empty, accent, true, true);
+        AddTotalsPair(grid, 1, 0, "전미수", string.Empty, accent, false, false);
+        AddTotalsPair(grid, 1, 2, "입금액", model.PrintWithPrice ? FormatMoney(model.PaidAmount) : string.Empty, accent, true, true);
         AddTotalsPair(grid, 1, 4, "미수잔액", model.PrintWithPrice ? FormatMoney(model.BalanceAmount) : string.Empty, accent, true, true);
         AddTotalsPair(grid, 1, 6, "인수자", "(인)", accent, false, true);
 
@@ -705,25 +749,14 @@ public sealed class WpfInvoicePrintService : IPrintService
         IReadOnlyList<InvoicePrintLineModel> lines,
         Brush accent)
     {
-        var quantitySum = lines.Sum(line => line.Quantity);
         var leftText = string.IsNullOrWhiteSpace(model.BankAccountText)
             ? (model.FooterText ?? string.Empty)
-            : $"입금안내 {model.BankAccountText} {model.FooterText}".Trim();
+            : $"{model.BankAccountText} {model.FooterText}".Trim();
 
         var panel = new Grid();
         panel.ColumnDefinitions.Add(new ColumnDefinition());
-        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         panel.Children.Add(CreateText(leftText, 10));
-
-        var right = CreateText(
-            $"수량합계 {FormatQuantity(quantitySum)}",
-            10,
-            null,
-            accent);
-        right.HorizontalAlignment = HorizontalAlignment.Right;
-        Grid.SetColumn(right, 1);
-        panel.Children.Add(right);
 
         return panel;
     }
@@ -819,7 +852,8 @@ public sealed class WpfInvoicePrintService : IPrintService
         bool alignRight = false,
         Brush? background = null,
         Brush? foreground = null,
-        bool autoShrink = false)
+        bool autoShrink = false,
+        int columnSpan = 1)
     {
         borderBrush ??= BorderGray;
         var alignment = center ? TextAlignment.Center : alignRight ? TextAlignment.Right : TextAlignment.Left;
@@ -844,7 +878,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         var border = new Border
         {
             BorderBrush = borderBrush,
-            BorderThickness = GetInnerCellBorderThickness(grid, row, column),
+            BorderThickness = GetInnerCellBorderThickness(grid, row, column, columnSpan: columnSpan),
             Background = background ?? (isHeader ? HeaderFill : Brushes.White),
             Padding = new Thickness(3, isHeader ? 1 : 2, 3, isHeader ? 1 : 2),
             Child = autoShrink
@@ -874,6 +908,74 @@ public sealed class WpfInvoicePrintService : IPrintService
         };
         Grid.SetRow(border, row);
         Grid.SetColumn(border, column);
+        if (columnSpan > 1)
+            Grid.SetColumnSpan(border, columnSpan);
+        grid.Children.Add(border);
+    }
+
+    private static void AddGridCell(
+        Grid grid,
+        int row,
+        int column,
+        string text,
+        Brush borderBrush,
+        int rowSpan = 1,
+        int columnSpan = 1,
+        bool center = false,
+        bool alignRight = false,
+        bool wrap = false,
+        Brush? background = null,
+        Brush? foreground = null,
+        FontWeight? fontWeight = null,
+        double fontSize = 10.5,
+        double? lineHeight = null,
+        bool autoShrink = false)
+    {
+        var alignment = center ? TextAlignment.Center : alignRight ? TextAlignment.Right : TextAlignment.Left;
+        var textBlock = CreateText(
+            text ?? string.Empty,
+            fontSize,
+            fontWeight ?? FontWeights.Normal,
+            foreground ?? Brushes.Black,
+            alignment);
+        textBlock.TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap;
+        textBlock.TextTrimming = autoShrink ? TextTrimming.None : TextTrimming.CharacterEllipsis;
+        if (lineHeight.HasValue)
+            textBlock.LineHeight = lineHeight.Value;
+
+        UIElement child = textBlock;
+        if (autoShrink)
+        {
+            child = new Viewbox
+            {
+                Stretch = Stretch.Uniform,
+                StretchDirection = StretchDirection.DownOnly,
+                HorizontalAlignment = alignment switch
+                {
+                    TextAlignment.Center => HorizontalAlignment.Center,
+                    TextAlignment.Right => HorizontalAlignment.Right,
+                    _ => HorizontalAlignment.Left
+                },
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = textBlock
+            };
+        }
+
+        var border = new Border
+        {
+            BorderBrush = borderBrush,
+            BorderThickness = GetInnerCellBorderThickness(grid, row, column, rowSpan, columnSpan),
+            Background = background ?? Brushes.White,
+            Padding = new Thickness(4, 1, 4, 1),
+            Child = child
+        };
+
+        Grid.SetRow(border, row);
+        Grid.SetColumn(border, column);
+        if (rowSpan > 1)
+            Grid.SetRowSpan(border, rowSpan);
+        if (columnSpan > 1)
+            Grid.SetColumnSpan(border, columnSpan);
         grid.Children.Add(border);
     }
 
@@ -960,10 +1062,17 @@ public sealed class WpfInvoicePrintService : IPrintService
         return $"{value:0.##}";
     }
 
-    private static Thickness GetInnerCellBorderThickness(Grid grid, int row, int column)
+    private static Thickness GetInnerCellBorderThickness(
+        Grid grid,
+        int row,
+        int column,
+        int rowSpan = 1,
+        int columnSpan = 1)
     {
-        var right = column < grid.ColumnDefinitions.Count - 1 ? 1d : 0d;
-        var bottom = row < grid.RowDefinitions.Count - 1 ? 1d : 0d;
+        var lastColumn = column + Math.Max(1, columnSpan) - 1;
+        var lastRow = row + Math.Max(1, rowSpan) - 1;
+        var right = lastColumn < grid.ColumnDefinitions.Count - 1 ? 1d : 0d;
+        var bottom = lastRow < grid.RowDefinitions.Count - 1 ? 1d : 0d;
         return new Thickness(0, 0, right, bottom);
     }
 

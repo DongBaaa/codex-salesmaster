@@ -13,6 +13,8 @@ public sealed record VersionChangeMaintenanceResult(
 public static class VersionChangeMaintenanceService
 {
     private const string LastProcessedVersionSettingKey = "System.LastPostUpdateMaintenanceVersion";
+    private const string LastCacheMirrorRepairEpochSettingKey = "System.LastCacheMirrorRepairEpoch";
+    private const string CurrentCacheMirrorRepairEpoch = "2026-05-27-rental-asset-mirror";
     private static readonly Version FullMirrorRefreshBaselineVersion = new(1, 1, 172);
     private static readonly string[] TransientSettingPrefixes =
     [
@@ -31,7 +33,10 @@ public static class VersionChangeMaintenanceService
             : currentVersion.Trim();
 
         var lastProcessedVersion = await local.GetSettingAsync(LastProcessedVersionSettingKey, ct);
-        if (string.Equals(lastProcessedVersion, normalizedVersion, StringComparison.OrdinalIgnoreCase))
+        var lastCacheMirrorRepairEpoch = await local.GetSettingAsync(LastCacheMirrorRepairEpochSettingKey, ct);
+        var requiresCacheMirrorRepair = RequiresCacheMirrorRepair(lastCacheMirrorRepairEpoch);
+        if (string.Equals(lastProcessedVersion, normalizedVersion, StringComparison.OrdinalIgnoreCase) &&
+            !requiresCacheMirrorRepair)
         {
             return new VersionChangeMaintenanceResult(
                 Ran: false,
@@ -48,7 +53,9 @@ public static class VersionChangeMaintenanceService
 
         await local.ClearInvalidOfficeSyncCredentialsAsync();
         var normalizedSharedOptionIdCount = await local.NormalizeSharedOptionIdCasingAsync(ct);
-        var requiresFullMirrorRefresh = RequiresFullMirrorRefreshAfterVersionChange(lastProcessedVersion);
+        var requiresFullMirrorRefresh =
+            RequiresFullMirrorRefreshAfterVersionChange(lastProcessedVersion) ||
+            requiresCacheMirrorRepair;
         if (requiresFullMirrorRefresh)
             await local.MarkServerMirrorRefreshRequiredAsync(ct);
 
@@ -59,11 +66,13 @@ public static class VersionChangeMaintenanceService
         DesktopAppUpdateService.TryCleanupStaleUpdateArtifacts();
 
         await local.SetSettingAsync(LastProcessedVersionSettingKey, normalizedVersion, ct);
+        await local.SetSettingAsync(LastCacheMirrorRepairEpochSettingKey, CurrentCacheMirrorRepairEpoch, ct);
 
         var message = $"버전 {normalizedVersion} 기준 1회 정비를 완료했습니다."
             + (backupCreated ? " 시작 전 DB 백업도 생성했습니다." : " 시작 전 DB 백업은 생성하지 못했습니다.")
             + (clearedSettingCount > 0 ? $" 임시 draft 설정 {clearedSettingCount:N0}건을 정리했습니다." : string.Empty)
             + (normalizedSharedOptionIdCount > 0 ? $" 공유 선택옵션 ID 표기 {normalizedSharedOptionIdCount:N0}건을 정리했습니다." : string.Empty)
+            + (requiresCacheMirrorRepair ? " 렌탈 자산/전표/거래처 로컬 캐시 불일치 방지를 위해 중앙 서버 기준 전체 캐시 재구성을 예약했습니다." : string.Empty)
             + (requiresFullMirrorRefresh
                 ? " 다음 동기화에서 중앙 서버 기준 전체 캐시를 1회 다시 받아 범위 불일치 데이터를 정리합니다."
                 : " 중앙 서버 기준 전체 캐시 재동기화는 이미 적용된 기준 버전에서 완료되어 이번 정비에서는 생략했습니다.")
@@ -87,6 +96,12 @@ public static class VersionChangeMaintenanceService
 
         return parsedLastProcessedVersion.CompareTo(FullMirrorRefreshBaselineVersion) < 0;
     }
+
+    private static bool RequiresCacheMirrorRepair(string? lastRepairEpoch)
+        => !string.Equals(
+            lastRepairEpoch?.Trim(),
+            CurrentCacheMirrorRepairEpoch,
+            StringComparison.OrdinalIgnoreCase);
 
     private static int CleanupFilesOlderThan(string rootPath, TimeSpan retention)
     {

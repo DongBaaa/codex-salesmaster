@@ -3,6 +3,7 @@ using System.ComponentModel;
 using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
+using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
 
@@ -11,21 +12,28 @@ namespace GeoraePlan.Mobile.App.Pages;
 public sealed class ItemsPage : ContentPage
 {
     private readonly ItemsViewModel _viewModel;
+    private readonly MobileRefreshCoordinator _refreshCoordinator;
     private readonly Grid _categoryButtonGrid;
+    private int _seenItemsVersion;
 
     public ItemsPage()
     {
         GeoraePlanTheme.ApplyPage(this, "품목");
 
         _viewModel = ServiceHelper.GetRequiredService<ItemsViewModel>();
+        _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
+        _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
 
         _viewModel.ItemCategories.CollectionChanged += HandleCategoryCollectionChanged;
         _viewModel.PropertyChanged += HandleViewModelPropertyChanged;
 
         var categoryTitle = GeoraePlanTheme.CreateSectionTitle("품목분류", 15);
-        var categoryGuide = GeoraePlanTheme.CreateBodyText("먼저 품목분류를 선택한 뒤 해당 분류 품목만 리스트에서 확인하세요.", true, 12);
+        var categoryGuide = GeoraePlanTheme.CreateBodyText("자주 쓰는 분류를 선택하면 해당 분류 품목만 빠르게 확인할 수 있습니다.", true, 12);
         categoryGuide.LineHeight = 1.0;
+        var newItemFromCategoryButton = GeoraePlanTheme.CreateCompactButton("신규 품목", GeoraePlanTheme.Success);
+        newItemFromCategoryButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(OpenNewItemAsync, "품목 신규등록");
 
         _categoryButtonGrid = new Grid
         {
@@ -35,7 +43,7 @@ public sealed class ItemsPage : ContentPage
         };
         _categoryButtonGrid.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.IsCategoryChooserVisible));
 
-        var categoryCard = GeoraePlanTheme.CreateCompactCard(categoryTitle, categoryGuide, _categoryButtonGrid);
+        var categoryCard = GeoraePlanTheme.CreateCompactCard(categoryTitle, categoryGuide, newItemFromCategoryButton, _categoryButtonGrid);
         categoryCard.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.IsCategoryChooserVisible));
 
         var selectedCategoryLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 13);
@@ -44,6 +52,17 @@ public sealed class ItemsPage : ContentPage
 
         var changeCategoryButton = GeoraePlanTheme.CreateCompactButton("분류 다시 선택", GeoraePlanTheme.SecondaryButton);
         changeCategoryButton.Clicked += (_, _) => _viewModel.ClearSelectedCategory();
+
+        var newItemButton = GeoraePlanTheme.CreateCompactButton("신규", GeoraePlanTheme.Success);
+        newItemButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(OpenNewItemAsync, "품목 신규등록");
+
+        var categoryActions = new HorizontalStackLayout
+        {
+            Spacing = 6,
+            HorizontalOptions = LayoutOptions.End,
+            Children = { newItemButton, changeCategoryButton }
+        };
 
         var selectedCategoryHeader = new Grid
         {
@@ -55,28 +74,40 @@ public sealed class ItemsPage : ContentPage
             }
         };
         selectedCategoryHeader.Add(selectedCategoryLabel);
-        selectedCategoryHeader.Add(changeCategoryButton, 1, 0);
+        selectedCategoryHeader.Add(categoryActions, 1, 0);
         selectedCategoryHeader.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
 
         var categorySummary = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
         categorySummary.LineHeight = 1.0;
         categorySummary.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedCategorySummary));
-        categorySummary.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
 
-        var searchEntry = GeoraePlanTheme.CreateCompactEntry("품목명 / 규격 검색");
+        var searchEntry = GeoraePlanTheme.CreateCompactEntry("품명 / 규격 검색");
+        searchEntry.HeightRequest = 42;
+        searchEntry.ReturnType = ReturnType.Search;
+        searchEntry.HorizontalOptions = LayoutOptions.Fill;
         searchEntry.SetBinding(Entry.TextProperty, nameof(ItemsViewModel.SearchText));
+        searchEntry.TextChanged += (_, args) =>
+        {
+            var text = args.NewTextValue ?? string.Empty;
+            if (!string.Equals(_viewModel.SearchText, text, StringComparison.Ordinal))
+                _viewModel.SearchText = text;
+        };
         searchEntry.Completed += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await _viewModel.SearchItemsAsync(),
                 "품목 작업");
-        searchEntry.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
 
         var searchButton = GeoraePlanTheme.CreateCompactButton("찾기", GeoraePlanTheme.SecondaryButton);
         searchButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await _viewModel.SearchItemsAsync(),
                 "품목 작업");
-        searchButton.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
+
+        var clearSearchButton = GeoraePlanTheme.CreateCompactButton("초기화", GeoraePlanTheme.SecondaryButton);
+        clearSearchButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await _viewModel.ClearSearchAsync(),
+                "품목 검색 초기화");
 
         var searchGrid = new Grid
         {
@@ -84,21 +115,28 @@ public sealed class ItemsPage : ContentPage
             ColumnDefinitions =
             {
                 new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(new GridLength(92))
+                new ColumnDefinition(new GridLength(76)),
+                new ColumnDefinition(new GridLength(76))
             }
         };
         searchGrid.Add(searchEntry);
         searchGrid.Add(searchButton, 1, 0);
-        searchGrid.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
+        searchGrid.Add(clearSearchButton, 2, 0);
+
+        var searchTitle = GeoraePlanTheme.CreateSectionTitle("품목 검색", 15);
+        var searchGuide = GeoraePlanTheme.CreateBodyText("분류를 고르지 않아도 전체 품목에서 품명, 규격, 자재번호를 검색합니다.", true, 12);
+        searchGuide.LineHeight = 1.0;
+        var searchCard = GeoraePlanTheme.CreateCompactCard(searchTitle, searchGuide, searchGrid);
 
         var itemListLabel = GeoraePlanTheme.CreateFieldLabel("분류 품목 목록");
-        itemListLabel.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
+        itemListLabel.SetBinding(Label.TextProperty, nameof(ItemsViewModel.ItemListLabelText));
+        itemListLabel.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.CanShowItemList));
 
         var itemList = new CollectionView
         {
             SelectionMode = SelectionMode.None,
             BackgroundColor = Colors.Transparent,
-            EmptyView = GeoraePlanTheme.CreateBodyText("현재 분류에 표시할 품목이 없습니다.", true, 12),
+            EmptyView = GeoraePlanTheme.CreateBodyText("표시할 품목이 없습니다. 검색어를 바꾸거나 분류를 선택하세요.", true, 12),
             ItemTemplate = new DataTemplate(() =>
             {
                 var nameLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 13);
@@ -147,7 +185,7 @@ public sealed class ItemsPage : ContentPage
         };
         itemList.SetBinding(ItemsView.ItemsSourceProperty, nameof(ItemsViewModel.Items));
         itemList.SetBinding(VisualElement.HeightRequestProperty, nameof(ItemsViewModel.ItemListHeight));
-        itemList.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
+        itemList.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.CanShowItemList));
 
         var detailTitle = GeoraePlanTheme.CreateSectionTitle(string.Empty, 15);
         detailTitle.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemTitle));
@@ -167,6 +205,26 @@ public sealed class ItemsPage : ContentPage
         var detailMemo = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
         detailMemo.LineHeight = 1.0;
         detailMemo.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemMemo));
+
+        var editItemButton = GeoraePlanTheme.CreateCompactButton("수정", GeoraePlanTheme.Purple);
+        editItemButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(OpenEditItemAsync, "품목 수정");
+
+        var deleteItemButton = GeoraePlanTheme.CreateCompactButton("삭제", GeoraePlanTheme.Danger);
+        deleteItemButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(OpenDeleteItemAsync, "품목 삭제");
+
+        var detailActions = new Grid
+        {
+            ColumnSpacing = 8,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star)
+            }
+        };
+        detailActions.Add(editItemButton, 0, 0);
+        detailActions.Add(deleteItemButton, 1, 0);
 
         var branchStockLabel = GeoraePlanTheme.CreateFieldLabel("지점별 재고");
         branchStockLabel.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedItem));
@@ -207,6 +265,7 @@ public sealed class ItemsPage : ContentPage
             detailPrice,
             detailStock,
             detailMemo,
+            detailActions,
             branchStockLabel,
             branchStockView);
         detailCard.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedItem));
@@ -217,10 +276,9 @@ public sealed class ItemsPage : ContentPage
         var listCard = GeoraePlanTheme.CreateCompactCard(
             selectedCategoryHeader,
             categorySummary,
-            searchGrid,
             itemListLabel,
             itemList);
-        listCard.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
+        listCard.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.CanShowItemList));
 
         Content = new ScrollView
         {
@@ -230,6 +288,7 @@ public sealed class ItemsPage : ContentPage
                 Spacing = 12,
                 Children =
                 {
+                    searchCard,
                     categoryCard,
                     listCard,
                     detailCard,
@@ -252,6 +311,7 @@ try
         {
             await _viewModel.PrepareForEntryAsync();
             RebuildCategoryButtons();
+            _seenItemsVersion = _refreshCoordinator.ItemsVersion;
         }
         catch (Exception ex)
         {
@@ -259,6 +319,22 @@ try
         }
             },
             "품목 화면 초기화");
+    }
+
+    private void HandleRealtimeRefreshRequested(object? sender, EventArgs e)
+    {
+        MainThread.BeginInvokeOnMainThread(() =>
+            MobileErrorHandler.FireAndForget(
+                async () =>
+                {
+                    if (Shell.Current?.CurrentPage == this && _seenItemsVersion != _refreshCoordinator.ItemsVersion)
+                    {
+                        await _viewModel.PrepareForEntryAsync();
+                        RebuildCategoryButtons();
+                        _seenItemsVersion = _refreshCoordinator.ItemsVersion;
+                    }
+                },
+                "품목 실시간 갱신"));
     }
 
     protected override bool OnBackButtonPressed()
@@ -312,6 +388,52 @@ try
                     "품목 작업");
             _categoryButtonGrid.Add(button, column, row);
         }
+    }
+
+    private async Task OpenNewItemAsync()
+    {
+        await Navigation.PushModalAsync(new ItemEditPage(
+            null,
+            _viewModel.SelectedCategory?.Name,
+            async saved =>
+            {
+                await _viewModel.RefreshAsync();
+                RebuildCategoryButtons();
+                if (saved is not null)
+                    await _viewModel.SelectItemAsync(saved);
+            }));
+    }
+
+    private async Task OpenEditItemAsync()
+    {
+        if (_viewModel.SelectedItem is null)
+            return;
+
+        await Navigation.PushModalAsync(new ItemEditPage(
+            _viewModel.SelectedItem,
+            _viewModel.SelectedCategory?.Name,
+            async saved =>
+            {
+                await _viewModel.RefreshAsync();
+                RebuildCategoryButtons();
+                if (saved is not null)
+                    await _viewModel.SelectItemAsync(saved);
+            }));
+    }
+
+    private async Task OpenDeleteItemAsync()
+    {
+        if (_viewModel.SelectedItem is null)
+            return;
+
+        await Navigation.PushModalAsync(new ItemEditPage(
+            _viewModel.SelectedItem,
+            _viewModel.SelectedCategory?.Name,
+            async _ =>
+            {
+                await _viewModel.RefreshAsync();
+                RebuildCategoryButtons();
+            }));
     }
 
     private sealed class ItemPriceConverter : IValueConverter

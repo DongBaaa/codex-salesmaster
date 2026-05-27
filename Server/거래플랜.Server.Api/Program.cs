@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using 거래플랜.Server.Api.Data;
@@ -15,6 +15,16 @@ using Microsoft.OpenApi.Models;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// The default host can include the Windows EventLog provider. On non-admin test
+// workstations that provider may throw "access denied" while logging startup
+// warnings, preventing the local test server from becoming ready. Keep logging to
+// console/debug/event-source so NAS/container logs and local test logs continue
+// to work without requiring Windows Event Log permissions.
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
+builder.Logging.AddEventSourceLogger();
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -93,6 +103,7 @@ builder.Services.AddDbContext<AppDbContext>((serviceProvider, options) =>
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
 builder.Services.AddScoped<OfficeScopeService>();
 builder.Services.AddScoped<InventoryLedgerService>();
+builder.Services.AddScoped<InvoiceStockSnapshotService>();
 builder.Services.AddScoped<RentalAssignmentHistoryService>();
 builder.Services.AddScoped<IJwtTokenFactory, JwtTokenFactory>();
 builder.Services.AddScoped<IInvoiceNumberService, InvoiceNumberService>();

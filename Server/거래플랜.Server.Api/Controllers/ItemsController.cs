@@ -1,4 +1,4 @@
-﻿using 거래플랜.Server.Api.Data;
+using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Security;
@@ -140,7 +140,7 @@ public sealed class ItemsController : ControllerBase
             return true;
 
         var normalized = value.Trim();
-        return normalized.All(ch => ch == '?' || ch == '�');
+        return normalized.All(ch => ch == '?' || ch == '\uFFFD');
     }
 
     [HttpGet("{id:guid}")]
@@ -237,10 +237,15 @@ public sealed class ItemsController : ControllerBase
             return conflict;
 
         entity.IsDeleted = true;
+        var warehouseStocks = await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == id)
+            .ToListAsync(cancellationToken);
+        if (warehouseStocks.Count > 0)
+            _dbContext.ItemWarehouseStocks.RemoveRange(warehouseStocks);
+
         await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
 }
-
 
 

@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0-android</TargetFramework>
@@ -9,22 +10,26 @@
     <Nullable>enable</Nullable>
     <ApplicationTitle>거래플랜</ApplicationTitle>
     <ApplicationId>kr.georaeplan.mobile</ApplicationId>
-    <ApplicationDisplayVersion>0.2.12</ApplicationDisplayVersion>
-    <ApplicationVersion>123</ApplicationVersion>
+    <ApplicationDisplayVersion>0.2.20</ApplicationDisplayVersion>
+    <ApplicationVersion>131</ApplicationVersion>
     <SupportedOSPlatformVersion>21.0</SupportedOSPlatformVersion>
+    <AndroidManifestPlaceholders>usesCleartextTraffic=false</AndroidManifestPlaceholders>
   </PropertyGroup>
-
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
-    <RunAOTCompilation>false</RunAOTCompilation>
-    <AndroidEnableProfiledAot>false</AndroidEnableProfiledAot>
+    <RunAOTCompilation>true</RunAOTCompilation>
+    <AndroidEnableProfiledAot>true</AndroidEnableProfiledAot>
   </PropertyGroup>
-
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <!-- 테스트용 APK를 IDE Fast Deployment 없이 단독 설치/실행할 수 있게 어셈블리를 APK에 포함합니다. -->
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <AndroidManifestPlaceholders>usesCleartextTraffic=true</AndroidManifestPlaceholders>
+  </PropertyGroup>
   <ItemGroup>
     <MauiIcon Remove="Resources\AppIcon\appicon.svg" />
     <MauiIcon Remove="Resources\AppIcon\appiconfg.svg" />
+    <MauiImage Include="Resources\Images\tab_*.png" />
     <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#2563EB" BaseSize="128,128" />
   </ItemGroup>
-
   <ItemGroup Condition="'$(TargetFramework)' == 'net8.0-android'">
     <AndroidResource Include="..\..\AppIcons\android\mipmap-mdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-mdpi\appicon.png" LogicalName="mipmap-mdpi/appicon.png" />
     <AndroidResource Include="..\..\AppIcons\android\mipmap-hdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-hdpi\appicon.png" LogicalName="mipmap-hdpi/appicon.png" />
@@ -42,11 +47,9 @@
     <AndroidResource Include="..\..\AppIcons\android\mipmap-xxhdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-xxhdpi\appicon_round.png" LogicalName="mipmap-xxhdpi/appicon_round.png" />
     <AndroidResource Include="..\..\AppIcons\android\mipmap-xxxhdpi\ic_launcher.png" Link="Platforms\Android\Resources\mipmap-xxxhdpi\appicon_round.png" LogicalName="mipmap-xxxhdpi/appicon_round.png" />
   </ItemGroup>
-
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" Version="8.0.100" />
   </ItemGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\거래플랜.Shared.Contracts\거래플랜.Shared.Contracts.csproj" />
   </ItemGroup>

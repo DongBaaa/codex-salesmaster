@@ -1,0 +1,82 @@
+<Window x:Class="거래플랜.Desktop.App.Views.RentalReturnReportInputWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="회수장비내역서 입력"
+        Width="560"
+        Height="420"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="#0F2138">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="회수장비내역서 추가 입력"
+                   FontSize="22"
+                   FontWeight="Bold"
+                   Foreground="#5CD6FF"
+                   Margin="0,0,0,6"/>
+        <TextBlock Grid.Row="1"
+                   Text="회수이유와 장애내용은 관리메모와 분리되어 이번 출력물에만 반영됩니다."
+                   FontSize="13"
+                   Foreground="#B8C7DC"
+                   Margin="0,0,0,16"/>
+
+        <Grid Grid.Row="2" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="90"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0"
+                       Text="회수이유"
+                       Foreground="#EAF2FF"
+                       VerticalAlignment="Center"/>
+            <TextBox x:Name="ReturnReasonBox"
+                     Grid.Column="1"
+                     Height="34"
+                     Padding="8,5"
+                     FontSize="14"/>
+        </Grid>
+
+        <Grid Grid.Row="3">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0"
+                       Text="장애내용"
+                       Foreground="#EAF2FF"
+                       Margin="0,0,0,6"/>
+            <TextBox x:Name="FaultDescriptionBox"
+                     Grid.Row="1"
+                     MinHeight="150"
+                     AcceptsReturn="True"
+                     TextWrapping="Wrap"
+                     VerticalScrollBarVisibility="Auto"
+                     Padding="8"
+                     FontSize="14"/>
+        </Grid>
+
+        <StackPanel Grid.Row="4"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,16,0,0">
+            <Button Content="확인"
+                    Width="110"
+                    Height="36"
+                    Margin="0,0,8,0"
+                    IsDefault="True"
+                    Click="Confirm_Click"/>
+            <Button Content="취소"
+                    Width="110"
+                    Height="36"
+                    IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

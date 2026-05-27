@@ -128,6 +128,23 @@ public static partial class DbInitializer
                 grantAllPermissions: false,
                 updatePasswordIfExists: seedUsersOptions.UpdateExistingItwPassword,
                 cancellationToken);
+
+            if (!string.IsNullOrWhiteSpace(seedUsersOptions.UsenetUsername) &&
+                !string.IsNullOrWhiteSpace(seedUsersOptions.UsenetPassword))
+            {
+                await EnsureSeedUserAsync(
+                    dbContext,
+                    logger,
+                    username: seedUsersOptions.UsenetUsername.Trim(),
+                    password: seedUsersOptions.UsenetPassword,
+                    role: "Admin",
+                    tenantCode: TenantScopeCatalog.UsenetGroup,
+                    officeCode: OfficeCodeCatalog.Usenet,
+                    scopeType: TenantScopeCatalog.ScopeAdmin,
+                    grantAllPermissions: true,
+                    updatePasswordIfExists: seedUsersOptions.UpdateExistingUsenetPassword,
+                    cancellationToken);
+            }
         }
         else
         {
@@ -141,6 +158,8 @@ public static partial class DbInitializer
         await NormalizeUnitCatalogAsync(dbContext, cancellationToken);
         await NormalizeInventoryTransferIntegrityAsync(dbContext, cancellationToken);
         await PurgeDeletedInventoryTransferDataAsync(dbContext, cancellationToken);
+        await PurgeDeletedItemWarehouseStocksAsync(dbContext, cancellationToken);
+        await RepairItemCurrentStockSnapshotsAsync(dbContext, cancellationToken);
         await RepairDeletedCustomerRentalProfileLinksAsync(dbContext, cancellationToken);
         await MergeDuplicateCustomerMastersAsync(dbContext, cancellationToken);
         await MergeDuplicateCustomersAsync(dbContext, cancellationToken);
@@ -169,6 +188,8 @@ public static partial class DbInitializer
             await NormalizeUnitCatalogAsync(tenantDbContext, cancellationToken);
             await NormalizeInventoryTransferIntegrityAsync(tenantDbContext, cancellationToken);
             await PurgeDeletedInventoryTransferDataAsync(tenantDbContext, cancellationToken);
+            await PurgeDeletedItemWarehouseStocksAsync(tenantDbContext, cancellationToken);
+            await RepairItemCurrentStockSnapshotsAsync(tenantDbContext, cancellationToken);
             await RepairDeletedCustomerRentalProfileLinksAsync(tenantDbContext, cancellationToken);
             await MergeDuplicateCustomerMastersAsync(tenantDbContext, cancellationToken);
             await MergeDuplicateCustomersAsync(tenantDbContext, cancellationToken);

@@ -74,6 +74,18 @@ public partial class RentalBillingWindow : Window
             if (DataContext is not RentalBillingViewModel viewModel)
                 return;
 
+            if (viewModel.SelectedRow?.HasPastUnresolved == true)
+            {
+                var confirm = MessageBox.Show(
+                    this,
+                    $"{viewModel.SelectedRow.CustomerDisplayName} 거래처에 이전 청구월 미처리 내역 {viewModel.SelectedRow.PastUnresolvedCount:N0}건 / 미수 {viewModel.SelectedRow.PastUnresolvedAmount:N0}원이 있습니다.{Environment.NewLine}{Environment.NewLine}그래도 선택한 청구월 청구서를 만들까요?",
+                    "과거 미처리 확인",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+                if (confirm != MessageBoxResult.Yes)
+                    return;
+            }
+
             await viewModel.StartBillingCommand.ExecuteAsync(null);
             if (!viewModel.InvoiceToOpenAfterClose.HasValue)
                 return;
@@ -104,22 +116,89 @@ public partial class RentalBillingWindow : Window
                 return;
             }
 
-            var paymentViewModel = new PaymentViewModel(viewModel.LocalStateService, viewModel.SessionState);
-            await paymentViewModel.LoadAsync();
-            await paymentViewModel.ConfigureForRentalBillingAsync(
-                viewModel.SelectedRow.Source,
-                viewModel.SelectedRow.CurrentBillingRunId,
-                viewModel.SelectedRow.CurrentBilledAmount,
-                viewModel.SelectedRow.CurrentBillingPeriodLabel);
-
-            var paymentWindow = new PaymentWindow(paymentViewModel)
-            {
-                Owner = this
-            };
-
-            paymentWindow.ShowDialog();
-            await viewModel.ReloadCommand.ExecuteAsync(null);
+            await OpenRentalSettlementWindowAsync(viewModel, viewModel.SelectedBillingHistory);
         }, "UI", "렌탈 청구 수금 등록", "렌탈 청구 수금 등록 중 오류가 발생했습니다.");
+    }
+
+    private void BillingHistoryRegisterButton_Click(object sender, RoutedEventArgs e)
+    {
+        UiTaskHelper.Run(this, async () =>
+        {
+            if (DataContext is not RentalBillingViewModel viewModel ||
+                sender is not FrameworkElement element ||
+                element.DataContext is not RentalBillingHistoryRow history)
+            {
+                MessageBox.Show("입금 등록할 청구/입금 내역을 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            viewModel.SelectedBillingHistory = history;
+            await OpenRentalSettlementWindowAsync(viewModel, history);
+        }, "UI", "렌탈 청구 월별 입금 등록", "렌탈 청구 월별 입금 등록 중 오류가 발생했습니다.");
+    }
+
+    private async Task OpenRentalSettlementWindowAsync(RentalBillingViewModel viewModel, RentalBillingHistoryRow? history)
+    {
+        if (viewModel.SelectedRow is null)
+        {
+            MessageBox.Show("입금을 등록할 대상을 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!viewModel.CanRegisterSettlementSelected)
+        {
+            MessageBox.Show(
+                "거래처 그룹은 바로 입금등록할 수 없습니다. 개별 청구건 보기로 전환한 뒤 다시 시도하세요.",
+                "알림",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        if (history is not null)
+        {
+            if (!history.CanRegisterSettlement)
+            {
+                MessageBox.Show("선택한 청구월은 남은 미수금이 없어 입금 등록할 금액이 없습니다.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (history.BillingProfileId != viewModel.SelectedRow.Source.Id)
+            {
+                MessageBox.Show(
+                    "거래처 그룹에 포함된 다른 청구건입니다. '개별 청구건 보기'로 전환한 뒤 해당 거래처를 선택해 입금 등록하세요.",
+                    "알림",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+        }
+
+        var billingRunId = history is not null && history.BillingRunId != Guid.Empty
+            ? history.BillingRunId
+            : viewModel.SelectedRow.CurrentBillingRunId;
+        var billedAmount = history is not null && history.BilledAmount > 0m
+            ? history.BilledAmount
+            : viewModel.SelectedRow.CurrentBilledAmount;
+        var periodLabel = !string.IsNullOrWhiteSpace(history?.PeriodLabel)
+            ? history!.PeriodLabel
+            : viewModel.SelectedRow.CurrentBillingPeriodLabel;
+
+        var paymentViewModel = new PaymentViewModel(viewModel.LocalStateService, viewModel.SessionState);
+        await paymentViewModel.LoadAsync();
+        await paymentViewModel.ConfigureForRentalBillingAsync(
+            viewModel.SelectedRow.Source,
+            billingRunId,
+            billedAmount,
+            periodLabel);
+
+        var paymentWindow = new PaymentWindow(paymentViewModel)
+        {
+            Owner = this
+        };
+
+        paymentWindow.ShowDialog();
+        await viewModel.ReloadCommand.ExecuteAsync(null);
     }
 
     private async void HandleClosing(object? sender, CancelEventArgs e)

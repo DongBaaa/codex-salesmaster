@@ -658,28 +658,118 @@ public sealed partial class EnvironmentSettingsViewModel
                 StatusMessage = "운영 점검 항목의 렌탈 자산 화면을 열었습니다.";
                 break;
             }
-            default:
+            case DataIntegrityDirectActionKind.OpenInventoryItem when issue.EntityId.HasValue:
+            {
+                var inventoryViewModel = new InventoryViewModel(_local, _session);
+                await inventoryViewModel.LoadAndSelectItemAsync(issue.EntityId.Value);
+                var window = new InventoryWindow(inventoryViewModel);
                 if (owner is not null)
+                    window.Owner = owner;
+
+                window.ShowDialog();
+                StatusMessage = "운영 점검 항목의 품목/재고 화면을 열었습니다.";
+                break;
+            }
+            case DataIntegrityDirectActionKind.OpenCustomer when issue.EntityId.HasValue:
+            {
+                var customer = await _local.GetCustomerAsync(issue.EntityId.Value, _session);
+                if (customer is null)
                 {
-                    MessageBox.Show(
-                        owner,
-                        "이 항목은 원본 화면 바로가기를 지원하지 않습니다. 상세 내용을 기준으로 수동 확인하세요.",
-                        "운영 점검",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Information);
-                }
-                else
-                {
-                    MessageBox.Show(
-                        "이 항목은 원본 화면 바로가기를 지원하지 않습니다. 상세 내용을 기준으로 수동 확인하세요.",
-                        "운영 점검",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Information);
+                    ShowDataIntegrityNavigationMessage(owner, "거래처를 찾을 수 없어 거래처 수정창을 열 수 없습니다.");
+                    StatusMessage = "운영 점검 항목의 거래처를 찾지 못했습니다.";
+                    break;
                 }
 
+                var customerViewModel = new CustomerEditViewModel(_local, _session);
+                await customerViewModel.LoadAsync(customer);
+                var window = new CustomerEditWindow(customerViewModel);
+                if (owner is not null)
+                    window.Owner = owner;
+
+                window.ShowDialog();
+                StatusMessage = "운영 점검 항목의 거래처 수정창을 열었습니다.";
+                break;
+            }
+            case DataIntegrityDirectActionKind.OpenInvoice when issue.EntityId.HasValue:
+            {
+                var invoice = await _local.GetInvoiceAsync(issue.EntityId.Value, _session);
+                if (invoice is null)
+                {
+                    ShowDataIntegrityNavigationMessage(owner, "전표를 찾을 수 없어 전표 작성창을 열 수 없습니다.");
+                    StatusMessage = "운영 점검 항목의 전표를 찾지 못했습니다.";
+                    break;
+                }
+
+                var entryType = invoice.VoucherType switch
+                {
+                    VoucherType.Purchase => VoucherType.Purchase,
+                    VoucherType.Procurement => VoucherType.Procurement,
+                    _ => VoucherType.Sales
+                };
+                var invoiceViewModel = new SalesViewModel(_local, _print, _invoicePrintService, _session, entryType);
+                await invoiceViewModel.LoadAsync();
+                await invoiceViewModel.LoadInvoiceAsync(invoice);
+                var window = new SalesWindow(invoiceViewModel);
+                if (owner is not null)
+                    window.Owner = owner;
+
+                window.ShowDialog();
+                StatusMessage = "운영 점검 항목의 전표 작성창을 열었습니다.";
+                break;
+            }
+            case DataIntegrityDirectActionKind.OpenPaymentForInvoice when issue.EntityId.HasValue:
+            {
+                var invoice = await _local.GetInvoiceAsync(issue.EntityId.Value, _session);
+                if (invoice is null)
+                {
+                    ShowDataIntegrityNavigationMessage(owner, "전표를 찾을 수 없어 수금/지급 창을 열 수 없습니다.");
+                    StatusMessage = "운영 점검 항목의 전표를 찾지 못했습니다.";
+                    break;
+                }
+
+                var customer = await _local.GetCustomerAsync(invoice.CustomerId, _session);
+                var paymentViewModel = new PaymentViewModel(_local, _session);
+                await paymentViewModel.LoadAsync(customer);
+                await paymentViewModel.ConfigureForInvoiceAsync(invoice);
+                var window = new PaymentWindow(paymentViewModel);
+                if (owner is not null)
+                    window.Owner = owner;
+
+                window.ShowDialog();
+                StatusMessage = "운영 점검 항목의 수금/지급 창을 열었습니다.";
+                break;
+            }
+            case DataIntegrityDirectActionKind.OpenSyncDiagnostics:
+            {
+                var diagnosticsViewModel = new SyncDiagnosticsViewModel(_diagnostics, _sync, _api, _local, _rental, _session);
+                await diagnosticsViewModel.LoadAsync();
+                var window = new SyncDiagnosticsWindow(diagnosticsViewModel);
+                if (owner is not null)
+                    window.Owner = owner;
+
+                window.ShowDialog();
+                StatusMessage = "동기화 진단 창을 열었습니다.";
+                break;
+            }
+            case DataIntegrityDirectActionKind.OpenEnvironmentSettings:
+                StatusMessage = "현재 환경설정 화면에서 창고/동기화 설정을 확인하세요.";
+                break;
+            default:
+                ShowDataIntegrityNavigationMessage(owner, "이 항목은 원본 화면 바로가기를 지원하지 않습니다. 상세 내용을 기준으로 수동 확인하세요.");
                 StatusMessage = "운영 점검 상세에서 수동 확인이 필요한 항목입니다.";
                 break;
         }
+    }
+
+    private static void ShowDataIntegrityNavigationMessage(Window? owner, string message)
+    {
+        if (owner is not null)
+        {
+            MessageBox.Show(owner, message, "운영 점검", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        MessageBox.Show(message, "운영 점검", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private static Window? ResolveActiveWindow()

@@ -109,8 +109,8 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
         _ => "거래명세 품목 편집"
     };
     public bool IsPurchaseDocument => string.Equals(VoucherType, 거래플랜.Shared.Contracts.VoucherType.Purchase.ToString(), StringComparison.OrdinalIgnoreCase);
-    public string SettlementAmountLabelText => IsPurchaseDocument ? "지불액" : "입금액";
-    public string OutstandingAmountLabelText => IsPurchaseDocument ? "미지불" : "미수금";
+    public string SettlementAmountLabelText => IsPurchaseDocument ? "지급액" : "입금액";
+    public string OutstandingAmountLabelText => IsPurchaseDocument ? "미지급" : "미수금";
     public bool HasPendingChanges => !string.Equals(_baselineStateSignature, BuildStateSignature(BuildModel()), StringComparison.Ordinal);
     public bool HasMeaningfulDraftContentForClose => HasMeaningfulDraftContent();
 

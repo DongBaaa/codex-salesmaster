@@ -11,6 +11,8 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
+public sealed record RentalReturnReportFields(string ReturnReason, string FaultDescription);
+
 public sealed class RentalDocumentService
 {
     private const double A4Width = 793.7;
@@ -24,7 +26,8 @@ public sealed class RentalDocumentService
     public FixedDocument BuildEquipmentDetailDocument(
         IReadOnlyList<LocalRentalAsset> assets,
         LocalCustomer? customer,
-        LocalCompanyProfile? companyProfile)
+        LocalCompanyProfile? companyProfile,
+        IReadOnlyDictionary<string, string>? managementCompanyNames = null)
     {
         ArgumentNullException.ThrowIfNull(assets);
         if (assets.Count == 0)
@@ -64,12 +67,12 @@ public sealed class RentalDocumentService
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-            AddToGrid(root, CreateEquipmentDetailTitle(anchor, companyProfile, pageIndex + 1, chunks.Count), 0);
+            AddToGrid(root, CreateEquipmentDetailTitle(anchor, companyProfile, managementCompanyNames, pageIndex + 1, chunks.Count), 0);
 
             if (pageIndex == 0)
-                AddToGrid(root, CreateEquipmentDetailSummary(anchor, customer, companyProfile, orderedAssets.Count), 1);
+                AddToGrid(root, CreateEquipmentDetailSummary(anchor, customer, companyProfile, managementCompanyNames, orderedAssets.Count), 1);
             else
-                AddToGrid(root, CreateEquipmentContinuationSummary(anchor, customer, companyProfile), 1);
+                AddToGrid(root, CreateEquipmentContinuationSummary(anchor, customer, companyProfile, managementCompanyNames), 1);
 
             AddToGrid(root, CreateEquipmentDetailTable(chunks[pageIndex], pageIndex == 0 ? 1 : (pageIndex * continuationRowLimit) - (continuationRowLimit - firstPageRowLimit) + 1), 2);
 
@@ -88,7 +91,11 @@ public sealed class RentalDocumentService
         return document;
     }
 
-    public FixedDocument BuildReturnReportDocument(LocalRentalAsset asset, LocalCompanyProfile? companyProfile)
+    public FixedDocument BuildReturnReportDocument(
+        LocalRentalAsset asset,
+        LocalCompanyProfile? companyProfile,
+        RentalReturnReportFields? reportFields = null,
+        IReadOnlyDictionary<string, string>? managementCompanyNames = null)
     {
         ArgumentNullException.ThrowIfNull(asset);
 
@@ -128,13 +135,14 @@ public sealed class RentalDocumentService
             ("제조사", asset.Manufacturer),
             ("품명", asset.ItemName),
             ("제품번호", asset.MachineNumber),
+            ("렌탈업체", ResolveAssetManagementCompanyName(asset, managementCompanyNames)),
             ("구입일자", FormatDate(asset.PurchaseDate)),
             ("거래처명", asset.CustomerName),
             ("회수일자", FormatDate(asset.DisposalDate ?? asset.RentalEndDate)),
-            ("담당지점", ResolveOfficeName(asset.ResponsibleOfficeCode, companyProfile)),
-            ("회수이유", BuildReturnReason(asset))), 1);
+            ("담당지점", ResolveAssetResponsibleOfficeName(asset)),
+            ("회수이유", reportFields is null ? BuildReturnReason(asset) : reportFields.ReturnReason)), 1);
 
-        AddToGrid(root, CreateLabeledMultilineBlock("장애내용(상세하게 기록)", string.IsNullOrWhiteSpace(asset.Notes) ? "" : asset.Notes, 80), 2);
+        AddToGrid(root, CreateLabeledMultilineBlock("장애내용(상세하게 기록)", reportFields?.FaultDescription ?? string.Empty, 80), 2);
 
         var inspectionGrid = new Grid { Margin = new Thickness(0, 0, 0, 10) };
         inspectionGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.6, GridUnitType.Star) });
@@ -854,6 +862,7 @@ public sealed class RentalDocumentService
     private static UIElement CreateEquipmentDetailTitle(
         LocalRentalAsset anchor,
         LocalCompanyProfile? companyProfile,
+        IReadOnlyDictionary<string, string>? managementCompanyNames,
         int pageNumber,
         int totalPages)
     {
@@ -869,7 +878,7 @@ public sealed class RentalDocumentService
         var centerStack = new StackPanel();
         centerStack.Children.Add(CreateText("렌탈장비 내역서", 22, FontWeights.Bold, Brushes.Black, TextAlignment.Center));
         centerStack.Children.Add(CreateText(
-            $"{ResolveOfficeName(anchor.ResponsibleOfficeCode, companyProfile)} 렌탈 장비 상세 목록",
+            $"{ResolveAssetResponsibleOfficeName(anchor)} 렌탈 장비 상세 목록",
             11,
             FontWeights.Normal,
             Brushes.Gray,
@@ -889,6 +898,7 @@ public sealed class RentalDocumentService
         LocalRentalAsset anchor,
         LocalCustomer? customer,
         LocalCompanyProfile? companyProfile,
+        IReadOnlyDictionary<string, string>? managementCompanyNames,
         int assetCount)
     {
         var border = CreateBorder();
@@ -909,14 +919,14 @@ public sealed class RentalDocumentService
         AddCell(grid, "발주거래처", 0, 0, true, TextAlignment.Center);
         AddCell(grid, Coalesce(customer?.NameOriginal, anchor.CustomerName, "미입력"), 0, 1, false);
         AddCell(grid, "렌탈업체", 0, 2, true, TextAlignment.Center);
-        AddCell(grid, Coalesce(companyProfile?.TradeName, ResolveOfficeName(anchor.ResponsibleOfficeCode, companyProfile), "미입력"), 0, 3, false);
+        AddCell(grid, ResolveAssetManagementCompanyName(anchor, managementCompanyNames), 0, 3, false);
         AddCell(grid, "장비수", 0, 4, true, TextAlignment.Center);
         AddCell(grid, $"{assetCount:N0}대", 0, 5, false, TextAlignment.Center);
 
         AddCell(grid, "사업자번호", 1, 0, true, TextAlignment.Center);
         AddCell(grid, Coalesce(customer?.BusinessNumber, "미입력"), 1, 1, false);
         AddCell(grid, "담당지점", 1, 2, true, TextAlignment.Center);
-        AddCell(grid, ResolveOfficeName(anchor.ResponsibleOfficeCode, companyProfile), 1, 3, false);
+        AddCell(grid, ResolveAssetResponsibleOfficeName(anchor), 1, 3, false);
         AddCell(grid, "작성일", 1, 4, true, TextAlignment.Center);
         AddCell(grid, DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), 1, 5, false, TextAlignment.Center);
 
@@ -927,12 +937,13 @@ public sealed class RentalDocumentService
     private static Border CreateEquipmentContinuationSummary(
         LocalRentalAsset anchor,
         LocalCustomer? customer,
-        LocalCompanyProfile? companyProfile)
+        LocalCompanyProfile? companyProfile,
+        IReadOnlyDictionary<string, string>? managementCompanyNames)
     {
         var border = CreateBorder();
         border.Padding = new Thickness(12, 10, 12, 10);
         border.Child = CreateText(
-            $"발주거래처: {Coalesce(customer?.NameOriginal, anchor.CustomerName, "미입력")}    |    렌탈업체: {Coalesce(companyProfile?.TradeName, ResolveOfficeName(anchor.ResponsibleOfficeCode, companyProfile), "미입력")}",
+            $"발주거래처: {Coalesce(customer?.NameOriginal, anchor.CustomerName, "미입력")}    |    렌탈업체: {ResolveAssetManagementCompanyName(anchor, managementCompanyNames)}",
             11.5,
             FontWeights.SemiBold,
             Brushes.Black);
@@ -1544,7 +1555,7 @@ public sealed class RentalDocumentService
             return "계약 종료 또는 회수 처리";
         if (string.Equals(asset.AssetStatus, "대기", StringComparison.OrdinalIgnoreCase))
             return "재배치 또는 보류";
-        return string.IsNullOrWhiteSpace(asset.Notes) ? string.Empty : asset.Notes;
+        return string.Empty;
     }
 
     private static string BuildSaleableState(LocalRentalAsset asset)
@@ -1570,6 +1581,39 @@ public sealed class RentalDocumentService
             return companyProfile.TradeName;
 
         return OfficeCodeCatalog.GetOfficeDisplayName(officeCode);
+    }
+
+    private static string ResolveAssetResponsibleOfficeName(LocalRentalAsset asset)
+        => OfficeCodeCatalog.GetOfficeDisplayName(
+            string.IsNullOrWhiteSpace(asset.ResponsibleOfficeCode)
+                ? asset.OfficeCode
+                : asset.ResponsibleOfficeCode);
+
+    private static string ResolveAssetManagementCompanyName(
+        LocalRentalAsset asset,
+        IReadOnlyDictionary<string, string>? managementCompanyNames)
+    {
+        var code = Coalesce(asset.ManagementCompanyCode, asset.OfficeCode, asset.ResponsibleOfficeCode);
+        if (string.IsNullOrWhiteSpace(code))
+            return "미입력";
+
+        var normalizedCode = NormalizeOfficeCode(code);
+        if (managementCompanyNames is not null)
+        {
+            if (managementCompanyNames.TryGetValue(code.Trim(), out var rawName) &&
+                !string.IsNullOrWhiteSpace(rawName))
+            {
+                return rawName.Trim();
+            }
+
+            if (managementCompanyNames.TryGetValue(normalizedCode, out var normalizedName) &&
+                !string.IsNullOrWhiteSpace(normalizedName))
+            {
+                return normalizedName.Trim();
+            }
+        }
+
+        return OfficeCodeCatalog.GetOfficeDisplayName(normalizedCode);
     }
 
     private static string ResolveContractPhoneNumber(LocalCompanyProfile companyProfile)

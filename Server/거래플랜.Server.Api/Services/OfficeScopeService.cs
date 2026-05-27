@@ -424,7 +424,7 @@ public sealed class OfficeScopeService
     public IQueryable<ItemWarehouseStock> ApplyItemWarehouseStockScope(IQueryable<ItemWarehouseStock> query)
     {
         if (HasGlobalDataScope)
-            return query;
+            return query.Where(entity => entity.Item != null && !entity.Item.IsDeleted);
 
         var tenantCode = CurrentTenantCode;
         var readableWarehouses = ResolveReadableOfficeCodes(DataArea.Items)
@@ -435,6 +435,7 @@ public sealed class OfficeScopeService
         return query.Where(entity =>
             readableWarehouses.Contains(entity.WarehouseCode) &&
             entity.Item != null &&
+            !entity.Item.IsDeleted &&
             entity.Item.TenantCode == tenantCode &&
             (entity.Item.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.Item.OfficeCode)));
     }

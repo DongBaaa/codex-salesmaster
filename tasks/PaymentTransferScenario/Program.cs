@@ -110,7 +110,9 @@ internal static class Program
         var advanceDepositResult = local.SaveTransactionAsync(advanceDepositTransaction, adminSession).GetAwaiter().GetResult();
         var advanceBalanceAfterDeposit = GetAdvanceBalanceAsync(local, customer.Id, adminSession);
 
-        var sampleFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "payment-proof-sample.pdf");
+        var proofDirectory = Path.Combine(AppContext.BaseDirectory, "runtime", "isolated-payment-transfer-scenario", "proofs");
+        Directory.CreateDirectory(proofDirectory);
+        var sampleFile = Path.Combine(proofDirectory, "payment-proof-sample.pdf");
         File.WriteAllText(sampleFile, "sample proof file");
 
         var attachmentSave = local.SaveTransactionAttachmentAsync(advanceDepositTransaction.Id, sampleFile, "입금확인증", "입금 확인 메모", adminSession).GetAwaiter().GetResult();

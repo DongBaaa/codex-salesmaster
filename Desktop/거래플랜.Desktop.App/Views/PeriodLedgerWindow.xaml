@@ -41,22 +41,24 @@
             <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderBrush" Value="#4A6382"/>
-            <Setter Property="Height" Value="32"/>
+            <Setter Property="Height" Value="30"/>
             <Setter Property="FontSize" Value="12"/>
-            <Setter Property="Width" Value="172"/>
-            <Setter Property="Padding" Value="8,3"/>
+            <Setter Property="Width" Value="150"/>
+            <Setter Property="Padding" Value="0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
-            <Setter Property="MinWidth" Value="184"/>
-            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="MinWidth" Value="150"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="MaxWidth" Value="150"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Height" Value="32"/>
-            <Setter Property="MinHeight" Value="32"/>
-            <Setter Property="Padding" Value="8,0,10,0"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Padding" Value="8,0,4,0"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
@@ -190,7 +192,7 @@
                            FontSize="20"
                            FontWeight="Bold"
                            Foreground="#4FC3F7"/>
-                <TextBlock Text="거래처별 집계, 판매/구매/수금지불 원장, 연수구 납품내역을 한 화면에서 정리합니다."
+                <TextBlock Text="거래처별 집계, 판매/구매/수금·지급 원장, 연수구 납품내역을 한 화면에서 정리합니다."
                            Foreground="#9FB3C8"
                            Margin="0,4,0,0"
                            FontSize="12"
@@ -311,7 +313,7 @@
                             Command="{Binding SetCurrentMonthCommand}"/>
                     <TextBlock Grid.Row="0"
                                Grid.Column="2"
-                                   Text="검색"
+                                   Text="기간"
                                VerticalAlignment="Center"
                                FontSize="12"
                                Margin="0,0,4,0"/>
@@ -344,7 +346,7 @@
 
                     <TextBlock Grid.Row="1"
                                Grid.Column="2"
-                                   Text="선택거래처"
+                                   Text="거래처 범위"
                                VerticalAlignment="Center"
                                FontSize="12"
                                Margin="0,12,10,0"/>
@@ -403,7 +405,7 @@
                         <RadioButton Content="1. 판매+구매 거래 원장" IsChecked="{Binding IsSalesPurchaseSelected}"/>
                         <RadioButton Content="2. 판매/매출 거래 원장" IsChecked="{Binding IsSalesSelected}"/>
                         <RadioButton Content="3. 구매/매입 거래 원장" IsChecked="{Binding IsPurchaseSelected}"/>
-                        <RadioButton Content="4. 수금/지불 거래 원장" IsChecked="{Binding IsReceiptPaymentSelected}"/>
+                        <RadioButton Content="4. 수금/지급 거래 원장" IsChecked="{Binding IsReceiptPaymentSelected}"/>
                         <RadioButton Content="5. 연수구 납품내역" IsChecked="{Binding IsYeonsuDeliverySelected}"/>
                     </StackPanel>
 
@@ -462,7 +464,7 @@
                             <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SummaryTradeAmountText}" TextAlignment="Right" FontWeight="Bold"/>
                             <TextBlock Grid.Row="2" Text="수금액" Foreground="#9FB3C8" Margin="0,5,0,0"/>
                             <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SummaryReceiptAmountText}" TextAlignment="Right" FontWeight="Bold" Margin="0,5,0,0"/>
-                            <TextBlock Grid.Row="3" Text="지불액" Foreground="#9FB3C8" Margin="0,5,0,0"/>
+                            <TextBlock Grid.Row="3" Text="지급액" Foreground="#9FB3C8" Margin="0,5,0,0"/>
                             <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SummaryPaymentAmountText}" TextAlignment="Right" FontWeight="Bold" Margin="0,5,0,0"/>
                             <TextBlock Grid.Row="4" Text="누적잔액" Foreground="#9FB3C8" Margin="0,5,0,0"/>
                             <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding SummaryRunningBalanceText}" TextAlignment="Right" FontWeight="Bold" Margin="0,5,0,0"/>
@@ -543,7 +545,7 @@
                             <DataGridTextColumn Header="품목요약" Binding="{Binding Summary}" Width="1.6*" MinWidth="160" ElementStyle="{StaticResource LedgerGridTextStyle}"/>
                             <DataGridTextColumn Header="거래금액" Binding="{Binding TradeAmount, StringFormat={}{0:N0}}" Width="110" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
                             <DataGridTextColumn Header="수금액" Binding="{Binding ReceiptAmount, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
-                            <DataGridTextColumn Header="지불액" Binding="{Binding PaymentAmount, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
+                            <DataGridTextColumn Header="지급액" Binding="{Binding PaymentAmount, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
                             <DataGridTextColumn Header="누적잔액" Binding="{Binding RunningBalance, StringFormat={}{0:N0}}" Width="110" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
                             <DataGridTextColumn Header="전표메모" Binding="{Binding NotePreview}" Width="1.2*" MinWidth="140" ElementStyle="{StaticResource LedgerGridNoteTextStyle}"/>
                         </DataGrid.Columns>

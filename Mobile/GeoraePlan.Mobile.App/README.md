@@ -1,4 +1,4 @@
-﻿# 거래플랜 안드로이드 MAUI 앱
+# 거래플랜 안드로이드 MAUI 앱
 - 작성일: 2026-03-19
 - 프로젝트 파일: `D:\거래플랜\Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj`
 - 앱 ID: `kr.georaeplan.mobile`
@@ -9,8 +9,11 @@
 - 거래처 조회
 - 품목 조회
 - 전표 조회
-- 전표 작성 초안
-- 수금 입력 초안
+- 판매 전표 작성
+- 구매 전표 작성
+- 수금/지급 입력(방식 선택, 서버 반영)
+- 재고이동 조회(생성/수령/반려는 PC 품목/재고 관리에서 처리)
+- 렌탈 조회(청구 생성/입금 등록/프로필·자산 수정은 PC 렌탈 청구관리에서 처리)
 - 동기화 상태 조회
 - 거래처 계약서 조회 / PDF 열기
 - 휴지통 조회 / 복원 / 영구삭제
@@ -19,11 +22,14 @@
 - 모바일 앱은 **거래플랜 NAS 서버에 고정 연결**됩니다.
 - **서버 주소는 사용자 화면에 표시하지 않습니다.**
 - PC와 같은 서버 데이터를 사용하도록 맞춘 상태입니다.
+- 모바일 입력 가능 범위는 거래처/품목/판매·구매 전표/수금·지급입니다.
+- 재고이동과 렌탈은 모바일에서 조회 전용으로 제공하며, 실제 생성·확정·수정 업무는 PC에서 처리합니다.
 
 ## 최신 Android 산출물
-- 최신 서명 APK 예:
-  - `D:\거래플랜\Mobile\artifacts\android\publish_20260320_141634\kr.georaeplan.mobile-Signed.apk`
-  - SHA256: `D:\거래플랜\Mobile\artifacts\android\publish_20260320_141634\kr.georaeplan.mobile-Signed.apk.sha256.txt`
+- 최신 테스트 서명 APK:
+  - `D:\거래플랜\Mobile\artifacts\android\publish_20260516_040127\kr.georaeplan.mobile-Signed.apk`
+  - SHA256: `D:\거래플랜\Mobile\artifacts\android\publish_20260516_040127\kr.georaeplan.mobile-Signed.apk.sha256.txt`
+  - 배포 폴더 복사본: `D:\거래플랜\배포\거래플랜-안드로이드-v0.2.12-signed.apk`
 - 최신 서명 AAB 예:
   - `D:\거래플랜\Mobile\artifacts\android\aab_20260320_141421\kr.georaeplan.mobile-Signed.aab`
   - SHA256: `D:\거래플랜\Mobile\artifacts\android\aab_20260320_141421\kr.georaeplan.mobile-Signed.aab.sha256.txt`

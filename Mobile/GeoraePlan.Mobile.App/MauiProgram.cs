@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Pages;
+using GeoraePlan.Mobile.App.Pages;
 using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.ViewModels;
 
@@ -22,7 +22,9 @@ public static class MauiProgram
         builder.Services.AddSingleton<PaymentAttachmentDraftStore>();
         builder.Services.AddSingleton<GeoraePlanApiClient>();
         builder.Services.AddSingleton<MobileAppUpdateService>();
+        builder.Services.AddSingleton<MobileInvoicePdfExportService>();
         builder.Services.AddSingleton<SyncCoordinator>();
+        builder.Services.AddSingleton<MobileRealtimeSyncService>();
 
         builder.Services.AddSingleton<LoginViewModel>();
         builder.Services.AddSingleton<HomeViewModel>();

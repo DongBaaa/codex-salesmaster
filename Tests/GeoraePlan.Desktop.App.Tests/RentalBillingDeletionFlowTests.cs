@@ -112,12 +112,439 @@ public sealed class RentalBillingDeletionFlowTests
         }
     }
 
+    [Fact]
+    public async Task StartBilling_AllowsNextUnbilledCycle_WhenReferenceDateIsOutsideBillingMonth()
+    {
+        PrepareAppRoot("georaeplan-rental-start-outside-billing-month");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "청구일 외 테스트 거래처";
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = customerName,
+                NameMatchKey = customerName,
+                TradeType = CustomerTradeTypes.Sales,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                IsDeleted = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            profile.BillingCycleMonths = 3;
+            profile.BillingAnchorMonth = 5;
+            profile.LastBilledDate = new DateOnly(2026, 5, 25);
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var result = await service.StartBillingAsync(profileId, new DateOnly(2026, 6, 10), session);
+
+            Assert.True(result.Success, result.Message);
+            var invoice = await db.Invoices.SingleAsync(current => current.Id == result.RelatedEntityId);
+            Assert.Equal(new DateOnly(2026, 8, 25), invoice.InvoiceDate);
+            Assert.Equal(profileId, invoice.LinkedRentalBillingProfileId);
+            Assert.NotNull(invoice.LinkedRentalBillingRunId);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task StartBilling_RebuildsUnpaidExistingInvoiceWhenTemplateChanges()
+    {
+        PrepareAppRoot("georaeplan-rental-start-idempotent");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "중복 청구 방지 거래처";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var first = await service.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(first.Success, first.Message);
+            var firstInvoice = await db.Invoices.SingleAsync(current => current.Id == first.RelatedEntityId);
+            Assert.Equal(100_000m, firstInvoice.TotalAmount);
+
+            var persistedProfile = await db.RentalBillingProfiles.SingleAsync(current => current.Id == profileId);
+            persistedProfile.BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "복합기 렌탈료",
+                    BillingLineMode = "묶음",
+                    RepresentativeAssetId = assetId,
+                    Quantity = 1m,
+                    UnitPrice = 200_000m,
+                    Amount = 200_000m,
+                    IncludedAssetIds = [assetId]
+                }
+            });
+            persistedProfile.MonthlyAmount = 200_000m;
+            await db.SaveChangesAsync();
+
+            var second = await service.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(second.Success, second.Message);
+            Assert.NotEqual(first.RelatedEntityId, second.RelatedEntityId);
+
+            var invoices = await db.Invoices
+                .Where(current => current.LinkedRentalBillingProfileId == profileId)
+                .ToListAsync();
+            Assert.Equal(2, invoices.Count);
+            Assert.Contains(invoices, current => current.Id == first.RelatedEntityId && !current.IsLatestVersion);
+            var secondInvoice = Assert.Single(invoices, current => current.Id == second.RelatedEntityId && current.IsLatestVersion);
+            Assert.Equal(200_000m, secondInvoice.TotalAmount);
+
+            var rows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter { ReferenceDate = new DateOnly(2026, 5, 25), ExpandCustomerSummaryRows = true },
+                session);
+            var row = Assert.Single(rows, current => current.Source.Id == profileId);
+            Assert.Equal(200_000m, row.CurrentBilledAmount);
+            Assert.Equal(200_000m, row.OutstandingAmount);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task MarkCompleted_AllowsSelectedRunOutsideBillingMonthAndMovesNextRunWithoutSettledCarryover()
+    {
+        PrepareAppRoot("georaeplan-rental-complete-outside-billing-month");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "청구 완료 회차 이동 거래처";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            profile.BillingCycleMonths = 3;
+            profile.BillingAnchorMonth = 5;
+            profile.LastBilledDate = new DateOnly(2026, 5, 25);
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var start = await service.StartBillingAsync(profileId, new DateOnly(2026, 6, 10), session);
+            Assert.True(start.Success, start.Message);
+            var invoice = await db.Invoices.SingleAsync(current => current.Id == start.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 10),
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = runId,
+                ReceiptTotal = invoice.TotalAmount,
+                BankReceipt = invoice.TotalAmount,
+                SettlementAmount = invoice.TotalAmount,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var completed = await service.MarkBillingCompletedAsync(
+                profileId,
+                new DateOnly(2026, 6, 10),
+                "완료",
+                string.Empty,
+                session,
+                billingRunId: runId);
+
+            Assert.True(completed.Success, completed.Message);
+            var completedProfile = await db.RentalBillingProfiles.SingleAsync(current => current.Id == profileId);
+            Assert.Equal(new DateOnly(2026, 8, 25), completedProfile.LastBilledDate);
+
+            var rows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter { ReferenceDate = new DateOnly(2026, 6, 10), ExpandCustomerSummaryRows = true },
+                session);
+            var row = Assert.Single(rows, current => current.Source.Id == profileId);
+            Assert.Equal(new DateOnly(2026, 11, 25), row.NextBillingDate);
+            Assert.Equal(0m, row.SettledAmount);
+            Assert.Equal(row.CurrentBilledAmount, row.OutstandingAmount);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetBillingRows_ExposesPastUnresolvedHistoryAndFilter()
+    {
+        PrepareAppRoot("georaeplan-rental-past-unresolved-history");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "과거 미처리 거래처";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var start = await service.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(start.Success, start.Message);
+            var invoice = await db.Invoices.SingleAsync(current => current.Id == start.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 5, 30),
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = runId,
+                ReceiptTotal = 40_000m,
+                BankReceipt = 40_000m,
+                SettlementAmount = 40_000m,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var rows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter { ReferenceDate = new DateOnly(2026, 6, 25), ExpandCustomerSummaryRows = true },
+                session);
+            var row = Assert.Single(rows, current => current.Source.Id == profileId);
+
+            Assert.True(row.HasPastUnresolved);
+            Assert.Equal(1, row.PastUnresolvedCount);
+            Assert.Equal(60_000m, row.PastUnresolvedAmount);
+            var pastHistory = Assert.Single(row.BillingHistoryRows, history => history.BillingRunId == runId);
+            Assert.True(pastHistory.IsPastUnresolved);
+            Assert.Equal(100_000m, pastHistory.BilledAmount);
+            Assert.Equal(40_000m, pastHistory.SettledAmount);
+            Assert.Equal(60_000m, pastHistory.OutstandingAmount);
+
+            var filteredRows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter { ReferenceDate = new DateOnly(2026, 6, 25), ExpandCustomerSummaryRows = true, PastDueOnly = true },
+                session);
+            Assert.Contains(filteredRows, current => current.Source.Id == profileId);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SaveTransaction_RentalReceipt_AlsoUpdatesLinkedSalesInvoicePayment()
+    {
+        PrepareAppRoot("georaeplan-rental-receipt-links-invoice");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "렌탈 입금 전표 연동 거래처";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var start = await rental.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(start.Success, start.Message);
+
+            var invoice = await db.Invoices.AsNoTracking().SingleAsync(current => current.Id == start.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+
+            var save = await local.SaveTransactionAsync(new LocalTransaction
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                TransactionDate = new DateOnly(2026, 5, 26),
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = runId,
+                BankReceipt = invoice.TotalAmount,
+                ReceiptTotal = invoice.TotalAmount,
+                SettlementAmount = invoice.TotalAmount
+            }, session);
+
+            Assert.True(save.Success, save.Message);
+            var transaction = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == save.EntityId);
+            Assert.Equal(invoice.Id, transaction.LinkedInvoiceId);
+            Assert.Equal(profileId, transaction.LinkedRentalBillingProfileId);
+            Assert.Equal(runId, transaction.LinkedRentalBillingRunId);
+
+            var payment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transaction.Id);
+            Assert.Equal(invoice.Id, payment.InvoiceId);
+            Assert.Equal(invoice.TotalAmount, payment.Amount);
+
+            var updatedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(invoice.TotalAmount, updatedProfile.SettledAmount);
+            Assert.Equal(0m, updatedProfile.OutstandingAmount);
+            Assert.Equal(PaymentFlowConstants.CompletionDone, updatedProfile.CompletionStatus);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SaveTransaction_RentalSalesInvoiceReceipt_AlsoUpdatesRentalSettlement()
+    {
+        PrepareAppRoot("georaeplan-rental-invoice-receipt-links-billing");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "전표 수금 렌탈 연동 거래처";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var start = await rental.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(start.Success, start.Message);
+
+            var invoice = await db.Invoices.AsNoTracking().SingleAsync(current => current.Id == start.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+
+            var save = await local.SaveTransactionAsync(new LocalTransaction
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                TransactionDate = new DateOnly(2026, 5, 26),
+                TransactionKind = PaymentFlowConstants.TransactionKindInvoiceReceipt,
+                LinkedInvoiceId = invoice.Id,
+                BankReceipt = invoice.TotalAmount,
+                ReceiptTotal = invoice.TotalAmount,
+                SettlementAmount = invoice.TotalAmount
+            }, session);
+
+            Assert.True(save.Success, save.Message);
+            var transaction = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == save.EntityId);
+            Assert.Equal(PaymentFlowConstants.TransactionKindRentalReceipt, transaction.TransactionKind);
+            Assert.Equal(invoice.Id, transaction.LinkedInvoiceId);
+            Assert.Equal(profileId, transaction.LinkedRentalBillingProfileId);
+            Assert.Equal(runId, transaction.LinkedRentalBillingRunId);
+
+            var payment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transaction.Id);
+            Assert.Equal(invoice.Id, payment.InvoiceId);
+            Assert.Equal(invoice.TotalAmount, payment.Amount);
+
+            var updatedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(invoice.TotalAmount, updatedProfile.SettledAmount);
+            Assert.Equal(0m, updatedProfile.OutstandingAmount);
+            Assert.Equal(PaymentFlowConstants.CompletionDone, updatedProfile.CompletionStatus);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
         Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
     }
+
+    private static LocalCustomer CreateCustomer(Guid customerId, string customerName)
+        => new()
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = customerName,
+            NameMatchKey = customerName,
+            TradeType = CustomerTradeTypes.Sales,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
 
     private static LocalRentalAsset CreateRentalAsset(
         Guid assetId,

@@ -181,7 +181,7 @@ public sealed class PeriodLedgerExcelExportService
         ws.Range(3, 1, 3, 11).Merge();
 
         var row = 5;
-        var headers = new[] { "No", "거래날짜", "전표구분", "품목거래내역", "거래금액", "수금액", "지불액", "누적잔액", "전미수/미지불", "거래처명", "전표메모" };
+        var headers = new[] { "No", "거래날짜", "전표구분", "품목거래내역", "거래금액", "수금액", "지급액", "누적잔액", "전미수/미지급", "거래처명", "전표메모" };
         for (var i = 0; i < headers.Length; i++)
             ws.Cell(row, i + 1).Value = headers[i];
 
@@ -292,8 +292,8 @@ public sealed class PeriodLedgerExcelExportService
     private static void WriteBlockLedgerHeader(IXLWorksheet ws, int row, bool includeProfit)
     {
         var headers = includeProfit
-            ? new[] { "거래날짜", "구분", "품목거래내역", "거래금액", "수금액", "지불액", "누적잔액", "전미수/미지불", "순이익", "전표메모" }
-            : new[] { "거래날짜", "구분", "품목거래내역", "거래금액", "수금액", "지불액", "누적잔액", "전미수/미지불", "전표메모", "품목비고" };
+            ? new[] { "거래날짜", "구분", "품목거래내역", "거래금액", "수금액", "지급액", "누적잔액", "전미수/미지급", "순이익", "전표메모" }
+            : new[] { "거래날짜", "구분", "품목거래내역", "거래금액", "수금액", "지급액", "누적잔액", "전미수/미지급", "전표메모", "품목비고" };
 
         for (var i = 0; i < headers.Length; i++)
             ws.Cell(row, i + 1).Value = headers[i];
@@ -445,7 +445,7 @@ public sealed class PeriodLedgerExcelExportService
             PeriodLedgerType.SalesPurchase => "판매+구매",
             PeriodLedgerType.SalesOnly => "판매매출",
             PeriodLedgerType.PurchaseOnly => "구매매입",
-            PeriodLedgerType.ReceiptPayment => "수금지불",
+            PeriodLedgerType.ReceiptPayment => "수금지급",
             PeriodLedgerType.YeonsuDelivery => "연수구납품내역",
             _ => "거래원장"
         };

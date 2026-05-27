@@ -25,7 +25,7 @@ internal static class Program
 
         var referenceDate = new DateOnly(2026, 6, 15);
 
-        var groupedCustomerId = SeedCustomer(local, adminSession, "ZZZ-렌탈 청구 자동전표 검증 거래처-묶음", "999-99-90001");
+        var groupedCustomerId = SeedCustomer(local, adminSession, "ZZZ-렌탈 묶음 검증 거래처", "999-99-90001");
         var groupedProfileId = Guid.NewGuid();
         SeedGroupedAssets(db, groupedCustomerId, groupedProfileId);
         var groupedSave = SaveBillingProfile(
@@ -54,7 +54,7 @@ internal static class Program
                 }
             });
 
-        var individualCustomerId = SeedCustomer(local, adminSession, "ZZZ-렌탈 청구 자동전표 검증 거래처-개별", "999-99-90002");
+        var individualCustomerId = SeedCustomer(local, adminSession, "ZZZ-렌탈 개별 검증 거래처", "999-99-90002");
         var individualProfileId = Guid.NewGuid();
         SeedIndividualAssets(db, individualCustomerId, individualProfileId);
         var individualSave = SaveBillingProfile(
@@ -144,7 +144,7 @@ internal static class Program
         {
             var line = lines.SingleOrDefault(current => string.Equals(current.ItemNameOriginal, expectedMonth, StringComparison.Ordinal));
             Ensure(line is not null, $"묶음 청구에서 {expectedMonth} 라인을 찾지 못했습니다.");
-            Ensure(string.Equals(line!.SpecificationOriginal, "리코 IMC 2000", StringComparison.Ordinal), $"묶음 청구 대표 장비명이 잘못되었습니다. 실제: {line.SpecificationOriginal}");
+            Ensure(string.Equals(line!.SpecificationOriginal, "리코 IMC 2000 외", StringComparison.Ordinal), $"묶음 청구 대표 장비명이 잘못되었습니다. 실제: {line.SpecificationOriginal}");
             Ensure(line.Quantity == 1m, $"묶음 청구 수량은 1이어야 합니다. 실제: {line.Quantity}");
             Ensure(line.UnitPrice == 330000m, $"묶음 청구 단가가 330000원이 아닙니다. 실제: {line.UnitPrice}");
             Ensure(line.LineAmount == 330000m, $"묶음 청구 금액이 330000원이 아닙니다. 실제: {line.LineAmount}");
@@ -197,17 +197,18 @@ internal static class Program
         Ensure(activeInvoiceCount == 1, $"개별 청구 전표가 {activeInvoiceCount}건 생성되었습니다.");
 
         var lines = invoice!.Lines.OrderBy(line => line.ItemNameOriginal).ThenBy(line => line.SpecificationOriginal).ToList();
-        Ensure(lines.Count == 6, $"개별 청구 라인 수가 6건이 아닙니다. 실제 {lines.Count}건");
+        Ensure(lines.Count == 12, $"개별 청구 라인 수가 12건이 아닙니다. 실제 {lines.Count}건");
 
         foreach (var month in new[] { 4, 5, 6 })
         {
-            var imcLine = lines.SingleOrDefault(current =>
+            var imcLines = lines.Where(current =>
                 string.Equals(current.ItemNameOriginal, $"사무기기 렌탈대금[{month}월]", StringComparison.Ordinal) &&
-                string.Equals(current.SpecificationOriginal, "리코 IMC 2010", StringComparison.Ordinal));
-            Ensure(imcLine is not null, $"개별 청구 {month}월 IMC 2010 라인을 찾지 못했습니다.");
-            Ensure(imcLine!.Quantity == 3m, $"개별 청구 {month}월 IMC 2010 수량이 3이 아닙니다. 실제: {imcLine.Quantity}");
-            Ensure(imcLine.UnitPrice == 240000m, $"개별 청구 {month}월 IMC 2010 단가가 240000원이 아닙니다. 실제: {imcLine.UnitPrice}");
-            Ensure(imcLine.LineAmount == 720000m, $"개별 청구 {month}월 IMC 2010 금액이 720000원이 아닙니다. 실제: {imcLine.LineAmount}");
+                string.Equals(current.SpecificationOriginal, "리코 IMC 2010", StringComparison.Ordinal))
+                .ToList();
+            Ensure(imcLines.Count == 3, $"개별 청구 {month}월 IMC 2010 라인 수가 3건이 아닙니다. 실제: {imcLines.Count}");
+            Ensure(imcLines.All(line => line.Quantity == 1m), $"개별 청구 {month}월 IMC 2010 수량은 장비별 1이어야 합니다.");
+            Ensure(imcLines.All(line => line.UnitPrice == 240000m), $"개별 청구 {month}월 IMC 2010 단가가 240000원이 아닙니다.");
+            Ensure(imcLines.Sum(line => line.LineAmount) == 720000m, $"개별 청구 {month}월 IMC 2010 합계가 720000원이 아닙니다. 실제: {imcLines.Sum(line => line.LineAmount)}");
 
             var samsungLine = lines.SingleOrDefault(current =>
                 string.Equals(current.ItemNameOriginal, $"사무기기 렌탈대금[{month}월]", StringComparison.Ordinal) &&

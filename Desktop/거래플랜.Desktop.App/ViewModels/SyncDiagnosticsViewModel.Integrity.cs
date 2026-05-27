@@ -108,9 +108,17 @@ public sealed partial class SyncDiagnosticsViewModel
             var report = await _api.GetIntegrityReportAsync(ct);
             ApplyServerIntegrityReport(report);
             if (updateSummaryStatus)
-                SummaryStatusText = ServerIntegrityIssueCount == 0
-                    ? "서버 무결성 리포트 조회를 완료했습니다."
-                    : $"서버 무결성 리포트에서 이슈 {ServerIntegrityIssueCount:N0}건을 확인했습니다.";
+            {
+                var actionRequiredCount = CountActionRequiredServerIssues(report);
+                var informationalCount = report?.Issues.Count(IsInformationalServerIssue) ?? 0;
+                SummaryStatusText = report is null
+                    ? ServerIntegritySummaryText
+                    : actionRequiredCount == 0
+                        ? informationalCount > 0
+                            ? $"서버 무결성 리포트 조회 완료: 업무 처리가 필요한 경고는 없고 참고 정보 {informationalCount:N0}건만 있습니다."
+                            : "서버 무결성 리포트 조회를 완료했습니다."
+                        : $"서버 무결성 리포트에서 확인이 필요한 항목 {actionRequiredCount:N0}건을 확인했습니다.";
+            }
         }
         catch (Exception ex)
         {
@@ -196,7 +204,7 @@ public sealed partial class SyncDiagnosticsViewModel
             : $"{report.OfficeCode} / {report.TenantCode}";
         ServerIntegritySummaryText = report is null
             ? "서버 무결성 리포트를 불러오지 못했습니다."
-            : report.IssueCount == 0
+            : CountActionRequiredServerIssues(report) == 0
                 ? "서버 기준으로 확인된 무결성 이슈가 없습니다."
                 : BuildServerIntegritySummary(report, routineRepairCandidateCount, informationalIssueCount, manualReviewCount);
 
@@ -544,6 +552,9 @@ public sealed partial class SyncDiagnosticsViewModel
 
     private static bool IsInformationalServerIssue(IntegrityIssueDto issue)
         => string.Equals(issue.Severity, "Info", StringComparison.OrdinalIgnoreCase);
+
+    private static int CountActionRequiredServerIssues(IntegrityReportDto? report)
+        => report?.Issues.Count(issue => !IsInformationalServerIssue(issue)) ?? 0;
 
     private static string BuildServerIntegrityDetailExportFileName(IntegrityIssueDto issue)
     {

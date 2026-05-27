@@ -103,6 +103,12 @@
                            FontSize="13"
                            VerticalAlignment="Center"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="순서 초기화"
+                            Style="{StaticResource DialogActionButtonStyle}"
+                            Width="128"
+                            Background="#526985"
+                            Foreground="White"
+                            Command="{Binding ResetOrderCommand}"/>
                     <Button Content="확인"
                             Style="{StaticResource DialogActionButtonStyle}"
                             Background="#1F7ACC"

@@ -230,6 +230,8 @@ public sealed class PaymentsController : ControllerBase
             return BadRequest("Referenced invoice was not found.");
         if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode))
             return Forbid();
+        if (await ValidatePaymentAmountAsync(dto, currentPaymentId: null, cancellationToken) is { } paymentValidationError)
+            return paymentValidationError;
 
         var entity = new Payment { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         entity.Apply(dto);
@@ -261,6 +263,8 @@ public sealed class PaymentsController : ControllerBase
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Payment)) is { } conflict)
             return conflict;
+        if (await ValidatePaymentAmountAsync(dto, id, cancellationToken) is { } paymentValidationError)
+            return paymentValidationError;
 
         entity.Apply(dto);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -295,6 +299,51 @@ public sealed class PaymentsController : ControllerBase
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();
+    }
+
+    private async Task<ActionResult?> ValidatePaymentAmountAsync(
+        PaymentDto dto,
+        Guid? currentPaymentId,
+        CancellationToken cancellationToken)
+    {
+        if (dto.Amount <= 0m)
+        {
+            return BadRequest(new
+            {
+                error = "invalid_payment_amount",
+                message = "수금/지급 금액은 0보다 커야 합니다."
+            });
+        }
+
+        var invoice = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(x => x.Payments)
+            .FirstOrDefaultAsync(x => x.Id == dto.InvoiceId, cancellationToken);
+        if (invoice is null || invoice.IsDeleted)
+        {
+            return BadRequest(new
+            {
+                error = "invoice_not_found",
+                message = "연결 전표를 찾을 수 없습니다. 최신 전표를 다시 조회한 뒤 저장하세요."
+            });
+        }
+
+        var settledAmount = invoice.Payments
+            .Where(payment => !payment.IsDeleted && (!currentPaymentId.HasValue || payment.Id != currentPaymentId.Value))
+            .Sum(payment => payment.Amount);
+        var outstandingAmount = Math.Max(0m, invoice.TotalAmount - settledAmount);
+        if (dto.Amount <= outstandingAmount)
+            return null;
+
+        return Conflict(new
+        {
+            error = "payment_amount_exceeds_outstanding",
+            message = $"입력 금액이 현재 잔액보다 {dto.Amount - outstandingAmount:N0}원 많습니다. 최신 전표를 다시 조회한 뒤 금액을 확인하세요.",
+            invoiceId = dto.InvoiceId,
+            outstandingAmount,
+            enteredAmount = dto.Amount
+        });
     }
 
 }

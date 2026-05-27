@@ -61,6 +61,31 @@ public sealed partial class AttachmentSelectionDialogViewModel : ObservableObjec
         RequestClose?.Invoke(false);
     }
 
+    [RelayCommand]
+    private void ResetOrder()
+    {
+        _updatingInternally = true;
+        EnsureLockedChecked();
+        _frontGroup.Clear();
+        _backGroup.Clear();
+
+        foreach (var definition in _definitions)
+        {
+            var code = definition.Code;
+            if (string.Equals(code, _anchorCode, StringComparison.OrdinalIgnoreCase) || !IsCheckedCode(code))
+                continue;
+
+            if (IsFrontBaseCode(code))
+                _frontGroup.Add(code);
+            else
+                _backGroup.Add(code);
+        }
+
+        _updatingInternally = false;
+        RecalculateOrderIndexes();
+        StatusMessage = "서류 순서를 기본 순서로 초기화했습니다. 체크 상태는 유지됩니다.";
+    }
+
     public IReadOnlyList<AttachmentSelectionState> GetSelectionStates()
     {
         return Items

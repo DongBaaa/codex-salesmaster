@@ -37,7 +37,8 @@ public sealed partial class LocalStateService
             issues,
             "out_of_scope_customers",
             Math.Max(0, totalCustomerCount - readableCustomerCount),
-            "현재 계정 범위 밖 거래처 캐시가 로컬 DB에 남아 있습니다.");
+            "현재 계정 범위 밖 거래처 캐시가 로컬 DB에 남아 있습니다.",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var itemQuery = _db.Items
             .IgnoreQueryFilters()
@@ -49,7 +50,8 @@ public sealed partial class LocalStateService
             issues,
             "out_of_scope_items",
             Math.Max(0, totalItemCount - readableItemCount),
-            "현재 계정 범위 밖 품목/재고 캐시가 로컬 DB에 남아 있습니다.");
+            "현재 계정 범위 밖 품목/재고 캐시가 로컬 DB에 남아 있습니다.",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var invoiceQuery = _db.Invoices
             .IgnoreQueryFilters()
@@ -61,7 +63,8 @@ public sealed partial class LocalStateService
             issues,
             "out_of_scope_invoices",
             Math.Max(0, totalInvoiceCount - readableInvoiceCount),
-            "현재 계정 범위 밖 전표 캐시가 로컬 DB에 남아 있습니다.");
+            "현재 계정 범위 밖 전표 캐시가 로컬 DB에 남아 있습니다.",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var transactionQuery = _db.Transactions
             .IgnoreQueryFilters()
@@ -73,7 +76,8 @@ public sealed partial class LocalStateService
             issues,
             "out_of_scope_transactions",
             Math.Max(0, totalTransactionCount - readableTransactionCount),
-            "현재 계정 범위 밖 거래/수금 캐시가 로컬 DB에 남아 있습니다.");
+            "현재 계정 범위 밖 거래/수금 캐시가 로컬 DB에 남아 있습니다.",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var rentalProfileScopes = await _db.RentalBillingProfiles
             .IgnoreQueryFilters()
@@ -87,7 +91,8 @@ public sealed partial class LocalStateService
             issues,
             "out_of_scope_rental_profiles",
             outOfScopeRentalProfileCount,
-            "현재 계정 범위 밖 렌탈 청구 프로필 캐시가 로컬 DB에 남아 있습니다.");
+            "현재 계정 범위 밖 렌탈 청구 프로필 캐시가 로컬 DB에 남아 있습니다.",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var rentalAssetScopes = await _db.RentalAssets
             .IgnoreQueryFilters()
@@ -101,7 +106,8 @@ public sealed partial class LocalStateService
             issues,
             "out_of_scope_rental_assets",
             outOfScopeRentalAssetCount,
-            "현재 계정 범위 밖 렌탈 자산 캐시가 로컬 DB에 남아 있습니다.");
+            "현재 계정 범위 밖 렌탈 자산 캐시가 로컬 DB에 남아 있습니다.",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var staleOutboxSentCutoffUtc = DateTime.UtcNow - StaleSyncOutboxSentThreshold;
         var staleOutboxSentCount = await _db.SyncOutboxEntries
@@ -115,7 +121,8 @@ public sealed partial class LocalStateService
             "sync_outbox_sent_stuck",
             staleOutboxSentCount,
             "전송 중 상태로 오래 멈춘 sync outbox가 남아 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var failedOutboxCount = await _db.SyncOutboxEntries
             .AsNoTracking()
@@ -124,7 +131,8 @@ public sealed partial class LocalStateService
             issues,
             "sync_outbox_failed_pending",
             failedOutboxCount,
-            "실패 상태의 sync outbox가 남아 있어 수동 재시도 또는 원인 확인이 필요합니다.");
+            "실패 상태의 sync outbox가 남아 있어 수동 재시도 또는 원인 확인이 필요합니다.",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var integrityRentalProfileQuery = ApplyIntegrityRentalProfileScope(
             _db.RentalBillingProfiles.IgnoreQueryFilters(),
@@ -164,7 +172,8 @@ public sealed partial class LocalStateService
             "duplicate_rental_profile_keys",
             duplicateRentalProfileKeyCount,
             "중복된 렌탈 청구 프로필 키가 남아 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var duplicateRentalAssetKeyCount = await integrityRentalAssetQuery
             .IgnoreQueryFilters()
@@ -179,7 +188,8 @@ public sealed partial class LocalStateService
             "duplicate_rental_asset_keys",
             duplicateRentalAssetKeyCount,
             "중복된 렌탈 자산 키가 남아 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var activeCustomerMasterIds = _db.CustomerMasters
             .IgnoreQueryFilters()
@@ -223,6 +233,9 @@ public sealed partial class LocalStateService
             .Select(item => new
             {
                 item.Id,
+                item.NameOriginal,
+                item.SpecificationOriginal,
+                item.OfficeCode,
                 item.TrackingType,
                 item.CurrentStock
             })
@@ -243,39 +256,63 @@ public sealed partial class LocalStateService
         var warehouseStockTotals = warehouseStockSnapshots
             .GroupBy(stock => stock.ItemId)
             .ToDictionary(group => group.Key, group => group.Sum(stock => stock.Quantity));
-        var inventorySnapshotMismatchCount = inventoryItemSnapshots.Count(item =>
-        {
-            if (!ItemOperationalPolicy.SupportsInventory(item.TrackingType))
-                return false;
-
-            var snapshotTotal = warehouseStockTotals.TryGetValue(item.Id, out var totalQuantity)
-                ? totalQuantity
-                : 0m;
-            return item.CurrentStock != snapshotTotal;
-        });
+        var inventorySnapshotMismatches = inventoryItemSnapshots
+            .Where(item => ItemOperationalPolicy.SupportsInventory(item.TrackingType))
+            .Select(item => new
+            {
+                Item = item,
+                SnapshotTotal = warehouseStockTotals.TryGetValue(item.Id, out var totalQuantity)
+                    ? totalQuantity
+                    : 0m
+            })
+            .Where(row => row.Item.CurrentStock != row.SnapshotTotal)
+            .OrderBy(row => row.Item.NameOriginal)
+            .ThenBy(row => row.Item.SpecificationOriginal)
+            .ToList();
+        var primaryInventorySnapshotMismatch = inventorySnapshotMismatches.FirstOrDefault();
         AddIssueIfNeeded(
             issues,
             "inventory_current_stock_snapshot_mismatch",
-            inventorySnapshotMismatchCount,
+            inventorySnapshotMismatches.Count,
             "품목 현재고와 재고 스냅샷 합계가 서로 맞지 않습니다.",
-            severity: "Error");
+            severity: "Error",
+            detailRows: BuildIntegrityDetailRows(
+                inventorySnapshotMismatches,
+                inventorySnapshotMismatches.Count,
+                row =>
+                    $"{FormatDetailValue(row.Item.NameOriginal, "품목")} / 규격 {FormatDetailValue(row.Item.SpecificationOriginal)} / 담당지점 {FormatDetailValue(row.Item.OfficeCode)} / 품목ID {row.Item.Id:N} / 현재고 {row.Item.CurrentStock:N2} / 창고합계 {row.SnapshotTotal:N2} / 차이 {(row.Item.CurrentStock - row.SnapshotTotal):N2}"),
+            directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem,
+            targetEntityId: primaryInventorySnapshotMismatch?.Item.Id,
+            targetEntityName: primaryInventorySnapshotMismatch?.Item.NameOriginal ?? string.Empty);
 
-        var nonInventorySnapshotResidueCount = inventoryItemSnapshots.Count(item =>
-        {
-            if (ItemOperationalPolicy.SupportsInventory(item.TrackingType))
-                return false;
-
-            var snapshotTotal = warehouseStockTotals.TryGetValue(item.Id, out var totalQuantity)
-                ? totalQuantity
-                : 0m;
-            return item.CurrentStock != 0m || snapshotTotal != 0m;
-        });
+        var nonInventorySnapshotResidueRows = inventoryItemSnapshots
+            .Where(item => !ItemOperationalPolicy.SupportsInventory(item.TrackingType))
+            .Select(item => new
+            {
+                Item = item,
+                SnapshotTotal = warehouseStockTotals.TryGetValue(item.Id, out var totalQuantity)
+                    ? totalQuantity
+                    : 0m
+            })
+            .Where(row => row.Item.CurrentStock != 0m || row.SnapshotTotal != 0m)
+            .OrderBy(row => row.Item.NameOriginal)
+            .ThenBy(row => row.Item.SpecificationOriginal)
+            .ToList();
+        var primaryNonInventorySnapshotResidue = nonInventorySnapshotResidueRows.FirstOrDefault();
         AddIssueIfNeeded(
             issues,
             "inventory_nonstock_snapshot_residue",
-            nonInventorySnapshotResidueCount,
+            nonInventorySnapshotResidueRows.Count,
             "재고 미관리 품목에 현재고 또는 창고 재고 스냅샷이 남아 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            detailRows: BuildIntegrityDetailRows(
+                nonInventorySnapshotResidueRows,
+                nonInventorySnapshotResidueRows.Count,
+                row =>
+                    $"{FormatDetailValue(row.Item.NameOriginal, "품목")} / 규격 {FormatDetailValue(row.Item.SpecificationOriginal)} / 담당지점 {FormatDetailValue(row.Item.OfficeCode)} / 품목ID {row.Item.Id:N} / 현재고 {row.Item.CurrentStock:N2} / 창고합계 {row.SnapshotTotal:N2}"),
+            directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem,
+            targetEntityId: primaryNonInventorySnapshotResidue?.Item.Id,
+            targetEntityName: primaryNonInventorySnapshotResidue?.Item.NameOriginal ?? string.Empty);
 
         var orphanWarehouseStockCount = warehouseStockSnapshots.Count(stock =>
             integrityWarehouseCodes.Contains(OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(stock.WarehouseCode, null)) &&
@@ -285,7 +322,8 @@ public sealed partial class LocalStateService
             "orphan_item_warehouse_stock_refs",
             orphanWarehouseStockCount,
             "창고 재고 스냅샷이 삭제되었거나 없는 품목을 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var orphanStockLayerItemCount = await _db.StockLayers
             .AsNoTracking()
@@ -299,7 +337,8 @@ public sealed partial class LocalStateService
             "orphan_stock_layer_item_refs",
             orphanStockLayerItemCount,
             "재고 원가 레이어가 삭제되었거나 없는 품목을 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var orphanInventoryMovementItemCount = await _db.InventoryMovements
             .AsNoTracking()
@@ -313,7 +352,8 @@ public sealed partial class LocalStateService
             "orphan_inventory_movement_item_refs",
             orphanInventoryMovementItemCount,
             "재고 이동 원장이 삭제되었거나 없는 품목을 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var orphanSerialLedgerItemCount = await _db.SerialLedgers
             .AsNoTracking()
@@ -327,7 +367,8 @@ public sealed partial class LocalStateService
             "orphan_serial_ledger_item_refs",
             orphanSerialLedgerItemCount,
             "시리얼 원장이 삭제되었거나 없는 품목을 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var orphanInventoryTransferLineItemCount = await _db.InventoryTransferLines
             .AsNoTracking()
@@ -338,7 +379,8 @@ public sealed partial class LocalStateService
             "orphan_inventory_transfer_line_item_refs",
             orphanInventoryTransferLineItemCount,
             "재고이동 상세가 삭제되었거나 없는 품목을 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var crossTenantInventoryTransferCount = (await _db.InventoryTransfers
                 .IgnoreQueryFilters()
@@ -361,7 +403,8 @@ public sealed partial class LocalStateService
             "cross_tenant_inventory_transfers",
             crossTenantInventoryTransferCount,
             "업체 간 직접 재고이동 문서가 로컬 DB에 남아 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var missingCustomerMasterCategoryCount = await _db.CustomerMasters
             .IgnoreQueryFilters()
@@ -373,7 +416,8 @@ public sealed partial class LocalStateService
             "orphan_customer_master_category_refs",
             missingCustomerMasterCategoryCount,
             "거래처 기준 정보가 존재하지 않는 거래처 분류를 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var missingCustomerMasterCount = await _db.Customers
             .IgnoreQueryFilters()
@@ -385,7 +429,8 @@ public sealed partial class LocalStateService
             "orphan_customer_master_refs",
             missingCustomerMasterCount,
             "거래처가 존재하지 않는 거래처 기준 정보를 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var missingCustomerCategoryCount = await _db.Customers
             .IgnoreQueryFilters()
@@ -397,7 +442,8 @@ public sealed partial class LocalStateService
             "orphan_customer_category_refs",
             missingCustomerCategoryCount,
             "거래처가 존재하지 않는 거래처 분류를 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var orphanRentalProfileCustomerQuery = integrityRentalProfileQuery
             .IgnoreQueryFilters()
@@ -427,7 +473,8 @@ public sealed partial class LocalStateService
             detailRows: BuildIntegrityDetailRows(
                 orphanRentalProfileCustomerRows,
                 orphanRentalProfileCustomerCount,
-                row => $"프로필키={FormatDetailValue(row.ProfileKey)} / 거래처명={FormatDetailValue(row.CustomerName)} / 설치처={FormatDetailValue(row.InstallSiteName)} / 누락 CustomerId={FormatDetailGuid(row.CustomerId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"));
+                row => $"프로필키={FormatDetailValue(row.ProfileKey)} / 거래처명={FormatDetailValue(row.CustomerName)} / 설치처={FormatDetailValue(row.InstallSiteName)} / 누락 CustomerId={FormatDetailGuid(row.CustomerId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"),
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var orphanRentalAssetCustomerQuery = integrityRentalAssetQuery
             .IgnoreQueryFilters()
@@ -462,7 +509,8 @@ public sealed partial class LocalStateService
             detailRows: BuildIntegrityDetailRows(
                 orphanRentalAssetCustomerRows,
                 orphanRentalAssetCustomerCount,
-                row => $"자산키={FormatDetailValue(row.AssetKey)} / 관리번호={FormatDetailValue(row.ManagementNumber)} / 시리얼={FormatDetailValue(row.MachineNumber)} / 품목={FormatDetailValue(row.ItemName)} / 거래처={FormatDetailValue(row.CustomerName, row.CurrentCustomerName)} / 설치위치={FormatDetailValue(row.InstallLocation)} / 누락 CustomerId={FormatDetailGuid(row.CustomerId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"));
+                row => $"자산키={FormatDetailValue(row.AssetKey)} / 관리번호={FormatDetailValue(row.ManagementNumber)} / 시리얼={FormatDetailValue(row.MachineNumber)} / 품목={FormatDetailValue(row.ItemName)} / 거래처={FormatDetailValue(row.CustomerName, row.CurrentCustomerName)} / 설치위치={FormatDetailValue(row.InstallLocation)} / 누락 CustomerId={FormatDetailGuid(row.CustomerId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"),
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var orphanRentalAssetProfileQuery = integrityRentalAssetQuery
             .IgnoreQueryFilters()
@@ -496,7 +544,8 @@ public sealed partial class LocalStateService
             detailRows: BuildIntegrityDetailRows(
                 orphanRentalAssetProfileRows,
                 orphanRentalAssetProfileCount,
-                row => $"자산키={FormatDetailValue(row.AssetKey)} / 관리번호={FormatDetailValue(row.ManagementNumber)} / 시리얼={FormatDetailValue(row.MachineNumber)} / 품목={FormatDetailValue(row.ItemName)} / 거래처={FormatDetailValue(row.CustomerName)} / 설치위치={FormatDetailValue(row.InstallLocation)} / 누락 BillingProfileId={FormatDetailGuid(row.BillingProfileId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"));
+                row => $"자산키={FormatDetailValue(row.AssetKey)} / 관리번호={FormatDetailValue(row.ManagementNumber)} / 시리얼={FormatDetailValue(row.MachineNumber)} / 품목={FormatDetailValue(row.ItemName)} / 거래처={FormatDetailValue(row.CustomerName)} / 설치위치={FormatDetailValue(row.InstallLocation)} / 누락 BillingProfileId={FormatDetailGuid(row.BillingProfileId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"),
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var orphanRentalAssetItemQuery = integrityRentalAssetQuery
             .IgnoreQueryFilters()
@@ -531,7 +580,8 @@ public sealed partial class LocalStateService
             detailRows: BuildIntegrityDetailRows(
                 orphanRentalAssetItemRows,
                 orphanRentalAssetItemCount,
-                row => $"자산키={FormatDetailValue(row.AssetKey)} / 관리번호={FormatDetailValue(row.ManagementNumber)} / 시리얼={FormatDetailValue(row.MachineNumber)} / 품목={FormatDetailValue(row.ItemName)} / 제조사={FormatDetailValue(row.Manufacturer)} / 거래처={FormatDetailValue(row.CustomerName)} / 설치위치={FormatDetailValue(row.InstallLocation)} / 누락 ItemId={FormatDetailGuid(row.ItemId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"));
+                row => $"자산키={FormatDetailValue(row.AssetKey)} / 관리번호={FormatDetailValue(row.ManagementNumber)} / 시리얼={FormatDetailValue(row.MachineNumber)} / 품목={FormatDetailValue(row.ItemName)} / 제조사={FormatDetailValue(row.Manufacturer)} / 거래처={FormatDetailValue(row.CustomerName)} / 설치위치={FormatDetailValue(row.InstallLocation)} / 누락 ItemId={FormatDetailGuid(row.ItemId)} / 담당지점={FormatDetailValue(row.ResponsibleOfficeCode)} / 테넌트={FormatDetailValue(row.TenantCode)}"),
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var missingInvoiceCustomerCount = await integrityInvoiceQuery
             .IgnoreQueryFilters()
@@ -543,7 +593,8 @@ public sealed partial class LocalStateService
             "orphan_invoice_customer_refs",
             missingInvoiceCustomerCount,
             "전표가 존재하지 않는 거래처를 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var missingTransactionInvoiceCount = await integrityTransactionQuery
             .IgnoreQueryFilters()
@@ -555,7 +606,8 @@ public sealed partial class LocalStateService
             "orphan_transaction_invoice_refs",
             missingTransactionInvoiceCount,
             "거래/수금 내역이 존재하지 않는 전표를 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var missingPaymentInvoiceCount = await _db.Payments
             .IgnoreQueryFilters()
@@ -567,7 +619,8 @@ public sealed partial class LocalStateService
             "orphan_payment_invoice_refs",
             missingPaymentInvoiceCount,
             "수금/지급 내역이 존재하지 않는 전표를 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var missingAttachmentTransactionCount = await _db.TransactionAttachments
             .IgnoreQueryFilters()
@@ -579,7 +632,8 @@ public sealed partial class LocalStateService
             "orphan_attachment_transaction_refs",
             missingAttachmentTransactionCount,
             "증빙 첨부가 존재하지 않는 거래내역을 참조하고 있습니다.",
-            severity: "Error");
+            severity: "Error",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var attachmentPathSnapshots = await _db.TransactionAttachments
             .IgnoreQueryFilters()
@@ -598,7 +652,8 @@ public sealed partial class LocalStateService
             issues,
             "missing_attachment_files",
             missingAttachmentFileCount,
-            "로컬 증빙 파일이 없어 다시 동기화하거나 첨부 복구가 필요합니다.");
+            "로컬 증빙 파일이 없어 다시 동기화하거나 첨부 복구가 필요합니다.",
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         return new LocalIntegrityReport(createdAtUtc, officeCode, tenantCode, dirtyCount, pendingServerMirrorRefresh, issues);
     }
@@ -802,12 +857,15 @@ public sealed partial class LocalStateService
         int count,
         string message,
         string severity = "Warning",
-        IReadOnlyList<string>? detailRows = null)
+        IReadOnlyList<string>? detailRows = null,
+        DataIntegrityDirectActionKind directActionKind = DataIntegrityDirectActionKind.None,
+        Guid? targetEntityId = null,
+        string targetEntityName = "")
     {
         if (count <= 0)
             return;
 
-        issues.Add(new LocalIntegrityIssue(code, severity, count, message, detailRows));
+        issues.Add(new LocalIntegrityIssue(code, severity, count, message, detailRows, directActionKind, targetEntityId, targetEntityName));
     }
 
     private static IReadOnlyList<string> BuildIntegrityDetailRows<T>(

@@ -239,6 +239,57 @@ public static partial class DbInitializer
             dbContext.InventoryTransfers.RemoveRange(deletedTransfers);
     }
 
+    private static async Task PurgeDeletedItemWarehouseStocksAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var staleWarehouseStocks = await dbContext.ItemWarehouseStocks
+            .Where(current => !dbContext.Items.IgnoreQueryFilters()
+                .Any(item => !item.IsDeleted && item.Id == current.ItemId))
+            .ToListAsync(cancellationToken);
+        if (staleWarehouseStocks.Count > 0)
+            dbContext.ItemWarehouseStocks.RemoveRange(staleWarehouseStocks);
+    }
+
+    private static async Task<int> RepairItemCurrentStockSnapshotsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var warehouseStocks = await dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .Select(group => new
+            {
+                group.ItemId,
+                group.Quantity
+            })
+            .ToListAsync(cancellationToken);
+        var warehouseTotals = warehouseStocks
+            .GroupBy(current => current.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(current => current.Quantity));
+
+        var items = await dbContext.Items.IgnoreQueryFilters()
+            .Where(current => !current.IsDeleted)
+            .ToListAsync(cancellationToken);
+
+        var repairedCount = 0;
+        foreach (var item in items)
+        {
+            if (!ItemOperationalPolicy.SupportsInventory(item.TrackingType))
+                continue;
+
+            var warehouseTotal = warehouseTotals.TryGetValue(item.Id, out var quantity)
+                ? quantity
+                : 0m;
+            if (item.CurrentStock == warehouseTotal)
+                continue;
+
+            item.CurrentStock = warehouseTotal;
+            repairedCount++;
+        }
+
+        return repairedCount;
+    }
+
     private static async Task RepairDeletedCustomerRentalProfileLinksAsync(
         AppDbContext dbContext,
         CancellationToken cancellationToken)

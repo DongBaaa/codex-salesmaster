@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using GeoraePlan.Mobile.App.Models;
 using GeoraePlan.Mobile.App.Services;
@@ -13,11 +13,13 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     private readonly MobileRefreshCoordinator _refreshCoordinator;
     private readonly SessionStore _sessionStore;
     private readonly RecentItemSelectionStore _recentItemSelectionStore;
+    private readonly MobileInvoicePdfExportService _pdfExportService;
     private readonly List<RecentItemSelectionRecord> _recentSelections = new();
 
     private CustomerDto? _selectedCustomer;
     private ItemCategorySummaryDto? _selectedCategory;
     private ItemDto? _selectedItem;
+    private InvoiceDto? _editingInvoice;
     private DateTime _invoiceDate = DateTime.Today;
     private string _customerSearchText = string.Empty;
     private string _itemSearchText = string.Empty;
@@ -29,26 +31,39 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     private bool _isBusy;
     private bool _isLoaded;
     private bool _isItemEntrySheetVisible;
+    private bool _isCategoryChooserExpanded;
+    private VoucherType _voucherType = VoucherType.Sales;
     private Guid? _editingLineId;
     private MobileOfficeOption? _selectedInvoiceOffice;
+    private MobileWarehouseOption? _selectedSourceWarehouse;
+    private bool _isVatNone;
+    private readonly Dictionary<string, string> _priceGradeSourceMap = new(StringComparer.CurrentCultureIgnoreCase);
     private string _sessionOfficeCode = OfficeCodeCatalog.Usenet;
     private string _sessionTenantCode = TenantScopeCatalog.UsenetGroup;
     private string _sessionUsername = string.Empty;
+    private bool _printStatementDocument = true;
+    private bool _printEstimateDocument;
+    private bool _printPaymentClaimDocument;
+    private bool _printDate = true;
+    private bool _printUnitPrice = true;
 
     public InvoiceDraftViewModel(
         GeoraePlanApiClient api,
         SyncCoordinator syncCoordinator,
         MobileRefreshCoordinator refreshCoordinator,
         SessionStore sessionStore,
-        RecentItemSelectionStore recentItemSelectionStore)
+        RecentItemSelectionStore recentItemSelectionStore,
+        MobileInvoicePdfExportService pdfExportService)
     {
         _api = api;
         _syncCoordinator = syncCoordinator;
         _refreshCoordinator = refreshCoordinator;
         _sessionStore = sessionStore;
         _recentItemSelectionStore = recentItemSelectionStore;
+        _pdfExportService = pdfExportService;
         LoadCommand = new AsyncCommand(LoadAsync);
         SaveDraftCommand = new AsyncCommand(SaveDraftAsync);
+        ExportPdfCommand = new AsyncCommand(ExportPdfAsync);
 
         CustomerSearchResults.CollectionChanged += HandleCollectionChanged;
         ItemSearchResults.CollectionChanged += HandleCollectionChanged;
@@ -65,7 +80,36 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public ObservableCollection<ItemWarehouseStockDto> SelectedItemBranchStocks { get; } = new();
     public ObservableCollection<InvoiceLineDraftItem> LineItems { get; } = new();
     public ObservableCollection<MobileOfficeOption> InvoiceOfficeOptions { get; } = new();
+    public ObservableCollection<MobileWarehouseOption> SourceWarehouseOptions { get; } = new();
     public ObservableCollection<RecentItemSelectionRecord> VisibleRecentItems { get; } = new();
+
+    public VoucherType VoucherType
+    {
+        get => _voucherType;
+        set
+        {
+            var normalized = value == VoucherType.Purchase ? VoucherType.Purchase : VoucherType.Sales;
+            if (!SetProperty(ref _voucherType, normalized))
+                return;
+
+            OnPropertyChanged(nameof(IsPurchaseDocument));
+            OnPropertyChanged(nameof(IsSalesDocument));
+            OnPropertyChanged(nameof(PageTitleText));
+            OnPropertyChanged(nameof(DocumentKindText));
+            OnPropertyChanged(nameof(CustomerSearchSectionTitle));
+            OnPropertyChanged(nameof(CustomerNameLabelText));
+            OnPropertyChanged(nameof(WarehouseLabelText));
+            OnPropertyChanged(nameof(WarehousePickerTitleText));
+            OnPropertyChanged(nameof(SelectedSourceWarehouseSummary));
+            OnPropertyChanged(nameof(DocumentSaveSectionTitle));
+            OnPropertyChanged(nameof(SaveButtonText));
+            OnPropertyChanged(nameof(VatSummary));
+            OnPropertyChanged(nameof(SelectedItemPriceSummary));
+
+            if (SelectedItem is not null && !_editingLineId.HasValue)
+                LineUnitPriceText = ResolveDefaultUnitPrice(SelectedItem).ToString("0.##");
+        }
+    }
 
     public CustomerDto? SelectedCustomer
     {
@@ -91,6 +135,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
                 OnPropertyChanged(nameof(IsCategoryChooserVisible));
                 OnPropertyChanged(nameof(SelectedCategoryHeader));
                 OnPropertyChanged(nameof(SelectedCategorySummary));
+                OnPropertyChanged(nameof(ItemListCaptionText));
                 RefreshVisibleRecentItems();
             }
         }
@@ -122,7 +167,31 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             {
                 OnPropertyChanged(nameof(SelectedInvoiceOfficeCode));
                 OnPropertyChanged(nameof(SelectedInvoiceOfficeSummary));
+                RefreshSourceWarehouseOptions();
             }
+        }
+    }
+
+    public MobileWarehouseOption? SelectedSourceWarehouse
+    {
+        get => _selectedSourceWarehouse;
+        set
+        {
+            if (SetProperty(ref _selectedSourceWarehouse, value))
+            {
+                OnPropertyChanged(nameof(SelectedSourceWarehouseCode));
+                OnPropertyChanged(nameof(SelectedSourceWarehouseSummary));
+            }
+        }
+    }
+
+    public bool IsVatNone
+    {
+        get => _isVatNone;
+        set
+        {
+            if (SetProperty(ref _isVatNone, value))
+                OnPropertyChanged(nameof(VatSummary));
         }
     }
 
@@ -186,16 +255,79 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         private set => SetProperty(ref _isItemEntrySheetVisible, value);
     }
 
+    public bool IsCategoryChooserExpanded
+    {
+        get => _isCategoryChooserExpanded;
+        private set
+        {
+            if (SetProperty(ref _isCategoryChooserExpanded, value))
+                OnPropertyChanged(nameof(IsCategoryChooserVisible));
+        }
+    }
+
+    public bool PrintStatementDocument
+    {
+        get => _printStatementDocument;
+        set => SetProperty(ref _printStatementDocument, value);
+    }
+
+    public bool PrintEstimateDocument
+    {
+        get => _printEstimateDocument;
+        set => SetProperty(ref _printEstimateDocument, value);
+    }
+
+    public bool PrintPaymentClaimDocument
+    {
+        get => _printPaymentClaimDocument;
+        set => SetProperty(ref _printPaymentClaimDocument, value);
+    }
+
+    public bool PrintDate
+    {
+        get => _printDate;
+        set => SetProperty(ref _printDate, value);
+    }
+
+    public bool PrintUnitPrice
+    {
+        get => _printUnitPrice;
+        set => SetProperty(ref _printUnitPrice, value);
+    }
+
+    public bool IsEditMode => _editingInvoice is not null;
     public bool HasSelectedCustomer => SelectedCustomer is not null;
     public bool HasSelectedCategory => SelectedCategory is not null;
-    public bool IsCategoryChooserVisible => !HasSelectedCategory;
+    public bool IsCategoryChooserVisible => IsCategoryChooserExpanded;
     public bool HasSelectedItem => SelectedItem is not null;
+    public bool IsPurchaseDocument => VoucherType == VoucherType.Purchase;
+    public bool IsSalesDocument => VoucherType == VoucherType.Sales;
     public bool HasVisibleRecentItems => VisibleRecentItems.Count > 0;
+    public bool HasItemSearchResults => ItemSearchResults.Count > 0;
     public bool CanChooseInvoiceOffice => InvoiceOfficeOptions.Count > 1;
+    public bool CanChooseSourceWarehouse => SourceWarehouseOptions.Count > 1;
+    public string PageTitleText => IsEditMode
+        ? IsPurchaseDocument ? "구매(매입) 전표 수정" : "판매(매출) 전표 수정"
+        : IsPurchaseDocument ? "구매(매입) 작성" : "판매(매출) 작성";
+    public string DocumentKindText => IsPurchaseDocument ? "구매(매입)" : "판매(매출)";
+    public string CustomerSearchSectionTitle => IsPurchaseDocument ? "1단계 · 거래처 찾기" : "1단계 · 고객/거래처 찾기";
+    public string CustomerNameLabelText => IsPurchaseDocument ? "거래처" : "고객/거래처";
+    public string WarehouseLabelText => IsPurchaseDocument ? "입고창고" : "출고창고";
+    public string WarehousePickerTitleText => $"{WarehouseLabelText} 선택";
+    public string DocumentSaveSectionTitle => IsEditMode
+        ? IsPurchaseDocument ? "구매 전표 수정 저장" : "판매 전표 수정 저장"
+        : IsPurchaseDocument ? "구매 전표 저장" : "판매 전표 저장";
+    public string SaveButtonText => IsEditMode
+        ? IsPurchaseDocument ? "구매 전표 수정 저장" : "판매 전표 수정 저장"
+        : IsPurchaseDocument ? "구매 전표 저장" : "판매 전표 저장";
     public string SelectedInvoiceOfficeCode => SelectedInvoiceOffice?.Code ?? _sessionOfficeCode;
+    public string SelectedSourceWarehouseCode => SelectedSourceWarehouse?.Code ?? OfficeCodeCatalog.GetMainWarehouseCode(SelectedInvoiceOfficeCode);
     public string SelectedInvoiceOfficeSummary => SelectedInvoiceOffice is null
         ? "전표 담당지점을 선택하세요."
         : $"선택 담당지점: {SelectedInvoiceOffice.DisplayName}";
+    public string SelectedSourceWarehouseSummary => SelectedSourceWarehouse is null
+        ? $"{WarehouseLabelText}를 선택하세요."
+        : $"{WarehouseLabelText}: {SelectedSourceWarehouse.DisplayName}";
     public string SelectedCustomerSummary => SelectedCustomer is null
         ? "거래처를 아직 선택하지 않았습니다."
         : $"선택 거래처: {SelectedCustomer.NameOriginal}";
@@ -203,8 +335,11 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         ? "품목분류를 선택하세요."
         : $"선택 분류: {SelectedCategory.Name}";
     public string SelectedCategorySummary => SelectedCategory is null
-        ? "품목분류를 먼저 선택하세요."
+        ? ItemSearchResults.Count == 0 ? "품명/규격으로 바로 검색하거나 품목찾기에서 분류를 선택하세요." : $"전체 검색 품목 {ItemSearchResults.Count:N0}건"
         : $"해당 분류 품목 {ItemSearchResults.Count:N0}건";
+    public string ItemListCaptionText => SelectedCategory is null
+        ? $"검색 품목 {ItemSearchResults.Count:N0}건"
+        : SelectedCategorySummary;
     public string SelectedItemSheetTitle => SelectedItem is null
         ? "선택 품목"
         : $"선택 품목: {SelectedItem.NameOriginal}";
@@ -215,14 +350,12 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             : $"규격: {SelectedItem.SpecificationOriginal}";
     public string SelectedItemPriceSummary => SelectedItem is null
         ? "단가 정보 없음"
-        : $"매입 {SelectedItem.PurchasePrice:N0} / 판매 {SelectedItem.SalePrice:N0} / 소매 {SelectedItem.RetailPrice:N0}";
+        : IsPurchaseDocument
+            ? $"매입 기준 {SelectedItem.PurchasePrice:N0}원 / 판매 {SelectedItem.SalePrice:N0}원 / 소매 {SelectedItem.RetailPrice:N0}원"
+            : $"판매 기준 {ResolveDefaultUnitPrice(SelectedItem):N0}원 / 매입 {SelectedItem.PurchasePrice:N0}원 / 소매 {SelectedItem.RetailPrice:N0}원";
     public string SelectedItemMemo => SelectedItem is null
-        ? "메모 없음"
-        : string.IsNullOrWhiteSpace(SelectedItem.SimpleMemo) && string.IsNullOrWhiteSpace(SelectedItem.Notes)
-            ? "메모 없음"
-            : string.IsNullOrWhiteSpace(SelectedItem.SimpleMemo)
-                ? SelectedItem.Notes
-                : SelectedItem.SimpleMemo;
+        ? "전표 비고는 직접 입력하세요."
+        : "품목 메모는 전표 비고에 자동 입력하지 않습니다.";
     public string SelectedItemStockSummary => SelectedItem is null
         ? "재고 정보 없음"
         : $"현재재고 {SelectedItem.CurrentStock:N0} / 안전재고 {SelectedItem.SafetyStock:N0}";
@@ -230,13 +363,68 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public string DraftSummary => LineItems.Count == 0
         ? "추가된 품목이 없습니다."
         : $"총 {LineItems.Count:N0}건 / 합계 {LineItems.Sum(x => x.LineAmount):N0}원";
+    public string VatSummary
+    {
+        get
+        {
+            var totals = CalculateTotals(LineItems.Select(line => line.LineAmount));
+            var modeText = IsVatNone ? "부가세 없음" : "부가세 포함";
+            return $"{modeText} / 공급가 {totals.SupplyAmount:N0}원 / 부가세 {totals.VatAmount:N0}원 / 합계 {totals.TotalAmount:N0}원";
+        }
+    }
     public double CustomerSearchResultsHeight => CalculateListHeight(CustomerSearchResults.Count, 56, 42, 2);
-    public double ItemSearchResultsHeight => CalculateListHeight(ItemSearchResults.Count, 64, 48, 5);
+    public double ItemSearchResultsHeight => CalculateListHeight(ItemSearchResults.Count, 112, 48, 4);
     public double SelectedItemBranchStocksHeight => CalculateListHeight(SelectedItemBranchStocks.Count, 32, 40, 4);
     public double LineItemsHeight => CalculateListHeight(LineItems.Count, 74, 42, 3);
 
     public AsyncCommand LoadCommand { get; }
     public AsyncCommand SaveDraftCommand { get; }
+    public AsyncCommand ExportPdfCommand { get; }
+
+    public void ConfigureVoucherType(VoucherType voucherType)
+        => VoucherType = voucherType == VoucherType.Purchase ? VoucherType.Purchase : VoucherType.Sales;
+
+    public async Task LoadExistingInvoiceAsync(InvoiceDto invoice)
+    {
+        if (invoice is null)
+            return;
+
+        await LoadAsync();
+
+        _editingInvoice = invoice;
+        OnPropertyChanged(nameof(IsEditMode));
+        ConfigureVoucherType(invoice.VoucherType);
+        InvoiceDate = invoice.InvoiceDate == default
+            ? DateTime.Today
+            : invoice.InvoiceDate.ToDateTime(TimeOnly.MinValue);
+        Memo = invoice.Memo;
+        IsVatNone = string.Equals(InvoiceVatModes.Normalize(invoice.VatMode), InvoiceVatModes.None, StringComparison.OrdinalIgnoreCase);
+
+        var customer = invoice.CustomerId == Guid.Empty ? null : await _api.GetCustomerByIdAsync(invoice.CustomerId);
+        SelectedCustomer = customer ?? new CustomerDto
+        {
+            Id = invoice.CustomerId,
+            NameOriginal = string.IsNullOrWhiteSpace(invoice.CustomerName) ? "거래처 정보 없음" : invoice.CustomerName,
+            ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
+            OfficeCode = invoice.OfficeCode,
+            TenantCode = invoice.TenantCode
+        };
+        CustomerSearchText = SelectedCustomer.NameOriginal;
+
+        SelectInvoiceOfficeByCode(invoice.ResponsibleOfficeCode, invoice.OfficeCode);
+        SelectSourceWarehouseByCode(invoice.SourceWarehouseCode);
+
+        LineItems.Clear();
+        foreach (var line in invoice.Lines.Where(line => !line.IsDeleted))
+            LineItems.Add(InvoiceLineDraftItem.FromDto(line));
+
+        OnPropertyChanged(nameof(PageTitleText));
+        OnPropertyChanged(nameof(DocumentSaveSectionTitle));
+        OnPropertyChanged(nameof(SaveButtonText));
+        OnPropertyChanged(nameof(DraftSummary));
+        OnPropertyChanged(nameof(VatSummary));
+        StatusMessage = $"{DocumentKindText} 전표를 수정 중입니다. 필요한 항목을 바꾼 뒤 저장하세요.";
+    }
 
     public async Task LoadAsync()
     {
@@ -247,12 +435,15 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         {
             IsBusy = true;
             InitializeOfficeOptions();
+            var syncState = await _syncCoordinator.LoadAsync();
+            _ = RefreshSyncSnapshotInBackgroundAsync();
+            RefreshPriceGradeSourceMap(syncState.SyncedPriceGradeOptions);
             await LoadRecentSelectionsAsync();
 
             if (_isLoaded)
                 return;
 
-            StatusMessage = "전표 작성에 필요한 분류 정보를 불러오고 있습니다.";
+            StatusMessage = $"{DocumentKindText} 전표 작성에 필요한 분류 정보를 불러오고 있습니다.";
             var categories = await _api.GetItemCategoriesAsync();
             ItemCategories.Clear();
             foreach (var category in categories.OrderBy(x => x.Name))
@@ -261,7 +452,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             _isLoaded = true;
             StatusMessage = ItemCategories.Count == 0
                 ? "등록된 품목분류가 없습니다."
-                : "품목분류를 선택한 뒤 품목을 연속해서 추가하세요.";
+                : "품명/규격 검색으로 품목을 찾거나 품목찾기 버튼에서 분류를 선택하세요.";
         }
         catch (Exception ex)
         {
@@ -270,6 +461,18 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         finally
         {
             IsBusy = false;
+        }
+    }
+
+    private async Task RefreshSyncSnapshotInBackgroundAsync()
+    {
+        try
+        {
+            await _syncCoordinator.RefreshIfServerChangedAsync("invoice-draft-load-bg", TimeSpan.FromSeconds(15));
+        }
+        catch
+        {
+            // 전표 작성 화면 진입과 검색을 막지 않기 위한 백그라운드 보강 동기화입니다.
         }
     }
 
@@ -311,7 +514,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public Task SelectCustomerAsync(CustomerDto customer)
     {
         SelectedCustomer = customer;
-        StatusMessage = $"{customer.NameOriginal} 거래처를 선택했습니다.";
+        StatusMessage = $"{customer.NameOriginal} {CustomerNameLabelText}를 선택했습니다.";
         return Task.CompletedTask;
     }
 
@@ -330,7 +533,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
         SelectedCustomer = customer;
         CustomerSearchText = customer.NameOriginal;
-        StatusMessage = $"{customer.NameOriginal} 거래처 기준으로 전표를 입력하세요.";
+        StatusMessage = $"{customer.NameOriginal} {CustomerNameLabelText} 기준으로 {DocumentKindText} 전표를 입력하세요.";
     }
 
     public async Task SelectCategoryAsync(ItemCategorySummaryDto category, bool resetSearch = true)
@@ -342,17 +545,24 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             ItemSearchText = string.Empty;
 
         SelectedCategory = category;
+        IsCategoryChooserExpanded = false;
         ResetItemSelection(clearCategory: false);
         await SearchItemsAsync();
+    }
+
+    public void ToggleCategoryChooser()
+    {
+        IsCategoryChooserExpanded = !IsCategoryChooserExpanded;
+        StatusMessage = IsCategoryChooserExpanded
+            ? "품목분류를 선택하거나 품명/규격 검색으로 바로 찾을 수 있습니다."
+            : "품명/규격 검색으로 품목을 찾으세요.";
     }
 
     public void ClearSelectedCategory()
     {
         SelectedCategory = null;
-        ItemSearchText = string.Empty;
-        ItemSearchResults.Clear();
         ResetItemSelection(clearCategory: false);
-        StatusMessage = "품목분류를 다시 선택하세요.";
+        StatusMessage = "분류 조건을 해제했습니다. 품명/규격으로 전체 검색할 수 있습니다.";
     }
 
     public bool TryNavigateBackOneStep()
@@ -372,6 +582,12 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             return true;
         }
 
+        if (IsCategoryChooserExpanded)
+        {
+            IsCategoryChooserExpanded = false;
+            return true;
+        }
+
         return false;
     }
 
@@ -380,25 +596,28 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         if (IsBusy)
             return;
 
-        if (SelectedCategory is null)
+        var keyword = ItemSearchText.Trim();
+        if (SelectedCategory is null && string.IsNullOrWhiteSpace(keyword))
         {
-            StatusMessage = "품목분류를 먼저 선택하세요.";
+            StatusMessage = "품명/규격 검색어를 입력하거나 품목찾기 버튼으로 분류를 선택하세요.";
             return;
         }
 
         try
         {
             IsBusy = true;
-            StatusMessage = $"{SelectedCategory.Name} 분류 품목을 조회하고 있습니다.";
-            var items = await _api.GetItemsAsync(ItemSearchText, SelectedCategory.Name);
+            var scopeText = SelectedCategory?.Name ?? "전체";
+            StatusMessage = $"{scopeText} 품목을 조회하고 있습니다.";
+            var items = await _api.GetItemsAsync(keyword, SelectedCategory?.Name);
             ItemSearchResults.Clear();
             foreach (var item in items.OrderBy(x => x.NameOriginal))
                 ItemSearchResults.Add(item);
 
             StatusMessage = items.Count == 0
-                ? "현재 분류에서 조건에 맞는 품목이 없습니다."
-                : $"{SelectedCategory.Name} 품목 {items.Count:N0}건";
+                ? "조건에 맞는 품목이 없습니다."
+                : $"{scopeText} 품목 {items.Count:N0}건";
             OnPropertyChanged(nameof(SelectedCategorySummary));
+            OnPropertyChanged(nameof(ItemListCaptionText));
         }
         catch (Exception ex)
         {
@@ -489,6 +708,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         await RecordRecentSelectionAsync(SelectedItem);
         ResetItemSelection(clearCategory: false);
         OnPropertyChanged(nameof(DraftSummary));
+        OnPropertyChanged(nameof(VatSummary));
     }
 
     public async Task EditLineAsync(InvoiceLineDraftItem line)
@@ -548,6 +768,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             ResetItemSelection(clearCategory: false);
 
         OnPropertyChanged(nameof(DraftSummary));
+        OnPropertyChanged(nameof(VatSummary));
         StatusMessage = $"{line.ItemNameOriginal} 품목을 목록에서 제거했습니다.";
         return Task.CompletedTask;
     }
@@ -569,62 +790,148 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             return;
         }
 
-        var now = DateTime.UtcNow;
-        var invoiceId = Guid.NewGuid();
-        var lines = LineItems.Select(line => line.ToDto(invoiceId)).ToList();
-        var total = lines.Sum(line => line.LineAmount);
-
-        var invoice = new InvoiceDto
-        {
-            Id = invoiceId,
-            CustomerId = SelectedCustomer.Id,
-            TenantCode = _sessionTenantCode,
-            OfficeCode = SelectedInvoiceOfficeCode,
-            ResponsibleOfficeCode = SelectedInvoiceOfficeCode,
-            InvoiceNumber = string.Empty,
-            LocalTempNumber = $"M-{DateTime.Now:yyyyMMdd-HHmmss}",
-            VoucherType = VoucherType.Sales,
-            InvoiceDate = DateOnly.FromDateTime(InvoiceDate),
-            TotalAmount = total,
-            SupplyAmount = total,
-            VatAmount = 0,
-            Memo = Memo.Trim(),
-            CreatedAtUtc = now,
-            UpdatedAtUtc = now,
-            Revision = 0,
-            IsDeleted = false,
-            Lines = lines
-        };
+        var isEditMode = _editingInvoice is not null;
+        var invoice = BuildCurrentInvoiceDto(forSave: true);
 
         try
         {
             IsBusy = true;
-            StatusMessage = "전표를 저장하고 있습니다.";
+            StatusMessage = $"{DocumentKindText} 전표를 {(isEditMode ? "수정 저장" : "저장")}하고 있습니다.";
             var state = await _syncCoordinator.SaveInvoiceImmediatelyAsync(invoice);
+
+            if (SyncCoordinator.IsConcurrencyConflictState(state))
+            {
+                _refreshCoordinator.MarkInvoicesChanged();
+                StatusMessage = $"{DocumentKindText} 전표가 저장되지 않았습니다. {state.LastError}";
+                return;
+            }
 
             if (state.PendingInvoiceCount == 0)
             {
                 _refreshCoordinator.MarkInvoicesChanged();
                 StatusMessage = string.IsNullOrWhiteSpace(state.LastError)
-                    ? "전표 저장 및 서버 반영 완료"
-                    : $"전표 저장 완료 / 최신 데이터 새로고침 대기: {state.LastError}";
+                        ? $"{DocumentKindText} 전표 {(isEditMode ? "수정 저장" : "저장")} 및 서버 반영 완료"
+                        : $"{DocumentKindText} 전표 {(isEditMode ? "수정 저장" : "저장")} 완료 / 최신 데이터 새로고침 대기: {state.LastError}";
 
                 if (SavedSuccessfully is not null)
                     await SavedSuccessfully.Invoke();
             }
             else
             {
-                StatusMessage = $"전표 저장 완료(오프라인/재시도 대기): {state.LastError}";
+                StatusMessage = $"{DocumentKindText} 전표 저장 완료(오프라인/재시도 대기): {state.LastError}";
             }
         }
         catch (Exception ex)
         {
-            StatusMessage = $"전표 저장 실패: {ex.Message}";
+            StatusMessage = $"{DocumentKindText} 전표 저장 실패: {ex.Message}";
         }
         finally
         {
             IsBusy = false;
         }
+    }
+
+    public async Task ExportPdfAsync()
+    {
+        if (IsBusy)
+            return;
+
+        if (SelectedCustomer is null)
+        {
+            StatusMessage = "PDF로 저장할 거래처를 먼저 선택하세요.";
+            return;
+        }
+
+        if (LineItems.Count == 0)
+        {
+            StatusMessage = "PDF로 저장할 품목을 하나 이상 입력하세요.";
+            return;
+        }
+
+        var options = new MobileInvoicePrintOptions
+        {
+            PrintStatementDocument = PrintStatementDocument,
+            PrintEstimateDocument = PrintEstimateDocument,
+            PrintPaymentClaimDocument = PrintPaymentClaimDocument,
+            PrintDate = PrintDate,
+            PrintUnitPrice = PrintUnitPrice
+        };
+
+        if (!options.HasAnyDocument)
+        {
+            StatusMessage = "PDF로 저장할 출력 서류를 하나 이상 선택하세요.";
+            return;
+        }
+
+        try
+        {
+            IsBusy = true;
+            var invoice = BuildCurrentInvoiceDto(forSave: false);
+            StatusMessage = "선택한 출력 옵션으로 PDF를 만들고 있습니다.";
+            var path = await _pdfExportService.ExportAndShareAsync(invoice, options);
+            StatusMessage = $"PDF 저장 완료: {Path.GetFileName(path)}";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"PDF 저장 실패: {ex.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private InvoiceDto BuildCurrentInvoiceDto(bool forSave)
+    {
+        var now = DateTime.UtcNow;
+        var invoiceId = _editingInvoice?.Id ?? Guid.NewGuid();
+        var lines = LineItems.Select(line => line.ToDto(invoiceId)).ToList();
+        var totals = CalculateTotals(lines.Select(line => line.LineAmount));
+
+        return new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = SelectedCustomer?.Id ?? Guid.Empty,
+            CustomerName = SelectedCustomer?.NameOriginal ?? string.Empty,
+            TenantCode = _editingInvoice?.TenantCode ?? _sessionTenantCode,
+            OfficeCode = SelectedInvoiceOfficeCode,
+            ResponsibleOfficeCode = SelectedInvoiceOfficeCode,
+            InvoiceNumber = _editingInvoice?.InvoiceNumber ?? string.Empty,
+            LocalTempNumber = string.IsNullOrWhiteSpace(_editingInvoice?.LocalTempNumber)
+                ? $"M-{(IsPurchaseDocument ? "P" : "S")}-{DateTime.Now:yyyyMMdd-HHmmss}"
+                : _editingInvoice!.LocalTempNumber,
+            LinkedRentalBillingProfileId = _editingInvoice?.LinkedRentalBillingProfileId,
+            LinkedRentalBillingRunId = _editingInvoice?.LinkedRentalBillingRunId,
+            VersionGroupId = _editingInvoice?.VersionGroupId ?? Guid.Empty,
+            VersionNumber = _editingInvoice?.VersionNumber ?? 1,
+            PreviousVersionId = _editingInvoice?.PreviousVersionId,
+            IsLatestVersion = _editingInvoice?.IsLatestVersion ?? true,
+            VoucherType = this.VoucherType,
+            InvoiceDate = DateOnly.FromDateTime(InvoiceDate),
+            SourceWarehouseCode = SelectedSourceWarehouseCode,
+            TotalAmount = totals.TotalAmount,
+            SupplyAmount = totals.SupplyAmount,
+            VatAmount = totals.VatAmount,
+            VatMode = IsVatNone ? InvoiceVatModes.None : InvoiceVatModes.Included,
+            TaxInvoiceIssued = _editingInvoice?.TaxInvoiceIssued ?? false,
+            PurchaseReceivingRequired = IsPurchaseDocument,
+            PurchaseReceivingStatus = InvoiceReceivingStatuses.Normalize(
+                _editingInvoice?.PurchaseReceivingStatus ?? string.Empty,
+                IsPurchaseDocument,
+                IsPurchaseDocument),
+            PurchaseReceivedAtUtc = _editingInvoice?.PurchaseReceivedAtUtc,
+            PurchaseReceivedByUsername = _editingInvoice?.PurchaseReceivedByUsername ?? string.Empty,
+            PurchaseReceivingOfficeCode = _editingInvoice?.PurchaseReceivingOfficeCode ?? string.Empty,
+            PurchaseReceivingWarehouseCode = _editingInvoice?.PurchaseReceivingWarehouseCode ?? string.Empty,
+            PurchaseReceivingMemo = _editingInvoice?.PurchaseReceivingMemo ?? string.Empty,
+            Memo = Memo.Trim(),
+            CreatedAtUtc = _editingInvoice?.CreatedAtUtc == default ? now : _editingInvoice?.CreatedAtUtc ?? now,
+            UpdatedAtUtc = forSave ? now : _editingInvoice?.UpdatedAtUtc ?? now,
+            Revision = _editingInvoice?.Revision ?? 0,
+            IsDeleted = false,
+            Lines = lines,
+            Payments = _editingInvoice?.Payments ?? new List<PaymentDto>()
+        };
     }
 
     private async Task OpenItemEntrySheetAsync(ItemDto item, bool recordRecent)
@@ -634,7 +941,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         OnPropertyChanged(nameof(LineActionText));
         LineQuantityText = "1";
         LineUnitPriceText = ResolveDefaultUnitPrice(item).ToString("0.##");
-        LineRemark = string.IsNullOrWhiteSpace(item.SimpleMemo) ? item.Notes : item.SimpleMemo;
+        LineRemark = string.Empty;
         SelectedItemBranchStocks.Clear();
 
         try
@@ -644,8 +951,6 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             {
                 SelectedItem = detail.Item;
                 LineUnitPriceText = ResolveDefaultUnitPrice(detail.Item).ToString("0.##");
-                if (string.IsNullOrWhiteSpace(LineRemark))
-                    LineRemark = string.IsNullOrWhiteSpace(detail.Item.SimpleMemo) ? detail.Item.Notes : detail.Item.SimpleMemo;
             }
 
             foreach (var stock in detail?.BranchStocks ?? [])
@@ -726,16 +1031,89 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             ?? InvoiceOfficeOptions.FirstOrDefault();
         OnPropertyChanged(nameof(CanChooseInvoiceOffice));
         OnPropertyChanged(nameof(SelectedInvoiceOfficeSummary));
+        RefreshSourceWarehouseOptions();
+    }
+
+    private void RefreshSourceWarehouseOptions()
+    {
+        var previousCode = SelectedSourceWarehouse?.Code;
+        var officeCode = SelectedInvoiceOfficeCode;
+        var warehouseCodes = new List<string>();
+
+        if (OfficeCodeCatalog.IsSharedOfficeCode(officeCode))
+        {
+            foreach (var code in OfficeCodeCatalog.All)
+                warehouseCodes.Add(OfficeCodeCatalog.GetMainWarehouseCode(code));
+        }
+        else
+        {
+            warehouseCodes.Add(OfficeCodeCatalog.GetMainWarehouseCode(officeCode));
+        }
+
+        SourceWarehouseOptions.Clear();
+        foreach (var code in warehouseCodes.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            SourceWarehouseOptions.Add(new MobileWarehouseOption
+            {
+                Code = code,
+                DisplayName = WarehouseDisplayNameResolver.Resolve(code)
+            });
+        }
+
+        SelectedSourceWarehouse = SourceWarehouseOptions.FirstOrDefault(option => string.Equals(option.Code, previousCode, StringComparison.OrdinalIgnoreCase))
+            ?? SourceWarehouseOptions.FirstOrDefault();
+        OnPropertyChanged(nameof(CanChooseSourceWarehouse));
+        OnPropertyChanged(nameof(SelectedSourceWarehouseSummary));
+    }
+
+    private void SelectInvoiceOfficeByCode(params string?[] officeCodes)
+    {
+        InitializeOfficeOptions();
+        foreach (var code in officeCodes.Where(code => !string.IsNullOrWhiteSpace(code)))
+        {
+            var match = InvoiceOfficeOptions.FirstOrDefault(option =>
+                string.Equals(option.Code, code, StringComparison.OrdinalIgnoreCase));
+            if (match is not null)
+            {
+                SelectedInvoiceOffice = match;
+                return;
+            }
+        }
+    }
+
+    private void SelectSourceWarehouseByCode(string? warehouseCode)
+    {
+        if (string.IsNullOrWhiteSpace(warehouseCode))
+            return;
+
+        RefreshSourceWarehouseOptions();
+        var match = SourceWarehouseOptions.FirstOrDefault(option =>
+            string.Equals(option.Code, warehouseCode, StringComparison.OrdinalIgnoreCase));
+        if (match is not null)
+            SelectedSourceWarehouse = match;
+    }
+
+    private void RefreshPriceGradeSourceMap(IEnumerable<PriceGradeOptionDto>? options)
+    {
+        _priceGradeSourceMap.Clear();
+        foreach (var option in options ?? [])
+        {
+            if (option.IsDeleted || string.IsNullOrWhiteSpace(option.Name))
+                continue;
+
+            _priceGradeSourceMap[option.Name.Trim()] = MobilePriceSourceResolver.NormalizePriceSource(option.PriceSource);
+        }
     }
 
     private async Task LoadRecentSelectionsAsync()
     {
         var snapshot = _sessionStore.GetSnapshot();
         _sessionTenantCode = string.IsNullOrWhiteSpace(snapshot.TenantCode) ? TenantScopeCatalog.UsenetGroup : snapshot.TenantCode;
+        _sessionOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(snapshot.OfficeCode, OfficeCodeCatalog.Usenet);
         _sessionUsername = snapshot.Username ?? string.Empty;
 
         _recentSelections.Clear();
-        var records = await _recentItemSelectionStore.LoadAsync(_sessionTenantCode, _sessionUsername);
+        var records = await _recentItemSelectionStore.LoadAsync(_sessionTenantCode, SelectedInvoiceOfficeCode, _sessionUsername);
         _recentSelections.AddRange(records);
         RefreshVisibleRecentItems();
     }
@@ -758,7 +1136,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         if (_recentSelections.Count > 5)
             _recentSelections.RemoveRange(5, _recentSelections.Count - 5);
 
-        await _recentItemSelectionStore.SaveAsync(_sessionTenantCode, _sessionUsername, _recentSelections);
+        await _recentItemSelectionStore.SaveAsync(_sessionTenantCode, SelectedInvoiceOfficeCode, _sessionUsername, _recentSelections);
         RefreshVisibleRecentItems();
     }
 
@@ -804,8 +1182,11 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedItemBranchStocksHeight));
         OnPropertyChanged(nameof(LineItemsHeight));
         OnPropertyChanged(nameof(DraftSummary));
+        OnPropertyChanged(nameof(VatSummary));
         OnPropertyChanged(nameof(HasVisibleRecentItems));
+        OnPropertyChanged(nameof(HasItemSearchResults));
         OnPropertyChanged(nameof(SelectedCategorySummary));
+        OnPropertyChanged(nameof(ItemListCaptionText));
     }
 
     private static double CalculateListHeight(int count, double rowHeight, double emptyHeight, int maxVisibleRows)
@@ -817,12 +1198,13 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         return (visibleRows * rowHeight) + Math.Max(0, visibleRows - 1) * 6;
     }
 
-    private static decimal ResolveDefaultUnitPrice(ItemDto item)
-        => item.SalePrice > 0m
-            ? item.SalePrice
-            : item.RetailPrice > 0m
-                ? item.RetailPrice
-                : item.PurchasePrice > 0m
-                    ? item.PurchasePrice
-                    : 0m;
+    private decimal ResolveDefaultUnitPrice(ItemDto item)
+        => IsPurchaseDocument
+            ? item.PurchasePrice
+            : MobilePriceSourceResolver.ResolveSalesUnitPrice(item, SelectedCustomer?.PriceGrade, _priceGradeSourceMap);
+
+    private (decimal SupplyAmount, decimal VatAmount, decimal TotalAmount) CalculateTotals(IEnumerable<decimal> lineAmounts)
+        => InvoiceVatModes.CalculateTotals(
+            lineAmounts,
+            IsVatNone ? InvoiceVatModes.None : InvoiceVatModes.Included);
 }

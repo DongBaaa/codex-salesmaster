@@ -25,6 +25,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     private readonly SyncDiagnosticsService _diagnostics;
     private readonly DataIntegrityIssueService _dataIntegrity;
     private readonly RentalStateService _rental;
+    private readonly StatementPrintService _print;
     private readonly RentalDocumentService _rentalDocuments;
     private readonly IPrintService _invoicePrintService;
     private readonly LegacyDataMigrationService _legacyMigrationService;
@@ -98,6 +99,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         SyncDiagnosticsService diagnostics,
         DataIntegrityIssueService dataIntegrity,
         RentalStateService rental,
+        StatementPrintService print,
         RentalDocumentService rentalDocuments,
         IPrintService invoicePrintService,
         Func<Task>? applyBusinessDatabaseChangeAsync = null)
@@ -110,6 +112,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         _diagnostics = diagnostics;
         _dataIntegrity = dataIntegrity;
         _rental = rental;
+        _print = print;
         _rentalDocuments = rentalDocuments;
         _invoicePrintService = invoicePrintService;
         _legacyMigrationService = new LegacyDataMigrationService(local);

@@ -22,6 +22,7 @@ namespace 거래플랜.Desktop.App.Services;
 public sealed partial class LocalStateService
 {
 	private const string ManualStockAdjustmentMovementType = "StockAdjustmentManual";
+	private const string InventoryResetToZeroMovementType = "StockResetToZero";
 
 	private sealed record CompanyProfileDefaultDefinition(string ProfileName, string OfficeCode, string TradeName, string Representative, string BusinessNumber, string Address, string ContactNumber);
 
@@ -459,6 +460,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		var existing = await _db.Customers.FindAsync(new object[1] { customer.Id }, ct);
 		string previousCustomerName = existing?.NameOriginal ?? string.Empty;
 		DateTime now = DateTime.UtcNow;
+		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, customer, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(customer, existing, "거래처", now, out string conflictMessage))
 		{
 			throw new InvalidOperationException(conflictMessage);
@@ -502,6 +504,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		customer.ResponsibleOfficeCode = normalizedOfficeCode;
 		customer.OfficeCode = normalizedOwnerOfficeCode;
 		customer.TenantCode = normalizedTenantCode;
+		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, customer, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(now: DateTime.UtcNow, candidate: customer, existing: existing, entityDisplayName: "거래처", conflictMessage: out string conflictMessage))
 		{
 			return OfficeMutationResult.Conflict(conflictMessage);
@@ -1262,6 +1265,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return new List<LocalRentalAssetAssignmentHistory>();
 		}
 		IQueryable<LocalRentalAssetAssignmentHistory> query = (from history in _db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+			join asset in _db.RentalAssets.IgnoreQueryFilters() on history.AssetId equals asset.Id
 			where history.IsDirty
 			select history).AsNoTracking();
 		return (await query.ToListAsync(ct)).Where((LocalRentalAssetAssignmentHistory history) => CanWriteRentalEntityScope(session, history.TenantCode, history.ResponsibleOfficeCode)).ToList();
@@ -1691,6 +1695,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		string previousItemName = existing?.NameOriginal ?? string.Empty;
 		string previousCategoryName = existing?.CategoryName ?? string.Empty;
 		DateTime now = DateTime.UtcNow;
+		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, item, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(item, existing, "품목", now, out string conflictMessage))
 		{
 			throw new InvalidOperationException(conflictMessage);
@@ -1837,7 +1842,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	{
 		if (!CanResetInventoryValue(session))
 		{
-			return OfficeMutationResult.Denied("현재 계정은 선택 재고 초기화를 실행할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 요청하세요.");
+			return OfficeMutationResult.Denied("현재 계정은 재고 초기화를 실행할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 요청하세요.");
 		}
 		DateTime now = DateTime.UtcNow;
 		OfficeMutationResult result;
@@ -1848,21 +1853,162 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			{
 				result = OfficeMutationResult.Missing("초기화할 품목을 찾을 수 없습니다.");
 			}
+			else if (!CanWriteItemScope(item, session))
+			{
+				result = OfficeMutationResult.Denied("권한이 없어 해당 품목의 재고를 초기화할 수 없습니다.");
+			}
 			else
 			{
-				await _db.ItemWarehouseStocks.Where((LocalItemWarehouseStock stock) => stock.ItemId == itemId).ExecuteDeleteAsync(ct);
-				await _db.StockLayers.Where((LocalStockLayer layer) => layer.ItemId == itemId).ExecuteDeleteAsync(ct);
-				await _db.SerialLedgers.Where((LocalSerialLedger ledger) => ledger.ItemId == itemId).ExecuteDeleteAsync(ct);
-				item.CurrentStock = 0m;
-				item.IsDirty = true;
-				item.UpdatedAtUtc = now;
+				var warehouseCodes = await ResolveInventoryResetWarehouseCodesAsync(itemId, item, ct);
+				var occurredDate = await ResolveInventoryResetOccurredDateAsync(itemId, ct);
+				var username = session.User?.Username ?? "local-user";
+				var unitCost = Math.Max(0m, item.PurchasePrice);
+				foreach (var warehouseCode in warehouseCodes)
+				{
+					_db.InventoryMovements.Add(new LocalInventoryMovement
+					{
+						Id = Guid.NewGuid(),
+						ItemId = itemId,
+						WarehouseCode = warehouseCode,
+						MovementType = InventoryResetToZeroMovementType,
+						QuantityDelta = 0m,
+						UnitCost = unitCost,
+						Amount = 0m,
+						OccurredDate = occurredDate,
+						IsSettledCost = true,
+						IsActive = true,
+						Note = "재고 초기화",
+						CreatedByUsername = username,
+						CreatedAtUtc = now
+					});
+				}
+
+				await _db.SaveChangesAsync(ct);
+				await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+				{
+					Username = username,
+					Role = session.User?.Role ?? string.Empty,
+					OfficeCode = session.OfficeCode
+				}, ct);
+
+				var refreshed = await _db.Items.IgnoreQueryFilters().FirstAsync((LocalItem current) => current.Id == itemId, ct);
+				refreshed.CurrentStock = 0m;
+				refreshed.IsDirty = true;
+				refreshed.UpdatedAtUtc = DateTime.UtcNow;
 				await _db.SaveChangesAsync(ct);
 				await transaction.CommitAsync(ct);
 				RaiseInventoryStateChanged();
-				result = OfficeMutationResult.Ok(itemId, "'" + item.NameOriginal + "' 품목의 현재 재고 수량을 0으로 초기화했습니다. 창고별 현재고 스냅샷은 비웠고 기존 판매/구매/재고이동 이력은 유지됩니다.");
+				result = OfficeMutationResult.Ok(itemId, "'" + item.NameOriginal + "' 품목의 재고를 초기화했습니다. 기존 전표/재고이동 이력은 유지되고, 초기화 시점 이후 재고만 다시 계산됩니다.");
 			}
 		}
 		return result;
+	}
+
+	private async Task<List<string>> ResolveInventoryResetWarehouseCodesAsync(Guid itemId, LocalItem item, CancellationToken ct)
+	{
+		var codes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		void AddCode(string? warehouseCode, string? officeCode = null)
+		{
+			var normalized = NormalizeWarehouseCode(warehouseCode, officeCode, item.OfficeCode);
+			if (!string.IsNullOrWhiteSpace(normalized))
+			{
+				codes.Add(normalized);
+			}
+		}
+
+		var stockCodes = await _db.ItemWarehouseStocks.AsNoTracking()
+			.Where((LocalItemWarehouseStock stock) => stock.ItemId == itemId)
+			.Select((LocalItemWarehouseStock stock) => stock.WarehouseCode)
+			.ToListAsync(ct);
+		foreach (var warehouseCode in stockCodes)
+		{
+			AddCode(warehouseCode, ResolveOfficeCodeFromWarehouseCode(warehouseCode));
+		}
+
+		var invoiceWarehouses = await _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+			.Where((LocalInvoice invoice) => !invoice.IsDeleted && invoice.IsLatestVersion && invoice.IsConfirmed && invoice.Lines.Any((LocalInvoiceLine line) => !line.IsDeleted && line.ItemId == itemId))
+			.Select((LocalInvoice invoice) => new
+			{
+				invoice.SourceWarehouseCode,
+				invoice.ResponsibleOfficeCode,
+				invoice.OfficeCode
+			})
+			.ToListAsync(ct);
+		foreach (var invoice in invoiceWarehouses)
+		{
+			AddCode(invoice.SourceWarehouseCode, invoice.ResponsibleOfficeCode);
+		}
+
+		var transferWarehouses = await _db.InventoryTransfers.IgnoreQueryFilters().AsNoTracking()
+			.Where((LocalInventoryTransfer transfer) => !transfer.IsDeleted && transfer.Lines.Any((LocalInventoryTransferLine line) => !line.IsDeleted && line.ItemId == itemId))
+			.Select((LocalInventoryTransfer transfer) => new
+			{
+				transfer.FromWarehouseCode,
+				transfer.ToWarehouseCode
+			})
+			.ToListAsync(ct);
+		foreach (var transfer in transferWarehouses)
+		{
+			AddCode(transfer.FromWarehouseCode, ResolveOfficeCodeFromWarehouseCode(transfer.FromWarehouseCode));
+			AddCode(transfer.ToWarehouseCode, ResolveOfficeCodeFromWarehouseCode(transfer.ToWarehouseCode));
+		}
+
+		var adjustmentWarehouses = await _db.InventoryMovements.AsNoTracking()
+			.Where((LocalInventoryMovement movement) => movement.IsActive && movement.ItemId == itemId && (movement.MovementType == ManualStockAdjustmentMovementType || movement.MovementType == InventoryResetToZeroMovementType))
+			.Select((LocalInventoryMovement movement) => movement.WarehouseCode)
+			.ToListAsync(ct);
+		foreach (var warehouseCode in adjustmentWarehouses)
+		{
+			AddCode(warehouseCode, ResolveOfficeCodeFromWarehouseCode(warehouseCode));
+		}
+
+		if (codes.Count == 0)
+		{
+			codes.Add(ResolvePrimaryWarehouseCode(item.OfficeCode));
+		}
+
+		return codes.OrderBy((string code) => code, StringComparer.OrdinalIgnoreCase).ToList();
+	}
+
+	private async Task<DateOnly> ResolveInventoryResetOccurredDateAsync(Guid itemId, CancellationToken ct)
+	{
+		var latest = DateOnly.FromDateTime(DateTime.Today);
+		void Use(DateOnly value)
+		{
+			if (value > latest)
+			{
+				latest = value;
+			}
+		}
+
+		var invoiceDates = await _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+			.Where((LocalInvoice invoice) => !invoice.IsDeleted && invoice.IsLatestVersion && invoice.IsConfirmed && invoice.Lines.Any((LocalInvoiceLine line) => !line.IsDeleted && line.ItemId == itemId))
+			.Select((LocalInvoice invoice) => invoice.InvoiceDate)
+			.ToListAsync(ct);
+		foreach (var invoiceDate in invoiceDates)
+		{
+			Use(invoiceDate);
+		}
+
+		var transferDates = await _db.InventoryTransfers.IgnoreQueryFilters().AsNoTracking()
+			.Where((LocalInventoryTransfer transfer) => !transfer.IsDeleted && transfer.Lines.Any((LocalInventoryTransferLine line) => !line.IsDeleted && line.ItemId == itemId))
+			.Select((LocalInventoryTransfer transfer) => transfer.TransferDate)
+			.ToListAsync(ct);
+		foreach (var transferDate in transferDates)
+		{
+			Use(transferDate);
+		}
+
+		var adjustmentDates = await _db.InventoryMovements.AsNoTracking()
+			.Where((LocalInventoryMovement movement) => movement.IsActive && movement.ItemId == itemId && (movement.MovementType == ManualStockAdjustmentMovementType || movement.MovementType == InventoryResetToZeroMovementType))
+			.Select((LocalInventoryMovement movement) => movement.OccurredDate)
+			.ToListAsync(ct);
+		foreach (var adjustmentDate in adjustmentDates)
+		{
+			Use(adjustmentDate);
+		}
+
+		return latest;
 	}
 
 	public async Task<List<LocalOffice>> GetOfficesAsync(CancellationToken ct = default(CancellationToken))
@@ -2076,6 +2222,36 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	{
 		var invoice = await GetInvoiceAsync(id, ct);
 		return (invoice != null && CanAccessInvoice(invoice, session)) ? invoice : null;
+	}
+
+	public async Task<LocalInvoice?> GetSalesInvoiceForRentalBillingAsync(Guid billingProfileId, Guid? billingRunId, SessionState session, CancellationToken ct = default(CancellationToken))
+	{
+		if (billingProfileId == Guid.Empty)
+		{
+			return null;
+		}
+
+		IQueryable<LocalInvoice> query = _db.Invoices
+			.Include((LocalInvoice i) => i.Lines.Where((LocalInvoiceLine l) => !l.IsDeleted))
+			.Include((LocalInvoice i) => i.Payments.Where((LocalPayment p) => !p.IsDeleted))
+			.AsSplitQuery()
+			.AsNoTracking();
+		query = ApplyInvoiceScope(query, session);
+		query = query.Where((LocalInvoice invoice) =>
+			!invoice.IsDeleted &&
+			invoice.IsLatestVersion &&
+			invoice.VoucherType == VoucherType.Sales &&
+			invoice.LinkedRentalBillingProfileId == billingProfileId);
+		if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.LinkedRentalBillingRunId == billingRunId.Value);
+		}
+
+		return await query
+			.OrderByDescending((LocalInvoice invoice) => invoice.InvoiceDate)
+			.ThenByDescending((LocalInvoice invoice) => invoice.UpdatedAtUtc)
+			.ThenByDescending((LocalInvoice invoice) => invoice.CreatedAtUtc)
+			.FirstOrDefaultAsync(ct);
 	}
 
 	public async Task<List<LocalInvoice>> GetInvoiceVersionsAsync(Guid invoiceIdOrVersionGroupId, CancellationToken ct = default(CancellationToken))
@@ -2370,6 +2546,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	{
 		var existing = await _db.Payments.FindAsync(new object[1] { payment.Id }, ct);
 		DateTime now = DateTime.UtcNow;
+		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, payment, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(payment, existing, "수금/지급", now, out string conflictMessage))
 		{
 			throw new InvalidOperationException(conflictMessage);
@@ -2402,6 +2579,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 전표 수금/지급을 저장할 수 없습니다.");
 		}
+		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, payment, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(now: DateTime.UtcNow, candidate: payment, existing: existing, entityDisplayName: "수금/지급", conflictMessage: out string conflictMessage))
 		{
 			return OfficeMutationResult.Conflict(conflictMessage);
@@ -2500,6 +2678,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		profile.IsActive = true;
 		var existing = await _db.CompanyProfiles.FindAsync(new object[1] { profile.Id }, ct);
 		DateTime now = DateTime.UtcNow;
+		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, profile, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(profile, existing, "회사설정", now, out string conflictMessage))
 		{
 			throw new InvalidOperationException(conflictMessage);
@@ -3440,17 +3619,49 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 	}
 
+	private const string CachedSessionUsernameSuffix = "Username";
+	private const string CachedSessionRoleSuffix = "Role";
+	private const string CachedSessionPermissionsSuffix = "Permissions";
+	private const string CachedSessionTenantCodeSuffix = "TenantCode";
+	private const string CachedSessionScopeTypeSuffix = "ScopeType";
+	private const string CachedSessionOfficeCodeSuffix = "OfficeCode";
+	private const string CachedSessionPasswordProofSuffix = "PasswordProof";
+
 	public async Task SaveSessionCacheAsync(string username, string role, IEnumerable<string> permissions, string? tenantCode = null, string? scopeType = null, string? officeCode = null, string? password = null, CancellationToken ct = default(CancellationToken))
 	{
-		await SetSettingAsync("CachedSession_Username", username, ct);
-		await SetSettingAsync("CachedSession_Role", role, ct);
-		await SetSettingAsync("CachedSession_Permissions", string.Join(',', permissions), ct);
-		await SetSettingAsync("CachedSession_TenantCode", TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode), ct);
-		await SetSettingAsync("CachedSession_ScopeType", TenantScopeCatalog.NormalizeScopeTypeOrDefault(scopeType, DomainConstants.IsAdminRole(role) ? "Admin" : "OfficeOnly"), ct);
-		await SetSettingAsync("CachedSession_OfficeCode", NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet), ct);
-		if (!string.IsNullOrEmpty(password))
+		string displayUsername = (username ?? string.Empty).Trim();
+		string normalizedUsername = NormalizeUsername(displayUsername);
+		if (string.IsNullOrWhiteSpace(normalizedUsername))
 		{
-			await SetSettingAsync("CachedSession_PasswordProof", ProtectOfflinePasswordProof(password), ct);
+			return;
+		}
+
+		string normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode);
+		string normalizedScopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(scopeType, DomainConstants.IsAdminRole(role) ? "Admin" : "OfficeOnly");
+		string normalizedOfficeCode = NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet);
+		string permissionsText = string.Join(',', permissions);
+		string? passwordProof = !string.IsNullOrEmpty(password) ? ProtectOfflinePasswordProof(password) : null;
+
+		await SetCachedSessionSettingAsync(normalizedUsername, CachedSessionUsernameSuffix, displayUsername, ct);
+		await SetCachedSessionSettingAsync(normalizedUsername, CachedSessionRoleSuffix, role, ct);
+		await SetCachedSessionSettingAsync(normalizedUsername, CachedSessionPermissionsSuffix, permissionsText, ct);
+		await SetCachedSessionSettingAsync(normalizedUsername, CachedSessionTenantCodeSuffix, normalizedTenantCode, ct);
+		await SetCachedSessionSettingAsync(normalizedUsername, CachedSessionScopeTypeSuffix, normalizedScopeType, ct);
+		await SetCachedSessionSettingAsync(normalizedUsername, CachedSessionOfficeCodeSuffix, normalizedOfficeCode, ct);
+		if (passwordProof is not null)
+		{
+			await SetCachedSessionSettingAsync(normalizedUsername, CachedSessionPasswordProofSuffix, passwordProof, ct);
+		}
+
+		await SetSettingAsync("CachedSession_Username", displayUsername, ct);
+		await SetSettingAsync("CachedSession_Role", role, ct);
+		await SetSettingAsync("CachedSession_Permissions", permissionsText, ct);
+		await SetSettingAsync("CachedSession_TenantCode", normalizedTenantCode, ct);
+		await SetSettingAsync("CachedSession_ScopeType", normalizedScopeType, ct);
+		await SetSettingAsync("CachedSession_OfficeCode", normalizedOfficeCode, ct);
+		if (passwordProof is not null)
+		{
+			await SetSettingAsync("CachedSession_PasswordProof", passwordProof, ct);
 		}
 	}
 
@@ -3460,27 +3671,47 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return false;
 		}
-		string? cachedUsername = await GetSettingAsync("CachedSession_Username", ct);
-		if (!string.Equals(cachedUsername, username, StringComparison.OrdinalIgnoreCase))
+
+		string normalizedUsername = NormalizeUsername(username);
+		string? cachedUsername = await GetCachedSessionSettingAsync(normalizedUsername, CachedSessionUsernameSuffix, ct);
+		if (string.Equals(cachedUsername, username, StringComparison.OrdinalIgnoreCase))
+		{
+			string? protectedProof = await GetCachedSessionSettingAsync(normalizedUsername, CachedSessionPasswordProofSuffix, ct);
+			return VerifyOfflinePasswordProof(password, protectedProof);
+		}
+
+		string? legacyCachedUsername = await GetSettingAsync("CachedSession_Username", ct);
+		if (!string.Equals(legacyCachedUsername, username, StringComparison.OrdinalIgnoreCase))
 		{
 			return false;
 		}
-		string? protectedProof = await GetSettingAsync("CachedSession_PasswordProof", ct);
-		return VerifyOfflinePasswordProof(password, protectedProof);
+
+		return VerifyOfflinePasswordProof(password, await GetSettingAsync("CachedSession_PasswordProof", ct));
 	}
 
 	public async Task<UserSessionDto?> GetCachedSessionAsync(string username, CancellationToken ct = default(CancellationToken))
 	{
-		string? cachedUsername = await GetSettingAsync("CachedSession_Username", ct);
+		string normalizedUsername = NormalizeUsername(username);
+		string? cachedUsername = await GetCachedSessionSettingAsync(normalizedUsername, CachedSessionUsernameSuffix, ct);
+		bool useLegacyCache = false;
+
 		if (!string.Equals(cachedUsername, username, StringComparison.OrdinalIgnoreCase))
 		{
-			return null;
+			string? legacyCachedUsername = await GetSettingAsync("CachedSession_Username", ct);
+			if (!string.Equals(legacyCachedUsername, username, StringComparison.OrdinalIgnoreCase))
+			{
+				return null;
+			}
+
+			cachedUsername = legacyCachedUsername;
+			useLegacyCache = true;
 		}
-		string role = (await GetSettingAsync("CachedSession_Role", ct)) ?? "User";
-		string tenantCode = (await GetSettingAsync("CachedSession_TenantCode", ct)) ?? string.Empty;
-		string scopeType = (await GetSettingAsync("CachedSession_ScopeType", ct)) ?? string.Empty;
-		string officeCode = (await GetSettingAsync("CachedSession_OfficeCode", ct)) ?? string.Empty;
-		string permissionsRaw = (await GetSettingAsync("CachedSession_Permissions", ct)) ?? string.Empty;
+
+		string role = await ReadCachedSessionValueAsync(normalizedUsername, CachedSessionRoleSuffix, useLegacyCache, ct) ?? "User";
+		string tenantCode = await ReadCachedSessionValueAsync(normalizedUsername, CachedSessionTenantCodeSuffix, useLegacyCache, ct) ?? string.Empty;
+		string scopeType = await ReadCachedSessionValueAsync(normalizedUsername, CachedSessionScopeTypeSuffix, useLegacyCache, ct) ?? string.Empty;
+		string officeCode = await ReadCachedSessionValueAsync(normalizedUsername, CachedSessionOfficeCodeSuffix, useLegacyCache, ct) ?? string.Empty;
+		string permissionsRaw = await ReadCachedSessionValueAsync(normalizedUsername, CachedSessionPermissionsSuffix, useLegacyCache, ct) ?? string.Empty;
 		List<string> permissions = permissionsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList();
 		return new UserSessionDto
 		{
@@ -3494,10 +3725,41 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		};
 	}
 
-	public Task<string?> GetCachedOfficeCodeAsync(CancellationToken ct = default(CancellationToken))
+	public async Task<string?> GetCachedOfficeCodeAsync(string? username = null, CancellationToken ct = default(CancellationToken))
 	{
-		return GetSettingAsync("CachedSession_OfficeCode", ct);
+		string normalizedUsername = NormalizeUsername(username);
+		if (!string.IsNullOrWhiteSpace(normalizedUsername))
+		{
+			string? value = await GetCachedSessionSettingAsync(normalizedUsername, CachedSessionOfficeCodeSuffix, ct);
+			if (!string.IsNullOrWhiteSpace(value))
+			{
+				return value;
+			}
+		}
+
+		return await GetSettingAsync("CachedSession_OfficeCode", ct);
 	}
+
+	private Task SetCachedSessionSettingAsync(string normalizedUsername, string suffix, string value, CancellationToken ct)
+		=> SetSettingAsync(GetCachedSessionSettingKey(normalizedUsername, suffix), value, ct);
+
+	private Task<string?> GetCachedSessionSettingAsync(string normalizedUsername, string suffix, CancellationToken ct)
+		=> string.IsNullOrWhiteSpace(normalizedUsername)
+			? Task.FromResult<string?>(null)
+			: GetSettingAsync(GetCachedSessionSettingKey(normalizedUsername, suffix), ct);
+
+	private async Task<string?> ReadCachedSessionValueAsync(string normalizedUsername, string suffix, bool useLegacyCache, CancellationToken ct)
+	{
+		if (!useLegacyCache)
+		{
+			return await GetCachedSessionSettingAsync(normalizedUsername, suffix, ct);
+		}
+
+		return await GetSettingAsync("CachedSession_" + suffix, ct);
+	}
+
+	private static string GetCachedSessionSettingKey(string normalizedUsername, string suffix)
+		=> "CachedSession." + NormalizeUsername(normalizedUsername) + "." + suffix;
 
 	private static string ProtectOfflinePasswordProof(string password)
 	{
@@ -3700,6 +3962,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	{
 		var existing = await _db.Transactions.FindAsync(new object[1] { transaction.Id }, ct);
 		DateTime now = DateTime.UtcNow;
+		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, transaction, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(transaction, existing, "수금/지급 내역", now, out string conflictMessage))
 		{
 			throw new InvalidOperationException(conflictMessage);
@@ -3769,6 +4032,20 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			bool flag = (uint)(voucherType - 1) <= 1u;
 			bool preferInvoicePayment = flag;
 			transaction.TransactionKind = NormalizeLinkedInvoiceTransactionKind(transaction.TransactionKind, preferInvoicePayment);
+			if (linkedInvoice.LinkedRentalBillingProfileId.HasValue &&
+			    linkedInvoice.LinkedRentalBillingProfileId.Value != Guid.Empty)
+			{
+				if (!transaction.LinkedRentalBillingProfileId.HasValue ||
+				    transaction.LinkedRentalBillingProfileId.Value == Guid.Empty)
+				{
+					transaction.LinkedRentalBillingProfileId = linkedInvoice.LinkedRentalBillingProfileId;
+				}
+				if (!transaction.LinkedRentalBillingRunId.HasValue ||
+				    transaction.LinkedRentalBillingRunId.Value == Guid.Empty)
+				{
+					transaction.LinkedRentalBillingRunId = linkedInvoice.LinkedRentalBillingRunId;
+				}
+			}
 		}
 		else
 		{
@@ -3790,6 +4067,30 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			if (!PaymentFlowConstants.IsRentalSettlementKind(transaction.TransactionKind))
 			{
 				transaction.TransactionKind = "렌탈수금";
+			}
+			if (linkedInvoice == null)
+			{
+				linkedInvoice = await FindTrackedSalesInvoiceForRentalBillingAsync(
+					linkedRentalProfile.Id,
+					transaction.LinkedRentalBillingRunId,
+					ct);
+				if (linkedInvoice != null)
+				{
+					if (!CanWriteOfficeScope(session, linkedInvoice.ResponsibleOfficeCode, customerOfficeCode))
+					{
+						return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 청구 전표 결제를 처리할 수 없습니다.");
+					}
+
+					transaction.LinkedInvoiceId = linkedInvoice.Id;
+					transaction.LinkedInvoiceNumber = string.IsNullOrWhiteSpace(linkedInvoice.InvoiceNumber)
+						? linkedInvoice.LocalTempNumber
+						: linkedInvoice.InvoiceNumber;
+					if (!transaction.LinkedRentalBillingRunId.HasValue ||
+					    transaction.LinkedRentalBillingRunId.Value == Guid.Empty)
+					{
+						transaction.LinkedRentalBillingRunId = linkedInvoice.LinkedRentalBillingRunId;
+					}
+				}
 			}
 		}
 		else
@@ -3933,6 +4234,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				}
 			}
 		}
+		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, transaction, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(now: DateTime.UtcNow, candidate: transaction, existing: existing, entityDisplayName: "수금/지급 내역", conflictMessage: out string conflictMessage))
 		{
 			return OfficeMutationResult.Conflict(conflictMessage);
@@ -3980,7 +4282,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		if (requestedSettlementAmount != transaction.SettlementAmount)
 		{
-			warnings.Add($"정산금액을 {requestedSettlementAmount:N0}원에서 {transaction.SettlementAmount:N0}원으로 조정했습니다.");
+			warnings.Add($"수금/지급 금액을 {requestedSettlementAmount:N0}원에서 {transaction.SettlementAmount:N0}원으로 조정했습니다.");
 		}
 		return OfficeMutationResult.Ok(transaction.Id, "수금/지급을 저장했습니다.", grantedTemporaryAccess: false, warnings);
 	}
@@ -4110,6 +4412,31 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			query = query.Where((LocalTransaction transaction) => transaction.LinkedRentalBillingRunId == ((Guid?)billingRunId).Value);
 		}
 		return (await query.Select((LocalTransaction transaction) => transaction.SettlementAmount).ToListAsync(ct)).Sum();
+	}
+
+	private async Task<LocalInvoice?> FindTrackedSalesInvoiceForRentalBillingAsync(Guid billingProfileId, Guid? billingRunId, CancellationToken ct)
+	{
+		if (billingProfileId == Guid.Empty)
+		{
+			return null;
+		}
+
+		IQueryable<LocalInvoice> query = _db.Invoices.IgnoreQueryFilters()
+			.Where((LocalInvoice invoice) =>
+				!invoice.IsDeleted &&
+				invoice.IsLatestVersion &&
+				invoice.VoucherType == VoucherType.Sales &&
+				invoice.LinkedRentalBillingProfileId == billingProfileId);
+		if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.LinkedRentalBillingRunId == billingRunId.Value);
+		}
+
+		return await query
+			.OrderByDescending((LocalInvoice invoice) => invoice.InvoiceDate)
+			.ThenByDescending((LocalInvoice invoice) => invoice.UpdatedAtUtc)
+			.ThenByDescending((LocalInvoice invoice) => invoice.CreatedAtUtc)
+			.FirstOrDefaultAsync(ct);
 	}
 
 	private async Task SyncInvoicePaymentFromTransactionAsync(LocalTransaction transaction, LocalInvoice invoice, CancellationToken ct)
@@ -4243,6 +4570,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 					orderby transaction.TransactionDate descending
 					select transaction)).Select((Expression<Func<LocalTransaction, DateOnly?>>)((LocalTransaction transaction) => transaction.TransactionDate)).FirstOrDefaultAsync(ct)));
 				rentalBillingRunModel.SettledDate = settledDate;
+				if (profile.OutstandingAmount <= 0m)
+				{
+					profile.LastBilledDate = run.ScheduledDate;
+				}
 				profile.BillingRunsJson = JsonSerializer.Serialize(runs, AuditJsonOptions);
 			}
 		}
@@ -4586,6 +4917,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Denied("이미 수령확정 또는 반려된 재고이동 문서는 수정할 수 없습니다.");
 		}
+		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, transfer, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(transfer, existing, "재고이동 문서", now, out string conflictMessage))
 		{
 			return OfficeMutationResult.Conflict(conflictMessage);
@@ -5875,7 +6207,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	private async Task RebuildInventorySnapshotsAsync(InvoiceSaveContext context, CancellationToken ct)
 	{
 		List<LocalInventoryMovement> manualStockAdjustments = await _db.InventoryMovements.AsNoTracking()
-			.Where((LocalInventoryMovement movement) => movement.IsActive && movement.ItemId.HasValue && movement.MovementType == ManualStockAdjustmentMovementType)
+			.Where((LocalInventoryMovement movement) => movement.IsActive && movement.ItemId.HasValue && (movement.MovementType == ManualStockAdjustmentMovementType || movement.MovementType == InventoryResetToZeroMovementType))
 			.OrderBy((LocalInventoryMovement movement) => movement.OccurredDate)
 			.ThenBy((LocalInventoryMovement movement) => movement.CreatedAtUtc)
 			.ToListAsync(ct);
@@ -5916,7 +6248,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			}
 			else if (entry.ManualAdjustment != null)
 			{
-				ApplyManualStockAdjustmentEntry(entry.ManualAdjustment, stockMap, layerMap);
+				if (string.Equals(entry.ManualAdjustment.MovementType, InventoryResetToZeroMovementType, StringComparison.Ordinal))
+				{
+					ApplyInventoryResetToZeroEntry(entry.ManualAdjustment, stockMap, layerMap);
+				}
+				else
+				{
+					ApplyManualStockAdjustmentEntry(entry.ManualAdjustment, stockMap, layerMap);
+				}
 			}
 		}
 		var normalizedStocks = (from anon in Enumerable.Select(stockMap, (KeyValuePair<(Guid ItemId, string WarehouseCode), decimal> keyValuePair) => new
@@ -6106,6 +6445,34 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return ItemTrackingTypes.Normalize(value);
 		}
 		return line.ItemId.HasValue ? "재고" : "비재고";
+	}
+
+	private void ApplyInventoryResetToZeroEntry(LocalInventoryMovement reset, IDictionary<(Guid ItemId, string WarehouseCode), decimal> stockMap, IDictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>> layerMap)
+	{
+		if (!reset.ItemId.HasValue || !reset.IsActive)
+		{
+			return;
+		}
+
+		Guid itemId = reset.ItemId.Value;
+		string warehouseCode = NormalizeWarehouseCode(
+			reset.WarehouseCode,
+			ResolveOfficeCodeFromWarehouseCode(reset.WarehouseCode),
+			DomainConstants.OfficeUsenet);
+		reset.WarehouseCode = warehouseCode;
+		(Guid, string) key = (itemId, warehouseCode);
+		EnsureStockKey(stockMap, key);
+
+		decimal currentQuantity = stockMap[key];
+		foreach (LocalStockLayer layer in EnsureLayerList(layerMap, key))
+		{
+			layer.RemainingQuantity = 0m;
+		}
+
+		stockMap[key] = 0m;
+		reset.QuantityDelta = -currentQuantity;
+		reset.Amount = Math.Round(Math.Abs(currentQuantity) * Math.Max(0m, reset.UnitCost), 2, MidpointRounding.AwayFromZero);
+		_db.InventoryMovements.Add(reset);
 	}
 
 	private void ApplyManualStockAdjustmentEntry(LocalInventoryMovement adjustment, IDictionary<(Guid ItemId, string WarehouseCode), decimal> stockMap, IDictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>> layerMap)

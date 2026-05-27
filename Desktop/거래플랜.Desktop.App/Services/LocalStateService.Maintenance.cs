@@ -4,8 +4,19 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
+public sealed record LoginScopeRegistrationResult(
+    bool ScopeChanged,
+    bool HadPendingSyncChanges,
+    string Message);
+
 public sealed partial class LocalStateService
 {
+    private const string LastLoginScopeKey = "Login.LastScopeKey";
+    private const string LastLoginScopeUsernameKey = "Login.LastScopeUsername";
+    private const string LastLoginScopeTenantKey = "Login.LastScopeTenantCode";
+    private const string LastLoginScopeOfficeKey = "Login.LastScopeOfficeCode";
+    private const string LastLoginScopeTypeKey = "Login.LastScopeType";
+
     public async Task<bool> DeleteSettingAsync(string key, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(key))
@@ -61,6 +72,72 @@ public sealed partial class LocalStateService
 
     public Task ClearServerMirrorRefreshRequiredAsync(CancellationToken ct = default)
         => DeleteSettingAsync(PendingMirrorRefreshSettingKey, ct);
+
+    public async Task<LoginScopeRegistrationResult> RegisterLoginScopeAsync(
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (session is null || !session.IsLoggedIn)
+        {
+            return new LoginScopeRegistrationResult(
+                ScopeChanged: false,
+                HadPendingSyncChanges: false,
+                Message: "로그인 세션이 없어 계정 범위 등록을 건너뜁니다.");
+        }
+
+        var username = NormalizeLoginScopePart(session.User?.Username, "unknown");
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            session.TenantCode,
+            session.OfficeCode);
+        var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode);
+        var scopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(session.ScopeType);
+        var currentScopeKey = BuildLoginScopeKey(username, tenantCode, officeCode, scopeType);
+        var previousScopeKey = await GetSettingAsync(LastLoginScopeKey, ct);
+
+        var scopeChanged = !string.IsNullOrWhiteSpace(previousScopeKey) &&
+                           !string.Equals(previousScopeKey, currentScopeKey, StringComparison.OrdinalIgnoreCase);
+        var hadPendingSyncChanges = false;
+
+        if (scopeChanged)
+        {
+            hadPendingSyncChanges = await HasPendingSyncChangesAsync(ct);
+
+            foreach (var key in ServerMirrorStateSettingKeys)
+            {
+                await DeleteSettingAsync(key, ct);
+            }
+
+            await MarkServerMirrorRefreshRequiredAsync(ct);
+        }
+
+        await SetSettingAsync(LastLoginScopeKey, currentScopeKey, ct);
+        await SetSettingAsync(LastLoginScopeUsernameKey, username, ct);
+        await SetSettingAsync(LastLoginScopeTenantKey, tenantCode, ct);
+        await SetSettingAsync(LastLoginScopeOfficeKey, officeCode, ct);
+        await SetSettingAsync(LastLoginScopeTypeKey, scopeType, ct);
+
+        var message = scopeChanged
+            ? hadPendingSyncChanges
+                ? "로그인 계정/범위가 변경되어 동기화 기준을 초기화했습니다. 미동기화 변경은 보존했으며 해당 계정으로 다시 로그인해 동기화할 수 있습니다."
+                : "로그인 계정/범위가 변경되어 현재 계정 기준으로 서버 캐시를 다시 구성합니다."
+            : "로그인 계정/범위가 이전과 동일합니다.";
+
+        return new LoginScopeRegistrationResult(scopeChanged, hadPendingSyncChanges, message);
+    }
+
+    private static string BuildLoginScopeKey(string username, string tenantCode, string officeCode, string scopeType)
+        => string.Join(
+            "|",
+            NormalizeLoginScopePart(username, "unknown"),
+            TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode),
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode),
+            TenantScopeCatalog.NormalizeScopeTypeOrDefault(scopeType));
+
+    private static string NormalizeLoginScopePart(string? value, string fallback)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? fallback : normalized;
+    }
 
     private Task<int> NormalizeGuidTextColumnToUpperAsync(string tableName, string columnName, CancellationToken ct)
     {

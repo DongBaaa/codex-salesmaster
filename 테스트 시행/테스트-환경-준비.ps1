@@ -7,6 +7,7 @@ param(
     [switch]$SkipBuild,
     [switch]$SkipDataCopy,
     [switch]$SkipServerSeed,
+    [switch]$AllowDirtySeedFailure,
     [switch]$Launch
 )
 
@@ -364,14 +365,21 @@ function Get-StoredSyncCredentialsFromLocalState {
             }
         }
     )
-    Write-Utf8File -Path $LogPath -Content ($sanitized | ConvertTo-Json -Depth 10)
+    $sanitizedJson = if ($sanitized.Count -gt 0) {
+        $sanitized | ConvertTo-Json -Depth 10
+    }
+    else {
+        '[]'
+    }
+
+    Write-Utf8File -Path $LogPath -Content $sanitizedJson
     return $credentials
 }
 
 function Get-SourceUsersFromApi {
     param(
         [Parameter(Mandatory = $true)][string]$BaseUrl,
-        [Parameter(Mandatory = $true)][object[]]$StoredCredentials,
+        [object[]]$StoredCredentials = @(),
         [Parameter(Mandatory = $true)][string]$LogPath
     )
 
@@ -493,8 +501,8 @@ function Get-FallbackOperationalUsers {
 
 function Resolve-IsolatedUserDefinitions {
     param(
-        [Parameter(Mandatory = $true)][object[]]$SourceUsers,
-        [Parameter(Mandatory = $true)][object[]]$StoredCredentials
+        [object[]]$SourceUsers = @(),
+        [object[]]$StoredCredentials = @()
     )
 
     $passwordMap = @{}
@@ -799,6 +807,18 @@ function Reset-IsolatedServerStorage {
     }
 }
 
+function Repair-ProcessPathEnvironmentForChildProcess {
+    $pathValue = [Environment]::GetEnvironmentVariable('Path', 'Process')
+    if ([string]::IsNullOrWhiteSpace($pathValue)) {
+        $pathValue = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($pathValue)) {
+        [Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
+        [Environment]::SetEnvironmentVariable('Path', $pathValue, 'Process')
+    }
+}
+
 function Start-IsolatedServerProcess {
     param(
         [Parameter(Mandatory = $true)][string]$DotnetExe,
@@ -811,26 +831,35 @@ function Start-IsolatedServerProcess {
 
     $serverUrl = "http://127.0.0.1:$Port"
 
-    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $DotnetExe
-    $startInfo.WorkingDirectory = $ServerWorkingDirectory
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.Arguments = ('"{0}" --environment Development' -f $ServerDll.Replace('"', '""'))
-    $startInfo.EnvironmentVariables['ASPNETCORE_ENVIRONMENT'] = 'Development'
-    $startInfo.EnvironmentVariables['DOTNET_ENVIRONMENT'] = 'Development'
-    $startInfo.EnvironmentVariables['ASPNETCORE_URLS'] = $serverUrl
-    $startInfo.EnvironmentVariables['Kestrel__Endpoints__Http__Url'] = $serverUrl
-    $startInfo.EnvironmentVariables['ERP_DB_FALLBACK_SQLITE'] = '1'
-    $startInfo.EnvironmentVariables['Logging__LogLevel__Default'] = 'Warning'
-    $startInfo.EnvironmentVariables['Logging__LogLevel__Microsoft'] = 'Warning'
-    $startInfo.EnvironmentVariables['Logging__LogLevel__Microsoft.EntityFrameworkCore'] = 'Warning'
-    $startInfo.EnvironmentVariables['FileStorage__RootPath'] = $FileStorageRoot
-    $startInfo.EnvironmentVariables['Updates__StorageRoot'] = $UpdatesRoot
+    $serverEnv = @{
+        'ASPNETCORE_ENVIRONMENT' = 'Development'
+        'DOTNET_ENVIRONMENT' = 'Development'
+        'ASPNETCORE_URLS' = $serverUrl
+        'Kestrel__Endpoints__Http__Url' = $serverUrl
+        'ERP_DB_FALLBACK_SQLITE' = '1'
+        'Logging__LogLevel__Default' = 'Warning'
+        'Logging__LogLevel__Microsoft' = 'Warning'
+        'Logging__LogLevel__Microsoft.EntityFrameworkCore' = 'Warning'
+        'FileStorage__RootPath' = $FileStorageRoot
+        'Updates__StorageRoot' = $UpdatesRoot
+    }
 
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $startInfo
-    [void]$process.Start()
+    $previousEnv = @{}
+    foreach ($key in $serverEnv.Keys) {
+        $previousEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+        [Environment]::SetEnvironmentVariable($key, [string]$serverEnv[$key], 'Process')
+    }
+
+    try {
+        Repair-ProcessPathEnvironmentForChildProcess
+        $argumentList = ('"{0}" --environment Development' -f $ServerDll.Replace('"', '""'))
+        $process = Start-Process -FilePath $DotnetExe -ArgumentList $argumentList -WorkingDirectory $ServerWorkingDirectory -WindowStyle Hidden -PassThru
+    }
+    finally {
+        foreach ($key in $serverEnv.Keys) {
+            [Environment]::SetEnvironmentVariable($key, $previousEnv[$key], 'Process')
+        }
+    }
 
     return [pscustomobject]@{
         Process = $process
@@ -942,7 +971,10 @@ set "DOTNET_ENVIRONMENT=Development"
 set "ASPNETCORE_URLS=%SERVER_URL%"
 set "Kestrel__Endpoints__Http__Url=%SERVER_URL%"
 set "ERP_DB_FALLBACK_SQLITE=1"
-set "SeedUsers__EnableSeedUsers=false"
+set "SeedUsers__EnableSeedUsers=true"
+set "SeedUsers__UsenetUsername=usenet"
+set "SeedUsers__UsenetPassword=CHANGE_THIS_USENET_PASSWORD"
+set "SeedUsers__UpdateExistingUsenetPassword=true"
 set "Logging__LogLevel__Default=Warning"
 set "Logging__LogLevel__Microsoft=Warning"
 set "Logging__LogLevel__Microsoft.EntityFrameworkCore=Warning"
@@ -1020,6 +1052,18 @@ function Wait-HttpReady {
     return $false
 }
 
+function Repair-ProcessPathEnvironmentForChildProcess {
+    $pathValue = [Environment]::GetEnvironmentVariable('Path', 'Process')
+    if ([string]::IsNullOrWhiteSpace($pathValue)) {
+        $pathValue = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($pathValue)) {
+        [Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
+        [Environment]::SetEnvironmentVariable('Path', $pathValue, 'Process')
+    }
+}
+
 function Start-HiddenServerProcess {
     param(
         [Parameter(Mandatory = $true)][string]$DotnetExe,
@@ -1029,28 +1073,39 @@ function Start-HiddenServerProcess {
         [Parameter(Mandatory = $true)][string]$ServerDataRoot
     )
 
-    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $DotnetExe
-    $startInfo.WorkingDirectory = $ServerDir
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.Arguments = ('"{0}" --environment Development' -f $ServerDll.Replace('"', '""'))
-    $startInfo.EnvironmentVariables['ASPNETCORE_ENVIRONMENT'] = 'Development'
-    $startInfo.EnvironmentVariables['DOTNET_ENVIRONMENT'] = 'Development'
-    $startInfo.EnvironmentVariables['ASPNETCORE_URLS'] = $ServerUrl
-    $startInfo.EnvironmentVariables['Kestrel__Endpoints__Http__Url'] = $ServerUrl
-    $startInfo.EnvironmentVariables['ERP_DB_FALLBACK_SQLITE'] = '1'
-    $startInfo.EnvironmentVariables['SeedUsers__EnableSeedUsers'] = 'false'
-    $startInfo.EnvironmentVariables['Logging__LogLevel__Default'] = 'Warning'
-    $startInfo.EnvironmentVariables['Logging__LogLevel__Microsoft'] = 'Warning'
-    $startInfo.EnvironmentVariables['Logging__LogLevel__Microsoft.EntityFrameworkCore'] = 'Warning'
-    $startInfo.EnvironmentVariables['FileStorage__RootPath'] = (Join-Path $ServerDataRoot 'FileStore')
-    $startInfo.EnvironmentVariables['Updates__StorageRoot'] = (Join-Path $ServerDataRoot 'updates')
+    $serverEnv = @{
+        'ASPNETCORE_ENVIRONMENT' = 'Development'
+        'DOTNET_ENVIRONMENT' = 'Development'
+        'ASPNETCORE_URLS' = $ServerUrl
+        'Kestrel__Endpoints__Http__Url' = $ServerUrl
+        'ERP_DB_FALLBACK_SQLITE' = '1'
+        'SeedUsers__EnableSeedUsers' = 'true'
+        'SeedUsers__UsenetUsername' = 'usenet'
+        'SeedUsers__UsenetPassword' = '1234'
+        'SeedUsers__UpdateExistingUsenetPassword' = 'true'
+        'Logging__LogLevel__Default' = 'Warning'
+        'Logging__LogLevel__Microsoft' = 'Warning'
+        'Logging__LogLevel__Microsoft.EntityFrameworkCore' = 'Warning'
+        'FileStorage__RootPath' = (Join-Path $ServerDataRoot 'FileStore')
+        'Updates__StorageRoot' = (Join-Path $ServerDataRoot 'updates')
+    }
 
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $startInfo
-    [void]$process.Start()
-    return $process
+    $previousEnv = @{}
+    foreach ($key in $serverEnv.Keys) {
+        $previousEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+        [Environment]::SetEnvironmentVariable($key, [string]$serverEnv[$key], 'Process')
+    }
+
+    try {
+        Repair-ProcessPathEnvironmentForChildProcess
+        $argumentList = ('"{0}" --environment Development' -f $ServerDll.Replace('"', '""'))
+        return Start-Process -FilePath $DotnetExe -ArgumentList $argumentList -WorkingDirectory $ServerDir -WindowStyle Hidden -PassThru
+    }
+    finally {
+        foreach ($key in $serverEnv.Keys) {
+            [Environment]::SetEnvironmentVariable($key, $previousEnv[$key], 'Process')
+        }
+    }
 }
 
 $dotnetExe = '__DOTNET_EXE__'
@@ -1070,6 +1125,128 @@ $appProcess = $null
 function Write-Log {
     param([string]$Message)
     Add-Content -LiteralPath $traceLogPath -Value ("[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message) -Encoding UTF8
+}
+
+function Initialize-TestUpdateManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$ServerDataRoot
+    )
+
+    $mobileDir = Join-Path $PSScriptRoot 'Mobile'
+    $apkSource = Join-Path $mobileDir '거래플랜-Mobile-Test-Debug.apk'
+    if (-not (Test-Path -LiteralPath $apkSource)) {
+        $apkSource = Join-Path $mobileDir 'kr.georaeplan.mobile-Signed.apk'
+    }
+
+    if (-not (Test-Path -LiteralPath $apkSource)) {
+        Write-Log 'Mobile APK not found. Skipping test update manifest.'
+        return
+    }
+
+    $updatesRoot = Join-Path $ServerDataRoot 'updates'
+    $manifestRoot = Join-Path $updatesRoot 'manifest'
+    $downloadRoot = Join-Path $updatesRoot 'downloads\android'
+    New-Item -ItemType Directory -Force -Path $manifestRoot, $downloadRoot | Out-Null
+
+    $apkTargetName = '거래플랜-Mobile-Test-Debug.apk'
+    $apkTarget = Join-Path $downloadRoot $apkTargetName
+    Copy-Item -LiteralPath $apkSource -Destination $apkTarget -Force
+
+    $apkFile = Get-Item -LiteralPath $apkTarget
+    $hash = Get-FileHash -LiteralPath $apkTarget -Algorithm SHA256
+    $stableManifestPath = Join-Path $manifestRoot 'stable.json'
+    $existingDesktopManifest = $null
+    if (Test-Path -LiteralPath $stableManifestPath) {
+        try {
+            $existingManifest = Get-Content -LiteralPath $stableManifestPath -Raw | ConvertFrom-Json
+            if ($null -ne $existingManifest.desktop) {
+                $existingDesktopManifest = $existingManifest.desktop
+            }
+        }
+        catch {
+            Write-Log ("Existing test update manifest could not be read. Rebuilding mobile entry only first. error={0}" -f $_.Exception.Message)
+        }
+    }
+
+    $manifest = [ordered]@{
+        channel = 'stable'
+        generatedAtUtc = [DateTime]::UtcNow.ToString('O')
+        android = [ordered]@{
+            platform = 'android'
+            version = '0.2.18'
+            mandatory = $false
+            minimumSupportedVersion = '0.2.18'
+            fileName = $apkTargetName
+            packageUrl = ''
+            sha256 = $hash.Hash
+            fileSize = $apkFile.Length
+            notes = '테스트 실행환경 모바일 APK입니다.'
+            releasedAtUtc = [DateTime]::UtcNow.ToString('O')
+        }
+    }
+
+    if ($null -ne $existingDesktopManifest) {
+        $manifest.desktop = $existingDesktopManifest
+    }
+    else {
+        $desktopDownloadRoot = Join-Path $updatesRoot 'downloads\desktop'
+        $desktopPackage = Get-ChildItem -LiteralPath $desktopDownloadRoot -File -Filter 'tradeplan-pc-installer-*.zip' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+        if ($null -ne $desktopPackage) {
+            $desktopVersion = 'latest'
+            $versionMatch = [regex]::Match($desktopPackage.Name, 'v(?<version>\d+(?:\.\d+)+)')
+            if ($versionMatch.Success) {
+                $desktopVersion = $versionMatch.Groups['version'].Value
+            }
+
+            $desktopHash = Get-FileHash -LiteralPath $desktopPackage.FullName -Algorithm SHA256
+            $manifest.desktop = [ordered]@{
+                platform = 'desktop'
+                version = $desktopVersion
+                mandatory = $false
+                minimumSupportedVersion = $desktopVersion
+                fileName = $desktopPackage.Name
+                packageUrl = ''
+                sha256 = $desktopHash.Hash
+                fileSize = $desktopPackage.Length
+                notes = '테스트 실행환경 PC 업데이트 패키지입니다.'
+                releasedAtUtc = [DateTime]::UtcNow.ToString('O')
+            }
+        }
+        else {
+            $desktopPackage = Join-Path $desktopDownloadRoot 'tradeplan-pc-installer-vtest.zip'
+            $desktopAppRoot = Join-Path $PSScriptRoot 'App'
+            if (Test-Path -LiteralPath $desktopAppRoot) {
+                New-Item -ItemType Directory -Force -Path $desktopDownloadRoot | Out-Null
+                Remove-Item -LiteralPath $desktopPackage -Force -ErrorAction SilentlyContinue
+                Compress-Archive -Path (Join-Path $desktopAppRoot '*') -DestinationPath $desktopPackage -Force
+                $desktopPackage = Get-Item -LiteralPath $desktopPackage
+                Write-Log ("Desktop update package was not found. Created test package from App folder: {0}" -f $desktopPackage.FullName)
+
+                $desktopHash = Get-FileHash -LiteralPath $desktopPackage.FullName -Algorithm SHA256
+                $manifest.desktop = [ordered]@{
+                    platform = 'desktop'
+                    version = 'test'
+                    mandatory = $false
+                    minimumSupportedVersion = 'test'
+                    fileName = $desktopPackage.Name
+                    packageUrl = ''
+                    sha256 = $desktopHash.Hash
+                    fileSize = $desktopPackage.Length
+                    notes = '테스트 실행환경 PC 앱 패키지입니다.'
+                    releasedAtUtc = [DateTime]::UtcNow.ToString('O')
+                }
+            }
+            else {
+                Write-Log 'Desktop update package not found and App folder is missing. Test manifest will contain android entry only.'
+            }
+        }
+    }
+
+    $manifestJson = $manifest | ConvertTo-Json -Depth 8
+    Set-Content -LiteralPath $stableManifestPath -Value $manifestJson -Encoding UTF8
+    Write-Log ("Test update manifest prepared. apk={0}; desktopPreserved={1}" -f $apkTarget, ($null -ne $manifest.desktop))
 }
 
 Set-Content -LiteralPath $traceLogPath -Value @() -Encoding UTF8
@@ -1102,6 +1279,7 @@ try {
     }
 
     Write-Log 'App/server files resolved.'
+    Initialize-TestUpdateManifest -ServerDataRoot $serverDataRoot
     $scanPort = 19080
     $serverReady = $false
     for ($attempt = 1; $attempt -le 10; $attempt++) {
@@ -1225,7 +1403,8 @@ function Initialize-IsolatedServerData {
         [Parameter(Mandatory = $true)][string]$ServerWorkingDirectory,
         [Parameter(Mandatory = $true)][string]$SeedLogRoot,
         [Parameter(Mandatory = $true)][string]$ServerDataRoot,
-        [Parameter(Mandatory = $true)][string]$SourceApiBaseUrl
+        [Parameter(Mandatory = $true)][string]$SourceApiBaseUrl,
+        [switch]$AllowDirtySeedFailure
     )
 
     if (-not (Test-Path -LiteralPath (Join-Path $TestAppRoot 'data\거래플랜.db'))) {
@@ -1235,16 +1414,16 @@ function Initialize-IsolatedServerData {
     New-Item -ItemType Directory -Force -Path $SeedLogRoot | Out-Null
     New-Item -ItemType Directory -Force -Path $ServerDataRoot | Out-Null
 
-    $markResult = Invoke-WithProcessEnvironment -Variables @{
+    $prepareResult = Invoke-WithProcessEnvironment -Variables @{
         GEORAEPLAN_APP_ROOT = $TestAppRoot
         GEORAEPLAN_DISABLE_LEGACY_MERGE = '1'
     } -Action {
-        Invoke-DotnetWithOutput -DotnetExe $DotnetExe -Arguments @('run', '--project', $SyncDiagProject, '--', 'mark-all-dirty')
+        Invoke-DotnetWithOutput -DotnetExe $DotnetExe -Arguments @('run', '--project', $SyncDiagProject, '--', 'prepare-test-seed')
     }
 
-    Write-Utf8File -Path (Join-Path $SeedLogRoot 'mark-all-dirty.log') -Content $markResult.Text
-    if ($markResult.ExitCode -ne 0) {
-        throw "테스트 앱 데이터 dirty 표시 실패`n$($markResult.Text)"
+    Write-Utf8File -Path (Join-Path $SeedLogRoot 'prepare-test-seed.log') -Content $prepareResult.Text
+    if ($prepareResult.ExitCode -ne 0) {
+        throw "테스트 앱 데이터 시드 준비 실패`n$($prepareResult.Text)"
     }
 
     $seedPort = Get-FreeTcpPort -StartingPort 19080
@@ -1253,6 +1432,34 @@ function Initialize-IsolatedServerData {
     try {
         if (-not (Wait-HttpReady -Url ($serverState.ServerUrl + '/healthz') -TimeoutSeconds 50)) {
             throw "테스트 서버 기동 확인 실패. url=$($serverState.ServerUrl) dll=$ServerDll"
+        }
+
+        $preSyncResult = Invoke-WithProcessEnvironment -Variables @{
+            GEORAEPLAN_APP_ROOT = $TestAppRoot
+            GEORAEPLAN_DISABLE_LEGACY_MERGE = '1'
+            GEORAEPLAN_SYNC_USERNAME = 'admin'
+            GEORAEPLAN_SYNC_PASSWORD = 'CHANGE_THIS_ADMIN_PASSWORD'
+            GEORAEPLAN_SYNC_BASEURL = ($serverState.ServerUrl + '/')
+        } -Action {
+            Invoke-DotnetWithOutput -DotnetExe $DotnetExe -Arguments @('run', '--project', $SyncDiagProject, '--', 'preseed-sync')
+        }
+
+        Write-Utf8File -Path (Join-Path $SeedLogRoot 'pre-seed-sync.log') -Content $preSyncResult.Text
+        $preSeedSyncSucceeded = $preSyncResult.ExitCode -eq 0 -and $preSyncResult.Text -match 'sync_ok=(True|true)'
+        if (-not $preSeedSyncSucceeded) {
+            throw "테스트 서버 기본 데이터 동기화 준비 실패`n$($preSyncResult.Text)"
+        }
+
+        $markResult = Invoke-WithProcessEnvironment -Variables @{
+            GEORAEPLAN_APP_ROOT = $TestAppRoot
+            GEORAEPLAN_DISABLE_LEGACY_MERGE = '1'
+        } -Action {
+            Invoke-DotnetWithOutput -DotnetExe $DotnetExe -Arguments @('run', '--project', $SyncDiagProject, '--', 'mark-all-dirty')
+        }
+
+        Write-Utf8File -Path (Join-Path $SeedLogRoot 'mark-all-dirty.log') -Content $markResult.Text
+        if ($markResult.ExitCode -ne 0) {
+            throw "테스트 앱 데이터 dirty 표시 실패`n$($markResult.Text)"
         }
 
         $syncResult = Invoke-WithProcessEnvironment -Variables @{
@@ -1266,15 +1473,29 @@ function Initialize-IsolatedServerData {
         }
 
         Write-Utf8File -Path (Join-Path $SeedLogRoot 'seed-sync.log') -Content $syncResult.Text
-        if ($syncResult.ExitCode -ne 0 -or $syncResult.Text -notmatch 'sync_ok=(True|true)') {
-            throw "테스트 서버 시드 동기화 실패`n$($syncResult.Text)"
+        $seedSyncSucceeded = $syncResult.ExitCode -eq 0 -and $syncResult.Text -match 'sync_ok=(True|true)'
+        if (-not $seedSyncSucceeded) {
+            $seedSyncWarning = @(
+                '테스트 서버 데이터 시드 동기화가 완료되지 않았습니다.',
+                '로컬 AppData에 미동기화/충돌 데이터가 있을 때 발생할 수 있습니다.',
+                '테스트 실행환경은 계속 만들고, 로그인/화면 미리보기용 사용자 시드는 계속 진행합니다.',
+                '',
+                $syncResult.Text
+            ) -join [Environment]::NewLine
+            Write-Utf8File -Path (Join-Path $SeedLogRoot 'seed-sync-warning.log') -Content $seedSyncWarning
+
+            if (-not $AllowDirtySeedFailure) {
+                Write-Warning $seedSyncWarning
+            }
         }
 
-        $storedCredentials = Get-StoredSyncCredentialsFromLocalState `
-            -DotnetExe $DotnetExe `
-            -SyncDiagProject $SyncDiagProject `
-            -AppRoot $TestAppRoot `
-            -LogPath (Join-Path $SeedLogRoot 'stored-sync-credentials.log')
+        $storedCredentials = @(
+            Get-StoredSyncCredentialsFromLocalState `
+                -DotnetExe $DotnetExe `
+                -SyncDiagProject $SyncDiagProject `
+                -AppRoot $TestAppRoot `
+                -LogPath (Join-Path $SeedLogRoot 'stored-sync-credentials.log')
+        )
 
         $sourceUsersSnapshot = Get-SourceUsersFromApi `
             -BaseUrl $SourceApiBaseUrl `
@@ -1313,6 +1534,7 @@ function Initialize-IsolatedServerData {
         $seedSummary = @(
             "seed_server_url=$($serverState.ServerUrl)",
             "seed_sync_log=$(Join-Path $SeedLogRoot 'seed-sync.log')",
+            "seed_sync_succeeded=$seedSyncSucceeded",
             "source_api_base_url=$SourceApiBaseUrl",
             "user_bootstrap_log=$(Join-Path $SeedLogRoot 'user-bootstrap.json')"
         ) -join [Environment]::NewLine
@@ -1426,7 +1648,7 @@ Reset-IsolatedServerStorage -ServerOutput $serverOutput -ServerDataRoot $serverD
 $seedSucceeded = $false
 $seedSkippedReason = ''
 if (-not $SkipServerSeed) {
-    Initialize-IsolatedServerData -DotnetExe $dotnetExe -SyncDiagProject $syncDiagProject -TestAppRoot $isolatedAppRoot -ServerDll $serverDll -ServerWorkingDirectory $serverOutput -SeedLogRoot (Join-Path $sessionRoot 'server-seed') -ServerDataRoot $serverDataRoot -SourceApiBaseUrl $sourceApiBaseUrl
+    Initialize-IsolatedServerData -DotnetExe $dotnetExe -SyncDiagProject $syncDiagProject -TestAppRoot $isolatedAppRoot -ServerDll $serverDll -ServerWorkingDirectory $serverOutput -SeedLogRoot (Join-Path $sessionRoot 'server-seed') -ServerDataRoot $serverDataRoot -SourceApiBaseUrl $sourceApiBaseUrl -AllowDirtySeedFailure:$AllowDirtySeedFailure
     $seedSucceeded = $true
 }
 else {
@@ -1492,11 +1714,3 @@ if ($Launch) {
     Start-Process -FilePath (Join-Path $OutputRoot 'Run-All.cmd') -WorkingDirectory $OutputRoot
     Write-Host '로컬 테스트 서버/앱 실행을 시작했습니다.'
 }
-
-
-
-
-
-
-
-

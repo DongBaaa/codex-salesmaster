@@ -11,6 +11,7 @@ using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
 using 거래플랜.Desktop.App.Views;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App;
 
@@ -32,7 +33,10 @@ public partial class MainWindow : Window
     private readonly RuntimeSafetyMonitorService _runtimeSafety;
     private readonly DispatcherTimer _centralRevisionPollTimer;
     private readonly DispatcherTimer _runtimeSafetyTimer;
+    private CancellationTokenSource? _realtimeRevisionCts;
+    private Task? _realtimeRevisionTask;
     private bool _isInitialized;
+    private bool _runtimeServicesStarted;
     private DateTime _lastCentralRefreshUtc = DateTime.MinValue;
     private long _lastPassiveServerRevisionHint;
     private bool _centralRefreshInProgress;
@@ -96,6 +100,7 @@ public partial class MainWindow : Window
             return;
 
         _isClosingOrClosed = true;
+        StopRealtimeRevisionMonitor();
         _centralRevisionPollTimer?.Stop();
         _runtimeSafetyTimer?.Stop();
     }
@@ -106,12 +111,14 @@ public partial class MainWindow : Window
     public IPrintService InvoicePrintService => _invoicePrintService;
     public SessionState SessionState => _session;
     public ErpApiClient ApiClient => _api;
+    public Task? InitialDashboardLoadTask { get; private set; }
 
     public void EndShutdownProtection()
     {
         _isClosingOrClosed = false;
         if (_isInitialized && !_session.IsOfflineMode)
         {
+            StartRealtimeRevisionMonitor();
             _centralRevisionPollTimer?.Start();
             _runtimeSafetyTimer?.Start();
         }
@@ -162,63 +169,187 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
-    public async Task InitAsync(bool deferStartupNotifications = false)
+    public Task InitAsync(bool deferStartupNotifications = false)
     {
         if (_isClosingOrClosed)
+            return Task.CompletedTask;
+
+        _vm.SyncStatus = "메인 화면을 표시했습니다. 대시보드와 거래내역은 백그라운드에서 불러오는 중입니다.";
+        InitialDashboardLoadTask = RunInitialDashboardLoadAsync(deferStartupNotifications);
+        UiTaskHelper.Forget(
+            InitialDashboardLoadTask,
+            "UI",
+            "메인 대시보드 백그라운드 로드",
+            ex =>
+            {
+                _vm.SyncStatus = "초기 대시보드 로드 중 오류가 발생했습니다. 메뉴는 사용할 수 있으며 필요한 화면에서 다시 조회할 수 있습니다.";
+                AppLogger.Error("UI", "Initial dashboard background load failed", ex);
+            });
+        return Task.CompletedTask;
+    }
+
+    private async Task RunInitialDashboardLoadAsync(bool deferStartupNotifications)
+    {
+        ServerClockCheckResult? serverClockCheck = null;
+        try
+        {
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            if (_isClosingOrClosed)
+                return;
+
+            await OperationTiming.MeasureAsync(
+                "APP",
+                "회사 프로필 상태 점검",
+                () => _local.EnsureCompanyProfilesHealthyAsync(),
+                warningThreshold: TimeSpan.FromSeconds(2));
+
+            serverClockCheck = await OperationTiming.MeasureAsync(
+                "APP",
+                "서버 기준 날짜 확인",
+                () => _runtimeSafety.ResolveServerTodayAsync(),
+                warningThreshold: TimeSpan.FromSeconds(2));
+            _vm.SetInvoiceDefaultDateRange(serverClockCheck.ServerToday);
+
+            await OperationTiming.MeasureAsync(
+                "UI",
+                "메인 대시보드 로드",
+                () => _vm.LoadAsync(),
+                warningThreshold: TimeSpan.FromSeconds(3));
+
+            var popupSections = new List<string>();
+            if (!string.IsNullOrWhiteSpace(_vm.ContractAlertPopupMessage))
+                popupSections.Add(_vm.ContractAlertPopupMessage);
+            if (!string.IsNullOrWhiteSpace(_vm.RentalAlertPopupMessage))
+                popupSections.Add(_vm.RentalAlertPopupMessage);
+
+            var dashboardMessage = popupSections.Count > 0
+                ? string.Join(Environment.NewLine + Environment.NewLine, popupSections)
+                  + Environment.NewLine
+                  + Environment.NewLine
+                  + "확인을 누르면 메인화면으로 이동해 계속 작업할 수 있습니다."
+                : null;
+
+            var clockWarningMessage = serverClockCheck.WarningRequired && !string.IsNullOrWhiteSpace(serverClockCheck.WarningMessage)
+                ? serverClockCheck.WarningMessage
+                : null;
+
+            if (deferStartupNotifications)
+            {
+                _deferredStartupDashboardMessage = dashboardMessage;
+                _deferredStartupClockWarningMessage = clockWarningMessage;
+            }
+            else
+            {
+                ShowStartupNotifications(dashboardMessage, clockWarningMessage);
+            }
+        }
+        finally
+        {
+            _isInitialized = true;
+            StartRuntimeServicesAfterInitialDashboardLoad();
+            QueueDeferredStartupSafetyChecks();
+        }
+    }
+
+    private void StartRuntimeServicesAfterInitialDashboardLoad()
+    {
+        if (_runtimeServicesStarted || _session.IsOfflineMode || _isClosingOrClosed)
             return;
 
-        await OperationTiming.MeasureAsync(
-            "APP",
-            "회사 프로필 상태 점검",
-            () => _local.EnsureCompanyProfilesHealthyAsync(),
-            warningThreshold: TimeSpan.FromSeconds(2));
-        var serverClockCheck = await OperationTiming.MeasureAsync(
-            "APP",
-            "서버 기준 날짜 확인",
-            () => _runtimeSafety.ResolveServerTodayAsync(),
-            warningThreshold: TimeSpan.FromSeconds(2));
-        _vm.SetInvoiceDefaultDateRange(serverClockCheck.ServerToday);
-        await OperationTiming.MeasureAsync(
-            "UI",
-            "메인 대시보드 로드",
-            () => _vm.LoadAsync(),
-            warningThreshold: TimeSpan.FromSeconds(3));
-        if (!_session.IsOfflineMode)
+        _runtimeServicesStarted = true;
+        _sync.Start(TimeSpan.FromMinutes(5));
+        StartRealtimeRevisionMonitor();
+        _centralRevisionPollTimer.Start();
+        _runtimeSafetyTimer.Start();
+    }
+
+    private void StartRealtimeRevisionMonitor()
+    {
+        if (_realtimeRevisionCts is not null || _session.IsOfflineMode || !_session.IsLoggedIn || _isClosingOrClosed)
+            return;
+
+        _realtimeRevisionCts = new CancellationTokenSource();
+        _realtimeRevisionTask = Task.Run(
+            () => RunRealtimeRevisionMonitorAsync(_realtimeRevisionCts.Token),
+            _realtimeRevisionCts.Token);
+    }
+
+    private void StopRealtimeRevisionMonitor()
+    {
+        var cts = _realtimeRevisionCts;
+        _realtimeRevisionCts = null;
+        _realtimeRevisionTask = null;
+        if (cts is null)
+            return;
+
+        try
         {
-            _sync.Start(TimeSpan.FromMinutes(5));
-            _centralRevisionPollTimer.Start();
-            _runtimeSafetyTimer.Start();
+            cts.Cancel();
         }
-
-        var popupSections = new List<string>();
-        if (!string.IsNullOrWhiteSpace(_vm.ContractAlertPopupMessage))
-            popupSections.Add(_vm.ContractAlertPopupMessage);
-        if (!string.IsNullOrWhiteSpace(_vm.RentalAlertPopupMessage))
-            popupSections.Add(_vm.RentalAlertPopupMessage);
-
-        var dashboardMessage = popupSections.Count > 0
-            ? string.Join(Environment.NewLine + Environment.NewLine, popupSections)
-              + Environment.NewLine
-              + Environment.NewLine
-              + "확인을 누르면 메인화면으로 이동해 계속 작업할 수 있습니다."
-            : null;
-
-        var clockWarningMessage = serverClockCheck.WarningRequired && !string.IsNullOrWhiteSpace(serverClockCheck.WarningMessage)
-            ? serverClockCheck.WarningMessage
-            : null;
-
-        if (deferStartupNotifications)
+        catch
         {
-            _deferredStartupDashboardMessage = dashboardMessage;
-            _deferredStartupClockWarningMessage = clockWarningMessage;
+            // ignore shutdown race
         }
-        else
+        finally
         {
-            ShowStartupNotifications(dashboardMessage, clockWarningMessage);
+            cts.Dispose();
         }
+    }
 
-        _isInitialized = true;
-        QueueDeferredStartupSafetyChecks();
+    private async Task RunRealtimeRevisionMonitorAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode || !_session.IsLoggedIn)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(3), ct);
+                    continue;
+                }
+
+                var baselineRevision = Math.Max(await ResolveLocalLastSyncRevisionAsync(), _lastPassiveServerRevisionHint);
+                var status = await _api.WaitForSyncChangeAsync(
+                    baselineRevision,
+                    TimeSpan.FromSeconds(25),
+                    _session.SelectedBusinessDatabaseName,
+                    ct);
+                if (status is null || status.CurrentServerRevision <= baselineRevision)
+                    continue;
+
+                await Dispatcher.InvokeAsync(
+                    () => UiTaskHelper.Forget(
+                        RunPassiveSyncRefreshAsync("실시간 변경 감지", TimeSpan.Zero, requireServerRevisionChange: false),
+                        "SYNC",
+                        "실시간 변경 감지 후 재동기화",
+                        ex => AppLogger.Warn("SYNC", $"실시간 변경 감지 후 재동기화 실패: {ex.Message}")),
+                    DispatcherPriority.Background,
+                    ct);
+                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warn("SYNC", $"실시간 변경 감지 대기 실패: {ex.Message}");
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    private async Task<long> ResolveLocalLastSyncRevisionAsync()
+    {
+        var raw = await _local.GetSettingAsync("LastSyncRevision");
+        return long.TryParse(raw, out var value) ? value : 0L;
     }
 
     public void ShowDeferredStartupNotifications()
@@ -275,6 +406,9 @@ public partial class MainWindow : Window
         if (_isClosingOrClosed)
             return;
 
+        if (await ShouldDeferStartupRuntimeSafetyCheckAsync())
+            return;
+
         await OperationTiming.MeasureAsync(
             "APP",
             "주기 안전 점검 초기 실행",
@@ -292,6 +426,32 @@ public partial class MainWindow : Window
         {
             await Task.Delay(TimeSpan.FromMilliseconds(500));
         }
+    }
+
+    private async Task<bool> ShouldDeferStartupRuntimeSafetyCheckAsync()
+    {
+        if (_sync.HasActiveOrQueuedSync)
+        {
+            _vm.SyncStatus = "초기 데이터 동기화가 진행 중입니다. 거래처/거래내역을 서버에서 받는 동안 잠시만 기다려 주세요.";
+            AppLogger.Info("RUNTIME", "초기 동기화가 진행 중이라 시작 안전 점검을 뒤로 미룹니다.");
+            return true;
+        }
+
+        try
+        {
+            if (await _vm.IsInitialServerDataLoadRequiredAsync())
+            {
+                _vm.SyncStatus = "초기 데이터 동기화가 필요합니다. 거래처/거래내역 수신 후 안전 점검을 진행합니다.";
+                AppLogger.Info("RUNTIME", "초기 서버 데이터 수신이 필요한 상태라 시작 안전 점검을 뒤로 미룹니다.");
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("RUNTIME", $"초기 동기화 상태 확인 실패: {ex.Message}");
+        }
+
+        return false;
     }
 
     private async Task<DateOnly> ResolveServerTodayAsync()
@@ -389,14 +549,17 @@ public partial class MainWindow : Window
                 }
                 else
                 {
+                    var actionQuestion = result.HasDirectAction
+                        ? $"{Environment.NewLine}{Environment.NewLine}거래플랜에서 문제 위치를 바로 열까요?"
+                        : $"{Environment.NewLine}{Environment.NewLine}상세 내역과 수정 방법을 지금 열까요?";
                     var response = MessageBox.Show(
                         this,
-                        result.WarningMessage + Environment.NewLine + Environment.NewLine + "상세 내역과 수정 방법을 지금 열까요?",
+                        result.WarningMessage + actionQuestion,
                         "주기 무결성 점검",
                         MessageBoxButton.YesNo,
                         MessageBoxImage.Warning);
                     if (response == MessageBoxResult.Yes)
-                        OpenPeriodicIntegrityReport(result.DetailReportPath);
+                        await OpenPeriodicIntegrityTargetAsync(result);
                 }
             }
         }
@@ -406,6 +569,33 @@ public partial class MainWindow : Window
         }
     }
 
+
+    private async Task OpenPeriodicIntegrityTargetAsync(PeriodicIntegrityMonitorResult result)
+    {
+        if (result.HasDirectAction)
+        {
+            switch (result.DirectActionKind)
+            {
+                case DataIntegrityDirectActionKind.OpenInventoryItem when result.TargetEntityId.HasValue:
+                    await OpenInventoryWindowAsync(result.TargetEntityId.Value, this);
+                    return;
+                case DataIntegrityDirectActionKind.OpenRentalBillingProfile when result.TargetEntityId.HasValue:
+                    await OpenRentalBillingWindowAsync(result.TargetEntityId.Value, this);
+                    return;
+                case DataIntegrityDirectActionKind.OpenRentalAsset when result.TargetEntityId.HasValue:
+                    await OpenRentalAssetWindowAsync(result.TargetEntityId.Value, this);
+                    return;
+                case DataIntegrityDirectActionKind.OpenSyncDiagnostics:
+                    await OpenSyncDiagnosticsWindowAsync(this);
+                    return;
+                case DataIntegrityDirectActionKind.OpenEnvironmentSettings:
+                    await OpenEnvironmentSettingsWindowAsync(EnvironmentSettingsInitialTab.General);
+                    return;
+            }
+        }
+
+        OpenPeriodicIntegrityReport(result.DetailReportPath);
+    }
     private void OpenPeriodicIntegrityReport(string path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -513,13 +703,19 @@ public partial class MainWindow : Window
             if (!result.HasIssues)
                 return;
 
-            if (!forceShow && string.Equals(_lastDataIntegrityIssueSignature, result.IssueSignature, StringComparison.Ordinal))
+            if (!forceShow && !result.HasPassiveStartupNoticeIssues)
                 return;
 
-            _lastDataIntegrityIssueSignature = result.IssueSignature;
+            var issueSignature = forceShow
+                ? result.IssueSignature
+                : result.PassiveStartupNoticeSignature;
+            if (!forceShow && string.Equals(_lastDataIntegrityIssueSignature, issueSignature, StringComparison.Ordinal))
+                return;
+
+            _lastDataIntegrityIssueSignature = issueSignature;
             if (!showPrompt)
             {
-                _vm.SyncStatus = "운영 점검에서 확인이 필요한 항목이 있습니다. 업무는 바로 진행할 수 있으며, 동기화 진단에서 상세 내용을 확인하세요.";
+                _vm.SyncStatus = "운영 점검 알림: 확인할 항목이 있습니다. 목록 조회와 업무는 계속 가능하며, 상세 내용은 동기화 진단에서 확인하세요.";
                 AppLogger.Warn("INTEGRITY", $"{reason} 운영 점검 알림을 상태바로 전환했습니다. issues={result.Issues.Count:N0}");
                 return;
             }
@@ -642,6 +838,24 @@ public partial class MainWindow : Window
             case DataIntegrityDirectActionKind.OpenRentalBillingProfile when issue.AssetId.HasValue:
                 await OpenRentalAssetWindowAsync(issue.AssetId.Value, ownerOverride);
                 break;
+            case DataIntegrityDirectActionKind.OpenInventoryItem when issue.EntityId.HasValue:
+                await OpenInventoryWindowAsync(issue.EntityId.Value, ownerOverride);
+                break;
+            case DataIntegrityDirectActionKind.OpenCustomer when issue.EntityId.HasValue:
+                await OpenCustomerEditorAsync(issue.EntityId.Value, ownerOverride);
+                break;
+            case DataIntegrityDirectActionKind.OpenInvoice when issue.EntityId.HasValue:
+                await OpenInvoiceWindowAsync(issue.EntityId.Value, ownerOverride);
+                break;
+            case DataIntegrityDirectActionKind.OpenPaymentForInvoice when issue.EntityId.HasValue:
+                await OpenPaymentPopupAsync(issue.EntityId.Value, ownerOverride);
+                break;
+            case DataIntegrityDirectActionKind.OpenSyncDiagnostics:
+                await OpenSyncDiagnosticsWindowAsync(ownerOverride);
+                break;
+            case DataIntegrityDirectActionKind.OpenEnvironmentSettings:
+                await OpenEnvironmentSettingsWindowAsync(EnvironmentSettingsInitialTab.General);
+                break;
             default:
                 MessageBox.Show(
                     ownerOverride ?? this,
@@ -743,6 +957,27 @@ public partial class MainWindow : Window
         => RunUiAsync(() => OpenProcurementWindowAsync(preselectSelectedCustomer: true), "견적/발주 창 열기");
 
     // 전표 목록 더블클릭 수정
+    private void InvoiceRowsDataGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not DataGrid grid)
+            return;
+
+        var source = e.OriginalSource as DependencyObject;
+        var row = FindAncestor<DataGridRow>(source);
+        if (row?.DataContext is not InvoiceListRow invoiceRow)
+            return;
+
+        if (!grid.SelectedItems.Contains(invoiceRow))
+        {
+            grid.SelectedItems.Clear();
+            row.IsSelected = true;
+            grid.SelectedItem = invoiceRow;
+            _vm.SelectedInvoiceRow = invoiceRow;
+        }
+
+        row.Focus();
+    }
+
     private void InvoiceRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         => RunUiAsync(OpenSelectedInvoiceEditorAsync, "전표 상세 열기");
 
@@ -883,32 +1118,7 @@ public partial class MainWindow : Window
     private async Task DeleteSelectedInvoicesContextMenu_ClickAsync(object sender)
     {
         var rows = GetSelectedInvoiceRows(sender).ToList();
-        if (rows.Count == 0)
-        {
-            MessageBox.Show("삭제할 전표를 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var confirm = MessageBox.Show(
-            $"선택한 전표를 삭제하시겠습니까?{Environment.NewLine}삭제된 전표는 환경설정 > 휴지통에서 복원할 수 있습니다.",
-            "전표 삭제 확인",
-            MessageBoxButton.OKCancel,
-            MessageBoxImage.Warning);
-
-        if (confirm != MessageBoxResult.OK)
-            return;
-
-        foreach (var row in rows.GroupBy(r => r.Id).Select(group => group.First()))
-        {
-            var deleteInvoiceResult = await _local.DeleteInvoiceAsync(row.Id, _session, row.Revision);
-            if (!deleteInvoiceResult.Success)
-            {
-                MessageBox.Show(deleteInvoiceResult.Message, "전표 삭제", MessageBoxButton.OK, MessageBoxImage.Warning);
-                break;
-            }
-        }
-
-        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+        await _vm.DeleteInvoiceRowsAsync(rows);
     }
 
     private static IEnumerable<InvoiceListRow> GetSelectedInvoiceRows(object sender)
@@ -1072,14 +1282,31 @@ public partial class MainWindow : Window
         win.Show();
     }
 
-    private async Task OpenInvoiceWindowAsync(Data.LocalInvoice invoice)
+    private async Task OpenInvoiceWindowAsync(Guid invoiceId, Window? ownerOverride = null)
+    {
+        var invoice = await _local.GetInvoiceAsync(invoiceId, _session);
+        if (invoice is null)
+        {
+            MessageBox.Show(
+                ownerOverride ?? this,
+                "전표를 찾을 수 없어 전표 작성창을 열 수 없습니다.",
+                "운영 점검",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        await OpenInvoiceWindowAsync(invoice, ownerOverride);
+    }
+
+    private async Task OpenInvoiceWindowAsync(Data.LocalInvoice invoice, Window? ownerOverride = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var entryType = invoice.VoucherType switch
         {
-            거래플랜.Shared.Contracts.VoucherType.Purchase => 거래플랜.Shared.Contracts.VoucherType.Purchase,
-            거래플랜.Shared.Contracts.VoucherType.Procurement => 거래플랜.Shared.Contracts.VoucherType.Procurement,
-            _ => 거래플랜.Shared.Contracts.VoucherType.Sales
+            VoucherType.Purchase => VoucherType.Purchase,
+            VoucherType.Procurement => VoucherType.Procurement,
+            _ => VoucherType.Sales
         };
 
         var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session, entryType);
@@ -1094,12 +1321,29 @@ public partial class MainWindow : Window
             () => vm.LoadInvoiceAsync(invoice),
             warningThreshold: TimeSpan.FromSeconds(2));
 
-        var win = new SalesWindow(vm) { Owner = this };
+        var win = new SalesWindow(vm) { Owner = ownerOverride ?? this };
         win.Closed += SalesWindow_Closed;
         win.Show();
     }
 
-    private async Task OpenCustomerEditorAsync(Data.LocalCustomer? customer = null)
+    private async Task OpenCustomerEditorAsync(Guid customerId, Window? ownerOverride = null)
+    {
+        var customer = await _local.GetCustomerAsync(customerId, _session);
+        if (customer is null)
+        {
+            MessageBox.Show(
+                ownerOverride ?? this,
+                "거래처를 찾을 수 없어 거래처 수정창을 열 수 없습니다.",
+                "운영 점검",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        await OpenCustomerEditorAsync(customer, ownerOverride);
+    }
+
+    private async Task OpenCustomerEditorAsync(Data.LocalCustomer? customer = null, Window? ownerOverride = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new CustomerEditViewModel(_local, _session);
@@ -1109,45 +1353,70 @@ public partial class MainWindow : Window
             () => vm.LoadAsync(customer),
             warningThreshold: TimeSpan.FromSeconds(2));
 
-        var win = new CustomerEditWindow(vm) { Owner = this };
+        var win = new CustomerEditWindow(vm) { Owner = ownerOverride ?? this };
         if (win.ShowDialog() == true)
             await _vm.RefreshCustomersCommand.ExecuteAsync(null);
     }
 
-    private async Task OpenInventoryWindowAsync()
+    private Task OpenInventoryWindowAsync()
+        => OpenInventoryWindowAsync(null, null);
+
+    private async Task OpenInventoryWindowAsync(Guid? targetItemId, Window? ownerOverride)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new InventoryViewModel(_local, _session);
         await OperationTiming.MeasureAsync(
             "UI",
             "품목/재고 관리 창 초기화",
-            () => vm.LoadAsync(),
+            () => targetItemId.HasValue ? vm.LoadAndSelectItemAsync(targetItemId.Value) : vm.LoadAsync(),
             warningThreshold: TimeSpan.FromSeconds(2));
-        var win = new InventoryWindow(vm) { Owner = this };
+        var win = new InventoryWindow(vm) { Owner = ownerOverride ?? this };
         win.Show();
     }
 
-    private async Task OpenPaymentPopupAsync()
+    private Task OpenPaymentPopupAsync()
+        => OpenPaymentPopupAsync(null, null);
+
+    private async Task OpenPaymentPopupAsync(Guid? targetInvoiceId, Window? ownerOverride)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new PaymentViewModel(_local, _session);
 
-        // 우선: 좌측 거래처 선택값, 없으면 선택 전표의 거래처를 사용
-        var preselect = _vm.SelectedCustomerFilter;
-        if (preselect is null && _vm.SelectedInvoiceRow is not null)
+        Data.LocalInvoice? targetInvoice = null;
+        Data.LocalCustomer? preselect = _vm.SelectedCustomerFilter;
+        if (targetInvoiceId.HasValue)
+        {
+            targetInvoice = await _local.GetInvoiceAsync(targetInvoiceId.Value, _session);
+            if (targetInvoice is null)
+            {
+                MessageBox.Show(
+                    ownerOverride ?? this,
+                    "전표를 찾을 수 없어 수금/지급 창을 열 수 없습니다.",
+                    "운영 점검",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            preselect = await _local.GetCustomerAsync(targetInvoice.CustomerId, _session);
+        }
+        else if (preselect is null && _vm.SelectedInvoiceRow is not null)
         {
             var invoice = await _local.GetInvoiceAsync(_vm.SelectedInvoiceRow.Id, _session);
             if (invoice is not null)
                 preselect = await _local.GetCustomerAsync(invoice.CustomerId, _session);
         }
 
-        var refreshCustomerId = preselect?.Id;
+        var refreshCustomerId = preselect?.Id ?? targetInvoice?.CustomerId;
         await OperationTiming.MeasureAsync(
             "UI",
             "수금/지급 창 초기화",
             () => vm.LoadAsync(preselect),
             warningThreshold: TimeSpan.FromSeconds(2));
-        var win = new PaymentWindow(vm) { Owner = this };
+        if (targetInvoice is not null)
+            await vm.ConfigureForInvoiceAsync(targetInvoice);
+
+        var win = new PaymentWindow(vm) { Owner = ownerOverride ?? this };
         void RefreshMainAfterPaymentChange()
             => RunUiAsync(
                 () => _vm.RefreshAfterFinancialTransactionChangedAsync(refreshCustomerId),
@@ -1180,6 +1449,23 @@ public partial class MainWindow : Window
         win.Show();
     }
 
+    private async Task OpenSyncDiagnosticsWindowAsync(Window? ownerOverride = null)
+    {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
+        var diagnosticsViewModel = new SyncDiagnosticsViewModel(_diagnostics, _sync, _api, _local, _rental, _session);
+        await OperationTiming.MeasureAsync(
+            "UI",
+            "동기화 진단 창 초기화",
+            () => diagnosticsViewModel.LoadAsync(),
+            warningThreshold: TimeSpan.FromSeconds(2));
+
+        var window = new SyncDiagnosticsWindow(diagnosticsViewModel)
+        {
+            Owner = ownerOverride ?? this
+        };
+        window.ShowDialog();
+    }
+
     private async Task OpenEnvironmentSettingsWindowAsync(EnvironmentSettingsInitialTab initialTab = EnvironmentSettingsInitialTab.General)
     {
         try
@@ -1194,6 +1480,7 @@ public partial class MainWindow : Window
                 _diagnostics,
                 _dataIntegrity,
                 _rental,
+                _print,
                 _rentalDocuments,
                 _invoicePrintService,
                 async () => await _vm.ReloadForBusinessDatabaseChangeAsync());
@@ -1376,7 +1663,21 @@ public partial class MainWindow : Window
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             _vm.SyncStatus = $"{reason} 전 중앙 서버에 변경사항 저장 중...";
-            await _sync.FlushPendingChangesAsync(cts.Token);
+            var flushed = await _sync.FlushPendingChangesAsync(cts.Token);
+            var remainingDirtyCount = await _local.CountDirtyAsync(_session);
+            if (!flushed || remainingDirtyCount > 0)
+            {
+                _vm.SyncStatus = await _local.GetPendingSyncWaitingMessageAsync(
+                                     _session,
+                                     $"{reason} 전 변경사항을 서버에 모두 반영하지 못했습니다.",
+                                     cts.Token)
+                                 ?? $"{reason} 전 서버 반영 대기 데이터 {remainingDirtyCount:N0}건이 남아 있습니다.";
+                AppLogger.Warn("SYNC", $"{reason} flush incomplete: flushed={flushed}, remainingDirty={remainingDirtyCount}");
+            }
+            else
+            {
+                _vm.SyncStatus = $"{reason} 전 변경사항을 서버에 모두 반영했습니다.";
+            }
         }
         catch (Exception ex)
         {

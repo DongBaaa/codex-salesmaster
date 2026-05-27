@@ -11,12 +11,21 @@ public sealed class SyncCoordinator
     private readonly PaymentAttachmentDraftStore _attachmentStore;
     private readonly SemaphoreSlim _syncLock = new(1, 1);
 
+    public const string ConcurrencyConflictUserMessage = "다른 PC/모바일에서 먼저 수정되어 최신값을 다시 불러왔습니다. 내용을 확인한 뒤 다시 저장해 주세요.";
+
     public SyncCoordinator(JsonSyncStateStore store, GeoraePlanApiClient api, PaymentAttachmentDraftStore attachmentStore)
     {
         _store = store;
         _api = api;
         _attachmentStore = attachmentStore;
     }
+
+    public static bool IsConcurrencyConflictState(MobileSyncState state)
+        => state is not null && IsConcurrencyConflictMessage(state.LastError);
+
+    public static bool IsConcurrencyConflictMessage(string? message)
+        => !string.IsNullOrWhiteSpace(message) &&
+           message.Contains("다른 PC/모바일에서 먼저 수정", StringComparison.Ordinal);
 
     public Task<MobileSyncState> LoadAsync(CancellationToken ct = default)
         => _store.LoadAsync(ct);
@@ -151,7 +160,10 @@ public sealed class SyncCoordinator
 
             try
             {
-                var saved = await _api.CreateInvoiceAsync(invoice, ct);
+                var isExistingInvoice = invoice.Revision > 0 || !string.IsNullOrWhiteSpace(invoice.InvoiceNumber);
+                var saved = isExistingInvoice
+                    ? await _api.UpdateInvoiceAsync(invoice, ct)
+                    : await _api.CreateInvoiceAsync(invoice, ct);
                 if (saved is not null)
                     state.LastRevision = Math.Max(state.LastRevision, saved.Revision);
 
@@ -159,6 +171,10 @@ public sealed class SyncCoordinator
                 state.LastError = string.Empty;
                 state.ConsecutiveFailureCount = 0;
                 state = await PullInternalAsync(state, ct);
+            }
+            catch (Exception ex) when (IsConcurrencyConflict(ex))
+            {
+                await MarkConcurrencyConflictAndRefreshAsync(state, ex, ct);
             }
             catch (Exception ex)
             {
@@ -178,6 +194,7 @@ public sealed class SyncCoordinator
     public async Task<MobileSyncState> SavePaymentImmediatelyAsync(
         PaymentDto payment,
         IEnumerable<PendingPaymentAttachmentRecord>? attachments = null,
+        TransactionDto? linkedTransaction = null,
         CancellationToken ct = default)
     {
         await _syncLock.WaitAsync(ct);
@@ -187,14 +204,36 @@ public sealed class SyncCoordinator
             state.LastAttemptUtc = DateTime.UtcNow;
             state.Normalize();
             state.PendingPush.Payments.RemoveAll(x => x.Id == payment.Id);
+            if (linkedTransaction is not null)
+                state.PendingPush.Transactions.RemoveAll(x => x.Id == linkedTransaction.Id);
 
             var attachmentList = attachments?.ToList() ?? [];
 
             try
             {
-                var saved = await _api.CreatePaymentAsync(payment, ct);
-                if (saved is not null)
-                    state.LastRevision = Math.Max(state.LastRevision, saved.Revision);
+                if (linkedTransaction is null)
+                {
+                    var saved = await _api.CreatePaymentAsync(payment, ct);
+                    if (saved is not null)
+                        state.LastRevision = Math.Max(state.LastRevision, saved.Revision);
+                }
+                else
+                {
+                    var request = new SyncPushRequest { DeviceId = state.DeviceId };
+                    request.Transactions.Add(linkedTransaction);
+                    request.Payments.Add(payment);
+                    var result = await _api.PushAsync(request, ct);
+                    if (result is not null)
+                    {
+                        state.LastRevision = Math.Max(state.LastRevision, result.CurrentServerRevision);
+                        if (result.ConflictCount > 0)
+                        {
+                            await MarkPushConflictAndRefreshAsync(state, result, ct);
+                            await _store.SaveAsync(state, ct);
+                            return state;
+                        }
+                    }
+                }
 
                 foreach (var attachment in attachmentList)
                 {
@@ -218,9 +257,15 @@ public sealed class SyncCoordinator
                 state.ConsecutiveFailureCount = 0;
                 state = await PullInternalAsync(state, ct);
             }
+            catch (Exception ex) when (IsConcurrencyConflict(ex))
+            {
+                await MarkConcurrencyConflictAndRefreshAsync(state, ex, ct);
+            }
             catch (Exception ex)
             {
                 state.PendingPush.Payments.Add(payment);
+                if (linkedTransaction is not null)
+                    state.PendingPush.Transactions.Add(linkedTransaction);
                 foreach (var attachment in attachmentList)
                 {
                     attachment.PaymentId = payment.Id;
@@ -244,101 +289,100 @@ public sealed class SyncCoordinator
         => await RefreshIfServerChangedAsync(reason, minInterval, ct);
 
     public async Task<MobileSyncState> QueueInvoiceDraftAsync(InvoiceDto invoice, CancellationToken ct = default)
-    {
-        var state = await _store.LoadAsync(ct);
-        state.PendingPush.Invoices.RemoveAll(x => x.Id == invoice.Id);
-        state.PendingPush.Invoices.Add(invoice);
-        await _store.SaveAsync(state, ct);
-        return state;
-    }
+        => await MutateStoredStateAsync(state =>
+        {
+            state.PendingPush.Invoices.RemoveAll(x => x.Id == invoice.Id);
+            state.PendingPush.Invoices.Add(invoice);
+        }, ct);
 
     public async Task<MobileSyncState> QueuePaymentDraftAsync(PaymentDto payment, CancellationToken ct = default)
-    {
-        var state = await _store.LoadAsync(ct);
-        state.PendingPush.Payments.RemoveAll(x => x.Id == payment.Id);
-        state.PendingPush.Payments.Add(payment);
-        await _store.SaveAsync(state, ct);
-        return state;
-    }
+        => await MutateStoredStateAsync(state =>
+        {
+            state.PendingPush.Payments.RemoveAll(x => x.Id == payment.Id);
+            state.PendingPush.Payments.Add(payment);
+        }, ct);
 
     public async Task<MobileSyncState> QueueTransactionDraftAsync(TransactionDto transaction, CancellationToken ct = default)
-    {
-        var state = await _store.LoadAsync(ct);
-        state.PendingPush.Transactions.RemoveAll(x => x.Id == transaction.Id);
-        state.PendingPush.Transactions.Add(transaction);
-        await _store.SaveAsync(state, ct);
-        return state;
-    }
+        => await MutateStoredStateAsync(state =>
+        {
+            state.PendingPush.Transactions.RemoveAll(x => x.Id == transaction.Id);
+            state.PendingPush.Transactions.Add(transaction);
+        }, ct);
 
     public async Task<MobileSyncState> QueueTransactionAttachmentDraftAsync(TransactionAttachmentDto attachment, CancellationToken ct = default)
-    {
-        var state = await _store.LoadAsync(ct);
-        state.PendingPush.TransactionAttachments.RemoveAll(x => x.Id == attachment.Id);
-        state.PendingPush.TransactionAttachments.Add(attachment);
-        await _store.SaveAsync(state, ct);
-        return state;
-    }
+        => await MutateStoredStateAsync(state =>
+        {
+            state.PendingPush.TransactionAttachments.RemoveAll(x => x.Id == attachment.Id);
+            state.PendingPush.TransactionAttachments.Add(attachment);
+        }, ct);
 
     public async Task<MobileSyncState> QueueInventoryTransferDraftAsync(InventoryTransferDto transfer, CancellationToken ct = default)
-    {
-        var state = await _store.LoadAsync(ct);
-        state.PendingPush.InventoryTransfers.RemoveAll(x => x.Id == transfer.Id);
-        state.PendingPush.InventoryTransfers.Add(transfer);
-        await _store.SaveAsync(state, ct);
-        return state;
-    }
+        => await MutateStoredStateAsync(state =>
+        {
+            state.PendingPush.InventoryTransfers.RemoveAll(x => x.Id == transfer.Id);
+            state.PendingPush.InventoryTransfers.Add(transfer);
+        }, ct);
 
     public async Task<MobileSyncState> QueueRentalManagementCompanyDraftAsync(RentalManagementCompanyDto company, CancellationToken ct = default)
-    {
-        var state = await _store.LoadAsync(ct);
-        state.PendingPush.RentalManagementCompanies.RemoveAll(x => x.Id == company.Id);
-        state.PendingPush.RentalManagementCompanies.Add(company);
-        await _store.SaveAsync(state, ct);
-        return state;
-    }
+        => await MutateStoredStateAsync(state =>
+        {
+            state.PendingPush.RentalManagementCompanies.RemoveAll(x => x.Id == company.Id);
+            state.PendingPush.RentalManagementCompanies.Add(company);
+        }, ct);
 
     public async Task<MobileSyncState> QueueRentalBillingProfileDraftAsync(RentalBillingProfileDto profile, CancellationToken ct = default)
-    {
-        var state = await _store.LoadAsync(ct);
-        state.PendingPush.RentalBillingProfiles.RemoveAll(x => x.Id == profile.Id);
-        state.PendingPush.RentalBillingProfiles.Add(profile);
-        await _store.SaveAsync(state, ct);
-        return state;
-    }
+        => await MutateStoredStateAsync(state =>
+        {
+            state.PendingPush.RentalBillingProfiles.RemoveAll(x => x.Id == profile.Id);
+            state.PendingPush.RentalBillingProfiles.Add(profile);
+        }, ct);
 
     public async Task<MobileSyncState> QueueRentalAssetDraftAsync(RentalAssetDto asset, CancellationToken ct = default)
-    {
-        var state = await _store.LoadAsync(ct);
-        state.PendingPush.RentalAssets.RemoveAll(x => x.Id == asset.Id);
-        state.PendingPush.RentalAssets.Add(asset);
-        await _store.SaveAsync(state, ct);
-        return state;
-    }
+        => await MutateStoredStateAsync(state =>
+        {
+            state.PendingPush.RentalAssets.RemoveAll(x => x.Id == asset.Id);
+            state.PendingPush.RentalAssets.Add(asset);
+        }, ct);
 
     public async Task<MobileSyncState> QueueRentalBillingLogDraftAsync(RentalBillingLogDto log, CancellationToken ct = default)
-    {
-        var state = await _store.LoadAsync(ct);
-        state.PendingPush.RentalBillingLogs.RemoveAll(x => x.Id == log.Id);
-        state.PendingPush.RentalBillingLogs.Add(log);
-        await _store.SaveAsync(state, ct);
-        return state;
-    }
+        => await MutateStoredStateAsync(state =>
+        {
+            state.PendingPush.RentalBillingLogs.RemoveAll(x => x.Id == log.Id);
+            state.PendingPush.RentalBillingLogs.Add(log);
+        }, ct);
 
     public async Task<MobileSyncState> QueuePaymentAttachmentsAsync(
         Guid paymentId,
         IEnumerable<PendingPaymentAttachmentRecord> attachments,
         CancellationToken ct = default)
     {
-        var state = await _store.LoadAsync(ct);
-        foreach (var attachment in attachments)
+        var attachmentList = attachments.ToList();
+        return await MutateStoredStateAsync(state =>
         {
-            attachment.PaymentId = paymentId;
-            state.PendingPaymentAttachments.RemoveAll(x => x.LocalId == attachment.LocalId);
-            state.PendingPaymentAttachments.Add(attachment);
-        }
+            foreach (var attachment in attachmentList)
+            {
+                attachment.PaymentId = paymentId;
+                state.PendingPaymentAttachments.RemoveAll(x => x.LocalId == attachment.LocalId);
+                state.PendingPaymentAttachments.Add(attachment);
+            }
+        }, ct);
+    }
 
-        await _store.SaveAsync(state, ct);
-        return state;
+    private async Task<MobileSyncState> MutateStoredStateAsync(Action<MobileSyncState> mutate, CancellationToken ct)
+    {
+        await _syncLock.WaitAsync(ct);
+        try
+        {
+            var state = await _store.LoadAsync(ct);
+            state.Normalize();
+            mutate(state);
+            await _store.SaveAsync(state, ct);
+            return state;
+        }
+        finally
+        {
+            _syncLock.Release();
+        }
     }
 
     private async Task<MobileSyncState> PullInternalAsync(MobileSyncState state, CancellationToken ct)
@@ -372,7 +416,16 @@ public sealed class SyncCoordinator
             {
                 var result = await _api.PushAsync(state.PendingPush, ct);
                 if (result is not null)
+                {
                     state.LastRevision = Math.Max(state.LastRevision, result.CurrentServerRevision);
+                    if (result.ConflictCount > 0)
+                    {
+                        state.PendingPush = new SyncPushRequest { DeviceId = state.DeviceId };
+                        await MarkPushConflictAndRefreshAsync(state, result, ct);
+                        await _store.SaveAsync(state, ct);
+                        return state;
+                    }
+                }
 
                 state.PendingPush = new SyncPushRequest { DeviceId = state.DeviceId };
             }
@@ -447,6 +500,65 @@ public sealed class SyncCoordinator
         return state;
     }
 
+    private async Task MarkConcurrencyConflictAndRefreshAsync(MobileSyncState state, Exception ex, CancellationToken ct)
+    {
+        var message = BuildConcurrencyConflictMessage(ex);
+        await RefreshLatestAfterConflictAsync(state, message, ct);
+    }
+
+    private async Task MarkPushConflictAndRefreshAsync(MobileSyncState state, SyncPushResult result, CancellationToken ct)
+    {
+        var message = BuildPushConflictMessage(result);
+        await RefreshLatestAfterConflictAsync(state, message, ct);
+    }
+
+    private async Task RefreshLatestAfterConflictAsync(MobileSyncState state, string message, CancellationToken ct)
+    {
+        var refreshError = string.Empty;
+        try
+        {
+            var response = await _api.PullAsync(0, ct);
+            if (response is not null)
+                ApplyPullResponse(state, response);
+        }
+        catch (Exception refreshEx)
+        {
+            refreshError = TranslateFailureMessage(refreshEx);
+        }
+
+        state.LastError = string.IsNullOrWhiteSpace(refreshError)
+            ? message
+            : $"{message} 최신 데이터 새로고침은 실패했습니다: {refreshError}";
+        state.ConsecutiveFailureCount = 0;
+        MobileAppLogger.Warn("SYNC", $"모바일 동시 수정 충돌: {state.LastError}");
+    }
+
+    private static string BuildConcurrencyConflictMessage(Exception ex)
+    {
+        var detail = ex.Message?.Trim();
+        if (string.IsNullOrWhiteSpace(detail))
+            return ConcurrencyConflictUserMessage;
+
+        return detail.Length > 160
+            ? $"{ConcurrencyConflictUserMessage} ({detail[..160]}...)"
+            : $"{ConcurrencyConflictUserMessage} ({detail})";
+    }
+
+    private static string BuildPushConflictMessage(SyncPushResult result)
+    {
+        var firstConflict = result.Conflicts.FirstOrDefault();
+        var reason = firstConflict?.Reason?.Trim();
+        if (string.IsNullOrWhiteSpace(reason))
+            return $"{ConcurrencyConflictUserMessage} (충돌 {result.ConflictCount:N0}건)";
+
+        return reason.Length > 160
+            ? $"{ConcurrencyConflictUserMessage} ({reason[..160]}...)"
+            : $"{ConcurrencyConflictUserMessage} ({reason})";
+    }
+
+    private static bool IsConcurrencyConflict(Exception ex)
+        => ex is HttpRequestException { StatusCode: HttpStatusCode.Conflict };
+
     private static void MarkFailure(MobileSyncState state, Exception ex)
     {
         state.LastError = TranslateFailureMessage(ex);
@@ -463,6 +575,8 @@ public sealed class SyncCoordinator
                 => "인증이 만료되었거나 복구되지 않았습니다. 다시 로그인해 주세요.",
             HttpRequestException httpEx when httpEx.StatusCode == HttpStatusCode.InternalServerError
                 => "서버 오류(500)가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+            HttpRequestException httpEx when httpEx.StatusCode == HttpStatusCode.Conflict
+                => ConcurrencyConflictUserMessage,
             HttpRequestException httpEx when httpEx.StatusCode.HasValue
                 => $"서버 요청에 실패했습니다. ({(int)httpEx.StatusCode.Value} {httpEx.StatusCode.Value})",
             TaskCanceledException or TimeoutException
@@ -509,6 +623,7 @@ public sealed class SyncCoordinator
         state.ConsecutiveFailureCount = 0;
         state.LastPulledCustomerCount = response.Customers.Count;
         state.LastPulledItemCount = response.Items.Count;
+        state.LastPulledPriceGradeOptionCount = response.PriceGradeOptions.Count;
         state.LastPulledInvoiceCount = response.Invoices.Count;
         state.LastPulledPaymentCount = response.Payments.Count;
         state.LastPulledTransactionCount = response.Transactions.Count;
@@ -518,6 +633,7 @@ public sealed class SyncCoordinator
         state.LastPulledRentalBillingProfileCount = response.RentalBillingProfiles.Count;
         state.LastPulledRentalAssetCount = response.RentalAssets.Count;
         state.LastPulledRentalBillingLogCount = response.RentalBillingLogs.Count;
+        state.SyncedPriceGradeOptions = MergeById(state.SyncedPriceGradeOptions, response.PriceGradeOptions);
         state.SyncedTransactions = MergeById(state.SyncedTransactions, response.Transactions);
         state.SyncedTransactionAttachments = MergeById(state.SyncedTransactionAttachments, response.TransactionAttachments);
         state.SyncedInventoryTransfers = MergeById(state.SyncedInventoryTransfers, response.InventoryTransfers);

@@ -15,14 +15,38 @@ public sealed class InvoiceDraftPage : ContentPage
     private readonly InvoiceDraftViewModel _viewModel;
     private readonly Guid? _preferredCustomerId;
     private readonly string _preferredCustomerName;
+    private readonly InvoiceDto? _editingInvoice;
+    private bool _editingInvoiceLoaded;
     private readonly Grid _categoryButtonGrid;
     private readonly FlexLayout _recentItemsLayout;
 
-    public InvoiceDraftPage(Guid? preferredCustomerId = null, string? preferredCustomerName = null)
+    public InvoiceDraftPage()
+        : this(VoucherType.Sales, null, null)
+    {
+    }
+
+    public InvoiceDraftPage(Guid? preferredCustomerId, string? preferredCustomerName)
+        : this(VoucherType.Sales, preferredCustomerId, preferredCustomerName)
+    {
+    }
+
+    public InvoiceDraftPage(VoucherType voucherType)
+        : this(voucherType, null, null)
+    {
+    }
+
+    public InvoiceDraftPage(InvoiceDto invoice)
+        : this(invoice?.VoucherType ?? VoucherType.Sales, null, null)
+    {
+        _editingInvoice = invoice;
+    }
+
+    public InvoiceDraftPage(VoucherType voucherType, Guid? preferredCustomerId, string? preferredCustomerName)
     {
         GeoraePlanTheme.ApplyPage(this, "전표 작성");
 
         _viewModel = ServiceHelper.GetRequiredService<InvoiceDraftViewModel>();
+        _viewModel.ConfigureVoucherType(voucherType);
         _viewModel.SavedSuccessfully += HandleSavedSuccessfullyAsync;
         _viewModel.PropertyChanged += HandleViewModelPropertyChanged;
         _viewModel.ItemCategories.CollectionChanged += HandleCategoryCollectionChanged;
@@ -30,15 +54,28 @@ public sealed class InvoiceDraftPage : ContentPage
         BindingContext = _viewModel;
         _preferredCustomerId = preferredCustomerId;
         _preferredCustomerName = preferredCustomerName?.Trim() ?? string.Empty;
+        SetBinding(TitleProperty, new Binding(nameof(InvoiceDraftViewModel.PageTitleText)));
 
         var customerSearchEntry = GeoraePlanTheme.CreateCompactEntry("거래처명 입력");
+        customerSearchEntry.HeightRequest = 42;
+        customerSearchEntry.ReturnType = ReturnType.Search;
+        customerSearchEntry.HorizontalOptions = LayoutOptions.Fill;
         customerSearchEntry.SetBinding(Entry.TextProperty, nameof(InvoiceDraftViewModel.CustomerSearchText));
+        customerSearchEntry.TextChanged += (_, args) =>
+        {
+            var text = args.NewTextValue ?? string.Empty;
+            if (!string.Equals(_viewModel.CustomerSearchText, text, StringComparison.Ordinal))
+                _viewModel.CustomerSearchText = text;
+        };
 
         var customerSearchButton = GeoraePlanTheme.CreateCompactButton("찾기", GeoraePlanTheme.SecondaryButton);
         customerSearchButton.Clicked += (_, _) =>
+        {
+            _viewModel.CustomerSearchText = customerSearchEntry.Text ?? string.Empty;
             MobileErrorHandler.FireAndForget(
                 async () => await _viewModel.SearchCustomersAsync(),
                 "전표 작성 작업");
+        };
 
         var customerSearchGrid = new Grid
         {
@@ -110,9 +147,22 @@ public sealed class InvoiceDraftPage : ContentPage
         invoiceOfficeSummary.LineHeight = 1.0;
         invoiceOfficeSummary.SetBinding(Label.TextProperty, nameof(InvoiceDraftViewModel.SelectedInvoiceOfficeSummary));
 
-        var categoryIntro = GeoraePlanTheme.CreateBodyText("품목분류를 먼저 선택하세요.", true, 12);
+        var sourceWarehousePicker = GeoraePlanTheme.CreateCompactPicker("창고 선택");
+        sourceWarehousePicker.ItemDisplayBinding = new Binding(nameof(MobileWarehouseOption.DisplayName));
+        sourceWarehousePicker.SetBinding(Picker.TitleProperty, nameof(InvoiceDraftViewModel.WarehousePickerTitleText));
+        sourceWarehousePicker.SetBinding(Picker.ItemsSourceProperty, nameof(InvoiceDraftViewModel.SourceWarehouseOptions));
+        sourceWarehousePicker.SetBinding(Picker.SelectedItemProperty, nameof(InvoiceDraftViewModel.SelectedSourceWarehouse));
+        sourceWarehousePicker.SetBinding(VisualElement.IsEnabledProperty, nameof(InvoiceDraftViewModel.CanChooseSourceWarehouse));
+
+        var sourceWarehouseLabel = GeoraePlanTheme.CreateFieldLabel("창고");
+        sourceWarehouseLabel.SetBinding(Label.TextProperty, nameof(InvoiceDraftViewModel.WarehouseLabelText));
+
+        var sourceWarehouseSummary = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+        sourceWarehouseSummary.LineHeight = 1.0;
+        sourceWarehouseSummary.SetBinding(Label.TextProperty, nameof(InvoiceDraftViewModel.SelectedSourceWarehouseSummary));
+
+        var categoryIntro = GeoraePlanTheme.CreateBodyText("품명/규격으로 바로 검색하거나, 품목찾기 버튼으로 분류를 열어 선택하세요.", true, 12);
         categoryIntro.LineHeight = 1.0;
-        categoryIntro.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.IsCategoryChooserVisible));
 
         _categoryButtonGrid = new Grid
         {
@@ -126,7 +176,7 @@ public sealed class InvoiceDraftPage : ContentPage
         selectedCategoryLabel.FontAttributes = FontAttributes.Bold;
         selectedCategoryLabel.SetBinding(Label.TextProperty, nameof(InvoiceDraftViewModel.SelectedCategoryHeader));
 
-        var changeCategoryButton = GeoraePlanTheme.CreateCompactButton("분류 변경", GeoraePlanTheme.SecondaryButton);
+        var changeCategoryButton = GeoraePlanTheme.CreateCompactButton("분류 해제", GeoraePlanTheme.SecondaryButton);
         changeCategoryButton.Clicked += (_, _) => _viewModel.ClearSelectedCategory();
 
         var selectedCategoryHeader = new Grid
@@ -147,20 +197,33 @@ public sealed class InvoiceDraftPage : ContentPage
         categorySummary.SetBinding(Label.TextProperty, nameof(InvoiceDraftViewModel.SelectedCategorySummary));
         categorySummary.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasSelectedCategory));
 
-        var itemSearchEntry = GeoraePlanTheme.CreateCompactEntry("품목명 / 규격 검색");
+        var itemSearchEntry = GeoraePlanTheme.CreateCompactEntry("품명 / 규격 검색");
+        itemSearchEntry.HeightRequest = 42;
+        itemSearchEntry.ReturnType = ReturnType.Search;
+        itemSearchEntry.HorizontalOptions = LayoutOptions.Fill;
         itemSearchEntry.SetBinding(Entry.TextProperty, nameof(InvoiceDraftViewModel.ItemSearchText));
-        itemSearchEntry.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasSelectedCategory));
+        itemSearchEntry.TextChanged += (_, args) =>
+        {
+            var text = args.NewTextValue ?? string.Empty;
+            if (!string.Equals(_viewModel.ItemSearchText, text, StringComparison.Ordinal))
+                _viewModel.ItemSearchText = text;
+        };
         itemSearchEntry.Completed += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await _viewModel.SearchItemsAsync(),
                 "전표 작성 작업");
 
-        var itemSearchButton = GeoraePlanTheme.CreateCompactButton("찾기", GeoraePlanTheme.SecondaryButton);
+        var itemSearchButton = GeoraePlanTheme.CreateCompactButton("검색", GeoraePlanTheme.SecondaryButton);
         itemSearchButton.Clicked += (_, _) =>
+        {
+            _viewModel.ItemSearchText = itemSearchEntry.Text ?? string.Empty;
             MobileErrorHandler.FireAndForget(
                 async () => await _viewModel.SearchItemsAsync(),
                 "전표 작성 작업");
-        itemSearchButton.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasSelectedCategory));
+        };
+
+        var itemCategoryButton = GeoraePlanTheme.CreateCompactButton("품목찾기", GeoraePlanTheme.Purple);
+        itemCategoryButton.Clicked += (_, _) => _viewModel.ToggleCategoryChooser();
 
         var itemSearchGrid = new Grid
         {
@@ -168,22 +231,23 @@ public sealed class InvoiceDraftPage : ContentPage
             ColumnDefinitions =
             {
                 new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(new GridLength(92))
+                new ColumnDefinition(new GridLength(78)),
+                new ColumnDefinition(new GridLength(96))
             }
         };
-        itemSearchGrid.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasSelectedCategory));
         itemSearchGrid.Add(itemSearchEntry);
         itemSearchGrid.Add(itemSearchButton, 1, 0);
+        itemSearchGrid.Add(itemCategoryButton, 2, 0);
 
         var recentHeader = GeoraePlanTheme.CreateFieldLabel("최근 선택 품목");
         recentHeader.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasVisibleRecentItems));
 
         _recentItemsLayout = new FlexLayout
         {
-            Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap,
+            Wrap = Microsoft.Maui.Layouts.FlexWrap.NoWrap,
             Direction = Microsoft.Maui.Layouts.FlexDirection.Row,
             JustifyContent = Microsoft.Maui.Layouts.FlexJustify.Start,
-            AlignItems = Microsoft.Maui.Layouts.FlexAlignItems.Start
+            AlignItems = Microsoft.Maui.Layouts.FlexAlignItems.Center
         };
 
         var recentScroll = new ScrollView
@@ -194,14 +258,14 @@ public sealed class InvoiceDraftPage : ContentPage
         recentScroll.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasVisibleRecentItems));
 
         var itemListCaption = GeoraePlanTheme.CreateBodyText("현재 분류 품목", true, 11);
-        itemListCaption.SetBinding(Label.TextProperty, nameof(InvoiceDraftViewModel.SelectedCategorySummary));
-        itemListCaption.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasSelectedCategory));
+        itemListCaption.SetBinding(Label.TextProperty, nameof(InvoiceDraftViewModel.ItemListCaptionText));
+        itemListCaption.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasItemSearchResults));
 
         var itemResultView = new CollectionView
         {
             SelectionMode = SelectionMode.None,
             BackgroundColor = Colors.Transparent,
-            EmptyView = GeoraePlanTheme.CreateBodyText("현재 분류에 표시할 품목이 없습니다.", true, 12),
+            EmptyView = GeoraePlanTheme.CreateBodyText("검색어를 입력하거나 품목찾기로 분류를 선택하세요.", true, 12),
             ItemTemplate = new DataTemplate(() =>
             {
                 var nameLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 13);
@@ -220,10 +284,20 @@ public sealed class InvoiceDraftPage : ContentPage
                 var hintLabel = GeoraePlanTheme.CreateBodyText("탭하여 수량/단가 입력", true, 11);
                 hintLabel.LineHeight = 1.0;
 
+                var selectButton = GeoraePlanTheme.CreateCompactButton("품목 선택", GeoraePlanTheme.Success);
+                selectButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
+                    if (sender is Button button && button.BindingContext is ItemDto item)
+                        await _viewModel.SelectItemAsync(item);
+                },
+                        "전표 작성 작업");
+
                 var content = new VerticalStackLayout
                 {
                     Spacing = 4,
-                    Children = { nameLabel, specLabel, metaLabel, hintLabel }
+                    Children = { nameLabel, specLabel, metaLabel, hintLabel, selectButton }
                 };
 
                 var border = new Border
@@ -251,7 +325,7 @@ public sealed class InvoiceDraftPage : ContentPage
         };
         itemResultView.SetBinding(ItemsView.ItemsSourceProperty, nameof(InvoiceDraftViewModel.ItemSearchResults));
         itemResultView.SetBinding(VisualElement.HeightRequestProperty, nameof(InvoiceDraftViewModel.ItemSearchResultsHeight));
-        itemResultView.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasSelectedCategory));
+        itemResultView.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasItemSearchResults));
 
         var draftSummary = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 11);
         draftSummary.LineHeight = 1.0;
@@ -345,7 +419,54 @@ public sealed class InvoiceDraftPage : ContentPage
         var memoEditor = GeoraePlanTheme.CreateCompactEditor("전표 메모", 64);
         memoEditor.SetBinding(Editor.TextProperty, nameof(InvoiceDraftViewModel.Memo));
 
-        var saveButton = GeoraePlanTheme.CreateCompactButton("전표 임시저장", GeoraePlanTheme.Accent);
+        var vatNoneCheck = new CheckBox
+        {
+            Color = GeoraePlanTheme.Accent,
+            VerticalOptions = LayoutOptions.Center
+        };
+        vatNoneCheck.SetBinding(CheckBox.IsCheckedProperty, nameof(InvoiceDraftViewModel.IsVatNone));
+
+        var vatNoneLabel = GeoraePlanTheme.CreateBodyText("부가세 없음", muted: false, fontSize: 12);
+        vatNoneLabel.VerticalOptions = LayoutOptions.Center;
+
+        var vatOptionGrid = new Grid
+        {
+            ColumnSpacing = 6,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Star)
+            }
+        };
+        vatOptionGrid.Add(vatNoneCheck);
+        vatOptionGrid.Add(vatNoneLabel, 1, 0);
+
+        var vatSummaryLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+        vatSummaryLabel.LineHeight = 1.0;
+        vatSummaryLabel.SetBinding(Label.TextProperty, nameof(InvoiceDraftViewModel.VatSummary));
+
+        var printOptionsTitle = GeoraePlanTheme.CreateFieldLabel("인쇄/PDF 옵션");
+        var printDocumentGrid = new Grid
+        {
+            ColumnSpacing = 8,
+            RowSpacing = 6,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star)
+            }
+        };
+        printDocumentGrid.Add(CreateOptionCheck("거래명세서", nameof(InvoiceDraftViewModel.PrintStatementDocument)), 0, 0);
+        printDocumentGrid.Add(CreateOptionCheck("견적서", nameof(InvoiceDraftViewModel.PrintEstimateDocument)), 1, 0);
+        printDocumentGrid.Add(CreateOptionCheck("대금청구서", nameof(InvoiceDraftViewModel.PrintPaymentClaimDocument)), 0, 1);
+        printDocumentGrid.Add(CreateOptionCheck("날짜 인쇄함", nameof(InvoiceDraftViewModel.PrintDate)), 1, 1);
+        printDocumentGrid.Add(CreateOptionCheck("단가 인쇄함", nameof(InvoiceDraftViewModel.PrintUnitPrice)), 0, 2);
+
+        var pdfButton = GeoraePlanTheme.CreateCompactButton("PDF 저장", GeoraePlanTheme.Purple);
+        pdfButton.SetBinding(Button.CommandProperty, nameof(InvoiceDraftViewModel.ExportPdfCommand));
+
+        var saveButton = GeoraePlanTheme.CreateCompactButton("전표 저장", GeoraePlanTheme.Accent);
+        saveButton.SetBinding(Button.TextProperty, nameof(InvoiceDraftViewModel.SaveButtonText));
         saveButton.SetBinding(Button.CommandProperty, nameof(InvoiceDraftViewModel.SaveDraftCommand));
 
         var statusLabel = GeoraePlanTheme.CreateStatusLabel();
@@ -362,13 +483,16 @@ public sealed class InvoiceDraftPage : ContentPage
             Children =
             {
                 GeoraePlanTheme.CreateCompactCard(
-                    GeoraePlanTheme.CreateSectionTitle("1단계 · 거래처 찾기", 15),
+                    CreateBoundSectionTitle(nameof(InvoiceDraftViewModel.CustomerSearchSectionTitle)),
                     customerSearchGrid,
                     customerResultView,
                     selectedCustomerLabel,
                     GeoraePlanTheme.CreateFieldLabel("전표 소속"),
                     invoiceOfficePicker,
-                    invoiceOfficeSummary),
+                    invoiceOfficeSummary,
+                    sourceWarehouseLabel,
+                    sourceWarehousePicker,
+                    sourceWarehouseSummary),
                 GeoraePlanTheme.CreateCompactCard(
                     GeoraePlanTheme.CreateSectionTitle("2단계 · 품목 선택", 15),
                     categoryIntro,
@@ -385,11 +509,16 @@ public sealed class InvoiceDraftPage : ContentPage
                     draftSummary,
                     lineList),
                 GeoraePlanTheme.CreateCompactCard(
-                    GeoraePlanTheme.CreateSectionTitle("전표 저장", 15),
+                    CreateBoundSectionTitle(nameof(InvoiceDraftViewModel.DocumentSaveSectionTitle)),
                     dateLabel,
                     datePicker,
                     memoLabel,
                     memoEditor,
+                    vatOptionGrid,
+                    vatSummaryLabel,
+                    printOptionsTitle,
+                    printDocumentGrid,
+                    pdfButton,
                     saveButton,
                     activity,
                     statusLabel)
@@ -585,7 +714,23 @@ try
             return;
         }
 
-        if (_preferredCustomerId.HasValue)
+        if (_editingInvoice is not null && !_editingInvoiceLoaded)
+        {
+            try
+            {
+                await _viewModel.LoadExistingInvoiceAsync(_editingInvoice);
+                _editingInvoiceLoaded = true;
+            }
+            catch (MobileAuthenticationException ex)
+            {
+                _viewModel.StatusMessage = ex.Message;
+            }
+            catch (Exception ex)
+            {
+                _viewModel.StatusMessage = $"선택 전표 수정값 적용 실패: {ex.Message}";
+            }
+        }
+        else if (_preferredCustomerId.HasValue)
         {
             try
             {
@@ -635,6 +780,39 @@ try
             RebuildCategoryButtons();
             RebuildRecentItems();
         }
+    }
+
+    private static Label CreateBoundSectionTitle(string bindingPath)
+    {
+        var label = GeoraePlanTheme.CreateSectionTitle(string.Empty, 15);
+        label.SetBinding(Label.TextProperty, bindingPath);
+        return label;
+    }
+
+    private static Grid CreateOptionCheck(string text, string bindingPath)
+    {
+        var check = new CheckBox
+        {
+            Color = GeoraePlanTheme.Accent,
+            VerticalOptions = LayoutOptions.Center
+        };
+        check.SetBinding(CheckBox.IsCheckedProperty, bindingPath);
+
+        var label = GeoraePlanTheme.CreateBodyText(text, muted: false, fontSize: 12);
+        label.VerticalOptions = LayoutOptions.Center;
+
+        var grid = new Grid
+        {
+            ColumnSpacing = 4,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Star)
+            }
+        };
+        grid.Add(check);
+        grid.Add(label, 1, 0);
+        return grid;
     }
 
     protected override bool OnBackButtonPressed()
@@ -687,14 +865,44 @@ try
         {
             var matchesCurrentCategory = _viewModel.SelectedCategory is not null &&
                                          string.Equals(_viewModel.SelectedCategory.Name, recent.CategoryName, StringComparison.OrdinalIgnoreCase);
-            var button = GeoraePlanTheme.CreateCompactButton(recent.ItemNameOriginal, matchesCurrentCategory ? GeoraePlanTheme.Accent : GeoraePlanTheme.SecondaryButton);
-            button.Margin = new Thickness(0, 0, 8, 8);
-            button.Padding = new Thickness(12, 0);
-            button.Clicked += (_, _) =>
+            var titleLabel = GeoraePlanTheme.CreateBodyText(recent.ItemNameOriginal, muted: false, fontSize: 13);
+            titleLabel.FontAttributes = FontAttributes.Bold;
+            titleLabel.LineBreakMode = LineBreakMode.TailTruncation;
+            titleLabel.MaxLines = 2;
+            titleLabel.TextColor = matchesCurrentCategory ? Colors.White : GeoraePlanTheme.TextPrimary;
+
+            var specText = string.IsNullOrWhiteSpace(recent.SpecificationOriginal)
+                ? string.IsNullOrWhiteSpace(recent.CategoryName) ? "최근 선택 품목" : recent.CategoryName
+                : recent.SpecificationOriginal;
+            var specLabel = GeoraePlanTheme.CreateBodyText(specText, true, 11);
+            specLabel.LineBreakMode = LineBreakMode.TailTruncation;
+            specLabel.MaxLines = 1;
+            specLabel.TextColor = matchesCurrentCategory ? Colors.White : GeoraePlanTheme.TextSecondary;
+
+            var content = new VerticalStackLayout
+            {
+                Spacing = 3,
+                Children = { titleLabel, specLabel }
+            };
+
+            var card = new Border
+            {
+                BackgroundColor = matchesCurrentCategory ? GeoraePlanTheme.Accent : GeoraePlanTheme.SecondaryButton,
+                Stroke = matchesCurrentCategory ? GeoraePlanTheme.Accent : GeoraePlanTheme.Border,
+                StrokeShape = new RoundRectangle { CornerRadius = 10 },
+                Padding = new Thickness(10, 8),
+                Margin = new Thickness(0, 0, 10, 8),
+                WidthRequest = 210,
+                MinimumHeightRequest = 74,
+                Content = content
+            };
+            var tap = new TapGestureRecognizer();
+            tap.Tapped += (_, _) =>
                 MobileErrorHandler.FireAndForget(
                     async () => await _viewModel.SelectRecentItemAsync(recent),
                     "전표 작성 작업");
-            _recentItemsLayout.Children.Add(button);
+            card.GestureRecognizers.Add(tap);
+            _recentItemsLayout.Children.Add(card);
         }
     }
 

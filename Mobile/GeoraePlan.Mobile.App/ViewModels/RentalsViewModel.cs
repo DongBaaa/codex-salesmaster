@@ -87,7 +87,7 @@ public sealed class RentalsViewModel : ObservableObject
     {
         RentalMobileSection.BillingProfiles => "청구프로필",
         RentalMobileSection.Assets => "렌탈자산",
-        RentalMobileSection.BillingLogs => "청구로그",
+        RentalMobileSection.BillingLogs => "청구 이력",
         _ => "렌탈"
     };
 
@@ -95,7 +95,7 @@ public sealed class RentalsViewModel : ObservableObject
     {
         RentalMobileSection.BillingProfiles => $"청구프로필 {BillingProfiles.Count:N0}건",
         RentalMobileSection.Assets => $"렌탈자산 {RentalAssets.Count:N0}건",
-        RentalMobileSection.BillingLogs => $"청구로그 {BillingLogs.Count:N0}건",
+        RentalMobileSection.BillingLogs => $"청구 이력 {BillingLogs.Count:N0}건",
         _ => string.Empty
     };
 

@@ -88,6 +88,16 @@ public sealed partial class LoginViewModel : ObservableObject
             await _local.SaveOfficeSyncCredentialAsync(result.User, Username, Password);
             await SaveRememberOptionsAsync();
             _session.SetSession(result.Token, result.User);
+            try
+            {
+                var scopeResult = await _local.RegisterLoginScopeAsync(_session);
+                if (scopeResult.ScopeChanged)
+                    AppLogger.Info("LOGIN", scopeResult.Message);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warn("LOGIN", $"로그인 계정 범위 등록 중 오류가 발생했지만 로그인은 계속 진행합니다: {ex.Message}");
+            }
             LoginSucceeded?.Invoke();
         }
         catch (Exception ex) when (IsConnectionError(ex))
@@ -134,7 +144,7 @@ public sealed partial class LoginViewModel : ObservableObject
             return;
         }
         _session.SetOfflineSession(cached);
-        var cachedOffice = await _local.GetCachedOfficeCodeAsync();
+        var cachedOffice = await _local.GetCachedOfficeCodeAsync(Username);
         if (!string.IsNullOrWhiteSpace(cachedOffice))
             _session.SetOfficeCode(cachedOffice);
         await SaveRememberOptionsAsync();
@@ -254,4 +264,3 @@ public sealed partial class LoginViewModel : ObservableObject
             : DomainConstants.OfficeYeonsu;
     }
 }
-

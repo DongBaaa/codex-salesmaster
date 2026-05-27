@@ -179,8 +179,14 @@ public static partial class DbInitializer
         var assetCounts = assets.Where(current => current.BillingProfileId.HasValue && current.BillingProfileId.Value != Guid.Empty)
             .GroupBy(current => current.BillingProfileId!.Value)
             .ToDictionary(group => group.Key, group => group.Count());
-        var invoiceCounts = invoices.GroupBy(current => current.LinkedRentalBillingProfileId!.Value).ToDictionary(group => group.Key, group => group.Count());
-        var transactionCounts = transactions.GroupBy(current => current.LinkedRentalBillingProfileId!.Value).ToDictionary(group => group.Key, group => group.Count());
+        var invoiceCounts = invoices
+            .Where(current => current.LinkedRentalBillingProfileId.HasValue && current.LinkedRentalBillingProfileId.Value != Guid.Empty)
+            .GroupBy(current => current.LinkedRentalBillingProfileId!.Value)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var transactionCounts = transactions
+            .Where(current => current.LinkedRentalBillingProfileId.HasValue && current.LinkedRentalBillingProfileId.Value != Guid.Empty)
+            .GroupBy(current => current.LinkedRentalBillingProfileId!.Value)
+            .ToDictionary(group => group.Key, group => group.Count());
         var logCounts = logs.GroupBy(current => current.BillingProfileId).ToDictionary(group => group.Key, group => group.Count());
 
         var groups = profiles

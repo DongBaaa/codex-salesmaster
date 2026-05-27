@@ -8,7 +8,7 @@ public sealed class SyncViewModel : ObservableObject
 
     private string _lastRevisionText = "0";
     private string _lastPullSummary = "-";
-    private string _pendingText = "대기 전표 0건 / 대기 수금 0건 / 대기 첨부 0건";
+    private string _pendingText = "대기 전표 0건 / 대기 수금·지급 0건 / 대기 첨부 0건";
     private string _statusMessage = "동기화 준비";
     private string _autoSyncText = "저장 시 즉시 서버 반영하고, 화면 진입/복귀 시 서버 revision을 재확인합니다. 필요할 때만 수동 동기화를 사용하세요.";
     private string _attentionText = string.Empty;
@@ -153,11 +153,11 @@ public sealed class SyncViewModel : ObservableObject
     {
         LastRevisionText = state.LastRevision.ToString("N0");
         PendingText =
-            $"대기 전표 {state.PendingInvoiceCount}건 / 대기 수금 {state.PendingPaymentCount}건 / 대기 첨부 {state.PendingPaymentAttachmentCount}건"
+            $"대기 전표 {state.PendingInvoiceCount}건 / 대기 수금·지급 {state.PendingPaymentCount}건 / 대기 첨부 {state.PendingPaymentAttachmentCount}건"
             + $" / 거래 {state.PendingTransactionCount}건 / 거래첨부 {state.PendingTransactionAttachmentCount}건 / 재고이동 {state.PendingInventoryTransferCount}건"
             + $" / 렌탈 {state.PendingRentalBillingProfileCount + state.PendingRentalAssetCount + state.PendingRentalBillingLogCount}건";
         LastPullSummary =
-            $"최근 pull: 거래처 {state.LastPulledCustomerCount} / 품목 {state.LastPulledItemCount} / 전표 {state.LastPulledInvoiceCount} / 수금 {state.LastPulledPaymentCount}"
+            $"최근 pull: 거래처 {state.LastPulledCustomerCount} / 품목 {state.LastPulledItemCount} / 전표 {state.LastPulledInvoiceCount} / 수금·지급 {state.LastPulledPaymentCount}"
             + $" / 거래 {state.LastPulledTransactionCount} / 거래첨부 {state.LastPulledTransactionAttachmentCount}"
             + $" / 재고이동 {state.LastPulledInventoryTransferCount} / 렌탈 {state.LastPulledRentalBillingProfileCount + state.LastPulledRentalAssetCount + state.LastPulledRentalBillingLogCount}";
 

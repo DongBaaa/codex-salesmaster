@@ -8,6 +8,7 @@ using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using System.Reflection;
 using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
@@ -119,6 +120,94 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task ItemsController_Delete_RemovesWarehouseStockRows()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Delete stock item",
+            NameMatchKey = "DELETESTOCKITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 4m
+        };
+        dbContext.Items.Add(item);
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 4m,
+            Revision = 1
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id);
+        var controller = new ItemsController(dbContext, new OfficeScopeService(currentUser, dbContext));
+
+        var response = await controller.Delete(stored.Id, stored.Revision, CancellationToken.None);
+
+        Assert.IsType<NoContentResult>(response);
+        Assert.True(await dbContext.Items.IgnoreQueryFilters()
+            .Where(row => row.Id == item.Id)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == item.Id));
+    }
+
+    [Fact]
+    public async Task DbInitializer_RepairItemCurrentStockSnapshots_RecalculatesFromWarehouseTotals()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Repair stock item",
+            NameMatchKey = "REPAIRSTOCKITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 0m
+        };
+        dbContext.Items.Add(item);
+        dbContext.ItemWarehouseStocks.AddRange(
+            new ItemWarehouseStock
+            {
+                ItemId = item.Id,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 1m,
+                Revision = 1
+            },
+            new ItemWarehouseStock
+            {
+                ItemId = item.Id,
+                WarehouseCode = "USENET_SUB",
+                Quantity = 2m,
+                Revision = 2
+            });
+        await dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "RepairItemCurrentStockSnapshotsAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var repaired = await Assert.IsType<Task<int>>(method.Invoke(null, new object[] { dbContext, CancellationToken.None }));
+        await dbContext.SaveChangesAsync();
+
+        Assert.Equal(1, repaired);
+        Assert.Equal(3m, await dbContext.Items.IgnoreQueryFilters()
+            .Where(row => row.Id == item.Id)
+            .Select(row => row.CurrentStock)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task InvoicesController_Update_ReturnsConflict_WhenExpectedRevisionDoesNotMatch()
     {
         var currentUser = CreateAdminUser();
@@ -163,13 +252,138 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             currentUser,
             new StubInvoiceNumberService(),
             new OfficeScopeService(currentUser, dbContext),
-            new InventoryLedgerService(dbContext));
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
 
         var response = await controller.Update(stored.Id, dto, CancellationToken.None);
 
         var conflict = Assert.IsType<ConflictObjectResult>(response.Result);
         var payload = Assert.IsType<ExpectedRevisionConflictResponse>(conflict.Value);
         Assert.Equal(nameof(Invoice), payload.EntityName);
+    }
+
+    [Fact]
+    public async Task DirectCrud_AllowsConsecutiveUpdates_WhenClientUsesReturnedRevision()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Consecutive customer",
+            NameMatchKey = "CONSECUTIVECUSTOMER",
+            TradeType = "Sales"
+        };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Consecutive item",
+            NameMatchKey = "CONSECUTIVEITEM",
+            TrackingType = ItemTrackingTypes.NonStock
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-CONSECUTIVE-001",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 5, 26),
+            TotalAmount = 1000m,
+            SupplyAmount = 909m,
+            VatAmount = 91m
+        };
+        var invoiceLine = new InvoiceLine
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            ItemId = item.Id,
+            ItemNameOriginal = item.NameOriginal,
+            ItemTrackingType = ItemTrackingTypes.NonStock,
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 1000m,
+            LineAmount = 1000m
+        };
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 5, 26),
+            Amount = 100m,
+            Note = "initial"
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Items.Add(item);
+        dbContext.Invoices.Add(invoice);
+        dbContext.InvoiceLines.Add(invoiceLine);
+        dbContext.Payments.Add(payment);
+        await dbContext.SaveChangesAsync();
+
+        var customerController = new CustomersController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+        var itemController = new ItemsController(dbContext, new OfficeScopeService(currentUser, dbContext));
+        var invoiceController = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+        var paymentController = new PaymentsController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+
+        var customerDto = (await dbContext.Customers.IgnoreQueryFilters().SingleAsync(row => row.Id == customer.Id)).ToDto();
+        customerDto.ExpectedRevision = customerDto.Revision;
+        customerDto.Notes = "first save";
+        var savedCustomer = AssertOk(await customerController.Update(customer.Id, customerDto, CancellationToken.None));
+        savedCustomer.ExpectedRevision = savedCustomer.Revision;
+        savedCustomer.Notes = "second save";
+        var savedCustomerAgain = AssertOk(await customerController.Update(customer.Id, savedCustomer, CancellationToken.None));
+        Assert.Equal("second save", savedCustomerAgain.Notes);
+
+        var itemDto = (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).ToDto();
+        itemDto.ExpectedRevision = itemDto.Revision;
+        itemDto.SimpleMemo = "first save";
+        var savedItem = AssertOk(await itemController.Update(item.Id, itemDto, CancellationToken.None));
+        savedItem.ExpectedRevision = savedItem.Revision;
+        savedItem.SimpleMemo = "second save";
+        var savedItemAgain = AssertOk(await itemController.Update(item.Id, savedItem, CancellationToken.None));
+        Assert.Equal("second save", savedItemAgain.SimpleMemo);
+
+        var invoiceDto = (await dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Include(row => row.Customer)
+            .Include(row => row.Lines)
+            .Include(row => row.Payments)
+            .SingleAsync(row => row.Id == invoice.Id)).ToDto();
+        invoiceDto.ExpectedRevision = invoiceDto.Revision;
+        invoiceDto.Memo = "first save";
+        var savedInvoice = AssertOk(await invoiceController.Update(invoice.Id, invoiceDto, CancellationToken.None));
+        savedInvoice.ExpectedRevision = savedInvoice.Revision;
+        savedInvoice.Memo = "second save";
+        var savedInvoiceAgain = AssertOk(await invoiceController.Update(invoice.Id, savedInvoice, CancellationToken.None));
+        Assert.Equal("second save", savedInvoiceAgain.Memo);
+
+        var paymentDto = (await dbContext.Payments
+            .IgnoreQueryFilters()
+            .Include(row => row.Invoice)
+            .ThenInclude(invoiceRow => invoiceRow!.Customer)
+            .Include(row => row.Attachments)
+            .SingleAsync(row => row.Id == payment.Id)).ToDto();
+        paymentDto.ExpectedRevision = paymentDto.Revision;
+        paymentDto.Note = "first save";
+        var savedPayment = AssertOk(await paymentController.Update(payment.Id, paymentDto, CancellationToken.None));
+        savedPayment.ExpectedRevision = savedPayment.Revision;
+        savedPayment.Note = "second save";
+        var savedPaymentAgain = AssertOk(await paymentController.Update(payment.Id, savedPayment, CancellationToken.None));
+        Assert.Equal("second save", savedPaymentAgain.Note);
     }
 
     [Fact]
@@ -229,7 +443,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             currentUser,
             new StubInvoiceNumberService(),
             new OfficeScopeService(currentUser, dbContext),
-            new InventoryLedgerService(dbContext));
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
 
         var response = await controller.Create(dto, CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -248,6 +463,228 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.Equal("2층 사무실", storedLine.InstallLocation);
         Assert.Equal(new DateOnly(2026, 4, 1), storedLine.RentalStartDate);
         Assert.Equal(new DateOnly(2029, 3, 31), storedLine.RentalEndDate);
+    }
+
+    [Fact]
+    public async Task InvoicesController_SalesCreateUpdateDelete_AdjustsWarehouseStockSnapshots()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Stock customer",
+            NameMatchKey = "STOCKCUSTOMER",
+            TradeType = "매출"
+        };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Stock item",
+            NameMatchKey = "STOCKITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 5m
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Items.Add(item);
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 5m,
+            Revision = 1
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        var createDto = new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 5, 21),
+            Lines =
+            [
+                new InvoiceLineDto
+                {
+                    Id = lineId,
+                    InvoiceId = invoiceId,
+                    ItemId = item.Id,
+                    ItemNameOriginal = item.NameOriginal,
+                    ItemTrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    Quantity = 2m,
+                    UnitPrice = 1000m,
+                    LineAmount = 2000m
+                }
+            ]
+        };
+
+        var createResponse = await controller.Create(createDto, CancellationToken.None);
+        Assert.IsType<OkObjectResult>(createResponse.Result);
+        Assert.Equal(3m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(3m, (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).CurrentStock);
+
+        var storedInvoice = await dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Include(invoice => invoice.Customer)
+            .Include(invoice => invoice.Lines)
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        var updateDto = storedInvoice.ToDto();
+        updateDto.ExpectedRevision = storedInvoice.Revision;
+        updateDto.Lines[0].Quantity = 1m;
+        updateDto.Lines[0].LineAmount = 1000m;
+
+        var updateResponse = await controller.Update(invoiceId, updateDto, CancellationToken.None);
+        Assert.IsType<OkObjectResult>(updateResponse.Result);
+        Assert.Equal(4m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(4m, (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).CurrentStock);
+
+        var latestInvoice = await dbContext.Invoices.IgnoreQueryFilters().SingleAsync(invoice => invoice.Id == invoiceId);
+        var deleteResponse = await controller.Delete(invoiceId, latestInvoice.Revision, CancellationToken.None);
+
+        Assert.IsType<NoContentResult>(deleteResponse);
+        Assert.Equal(5m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(5m, (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).CurrentStock);
+    }
+
+    [Fact]
+    public async Task InvoicesController_PurchaseCreateUpdateDelete_AdjustsWarehouseStockSnapshots()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Purchase stock vendor",
+            NameMatchKey = "PURCHASESTOCKVENDOR",
+            TradeType = "Purchase"
+        };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Purchase stock item",
+            NameMatchKey = "PURCHASESTOCKITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 5m
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Items.Add(item);
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 5m,
+            Revision = 1
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        var createDto = new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            VoucherType = VoucherType.Purchase,
+            InvoiceDate = new DateOnly(2026, 5, 21),
+            Lines =
+            [
+                new InvoiceLineDto
+                {
+                    Id = lineId,
+                    InvoiceId = invoiceId,
+                    ItemId = item.Id,
+                    ItemNameOriginal = item.NameOriginal,
+                    ItemTrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    Quantity = 2m,
+                    UnitPrice = 1000m,
+                    LineAmount = 2000m
+                }
+            ]
+        };
+
+        var createResponse = await controller.Create(createDto, CancellationToken.None);
+        Assert.IsType<OkObjectResult>(createResponse.Result);
+        Assert.Equal(7m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(7m, (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).CurrentStock);
+
+        var storedInvoice = await dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Include(invoice => invoice.Customer)
+            .Include(invoice => invoice.Lines)
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        var updateDto = storedInvoice.ToDto();
+        updateDto.ExpectedRevision = storedInvoice.Revision;
+        updateDto.Lines[0].Quantity = 1m;
+        updateDto.Lines[0].LineAmount = 1000m;
+
+        var updateResponse = await controller.Update(invoiceId, updateDto, CancellationToken.None);
+        Assert.IsType<OkObjectResult>(updateResponse.Result);
+        Assert.Equal(6m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(6m, (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).CurrentStock);
+
+        var latestInvoice = await dbContext.Invoices.IgnoreQueryFilters().SingleAsync(invoice => invoice.Id == invoiceId);
+        var deleteResponse = await controller.Delete(invoiceId, latestInvoice.Revision, CancellationToken.None);
+
+        Assert.IsType<NoContentResult>(deleteResponse);
+        Assert.Equal(5m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(5m, (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).CurrentStock);
     }
 
     [Fact]
@@ -442,6 +879,12 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
 
         Assert.IsType<ConflictObjectResult>(unitResponse.Result);
         Assert.IsType<ConflictObjectResult>(categoryResponse.Result);
+    }
+
+    private static TDto AssertOk<TDto>(ActionResult<TDto> response)
+    {
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        return Assert.IsType<TDto>(ok.Value);
     }
 
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)

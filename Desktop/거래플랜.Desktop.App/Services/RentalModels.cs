@@ -11,6 +11,7 @@ public sealed class RentalBillingFilter
     public string OfficeCode { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public bool DueOnly { get; set; }
+    public bool PastDueOnly { get; set; }
     public bool ExpandCustomerSummaryRows { get; set; }
     public DateOnly ReferenceDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
 }
@@ -386,6 +387,28 @@ public sealed class RentalCustomerOnboardingDraftModel
     public List<RentalBillingTemplateItemModel> TemplateItems { get; set; } = new();
 }
 
+public sealed class RentalBillingHistoryRow
+{
+    public Guid BillingProfileId { get; init; }
+    public Guid BillingRunId { get; init; }
+    public string CustomerName { get; init; } = string.Empty;
+    public string PeriodLabel { get; init; } = string.Empty;
+    public DateOnly ScheduledDate { get; init; }
+    public decimal BilledAmount { get; init; }
+    public decimal SettledAmount { get; init; }
+    public decimal OutstandingAmount { get; init; }
+    public DateOnly? SettledDate { get; init; }
+    public string BillingStatus { get; init; } = string.Empty;
+    public string SettlementStatus { get; init; } = string.Empty;
+    public bool HasInvoice { get; init; }
+    public Guid? InvoiceId { get; init; }
+    public bool IsPastUnresolved { get; init; }
+    public bool CanRegisterSettlement => BillingRunId != Guid.Empty && OutstandingAmount > 0m;
+    public string ActionLabel => CanRegisterSettlement
+        ? SettledAmount > 0m ? "추가 입금" : "입금 등록"
+        : "완료";
+}
+
 public sealed class RentalBillingViewRow
 {
     public Guid SelectionId { get; init; }
@@ -428,9 +451,49 @@ public sealed class RentalBillingViewRow
     public string CurrentBillingPeriodLabel { get; init; } = string.Empty;
     public string CurrentBillingRunStatus { get; init; } = string.Empty;
     public decimal CurrentBilledAmount { get; init; }
+    public List<RentalBillingHistoryRow> BillingHistoryRows { get; init; } = new();
+    public int PastUnresolvedCount { get; init; }
+    public decimal PastUnresolvedAmount { get; init; }
+    public string OldestPastUnresolvedPeriodLabel { get; init; } = string.Empty;
+    public bool HasPastUnresolved => PastUnresolvedCount > 0 || PastUnresolvedAmount > 0m;
+    public string PastUnresolvedSummary => HasPastUnresolved
+        ? $"이전 청구월 미처리 {PastUnresolvedCount:N0}건 / 미수 {PastUnresolvedAmount:N0}원"
+        : "이전 청구월 미처리 내역 없음";
     public bool HasDataIssue { get; init; }
     public string DataIssueSummary { get; init; } = string.Empty;
     public bool IsAggregateRow => GroupedSourceCount > 1;
+    public bool HasUnlinkedBillingAssets => GroupedUnlinkedAssetCount > 0;
+    public bool RequiresBillingProfileCreation => GroupedPersistedProfileCount == 0 && GroupedUnlinkedAssetCount > 0;
+    public string BillingSetupStatus
+    {
+        get
+        {
+            if (RequiresBillingProfileCreation)
+                return GroupedUnlinkedAssetCount > 1 ? $"생성필요 {GroupedUnlinkedAssetCount:N0}대" : "생성필요";
+            if (HasUnlinkedBillingAssets)
+                return $"미연결 {GroupedUnlinkedAssetCount:N0}대";
+            return "설정완료";
+        }
+    }
+    public string BillingSetupHelpText
+        => RequiresBillingProfileCreation
+            ? GroupedUnlinkedAssetCount > 1
+                ? $"같은 거래처의 미연결 장비 {GroupedUnlinkedAssetCount:N0}대를 묶어 표시했습니다. '개별 청구건 보기'로 전환해 장비별 내용을 확인한 뒤 저장하면 청구 프로필이 생성됩니다."
+                : "청구 프로필이 없는 렌탈 장비입니다. 내용을 확인한 뒤 저장하면 청구 프로필이 생성됩니다."
+            : HasUnlinkedBillingAssets
+                ? $"청구 프로필에 연결되지 않은 장비 {GroupedUnlinkedAssetCount:N0}대가 함께 있습니다. 필요하면 '개별 청구건 보기'에서 정리하세요."
+                : "청구 설정이 완료된 건입니다.";
+    public string SettlementStatusDisplay
+    {
+        get
+        {
+            if (RequiresBillingProfileCreation)
+                return "청구 전";
+            if (string.Equals(SettlementStatus, "생성필요", StringComparison.OrdinalIgnoreCase))
+                return "청구 전";
+            return string.IsNullOrWhiteSpace(SettlementStatus) ? PaymentFlowConstants.SettlementStatusUnpaid : SettlementStatus;
+        }
+    }
     public bool IsSelected { get; set; }
 }
 

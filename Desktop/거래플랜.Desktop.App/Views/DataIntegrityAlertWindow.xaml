@@ -86,7 +86,7 @@
                                         <TextBlock Grid.Column="2" Text="{Binding CountText}" FontSize="20" FontWeight="Bold" Foreground="#FFD56B" VerticalAlignment="Center" HorizontalAlignment="Center"/>
                                         <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                                             <Button Content="자세히 보기" Click="DetailsButton_Click" Background="#1976A8"/>
-                                            <Button Content="바로 수정" Click="FixButton_Click" Background="#00897B"/>
+                                            <Button Content="선택 항목 자동 수정" Click="FixButton_Click" Background="#00897B"/>
                                         </StackPanel>
                                     </Grid>
                                 </Border>

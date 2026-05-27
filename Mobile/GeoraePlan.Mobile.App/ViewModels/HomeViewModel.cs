@@ -10,7 +10,7 @@ public sealed class HomeViewModel : ObservableObject
     private string _displayName = "거래플랜";
     private string _roleText = "로그인이 필요합니다.";
     private string _lastSyncText = "아직 동기화 기록이 없습니다.";
-    private string _statusMessage = "안드로이드 클라이언트 준비 완료";
+    private string _statusMessage = "모바일 거래플랜 준비 완료";
     private string _autoSyncText = "로그인 후 자동 동기화가 시작됩니다.";
     private string _pendingNoticeText = string.Empty;
     private bool _hasPendingNotice;
@@ -92,7 +92,7 @@ public sealed class HomeViewModel : ObservableObject
         else if (sync.PendingInvoiceCount > 0 || sync.PendingPaymentCount > 0)
         {
             HasPendingNotice = true;
-            PendingNoticeText = $"전표 {sync.PendingInvoiceCount:N0}건 / 수금 {sync.PendingPaymentCount:N0}건 업로드 대기 중입니다.";
+            PendingNoticeText = $"전표 {sync.PendingInvoiceCount:N0}건 / 수금·지급 {sync.PendingPaymentCount:N0}건 업로드 대기 중입니다.";
         }
         else
         {

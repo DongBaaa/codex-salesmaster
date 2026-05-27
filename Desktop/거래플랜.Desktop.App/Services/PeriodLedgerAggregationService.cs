@@ -53,7 +53,7 @@ public sealed class PeriodLedgerAggregationService
             PeriodLedgerType.SalesPurchase => "기간내 판매+구매 거래원장",
             PeriodLedgerType.SalesOnly => "기간내 판매/매출 거래원장",
             PeriodLedgerType.PurchaseOnly => "기간내 구매/매입 거래원장",
-            PeriodLedgerType.ReceiptPayment => "기간내 수금/지불 거래원장",
+            PeriodLedgerType.ReceiptPayment => "기간내 수금/지급 거래원장",
             PeriodLedgerType.YeonsuDelivery => "기간내 연수구 납품내역",
             _ => "거래원장"
         };
@@ -139,7 +139,7 @@ public sealed class PeriodLedgerAggregationService
                     CustomerId = invoice.CustomerId,
                     CustomerName = customerName,
                     Date = payment.PaymentDate,
-                    Division = isPurchaseInvoice ? "지불(매입전표)" : "수금(판매전표)",
+                    Division = isPurchaseInvoice ? "지급(매입전표)" : "수금(판매전표)",
                     Summary = string.IsNullOrWhiteSpace(payment.Note)
                         ? isPurchaseInvoice ? $"{summary} 지급" : $"{summary} 입금"
                         : payment.Note.Trim(),
@@ -414,6 +414,7 @@ public sealed class PeriodLedgerAggregationService
             "구매" => 1,
             "수금(판매전표)" => 2,
             "수금" => 3,
+            "지급" => 4,
             "지불" => 4,
             _ => 9
         };
@@ -636,7 +637,7 @@ public sealed class PeriodLedgerAggregationService
                         CustomerId = tx.CustomerId,
                         CustomerName = customerName,
                         Date = tx.TransactionDate,
-                        Division = "지불",
+                        Division = "지급",
                         Summary = BuildTransactionSummary(tx),
                         TradeAmount = 0m,
                         ReceiptAmount = 0m,
@@ -892,7 +893,7 @@ public sealed class PeriodLedgerAggregationService
             return tx.Note.Trim();
         if (!string.IsNullOrWhiteSpace(tx.Memo))
             return tx.Memo.Trim();
-        return "수금/지불 전표";
+        return "수금/지급 전표";
     }
 }
 

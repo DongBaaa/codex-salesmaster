@@ -15,7 +15,9 @@ param(
     [string]$OutputRoot,
     [string]$VersionName,
     [int]$VersionCode,
+    [int]$KeepArtifactDirectoryCount = 2,
     [switch]$SkipEnvironmentCheck,
+    [switch]$SkipArtifactPrune,
     [switch]$NoRestore
 )
 
@@ -37,8 +39,10 @@ $scriptPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'Build
     -OutputRoot $OutputRoot `
     -VersionName $VersionName `
     -VersionCode $VersionCode `
+    -KeepArtifactDirectoryCount $KeepArtifactDirectoryCount `
     -PackageFormat aab `
     -SkipEnvironmentCheck:$SkipEnvironmentCheck `
+    -SkipArtifactPrune:$SkipArtifactPrune `
     -NoRestore:$NoRestore
 
 if ($LASTEXITCODE -ne 0) {

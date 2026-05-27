@@ -15,10 +15,13 @@ param(
     [string]$OutputRoot,
     [string]$VersionName,
     [int]$VersionCode,
+    [int]$KeepArtifactDirectoryCount = 2,
     [ValidateSet('apk', 'aab', 'both')]
     [string]$PackageFormat = 'apk',
+    [switch]$DisableAot,
     [switch]$DisableTrimming,
     [switch]$SkipEnvironmentCheck,
+    [switch]$SkipArtifactPrune,
     [switch]$NoRestore
 )
 
@@ -95,8 +98,8 @@ function Get-ResolvedDotNetPath {
     }
 
     foreach ($candidate in @(
-        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\dotnet8\dotnet.exe'),
-        (Join-Path $ProjectRoot '.tooling\dotnet8\dotnet.exe')
+        (Join-Path $ProjectRoot '.tooling\dotnet8\dotnet.exe'),
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\dotnet8\dotnet.exe')
     )) {
         if (Test-Path -LiteralPath $candidate) {
             return (Resolve-Path -LiteralPath $candidate).Path
@@ -317,7 +320,15 @@ $arguments = @(
     '-p:ArchiveOnBuild=true'
 )
 
-$shouldDisableTrimming = $DisableTrimming.IsPresent -or $Configuration.Equals('Release', [System.StringComparison]::OrdinalIgnoreCase)
+$isReleaseBuild = $Configuration.Equals('Release', [System.StringComparison]::OrdinalIgnoreCase)
+$shouldEnableAot = $isReleaseBuild -and -not $DisableAot.IsPresent
+if ($shouldEnableAot) {
+    $arguments += '-p:RunAOTCompilation=true'
+    $arguments += '-p:AndroidEnableProfiledAot=true'
+    Write-Host 'android_profiled_aot=true'
+}
+
+$shouldDisableTrimming = $DisableTrimming.IsPresent
 if ($shouldDisableTrimming) {
     $arguments += '-p:PublishTrimmed=false'
     Write-Host 'publish_trimmed=false'
@@ -364,6 +375,79 @@ function Write-PackageHash {
         Hash = $hash.Hash
         HashFile = $hashFile
     }
+}
+
+function Remove-OldArtifactDirectories {
+    param(
+        [Parameter(Mandatory = $true)][string]$OutputRoot,
+        [Parameter(Mandatory = $true)][string]$CurrentDirectory,
+        [Parameter(Mandatory = $true)][int]$KeepDirectoryCount
+    )
+
+    if ($KeepDirectoryCount -lt 1 -or -not (Test-Path -LiteralPath $OutputRoot)) {
+        return @()
+    }
+
+    $resolvedOutputRoot = (Resolve-Path -LiteralPath $OutputRoot).Path.TrimEnd('\') + '\'
+    $resolvedCurrentDirectory = (Resolve-Path -LiteralPath $CurrentDirectory).Path
+    if (-not $resolvedCurrentDirectory.StartsWith($resolvedOutputRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Current artifact directory is outside output root: $resolvedCurrentDirectory"
+    }
+
+    $directories = Get-ChildItem -LiteralPath $OutputRoot -Directory -ErrorAction SilentlyContinue |
+        Sort-Object -Property @{ Expression = 'LastWriteTimeUtc'; Descending = $true }, @{ Expression = 'Name'; Descending = $false }
+
+    $preserve = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    [void]$preserve.Add($resolvedCurrentDirectory)
+    foreach ($directory in $directories) {
+        if ($preserve.Count -ge $KeepDirectoryCount) {
+            break
+        }
+
+        [void]$preserve.Add((Resolve-Path -LiteralPath $directory.FullName).Path)
+    }
+
+    $removed = New-Object System.Collections.Generic.List[string]
+    foreach ($directory in $directories) {
+        $resolvedDirectory = (Resolve-Path -LiteralPath $directory.FullName).Path
+        if ($preserve.Contains($resolvedDirectory)) {
+            continue
+        }
+
+        if (-not $resolvedDirectory.StartsWith($resolvedOutputRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Artifact prune target is outside output root: $resolvedDirectory"
+        }
+
+        Remove-Item -LiteralPath $resolvedDirectory -Recurse -Force -ErrorAction Stop
+        $removed.Add($directory.Name) | Out-Null
+    }
+
+    return $removed
+}
+
+function Remove-LooseArtifactFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$OutputRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $OutputRoot)) {
+        return @()
+    }
+
+    $resolvedOutputRoot = (Resolve-Path -LiteralPath $OutputRoot).Path.TrimEnd('\') + '\'
+    $removed = New-Object System.Collections.Generic.List[string]
+    $files = Get-ChildItem -LiteralPath $OutputRoot -File -ErrorAction SilentlyContinue
+    foreach ($file in $files) {
+        $resolvedFile = (Resolve-Path -LiteralPath $file.FullName).Path
+        if (-not $resolvedFile.StartsWith($resolvedOutputRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Loose artifact prune target is outside output root: $resolvedFile"
+        }
+
+        Remove-Item -LiteralPath $resolvedFile -Force -ErrorAction Stop
+        $removed.Add($file.Name) | Out-Null
+    }
+
+    return $removed
 }
 
 $apkFile = $null
@@ -413,3 +497,14 @@ Write-Host "dotnet_path=$resolvedDotNetPath"
 Write-Host "java_sdk_directory=$resolvedJavaSdkDirectory"
 Write-Host "android_sdk_directory=$resolvedAndroidSdkDirectory"
 
+if (-not $SkipArtifactPrune) {
+    $removedArtifactDirectories = Remove-OldArtifactDirectories -OutputRoot $OutputRoot -CurrentDirectory $publishDirectory -KeepDirectoryCount $KeepArtifactDirectoryCount
+    if ($removedArtifactDirectories.Count -gt 0) {
+        Write-Host "android_artifact_directories_pruned=$($removedArtifactDirectories.Count)"
+    }
+
+    $removedLooseArtifactFiles = Remove-LooseArtifactFiles -OutputRoot $OutputRoot
+    if ($removedLooseArtifactFiles.Count -gt 0) {
+        Write-Host "android_loose_artifact_files_pruned=$($removedLooseArtifactFiles.Count)"
+    }
+}

@@ -87,14 +87,14 @@ public sealed class InvoicesViewModel : ObservableObject
             var isPurchase = SelectedInvoice.VoucherType == VoucherType.Purchase;
             if (SelectedInvoice.Payments.Count == 0)
             {
-                var missingLabel = isPurchase ? "미지불" : "미수금";
-                var settlementLabel = isPurchase ? "지불 없음" : "수금 없음";
+                var missingLabel = isPurchase ? "미지급금" : "미수금";
+                var settlementLabel = isPurchase ? "지급 없음" : "수금 없음";
                 return $"{settlementLabel} · {missingLabel} {Math.Max(0m, SelectedInvoice.TotalAmount):N0}원";
             }
 
             var outstanding = Math.Max(0m, SelectedInvoice.TotalAmount - paid);
-            var summaryLabel = isPurchase ? "지불" : "수금";
-            var outstandingLabel = isPurchase ? "미지불" : "미수금";
+            var summaryLabel = isPurchase ? "지급" : "수금";
+            var outstandingLabel = isPurchase ? "미지급금" : "미수금";
             return $"{summaryLabel} {SelectedInvoice.Payments.Count:N0}건 · 누적 {paid:N0}원 · {outstandingLabel} {outstanding:N0}원";
         }
     }
@@ -262,10 +262,10 @@ public sealed class InvoiceListItem
         {
             var paidAmount = Invoice.Payments?.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount) ?? 0m;
             if (paidAmount <= 0m)
-                return Invoice.VoucherType == VoucherType.Purchase ? "지불 없음" : "수금 없음";
+                return Invoice.VoucherType == VoucherType.Purchase ? "지급 없음" : "수금 없음";
 
             return Invoice.VoucherType == VoucherType.Purchase
-                ? $"지불 {paidAmount:N0}원"
+                ? $"지급 {paidAmount:N0}원"
                 : $"수금 {paidAmount:N0}원";
         }
     }

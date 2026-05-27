@@ -27,6 +27,13 @@ public static class ItemKinds
             Product => Product,
             Asset => Asset,
             Billing => Billing,
+            _ when string.Equals(normalized, "Consumable", StringComparison.OrdinalIgnoreCase) => Consumable,
+            _ when string.Equals(normalized, "Product", StringComparison.OrdinalIgnoreCase) => Product,
+            _ when string.Equals(normalized, "Goods", StringComparison.OrdinalIgnoreCase) => Product,
+            _ when string.Equals(normalized, "Asset", StringComparison.OrdinalIgnoreCase) => Asset,
+            _ when string.Equals(normalized, "Equipment", StringComparison.OrdinalIgnoreCase) => Asset,
+            _ when string.Equals(normalized, "Billing", StringComparison.OrdinalIgnoreCase) => Billing,
+            _ when string.Equals(normalized, "Service", StringComparison.OrdinalIgnoreCase) => Billing,
             _ => normalized
         };
     }
@@ -56,6 +63,15 @@ public static class ItemTrackingTypes
             Stock => Stock,
             Asset => Asset,
             NonStock => NonStock,
+            _ when string.Equals(normalized, "Stock", StringComparison.OrdinalIgnoreCase) => Stock,
+            _ when string.Equals(normalized, "Inventory", StringComparison.OrdinalIgnoreCase) => Stock,
+            _ when string.Equals(normalized, "Asset", StringComparison.OrdinalIgnoreCase) => Asset,
+            _ when string.Equals(normalized, "Equipment", StringComparison.OrdinalIgnoreCase) => Asset,
+            _ when string.Equals(normalized, "NonStock", StringComparison.OrdinalIgnoreCase) => NonStock,
+            _ when string.Equals(normalized, "Non-Stock", StringComparison.OrdinalIgnoreCase) => NonStock,
+            _ when string.Equals(normalized, "Non Stock", StringComparison.OrdinalIgnoreCase) => NonStock,
+            _ when string.Equals(normalized, "Billing", StringComparison.OrdinalIgnoreCase) => NonStock,
+            _ when string.Equals(normalized, "Service", StringComparison.OrdinalIgnoreCase) => NonStock,
             _ => normalized
         };
     }

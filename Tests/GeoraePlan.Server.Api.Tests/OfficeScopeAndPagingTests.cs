@@ -202,6 +202,192 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
     }
 
     [Fact]
+    public async Task YeonsuUser_PaymentAndRentalScopes_ReturnOnlyResponsibleOfficeRows()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var visibleCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "VISIBLE-CUSTOMER",
+            NameMatchKey = "VISIBLECUSTOMER",
+            TradeType = "Sales"
+        };
+        var hiddenCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "HIDDEN-CUSTOMER",
+            NameMatchKey = "HIDDENCUSTOMER",
+            TradeType = "Sales"
+        };
+        var visibleInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = visibleCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            InvoiceNumber = "PAY-VISIBLE",
+            InvoiceDate = new DateOnly(2026, 5, 1)
+        };
+        var hiddenInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = hiddenCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "PAY-HIDDEN",
+            InvoiceDate = new DateOnly(2026, 5, 1)
+        };
+        var visibleProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = "RENTAL-VISIBLE",
+            CustomerId = visibleCustomer.Id,
+            CustomerName = visibleCustomer.NameOriginal
+        };
+        var hiddenProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "RENTAL-HIDDEN",
+            CustomerId = hiddenCustomer.Id,
+            CustomerName = hiddenCustomer.NameOriginal
+        };
+
+        dbContext.Customers.AddRange(visibleCustomer, hiddenCustomer);
+        dbContext.Invoices.AddRange(visibleInvoice, hiddenInvoice);
+        dbContext.Payments.AddRange(
+            new Payment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = visibleInvoice.Id,
+                PaymentDate = new DateOnly(2026, 5, 2),
+                Amount = 100m,
+                Note = "PAYMENT-VISIBLE"
+            },
+            new Payment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = hiddenInvoice.Id,
+                PaymentDate = new DateOnly(2026, 5, 2),
+                Amount = 100m,
+                Note = "PAYMENT-HIDDEN"
+            });
+        dbContext.Transactions.AddRange(
+            new TransactionRecord
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = visibleCustomer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                TransactionKind = "TRANSACTION-VISIBLE",
+                ReceiptTotal = 100m
+            },
+            new TransactionRecord
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = hiddenCustomer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionKind = "TRANSACTION-HIDDEN",
+                ReceiptTotal = 100m
+            });
+        dbContext.RentalBillingProfiles.AddRange(visibleProfile, hiddenProfile);
+        dbContext.RentalAssets.AddRange(
+            new RentalAsset
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                AssetKey = "ASSET-VISIBLE",
+                CustomerId = visibleCustomer.Id,
+                BillingProfileId = visibleProfile.Id
+            },
+            new RentalAsset
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "ASSET-HIDDEN",
+                CustomerId = hiddenCustomer.Id,
+                BillingProfileId = hiddenProfile.Id
+            });
+        dbContext.RentalBillingLogs.AddRange(
+            new RentalBillingLog
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                BillingProfileId = visibleProfile.Id,
+                BillingYearMonth = "2026-05"
+            },
+            new RentalBillingLog
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = hiddenProfile.Id,
+                BillingYearMonth = "2026-06"
+            });
+        await dbContext.SaveChangesAsync();
+
+        var service = new OfficeScopeService(currentUser, dbContext);
+
+        var payments = await service.ApplyPaymentScope(dbContext.Payments.AsNoTracking().Include(payment => payment.Invoice))
+            .Select(payment => payment.Note)
+            .ToListAsync();
+        var transactions = await service.ApplyTransactionScope(dbContext.Transactions.AsNoTracking())
+            .Select(transaction => transaction.TransactionKind)
+            .ToListAsync();
+        var profiles = await service.ApplyRentalBillingProfileScope(dbContext.RentalBillingProfiles.AsNoTracking())
+            .Select(profile => profile.ProfileKey)
+            .ToListAsync();
+        var assets = await service.ApplyRentalAssetScope(dbContext.RentalAssets.AsNoTracking())
+            .Select(asset => asset.AssetKey)
+            .ToListAsync();
+        var logs = await service.ApplyRentalBillingLogScope(dbContext.RentalBillingLogs.AsNoTracking())
+            .Select(log => log.BillingYearMonth)
+            .ToListAsync();
+
+        Assert.Equal(["PAYMENT-VISIBLE"], payments);
+        Assert.Equal(["TRANSACTION-VISIBLE"], transactions);
+        Assert.Equal(["RENTAL-VISIBLE"], profiles);
+        Assert.Equal(["ASSET-VISIBLE"], assets);
+        Assert.Equal(["2026-05"], logs);
+        Assert.True(service.CanWriteOfficeForPayments(OfficeCodeCatalog.Yeonsu, TenantScopeCatalog.UsenetGroup));
+        Assert.False(service.CanWriteOfficeForPayments(OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup));
+        Assert.True(service.CanWriteOfficeForRentals(OfficeCodeCatalog.Yeonsu, TenantScopeCatalog.UsenetGroup));
+        Assert.False(service.CanWriteOfficeForRentals(OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup));
+    }
+
+    [Fact]
     public async Task UsenetOfficeUser_DoesNotGainAdministrativeWriteAccess_OnlyFromOfficeCode()
     {
         var userId = Guid.NewGuid();
@@ -490,7 +676,8 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
             currentUser,
             new InvoiceNumberService(dbContext),
             new OfficeScopeService(currentUser, dbContext),
-            new InventoryLedgerService(dbContext));
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
 
         var response = await controller.GetAll(null, null, 200, CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);

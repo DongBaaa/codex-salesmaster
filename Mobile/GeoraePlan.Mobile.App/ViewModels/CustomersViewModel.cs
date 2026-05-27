@@ -113,7 +113,7 @@ public sealed class CustomersViewModel : ObservableObject
     public string SelectedCustomerName => SelectedCustomer?.NameOriginal ?? string.Empty;
     public string SelectedCustomerPhone => string.IsNullOrWhiteSpace(SelectedCustomer?.Phone) ? "등록된 전화번호 없음" : SelectedCustomer!.Phone;
     public string SelectedCustomerNotes => string.IsNullOrWhiteSpace(SelectedCustomer?.Notes) ? "등록된 메모 없음" : SelectedCustomer!.Notes;
-    public string SelectedCustomerSummaryCounts => $"계약 {SelectedCustomerContracts.Count:N0}건 · 거래내역 {SelectedCustomerInvoices.Count:N0}건 · 수금 {SelectedCustomerPayments.Count:N0}건";
+    public string SelectedCustomerSummaryCounts => $"계약 {SelectedCustomerContracts.Count:N0}건 · 거래내역 {SelectedCustomerInvoices.Count:N0}건 · 수금/지급 {SelectedCustomerPayments.Count:N0}건";
     public bool ShowSummarySection => SelectedDetailSection == CustomerDetailSection.Summary;
     public bool ShowContractsSection => SelectedDetailSection == CustomerDetailSection.Contracts;
     public bool ShowInvoicesSection => SelectedDetailSection == CustomerDetailSection.Invoices;

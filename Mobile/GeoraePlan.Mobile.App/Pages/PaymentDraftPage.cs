@@ -9,18 +9,25 @@ public sealed class PaymentDraftPage : ContentPage
 {
     private readonly PaymentDraftViewModel _viewModel;
 
+    public PaymentDraftPage(InvoiceDto invoice)
+        : this()
+    {
+        _viewModel.ConfigureInitialInvoice(invoice);
+    }
+
     public PaymentDraftPage()
     {
-        GeoraePlanTheme.ApplyPage(this, "수금 입력");
+        GeoraePlanTheme.ApplyPage(this, "수금/지급 입력");
 
         _viewModel = ServiceHelper.GetRequiredService<PaymentDraftViewModel>();
         _viewModel.SavedSuccessfully += HandleSavedSuccessfullyAsync;
         BindingContext = _viewModel;
+        SetBinding(TitleProperty, new Binding(nameof(PaymentDraftViewModel.PageTitleText)));
 
         var invoicePicker = GeoraePlanTheme.CreatePicker("전표 선택");
         invoicePicker.SetBinding(Picker.ItemsSourceProperty, nameof(PaymentDraftViewModel.Invoices));
         invoicePicker.SetBinding(Picker.SelectedItemProperty, nameof(PaymentDraftViewModel.SelectedInvoice));
-        invoicePicker.ItemDisplayBinding = new Binding(nameof(InvoiceDto.InvoiceNumber));
+        invoicePicker.ItemDisplayBinding = new Binding(path: ".", converter: new InvoicePickerDisplayConverter());
 
         var datePicker = new DatePicker
         {
@@ -29,7 +36,20 @@ public sealed class PaymentDraftPage : ContentPage
         };
         datePicker.SetBinding(DatePicker.DateProperty, nameof(PaymentDraftViewModel.PaymentDate));
 
-        var amountEntry = GeoraePlanTheme.CreateEntry("수금 금액");
+        var selectedInvoiceSummary = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
+        selectedInvoiceSummary.SetBinding(Label.TextProperty, nameof(PaymentDraftViewModel.SelectedInvoiceSummary));
+
+        var paymentMethodPicker = GeoraePlanTheme.CreateCompactPicker("수금/지급 방식 선택");
+        paymentMethodPicker.ItemDisplayBinding = new Binding(nameof(MobilePaymentMethodOption.DisplayName));
+        paymentMethodPicker.SetBinding(Picker.TitleProperty, nameof(PaymentDraftViewModel.PaymentMethodLabelText));
+        paymentMethodPicker.SetBinding(Picker.ItemsSourceProperty, nameof(PaymentDraftViewModel.PaymentMethodOptions));
+        paymentMethodPicker.SetBinding(Picker.SelectedItemProperty, nameof(PaymentDraftViewModel.SelectedPaymentMethod));
+
+        var paymentMethodHelpLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+        paymentMethodHelpLabel.SetBinding(Label.TextProperty, nameof(PaymentDraftViewModel.PaymentMethodHelpText));
+
+        var amountEntry = GeoraePlanTheme.CreateEntry("수금/지급 금액");
+        amountEntry.SetBinding(Entry.PlaceholderProperty, nameof(PaymentDraftViewModel.AmountPlaceholderText));
         amountEntry.Keyboard = Keyboard.Numeric;
         amountEntry.SetBinding(Entry.TextProperty, nameof(PaymentDraftViewModel.AmountText));
 
@@ -51,7 +71,7 @@ public sealed class PaymentDraftPage : ContentPage
         attachButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await ShowAttachmentMenuAsync(),
-                "수금 입력 작업");
+                "수금/지급 입력 작업");
 
         var attachmentsView = new CollectionView
         {
@@ -77,7 +97,7 @@ public sealed class PaymentDraftPage : ContentPage
                     if (sender is Button button && button.BindingContext is PendingPaymentAttachmentRecord attachment)
                         await _viewModel.OpenAttachmentAsync(attachment);
                 },
-                        "수금 입력 작업");
+                        "수금/지급 입력 작업");
 
                 var deleteButton = GeoraePlanTheme.CreateButton("삭제", GeoraePlanTheme.Danger);
                 deleteButton.HeightRequest = 38;
@@ -88,7 +108,7 @@ public sealed class PaymentDraftPage : ContentPage
                     if (sender is Button button && button.BindingContext is PendingPaymentAttachmentRecord attachment)
                         await _viewModel.RemoveAttachmentAsync(attachment);
                 },
-                        "수금 입력 작업");
+                        "수금/지급 입력 작업");
 
                 var actionGrid = new Grid
                 {
@@ -109,7 +129,8 @@ public sealed class PaymentDraftPage : ContentPage
         };
         attachmentsView.SetBinding(ItemsView.ItemsSourceProperty, nameof(PaymentDraftViewModel.Attachments));
 
-        var saveButton = GeoraePlanTheme.CreateButton("수금 임시저장", GeoraePlanTheme.Accent);
+        var saveButton = GeoraePlanTheme.CreateButton("수금/지급 저장", GeoraePlanTheme.Accent);
+        saveButton.SetBinding(Button.TextProperty, nameof(PaymentDraftViewModel.SaveButtonText));
         saveButton.SetBinding(Button.CommandProperty, nameof(PaymentDraftViewModel.SaveDraftCommand));
 
         var statusLabel = GeoraePlanTheme.CreateStatusLabel();
@@ -128,17 +149,21 @@ public sealed class PaymentDraftPage : ContentPage
                 Children =
                 {
                     GeoraePlanTheme.CreateCard(
-                        GeoraePlanTheme.CreateSectionTitle("수금 입력"),
-                        GeoraePlanTheme.CreateBodyText("전표 기준으로 수금 내역을 빠르게 입력합니다."),
+                        CreateBoundSectionTitle(nameof(PaymentDraftViewModel.PageTitleText)),
+                        GeoraePlanTheme.CreateBodyText("판매 전표는 수금, 구매 전표는 지급으로 자동 구분해 저장합니다."),
                         GeoraePlanTheme.CreateSectionTitle("전표", 14),
                         invoicePicker,
-                        GeoraePlanTheme.CreateSectionTitle("수금일자", 14),
+                        selectedInvoiceSummary,
+                        CreateBoundSectionTitle(nameof(PaymentDraftViewModel.PaymentDateLabelText), 14),
                         datePicker,
+                        CreateBoundSectionTitle(nameof(PaymentDraftViewModel.PaymentMethodLabelText), 14),
+                        paymentMethodPicker,
+                        paymentMethodHelpLabel,
                         GeoraePlanTheme.CreateSectionTitle("금액", 14),
                         amountEntry,
                         GeoraePlanTheme.CreateSectionTitle("비고", 14),
                         noteEditor,
-                        GeoraePlanTheme.CreateSectionTitle("첨부", 14),
+                        CreateBoundSectionTitle(nameof(PaymentDraftViewModel.AttachmentSectionTitle), 14),
                         attachmentSummary,
                         attachButton,
                         attachmentsView,
@@ -159,7 +184,7 @@ public sealed class PaymentDraftPage : ContentPage
             {
 await _viewModel.LoadAsync();
             },
-            "수금 입력 화면 초기화");
+            "수금/지급 입력 화면 초기화");
     }
 
     protected override void OnDisappearing()
@@ -185,6 +210,32 @@ await _viewModel.LoadAsync();
     {
         if (Navigation.NavigationStack.Count > 1)
             await Shell.Current.Navigation.PopAsync();
+    }
+
+    private static Label CreateBoundSectionTitle(string bindingPath, double fontSize = 16)
+    {
+        var label = GeoraePlanTheme.CreateSectionTitle(string.Empty, fontSize);
+        label.SetBinding(Label.TextProperty, bindingPath);
+        return label;
+    }
+
+    private sealed class InvoicePickerDisplayConverter : IValueConverter
+    {
+        public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
+        {
+            if (value is not InvoiceDto invoice)
+                return string.Empty;
+
+            var kind = invoice.VoucherType == VoucherType.Purchase ? "구매" : "판매";
+            var number = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
+                ? string.IsNullOrWhiteSpace(invoice.LocalTempNumber) ? "전표번호 미부여" : invoice.LocalTempNumber
+                : invoice.InvoiceNumber;
+            var customer = string.IsNullOrWhiteSpace(invoice.CustomerName) ? "거래처 미기록" : invoice.CustomerName;
+            return $"{invoice.InvoiceDate:yyyy-MM-dd} {kind} · {customer} · {number} · {invoice.TotalAmount:N0}원";
+        }
+
+        public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
+            => throw new NotSupportedException();
     }
 
     private sealed class AttachmentSummaryConverter : IValueConverter

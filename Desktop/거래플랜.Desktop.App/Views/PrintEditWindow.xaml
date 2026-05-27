@@ -39,20 +39,23 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
-            <Setter Property="MinHeight" Value="28"/>
-            <Setter Property="Padding" Value="8,1"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Padding" Value="0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
-            <Setter Property="MinWidth" Value="184"/>
-            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="MinWidth" Value="150"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Width" Value="150"/>
+            <Setter Property="MaxWidth" Value="150"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Height" Value="28"/>
-            <Setter Property="MinHeight" Value="28"/>
-            <Setter Property="Padding" Value="8,0,10,0"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Padding" Value="8,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style TargetType="Button">
@@ -144,6 +147,132 @@
                         </Grid>
                     </Border>
 
+                    <Border Background="#203A62" BorderBrush="#3F5D86" BorderThickness="1" Padding="8" Margin="0,0,0,8">
+                        <StackPanel>
+                            <TextBlock Text="{Binding SelectedPreviewDocument, StringFormat={}{0} 편집 항목}"
+                                       FontWeight="Bold"
+                                       Foreground="#90CAF9"
+                                       Margin="0,0,0,4"/>
+                            <TextBlock Text="{Binding PreviewDocumentGuideText}"
+                                       Foreground="#B7C9E8"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,4"/>
+                            <TextBlock Text="※ 저장 시 현재 전표/거래처 출력물에만 저장되며 거래처 원장 정보는 변경하지 않습니다."
+                                       Foreground="#A7D1FF"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#1A2B4A"
+                            BorderBrush="#2E4060"
+                            BorderThickness="1"
+                            Padding="8"
+                            Margin="0,0,0,8"
+                            Visibility="{Binding IsStatementPreviewSelected, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <StackPanel>
+                            <TextBlock Text="거래명세서 편집" FontWeight="Bold" Margin="0,0,0,6"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="90"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding SettlementAmountLabelText}"/>
+                                <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding PaidAmount, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="{Binding OutstandingAmountLabelText}" Margin="0,6,0,0"/>
+                                <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Text="{Binding BalanceAmount, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="전표메모" Margin="0,6,0,0"/>
+                                <TextBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0" Text="{Binding Memo, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Grid.Row="3" Grid.Column="0" Text="계좌문구" Margin="0,6,0,0"/>
+                                <TextBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0" Text="{Binding BankAccountText, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Grid.Row="4" Grid.Column="0" Text="하단문구" Margin="0,6,0,0"/>
+                                <TextBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0" Text="{Binding FooterText, UpdateSourceTrigger=PropertyChanged}"/>
+                                <StackPanel Grid.Row="5" Grid.Column="1" Orientation="Horizontal" Margin="0,6,0,0">
+                                    <CheckBox Content="날짜 인쇄" IsChecked="{Binding PrintWithDate}" Foreground="#EAF2FF" Margin="0,0,12,0"/>
+                                    <CheckBox Content="단가/금액 인쇄" IsChecked="{Binding PrintWithPrice}" Foreground="#EAF2FF"/>
+                                </StackPanel>
+                                <TextBlock Grid.Row="6"
+                                           Grid.Column="1"
+                                           Margin="0,4,0,0"
+                                           Foreground="#B7C9E8"
+                                           Text="※ 거래명세서 하단의 입금안내/비고 영역에 반영됩니다."
+                                           TextWrapping="Wrap"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#1A2B4A"
+                            BorderBrush="#2E4060"
+                            BorderThickness="1"
+                            Padding="8"
+                            Margin="0,0,0,8"
+                            Visibility="{Binding IsEstimatePreviewSelected, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <StackPanel>
+                            <TextBlock Text="견적서 편집" FontWeight="Bold" Margin="0,0,0,6"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="90"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="견적기간"/>
+                                <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EstimateValidityText, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="특이사항" Margin="0,6,0,0"/>
+                                <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Text="{Binding EstimateRemarks, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Grid.Row="2"
+                                           Grid.Column="1"
+                                           Margin="0,4,0,0"
+                                           Foreground="#B7C9E8"
+                                           Text="※ 견적서 상단 견적기간과 하단 특이사항에 반영됩니다."
+                                           TextWrapping="Wrap"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#1A2B4A"
+                            BorderBrush="#2E4060"
+                            BorderThickness="1"
+                            Padding="8"
+                            Margin="0,0,0,8"
+                            Visibility="{Binding IsPaymentClaimPreviewSelected, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <StackPanel>
+                            <TextBlock Text="대금청구서 편집" FontWeight="Bold" Margin="0,0,0,6"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="90"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="용역명"/>
+                                <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Memo, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="입금계좌" Margin="0,6,0,0"/>
+                                <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Text="{Binding BankAccountText, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Grid.Row="2"
+                                           Grid.Column="1"
+                                           Margin="0,4,0,0"
+                                           Foreground="#B7C9E8"
+                                           Text="※ 대금청구서의 용역명/입금계좌 표기에 반영됩니다."
+                                           TextWrapping="Wrap"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
                     <Border Background="#1A2B4A" BorderBrush="#2E4060" BorderThickness="1" Padding="8" Margin="0,0,0,8">
                         <StackPanel>
                             <TextBlock Text="공급자 정보" FontWeight="Bold" Margin="0,0,0,6"/>
@@ -225,122 +354,6 @@
                         </StackPanel>
                     </Border>
 
-                    <Border Background="#1A2B4A"
-                            BorderBrush="#2E4060"
-                            BorderThickness="1"
-                            Padding="8"
-                            Margin="0,0,0,8"
-                            Visibility="{Binding IsStatementPreviewSelected, Converter={StaticResource BoolToVisibilityConverter}}">
-                        <StackPanel>
-                            <TextBlock Text="거래명세서 편집" FontWeight="Bold" Margin="0,0,0,6"/>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="90"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
-                                <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding SettlementAmountLabelText}"/>
-                                <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding PaidAmount, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="1" Grid.Column="0" Text="{Binding OutstandingAmountLabelText}" Margin="0,6,0,0"/>
-                                <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Text="{Binding BalanceAmount, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="2" Grid.Column="0" Text="전표메모" Margin="0,6,0,0"/>
-                                <TextBox Grid.Row="2" Grid.Column="1" Margin="0,6,0,0" Text="{Binding Memo, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="3" Grid.Column="0" Text="계좌문구" Margin="0,6,0,0"/>
-                                <TextBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0" Text="{Binding BankAccountText, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="4" Grid.Column="0" Text="하단문구" Margin="0,6,0,0"/>
-                                <TextBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0" Text="{Binding FooterText, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="5"
-                                           Grid.Column="1"
-                                           Margin="0,4,0,0"
-                                           Foreground="#B7C9E8"
-                                           Text="※ 거래명세서 하단의 입금안내/비고 영역에 반영됩니다."
-                                           TextWrapping="Wrap"/>
-                            </Grid>
-                        </StackPanel>
-                    </Border>
-
-                    <Border Background="#1A2B4A"
-                            BorderBrush="#2E4060"
-                            BorderThickness="1"
-                            Padding="8"
-                            Margin="0,0,0,8"
-                            Visibility="{Binding IsEstimatePreviewSelected, Converter={StaticResource BoolToVisibilityConverter}}">
-                        <StackPanel>
-                            <TextBlock Text="견적서 편집" FontWeight="Bold" Margin="0,0,0,6"/>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="90"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
-                                <TextBlock Grid.Row="0" Grid.Column="0" Text="견적기간"/>
-                                <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EstimateValidityText, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="1" Grid.Column="0" Text="부가세" Margin="0,6,0,0"/>
-                                <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Text="{Binding EstimateRemarks, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="2"
-                                           Grid.Column="1"
-                                           Margin="0,4,0,0"
-                                           Foreground="#B7C9E8"
-                                           Text="※ 견적서 상단 견적기간과 하단 특이사항에 반영됩니다."
-                                           TextWrapping="Wrap"/>
-                            </Grid>
-                        </StackPanel>
-                    </Border>
-
-                    <Border Background="#1A2B4A"
-                            BorderBrush="#2E4060"
-                            BorderThickness="1"
-                            Padding="8"
-                            Margin="0,0,0,8"
-                            Visibility="{Binding IsPaymentClaimPreviewSelected, Converter={StaticResource BoolToVisibilityConverter}}">
-                        <StackPanel>
-                            <TextBlock Text="공급자 정보" FontWeight="Bold" Margin="0,0,0,6"/>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="90"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
-                                <TextBlock Grid.Row="0" Grid.Column="0" Text="용역명"/>
-                                <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Memo, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="1" Grid.Column="0" Text="특이사항" Margin="0,6,0,0"/>
-                                <TextBox Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" Text="{Binding BankAccountText, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock Grid.Row="2"
-                                           Grid.Column="1"
-                                           Margin="0,4,0,0"
-                                           Foreground="#B7C9E8"
-                                           Text="※ 대금청구서의 용역명/입금계좌 표기에 반영됩니다."
-                                           TextWrapping="Wrap"/>
-                            </Grid>
-                        </StackPanel>
-                    </Border>
-
-                    <Border Background="#1A2B4A"
-                            BorderBrush="#2E4060"
-                            BorderThickness="1"
-                            Padding="8"
-                            Visibility="{Binding IsStatementPreviewSelected, Converter={StaticResource BoolToVisibilityConverter}}">
-                        <StackPanel>
-                            <TextBlock Text="공급받는자 정보" FontWeight="Bold" Margin="0,0,0,6"/>
-                            <CheckBox Content="날짜 인쇄" IsChecked="{Binding PrintWithDate}" Foreground="#EAF2FF" Margin="0,0,0,4"/>
-                            <CheckBox Content="단가/금액 인쇄" IsChecked="{Binding PrintWithPrice}" Foreground="#EAF2FF"/>
-                        </StackPanel>
-                    </Border>
                 </StackPanel>
             </ScrollViewer>
 
@@ -363,7 +376,7 @@
                         <TextBlock Grid.Column="0" Text="미리보기 문서" FontWeight="Bold" Margin="0,0,8,0"/>
                         <ComboBox Grid.Column="1"
                                   ItemsSource="{Binding PreviewDocumentOptions}"
-                                  SelectedItem="{Binding SelectedPreviewDocument}"
+                                  SelectedItem="{Binding SelectedPreviewDocument, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                   MinHeight="30"/>
                          <TextBlock Grid.Column="2"
                                     Margin="12,0,0,0"

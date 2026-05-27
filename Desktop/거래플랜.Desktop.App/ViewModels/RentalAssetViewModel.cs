@@ -390,7 +390,18 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             return;
 
         var company = await _local.GetCompanyProfileAsync(_session);
-        var document = _documents.BuildReturnReportDocument(asset, company);
+        var inputWindow = new RentalReturnReportInputWindow(BuildDefaultReturnReason(asset))
+        {
+            Owner = GetActiveWindow()
+        };
+        if (inputWindow.ShowDialog() != true)
+        {
+            StatusMessage = "회수장비내역서 작성을 취소했습니다.";
+            return;
+        }
+
+        var managementCompanyNames = await BuildManagementCompanyNameLookupAsync();
+        var document = _documents.BuildReturnReportDocument(asset, company, inputWindow.ReportFields, managementCompanyNames);
         OpenPreview(document, $"회수장비내역서_{BuildSafeDocumentSuffix(asset)}");
         StatusMessage = "회수장비내역서를 열었습니다.";
     }
@@ -406,7 +417,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         var relatedAssets = (await _rental.GetAssetsForEquipmentDetailAsync(asset, _session)).ToList();
         MergeCurrentDocumentAsset(asset, relatedAssets);
 
-        var document = _documents.BuildEquipmentDetailDocument(relatedAssets, customer, company);
+        var managementCompanyNames = await BuildManagementCompanyNameLookupAsync();
+        var document = _documents.BuildEquipmentDetailDocument(relatedAssets, customer, company, managementCompanyNames);
         OpenPreview(document, $"렌탈장비내역서_{BuildSafeDocumentSuffix(asset)}");
         StatusMessage = $"렌탈장비내역서({relatedAssets.Count:N0}대)를 열었습니다.";
     }
@@ -697,15 +709,19 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             return false;
         }
 
+        var documentOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(EditOfficeCode, _session.OfficeCode);
+        var documentManagementCompanyCode = ResolveManagementCompanyCodeForCurrentAsset(documentOfficeCode);
+
         asset = new LocalRentalAsset
         {
             Id = EditId,
             CustomerId = EditCustomerId ?? SelectedRow?.Source.CustomerId,
             ItemId = EditItemId ?? SelectedRow?.Source.ItemId,
             BillingProfileId = SelectedRow?.Source.BillingProfileId,
+            OfficeCode = documentOfficeCode,
             ManagementId = EditManagementId,
             ManagementNumber = EditManagementNumber,
-            ManagementCompanyCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(EditOfficeCode, _session.OfficeCode),
+            ManagementCompanyCode = documentManagementCompanyCode,
             CurrentLocation = EditCurrentLocation,
             ItemCategoryName = EditItemCategoryName,
             Manufacturer = EditManufacturer,
@@ -728,7 +744,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             RentalEndDate = ToDateOnly(EditRentalEndDate),
             FreeSupplyItems = EditFreeSupplyItems,
             PaidSupplyItems = EditPaidSupplyItems,
-            ResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(EditOfficeCode, _session.OfficeCode),
+            ResponsibleOfficeCode = documentOfficeCode,
             AssetStatus = EditAssetStatus,
             Notes = EditNotes
         };
@@ -767,6 +783,49 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             assets[index.Value] = currentAsset;
         else
             assets.Insert(0, currentAsset);
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>> BuildManagementCompanyNameLookupAsync()
+    {
+        var companies = await _rental.GetManagementCompaniesAsync();
+        var lookup = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var company in companies)
+        {
+            var code = (company.Code ?? string.Empty).Trim();
+            var name = string.IsNullOrWhiteSpace(company.Name) ? code : company.Name.Trim();
+            if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(name))
+                continue;
+
+            lookup[code] = name;
+            if (OfficeCodeCatalog.TryNormalizeOfficeCode(code, out var normalizedCode))
+                lookup[normalizedCode] = name;
+        }
+
+        return lookup;
+    }
+
+    private static string BuildDefaultReturnReason(LocalRentalAsset asset)
+    {
+        if (string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase))
+            return "폐기 예정";
+        if (string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase))
+            return "계약 종료 또는 회수 처리";
+        if (string.Equals(asset.AssetStatus, "대기", StringComparison.OrdinalIgnoreCase))
+            return "재배치 또는 보류";
+        return string.Empty;
+    }
+
+    private string ResolveManagementCompanyCodeForCurrentAsset(string fallbackOfficeCode)
+    {
+        var source = SelectedRow?.Source;
+        if (source is not null &&
+            source.Id == EditId &&
+            !string.IsNullOrWhiteSpace(source.ManagementCompanyCode))
+        {
+            return source.ManagementCompanyCode.Trim();
+        }
+
+        return fallbackOfficeCode;
     }
 
     private void OpenPreview(FixedDocument document, string jobName)
@@ -1530,6 +1589,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
             snapshot.EditOfficeCode,
             OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet));
+        var managementCompanyCode = ResolveManagementCompanyCodeForCurrentAsset(officeCode);
 
         return new LocalRentalAsset
         {
@@ -1541,7 +1601,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             ItemId = snapshot.EditItemId,
             ManagementId = snapshot.EditManagementId,
             ManagementNumber = snapshot.EditManagementNumber,
-            ManagementCompanyCode = officeCode,
+            ManagementCompanyCode = managementCompanyCode,
             CurrentLocation = snapshot.EditCurrentLocation,
             ItemCategoryName = snapshot.EditItemCategoryName,
             Manufacturer = snapshot.EditManufacturer,

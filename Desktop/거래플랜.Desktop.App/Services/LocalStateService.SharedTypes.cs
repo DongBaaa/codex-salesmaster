@@ -8,10 +8,32 @@ public sealed record LocalIntegrityIssue(
     string Severity,
     int Count,
     string Message,
-    IReadOnlyList<string>? DetailRows = null)
+    IReadOnlyList<string>? DetailRows = null,
+    DataIntegrityDirectActionKind DirectActionKind = DataIntegrityDirectActionKind.None,
+    Guid? TargetEntityId = null,
+    string TargetEntityName = "")
 {
     public string SuggestedAction => IntegrityIssueGuidance.GetSuggestedAction(Code, Message);
     public IReadOnlyList<string> EffectiveDetailRows => DetailRows ?? Array.Empty<string>();
+    public bool HasDirectAction => DirectActionKind switch
+    {
+        DataIntegrityDirectActionKind.None => false,
+        DataIntegrityDirectActionKind.OpenSyncDiagnostics => true,
+        DataIntegrityDirectActionKind.OpenEnvironmentSettings => true,
+        _ => TargetEntityId.HasValue
+    };
+    public string DirectActionText => DirectActionKind switch
+    {
+        DataIntegrityDirectActionKind.OpenRentalAsset => "자산 바로가기",
+        DataIntegrityDirectActionKind.OpenRentalBillingProfile => "청구관리 바로가기",
+        DataIntegrityDirectActionKind.OpenInventoryItem => "품목/재고 바로가기",
+        DataIntegrityDirectActionKind.OpenCustomer => "거래처 바로가기",
+        DataIntegrityDirectActionKind.OpenInvoice => "전표 바로가기",
+        DataIntegrityDirectActionKind.OpenPaymentForInvoice => "수금/지급 바로가기",
+        DataIntegrityDirectActionKind.OpenSyncDiagnostics => "동기화 진단 바로가기",
+        DataIntegrityDirectActionKind.OpenEnvironmentSettings => "환경설정 바로가기",
+        _ => "수동 확인"
+    };
 }
 
 public static class IntegrityIssueGuidance

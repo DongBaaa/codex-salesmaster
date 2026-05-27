@@ -12,10 +12,10 @@ public sealed class RecentItemSelectionStore
 
     private string FilePath => Path.Combine(FileSystem.AppDataDirectory, "recent-item-selections.json");
 
-    public async Task<IReadOnlyList<RecentItemSelectionRecord>> LoadAsync(string tenantCode, string username, CancellationToken ct = default)
+    public async Task<IReadOnlyList<RecentItemSelectionRecord>> LoadAsync(string tenantCode, string officeCode, string username, CancellationToken ct = default)
     {
         var state = await LoadStateAsync(ct);
-        var key = BuildKey(tenantCode, username);
+        var key = BuildKey(tenantCode, officeCode, username);
         return state.TryGetValue(key, out var records)
             ? records
                 .OrderByDescending(record => record.SelectedAtUtc)
@@ -24,10 +24,10 @@ public sealed class RecentItemSelectionStore
             : [];
     }
 
-    public async Task SaveAsync(string tenantCode, string username, IReadOnlyList<RecentItemSelectionRecord> records, CancellationToken ct = default)
+    public async Task SaveAsync(string tenantCode, string officeCode, string username, IReadOnlyList<RecentItemSelectionRecord> records, CancellationToken ct = default)
     {
         var state = await LoadStateAsync(ct);
-        var key = BuildKey(tenantCode, username);
+        var key = BuildKey(tenantCode, officeCode, username);
         state[key] = records
             .OrderByDescending(record => record.SelectedAtUtc)
             .Take(5)
@@ -48,10 +48,11 @@ public sealed class RecentItemSelectionStore
                ?? new Dictionary<string, List<RecentItemSelectionRecord>>(StringComparer.OrdinalIgnoreCase);
     }
 
-    private static string BuildKey(string tenantCode, string username)
+    private static string BuildKey(string tenantCode, string officeCode, string username)
     {
         var tenant = string.IsNullOrWhiteSpace(tenantCode) ? "default" : tenantCode.Trim().ToUpperInvariant();
+        var office = string.IsNullOrWhiteSpace(officeCode) ? "default" : officeCode.Trim().ToUpperInvariant();
         var user = string.IsNullOrWhiteSpace(username) ? "anonymous" : username.Trim().ToLowerInvariant();
-        return $"{tenant}:{user}";
+        return $"{tenant}:{office}:{user}";
     }
 }

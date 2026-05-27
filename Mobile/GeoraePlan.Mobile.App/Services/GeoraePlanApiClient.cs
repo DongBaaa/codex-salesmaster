@@ -50,6 +50,15 @@ public sealed class GeoraePlanApiClient
     public async Task<List<CustomerDto>> GetCustomersAsync(string? searchText, CancellationToken ct = default)
         => await GetAsync<List<CustomerDto>>(BuildQuery("customers", ("q", searchText)), ct) ?? new List<CustomerDto>();
 
+    public Task<CustomerDto?> CreateCustomerAsync(CustomerDto request, CancellationToken ct = default)
+        => PostAsync<CustomerDto, CustomerDto>("customers", request, ct);
+
+    public Task<CustomerDto?> UpdateCustomerAsync(CustomerDto request, CancellationToken ct = default)
+        => PutAsync<CustomerDto, CustomerDto>($"customers/{request.Id}", request, ct);
+
+    public Task DeleteCustomerAsync(Guid customerId, long? expectedRevision, CancellationToken ct = default)
+        => DeleteAsync(BuildQuery("customers/" + customerId, ("expectedRevision", expectedRevision?.ToString())), ct);
+
     public async Task<List<CustomerContractDto>> GetCustomerContractsAsync(Guid customerId, CancellationToken ct = default)
         => await GetAsync<List<CustomerContractDto>>($"customers/{customerId}/contracts", ct) ?? new List<CustomerContractDto>();
 
@@ -81,6 +90,15 @@ public sealed class GeoraePlanApiClient
 
     public async Task<List<ItemDto>> GetItemsAsync(string? searchText, string? category = null, CancellationToken ct = default)
         => await GetAsync<List<ItemDto>>(BuildQuery("items", ("q", searchText), ("category", category)), ct) ?? new List<ItemDto>();
+
+    public Task<ItemDto?> CreateItemAsync(ItemDto request, CancellationToken ct = default)
+        => PostAsync<ItemDto, ItemDto>("items", request, ct);
+
+    public Task<ItemDto?> UpdateItemAsync(ItemDto request, CancellationToken ct = default)
+        => PutAsync<ItemDto, ItemDto>($"items/{request.Id}", request, ct);
+
+    public Task DeleteItemAsync(Guid itemId, long? expectedRevision, CancellationToken ct = default)
+        => DeleteAsync(BuildQuery("items/" + itemId, ("expectedRevision", expectedRevision?.ToString())), ct);
 
     public async Task<List<ItemCategorySummaryDto>> GetItemCategoriesAsync(CancellationToken ct = default)
         => await GetAsync<List<ItemCategorySummaryDto>>("items/categories", ct) ?? new List<ItemCategorySummaryDto>();
@@ -165,11 +183,25 @@ public sealed class GeoraePlanApiClient
     public Task<SyncStatusDto?> GetSyncStatusAsync(CancellationToken ct = default)
         => GetAsync<SyncStatusDto>("sync/status", ct);
 
+    public Task<SyncStatusDto?> WaitForSyncChangeAsync(long sinceRevision, TimeSpan timeout, CancellationToken ct = default)
+    {
+        var timeoutSeconds = Math.Clamp((int)Math.Ceiling(timeout.TotalSeconds), 1, 30);
+        return GetAsync<SyncStatusDto>(
+            BuildQuery(
+                "sync/wait",
+                ("sinceRev", Math.Max(0, sinceRevision).ToString()),
+                ("timeoutSeconds", timeoutSeconds.ToString())),
+            ct);
+    }
+
     public Task<AppUpdateManifestDto?> GetUpdateManifestAsync(string channel = "stable", CancellationToken ct = default)
         => GetAsync<AppUpdateManifestDto>($"updates/manifest?channel={Uri.EscapeDataString(channel)}", ct, requireAuthentication: false);
 
     public Task<InvoiceDto?> CreateInvoiceAsync(InvoiceDto request, CancellationToken ct = default)
         => PostAsync<InvoiceDto, InvoiceDto>("invoices", request, ct);
+
+    public Task<InvoiceDto?> UpdateInvoiceAsync(InvoiceDto request, CancellationToken ct = default)
+        => PutAsync<InvoiceDto, InvoiceDto>($"invoices/{request.Id}", request, ct);
 
     public Task<PaymentDto?> CreatePaymentAsync(PaymentDto request, CancellationToken ct = default)
         => PostAsync<PaymentDto, PaymentDto>("payments", request, ct);
@@ -224,6 +256,32 @@ public sealed class GeoraePlanApiClient
             requireAuthentication);
         await EnsureSuccessAsync(response, relative, ct);
         return await response.Content.ReadFromJsonAsync<TResponse>(_jsonOptions, ct);
+    }
+
+    private async Task<TResponse?> PutAsync<TRequest, TResponse>(string relative, TRequest payload, CancellationToken ct, bool requireAuthentication = true)
+    {
+        using var response = await SendAsync(
+            async () =>
+            {
+                var request = await CreateRequestAsync(HttpMethod.Put, relative, requireAuthentication, ct);
+                request.Content = JsonContent.Create(payload, options: _jsonOptions);
+                return request;
+            },
+            relative,
+            ct,
+            requireAuthentication);
+        await EnsureSuccessAsync(response, relative, ct);
+        return await response.Content.ReadFromJsonAsync<TResponse>(_jsonOptions, ct);
+    }
+
+    private async Task DeleteAsync(string relative, CancellationToken ct, bool requireAuthentication = true)
+    {
+        using var response = await SendAsync(
+            () => CreateRequestAsync(HttpMethod.Delete, relative, requireAuthentication, ct),
+            relative,
+            ct,
+            requireAuthentication);
+        await EnsureSuccessAsync(response, relative, ct);
     }
 
     private async Task<HttpRequestMessage> CreateRequestAsync(

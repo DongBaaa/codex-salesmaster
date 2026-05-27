@@ -154,13 +154,13 @@ function Test-PathInsideRoot {
         [Parameter(Mandatory = $true)][string]$RootPath
     )
 
-    $candidate = [System.IO.Path]::GetFullPath($CandidatePath).TrimEnd('\\')
-    $root = [System.IO.Path]::GetFullPath($RootPath).TrimEnd('\\')
+    $candidate = [System.IO.Path]::GetFullPath($CandidatePath).TrimEnd('\')
+    $root = [System.IO.Path]::GetFullPath($RootPath).TrimEnd('\')
     if ([string]::Equals($candidate, $root, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $true
     }
 
-    return $candidate.StartsWith($root + '\\', [System.StringComparison]::OrdinalIgnoreCase)
+    return $candidate.StartsWith($root + '\', [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Resolve-IncludePaths {
@@ -188,12 +188,12 @@ function Resolve-IncludePaths {
 
         $gitPath = $path
         if ([System.IO.Path]::IsPathRooted($path)) {
-            $gitPath = $fullPath.Substring([System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\\').Length).TrimStart('\\')
+            $gitPath = $fullPath.Substring([System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\').Length).TrimStart('\')
         }
 
         $resolved.Add([pscustomobject]@{
             InputPath = $path
-            FullPath = $fullPath.TrimEnd('\\')
+            FullPath = $fullPath.TrimEnd('\')
             GitPath = $gitPath
         }) | Out-Null
     }
@@ -489,7 +489,6 @@ if (-not $SkipNas) {
     Write-Host "- live 사전 점검 리포트: $livePreflightReport" -ForegroundColor Green
     Write-Host "- live 사후 점검 리포트: $livePostflightReport" -ForegroundColor Green
 }
-
 
 
 

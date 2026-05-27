@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Globalization;
 using System.Net.Http;
 using System.Text.Json;
@@ -31,6 +31,7 @@ public sealed class SyncService : IDisposable
     private const string DeviceIdSettingKey = "Sync.DeviceId";
     private const string LastConflictSummarySettingKey = "Sync.LastConflictSummary";
     private static readonly TimeSpan AdministrativeBusinessCacheRefreshInterval = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan AdministrativeBusinessCachePullTimeout = TimeSpan.FromSeconds(25);
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DebouncedSyncDelay = TimeSpan.FromSeconds(15);
     private static readonly HashSet<string> EquivalentConflictIgnoredPropertyNames = new(StringComparer.OrdinalIgnoreCase)
@@ -398,14 +399,8 @@ public sealed class SyncService : IDisposable
         var runningSyncTask = GetCurrentRunningSyncTask();
         if (runningSyncTask is not null)
         {
-            try
-            {
-                await runningSyncTask;
-            }
-            catch (Exception ex) when (!ct.IsCancellationRequested)
-            {
-                AppLogger.Warn("SYNC", $"관리자 전체 업체 캐시 병합 전 실행 중인 동기화 대기 실패 무시: {ex.Message}");
-            }
+            AppLogger.Info("SYNC", "관리자 전체 업체 캐시 병합은 실행 중인 일반 동기화를 막지 않도록 이번 회차에서 건너뜁니다.");
+            return false;
         }
 
         var now = DateTime.UtcNow;
@@ -434,11 +429,18 @@ public sealed class SyncService : IDisposable
 
                 try
                 {
-                    var pull = await _api.PullAsync(0, businessDatabaseName, ct);
+                    using var pullTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    pullTimeoutCts.CancelAfter(AdministrativeBusinessCachePullTimeout);
+
+                    var pull = await _api.PullAsync(0, businessDatabaseName, pullTimeoutCts.Token);
                     if (pull is null)
                         continue;
 
-                    await ApplyPullAsync(pull, 0L, ct, updateSyncRevision: false);
+                    using (_local.SuppressSyncDispatch())
+                    {
+                        await ApplyPullAsync(pull, 0L, ct, updateSyncRevision: false);
+                    }
+
                     _db.ChangeTracker.Clear();
                     mergedBusinessDatabaseCount++;
                 }
@@ -3528,6 +3530,12 @@ public sealed class SyncService : IDisposable
         var hasPendingDirty = await _local.CountDirtyAsync(ct) > 0;
         var requiresMirrorRefresh = await _local.IsServerMirrorRefreshRequiredAsync(ct);
 
+        if (!requiresMirrorRefresh && !hasPendingDirty && await _local.HasLikelyCorruptedPrimaryWorkCacheAsync(_session, ct))
+        {
+            await _local.MarkServerMirrorRefreshRequiredAsync(ct);
+            requiresMirrorRefresh = true;
+        }
+
         if (requiresMirrorRefresh && !hasPendingDirty)
         {
             AppLogger.Info("SYNC", "버전 정비 후 범위 불일치 데이터를 정리하기 위해 중앙 서버 기준 전체 캐시 재구성을 수행합니다.");
@@ -5426,12 +5434,17 @@ public sealed class SyncService : IDisposable
             try
             {
                 _db.ChangeTracker.Clear();
+                if (await ShouldRejectEmptyMirrorPullAsync(pull, ct))
+                    return false;
+
+                await using var transaction = await _db.Database.BeginTransactionAsync(ct);
                 using (_local.SuppressSyncDispatch())
                 {
                     await _local.ResetSharedMirrorCacheAsync(ct);
                     await ApplyPullAsync(pull, 0L, ct);
                 }
 
+                await transaction.CommitAsync(ct);
                 await _local.ClearServerMirrorRefreshRequiredAsync(CancellationToken.None);
                 await TrySetSettingSafeAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
                 await TrySetSettingSafeAsync("Sync.LastError", string.Empty, CancellationToken.None);
@@ -5461,6 +5474,58 @@ public sealed class SyncService : IDisposable
 
         return false;
     }
+
+    private async Task<bool> ShouldRejectEmptyMirrorPullAsync(SyncPullResponse pull, CancellationToken ct)
+    {
+        if (HasOperationalRows(pull))
+            return false;
+
+        var existingOperationalRows = await CountExistingOperationalRowsAsync(ct);
+        if (existingOperationalRows <= 0)
+            return false;
+
+        var message =
+            $"서버 전체 캐시 응답에 거래처/전표/품목 데이터가 없어 기존 로컬 표시 데이터 {existingOperationalRows:N0}건을 지우지 않았습니다. " +
+            "서버 데이터 범위, 로그인 계정, 업체 DB 선택을 확인한 뒤 다시 동기화하세요.";
+
+        AppLogger.Warn("SYNC", message);
+        await TryRecordDiagnosticAsync(
+            phase: "shared-refresh",
+            rawMessage: message,
+            severity: "Warning",
+            recoveryAttempted: true,
+            recoverySucceeded: true);
+        await TrySetSettingSafeAsync(
+            "Sync.LastError",
+            $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {message}",
+            CancellationToken.None);
+        SetStatus(message);
+        return true;
+    }
+
+    private async Task<int> CountExistingOperationalRowsAsync(CancellationToken ct)
+    {
+        var count = 0;
+        count += await _db.Customers.IgnoreQueryFilters().CountAsync(ct);
+        count += await _db.CustomerMasters.IgnoreQueryFilters().CountAsync(ct);
+        count += await _db.Items.IgnoreQueryFilters().CountAsync(ct);
+        count += await _db.Invoices.IgnoreQueryFilters().CountAsync(ct);
+        count += await _db.Transactions.IgnoreQueryFilters().CountAsync(ct);
+        count += await _db.RentalBillingProfiles.IgnoreQueryFilters().CountAsync(ct);
+        count += await _db.RentalAssets.IgnoreQueryFilters().CountAsync(ct);
+        count += await _db.RentalBillingLogs.IgnoreQueryFilters().CountAsync(ct);
+        return count;
+    }
+
+    private static bool HasOperationalRows(SyncPullResponse pull)
+        => pull.Customers.Count > 0
+           || pull.CustomerMasters.Count > 0
+           || pull.Items.Count > 0
+           || pull.Invoices.Count > 0
+           || pull.Transactions.Count > 0
+           || pull.RentalBillingProfiles.Count > 0
+           || pull.RentalAssets.Count > 0
+           || pull.RentalBillingLogs.Count > 0;
 
     private async Task<bool> TryRefreshCurrentBusinessScopeCoreAsync(CancellationToken ct)
     {

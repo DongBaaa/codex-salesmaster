@@ -8,7 +8,8 @@ param(
     [string]$Manufacturer,
     [string]$LaunchExeName,
     [string]$Version,
-    [string]$WixToolPath
+    [string]$WixToolPath,
+    [int]$KeepVersionedInstallerCount = 2
 )
 
 Set-StrictMode -Version Latest
@@ -741,6 +742,55 @@ function Write-Sha256File {
     ("{0} *{1}" -f $hash.Hash, (Split-Path -Leaf $Path)) | Set-Content -LiteralPath ($Path + '.sha256.txt') -Encoding UTF8
 }
 
+function Remove-OldVersionedInstallerArchives {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchiveRoot,
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [Parameter(Mandatory = $true)][int]$KeepVersionCount
+    )
+
+    if ($KeepVersionCount -lt 1 -or -not (Test-Path -LiteralPath $ArchiveRoot)) {
+        return @()
+    }
+
+    $escapedPackageName = [regex]::Escape($PackageName)
+    $versionedFiles = Get-ChildItem -LiteralPath $ArchiveRoot -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match "^$escapedPackageName-v(?<version>\d+\.\d+\.\d+)\.(exe|msi)(\.sha256\.txt)?$" }
+
+    $versionsToKeep = $versionedFiles |
+        ForEach-Object {
+            if ($_.Name -match "^$escapedPackageName-v(?<version>\d+\.\d+\.\d+)\.") {
+                [pscustomobject]@{
+                    Version = [version]$Matches.version
+                    Text = $Matches.version
+                }
+            }
+        } |
+        Sort-Object Version -Descending -Unique |
+        Select-Object -First $KeepVersionCount
+
+    $keepVersionTextSet = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($versionToKeep in $versionsToKeep) {
+        [void]$keepVersionTextSet.Add($versionToKeep.Text)
+    }
+
+    $removed = New-Object System.Collections.Generic.List[string]
+    foreach ($file in $versionedFiles) {
+        if ($file.Name -notmatch "^$escapedPackageName-v(?<version>\d+\.\d+\.\d+)\.") {
+            continue
+        }
+
+        if ($keepVersionTextSet.Contains($Matches.version)) {
+            continue
+        }
+
+        Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+        $removed.Add($file.Name) | Out-Null
+    }
+
+    return $removed
+}
+
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = (Resolve-Path (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\..')).Path
 }
@@ -858,6 +908,11 @@ Copy-Item -LiteralPath $tempExePath -Destination $versionedExePath -Force
 Copy-Item -LiteralPath $tempExePath -Destination $stableExePath -Force
 Write-Sha256File -Path $versionedExePath
 Write-Sha256File -Path $stableExePath
+
+$removedVersionedInstallers = Remove-OldVersionedInstallerArchives -ArchiveRoot $archiveOutputRoot -PackageName $PackageName -KeepVersionCount $KeepVersionedInstallerCount
+if ($removedVersionedInstallers.Count -gt 0) {
+    Write-Host "installer_archives_pruned=$($removedVersionedInstallers.Count)"
+}
 
 $packageReadmePath = Join-Path $OutputRoot 'README.txt'
 $packageReadme = @(

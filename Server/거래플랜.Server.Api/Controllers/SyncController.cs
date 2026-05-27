@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text.Json;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
@@ -56,6 +56,38 @@ public sealed class SyncController : ControllerBase
     [ProducesResponseType(typeof(SyncStatusDto), StatusCodes.Status200OK)]
     public ActionResult<SyncStatusDto> GetStatus(CancellationToken cancellationToken)
     {
+        return Ok(new SyncStatusDto
+        {
+            CurrentServerRevision = _revisionClock.Current,
+            ServerUtc = DateTime.UtcNow
+        });
+    }
+
+    [HttpGet("wait")]
+    [ProducesResponseType(typeof(SyncStatusDto), StatusCodes.Status200OK)]
+    public async Task<ActionResult<SyncStatusDto>> WaitForChange(
+        [FromQuery] long sinceRev,
+        [FromQuery] int timeoutSeconds = 25,
+        CancellationToken cancellationToken = default)
+    {
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds, 1, 30));
+        var startedAtUtc = DateTime.UtcNow;
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var currentRevision = _revisionClock.Current;
+            if (currentRevision > sinceRev || DateTime.UtcNow - startedAtUtc >= timeout)
+            {
+                return Ok(new SyncStatusDto
+                {
+                    CurrentServerRevision = currentRevision,
+                    ServerUtc = DateTime.UtcNow
+                });
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+        }
+
         return Ok(new SyncStatusDto
         {
             CurrentServerRevision = _revisionClock.Current,
@@ -301,7 +333,13 @@ public sealed class SyncController : ControllerBase
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 await RemoveSupersededPurgeRecordsAsync("item", scopedItems, cancellationToken);
             }
-            await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], result, cancellationToken);
+            var itemWarehouseStockItemIds = await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], result, cancellationToken);
+            if (itemWarehouseStockItemIds.Count > 0)
+            {
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await RecalculateItemCurrentStocksFromWarehousesAsync(itemWarehouseStockItemIds, cancellationToken);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            }
             var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
             await UpsertInvoicesAsync(validInvoices, result, deviceId, cancellationToken);
             if (validInvoices.Count > 0)
@@ -353,6 +391,8 @@ public sealed class SyncController : ControllerBase
                 var validRentalAssets = await FilterValidRentalAssetsAsync(scopedRentalAssets, resolvedRentalProfileIds, result, cancellationToken);
                 await UpsertEntitiesAsync(validRentalAssets, _dbContext.RentalAssets,
                     (e, d) => e.Apply(d), d => new RentalAsset { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+                if (validRentalAssets.Count > 0)
+                    await _dbContext.SaveChangesAsync(cancellationToken);
                 var scopedRentalAssignmentHistories = await PrepareScopedRentalAssetAssignmentHistoriesAsync(request.RentalAssetAssignmentHistories ?? [], result, cancellationToken);
                 await UpsertEntitiesAsync(scopedRentalAssignmentHistories, _dbContext.RentalAssetAssignmentHistories,
                     (e, d) => e.Apply(d), d => new RentalAssetAssignmentHistory { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
@@ -2216,7 +2256,12 @@ public sealed class SyncController : ControllerBase
             dto.Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id;
             if (dto.AssetId == Guid.Empty)
             {
-                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory), "Referenced rental asset was not found.", result);
+                AddNotice(
+                    result,
+                    nameof(RentalAssetAssignmentHistory),
+                    dto.Id,
+                    "missing-rental-asset",
+                    "Referenced rental asset was not found. The stale assignment history was skipped.");
                 continue;
             }
 
@@ -2229,7 +2274,12 @@ public sealed class SyncController : ControllerBase
 
             if (asset is null && existing is null)
             {
-                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory), "Referenced rental asset was not found.", result);
+                AddNotice(
+                    result,
+                    nameof(RentalAssetAssignmentHistory),
+                    dto.Id,
+                    "missing-rental-asset",
+                    "Referenced rental asset was not found. The stale assignment history was skipped.");
                 continue;
             }
 
@@ -3513,9 +3563,25 @@ public sealed class SyncController : ControllerBase
 
                 if (fileContent.Length == 0)
                 {
-                    AddClientConflict(dto, nameof(CustomerContract),
-                        "Contract file content is required when a contract PDF is attached.", result);
-                    continue;
+                    if (existing is not null &&
+                        !existing.IsDeleted &&
+                        (!string.IsNullOrWhiteSpace(existing.StoragePath) || existing.FileContent.Length > 0))
+                    {
+                        // 이미 서버에 파일이 보관된 계약서는 PC가 메타데이터만 수정할 수 있다.
+                        // Pull payload에는 파일 본문이 포함되지 않으므로, 파일 내용 없이 제목/일자/대표 여부만
+                        // 재전송되는 정상 흐름을 충돌로 막지 않는다. 비어 있는 파일 메타데이터는 기존값으로 보존한다.
+                        dto.FileContent = [];
+                        dto.FileName = string.IsNullOrWhiteSpace(fileName) ? existing.FileName : fileName;
+                        dto.MimeType = string.IsNullOrWhiteSpace(mimeType) ? existing.MimeType : mimeType;
+                        dto.FileSize = dto.FileSize > 0 ? dto.FileSize : existing.FileSize;
+                        dto.FileHash = string.IsNullOrWhiteSpace(dto.FileHash) ? existing.FileHash : dto.FileHash.Trim();
+                    }
+                    else
+                    {
+                        AddClientConflict(dto, nameof(CustomerContract),
+                            "Contract file content is required when a contract PDF is attached.", result);
+                        continue;
+                    }
                 }
 
                 if (fileContent.LongLength > MaxContractFileSizeBytes)
@@ -3545,6 +3611,7 @@ public sealed class SyncController : ControllerBase
         IEnumerable<PaymentDto> payload, SyncPushResult result, CancellationToken cancellationToken)
     {
         var valid = new List<PaymentDto>();
+        var acceptedAmountByInvoiceId = new Dictionary<Guid, decimal>();
 
         foreach (var dto in payload)
         {
@@ -3586,13 +3653,47 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            if (!dto.IsDeleted)
+            {
+                if (dto.Amount <= 0m)
+                {
+                    AddClientConflict(dto, nameof(Payment), "Payment amount must be greater than zero.", result);
+                    continue;
+                }
+
+                if (existing is not null && (HasExpectedRevisionConflict(existing, dto) || IsServerEntityNewer(existing, dto)))
+                {
+                    valid.Add(dto);
+                    continue;
+                }
+
+                var serverSettledAmounts = await _dbContext.Payments.IgnoreQueryFilters()
+                    .Where(payment =>
+                        payment.InvoiceId == dto.InvoiceId &&
+                        !payment.IsDeleted &&
+                        payment.Id != dto.Id)
+                    .Select(payment => payment.Amount)
+                    .ToListAsync(cancellationToken);
+                var serverSettledAmount = serverSettledAmounts.Sum();
+                acceptedAmountByInvoiceId.TryGetValue(dto.InvoiceId, out var acceptedBatchAmount);
+                var outstandingAmount = Math.Max(0m, invoice.TotalAmount - serverSettledAmount - acceptedBatchAmount);
+                if (dto.Amount > outstandingAmount)
+                {
+                    AddClientConflict(dto, nameof(Payment),
+                        $"Payment amount exceeds current outstanding balance. outstanding={outstandingAmount:N0}, amount={dto.Amount:N0}.", result);
+                    continue;
+                }
+
+                acceptedAmountByInvoiceId[dto.InvoiceId] = acceptedBatchAmount + dto.Amount;
+            }
+
             valid.Add(dto);
         }
 
         return valid;
     }
 
-    private async Task UpsertItemWarehouseStocksAsync(
+    private async Task<HashSet<Guid>> UpsertItemWarehouseStocksAsync(
         IEnumerable<ItemWarehouseStockDto> payload,
         SyncPushResult result,
         CancellationToken cancellationToken)
@@ -3601,6 +3702,7 @@ public sealed class SyncController : ControllerBase
         var deletedItemCount = 0;
         var outOfScopeItemCount = 0;
         var outOfScopeWarehouseCount = 0;
+        var affectedItemIds = new HashSet<Guid>();
 
         var sanitized = payload
             .Where(dto => dto.ItemId != Guid.Empty && !string.IsNullOrWhiteSpace(dto.WarehouseCode))
@@ -3656,6 +3758,7 @@ public sealed class SyncController : ControllerBase
             {
                 _dbContext.ItemWarehouseStocks.RemoveRange(staleRows);
                 scopedItem.UpdatedAtUtc = DateTime.UtcNow;
+                affectedItemIds.Add(itemId);
             }
         }
 
@@ -3699,6 +3802,7 @@ public sealed class SyncController : ControllerBase
                     UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc),
                     Revision = _revisionClock.NextRevision()
                 });
+                affectedItemIds.Add(dto.ItemId);
                 continue;
             }
 
@@ -3724,6 +3828,7 @@ public sealed class SyncController : ControllerBase
             entity.Quantity = dto.Quantity;
             entity.UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc);
             entity.Revision = _revisionClock.NextRevision();
+            affectedItemIds.Add(dto.ItemId);
         }
 
         if (missingItemCount > 0)
@@ -3764,6 +3869,45 @@ public sealed class SyncController : ControllerBase
                 Guid.Empty,
                 "item-warehouse-stock-skip-out-of-scope-warehouse",
                 $"재고 수량 {outOfScopeWarehouseCount:N0}건은 현재 계정이 수정할 수 없는 창고 범위라 서버 반영에서 제외했습니다.");
+        }
+        return affectedItemIds;
+    }
+
+    private async Task RecalculateItemCurrentStocksFromWarehousesAsync(
+        IReadOnlyCollection<Guid> itemIds,
+        CancellationToken cancellationToken)
+    {
+        if (itemIds.Count == 0)
+            return;
+
+        var stockRows = await _dbContext.ItemWarehouseStocks
+            .Where(stock => itemIds.Contains(stock.ItemId))
+            .Select(stock => new { stock.ItemId, stock.Quantity })
+            .ToListAsync(cancellationToken);
+
+        var stockTotals = stockRows
+            .GroupBy(stock => stock.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(stock => stock.Quantity));
+
+        var items = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .Where(item => itemIds.Contains(item.Id))
+            .ToListAsync(cancellationToken);
+
+        var now = DateTime.UtcNow;
+        foreach (var item in items)
+        {
+            var recalculated = ItemOperationalPolicy.SupportsInventory(item.TrackingType) &&
+                               stockTotals.TryGetValue(item.Id, out var stockTotal)
+                ? stockTotal
+                : 0m;
+
+            if (item.CurrentStock == recalculated)
+                continue;
+
+            item.CurrentStock = recalculated;
+            item.UpdatedAtUtc = now;
+            item.Revision = _revisionClock.NextRevision();
         }
     }
 
@@ -4178,30 +4322,8 @@ public sealed class SyncController : ControllerBase
 
     private async Task<long> GetCurrentRevisionAsync(CancellationToken cancellationToken)
     {
-        var maxRevision = 0L;
-        maxRevision = Math.Max(maxRevision, await _dbContext.CompanyProfiles.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.Units.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.CustomerCategories.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.PriceGradeOptions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.TradeTypeOptions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.ItemCategoryOptions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.CustomerMasters.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.Customers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.CustomerContracts.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.Items.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.ItemWarehouseStocks.Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.Transactions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.TransactionAttachments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.InventoryTransfers.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.RentalManagementCompanies.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.RentalAssets.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.RentalBillingLogs.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.Invoices.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.Payments.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        maxRevision = Math.Max(maxRevision, await _dbContext.RecycleBinPurgeRecords.Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0);
-        return maxRevision;
+        cancellationToken.ThrowIfCancellationRequested();
+        return await Task.FromResult(_revisionClock.Current);
     }
 
     private static DateTime NormalizeUtc(DateTime value)

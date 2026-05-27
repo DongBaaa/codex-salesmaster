@@ -150,7 +150,7 @@
                     </Grid.ColumnDefinitions>
 
                     <TextBlock Grid.Column="0"
-                               Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                               Text="검색어"
                                Margin="0,0,4,0"
                                VerticalAlignment="Center"
                                Foreground="#9FB3C8"/>
@@ -164,7 +164,7 @@
                             Command="{Binding SearchCommand}"
                             VerticalAlignment="Center"/>
                     <TextBlock Grid.Column="3"
-                               Text="검색"
+                               Text="고객분류"
                                Margin="0,0,4,0"
                                VerticalAlignment="Center"
                                Foreground="#9FB3C8"/>
@@ -182,7 +182,7 @@
                               SelectedItem="{Binding SelectedOfficeFilter}"
                               VerticalAlignment="Center"/>
                     <TextBlock Grid.Column="7"
-                               Text="고객분류"
+                               Text="정렬"
                                Margin="12,0,10,0"
                                VerticalAlignment="Center"
                                Foreground="#9FB3C8"/>

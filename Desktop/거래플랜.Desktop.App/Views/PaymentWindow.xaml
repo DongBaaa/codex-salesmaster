@@ -1,4 +1,4 @@
-﻿<Window x:Class="거래플랜.Desktop.App.Views.PaymentWindow"
+<Window x:Class="거래플랜.Desktop.App.Views.PaymentWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:거래플랜.Desktop.App.Converters"
@@ -74,20 +74,23 @@
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="FontSize" Value="12"/>
-            <Setter Property="Height" Value="27"/>
-            <Setter Property="Padding" Value="8,1"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Padding" Value="0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
-            <Setter Property="MinWidth" Value="184"/>
-            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="MinWidth" Value="150"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Width" Value="150"/>
+            <Setter Property="MaxWidth" Value="150"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Height" Value="27"/>
-            <Setter Property="MinHeight" Value="27"/>
-            <Setter Property="Padding" Value="7,0,9,0"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Padding" Value="8,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style x:Key="BaseButtonStyle" TargetType="Button">
@@ -120,6 +123,9 @@
             <Setter Property="VerticalAlignment" Value="Stretch"/>
             <Setter Property="HorizontalContentAlignment" Value="Center"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Width" Value="30"/>
+            <Setter Property="MaxWidth" Value="30"/>
+            <Setter Property="HorizontalAlignment" Value="Right"/>
         </Style>
         <Style TargetType="DataGrid">
             <Setter Property="Background" Value="#122038"/>
@@ -280,7 +286,7 @@
                                        DisplayMemberPath="Label"
                                        SelectedValuePath="Value"
                                        SelectedValue="{Binding SelectedTransactionKind}"/>
-                            <TextBlock Grid.Column="3" Text="대표전화" Style="{StaticResource InlineInfoLabelStyle}"/>
+                            <TextBlock Grid.Column="3" Text="수금/지급 금액" Style="{StaticResource InlineInfoLabelStyle}"/>
                             <Grid Grid.Column="4">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -314,7 +320,7 @@
                             <TextBlock Grid.Column="7"
                                        Text="{Binding AdvanceBalance, StringFormat={}{0:N0}}"
                                        Style="{StaticResource InlineInfoValueStyle}"/>
-                            <TextBlock Grid.Column="9" Text="정산방향" Style="{StaticResource InlineInfoLabelStyle}"/>
+                            <TextBlock Grid.Column="9" Text="처리방향" Style="{StaticResource InlineInfoLabelStyle}"/>
                             <TextBlock Grid.Column="10" Text="{Binding PaymentActionLabel}" Style="{StaticResource InlineInfoValueStyle}"/>
 
                             <TextBlock Grid.Row="1"
@@ -432,7 +438,7 @@
                             <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding CardReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
                             <Label Grid.Row="4" Grid.Column="0" Content="통장수금"/>
                             <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding BankReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
-                            <Label Grid.Row="5" Grid.Column="0" Content="D.C 해줌"/>
+                            <Label Grid.Row="5" Grid.Column="0" Content="할인 처리"/>
                             <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding DiscountApplied, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"/>
                         </Grid>
 
@@ -476,7 +482,7 @@
                         </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0"
-                                   Text="지불 처리내역"
+                                   Text="지급 처리내역"
                                    FontSize="14"
                                    FontWeight="Bold"
                                    Foreground="#6B86FF"
@@ -516,7 +522,7 @@
                                     </Style>
                                 </DatePicker.Resources>
                             </DatePicker>
-                            <Label Grid.Row="1" Grid.Column="0" Content="지불구분"/>
+                            <Label Grid.Row="1" Grid.Column="0" Content="지급구분"/>
                             <TextBox Grid.Row="1"
                                      Grid.Column="1"
                                      Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
@@ -528,7 +534,7 @@
                             <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding CardPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
                             <Label Grid.Row="4" Grid.Column="0" Content="통장지급"/>
                             <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding BankPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
-                            <Label Grid.Row="5" Grid.Column="0" Content="D.C 받음"/>
+                            <Label Grid.Row="5" Grid.Column="0" Content="할인 받음"/>
                             <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding DiscountReceived, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"/>
                         </Grid>
 
@@ -544,7 +550,7 @@
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="지불결제"
+                                <TextBlock Text="지급결제"
                                            Foreground="#B7C8DC"
                                            FontSize="12"/>
                                 <TextBlock Grid.Column="1"
@@ -655,7 +661,7 @@
                                 <DataGridTextColumn Header="구분" Binding="{Binding TransactionKindDisplay}" Width="84"/>
                                 <DataGridTextColumn Header="거래내역" Binding="{Binding LinkedInvoiceNumber}" Width="108"/>
                                 <DataGridTextColumn Header="수금합계" Binding="{Binding ReceiptTotal, StringFormat={}{0:N0}}" Width="84"/>
-                                <DataGridTextColumn Header="지불합계" Binding="{Binding PaymentTotal, StringFormat={}{0:N0}}" Width="84"/>
+                                <DataGridTextColumn Header="지급합계" Binding="{Binding PaymentTotal, StringFormat={}{0:N0}}" Width="84"/>
                                 <DataGridTextColumn Header="거래내용" Binding="{Binding Note}" Width="*"/>
                                 <DataGridTextColumn Header="메모" Binding="{Binding Memo}" Width="0.72*"/>
                             </DataGrid.Columns>
@@ -704,7 +710,7 @@
                                     <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
 
-                            <Label Grid.Row="0" Grid.Column="0" Content="지급일자"/>
+                            <Label Grid.Row="0" Grid.Column="0" Content="증빙종류"/>
                                 <ComboBox Grid.Row="0"
                                           Grid.Column="1"
                                           ItemsSource="{Binding AttachmentTypes}"

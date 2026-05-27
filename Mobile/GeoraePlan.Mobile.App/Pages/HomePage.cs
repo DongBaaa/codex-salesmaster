@@ -1,21 +1,28 @@
 using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
+using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Controls.Shapes;
+using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Mobile.App.Pages;
 
 public sealed class HomePage : ContentPage
 {
     private readonly HomeViewModel _viewModel;
+    private readonly SessionStore _sessionStore;
     private readonly SyncCoordinator _syncCoordinator;
+    private readonly MobileRefreshCoordinator _refreshCoordinator;
 
     public HomePage()
     {
         GeoraePlanTheme.ApplyPage(this, "홈");
 
         _viewModel = ServiceHelper.GetRequiredService<HomeViewModel>();
+        _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
         _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
+        _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
+        _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
 
         var displayName = new Label
@@ -63,13 +70,19 @@ public sealed class HomePage : ContentPage
         var refreshButton = GeoraePlanTheme.CreateButton("상태 새로고침", GeoraePlanTheme.SecondaryButton);
         refreshButton.SetBinding(Button.CommandProperty, nameof(HomeViewModel.RefreshCommand));
 
-        var createInvoiceButton = GeoraePlanTheme.CreateButton("전표 작성", GeoraePlanTheme.Success);
-        createInvoiceButton.Clicked += (_, _) =>
+        var createSalesInvoiceButton = GeoraePlanTheme.CreateButton("판매 작성", GeoraePlanTheme.Success);
+        createSalesInvoiceButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
-                async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InvoiceDraftPage>()),
+                async () => await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(VoucherType.Sales)),
                 "빠른 메뉴 이동");
 
-        var createPaymentButton = GeoraePlanTheme.CreateButton("수금 입력", GeoraePlanTheme.Purple);
+        var createPurchaseInvoiceButton = GeoraePlanTheme.CreateButton("구매 작성", GeoraePlanTheme.Brown);
+        createPurchaseInvoiceButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(VoucherType.Purchase)),
+                "빠른 메뉴 이동");
+
+        var createPaymentButton = GeoraePlanTheme.CreateButton("수금/지급", GeoraePlanTheme.Purple);
         createPaymentButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>()),
@@ -87,6 +100,12 @@ public sealed class HomePage : ContentPage
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<RentalsPage>()),
                 "빠른 메뉴 이동");
 
+        var recycleBinButton = GeoraePlanTheme.CreateButton("휴지통", GeoraePlanTheme.SecondaryButton);
+        recycleBinButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<RecycleBinPage>()),
+                "빠른 메뉴 이동");
+
         var quickActionGrid = new Grid
         {
             ColumnDefinitions =
@@ -97,17 +116,18 @@ public sealed class HomePage : ContentPage
             RowDefinitions =
             {
                 new RowDefinition(GridLength.Auto),
+                new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Auto)
             },
             ColumnSpacing = 12,
             RowSpacing = 12
         };
-        quickActionGrid.Add(createInvoiceButton);
-        Grid.SetColumn(createInvoiceButton, 0);
-        quickActionGrid.Add(createPaymentButton);
-        Grid.SetColumn(createPaymentButton, 1);
-        quickActionGrid.Add(inventoryTransferButton, 0, 1);
-        quickActionGrid.Add(rentalsButton, 1, 1);
+        quickActionGrid.Add(createSalesInvoiceButton, 0, 0);
+        quickActionGrid.Add(createPurchaseInvoiceButton, 1, 0);
+        quickActionGrid.Add(createPaymentButton, 0, 1);
+        quickActionGrid.Add(inventoryTransferButton, 1, 1);
+        quickActionGrid.Add(rentalsButton, 0, 2);
+        quickActionGrid.Add(recycleBinButton, 1, 2);
 
         Content = new ScrollView
         {
@@ -125,8 +145,8 @@ public sealed class HomePage : ContentPage
                     pendingNoticeCard,
                     GeoraePlanTheme.CreateCard(
                         GeoraePlanTheme.CreateSectionTitle("빠른 안내"),
-                        GeoraePlanTheme.CreateBodyText("PC 버전과 같은 진한 네이비/블루 톤을 유지합니다."),
-                        GeoraePlanTheme.CreateBodyText("거래처, 품목, 전표, 수금, 재고이동, 렌탈 화면은 같은 NAS 서버 sync 데이터를 기준으로 동작합니다."),
+                        GeoraePlanTheme.CreateBodyText("모바일에서 판매·구매·수금/지급은 입력 가능하며, 재고이동·렌탈은 조회 전용입니다."),
+                        GeoraePlanTheme.CreateBodyText("거래처, 품목, 전표, 수금/지급, 재고이동, 렌탈 화면은 같은 NAS 서버 sync 데이터를 기준으로 동작합니다."),
                         quickActionGrid,
                         refreshButton,
                         statusLabel)
@@ -142,9 +162,33 @@ public sealed class HomePage : ContentPage
         await MobileErrorHandler.RunGuardedAsync(
             async () =>
             {
-await _syncCoordinator.RefreshIfServerChangedAsync("home-page", TimeSpan.FromSeconds(5));
-        await _viewModel.RefreshAsync();
+                if (!await _sessionStore.HasUsableSessionAsync())
+                {
+                    App.ShowLogin();
+                    return;
+                }
+
+                await _viewModel.RefreshAsync();
+                MobileErrorHandler.FireAndForget(
+                    async () =>
+                    {
+                        await _syncCoordinator.RefreshIfServerChangedAsync("home-page", TimeSpan.FromSeconds(5));
+                        await _viewModel.RefreshAsync();
+                    },
+                    "홈 화면 백그라운드 동기화");
             },
             "홈 화면 초기화");
+    }
+
+    private void HandleRealtimeRefreshRequested(object? sender, EventArgs e)
+    {
+        MainThread.BeginInvokeOnMainThread(() =>
+            MobileErrorHandler.FireAndForget(
+                async () =>
+                {
+                    if (Shell.Current?.CurrentPage == this)
+                        await _viewModel.RefreshAsync();
+                },
+                "홈 실시간 갱신"));
     }
 }

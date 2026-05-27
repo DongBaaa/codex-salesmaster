@@ -10,9 +10,12 @@ public sealed class SeedUsersOptions
     public bool EnableSeedUsers { get; set; } = true;
     public bool WarnOnDefaultPasswords { get; set; } = true;
     public bool UpdateExistingItwPassword { get; set; } = true;
+    public bool UpdateExistingUsenetPassword { get; set; }
     public string? AdminPassword { get; set; }
     public string? UserPassword { get; set; }
     public string? ItwPassword { get; set; }
+    public string? UsenetUsername { get; set; }
+    public string? UsenetPassword { get; set; }
 
     public bool UsesDefaultAdminPassword() => string.Equals(AdminPassword, DefaultAdminPassword, StringComparison.Ordinal);
     public bool UsesDefaultUserPassword() => string.Equals(UserPassword, DefaultUserPassword, StringComparison.Ordinal);

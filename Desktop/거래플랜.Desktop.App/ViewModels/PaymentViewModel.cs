@@ -15,6 +15,13 @@ public sealed partial class PaymentViewModel : ObservableObject
 {
     public sealed record TransactionKindOption(string Value, string Label);
 
+    private enum RentalReceiptTarget
+    {
+        Bank,
+        Cash,
+        Card
+    }
+
     private readonly LocalStateService _local;
     private readonly SessionState _session;
     private List<LocalCustomer> _allCustomers = new();
@@ -213,14 +220,17 @@ public sealed partial class PaymentViewModel : ObservableObject
     public async Task ConfigureForInvoiceAsync(LocalInvoice invoice)
     {
         _contextInvoice = invoice;
-        _contextRentalProfile = null;
-        _contextRentalBillingRunId = null;
-        _contextRentalBilledAmount = 0m;
-        _contextRentalPeriodLabel = string.Empty;
         _linkedInvoice = invoice;
-        _linkedRentalProfile = null;
-        _linkedRentalBillingRunId = null;
-        _linkedRentalBilledAmount = 0m;
+        var linkedRentalProfile = invoice.LinkedRentalBillingProfileId.HasValue && invoice.LinkedRentalBillingProfileId.Value != Guid.Empty
+            ? await _local.GetRentalBillingProfileAsync(invoice.LinkedRentalBillingProfileId.Value, _session)
+            : null;
+        _contextRentalProfile = linkedRentalProfile;
+        _contextRentalBillingRunId = linkedRentalProfile is null ? null : invoice.LinkedRentalBillingRunId;
+        _contextRentalBilledAmount = linkedRentalProfile is null ? 0m : invoice.TotalAmount;
+        _contextRentalPeriodLabel = string.Empty;
+        _linkedRentalProfile = linkedRentalProfile;
+        _linkedRentalBillingRunId = linkedRentalProfile is null ? null : invoice.LinkedRentalBillingRunId;
+        _linkedRentalBilledAmount = linkedRentalProfile is null ? 0m : invoice.TotalAmount;
         _linkedRentalPeriodLabel = string.Empty;
         IsCustomerSelectionLocked = true;
 
@@ -229,7 +239,9 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (customer is not null)
             SetCustomer(customer);
 
-        var transactionKind = ResolveInvoiceDefaultTransactionKind(invoice);
+        var transactionKind = linkedRentalProfile is not null
+            ? PaymentFlowConstants.TransactionKindRentalReceipt
+            : ResolveInvoiceDefaultTransactionKind(invoice);
         RebuildTransactionKinds(transactionKind);
         await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
         await ApplySuggestedAmountsCoreAsync(forceResetAmounts: true, Interlocked.Increment(ref _settlementSuggestionVersion));
@@ -248,15 +260,16 @@ public sealed partial class PaymentViewModel : ObservableObject
         string? periodLabel,
         LocalCustomer? customer = null)
     {
-        _contextInvoice = null;
+        var linkedInvoice = await _local.GetSalesInvoiceForRentalBillingAsync(profile.Id, billingRunId, _session);
+        _contextInvoice = linkedInvoice;
         _contextRentalProfile = profile;
         _contextRentalBillingRunId = billingRunId;
-        _contextRentalBilledAmount = Math.Max(0m, billedAmount);
+        _contextRentalBilledAmount = Math.Max(0m, billedAmount > 0m ? billedAmount : linkedInvoice?.TotalAmount ?? 0m);
         _contextRentalPeriodLabel = (periodLabel ?? string.Empty).Trim();
-        _linkedInvoice = null;
+        _linkedInvoice = linkedInvoice;
         _linkedRentalProfile = profile;
         _linkedRentalBillingRunId = billingRunId;
-        _linkedRentalBilledAmount = Math.Max(0m, billedAmount);
+        _linkedRentalBilledAmount = Math.Max(0m, billedAmount > 0m ? billedAmount : linkedInvoice?.TotalAmount ?? 0m);
         _linkedRentalPeriodLabel = (periodLabel ?? string.Empty).Trim();
         IsCustomerSelectionLocked = true;
 
@@ -584,8 +597,8 @@ public sealed partial class PaymentViewModel : ObservableObject
         UiTaskHelper.Forget(
             ApplySuggestedAmountsCoreAsync(forceResetAmounts, version),
             "PAYMENT",
-            "수금/지급 기본 정산금액 계산",
-            ex => StatusMessage = $"정산금액 계산 중 오류가 발생했습니다. {ex.Message}");
+            "수금/지급 기본 금액 계산",
+            ex => StatusMessage = $"수금/지급 금액 계산 중 오류가 발생했습니다. {ex.Message}");
     }
 
     private async Task ApplySuggestedAmountsCoreAsync(bool forceResetAmounts, int version)
@@ -663,9 +676,44 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (!forceResetAmounts)
             return;
 
-        CashReceipt = CardReceipt = DiscountApplied = ReceiptTotal = 0m;
         CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
-        BankReceipt = SettlementAmount;
+        ApplyRentalReceiptAmountByBillingMethod(SettlementAmount);
+    }
+
+    private static RentalReceiptTarget ResolveRentalReceiptTarget(string? billingMethod)
+    {
+        var normalized = (billingMethod ?? string.Empty).Trim().Replace(" ", string.Empty);
+        if (string.Equals(normalized, "현금", StringComparison.OrdinalIgnoreCase))
+            return RentalReceiptTarget.Cash;
+
+        if (string.Equals(normalized, "카드", StringComparison.OrdinalIgnoreCase))
+            return RentalReceiptTarget.Card;
+
+        return RentalReceiptTarget.Bank;
+    }
+
+    private void ApplyRentalReceiptAmountByBillingMethod(decimal amount)
+    {
+        CashReceipt = CardReceipt = BankReceipt = DiscountApplied = ReceiptTotal = 0m;
+
+        var normalizedAmount = Math.Max(0m, amount);
+        if (normalizedAmount <= 0m)
+            return;
+
+        switch (ResolveRentalReceiptTarget(_linkedRentalProfile?.BillingMethod))
+        {
+            case RentalReceiptTarget.Cash:
+                CashReceipt = normalizedAmount;
+                break;
+            case RentalReceiptTarget.Card:
+                CardReceipt = normalizedAmount;
+                break;
+            default:
+                BankReceipt = normalizedAmount;
+                break;
+        }
+
+        RecalcReceipt();
     }
 
     private void NotifySettlementUiStateChanged()
@@ -1065,8 +1113,7 @@ public sealed partial class PaymentViewModel : ObservableObject
 
                     if (ReceiptTotal <= 0m && SettlementAmount > 0m)
                     {
-                        BankReceipt = SettlementAmount;
-                        RecalcReceipt();
+                        ApplyRentalReceiptAmountByBillingMethod(SettlementAmount);
                     }
 
                     if (ReceiptTotal <= 0m || PaymentTotal > 0m)

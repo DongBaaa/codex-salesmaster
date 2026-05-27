@@ -2,5 +2,9 @@ namespace GeoraePlan.Mobile.App.Configuration;
 
 public sealed class ApiOptions
 {
+#if DEBUG
+    public const string DefaultBaseUrl = "http://10.0.2.2:19080";
+#else
     public const string DefaultBaseUrl = "https://api.example.invalid";
+#endif
 }

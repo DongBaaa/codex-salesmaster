@@ -650,7 +650,9 @@ public sealed class SyncControllerTests : IDisposable
 
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPushResult>(ok.Value);
-        Assert.Equal(0, result.ConflictCount);
+        Assert.True(
+            result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
 
         var assets = await _dbContext.RentalAssets
             .IgnoreQueryFilters()
@@ -2091,6 +2093,214 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Contains(result.RentalAssets, asset => asset.ManagementNumber == "2603-902");
     }
 
+    [Fact]
+    public async Task Pull_OfficeOnlyUser_ReturnsOnlyResponsiblePaymentAndRentalRows()
+    {
+        var visibleCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "SYNC-VISIBLE-CUSTOMER",
+            NameMatchKey = "SYNCVISIBLECUSTOMER",
+            TradeType = "매출"
+        };
+        var hiddenCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-HIDDEN-CUSTOMER",
+            NameMatchKey = "SYNCHIDDENCUSTOMER",
+            TradeType = "매출"
+        };
+        var visibleInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = visibleCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            InvoiceNumber = "SYNC-PAY-VISIBLE",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 5, 26)
+        };
+        var hiddenInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = hiddenCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-PAY-HIDDEN",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 5, 26)
+        };
+        var visibleProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = "SYNC-RENTAL-VISIBLE",
+            CustomerId = visibleCustomer.Id,
+            CustomerName = visibleCustomer.NameOriginal
+        };
+        var hiddenProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "SYNC-RENTAL-HIDDEN",
+            CustomerId = hiddenCustomer.Id,
+            CustomerName = hiddenCustomer.NameOriginal
+        };
+        var visibleAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            AssetKey = "SYNC-ASSET-VISIBLE",
+            ManagementNumber = "SYNC-ASSET-VISIBLE",
+            CustomerId = visibleCustomer.Id,
+            BillingProfileId = visibleProfile.Id
+        };
+        var hiddenAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "SYNC-ASSET-HIDDEN",
+            ManagementNumber = "SYNC-ASSET-HIDDEN",
+            CustomerId = hiddenCustomer.Id,
+            BillingProfileId = hiddenProfile.Id
+        };
+
+        _dbContext.Customers.AddRange(visibleCustomer, hiddenCustomer);
+        _dbContext.Invoices.AddRange(visibleInvoice, hiddenInvoice);
+        _dbContext.Payments.AddRange(
+            new Payment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = visibleInvoice.Id,
+                PaymentDate = new DateOnly(2026, 5, 27),
+                Amount = 100m,
+                Note = "SYNC-PAYMENT-VISIBLE"
+            },
+            new Payment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = hiddenInvoice.Id,
+                PaymentDate = new DateOnly(2026, 5, 27),
+                Amount = 100m,
+                Note = "SYNC-PAYMENT-HIDDEN"
+            });
+        _dbContext.Transactions.AddRange(
+            new TransactionRecord
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = visibleCustomer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                TransactionKind = "SYNC-TRANSACTION-VISIBLE",
+                ReceiptTotal = 100m
+            },
+            new TransactionRecord
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = hiddenCustomer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionKind = "SYNC-TRANSACTION-HIDDEN",
+                ReceiptTotal = 100m
+            });
+        _dbContext.RentalBillingProfiles.AddRange(visibleProfile, hiddenProfile);
+        _dbContext.RentalAssets.AddRange(visibleAsset, hiddenAsset);
+        _dbContext.RentalAssetAssignmentHistories.AddRange(
+            new RentalAssetAssignmentHistory
+            {
+                Id = Guid.NewGuid(),
+                AssetId = visibleAsset.Id,
+                BillingProfileId = visibleProfile.Id,
+                CustomerId = visibleCustomer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ManagementNumber = "SYNC-ASSET-VISIBLE"
+            },
+            new RentalAssetAssignmentHistory
+            {
+                Id = Guid.NewGuid(),
+                AssetId = hiddenAsset.Id,
+                BillingProfileId = hiddenProfile.Id,
+                CustomerId = hiddenCustomer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementNumber = "SYNC-ASSET-HIDDEN"
+            });
+        _dbContext.RentalBillingLogs.AddRange(
+            new RentalBillingLog
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                BillingProfileId = visibleProfile.Id,
+                BillingYearMonth = "2026-05",
+                BilledAmount = 100m
+            },
+            new RentalBillingLog
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = hiddenProfile.Id,
+                BillingYearMonth = "2026-06",
+                BilledAmount = 100m
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu_sync_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.Contains(result.Customers, customer => customer.Id == visibleCustomer.Id);
+        Assert.DoesNotContain(result.Customers, customer => customer.Id == hiddenCustomer.Id);
+        Assert.Contains(result.Invoices, invoice => invoice.InvoiceNumber == "SYNC-PAY-VISIBLE");
+        Assert.DoesNotContain(result.Invoices, invoice => invoice.InvoiceNumber == "SYNC-PAY-HIDDEN");
+        Assert.Contains(result.Payments, payment => payment.Note == "SYNC-PAYMENT-VISIBLE");
+        Assert.DoesNotContain(result.Payments, payment => payment.Note == "SYNC-PAYMENT-HIDDEN");
+        Assert.Contains(result.Transactions, transaction => transaction.TransactionKind == "SYNC-TRANSACTION-VISIBLE");
+        Assert.DoesNotContain(result.Transactions, transaction => transaction.TransactionKind == "SYNC-TRANSACTION-HIDDEN");
+        Assert.Contains(result.RentalBillingProfiles, profile => profile.ProfileKey == "SYNC-RENTAL-VISIBLE");
+        Assert.DoesNotContain(result.RentalBillingProfiles, profile => profile.ProfileKey == "SYNC-RENTAL-HIDDEN");
+        Assert.Contains(result.RentalAssets, asset => asset.ManagementNumber == "SYNC-ASSET-VISIBLE");
+        Assert.DoesNotContain(result.RentalAssets, asset => asset.ManagementNumber == "SYNC-ASSET-HIDDEN");
+        Assert.Contains(result.RentalAssetAssignmentHistories, history => history.ManagementNumber == "SYNC-ASSET-VISIBLE");
+        Assert.DoesNotContain(result.RentalAssetAssignmentHistories, history => history.ManagementNumber == "SYNC-ASSET-HIDDEN");
+        Assert.Contains(result.RentalBillingLogs, log => log.BillingYearMonth == "2026-05");
+        Assert.DoesNotContain(result.RentalBillingLogs, log => log.BillingYearMonth == "2026-06");
+    }
+
 
     [Fact]
     public async Task Pull_AdminRentalUser_KeepsCustomerMirrorScoped_ButStillReceivesCrossTenantRentalAssets()
@@ -2474,6 +2684,79 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_AllowsCustomerContractMetadataUpdate_WhenFileAlreadyStored()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CONTRACT-METADATA-CUSTOMER",
+            NameMatchKey = "CONTRACTMETADATACUSTOMER",
+            TradeType = "매출"
+        };
+        var contractId = Guid.NewGuid();
+        var contract = new CustomerContract
+        {
+            Id = contractId,
+            CustomerId = customer.Id,
+            ContractType = "거래계약서",
+            FileName = "stored-contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = 4,
+            FileHash = "OLD-HASH",
+            Description = "수정 전",
+            StoragePath = "customer-contracts/stored-contract.pdf",
+            FileContent = [],
+            UploadedByUsername = "admin",
+            UploadedAtUtc = new DateTime(2026, 3, 25, 17, 0, 0, DateTimeKind.Utc),
+            CreatedAtUtc = new DateTime(2026, 3, 25, 17, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 3, 25, 17, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.CustomerContracts.Add(contract);
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = contractId,
+                    CustomerId = customer.Id,
+                    ContractType = "거래계약서",
+                    FileName = "stored-contract.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = 4,
+                    FileHash = "OLD-HASH",
+                    Description = "메타데이터만 수정",
+                    SignedDate = new DateOnly(2026, 5, 26),
+                    UploadedAtUtc = contract.UploadedAtUtc,
+                    CreatedAtUtc = contract.CreatedAtUtc,
+                    UpdatedAtUtc = new DateTime(2026, 5, 26, 0, 0, 0, DateTimeKind.Utc),
+                    Revision = contract.Revision,
+                    FileContent = []
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        var stored = await _dbContext.CustomerContracts.IgnoreQueryFilters().FirstAsync(current => current.Id == contractId);
+        Assert.Equal("메타데이터만 수정", stored.Description);
+        Assert.Equal(new DateOnly(2026, 5, 26), stored.SignedDate);
+        Assert.Equal("customer-contracts/stored-contract.pdf", stored.StoragePath);
+        Assert.Empty(stored.FileContent);
+        Assert.Equal(4, stored.FileSize);
+        Assert.Equal("OLD-HASH", stored.FileHash);
+    }
+
+    [Fact]
     public async Task Push_AllowsTransactionReferencingInvoiceCreatedInSameBatch()
     {
         var customer = new Customer
@@ -2501,6 +2784,19 @@ public sealed class SyncControllerTests : IDisposable
                     TenantCode = TenantScopeCatalog.UsenetGroup,
                     VoucherType = VoucherType.Purchase,
                     InvoiceDate = new DateOnly(2026, 3, 26),
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "same-batch line",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 5000m,
+                            LineAmount = 5000m
+                        }
+                    ],
                     CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
                     UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
                 }
@@ -2735,6 +3031,19 @@ public sealed class SyncControllerTests : IDisposable
                     TenantCode = TenantScopeCatalog.UsenetGroup,
                     VoucherType = VoucherType.Purchase,
                     InvoiceDate = new DateOnly(2026, 3, 26),
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "same-batch line",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 5000m,
+                            LineAmount = 5000m
+                        }
+                    ],
                     CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
                     UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
                 }
@@ -2758,11 +3067,78 @@ public sealed class SyncControllerTests : IDisposable
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPushResult>(ok.Value);
 
-        Assert.Equal(0, result.ConflictCount);
+        Assert.True(
+            result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
 
         var storedPayment = await _dbContext.Payments.IgnoreQueryFilters().FirstAsync();
         Assert.Equal(invoiceId, storedPayment.InvoiceId);
         Assert.False(storedPayment.IsDeleted);
+    }
+
+    [Fact]
+    public async Task Push_RejectsPayment_WhenAmountExceedsOutstanding()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "OVER-PAYMENT-CUSTOMER",
+            NameMatchKey = "OVERPAYMENTCUSTOMER",
+            TradeType = "매출"
+        };
+        var invoiceId = Guid.NewGuid();
+        _dbContext.Customers.Add(customer);
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "OVER-PAY-001",
+            LocalTempNumber = "OVER-PAY-TMP-001",
+            InvoiceDate = new DateOnly(2026, 3, 26),
+            VoucherType = VoucherType.Sales,
+            TotalAmount = 10000m,
+            SupplyAmount = 9091m,
+            VatAmount = 909m
+        });
+        _dbContext.Payments.Add(new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 3, 26),
+            Amount = 7000m,
+            Note = "already paid",
+            CreatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 3, 26, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 3, 27),
+                    Amount = 4000m,
+                    Note = "over payment",
+                    CreatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 3, 27, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Single(await _dbContext.Payments.IgnoreQueryFilters().ToListAsync());
     }
 
     [Fact]
@@ -3483,6 +3859,121 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Pull_ExcludesWarehouseStockRows_ForDeletedItems()
+    {
+        var scopedUser = new TestCurrentUserContext
+        {
+            Username = "usenet-stock-viewer",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+
+        await using var scopedDb = CreateDbContext(scopedUser);
+        var controller = CreateController(scopedDb, scopedUser);
+
+        var activeItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Active stock item",
+            NameMatchKey = "ACTIVESTOCKITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        };
+        var deletedItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted stock item",
+            NameMatchKey = "DELETEDSTOCKITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            IsDeleted = true
+        };
+        scopedDb.Items.AddRange(activeItem, deletedItem);
+        scopedDb.ItemWarehouseStocks.AddRange(
+            new ItemWarehouseStock
+            {
+                ItemId = activeItem.Id,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 3m,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Revision = 10
+            },
+            new ItemWarehouseStock
+            {
+                ItemId = deletedItem.Id,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 0m,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Revision = 11
+            });
+        await scopedDb.SaveChangesAsync();
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.Contains(result.ItemWarehouseStocks, stock => stock.ItemId == activeItem.Id);
+        Assert.DoesNotContain(result.ItemWarehouseStocks, stock => stock.ItemId == deletedItem.Id);
+    }
+
+    [Fact]
+    public async Task Pull_GlobalAdmin_ExcludesWarehouseStockRows_ForDeletedItems()
+    {
+        var activeItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Admin active stock item",
+            NameMatchKey = "ADMINACTIVESTOCKITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        };
+        var deletedItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Admin deleted stock item",
+            NameMatchKey = "ADMINDELETEDSTOCKITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            IsDeleted = true
+        };
+        _dbContext.Items.AddRange(activeItem, deletedItem);
+        _dbContext.ItemWarehouseStocks.AddRange(
+            new ItemWarehouseStock
+            {
+                ItemId = activeItem.Id,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 2m,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Revision = 20
+            },
+            new ItemWarehouseStock
+            {
+                ItemId = deletedItem.Id,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 0m,
+                UpdatedAtUtc = DateTime.UtcNow,
+                Revision = 21
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.Contains(result.ItemWarehouseStocks, stock => stock.ItemId == activeItem.Id);
+        Assert.DoesNotContain(result.ItemWarehouseStocks, stock => stock.ItemId == deletedItem.Id);
+    }
+
+    [Fact]
     public async Task Push_RejectsStaleItemWarehouseStockExpectedRevision()
     {
         var itemId = Guid.NewGuid();
@@ -3545,7 +4036,9 @@ public sealed class SyncControllerTests : IDisposable
             NameOriginal = "Multi warehouse item",
             NameMatchKey = "MULTIWAREHOUSEITEM",
             ItemKind = ItemKinds.Product,
-            TrackingType = ItemTrackingTypes.Stock
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 15m,
+            Revision = 100
         });
         _dbContext.ItemWarehouseStocks.AddRange(
             new ItemWarehouseStock
@@ -3593,6 +4086,9 @@ public sealed class SyncControllerTests : IDisposable
         var updated = await _dbContext.ItemWarehouseStocks.FirstAsync(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
         Assert.Equal(11m, updated.Quantity);
         Assert.True(updated.Revision > 200);
+        var refreshedItem = await _dbContext.Items.IgnoreQueryFilters().FirstAsync(item => item.Id == itemId);
+        Assert.Equal(16m, refreshedItem.CurrentStock);
+        Assert.True(refreshedItem.Revision > 100);
     }
 
     public void Dispose()

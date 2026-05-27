@@ -14,7 +14,7 @@ public sealed class PaymentAttachmentsPage : ContentPage
 
     public PaymentAttachmentsPage(Guid paymentId, string titleText)
     {
-        GeoraePlanTheme.ApplyPage(this, "수금 첨부");
+        GeoraePlanTheme.ApplyPage(this, "수금/지급 첨부");
 
         _paymentId = paymentId;
         _titleText = titleText;
@@ -59,7 +59,7 @@ public sealed class PaymentAttachmentsPage : ContentPage
                     if (sender is Button button && button.BindingContext is PaymentAttachmentDto attachment)
                         await _viewModel.OpenAttachmentAsync(attachment);
                 },
-                        "수금 첨부 열기");
+                        "수금/지급 첨부 열기");
 
                 return new Border
                 {
@@ -124,7 +124,7 @@ if (_initialized)
         _initialized = true;
         await _viewModel.InitializeAsync(_paymentId, _titleText);
             },
-            "수금 첨부 화면 초기화");
+            "수금/지급 첨부 화면 초기화");
     }
 
     private sealed class PaymentAttachmentMetaConverter : IValueConverter

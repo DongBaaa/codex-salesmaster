@@ -101,9 +101,9 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
                     <Button Content="새로고침(F5)" Background="#37474F" Command="{Binding RefreshCommand}" Margin="0,0,6,0"/>
                     <Button Content="동기화 재시도" Background="#1565C0" Command="{Binding RetrySyncCommand}" Margin="0,0,6,0"/>
-                    <Button Content="공유 캐시 재구성" Background="#0277BD" Command="{Binding RebuildSharedCacheCommand}" Margin="0,0,6,0"/>
-                    <Button Content="선택 오류 복구" Background="#00897B" Command="{Binding RunSelectedRepairCommand}" Margin="0,0,6,0"/>
-                    <Button Content="전체 자동 복구" Background="#2E7D32" Command="{Binding RunAutoRepairCommand}" Margin="0,0,6,0"/>
+                    <Button Content="공유 캐시 다시 만들기" Background="#0277BD" Command="{Binding RebuildSharedCacheCommand}" Margin="0,0,6,0"/>
+                    <Button Content="선택 오류만 복구" Background="#00897B" Command="{Binding RunSelectedRepairCommand}" Margin="0,0,6,0"/>
+                    <Button Content="복구 가능 오류 전체 처리" Background="#2E7D32" Command="{Binding RunAutoRepairCommand}" Margin="0,0,6,0"/>
                     <Button Content="닫기(F12)" Background="#6C5B7B" Click="CloseButton_Click"/>
                 </StackPanel>
             </Grid>
@@ -271,9 +271,9 @@
                         </WrapPanel>
                         <TextBlock Grid.Row="2" Text="{Binding OutboxSummaryText}" Foreground="#EAF2FF" Margin="0,10,0,0" TextWrapping="Wrap"/>
                         <WrapPanel Grid.Row="3" Margin="0,12,0,0">
-                            <Button Content="선택 재시도" Background="#1565C0" Command="{Binding RetrySelectedOutboxCommand}" Margin="0,0,6,0"/>
-                            <Button Content="전체 재시도" Background="#2E7D32" Command="{Binding RetryAllOutboxCommand}" Margin="0,0,6,0"/>
-                            <Button Content="완료 정리" Background="#6D4C41" Command="{Binding ClearAcknowledgedOutboxCommand}"/>
+                            <Button Content="선택 전송 재시도" Background="#1565C0" Command="{Binding RetrySelectedOutboxCommand}" Margin="0,0,6,0"/>
+                            <Button Content="전체 전송 재시도" Background="#2E7D32" Command="{Binding RetryAllOutboxCommand}" Margin="0,0,6,0"/>
+                            <Button Content="완료 항목 정리" Background="#6D4C41" Command="{Binding ClearAcknowledgedOutboxCommand}"/>
                         </WrapPanel>
                     </Grid>
                 </Border>

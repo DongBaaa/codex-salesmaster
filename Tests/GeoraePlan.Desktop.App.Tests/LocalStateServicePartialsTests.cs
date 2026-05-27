@@ -1,5 +1,7 @@
 ﻿using System.Reflection;
+using System.Globalization;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -48,6 +50,24 @@ public sealed class LocalStateServicePartialsTests
         Assert.Equal(expected, actual);
     }
 
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("", true)]
+    [InlineData("old-epoch", true)]
+    [InlineData("2026-05-27-rental-asset-mirror", false)]
+    [InlineData(" 2026-05-27-rental-asset-mirror ", false)]
+    public void VersionChangeMaintenance_CacheMirrorRepair_RunsUntilCurrentEpochRecorded(
+        string? lastRepairEpoch,
+        bool expected)
+    {
+        var actual = InvokePrivateStatic<bool>(
+            typeof(VersionChangeMaintenanceService),
+            "RequiresCacheMirrorRepair",
+            new object?[] { lastRepairEpoch });
+
+        Assert.Equal(expected, actual);
+    }
+
     [Fact]
     public void SalesViewModel_CalculateTaxInclusiveTotals_DoesNotAddVatOnTop()
     {
@@ -87,6 +107,95 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public void DataIntegrityScanResult_PassiveStartupNotice_IgnoresDuplicateCandidateNoise()
+    {
+        var duplicateOnly = new DataIntegrityScanResult(
+            DateTime.Now,
+            [],
+            [
+                new DataIntegrityIssueDetail
+                {
+                    Code = DataIntegrityIssueCodes.ItemDuplicateCandidate,
+                    Severity = "Warning",
+                    Message = "품목 중복 후보"
+                },
+                new DataIntegrityIssueDetail
+                {
+                    Code = DataIntegrityIssueCodes.CustomerDuplicateCandidate,
+                    Severity = "Warning",
+                    Message = "거래처 중복 후보"
+                }
+            ]);
+
+        Assert.True(duplicateOnly.HasIssues);
+        Assert.False(duplicateOnly.HasPassiveStartupNoticeIssues);
+        Assert.Equal(string.Empty, duplicateOnly.PassiveStartupNoticeSignature);
+
+        var actionable = new DataIntegrityScanResult(
+            DateTime.Now,
+            [],
+            [
+                new DataIntegrityIssueDetail
+                {
+                    Code = DataIntegrityIssueCodes.InvoiceAmountMismatch,
+                    Severity = "Warning",
+                    Message = "전표 금액 계산 불일치"
+                }
+            ]);
+
+        Assert.True(actionable.HasPassiveStartupNoticeIssues);
+        Assert.Equal($"{DataIntegrityIssueCodes.InvoiceAmountMismatch}:1", actionable.PassiveStartupNoticeSignature);
+    }
+
+    [Theory]
+    [InlineData("현금", "Cash")]
+    [InlineData("카드", "Card")]
+    [InlineData("CMS", "Bank")]
+    [InlineData("cms", "Bank")]
+    [InlineData("전자세금계산서", "Bank")]
+    [InlineData("", "Bank")]
+    [InlineData(null, "Bank")]
+    public void PaymentViewModel_ResolveRentalReceiptTarget_MapsBillingMethodToReceiptBucket(
+        string? billingMethod,
+        string expected)
+    {
+        var result = InvokePrivateStatic<object>(
+            typeof(PaymentViewModel),
+            "ResolveRentalReceiptTarget",
+            new object?[] { billingMethod });
+
+        Assert.Equal(expected, result.ToString());
+    }
+
+    [Fact]
+    public void RentalStateService_NormalizeRentalBillingInvoiceLineItemNames_UsesRentalChargeItemName()
+    {
+        var invoice = new LocalInvoice
+        {
+            Lines =
+            [
+                new LocalInvoiceLine { ItemNameOriginal = "IMC2010[5월]", LineAmount = 440_000m },
+                new LocalInvoiceLine { ItemNameOriginal = "SL-X4220RX[5월]", LineAmount = 150_000m }
+            ]
+        };
+        var run = new RentalBillingRunModel
+        {
+            PeriodStartDate = new DateOnly(2026, 5, 1),
+            PeriodEndDate = new DateOnly(2026, 5, 31),
+            CycleMonths = 1
+        };
+
+        var changed = InvokePrivateStatic<bool>(
+            typeof(RentalStateService),
+            "NormalizeRentalBillingInvoiceLineItemNames",
+            invoice,
+            run);
+
+        Assert.True(changed);
+        Assert.All(invoice.Lines, line => Assert.Equal("사무기기 렌탈대금[5월]", line.ItemNameOriginal));
+    }
+
+    [Fact]
     public void MainViewModel_ResolveMainInvoiceQueryDateRange_IgnoresHiddenPeriodFilter()
     {
         var result = InvokePrivateStatic<(DateOnly? From, DateOnly? To)>(
@@ -112,6 +221,224 @@ public sealed class LocalStateServicePartialsTests
         Assert.Equal(string.Empty, result.CustomerName);
         Assert.Equal(string.Empty, result.MinAmountText);
         Assert.Equal(string.Empty, result.MaxAmountText);
+    }
+
+    [Fact]
+    public async Task MainViewModel_LoadAsync_PopulatesVisibleCustomerAndInvoiceRows_WhenLocalCacheHasData()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-main-view-probe-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var officeAccess = new OfficeAccessService();
+            var dispatcher = new SyncRequestDispatcher();
+            var diagnostics = new SyncDiagnosticsService(session);
+            var localState = new LocalStateService(db, officeAccess, dispatcher, session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+            var viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
+
+            var customerId = Guid.Parse("91111111-1111-1111-1111-111111111111");
+            var invoiceId = Guid.Parse("92222222-2222-2222-2222-222222222222");
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "UI 표시 검증 거래처",
+                NameMatchKey = "UIVISIBLECUSTOMER",
+                IsDeleted = false
+            });
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = DateOnly.FromDateTime(DateTime.Today.AddMonths(-3)),
+                InvoiceNumber = "UI-PROBE-001",
+                TotalAmount = 110_000m,
+                SupplyAmount = 100_000m,
+                VatAmount = 10_000m,
+                IsLatestVersion = true,
+                IsConfirmed = true,
+                IsDeleted = false,
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemNameOriginal = "UI 표시 검증 품목",
+                        Unit = "EA",
+                        Quantity = 1m,
+                        UnitPrice = 110_000m,
+                        LineAmount = 110_000m,
+                        IsDeleted = false
+                    }
+                }
+            });
+            await db.SaveChangesAsync();
+
+            await localState.SetSettingAsync("USENET:InvoiceFilter.CustomerName", "이전버전숨은필터");
+            await localState.SetSettingAsync("USENET:InvoiceFilter.MinAmount", "999999999");
+            await localState.SetSettingAsync("USENET:InvoiceFilter.MaxAmount", "999999999");
+
+            await viewModel.LoadAsync();
+
+            var visibleCustomer = Assert.Single(viewModel.FilteredCustomers);
+            Assert.Equal(customerId, visibleCustomer.Id);
+            Assert.Single(viewModel.InvoiceRows);
+            Assert.Equal(invoiceId, viewModel.InvoiceRows.Single().Id);
+            Assert.Equal(1, viewModel.DashboardCustomerCount);
+            Assert.Equal(string.Empty, viewModel.FilterCustomerName);
+            Assert.Equal(string.Empty, viewModel.FilterMinAmountText);
+            Assert.Equal(string.Empty, viewModel.FilterMaxAmountText);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task MainViewModel_PostLoginSyncSkip_ChecksServerRevisionBeforeSkippingRecentSync()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-post-login-revision-probe-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateOnlineAdminSession();
+            var officeAccess = new OfficeAccessService();
+            var dispatcher = new SyncRequestDispatcher();
+            var diagnostics = new SyncDiagnosticsService(session);
+            var localState = new LocalStateService(db, officeAccess, dispatcher, session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(
+                new HttpClient(new SyncStatusHandler(101)) { BaseAddress = new Uri("http://localhost/") },
+                session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+            var viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
+
+            db.Settings.AddRange(
+                new LocalSetting { Key = "LastSyncRevision", Value = "100" },
+                new LocalSetting { Key = "Sync.LastSuccessAt", Value = DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture) });
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = Guid.Parse("93111111-1111-1111-1111-111111111111"),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "?? ??? ? ?? ?? ???",
+                NameMatchKey = "POSTLOGINREVISIONCUSTOMER",
+                TradeType = "??",
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+
+            var shouldSkip = await InvokePrivateInstanceAsync<bool>(viewModel, "ShouldSkipImmediatePostLoginSyncAsync");
+
+            Assert.False(shouldSkip);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_CorruptedPrimaryWorkCacheCheck_AllowsAllDefinedVoucherTypes()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-cache-voucher-probe-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("93333333-3333-3333-3333-333333333333");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "전표유형 검증 거래처",
+                NameMatchKey = "VOUCHERTYPECHECK",
+                TradeType = "매출/매입",
+                IsDeleted = false
+            });
+
+            foreach (var voucherType in new[]
+                     {
+                         VoucherType.Sales,
+                         VoucherType.Purchase,
+                         VoucherType.Procurement,
+                         VoucherType.Expense,
+                         VoucherType.Collection
+                     })
+            {
+                db.Invoices.Add(new LocalInvoice
+                {
+                    Id = Guid.NewGuid(),
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    VoucherType = voucherType,
+                    InvoiceDate = DateOnly.FromDateTime(DateTime.Today),
+                    IsLatestVersion = true,
+                    IsConfirmed = true,
+                    IsDeleted = false
+                });
+            }
+
+            await db.SaveChangesAsync();
+
+            Assert.False(await service.HasLikelyCorruptedPrimaryWorkCacheAsync(session));
+
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = (VoucherType)999,
+                InvoiceDate = DateOnly.FromDateTime(DateTime.Today),
+                IsLatestVersion = true,
+                IsConfirmed = true,
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+
+            Assert.True(await service.HasLikelyCorruptedPrimaryWorkCacheAsync(session));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
     }
 
     [Fact]
@@ -386,6 +713,148 @@ public sealed class LocalStateServicePartialsTests
             Assert.Equal("Custom Item Alias", aliasAsset.ItemName);
             Assert.Equal("Custom Category", aliasAsset.ItemCategoryName);
             Assert.False(aliasAsset.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_RepairRentalCatalogLinks_DoesNotReuseSameNameItemWhenAssetIdentifiersDiffer()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-item-identifier-repair-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.ItemCategoryOptions.Add(new LocalItemCategoryOption
+            {
+                Id = Guid.NewGuid(),
+                Name = "A3컬러복합기",
+                SortOrder = 10,
+                IsActive = true,
+                IsDirty = false
+            });
+
+            var wrongItemId = Guid.Parse("b1111111-1111-1111-1111-111111111111");
+            var assetId = Guid.Parse("b2222222-2222-2222-2222-222222222222");
+            db.Items.Add(new LocalItem
+            {
+                Id = wrongItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "SL-X6300LX",
+                NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("SL-X6300LX"),
+                CategoryName = "A3컬러복합기",
+                ItemKind = ItemKinds.Asset,
+                TrackingType = ItemTrackingTypes.Asset,
+                MaterialNumber = "2401-008",
+                SerialNumber = "ZPV9BJLW70002HE",
+                SimpleMemo = "렌탈 자산/설치현황 자동 동기화 생성",
+                IsRental = true,
+                IsDirty = false
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                ItemId = wrongItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ManagementNumber = "2503-004",
+                MachineNumber = "ZPV9BJSY30000VX",
+                ItemCategoryName = "A3컬러복합기",
+                ItemName = "SL-X6300LX",
+                CustomerName = "법률사무소 리엘파트너스",
+                CurrentCustomerName = "법률사무소 리엘파트너스",
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new RentalStateService(db).RepairRentalCatalogLinksAsync();
+
+            Assert.Equal(1, result.ScannedAssetCount);
+            var asset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
+            Assert.NotEqual(wrongItemId, asset.ItemId);
+            Assert.True(asset.IsDirty);
+
+            var correctedItem = await db.Items.IgnoreQueryFilters().SingleAsync(current => current.Id == asset.ItemId);
+            Assert.Equal("2503-004", correctedItem.MaterialNumber);
+            Assert.Equal("ZPV9BJSY30000VX", correctedItem.SerialNumber);
+            Assert.True(correctedItem.IsDirty);
+
+            var wrongItem = await db.Items.IgnoreQueryFilters().SingleAsync(current => current.Id == wrongItemId);
+            Assert.True(wrongItem.IsDeleted);
+            Assert.False(wrongItem.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_RepairRentalCatalogLinks_RetiresUnreferencedAutoCreatedItems()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-item-orphan-retire-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var orphanItemId = Guid.Parse("b3333333-3333-3333-3333-333333333333");
+            var normalItemId = Guid.Parse("b4444444-4444-4444-4444-444444444444");
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = orphanItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "MF-4750",
+                    NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("MF-4750"),
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "1302-004",
+                    SerialNumber = "ONXL03504",
+                    SimpleMemo = "렌탈 자산/설치현황 자동 동기화 생성",
+                    IsRental = true,
+                    IsDirty = false
+                },
+                new LocalItem
+                {
+                    Id = normalItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "정상 품목",
+                    NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("정상 품목"),
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    IsRental = false,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var result = await new RentalStateService(db).RepairRentalCatalogLinksAsync();
+
+            Assert.Equal(0, result.ScannedAssetCount);
+            var orphanItem = await db.Items.IgnoreQueryFilters().SingleAsync(current => current.Id == orphanItemId);
+            var normalItem = await db.Items.IgnoreQueryFilters().SingleAsync(current => current.Id == normalItemId);
+            Assert.True(orphanItem.IsDeleted);
+            Assert.False(orphanItem.IsDirty);
+            Assert.False(normalItem.IsDeleted);
         }
         finally
         {
@@ -1409,6 +1878,38 @@ public sealed class LocalStateServicePartialsTests
             conflict);
 
         Assert.True(isEquivalent);
+    }
+
+    [Fact]
+    public void SyncService_HasOperationalRows_DetectsEmptyMirrorPull()
+    {
+        var emptyPull = new SyncPullResponse
+        {
+            CurrentServerRevision = 1234
+        };
+
+        var hasEmptyOperationalRows = InvokePrivateStatic<bool>(
+            typeof(SyncService),
+            "HasOperationalRows",
+            emptyPull);
+
+        Assert.False(hasEmptyOperationalRows);
+
+        emptyPull.Customers.Add(new CustomerDto
+        {
+            Id = Guid.NewGuid(),
+            NameOriginal = "거래처",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet
+        });
+
+        var hasCustomerOperationalRows = InvokePrivateStatic<bool>(
+            typeof(SyncService),
+            "HasOperationalRows",
+            emptyPull);
+
+        Assert.True(hasCustomerOperationalRows);
     }
 
     [Fact]
@@ -3050,6 +3551,285 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task ResetItemInventoryValueAsync_KeepsZeroAfterInventoryRebuild()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-inventory-reset-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("80111111-1111-1111-1111-111111111111");
+            var itemId = Guid.Parse("80222222-2222-2222-2222-222222222222");
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Stock customer",
+                NameMatchKey = "STOCKCUSTOMER"
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Stock item",
+                NameMatchKey = "STOCKITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                PurchasePrice = 1000m
+            });
+            await db.SaveChangesAsync();
+
+            await service.SaveInvoiceAsync(new LocalInvoice
+            {
+                Id = Guid.Parse("80333333-3333-3333-3333-333333333333"),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Purchase,
+                InvoiceDate = new DateOnly(2026, 5, 1),
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemId = itemId,
+                        ItemNameOriginal = "Stock item",
+                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        Unit = "EA",
+                        Quantity = 5m,
+                        UnitPrice = 1000m,
+                        LineAmount = 5000m
+                    }
+                }
+            });
+
+            Assert.Equal(5m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+
+            await service.SaveInvoiceAsync(new LocalInvoice
+            {
+                Id = Guid.Parse("80444444-4444-4444-4444-444444444444"),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 5, 2),
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemId = itemId,
+                        ItemNameOriginal = "Stock item",
+                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        Unit = "EA",
+                        Quantity = 2m,
+                        UnitPrice = 1500m,
+                        LineAmount = 3000m
+                    }
+                }
+            });
+
+            Assert.Equal(3m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+
+            var resetResult = await service.ResetItemInventoryValueAsync(itemId, session);
+            Assert.True(resetResult.Success);
+            Assert.Equal(0m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+            Assert.Equal(0m, (await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId)).CurrentStock);
+
+            Assert.True(await service.RebuildInventorySnapshotsForIntegrityAsync(session));
+            Assert.Equal(0m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+            Assert.Equal(0m, (await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId)).CurrentStock);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RepairMissingItemMastersFromOperationalReferencesAsync_DoesNotRecoverSoftDeletedItems()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-missing-item-repair-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("80555555-5555-5555-5555-555555555555");
+            var itemId = Guid.Parse("80666666-6666-6666-6666-666666666666");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Repair customer",
+                NameMatchKey = "REPAIRCUSTOMER"
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Hidden item",
+                NameMatchKey = "HIDDENITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA"
+            });
+            await db.SaveChangesAsync();
+
+            await service.SaveInvoiceAsync(new LocalInvoice
+            {
+                Id = Guid.Parse("80777777-7777-7777-7777-777777777777"),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 5, 3),
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemId = itemId,
+                        ItemNameOriginal = "Hidden item",
+                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        Unit = "EA",
+                        Quantity = 1m,
+                        UnitPrice = 100m,
+                        LineAmount = 100m
+                    }
+                }
+            });
+
+            var item = await db.Items.IgnoreQueryFilters().SingleAsync(current => current.Id == itemId);
+            item.IsDeleted = true;
+            item.IsDirty = true;
+            await db.SaveChangesAsync();
+
+            var repairResult = await service.RepairMissingItemMastersFromOperationalReferencesAsync(session);
+
+            Assert.False(repairResult.HasChanges);
+            Assert.Equal(0, repairResult.RecoveredDeletedCount);
+            Assert.True(await db.Items.IgnoreQueryFilters()
+                .Where(current => current.Id == itemId)
+                .Select(current => current.IsDeleted)
+                .SingleAsync());
+            Assert.Empty(await service.GetItemsAsync(session));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetItemVendorPurchasePricesAsync_ReturnsLatestPurchasePricePerVendor()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-vendor-price-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var vendorAId = Guid.Parse("80888888-8888-8888-8888-888888888888");
+            var vendorBId = Guid.Parse("80999999-9999-9999-9999-999999999999");
+            var itemId = Guid.Parse("80aaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+
+            db.Customers.AddRange(
+                new LocalCustomer
+                {
+                    Id = vendorAId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "매입처 A",
+                    NameMatchKey = "VENDORA",
+                    TradeType = CustomerTradeTypes.Purchase
+                },
+                new LocalCustomer
+                {
+                    Id = vendorBId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "매입처 B",
+                    NameMatchKey = "VENDORB",
+                    TradeType = CustomerTradeTypes.Purchase
+                });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "공통 품목",
+                NameMatchKey = "COMMONITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                PurchasePrice = 10000m
+            });
+            await db.SaveChangesAsync();
+
+            await SavePurchaseInvoiceAsync(service, vendorAId, itemId, new DateOnly(2026, 5, 1), 37000m, "A-OLD");
+            await SavePurchaseInvoiceAsync(service, vendorAId, itemId, new DateOnly(2026, 5, 5), 39000m, "A-NEW");
+            await SavePurchaseInvoiceAsync(service, vendorBId, itemId, new DateOnly(2026, 5, 3), 41000m, "B-ONE");
+
+            var rows = await service.GetItemVendorPurchasePricesAsync(itemId, session);
+            var priceMap = rows.ToDictionary(row => row.VendorCustomerId, row => row.UnitPrice);
+
+            Assert.Equal(2, rows.Count);
+            Assert.Equal(39000m, priceMap[vendorAId]);
+            Assert.Equal(41000m, priceMap[vendorBId]);
+
+            var customerPriceMap = await service.GetLatestPurchasePriceByItemForCustomerAsync(vendorAId, session);
+            Assert.True(customerPriceMap.TryGetValue(itemId, out var latestVendorAPrice));
+            Assert.Equal(39000m, latestVendorAPrice);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task DeleteInvoiceAsync_RejectsStaleExpectedRevision()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-invoice-delete-concurrency-{Guid.NewGuid():N}");
@@ -3370,6 +4150,108 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
+    [Fact]
+    public async Task RentalBillingUnlinkedAssets_GroupByCustomerAndExposeSetupStatus()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-unlinked-setup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.Parse("9aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "청구설정 필요 거래처",
+                NameMatchKey = "청구설정필요거래처",
+                IsDirty = false
+            });
+            db.RentalAssets.AddRange(
+                new LocalRentalAsset
+                {
+                    Id = Guid.Parse("9bbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = "청구설정 필요 거래처",
+                    CurrentCustomerName = "청구설정 필요 거래처",
+                    ItemName = "복합기 A",
+                    MachineNumber = "UNLINKED-A",
+                    InstallLocation = "1층",
+                    MonthlyFee = 100_000m,
+                    AssetStatus = "임대",
+                    IsDirty = false
+                },
+                new LocalRentalAsset
+                {
+                    Id = Guid.Parse("9ccccccc-cccc-cccc-cccc-cccccccccccc"),
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = "청구설정 필요 거래처",
+                    CurrentCustomerName = "청구설정 필요 거래처",
+                    ItemName = "복합기 B",
+                    MachineNumber = "UNLINKED-B",
+                    InstallLocation = "2층",
+                    MonthlyFee = 150_000m,
+                    AssetStatus = "임대",
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var groupedRows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    ExpandCustomerSummaryRows = false,
+                    ReferenceDate = new DateOnly(2026, 5, 12)
+                },
+                CreateAdminSession());
+
+            var groupedRow = Assert.Single(groupedRows);
+            Assert.True(groupedRow.IsAggregateRow);
+            Assert.False(groupedRow.HasPersistedProfile);
+            Assert.Equal(2, groupedRow.GroupedUnlinkedAssetCount);
+            Assert.Equal("생성필요 2대", groupedRow.BillingSetupStatus);
+            Assert.Equal("청구 전", groupedRow.SettlementStatusDisplay);
+            Assert.Equal(250_000m, groupedRow.CurrentBilledAmount);
+
+            var filteredRows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    Status = "청구설정 필요",
+                    ExpandCustomerSummaryRows = true,
+                    ReferenceDate = new DateOnly(2026, 5, 12)
+                },
+                CreateAdminSession());
+
+            Assert.Equal(2, filteredRows.Count);
+            Assert.All(filteredRows, row =>
+            {
+                Assert.True(row.RequiresBillingProfileCreation);
+                Assert.Equal("생성필요", row.BillingSetupStatus);
+                Assert.Equal("청구 전", row.SettlementStatusDisplay);
+            });
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static SessionState CreateUserSession(params string[] permissions)
     {
         var session = new SessionState();
@@ -3381,6 +4263,55 @@ public sealed class LocalStateServicePartialsTests
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
             Permissions = permissions.ToList()
+        });
+        return session;
+    }
+
+    private static async Task SavePurchaseInvoiceAsync(
+        LocalStateService service,
+        Guid vendorCustomerId,
+        Guid itemId,
+        DateOnly invoiceDate,
+        decimal unitPrice,
+        string invoiceNumber)
+    {
+        await service.SaveInvoiceAsync(new LocalInvoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = vendorCustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            InvoiceNumber = invoiceNumber,
+            VoucherType = VoucherType.Purchase,
+            InvoiceDate = invoiceDate,
+            Lines =
+            {
+                new LocalInvoiceLine
+                {
+                    ItemId = itemId,
+                    ItemNameOriginal = "공통 품목",
+                    ItemTrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    Quantity = 1m,
+                    UnitPrice = unitPrice,
+                    LineAmount = unitPrice
+                }
+            }
+        });
+    }
+
+    private static SessionState CreateOnlineAdminSession()
+    {
+        var session = new SessionState();
+        session.SetSession("test-token", new UserSessionDto
+        {
+            Username = "admin",
+            Role = DomainConstants.RoleAdmin,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin
         });
         return session;
     }
@@ -3491,4 +4422,36 @@ public sealed class LocalStateServicePartialsTests
         await task!;
         return task.GetType().GetProperty("Result")?.GetValue(task);
     }
+    private sealed class SyncStatusHandler : HttpMessageHandler
+    {
+        private readonly long _serverRevision;
+
+        public SyncStatusHandler(long serverRevision)
+        {
+            _serverRevision = serverRevision;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.Equals("/sync/status", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var json = JsonSerializer.Serialize(new SyncStatusDto
+                {
+                    CurrentServerRevision = _serverRevision,
+                    ServerUtc = DateTime.UtcNow
+                });
+
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(json, Encoding.UTF8, "application/json")
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json")
+            });
+        }
+    }
+
 }

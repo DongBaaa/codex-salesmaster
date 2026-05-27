@@ -38,11 +38,11 @@ public sealed partial class MainViewModel : ObservableObject
     private const string LegacyCustomerExcelPathSettingKey = "LegacyMigration.CustomerExcelPath";
     private const string LegacyItemExcelPathSettingKey = "LegacyMigration.ItemExcelPath";
 
-    // ?? Status bar ?????????????????????????????????????????????????????????
+    // Status bar
     [ObservableProperty] private string _syncStatus = "동기화 대기";
     [ObservableProperty] private string _currentUserDisplay = string.Empty;
 
-    // ?? Tabs ???????????????????????????????????????????????????????????????
+    // Tabs
     [ObservableProperty] private int _selectedTabIndex;
 
     // Dashboard card metrics
@@ -59,7 +59,7 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private int _dashboardRentalOverdueCount;
     [ObservableProperty] private string _rentalAlertPopupMessage = string.Empty;
 
-    // ?? ?꾪몴 紐⑸줉 ?? Left panel (嫄곕옒泥??꾪꽣) ??????????????????????????????
+    // 전표 목록 - Left panel (거래처 필터)
     private List<LocalCustomer> _allCustomers = new();
     public ObservableCollection<LocalCustomer> FilteredCustomers { get; } = new();
     [ObservableProperty] private string _customerFilterText = string.Empty;
@@ -71,7 +71,7 @@ public sealed partial class MainViewModel : ObservableObject
     public bool HasSelectedCustomer => SelectedCustomerFilter is not null;
     public string InvoicePrimaryColumnHeader => HasSelectedCustomer ? "거래내역" : "거래처";
 
-    // ?? 嫄곕옒泥??몃씪???몄쭛 (?곗륫 ?⑤꼸) ??????????????????????????????????????
+    // 거래처 인라인 편집 (우측 패널)
     private bool _suppressCustomerSave;
     [ObservableProperty] private string _editCustBizNumber = string.Empty;
     [ObservableProperty] private string _editCustPhone = string.Empty;
@@ -131,13 +131,13 @@ public sealed partial class MainViewModel : ObservableObject
             AppLogger.Warn("AUTOSAVE", $"Customer inline auto-save failed for '{customer.NameOriginal}'. {result.Message}");
     }
 
-    // ?? ?꾪몴 紐⑸줉 ?? Bottom panel (?좏깮???꾪몴 ?쇱씤 誘몃━蹂닿린) ???????????????
+    // 전표 목록 - Bottom panel (선택한 전표 라인 미리보기)
     public ObservableCollection<InvoiceLineEditModel> PreviewLines { get; } = new();
     [ObservableProperty] private decimal _previewSupplyAmount;
     [ObservableProperty] private decimal _previewVatAmount;
     [ObservableProperty] private decimal _previewTotalAmount;
 
-    // ?? ?꾪몴 紐⑸줉 ?? Right panel (嫄곕옒泥??뺣낫 誘몃━蹂닿린) ?????????????????????
+    // 전표 목록 - Right panel (거래처 정보 미리보기)
     [ObservableProperty] private string _previewCustomerName = string.Empty;
     [ObservableProperty] private string _previewCustomerBizNumber = string.Empty;
     [ObservableProperty] private string _previewCustomerPhone = string.Empty;
@@ -146,7 +146,7 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _previewCustomerDepartment = string.Empty;
     [ObservableProperty] private string _previewCustomerContactPerson = string.Empty;
 
-    // ?? Invoice List (?꾪몴 紐⑸줉) ????????????????????????????????????????????
+    // Invoice List (전표 목록)
     public ObservableCollection<InvoiceListRow> InvoiceRows { get; } = new();
     public ObservableCollection<FavoriteInvoiceQuickItem> FavoriteInvoices { get; } = new();
     [ObservableProperty] private InvoiceListRow? _selectedInvoiceRow;
@@ -169,7 +169,7 @@ public sealed partial class MainViewModel : ObservableObject
     private const string InvoiceFilterMaxAmountSettingKey = "InvoiceFilter.MaxAmount";
     private const string FavoriteInvoiceIdsSettingKey = "InvoiceFavorites.Ids";
 
-    // ?? Invoice Editor (?꾪몴 ?묒꽦) ??????????????????????????????????????????
+    // Invoice Editor (전표 작성)
     [ObservableProperty] private Guid _editInvoiceId = Guid.NewGuid();
     [ObservableProperty] private LocalCustomer? _editCustomer;
     [ObservableProperty] private string _editCustomerName = string.Empty;
@@ -184,16 +184,16 @@ public sealed partial class MainViewModel : ObservableObject
     public ObservableCollection<InvoiceLineEditModel> EditLines { get; } = new();
     public Array VoucherTypes => Enum.GetValues<VoucherType>();
 
-    // ?? Payment Tab (?섍툑 ?낅젰) ????????????????????????????????????????????
+    // Payment Tab (수금 입력)
     [ObservableProperty] private InvoiceListRow? _paymentInvoice;
     public ObservableCollection<PaymentRowModel> PaymentRows { get; } = new();
     [ObservableProperty] private decimal _paymentTotalPaid;
     [ObservableProperty] private decimal _paymentBalance;
 
-    // ?? Statement tab (嫄곕옒紐낆꽭?? ?????????????????????????????????????????
+    // Statement tab (거래명세서)
     [ObservableProperty] private InvoiceListRow? _statementInvoice;
 
-    // ?? Company settings (?뚯궗 ?ㅼ젙) ??????????????????????????????????????
+    // Company settings (회사 설정)
     [ObservableProperty] private string _companyTradeName = string.Empty;
     [ObservableProperty] private string _companyRepresentative = string.Empty;
     [ObservableProperty] private string _companyBusinessNumber = string.Empty;
@@ -301,14 +301,26 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     public async Task<bool> ShouldShowPostLoginSyncPopupAsync()
+        => await IsInitialServerDataLoadRequiredAsync();
+
+    public async Task<bool> IsInitialServerDataLoadRequiredAsync(CancellationToken ct = default)
     {
         if (_session.IsOfflineMode)
             return false;
 
-        if (await _local.IsServerMirrorRefreshRequiredAsync())
+        if (await _local.IsServerMirrorRefreshRequiredAsync(ct))
             return true;
 
-        return !await HasPersistedSyncRevisionAsync();
+        if (await _local.HasLikelyCorruptedPrimaryWorkCacheAsync(_session, ct))
+        {
+            await _local.MarkServerMirrorRefreshRequiredAsync(ct);
+            return true;
+        }
+
+        if (!await _local.HasVisiblePrimaryWorkCacheAsync(_session, ct))
+            return true;
+
+        return !await HasPersistedSyncRevisionAsync(ct);
     }
 
     public async Task RunPostLoginSyncAsync()
@@ -330,22 +342,53 @@ public sealed partial class MainViewModel : ObservableObject
                 return;
             }
 
+            var initialDataLoadRequired = await IsInitialServerDataLoadRequiredAsync();
             var shouldRefreshCurrentBusinessScope = await ShouldRefreshCurrentBusinessScopeAfterPostLoginAsync();
             var dirtyBefore = await _local.CountDirtyAsync(_session);
-            SyncStatus = "로그인 후 서버 동기화 중...";
+            SyncStatus = initialDataLoadRequired
+                ? "초기 데이터 동기화 중입니다. 거래처/거래내역을 서버에서 받는 동안 잠시만 기다려 주세요."
+                : "로그인 후 서버 동기화 중...";
 
             var syncOk = await _sync.TrySyncAsync();
             var dirtyAfter = await _local.CountDirtyAsync(_session);
+
+            // 업데이트 직후 전체 캐시 재구성은 동기화 내부 복구 경로에서 완료될 수 있다.
+            // 이 경우 syncOk가 false여도 DB에는 거래처/거래내역이 다시 채워질 수 있으므로
+            // 반드시 메인 목록을 한 번 재조회해 빈 화면이 그대로 남지 않게 한다.
+            await ReloadAfterPassiveSyncAsync();
+            var hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session);
+
             if (syncOk && dirtyAfter == 0)
             {
                 var refreshOk = true;
-                if (shouldRefreshCurrentBusinessScope)
+                if (shouldRefreshCurrentBusinessScope && await _local.IsServerMirrorRefreshRequiredAsync())
                     refreshOk = await _sync.RefreshCurrentBusinessScopeFromServerAsync();
 
                 await ReloadAfterPassiveSyncAsync();
+                hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session);
+
+                if (initialDataLoadRequired && !hasVisiblePrimaryWorkCache)
+                {
+                    SyncStatus = "초기 데이터 표시 확인 중입니다. 서버 기준으로 한 번 더 받습니다...";
+                    var mirrorRefreshOk = await _sync.RefreshSharedMirrorFromServerAsync();
+                    await ReloadAfterPassiveSyncAsync();
+                    hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session);
+                    if (mirrorRefreshOk && hasVisiblePrimaryWorkCache)
+                    {
+                        SyncStatus = $"초기 데이터 동기화 완료 {DateTime.Now:HH:mm:ss}";
+                        return;
+                    }
+                }
+
                 SyncStatus = shouldRefreshCurrentBusinessScope && !refreshOk
                     ? "로그인 후 현재 업체 DB 캐시 재구성은 일부 실패했지만 앱은 계속 사용할 수 있습니다."
                     : $"로그인 후 서버 동기화 완료 {DateTime.Now:HH:mm:ss}";
+                return;
+            }
+
+            if (dirtyAfter == 0 && hasVisiblePrimaryWorkCache)
+            {
+                SyncStatus = $"서버 기준 데이터 복구 완료 {DateTime.Now:HH:mm:ss}";
                 return;
             }
 
@@ -401,7 +444,19 @@ public sealed partial class MainViewModel : ObservableObject
         if (await _local.IsServerMirrorRefreshRequiredAsync())
             return false;
 
+        if (await _local.HasLikelyCorruptedPrimaryWorkCacheAsync(_session))
+        {
+            await _local.MarkServerMirrorRefreshRequiredAsync();
+            return false;
+        }
+
         if (!await HasPersistedSyncRevisionAsync())
+            return false;
+
+        if (!await _local.HasVisiblePrimaryWorkCacheAsync(_session))
+            return false;
+
+        if (await HasServerRevisionAdvancedSinceLastSyncAsync())
             return false;
 
         var lastSuccess = await GetLastSuccessfulSyncAtAsync();
@@ -412,12 +467,31 @@ public sealed partial class MainViewModel : ObservableObject
         return dirtyCount == 0;
     }
 
+    private async Task<bool> HasServerRevisionAdvancedSinceLastSyncAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var status = await _api.GetSyncStatusAsync(ct);
+            if (status is null || status.CurrentServerRevision <= 0)
+                return false;
+
+            var revisionRaw = await _local.GetSettingAsync("LastSyncRevision", ct);
+            _ = long.TryParse(revisionRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var lastSyncRevision);
+            return status.CurrentServerRevision > lastSyncRevision;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("SYNC", $"Post-login revision check failed: {ex.Message}");
+            return false;
+        }
+    }
+
     private async Task<bool> ShouldRefreshCurrentBusinessScopeAfterPostLoginAsync()
         => await _local.IsServerMirrorRefreshRequiredAsync();
 
-    private async Task<bool> HasPersistedSyncRevisionAsync()
+    private async Task<bool> HasPersistedSyncRevisionAsync(CancellationToken ct = default)
     {
-        var revisionRaw = await _local.GetSettingAsync("LastSyncRevision");
+        var revisionRaw = await _local.GetSettingAsync("LastSyncRevision", ct);
         return long.TryParse(revisionRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var revision) && revision > 0;
     }
 
@@ -429,12 +503,19 @@ public sealed partial class MainViewModel : ObservableObject
             : null;
     }
 
-    // ?? Customer Filter (Left Panel) ???????????????????????????????????????
+    // Customer Filter (Left Panel)
     private async Task LoadCustomersAsync()
     {
+        var selectedCustomerId = SelectedCustomerFilter?.Id;
         _allCustomers = await _local.GetCustomersAsync(_session);
         DashboardCustomerCount = _allCustomers.Count;
         ApplyCustomerFilter();
+
+        if (selectedCustomerId.HasValue)
+        {
+            var refreshedSelection = _allCustomers.FirstOrDefault(customer => customer.Id == selectedCustomerId.Value);
+            SelectedCustomerFilter = refreshedSelection;
+        }
     }
 
     private void ApplyCustomerFilter()
@@ -575,7 +656,7 @@ public sealed partial class MainViewModel : ObservableObject
         SelectedInvoiceRow = targetRow;
     }
 
-    // ?? Invoice Preview (on selection) ?????????????????????????????????????
+    // Invoice Preview (on selection)
     partial void OnSelectedInvoiceRowChanged(InvoiceListRow? value)
         => RequestLoadPreview(value);
 
@@ -668,7 +749,7 @@ public sealed partial class MainViewModel : ObservableObject
     private bool IsCurrentInvoicePreview(int version)
         => version == Volatile.Read(ref _invoicePreviewVersion);
 
-    // ?? Invoice List ??????????????????????????????????????????????????????
+    // Invoice List
     [RelayCommand]
     private async Task LoadInvoiceListAsync()
     {
@@ -1089,35 +1170,77 @@ public sealed partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task DeleteInvoiceAsync()
     {
-        if (SelectedInvoiceRow is null) return;
-        var confirm = System.Windows.MessageBox.Show(
-            "선택한 전표를 삭제하시겠습니까?", "삭제 확인",
-            System.Windows.MessageBoxButton.YesNo);
-        if (confirm != System.Windows.MessageBoxResult.Yes) return;
+        if (SelectedInvoiceRow is null)
+            return;
 
-        var result = await _local.DeleteInvoiceAsync(SelectedInvoiceRow.Id, _session, SelectedInvoiceRow.Revision);
-        if (!result.Success)
+        await DeleteInvoiceRowsAsync(new[] { SelectedInvoiceRow });
+    }
+
+    public async Task DeleteInvoiceRowsAsync(IEnumerable<InvoiceListRow> invoiceRows)
+    {
+        var rows = invoiceRows
+            .Where(row => row is not null)
+            .GroupBy(row => row.Id)
+            .Select(group => group.First())
+            .ToList();
+
+        if (rows.Count == 0)
         {
             System.Windows.MessageBox.Show(
-                result.Message,
-                result.ConcurrencyConflict ? "동시 수정 충돌" : result.PermissionDenied ? "권한 없음" : "삭제 실패",
+                "삭제할 전표를 선택하세요.",
+                "알림",
                 System.Windows.MessageBoxButton.OK,
-                result.ConcurrencyConflict || result.PermissionDenied
-                    ? System.Windows.MessageBoxImage.Warning
-                    : System.Windows.MessageBoxImage.Error);
+                System.Windows.MessageBoxImage.Information);
             return;
+        }
+
+        var targetText = rows.Count == 1
+            ? "선택한 전표 1건"
+            : $"선택한 전표 {rows.Count:N0}건";
+
+        var confirm = System.Windows.MessageBox.Show(
+            $"{targetText}을 삭제하시겠습니까?{Environment.NewLine}삭제된 전표는 환경설정 > 휴지통에서 복원할 수 있습니다.",
+            "전표 삭제 확인",
+            System.Windows.MessageBoxButton.OKCancel,
+            System.Windows.MessageBoxImage.Warning);
+
+        if (confirm != System.Windows.MessageBoxResult.OK)
+            return;
+
+        var deletedCount = 0;
+        foreach (var row in rows)
+        {
+            var result = await _local.DeleteInvoiceAsync(row.Id, _session, row.Revision);
+            if (!result.Success)
+            {
+                await LoadInvoiceListAsync();
+                System.Windows.MessageBox.Show(
+                    result.Message,
+                    result.ConcurrencyConflict ? "동시 수정 충돌" : result.PermissionDenied ? "권한 없음" : "삭제 실패",
+                    System.Windows.MessageBoxButton.OK,
+                    result.ConcurrencyConflict || result.PermissionDenied
+                        ? System.Windows.MessageBoxImage.Warning
+                        : System.Windows.MessageBoxImage.Error);
+                return;
+            }
+
+            deletedCount++;
         }
 
         var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
         await LoadInvoiceListAsync();
+        var completedMessage = deletedCount == 1
+            ? "전표를 삭제했습니다."
+            : $"전표 {deletedCount:N0}건을 삭제했습니다.";
+
         System.Windows.MessageBox.Show(
-            LocalStateService.ComposeServerWriteStatusMessage("전표를 삭제했습니다.", serverWriteResult),
+            LocalStateService.ComposeServerWriteStatusMessage(completedMessage, serverWriteResult),
             "알림",
             System.Windows.MessageBoxButton.OK,
             System.Windows.MessageBoxImage.Information);
     }
 
-    // ?? Lines ??????????????????????????????????????????????????????????????
+    // Lines
     [RelayCommand]
     private void AddNewLine()
     {
@@ -1141,7 +1264,7 @@ public sealed partial class MainViewModel : ObservableObject
         EditVatAmount = totals.VatAmount;
     }
 
-    // ?? Payments ??????????????????????????????????????????????????????????
+    // Payments
     [RelayCommand]
     private async Task LoadPaymentsAsync()
     {
@@ -1156,7 +1279,7 @@ public sealed partial class MainViewModel : ObservableObject
             PaymentRows.Add(PaymentRowModel.FromLocal(p));
 
         RecalcPaymentTotals(inv);
-        SelectedTabIndex = 1; // ?섍툑 ?낅젰 ??(?꾪몴?묒꽦 ???쒓굅 ??
+        SelectedTabIndex = 1; // 수금 입력 탭으로 이동(전표작성 탭 제거 후)
     }
 
     [RelayCommand]
@@ -1244,7 +1367,7 @@ public sealed partial class MainViewModel : ObservableObject
         PaymentBalance = inv.TotalAmount - PaymentTotalPaid;
     }
 
-    // ?? Statement Print (F9) ?????????????????????????????????????????????
+    // Statement Print (F9)
     [RelayCommand]
     private async Task PrintStatementAsync()
     {
@@ -1353,7 +1476,7 @@ public sealed partial class MainViewModel : ObservableObject
             .OfType<Window>()
             .FirstOrDefault(window => window.IsActive);
     }
-// ?? Company Settings ??????????????????????????????????????????????????
+// Company Settings
     private async Task LoadCompanyProfileAsync()
     {
         var profile = await _local.GetCompanyProfileAsync(_session);
@@ -1638,7 +1761,7 @@ public sealed partial class MainViewModel : ObservableObject
         await ImportLegacyExcelDataAsync();
     }
 
-    // ?? Refresh Customers (嫄곕옒泥??깅줉/?섏젙 ??媛깆떊) ??????????????????????
+    // Refresh Customers (거래처 등록/수정 후 갱신)
     [RelayCommand]
     public async Task RefreshCustomersAsync()
     {
@@ -1646,7 +1769,7 @@ public sealed partial class MainViewModel : ObservableObject
         await LoadInvoiceListAsync();
     }
 
-    // ?? Sync ??????????????????????????????????????????????????????????????
+    // Sync
     public async Task ReloadAfterPassiveSyncAsync()
     {
         await LoadCustomersAsync();
@@ -1672,7 +1795,7 @@ public sealed partial class MainViewModel : ObservableObject
                 : "동기화가 완료되었지만 일부 오류가 남아 있습니다. 동기화 진단을 확인하세요.";
     }
 
-    // ?? Backup ???????????????????????????????????????????????????????????
+    // Backup
     [RelayCommand]
     private async Task BackupNowAsync()
     {

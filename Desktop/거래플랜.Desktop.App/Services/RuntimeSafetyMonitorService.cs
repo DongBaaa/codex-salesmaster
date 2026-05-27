@@ -16,7 +16,19 @@ public sealed record PeriodicIntegrityMonitorResult(
     bool WarningRequired,
     string StatusMessage,
     string WarningMessage,
-    string DetailReportPath = "");
+    string DetailReportPath = "",
+    DataIntegrityDirectActionKind DirectActionKind = DataIntegrityDirectActionKind.None,
+    Guid? TargetEntityId = null,
+    string TargetEntityName = "")
+{
+    public bool HasDirectAction => DirectActionKind switch
+    {
+        DataIntegrityDirectActionKind.None => false,
+        DataIntegrityDirectActionKind.OpenSyncDiagnostics => true,
+        DataIntegrityDirectActionKind.OpenEnvironmentSettings => true,
+        _ => TargetEntityId.HasValue
+    };
+}
 
 public sealed class RuntimeSafetyMonitorService
 {
@@ -222,6 +234,13 @@ public sealed class RuntimeSafetyMonitorService
             PeriodicIntegrityWarningCooldown,
             ct);
 
+        var directActionIssue = report.Issues
+            .Where(issue => issue.HasDirectAction)
+            .OrderByDescending(issue => string.Equals(issue.Severity, "Error", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+            .ThenByDescending(issue => issue.TargetEntityId.HasValue ? 1 : 0)
+            .ThenByDescending(issue => issue.Count)
+            .FirstOrDefault();
+
         var statusMessage = autoRecoveryAttempted && autoRecoverySucceeded
             ? "주기 무결성 점검에서 일부 자동 복구를 완료했습니다. 남은 항목을 확인하세요."
             : "주기 무결성 점검에서 확인이 필요한 항목이 감지되었습니다.";
@@ -231,7 +250,10 @@ public sealed class RuntimeSafetyMonitorService
             WarningRequired: warningRequired,
             StatusMessage: statusMessage,
             WarningMessage: warningMessage,
-            DetailReportPath: detailReportPath);
+            DetailReportPath: detailReportPath,
+            DirectActionKind: directActionIssue?.DirectActionKind ?? DataIntegrityDirectActionKind.None,
+            TargetEntityId: directActionIssue?.TargetEntityId,
+            TargetEntityName: directActionIssue?.TargetEntityName ?? string.Empty);
     }
 
     private static async Task<string> WritePeriodicIntegrityReportAsync(

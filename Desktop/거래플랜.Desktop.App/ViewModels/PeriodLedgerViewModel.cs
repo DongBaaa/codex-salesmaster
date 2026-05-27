@@ -568,14 +568,14 @@ public sealed partial class PeriodLedgerDisplayRow : ObservableObject
             return "#DDEEFF";
         if (division.Contains("수금", StringComparison.OrdinalIgnoreCase))
             return "#DFF3E5";
-        if (division.Contains("지불", StringComparison.OrdinalIgnoreCase))
+        if (division.Contains("지급", StringComparison.OrdinalIgnoreCase) || division.Contains("지불", StringComparison.OrdinalIgnoreCase))
             return "#FFE9D6";
         return "#E8EDF5";
     }
 
     private static string ResolveDivisionForeground(string division)
     {
-        if (division.Contains("지불", StringComparison.OrdinalIgnoreCase))
+        if (division.Contains("지급", StringComparison.OrdinalIgnoreCase) || division.Contains("지불", StringComparison.OrdinalIgnoreCase))
             return "#8A4A00";
         if (division.Contains("구매", StringComparison.OrdinalIgnoreCase) || division.Contains("매입", StringComparison.OrdinalIgnoreCase))
             return "#235A9F";

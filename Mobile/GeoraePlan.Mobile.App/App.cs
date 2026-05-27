@@ -14,6 +14,7 @@ public sealed class App : Application
     private readonly Services.MobileSessionRecoveryService _sessionRecoveryService;
     private readonly Services.SyncCoordinator _syncCoordinator;
     private readonly Services.MobileAppUpdateService _updateService;
+    private readonly Services.MobileRealtimeSyncService _realtimeSyncService;
     private int _resumeSyncRunning;
     private int _updatePromptRunning;
     private int _globalErrorDialogOpen;
@@ -22,12 +23,14 @@ public sealed class App : Application
         Services.SessionStore sessionStore,
         Services.MobileSessionRecoveryService sessionRecoveryService,
         Services.SyncCoordinator syncCoordinator,
-        Services.MobileAppUpdateService updateService)
+        Services.MobileAppUpdateService updateService,
+        Services.MobileRealtimeSyncService realtimeSyncService)
     {
         _sessionStore = sessionStore;
         _sessionRecoveryService = sessionRecoveryService;
         _syncCoordinator = syncCoordinator;
         _updateService = updateService;
+        _realtimeSyncService = realtimeSyncService;
         RegisterGlobalExceptionHandlers();
         UserAppTheme = AppTheme.Light;
         MainPage = CreateStartupPage();
@@ -103,8 +106,7 @@ public sealed class App : Application
             return;
 
         app.MainPage = new AppShell();
-        _ = app.RunLaunchSyncAsync();
-        _ = app.RunUpdatePromptAsync();
+        app.StartBackgroundServicesAfterFirstFrame();
     }
 
     public static void ShowLogin()
@@ -112,6 +114,7 @@ public sealed class App : Application
         if (Current is not App app)
             return;
 
+        app._realtimeSyncService.Stop();
         app.MainPage = new NavigationPage(new LoginPage());
     }
 
@@ -125,6 +128,24 @@ public sealed class App : Application
         {
             MobileAppLogger.Warn("SYNC", $"앱 시작 동기화 실패: {ex.Message}");
         }
+    }
+
+    private void StartBackgroundServicesAfterFirstFrame()
+    {
+        var dispatcher = MainPage?.Dispatcher ?? Dispatcher;
+        dispatcher.DispatchDelayed(TimeSpan.FromMilliseconds(750), () =>
+        {
+            try
+            {
+                _realtimeSyncService.Start();
+                _ = RunLaunchSyncAsync();
+                _ = RunUpdatePromptAsync();
+            }
+            catch (Exception ex)
+            {
+                MobileAppLogger.Warn("APP", $"모바일 시작 후 백그라운드 서비스 시작 실패: {ex.Message}");
+            }
+        });
     }
 
     private async Task RunResumeRevisionSyncAsync(string reason)

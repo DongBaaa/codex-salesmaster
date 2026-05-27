@@ -21,7 +21,9 @@ public sealed partial class InventoryViewModel : ObservableObject
     private List<LocalItem> _allItems = new();
     private bool _isInventoryRefreshInProgress;
     private bool _suppressSelectionAutoSave;
+    private int _suppressInventoryStateRefresh;
     private int _selectedItemMovementLoadVersion;
+    private int _selectedItemVendorPriceLoadVersion;
     private string _baselineStateSignature = string.Empty;
     private long _editRevision;
     private string _editOfficeCode = DomainConstants.OfficeUsenet;
@@ -29,6 +31,7 @@ public sealed partial class InventoryViewModel : ObservableObject
 
     public ObservableCollection<InventoryItemRow> FilteredItems { get; } = new();
     public ObservableCollection<InventoryMovementRow> SelectedItemMovements { get; } = new();
+    public ObservableCollection<ItemVendorPurchasePriceRow> SelectedItemVendorPurchasePrices { get; } = new();
     public ObservableCollection<LocalItemCategoryOption> ItemCategoryOptions { get; } = new();
     public IReadOnlyList<string> TrackingTypeFilterOptions { get; } = ["전체", ItemTrackingTypes.Stock, ItemTrackingTypes.Asset, ItemTrackingTypes.NonStock];
     public IReadOnlyList<string> ItemKindOptions { get; } = ItemKinds.All;
@@ -130,6 +133,23 @@ public sealed partial class InventoryViewModel : ObservableObject
         }
     }
 
+    public async Task LoadAndSelectItemAsync(Guid itemId)
+    {
+        await LoadAsync();
+
+        if (!FilteredItems.Any(row => row.Id == itemId))
+        {
+            SearchText = string.Empty;
+            SelectedTrackingTypeFilter = "전체";
+            ApplyFilter();
+        }
+
+        SelectItemWithoutAutoSave(itemId);
+        StatusMessage = SelectedItem is null
+            ? "문제 품목을 현재 계정 범위에서 찾지 못했습니다. 담당지점/권한 또는 동기화 상태를 확인하세요."
+            : $"문제 품목 '{SelectedItem.NameOriginal}'을 열었습니다. 현재고와 창고별 재고/이동 내역을 확인하세요.";
+    }
+
     public async Task ReloadItemCategoryOptionsAsync()
     {
         ItemCategoryOptions.Clear();
@@ -160,7 +180,7 @@ public sealed partial class InventoryViewModel : ObservableObject
 
     private void HandleInventoryStateChanged(object? sender, EventArgs e)
     {
-        if (_isInventoryRefreshInProgress)
+        if (_isInventoryRefreshInProgress || Volatile.Read(ref _suppressInventoryStateRefresh) > 0)
             return;
 
         UiTaskHelper.Forget(HandleInventoryStateChangedAsync(), "UI", "재고관리 화면 재고 상태 새로고침");
@@ -235,11 +255,13 @@ public sealed partial class InventoryViewModel : ObservableObject
         {
             ClearDetailForm();
             SelectedItemMovements.Clear();
+            SelectedItemVendorPurchasePrices.Clear();
             return;
         }
 
         LoadFormFromItem(value);
         RequestLoadSelectedItemMovements(value.Id);
+        RequestLoadSelectedItemVendorPurchasePrices(value.Id);
     }
 
     partial void OnSelectedOfficeCodeChanged(string value)
@@ -357,7 +379,8 @@ public sealed partial class InventoryViewModel : ObservableObject
                 refreshAfterSave: true,
                 successMessage: "품목 정보를 저장했습니다. 재고 수량은 지점별 계산값으로 유지됩니다.",
                 permissionDeniedMessage: "현재 계정은 품목을 저장할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 저장을 요청하세요.",
-                showConflictDialog: true))
+                showConflictDialog: true,
+                retryWithLatestRevisionOnConflict: false))
         {
             return;
         }
@@ -403,9 +426,9 @@ public sealed partial class InventoryViewModel : ObservableObject
 
     public async Task<OfficeMutationResult> ResetSelectedInventoryValueAsync()
     {
-        if (!_session.HasAdministrativePrivileges)
+        if (!_session.HasAdministrativePrivileges && !_session.HasPermission(AppPermissionNames.InventoryReset))
         {
-            var deniedMessage = "현재 계정은 선택 재고 초기화를 실행할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 요청하세요.";
+            var deniedMessage = "현재 계정은 재고 초기화를 실행할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 요청하세요.";
             StatusMessage = deniedMessage;
             return OfficeMutationResult.Denied(deniedMessage);
         }
@@ -459,7 +482,8 @@ public sealed partial class InventoryViewModel : ObservableObject
             refreshAfterSave: true,
             successMessage: "품목 정보를 자동 저장했습니다.",
             permissionDeniedMessage: "현재 계정은 품목을 자동 저장할 권한이 없습니다.",
-            showConflictDialog: false);
+            showConflictDialog: false,
+            retryWithLatestRevisionOnConflict: false);
 
         if (saved)
             return true;
@@ -483,7 +507,8 @@ public sealed partial class InventoryViewModel : ObservableObject
             refreshAfterSave: refreshAfterSave,
             successMessage: "품목 정보를 자동 저장했습니다.",
             permissionDeniedMessage: "현재 계정은 품목을 자동 저장할 권한이 없습니다.",
-            showConflictDialog: false);
+            showConflictDialog: false,
+            retryWithLatestRevisionOnConflict: false);
     }
 
     private bool TryCaptureAutoSaveSnapshot(out InventoryEditSnapshot snapshot)
@@ -501,7 +526,8 @@ public sealed partial class InventoryViewModel : ObservableObject
         bool refreshAfterSave,
         string successMessage,
         string permissionDeniedMessage,
-        bool showConflictDialog)
+        bool showConflictDialog,
+        bool retryWithLatestRevisionOnConflict)
     {
         await _autoSaveGate.WaitAsync();
         try
@@ -517,7 +543,43 @@ public sealed partial class InventoryViewModel : ObservableObject
 
             try
             {
-                await _local.UpsertItemAsync(BuildItem(snapshot), _session, snapshot.PreferredOfficeCode);
+                await SaveItemSnapshotToLocalAsync(snapshot);
+            }
+            catch (InvalidOperationException ex) when (retryWithLatestRevisionOnConflict && IsItemRevisionConflict(ex.Message))
+            {
+                var latestItem = await _local.GetItemAsync(snapshot.EditId);
+                if (latestItem is null)
+                {
+                    StatusMessage = "품목 최신값을 다시 확인하는 중 해당 품목을 찾을 수 없습니다. 새로고침 후 다시 시도하세요.";
+                    return false;
+                }
+
+                var retrySnapshot = snapshot with { EditRevision = latestItem.Revision };
+                try
+                {
+                    await SaveItemSnapshotToLocalAsync(retrySnapshot);
+                    snapshot = retrySnapshot;
+                    successMessage = "품목 최신값을 확인한 뒤 현재 수정 내용을 저장했습니다.";
+                }
+                catch (UnauthorizedAccessException retryUnauthorized)
+                {
+                    StatusMessage = retryUnauthorized.Message;
+                    return false;
+                }
+                catch (InvalidOperationException retryConflict)
+                {
+                    StatusMessage = retryConflict.Message;
+                    if (showConflictDialog)
+                    {
+                        System.Windows.MessageBox.Show(
+                            retryConflict.Message,
+                            "동시 수정 충돌",
+                            System.Windows.MessageBoxButton.OK,
+                            System.Windows.MessageBoxImage.Warning);
+                    }
+
+                    return false;
+                }
             }
             catch (UnauthorizedAccessException ex)
             {
@@ -572,6 +634,24 @@ public sealed partial class InventoryViewModel : ObservableObject
             _autoSaveGate.Release();
         }
     }
+
+    private async Task SaveItemSnapshotToLocalAsync(InventoryEditSnapshot snapshot)
+    {
+        Interlocked.Increment(ref _suppressInventoryStateRefresh);
+        try
+        {
+            await _local.UpsertItemAsync(BuildItem(snapshot), _session, snapshot.PreferredOfficeCode);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _suppressInventoryStateRefresh);
+        }
+    }
+
+    private static bool IsItemRevisionConflict(string? message)
+        => !string.IsNullOrWhiteSpace(message)
+           && message.Contains("해당 품목", StringComparison.Ordinal)
+           && message.Contains("최신값을 다시 불러온 뒤", StringComparison.Ordinal);
 
     private async Task LoadInventoryStateAsync()
     {
@@ -836,6 +916,40 @@ public sealed partial class InventoryViewModel : ObservableObject
     private bool IsCurrentSelectedItemMovementLoad(int version)
         => version == Volatile.Read(ref _selectedItemMovementLoadVersion);
 
+    private void RequestLoadSelectedItemVendorPurchasePrices(Guid itemId)
+    {
+        var version = Interlocked.Increment(ref _selectedItemVendorPriceLoadVersion);
+        UiTaskHelper.Forget(
+            LoadSelectedItemVendorPurchasePricesAsync(itemId, version),
+            "INVENTORY",
+            "선택 품목 매입처별 단가 조회",
+            ex =>
+            {
+                if (IsCurrentSelectedItemVendorPriceLoad(version))
+                    StatusMessage = $"매입처별 최근 구매단가를 불러오지 못했습니다. {ex.Message}";
+            });
+    }
+
+    private async Task LoadSelectedItemVendorPurchasePricesAsync(Guid itemId, int version)
+    {
+        if (!IsCurrentSelectedItemVendorPriceLoad(version))
+            return;
+
+        SelectedItemVendorPurchasePrices.Clear();
+        if (itemId == Guid.Empty)
+            return;
+
+        var rows = await _local.GetItemVendorPurchasePricesAsync(itemId, _session);
+        if (!IsCurrentSelectedItemVendorPriceLoad(version))
+            return;
+
+        foreach (var row in rows)
+            SelectedItemVendorPurchasePrices.Add(row);
+    }
+
+    private bool IsCurrentSelectedItemVendorPriceLoad(int version)
+        => version == Volatile.Read(ref _selectedItemVendorPriceLoadVersion);
+
     private async Task<bool> ValidateBeforeSaveAsync(InventoryEditSnapshot snapshot)
     {
         if (string.IsNullOrWhiteSpace(snapshot.EditName))
@@ -880,7 +994,12 @@ public sealed partial class InventoryViewModel : ObservableObject
 
     partial void OnEditBoxQtyChanged(decimal value) => OnPropertyChanged(nameof(BoxCurrentStock));
     partial void OnEditPurchasePriceChanged(decimal value) => OnPropertyChanged(nameof(AssetValue));
-    partial void OnEditSelectedOfficeStockChanged(decimal value) => OnPropertyChanged(nameof(BoxCurrentStock));
+    partial void OnEditSelectedOfficeStockChanged(decimal value)
+    {
+        OnPropertyChanged(nameof(BoxCurrentStock));
+        OnPropertyChanged(nameof(AssetValue));
+        OnPropertyChanged(nameof(ShortageStock));
+    }
     partial void OnEditTotalStockChanged(decimal value)
     {
         OnPropertyChanged(nameof(AssetValue));
@@ -976,6 +1095,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         }
 
         SelectedItemMovements.Clear();
+        SelectedItemVendorPurchasePrices.Clear();
         if (!string.IsNullOrWhiteSpace(statusMessage))
             StatusMessage = statusMessage;
     }
@@ -1016,6 +1136,7 @@ public sealed partial class InventoryViewModel : ObservableObject
         }
 
         SelectedItemMovements.Clear();
+        SelectedItemVendorPurchasePrices.Clear();
         ApplySnapshot(repeatedSnapshot, resetBaseline: true);
         StatusMessage = statusMessage;
     }
@@ -1047,7 +1168,10 @@ public sealed partial class InventoryViewModel : ObservableObject
 
         ApplySnapshot(snapshot, resetBaseline: false);
         if (previousSelection is null)
+        {
             SelectedItemMovements.Clear();
+            SelectedItemVendorPurchasePrices.Clear();
+        }
     }
 
     private void ApplySnapshot(InventoryEditSnapshot snapshot, bool resetBaseline)

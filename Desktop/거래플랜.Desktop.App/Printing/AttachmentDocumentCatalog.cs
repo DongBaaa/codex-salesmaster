@@ -7,6 +7,7 @@ public static class AttachmentDocumentCatalog
     public const string Statement = "statement";
     public const string Estimate = "estimate";
     public const string PaymentClaim = "payment_claim";
+    public const string FourMajorInsuranceCompletion = "four_major_insurance_completion";
     public const string NationalTaxCompletion = "national_tax_completion";
     public const string LocalTaxCompletion = "local_tax_completion";
     public const string BusinessRegistration = "business_registration";
@@ -18,6 +19,7 @@ public static class AttachmentDocumentCatalog
         new(Statement, "거래명세서"),
         new(Estimate, "견적서"),
         new(PaymentClaim, "대금청구서"),
+        new(FourMajorInsuranceCompletion, "4대 보험 완납 증명서"),
         new(NationalTaxCompletion, "국세완납증명서"),
         new(LocalTaxCompletion, "지방세 완납증명서"),
         new(BusinessRegistration, "사업자 등록증"),

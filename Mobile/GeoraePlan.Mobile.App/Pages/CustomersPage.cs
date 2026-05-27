@@ -1,7 +1,8 @@
-using GeoraePlan.Mobile.App.Models;
+﻿using GeoraePlan.Mobile.App.Models;
 using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
+using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
 
@@ -21,22 +22,24 @@ public sealed class CustomersPage : ContentPage
         _viewModel = ServiceHelper.GetRequiredService<CustomersViewModel>();
         _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
         _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
+        _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
 
-        var searchBar = GeoraePlanTheme.CreateSearchBar("거래처명 / 전화 / 사업자번호");
-        searchBar.HeightRequest = 42;
-        searchBar.SetBinding(SearchBar.TextProperty, nameof(CustomersViewModel.SearchText));
-        searchBar.SearchButtonPressed += (_, _) =>
+        var searchEntry = GeoraePlanTheme.CreateCompactEntry("거래처명 / 전화 / 사업자번호");
+        searchEntry.HeightRequest = 42;
+        searchEntry.ReturnType = ReturnType.Search;
+        searchEntry.SetBinding(Entry.TextProperty, nameof(CustomersViewModel.SearchText));
+        searchEntry.Completed += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await _viewModel.RefreshAsync(),
                 "거래처 작업");
-        searchBar.TextChanged += (_, args) =>
+        searchEntry.TextChanged += (_, args) =>
             MobileErrorHandler.FireAndForget(
                 async () =>
                 {
-            if (!string.IsNullOrWhiteSpace(args.OldTextValue) && string.IsNullOrWhiteSpace(args.NewTextValue))
-                await _viewModel.RefreshAsync();
-        },
+                    if (!string.IsNullOrWhiteSpace(args.OldTextValue) && string.IsNullOrWhiteSpace(args.NewTextValue))
+                        await _viewModel.RefreshAsync();
+                },
                 "거래처 작업");
 
         var clearSearchButton = GeoraePlanTheme.CreateCompactButton("초기화", GeoraePlanTheme.SecondaryButton);
@@ -55,6 +58,11 @@ public sealed class CustomersPage : ContentPage
         refreshButton.WidthRequest = 86;
         refreshButton.SetBinding(Button.CommandProperty, nameof(CustomersViewModel.RefreshCommand));
 
+        var newCustomerButton = GeoraePlanTheme.CreateCompactButton("신규", GeoraePlanTheme.Success);
+        newCustomerButton.WidthRequest = 76;
+        newCustomerButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(OpenNewCustomerAsync, "거래처 신규등록");
+
         var searchActions = new HorizontalStackLayout
         {
             Spacing = 8,
@@ -62,6 +70,7 @@ public sealed class CustomersPage : ContentPage
             VerticalOptions = LayoutOptions.Center,
             Children =
             {
+                newCustomerButton,
                 clearSearchButton,
                 refreshButton
             }
@@ -77,8 +86,8 @@ public sealed class CustomersPage : ContentPage
                 new ColumnDefinition(GridLength.Auto)
             }
         };
-        searchBar.HorizontalOptions = LayoutOptions.Fill;
-        searchGrid.Add(searchBar);
+        searchEntry.HorizontalOptions = LayoutOptions.Fill;
+        searchGrid.Add(searchEntry);
         searchGrid.Add(searchActions, 1, 0);
 
         var activity = new ActivityIndicator { Color = GeoraePlanTheme.Accent, HeightRequest = 18 };
@@ -99,8 +108,23 @@ public sealed class CustomersPage : ContentPage
         detailStatus.SetBinding(Label.TextProperty, nameof(CustomersViewModel.DetailStatusMessage));
 
         var detailHeaderTitle = GeoraePlanTheme.CreateSectionTitle("선택 거래처 상세", 15);
+        var editCustomerButton = GeoraePlanTheme.CreateCompactButton("수정", GeoraePlanTheme.Purple);
+        editCustomerButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(OpenEditCustomerAsync, "거래처 수정");
+
+        var deleteCustomerButton = GeoraePlanTheme.CreateCompactButton("삭제", GeoraePlanTheme.Danger);
+        deleteCustomerButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(OpenDeleteCustomerAsync, "거래처 삭제");
+
         var closeDetailButton = GeoraePlanTheme.CreateCompactButton("닫기", GeoraePlanTheme.SecondaryButton);
         closeDetailButton.Clicked += (_, _) => _viewModel.ClearSelectedCustomer();
+
+        var detailActions = new HorizontalStackLayout
+        {
+            Spacing = 6,
+            HorizontalOptions = LayoutOptions.End,
+            Children = { editCustomerButton, deleteCustomerButton, closeDetailButton }
+        };
 
         var detailHeader = new Grid
         {
@@ -112,7 +136,7 @@ public sealed class CustomersPage : ContentPage
             }
         };
         detailHeader.Add(detailHeaderTitle);
-        detailHeader.Add(closeDetailButton, 1, 0);
+        detailHeader.Add(detailActions, 1, 0);
 
         var detailActivity = new ActivityIndicator { Color = GeoraePlanTheme.Accent, HeightRequest = 18 };
         detailActivity.SetBinding(ActivityIndicator.IsRunningProperty, nameof(CustomersViewModel.IsDetailBusy));
@@ -228,7 +252,7 @@ public sealed class CustomersPage : ContentPage
         {
             SelectionMode = SelectionMode.None,
             BackgroundColor = Colors.Transparent,
-            EmptyView = GeoraePlanTheme.CreateBodyText("최근 수금 내역이 없습니다.", true, 11),
+            EmptyView = GeoraePlanTheme.CreateBodyText("최근 수금/지급 내역이 없습니다.", true, 11),
             ItemTemplate = new DataTemplate(() =>
             {
                 var invoiceLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 12);
@@ -255,7 +279,7 @@ public sealed class CustomersPage : ContentPage
                     if (sender is not Button button || button.BindingContext is not CustomerPaymentHistoryRow row)
                         return;
 
-                    await Shell.Current.Navigation.PushAsync(new PaymentAttachmentsPage(row.PaymentId, $"{row.InvoiceDisplay} 수금 첨부"));
+                    await Shell.Current.Navigation.PushAsync(new PaymentAttachmentsPage(row.PaymentId, $"{row.InvoiceDisplay} {row.ActionDisplay} 첨부"));
                 },
                         "거래처 작업");
 
@@ -283,7 +307,7 @@ public sealed class CustomersPage : ContentPage
         var summaryTabButton = CreateDetailTabButton("기본");
         var contractsTabButton = CreateDetailTabButton("계약");
         var invoicesTabButton = CreateDetailTabButton("거래내역");
-        var paymentsTabButton = CreateDetailTabButton("수금");
+        var paymentsTabButton = CreateDetailTabButton("수금/지급");
 
         void RefreshDetailTabButtons()
         {
@@ -354,9 +378,9 @@ public sealed class CustomersPage : ContentPage
                 noteLabel.MaxLines = 1;
                 noteLabel.SetBinding(Label.TextProperty, nameof(CustomerDto.Notes));
 
-                var invoiceButton = GeoraePlanTheme.CreateCompactButton("전표작성", GeoraePlanTheme.Success);
-                invoiceButton.HorizontalOptions = LayoutOptions.Fill;
-                invoiceButton.Clicked += (sender, _) =>
+                var salesInvoiceButton = GeoraePlanTheme.CreateCompactButton("판매작성", GeoraePlanTheme.Success);
+                salesInvoiceButton.HorizontalOptions = LayoutOptions.Fill;
+                salesInvoiceButton.Clicked += (sender, _) =>
                     MobileErrorHandler.FireAndForget(
                         async () =>
                         {
@@ -369,7 +393,27 @@ public sealed class CustomersPage : ContentPage
                     }
                     catch (Exception ex)
                     {
-                        await DisplayAlert("전표작성 오류", $"전표작성 화면을 열지 못했습니다.\n{ex.Message}", "확인");
+                        await DisplayAlert("판매작성 오류", $"판매 전표 작성 화면을 열지 못했습니다.\n{ex.Message}", "확인");
+                    }
+                },
+                        "거래처 작업");
+
+                var purchaseInvoiceButton = GeoraePlanTheme.CreateCompactButton("구매작성", GeoraePlanTheme.Brown);
+                purchaseInvoiceButton.HorizontalOptions = LayoutOptions.Fill;
+                purchaseInvoiceButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
+                    if (sender is not Button button || button.BindingContext is not CustomerDto customer)
+                        return;
+
+                    try
+                    {
+                        await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(VoucherType.Purchase, customer.Id, customer.NameOriginal));
+                    }
+                    catch (Exception ex)
+                    {
+                        await DisplayAlert("구매작성 오류", $"구매 전표 작성 화면을 열지 못했습니다.\n{ex.Message}", "확인");
                     }
                 },
                         "거래처 작업");
@@ -393,16 +437,21 @@ public sealed class CustomersPage : ContentPage
                     ColumnDefinitions =
                     {
                         new ColumnDefinition(GridLength.Star),
+                        new ColumnDefinition(GridLength.Star),
                         new ColumnDefinition(GridLength.Star)
                     }
                 };
-                actionGrid.Add(invoiceButton);
-                actionGrid.Add(contractButton, 1, 0);
+                actionGrid.Add(salesInvoiceButton, 0, 0);
+                actionGrid.Add(purchaseInvoiceButton, 1, 0);
+                actionGrid.Add(contractButton, 2, 0);
+
+                var inlineDetail = CreateInlineCustomerDetailView();
+                inlineDetail.SetBinding(VisualElement.IsVisibleProperty, new Binding(path: ".", converter: new SelectedCustomerVisibilityConverter(_viewModel)));
 
                 var body = new VerticalStackLayout
                 {
                     Spacing = 4,
-                    Children = { nameLabel, infoLabel, noteLabel, actionGrid }
+                    Children = { nameLabel, infoLabel, noteLabel, actionGrid, inlineDetail }
                 };
 
                 var border = new Border
@@ -430,13 +479,17 @@ public sealed class CustomersPage : ContentPage
             })
         };
         collectionView.SetBinding(ItemsView.ItemsSourceProperty, nameof(CustomersViewModel.Customers));
+        _viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is nameof(CustomersViewModel.SelectedCustomer) or nameof(CustomersViewModel.HasSelectedCustomer))
+                MainThread.BeginInvokeOnMainThread(() => RefreshCustomerRows(collectionView));
+        };
 
         var contentGrid = new Grid
         {
             Padding = 12,
             RowDefinitions =
             {
-                new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Auto),
@@ -450,10 +503,8 @@ public sealed class CustomersPage : ContentPage
         Grid.SetRow(activity, 1);
         contentGrid.Add(statusLabel);
         Grid.SetRow(statusLabel, 2);
-        contentGrid.Add(detailCard);
-        Grid.SetRow(detailCard, 3);
         contentGrid.Add(collectionView);
-        Grid.SetRow(collectionView, 4);
+        Grid.SetRow(collectionView, 3);
 
         Content = contentGrid;
     }
@@ -483,12 +534,40 @@ try
             "거래처 화면 초기화");
     }
 
+    private void HandleRealtimeRefreshRequested(object? sender, EventArgs e)
+    {
+        MainThread.BeginInvokeOnMainThread(() =>
+            MobileErrorHandler.FireAndForget(
+                async () =>
+                {
+                    if (Shell.Current?.CurrentPage == this)
+                    {
+                        await _viewModel.RefreshAsync();
+                        _seenCustomersVersion = _refreshCoordinator.CustomersVersion;
+                    }
+                },
+                "거래처 실시간 갱신"));
+    }
+
     protected override bool OnBackButtonPressed()
     {
         if (_viewModel.TryNavigateBackOneStep())
             return true;
 
-        return base.OnBackButtonPressed();
+        if (Shell.Current is AppShell appShell && appShell.TryNavigateToPreviousMainTab())
+            return true;
+
+        return true;
+    }
+
+    private static void RefreshCustomerRows(CollectionView collectionView)
+    {
+        var source = collectionView.ItemsSource;
+        if (source is null)
+            return;
+
+        collectionView.ItemsSource = null;
+        collectionView.ItemsSource = source;
     }
 
     private static Button CreateDetailTabButton(string text)
@@ -496,6 +575,317 @@ try
         var button = GeoraePlanTheme.CreateCompactButton(text, GeoraePlanTheme.SecondaryButton);
         button.FontSize = 12;
         return button;
+    }
+
+    private View CreateInlineCustomerDetailView()
+    {
+        var menuTitle = GeoraePlanTheme.CreateSectionTitle("거래처 메뉴", 13);
+        var detailCounts = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+        detailCounts.LineHeight = 1.0;
+        detailCounts.SetBinding(Label.TextProperty, new Binding(nameof(CustomersViewModel.SelectedCustomerSummaryCounts)) { Source = _viewModel });
+
+        var detailActivity = new ActivityIndicator { Color = GeoraePlanTheme.Accent, HeightRequest = 18 };
+        detailActivity.SetBinding(ActivityIndicator.IsRunningProperty, new Binding(nameof(CustomersViewModel.IsDetailBusy)) { Source = _viewModel });
+        detailActivity.SetBinding(ActivityIndicator.IsVisibleProperty, new Binding(nameof(CustomersViewModel.IsDetailBusy)) { Source = _viewModel });
+
+        var editCustomerButton = GeoraePlanTheme.CreateCompactButton("수정", GeoraePlanTheme.Purple);
+        editCustomerButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(OpenEditCustomerAsync, "거래처 작업");
+
+        var deleteCustomerButton = GeoraePlanTheme.CreateCompactButton("삭제", GeoraePlanTheme.Danger);
+        deleteCustomerButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(OpenDeleteCustomerAsync, "거래처 작업");
+
+        var closeDetailButton = GeoraePlanTheme.CreateCompactButton("접기", GeoraePlanTheme.SecondaryButton);
+        closeDetailButton.Clicked += (_, _) => _viewModel.ClearSelectedCustomer();
+
+        var detailActions = new HorizontalStackLayout
+        {
+            Spacing = 6,
+            HorizontalOptions = LayoutOptions.End,
+            Children = { editCustomerButton, deleteCustomerButton, closeDetailButton }
+        };
+
+        var header = new Grid
+        {
+            ColumnSpacing = 8,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Auto)
+            }
+        };
+        header.Add(menuTitle);
+        header.Add(detailActions, 1, 0);
+
+        var summaryTabButton = CreateInlineDetailTabButton("기본", CustomerDetailSection.Summary);
+        summaryTabButton.Clicked += (_, _) => _viewModel.ShowSummaryTab();
+        var contractsTabButton = CreateInlineDetailTabButton("계약", CustomerDetailSection.Contracts);
+        contractsTabButton.Clicked += (_, _) => _viewModel.ShowContractsTab();
+        var invoicesTabButton = CreateInlineDetailTabButton("거래내역", CustomerDetailSection.Invoices);
+        invoicesTabButton.Clicked += (_, _) => _viewModel.ShowInvoicesTab();
+        var paymentsTabButton = CreateInlineDetailTabButton("수금/지급", CustomerDetailSection.Payments);
+        paymentsTabButton.Clicked += (_, _) => _viewModel.ShowPaymentsTab();
+
+        var tabGrid = new Grid
+        {
+            ColumnSpacing = 6,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star)
+            }
+        };
+        tabGrid.Add(summaryTabButton);
+        tabGrid.Add(contractsTabButton, 1, 0);
+        tabGrid.Add(invoicesTabButton, 2, 0);
+        tabGrid.Add(paymentsTabButton, 3, 0);
+
+        var summaryPhoneLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 12);
+        summaryPhoneLabel.LineHeight = 1.0;
+        summaryPhoneLabel.SetBinding(Label.TextProperty, new Binding(nameof(CustomersViewModel.SelectedCustomerPhone), stringFormat: "대표전화 {0}") { Source = _viewModel });
+
+        var summaryMemoTitle = GeoraePlanTheme.CreateFieldLabel("메모사항");
+        var summaryMemoLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
+        summaryMemoLabel.LineHeight = 1.0;
+        summaryMemoLabel.SetBinding(Label.TextProperty, new Binding(nameof(CustomersViewModel.SelectedCustomerNotes)) { Source = _viewModel });
+
+        var summarySection = new VerticalStackLayout
+        {
+            Spacing = 4,
+            Children = { summaryPhoneLabel, summaryMemoTitle, summaryMemoLabel }
+        };
+        summarySection.SetBinding(VisualElement.IsVisibleProperty, new Binding(nameof(CustomersViewModel.ShowSummarySection)) { Source = _viewModel });
+
+        var contractsView = new CollectionView
+        {
+            SelectionMode = SelectionMode.None,
+            BackgroundColor = Colors.Transparent,
+            EmptyView = GeoraePlanTheme.CreateBodyText("등록된 계약서가 없습니다.", true, 11),
+            ItemTemplate = new DataTemplate(() =>
+            {
+                var typeLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 12);
+                typeLabel.FontAttributes = FontAttributes.Bold;
+                typeLabel.LineHeight = 1.0;
+                typeLabel.SetBinding(Label.TextProperty, nameof(CustomerContractDto.ContractType));
+
+                var dateLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+                dateLabel.LineHeight = 1.0;
+                dateLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new ContractDateSummaryConverter()));
+
+                var openButton = GeoraePlanTheme.CreateCompactButton("PDF 열기", GeoraePlanTheme.Purple);
+                openButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
+                            if (sender is Button button && button.BindingContext is CustomerContractDto contract)
+                                await _viewModel.OpenContractAsync(contract);
+                        },
+                        "거래처 작업");
+
+                return new Border
+                {
+                    BackgroundColor = GeoraePlanTheme.Surface,
+                    Stroke = GeoraePlanTheme.Border,
+                    StrokeShape = new RoundRectangle { CornerRadius = 10 },
+                    Padding = new Thickness(10, 8),
+                    Margin = new Thickness(0, 0, 0, 6),
+                    Content = new VerticalStackLayout
+                    {
+                        Spacing = 4,
+                        Children = { typeLabel, dateLabel, openButton }
+                    }
+                };
+            })
+        };
+        contractsView.SetBinding(ItemsView.ItemsSourceProperty, new Binding(nameof(CustomersViewModel.SelectedCustomerContracts)) { Source = _viewModel });
+        contractsView.SetBinding(VisualElement.HeightRequestProperty, new Binding(nameof(CustomersViewModel.ContractsSectionHeight)) { Source = _viewModel });
+
+        var contractsSection = new VerticalStackLayout { Spacing = 4, Children = { contractsView } };
+        contractsSection.SetBinding(VisualElement.IsVisibleProperty, new Binding(nameof(CustomersViewModel.ShowContractsSection)) { Source = _viewModel });
+
+        var invoicesView = new CollectionView
+        {
+            SelectionMode = SelectionMode.None,
+            BackgroundColor = Colors.Transparent,
+            EmptyView = GeoraePlanTheme.CreateBodyText("최근 거래내역이 없습니다.", true, 11),
+            ItemTemplate = new DataTemplate(() =>
+            {
+                var numberLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 12);
+                numberLabel.FontAttributes = FontAttributes.Bold;
+                numberLabel.LineHeight = 1.0;
+                numberLabel.SetBinding(Label.TextProperty, new Binding(nameof(InvoiceDto.InvoiceNumber), stringFormat: "전표 {0}"));
+
+                var dateAmountLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+                dateAmountLabel.LineHeight = 1.0;
+                dateAmountLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new InvoiceSummaryConverter()));
+
+                var memoLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+                memoLabel.LineHeight = 1.0;
+                memoLabel.LineBreakMode = LineBreakMode.TailTruncation;
+                memoLabel.MaxLines = 1;
+                memoLabel.SetBinding(Label.TextProperty, nameof(InvoiceDto.Memo));
+
+                return new Border
+                {
+                    BackgroundColor = GeoraePlanTheme.Surface,
+                    Stroke = GeoraePlanTheme.Border,
+                    StrokeShape = new RoundRectangle { CornerRadius = 10 },
+                    Padding = new Thickness(10, 8),
+                    Margin = new Thickness(0, 0, 0, 6),
+                    Content = new VerticalStackLayout
+                    {
+                        Spacing = 3,
+                        Children = { numberLabel, dateAmountLabel, memoLabel }
+                    }
+                };
+            })
+        };
+        invoicesView.SetBinding(ItemsView.ItemsSourceProperty, new Binding(nameof(CustomersViewModel.SelectedCustomerInvoices)) { Source = _viewModel });
+        invoicesView.SetBinding(VisualElement.HeightRequestProperty, new Binding(nameof(CustomersViewModel.InvoicesSectionHeight)) { Source = _viewModel });
+
+        var invoicesSection = new VerticalStackLayout { Spacing = 4, Children = { invoicesView } };
+        invoicesSection.SetBinding(VisualElement.IsVisibleProperty, new Binding(nameof(CustomersViewModel.ShowInvoicesSection)) { Source = _viewModel });
+
+        var paymentsView = new CollectionView
+        {
+            SelectionMode = SelectionMode.None,
+            BackgroundColor = Colors.Transparent,
+            EmptyView = GeoraePlanTheme.CreateBodyText("최근 수금/지급 내역이 없습니다.", true, 11),
+            ItemTemplate = new DataTemplate(() =>
+            {
+                var invoiceLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 12);
+                invoiceLabel.FontAttributes = FontAttributes.Bold;
+                invoiceLabel.LineHeight = 1.0;
+                invoiceLabel.SetBinding(Label.TextProperty, nameof(CustomerPaymentHistoryRow.InvoiceDisplay), stringFormat: "전표 {0}");
+
+                var dateAmountLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+                dateAmountLabel.LineHeight = 1.0;
+                dateAmountLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new PaymentSummaryConverter()));
+
+                var noteLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+                noteLabel.LineHeight = 1.0;
+                noteLabel.LineBreakMode = LineBreakMode.TailTruncation;
+                noteLabel.MaxLines = 1;
+                noteLabel.SetBinding(Label.TextProperty, nameof(CustomerPaymentHistoryRow.NoteDisplay));
+
+                var attachmentButton = GeoraePlanTheme.CreateCompactButton("첨부 보기", GeoraePlanTheme.Purple);
+                attachmentButton.SetBinding(VisualElement.IsVisibleProperty, nameof(CustomerPaymentHistoryRow.HasAttachments));
+                attachmentButton.Clicked += (sender, _) =>
+                    MobileErrorHandler.FireAndForget(
+                        async () =>
+                        {
+                            if (sender is not Button button || button.BindingContext is not CustomerPaymentHistoryRow row)
+                                return;
+
+                            await Shell.Current.Navigation.PushAsync(new PaymentAttachmentsPage(row.PaymentId, $"{row.InvoiceDisplay} {row.ActionDisplay} 첨부"));
+                        },
+                        "거래처 작업");
+
+                return new Border
+                {
+                    BackgroundColor = GeoraePlanTheme.Surface,
+                    Stroke = GeoraePlanTheme.Border,
+                    StrokeShape = new RoundRectangle { CornerRadius = 10 },
+                    Padding = new Thickness(10, 8),
+                    Margin = new Thickness(0, 0, 0, 6),
+                    Content = new VerticalStackLayout
+                    {
+                        Spacing = 4,
+                        Children = { invoiceLabel, dateAmountLabel, noteLabel, attachmentButton }
+                    }
+                };
+            })
+        };
+        paymentsView.SetBinding(ItemsView.ItemsSourceProperty, new Binding(nameof(CustomersViewModel.SelectedCustomerPayments)) { Source = _viewModel });
+        paymentsView.SetBinding(VisualElement.HeightRequestProperty, new Binding(nameof(CustomersViewModel.PaymentsSectionHeight)) { Source = _viewModel });
+
+        var paymentsSection = new VerticalStackLayout { Spacing = 4, Children = { paymentsView } };
+        paymentsSection.SetBinding(VisualElement.IsVisibleProperty, new Binding(nameof(CustomersViewModel.ShowPaymentsSection)) { Source = _viewModel });
+
+        var statusLabel = GeoraePlanTheme.CreateStatusLabel();
+        statusLabel.SetBinding(Label.TextProperty, new Binding(nameof(CustomersViewModel.DetailStatusMessage)) { Source = _viewModel });
+
+        return new Border
+        {
+            BackgroundColor = GeoraePlanTheme.Surface,
+            Stroke = GeoraePlanTheme.Border,
+            StrokeShape = new RoundRectangle { CornerRadius = 12 },
+            Padding = new Thickness(10, 8),
+            Margin = new Thickness(0, 6, 0, 0),
+            Content = new VerticalStackLayout
+            {
+                Spacing = 8,
+                Children =
+                {
+                    header,
+                    detailCounts,
+                    tabGrid,
+                    summarySection,
+                    contractsSection,
+                    invoicesSection,
+                    paymentsSection,
+                    detailActivity,
+                    statusLabel
+                }
+            }
+        };
+    }
+
+    private Button CreateInlineDetailTabButton(string text, CustomerDetailSection section)
+    {
+        var button = GeoraePlanTheme.CreateCompactButton(text, GeoraePlanTheme.SecondaryButton);
+        button.FontSize = 12;
+        button.SetBinding(VisualElement.BackgroundColorProperty, new Binding(nameof(CustomersViewModel.SelectedDetailSection))
+        {
+            Source = _viewModel,
+            Converter = new DetailTabBackgroundConverter(),
+            ConverterParameter = section
+        });
+        return button;
+    }
+
+    private async Task OpenNewCustomerAsync()
+    {
+        await Navigation.PushModalAsync(new CustomerEditPage(
+            null,
+            async saved =>
+            {
+                await _viewModel.RefreshAsync();
+                if (saved is not null)
+                    await _viewModel.SelectCustomerAsync(saved);
+            }));
+    }
+
+    private async Task OpenEditCustomerAsync()
+    {
+        if (_viewModel.SelectedCustomer is null)
+            return;
+
+        await Navigation.PushModalAsync(new CustomerEditPage(
+            _viewModel.SelectedCustomer,
+            async saved =>
+            {
+                await _viewModel.RefreshAsync();
+                if (saved is not null)
+                    await _viewModel.SelectCustomerAsync(saved);
+            }));
+    }
+
+    private async Task OpenDeleteCustomerAsync()
+    {
+        if (_viewModel.SelectedCustomer is null)
+            return;
+
+        await Navigation.PushModalAsync(new CustomerEditPage(
+            _viewModel.SelectedCustomer,
+            async _ =>
+            {
+                _viewModel.ClearSelectedCustomer();
+                await _viewModel.RefreshAsync();
+            }));
     }
 
     private sealed class ContractDateSummaryConverter : IValueConverter
@@ -535,7 +925,43 @@ try
             if (value is not CustomerPaymentHistoryRow row)
                 return string.Empty;
 
-            return $"{row.PaymentDate:yyyy-MM-dd} · {row.AmountDisplay}";
+            return $"{row.PaymentDate:yyyy-MM-dd} · {row.ActionDisplay} {row.AmountDisplay}";
+        }
+
+        public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class SelectedCustomerVisibilityConverter : IValueConverter
+    {
+        private readonly CustomersViewModel _viewModel;
+
+        public SelectedCustomerVisibilityConverter(CustomersViewModel viewModel)
+        {
+            _viewModel = viewModel;
+        }
+
+        public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
+        {
+            if (value is not CustomerDto customer || _viewModel.SelectedCustomer is null)
+                return false;
+
+            return customer.Id == _viewModel.SelectedCustomer.Id;
+        }
+
+        public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class DetailTabBackgroundConverter : IValueConverter
+    {
+        public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
+        {
+            return value is CustomerDetailSection selected
+                && parameter is CustomerDetailSection expected
+                && selected == expected
+                ? GeoraePlanTheme.Accent
+                : GeoraePlanTheme.SecondaryButton;
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)

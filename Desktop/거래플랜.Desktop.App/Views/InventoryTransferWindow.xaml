@@ -1,4 +1,4 @@
-﻿<Window x:Class="거래플랜.Desktop.App.Views.InventoryTransferWindow"
+<Window x:Class="거래플랜.Desktop.App.Views.InventoryTransferWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:거래플랜.Desktop.App.Converters"
@@ -52,21 +52,24 @@
             <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderBrush" Value="#4A6382"/>
-            <Setter Property="Padding" Value="8,1"/>
+            <Setter Property="Padding" Value="0"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
-            <Setter Property="MinHeight" Value="28"/>
+            <Setter Property="MinHeight" Value="30"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
-            <Setter Property="MinWidth" Value="184"/>
-            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="MinWidth" Value="150"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Width" Value="150"/>
+            <Setter Property="MaxWidth" Value="150"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Height" Value="28"/>
-            <Setter Property="MinHeight" Value="28"/>
-            <Setter Property="Padding" Value="8,0,10,0"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Padding" Value="8,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style TargetType="Button">
@@ -366,7 +369,7 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <Label Grid.Column="0" Content="품목검색"/>
+                                    <Label Grid.Column="0" Content="규격"/>
                                     <TextBox Grid.Column="1"
                                              Height="34"
                                              Text="{Binding InputSpec, UpdateSourceTrigger=PropertyChanged}"/>
@@ -389,7 +392,7 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <Label Grid.Column="0" Content="규격"/>
+                                    <Label Grid.Column="0" Content="단위"/>
                                     <TextBox Grid.Column="1"
                                              Height="34"
                                              Text="{Binding InputUnit, UpdateSourceTrigger=PropertyChanged}"/>
@@ -409,7 +412,7 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <Label Grid.Column="0" Content="단위"/>
+                                    <Label Grid.Column="0" Content="품목 수령메모"/>
                                     <TextBox Grid.Column="1"
                                              Height="34"
                                              Text="{Binding InputReceiptRemark, UpdateSourceTrigger=PropertyChanged}"/>

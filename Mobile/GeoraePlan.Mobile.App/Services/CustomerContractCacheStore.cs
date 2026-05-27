@@ -1,16 +1,22 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Mobile.App.Services;
 
 public sealed class CustomerContractCacheStore
 {
+    private readonly SessionStore _sessionStore;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true
     };
 
-    private string RootDirectory => Path.Combine(FileSystem.AppDataDirectory, "contract-cache");
+    public CustomerContractCacheStore(SessionStore sessionStore)
+    {
+        _sessionStore = sessionStore;
+    }
+
+    private string RootDirectory => Path.Combine(FileSystem.AppDataDirectory, "contract-cache", BuildScopeKey());
     private string CustomersManifestPath => Path.Combine(RootDirectory, "customers.json");
 
     public async Task SaveCustomersAsync(IReadOnlyList<CustomerDto> customers, CancellationToken ct = default)
@@ -107,6 +113,29 @@ public sealed class CustomerContractCacheStore
 
     private string GetPdfPath(Guid customerId, Guid contractId)
         => Path.Combine(GetCustomerDirectory(customerId), $"{contractId:N}.pdf");
+
+    private string BuildScopeKey()
+    {
+        var snapshot = _sessionStore.GetSnapshot();
+        var tenantCode = string.IsNullOrWhiteSpace(snapshot.TenantCode)
+            ? TenantScopeCatalog.UsenetGroup
+            : snapshot.TenantCode.Trim().ToUpperInvariant();
+        var officeCode = string.IsNullOrWhiteSpace(snapshot.OfficeCode)
+            ? OfficeCodeCatalog.Usenet
+            : OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(snapshot.OfficeCode, OfficeCodeCatalog.Usenet).ToUpperInvariant();
+        var username = string.IsNullOrWhiteSpace(snapshot.Username)
+            ? "anonymous"
+            : snapshot.Username.Trim().ToLowerInvariant();
+
+        return SanitizePathSegment($"{tenantCode}_{officeCode}_{username}");
+    }
+
+    private static string SanitizePathSegment(string value)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var sanitized = new string(value.Select(ch => invalid.Contains(ch) ? '_' : ch).ToArray());
+        return string.IsNullOrWhiteSpace(sanitized) ? "default" : sanitized;
+    }
 
     private static CustomerContractDto CloneWithoutContent(CustomerContractDto contract)
     {

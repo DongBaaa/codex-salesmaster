@@ -1,4 +1,4 @@
-﻿<Window x:Class="거래플랜.Desktop.App.Views.RentalBillingWindow"
+<Window x:Class="거래플랜.Desktop.App.Views.RentalBillingWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="렌탈 청구관리"
@@ -87,11 +87,16 @@
             <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderBrush" Value="#4A6382"/>
-            <Setter Property="Height" Value="28"/>
-            <Setter Property="MinWidth" Value="184"/>
-            <Setter Property="Padding" Value="8,1"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="MinWidth" Value="150"/>
+            <Setter Property="Padding" Value="0"/>
             <Setter Property="SelectedDateFormat" Value="Short"/>
-            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Width" Value="150"/>
+            <Setter Property="MaxWidth" Value="150"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
             <Style.Triggers>
                 <Trigger Property="IsEnabled" Value="False">
                     <Setter Property="Foreground" Value="Black"/>
@@ -104,9 +109,10 @@
             <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Height" Value="28"/>
-            <Setter Property="Padding" Value="6,0,4,0"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Padding" Value="8,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="MinHeight" Value="30"/>
             <Style.Triggers>
                 <Trigger Property="IsReadOnly" Value="True">
                     <Setter Property="Foreground" Value="Black"/>
@@ -121,10 +127,18 @@
             </Style.Triggers>
         </Style>
         <Style x:Key="RentalDatePickerButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}">
-            <Setter Property="Width" Value="Auto"/>
-            <Setter Property="MinWidth" Value="28"/>
-            <Setter Property="Height" Value="28"/>
-            <Setter Property="Padding" Value="4,0"/>
+            <Setter Property="Width" Value="30"/>
+            <Setter Property="MinWidth" Value="30"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="MaxWidth" Value="30"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Margin" Value="0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="VerticalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalAlignment" Value="Right"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style x:Key="BillingDetailLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
             <Setter Property="Margin" Value="0,0,4,6"/>
@@ -228,14 +242,15 @@
                     <Button Content="새로고침" Margin="0,0,6,6" Command="{Binding ReloadCommand}"/>
                     <Button Content="신규 렌탈 거래처 등록" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,6,6" Click="NewRentalCustomerButton_Click"/>
                     <Button Content="신규 설정" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,6,6" Command="{Binding NewProfileCommand}"/>
-                    <Button Content="저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,6,6" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}" ToolTip="미연결 설치처를 선택한 뒤 저장하면 청구 프로필이 생성됩니다."/>
-                    <Button Content="이번 회차 청구시작" Background="#2E7D32" BorderBrush="#2E7D32" Margin="0,0,6,6" Click="StartBillingButton_Click" IsEnabled="{Binding CanStartBillingSelected}"/>
-                    <Button Content="보류" Background="#F9A825" BorderBrush="#F9A825" Margin="0,0,6,6" Command="{Binding HoldBillingCommand}" IsEnabled="{Binding CanHoldSelected}"/>
-                    <Button Content="이번 입금 등록" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,6" Click="RegisterSettlementButton_Click" IsEnabled="{Binding CanRegisterSettlementSelected}"/>
-                    <Button Content="완납처리" Background="#00695C" BorderBrush="#00695C" Margin="0,0,6,6" Command="{Binding MarkCompletedCommand}" IsEnabled="{Binding CanMarkCompletedSelected}"/>
-                    <Button Content="청구 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,6" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
-                    <Button Content="개별 청구건 보기" Background="#455A64" BorderBrush="#455A64" Margin="0,0,6,6" Command="{Binding ExpandSelectedSummaryCommand}" IsEnabled="{Binding CanExpandSelectedSummary}" ToolTip="거래처 그룹을 개별 청구 프로필로 전환합니다."/>
-                    <Button Content="선택 청구 삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,6" Command="{Binding DeleteCheckedCommand}"/>
+                    <Button Content="저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,6,6" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}" ToolTip="청구설정 필요 장비를 선택한 뒤 저장하면 청구 프로필이 생성됩니다."/>
+                    <Button Content="선택 월 청구서 만들기" Background="#2E7D32" BorderBrush="#2E7D32" Margin="0,0,6,6" Click="StartBillingButton_Click" IsEnabled="{Binding CanStartBillingSelected}"
+                            ToolTip="청구일 전후와 관계없이 선택한 청구월의 전표를 생성하거나 기존 청구서를 엽니다."/>
+                    <Button Content="선택 청구 보류" Background="#F9A825" BorderBrush="#F9A825" Margin="0,0,6,6" Command="{Binding HoldBillingCommand}" IsEnabled="{Binding CanHoldSelected}"/>
+                    <Button Content="입금 등록" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,6" Click="RegisterSettlementButton_Click" IsEnabled="{Binding CanRegisterSettlementSelected}"/>
+                    <Button Content="완납 처리" Background="#00695C" BorderBrush="#00695C" Margin="0,0,6,6" Command="{Binding MarkCompletedCommand}" IsEnabled="{Binding CanMarkCompletedSelected}"/>
+                    <Button Content="선택 청구 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,6" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
+                    <Button Content="그룹을 개별 청구건으로 보기" Background="#455A64" BorderBrush="#455A64" Margin="0,0,6,6" Command="{Binding ExpandSelectedSummaryCommand}" IsEnabled="{Binding CanExpandSelectedSummary}" ToolTip="거래처 그룹을 개별 청구 프로필로 전환합니다."/>
+                    <Button Content="체크 청구 일괄삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,6" Command="{Binding DeleteCheckedCommand}"/>
                     <Button Content="닫기 (F12)" Click="CloseButton_Click" Margin="0,0,0,6"/>
                 </WrapPanel>
             </DockPanel>
@@ -294,22 +309,47 @@
         </Grid>
 
         <Border Grid.Row="2" Margin="0,10,0,0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
-            <WrapPanel VerticalAlignment="Center">
+            <StackPanel>
+                <Border Background="#4A341F"
+                        BorderBrush="#FFB74D"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="10,8"
+                        Margin="0,0,0,10"
+                        Visibility="{Binding HasPastUnresolved, Converter={StaticResource BoolToVisibility}}">
+                    <DockPanel LastChildFill="True">
+                        <Button DockPanel.Dock="Right"
+                                Content="미처리 거래처만 보기"
+                                Background="#F9A825"
+                                BorderBrush="#F9A825"
+                                Margin="10,0,0,0"
+                                MinWidth="148"
+                                Command="{Binding ShowPastDueOnlyCommand}"/>
+                        <TextBlock Text="{Binding PastUnresolvedSummaryText}"
+                                   Foreground="#FFE0B2"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"
+                                   TextWrapping="Wrap"/>
+                    </DockPanel>
+                </Border>
+                <WrapPanel VerticalAlignment="Center">
                 <TextBlock Text="검색어" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <TextBox Width="280" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=350}" Margin="0,0,12,0"/>
-                <TextBlock Text="기준일" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBlock Text="담당지점" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <ComboBox Width="180" ItemsSource="{Binding OfficeOptions}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedOfficeFilter}" Margin="0,0,12,0"/>
-                <TextBlock Text="검색" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBlock Text="상태" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <ComboBox Width="140" ItemsSource="{Binding StatusOptions}" SelectedItem="{Binding SelectedStatusFilter}" Margin="0,0,12,0"/>
                 <CheckBox Content="알림대상만" IsChecked="{Binding DueOnly}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                <CheckBox Content="개별 청구건 모두 보기" IsChecked="{Binding ShowIndividualProfiles}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0" ToolTip="거래처별 묶음 대신 개별 청구 프로필을 모두 표시합니다."/>
-                <TextBlock Text="기준일" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <CheckBox Content="과거 미처리만 보기" IsChecked="{Binding PastDueOnly}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <CheckBox Content="개별 청구건 보기" IsChecked="{Binding ShowIndividualProfiles}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0" ToolTip="거래처별 묶음 대신 개별 청구 프로필을 모두 표시합니다."/>
+                <TextBlock Text="청구할 월" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <DatePicker Width="180" SelectedDate="{Binding ReferenceDate, Converter={StaticResource DateOnlyConverter}}" SelectedDateFormat="Short">
                     <DatePicker.Resources>
                         <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
                     </DatePicker.Resources>
                 </DatePicker>
-            </WrapPanel>
+                </WrapPanel>
+            </StackPanel>
         </Border>
 
         <Grid Grid.Row="3" Margin="0,10,0,0">
@@ -338,39 +378,35 @@
                         <DataGridTextColumn Header="예정일" Binding="{Binding NextBillingDate}" Width="100" IsReadOnly="True"/>
                         <DataGridTextColumn Header="청구기간" Binding="{Binding CurrentBillingPeriodLabel}" Width="130" IsReadOnly="True"/>
                         <DataGridTextColumn Header="청구상태" Binding="{Binding DisplayStatus}" Width="88" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="청구설정" Binding="{Binding BillingSetupStatus}" Width="116" IsReadOnly="True"/>
                         <DataGridTemplateColumn Header="수금상태" Width="108" IsReadOnly="True">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Border x:Name="SettlementBadge" Style="{StaticResource SettlementBadgeBorderStyle}">
-                                        <TextBlock x:Name="SettlementBadgeText" Text="{Binding SettlementStatus}" Style="{StaticResource SettlementBadgeTextStyle}"/>
+                                        <TextBlock x:Name="SettlementBadgeText" Text="{Binding SettlementStatusDisplay}" Style="{StaticResource SettlementBadgeTextStyle}"/>
                                     </Border>
                                     <DataTemplate.Triggers>
-                                        <DataTrigger Binding="{Binding SettlementStatus}" Value="입금확인">
-                                            <Setter TargetName="SettlementBadge" Property="Background" Value="#6A4B1B"/>
-                                            <Setter TargetName="SettlementBadge" Property="BorderBrush" Value="#F9A825"/>
-                                            <Setter TargetName="SettlementBadgeText" Property="Foreground" Value="#FFE082"/>
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding SettlementStatus}" Value="부분입금">
+                                        <DataTrigger Binding="{Binding SettlementStatusDisplay}" Value="부분입금">
                                             <Setter TargetName="SettlementBadge" Property="Background" Value="#1F4A36"/>
                                             <Setter TargetName="SettlementBadge" Property="BorderBrush" Value="#43A047"/>
                                             <Setter TargetName="SettlementBadgeText" Property="Foreground" Value="#C8E6C9"/>
                                         </DataTrigger>
-                                        <DataTrigger Binding="{Binding SettlementStatus}" Value="입금확인">
+                                        <DataTrigger Binding="{Binding SettlementStatusDisplay}" Value="입금확인">
                                             <Setter TargetName="SettlementBadge" Property="Background" Value="#1F4A36"/>
                                             <Setter TargetName="SettlementBadge" Property="BorderBrush" Value="#43A047"/>
                                             <Setter TargetName="SettlementBadgeText" Property="Foreground" Value="#C8E6C9"/>
                                         </DataTrigger>
-                                        <DataTrigger Binding="{Binding SettlementStatus}" Value="미입금">
+                                        <DataTrigger Binding="{Binding SettlementStatusDisplay}" Value="미입금">
                                             <Setter TargetName="SettlementBadge" Property="Background" Value="#324863"/>
                                             <Setter TargetName="SettlementBadge" Property="BorderBrush" Value="#4FC3F7"/>
                                             <Setter TargetName="SettlementBadgeText" Property="Foreground" Value="#B3E5FC"/>
                                         </DataTrigger>
-                                        <DataTrigger Binding="{Binding SettlementStatus}" Value="생성필요">
-                                            <Setter TargetName="SettlementBadge" Property="Background" Value="#5A2A2A"/>
-                                            <Setter TargetName="SettlementBadge" Property="BorderBrush" Value="#EF5350"/>
-                                            <Setter TargetName="SettlementBadgeText" Property="Foreground" Value="#FFCDD2"/>
+                                        <DataTrigger Binding="{Binding SettlementStatusDisplay}" Value="청구 전">
+                                            <Setter TargetName="SettlementBadge" Property="Background" Value="#33465C"/>
+                                            <Setter TargetName="SettlementBadge" Property="BorderBrush" Value="#90A4AE"/>
+                                            <Setter TargetName="SettlementBadgeText" Property="Foreground" Value="#CFD8DC"/>
                                         </DataTrigger>
-                                        <DataTrigger Binding="{Binding SettlementStatus}" Value="카드승인완료">
+                                        <DataTrigger Binding="{Binding SettlementStatusDisplay}" Value="카드승인완료">
                                             <Setter TargetName="SettlementBadge" Property="Background" Value="#4A4A4A"/>
                                             <Setter TargetName="SettlementBadge" Property="BorderBrush" Value="#9E9E9E"/>
                                             <Setter TargetName="SettlementBadgeText" Property="Foreground" Value="#ECEFF1"/>
@@ -414,8 +450,21 @@
                                 Padding="10"
                                 Margin="0,0,0,10"
                                 Visibility="{Binding IsCustomerGroupSelection, Converter={StaticResource BoolToVisibility}}">
-                            <TextBlock Text="거래처 그룹 보기입니다. 이 행은 중복 거래처처럼 보이지 않도록 청구 프로필을 묶어 보여주는 용도이며, 저장/삭제/장비연결 편집은 '개별 청구건 보기'에서 진행합니다."
+                            <TextBlock Text="거래처 그룹 보기입니다. 중복 거래처처럼 보이지 않도록 청구 프로필/청구설정 필요 장비를 묶어 보여줍니다. 저장/삭제/장비연결 편집은 '개별 청구건 보기'에서 진행합니다."
                                        Foreground="#B3E5FC"
+                                       TextWrapping="Wrap"/>
+                        </Border>
+
+                        <Border Background="#4A341F"
+                                BorderBrush="#FFB74D"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="8"
+                                Margin="0,0,0,10"
+                                Visibility="{Binding SelectedRow.HasUnlinkedBillingAssets, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="{Binding SelectedRow.BillingSetupHelpText}"
+                                       Foreground="#FFE0B2"
+                                       FontWeight="SemiBold"
                                        TextWrapping="Wrap"/>
                         </Border>
 
@@ -454,19 +503,61 @@
                                     </StackPanel>
                                     <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,10,0,0">
                                         <TextBlock Text="수금상태" Style="{StaticResource SelectedBillingMetricLabelStyle}"/>
-                                        <TextBlock Text="{Binding SelectedRow.SettlementStatus}" Style="{StaticResource SelectedBillingMetricValueStyle}"/>
+                                        <TextBlock Text="{Binding SelectedRow.SettlementStatusDisplay}" Style="{StaticResource SelectedBillingMetricValueStyle}"/>
                                     </StackPanel>
                                     <StackPanel Grid.Row="1" Grid.Column="4" Margin="0,10,0,0">
                                         <TextBlock Text="마지막수금일" Style="{StaticResource SelectedBillingMetricLabelStyle}"/>
                                         <TextBlock Text="{Binding SelectedRow.LastSettledDate}" Style="{StaticResource SelectedBillingMetricValueStyle}"/>
                                     </StackPanel>
                                 </Grid>
-                                <TextBlock Text="수금은 '이번 입금 등록'에서 기록됩니다."
+                                <TextBlock Text="입금은 '입금 등록' 또는 아래 '청구/입금 내역'의 월별 버튼에서 기록됩니다."
                                            Foreground="#90CAF9"
                                            Margin="0,8,0,0"
                                            TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
+
+                        <Border Background="#4A341F"
+                                BorderBrush="#FFB74D"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="8"
+                                Margin="0,0,0,10"
+                                Visibility="{Binding SelectedRowHasPastUnresolved, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="{Binding SelectedPastUnresolvedSummaryText}"
+                                       Foreground="#FFE0B2"
+                                       FontWeight="SemiBold"
+                                       TextWrapping="Wrap"/>
+                        </Border>
+
+                        <TextBlock Text="청구/입금 내역" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,6"/>
+                        <DataGrid ItemsSource="{Binding BillingHistoryRows}"
+                                  SelectedItem="{Binding SelectedBillingHistory}"
+                                  Height="155"
+                                  Margin="0,0,0,10"
+                                  IsReadOnly="True">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="청구기간" Binding="{Binding PeriodLabel}" Width="120"/>
+                                <DataGridTextColumn Header="청구일" Binding="{Binding ScheduledDate, StringFormat={}{0:yyyy-MM-dd}}" Width="96"/>
+                                <DataGridTextColumn Header="청구금액" Binding="{Binding BilledAmount, StringFormat=N0}" Width="92"/>
+                                <DataGridTextColumn Header="입금액" Binding="{Binding SettledAmount, StringFormat=N0}" Width="86"/>
+                                <DataGridTextColumn Header="미수금" Binding="{Binding OutstandingAmount, StringFormat=N0}" Width="86"/>
+                                <DataGridTextColumn Header="입금일" Binding="{Binding SettledDate, StringFormat={}{0:yyyy-MM-dd}}" Width="96"/>
+                                <DataGridTextColumn Header="상태" Binding="{Binding SettlementStatus}" Width="84"/>
+                                <DataGridTemplateColumn Header="작업" Width="92">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="{Binding ActionLabel}"
+                                                    Height="28"
+                                                    MinWidth="76"
+                                                    Padding="8,0"
+                                                    Click="BillingHistoryRegisterButton_Click"
+                                                    IsEnabled="{Binding CanRegisterSettlement}"/>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
 
                         <Grid IsEnabled="{Binding CanEditBillingProfileDetails}">
                             <Grid.Resources>
@@ -638,7 +729,7 @@
                                         </DataGridTemplateColumn>
                                         <DataGridTextColumn Header="시리얼번호" Binding="{Binding MachineNumber}" Width="120"/>
                                         <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="120"/>
-                                        <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, StringFormat=N0}" Width="90"/>
+                                        <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, Mode=TwoWay, UpdateSourceTrigger=LostFocus, StringFormat=N0}" Width="90"/>
                                         <DataGridTextColumn Header="현재 거래처" Binding="{Binding CurrentCustomerName}" Width="160"/>
                                         <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="160"/>
                                         <DataGridTextColumn Header="상태" Binding="{Binding AssetStatus}" Width="76"/>

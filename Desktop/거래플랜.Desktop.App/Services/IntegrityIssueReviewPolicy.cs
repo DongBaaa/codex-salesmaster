@@ -2,6 +2,13 @@ namespace 거래플랜.Desktop.App.Services;
 
 internal static class IntegrityIssueReviewPolicy
 {
+    private static readonly HashSet<string> PassiveStartupNoticeExcludedLocalCodes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        DataIntegrityIssueCodes.CustomerDuplicateCandidate,
+        DataIntegrityIssueCodes.ItemDuplicateCandidate,
+        DataIntegrityIssueCodes.WarehouseDuplicateCandidate
+    };
+
     private static readonly HashSet<string> LocalRoutineRepairCandidateCodes = new(StringComparer.OrdinalIgnoreCase)
     {
         "out_of_scope_customers",
@@ -30,4 +37,21 @@ internal static class IntegrityIssueReviewPolicy
 
     public static bool IsRoutineRepairCandidateForServer(string? code)
         => !string.IsNullOrWhiteSpace(code) && ServerRoutineRepairCandidateCodes.Contains(code.Trim());
+
+    public static bool RequiresPassiveStartupNotice(DataIntegrityIssueDetail? issue)
+    {
+        if (issue is null)
+            return false;
+
+        if (string.Equals(issue.Severity, "Info", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(issue.Code) &&
+            PassiveStartupNoticeExcludedLocalCodes.Contains(issue.Code.Trim()))
+        {
+            return false;
+        }
+
+        return true;
+    }
 }

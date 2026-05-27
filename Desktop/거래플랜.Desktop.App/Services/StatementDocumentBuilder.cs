@@ -367,9 +367,9 @@ public static class StatementDocumentBuilder
         var paidAmount = invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount);
         var balanceAmount = invoice.TotalAmount - paidAmount;
         var isPurchaseDocument = invoice.VoucherType == VoucherType.Purchase;
-        var previousOutstandingLabel = isPurchaseDocument ? "전미지불" : "전미수";
-        var settlementLabel = isPurchaseDocument ? "지불액" : "입금액";
-        var outstandingLabel = isPurchaseDocument ? "미지불잔액" : "미수잔액";
+        var previousOutstandingLabel = isPurchaseDocument ? "전미지급" : "전미수";
+        var settlementLabel = isPurchaseDocument ? "지급액" : "입금액";
+        var outstandingLabel = isPurchaseDocument ? "미지급잔액" : "미수잔액";
 
         var row1 = new TableRow();
         row1.Cells.Add(CreateTotalsLabelCell("전표메모", accent));

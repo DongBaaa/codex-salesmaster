@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -95,7 +95,7 @@ public partial class InventoryWindow : Window
                     MessageBox.Show(
                         this,
                         "재고를 초기화할 품목을 먼저 선택하세요.",
-                        "선택 재고 초기화",
+                        "재고 초기화",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information);
                     return;
@@ -105,13 +105,13 @@ public partial class InventoryWindow : Window
                     ? "선택한 품목"
                     : vm.SelectedItem.NameOriginal;
                 var confirmationMessage = vm.HasMeaningfulDraftContentForClose && vm.HasPendingChanges
-                    ? $"현재 편집 중인 품목의 저장되지 않은 내용은 새로고침 과정에서 사라질 수 있습니다.\n\n'{selectedItemName}' 품목의 현재 재고 수량을 0으로 초기화할까요?\n창고별 현재고 스냅샷은 비워지며 기존 판매/구매/재고이동 이력은 유지됩니다."
-                    : $"'{selectedItemName}' 품목의 현재 재고 수량을 0으로 초기화할까요?\n창고별 현재고 스냅샷은 비워지며 기존 판매/구매/재고이동 이력은 유지됩니다.";
+                    ? $"현재 편집 중인 품목의 저장되지 않은 내용은 새로고침 과정에서 사라질 수 있습니다.\n\n'{selectedItemName}' 품목의 재고를 0으로 초기화할까요?\n기존 전표/재고이동 이력은 유지되고 초기화 시점 이후 재고만 다시 계산됩니다."
+                    : $"'{selectedItemName}' 품목의 재고를 0으로 초기화할까요?\n기존 전표/재고이동 이력은 유지되고 초기화 시점 이후 재고만 다시 계산됩니다.";
 
                 var confirmation = MessageBox.Show(
                     this,
                     confirmationMessage,
-                    "선택 재고 초기화",
+                    "재고 초기화",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Warning);
                 if (confirmation != MessageBoxResult.Yes)
@@ -123,7 +123,7 @@ public partial class InventoryWindow : Window
                     MessageBox.Show(
                         this,
                         result.Message,
-                        "선택 재고 초기화",
+                        "재고 초기화",
                         MessageBoxButton.OK,
                         result.PermissionDenied || result.NotFound ? MessageBoxImage.Warning : MessageBoxImage.Error);
                     return;
@@ -132,13 +132,13 @@ public partial class InventoryWindow : Window
                 MessageBox.Show(
                     this,
                     result.Message,
-                    "선택 재고 초기화",
+                    "재고 초기화",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
             },
             "UI",
-            "선택 재고 초기화",
-            "선택 재고 초기화 중 오류가 발생했습니다.");
+            "재고 초기화",
+            "재고 초기화 중 오류가 발생했습니다.");
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => DialogWindowCloseHelper.Close(this);
 

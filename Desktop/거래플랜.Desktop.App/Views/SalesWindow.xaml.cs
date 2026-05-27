@@ -22,7 +22,11 @@ public partial class SalesWindow : Window
         _vm = vm;
         DataContext = vm;
         Loaded += (_, _) => _editSessionMonitor?.Start();
-        Closed += (_, _) => _editSessionMonitor?.Dispose();
+        Closed += (_, _) =>
+        {
+            _editSessionMonitor?.Dispose();
+            _vm.Dispose();
+        };
 
         _editSessionMonitor = EntityEditSessionMonitor.TryCreate(
             this,

@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
@@ -15,9 +15,9 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
-public sealed partial class SalesViewModel : ObservableObject
+public sealed partial class SalesViewModel : ObservableObject, IDisposable
 {
-    private readonly LocalStateService _local;
+    private readonly LocalStateService _local = null!;
     private readonly StatementPrintService _print;
     private readonly IPrintService _invoicePrintService;
     private readonly SessionState _session;
@@ -28,16 +28,21 @@ public sealed partial class SalesViewModel : ObservableObject
     private readonly Dictionary<Guid, string> _categoryNameMap = new();
     private readonly Dictionary<string, string> _priceGradeSourceMap = new(StringComparer.CurrentCultureIgnoreCase);
     private readonly Dictionary<string, (bool AllowsSales, bool AllowsPurchase)> _tradeTypeRuleMap = new(StringComparer.CurrentCultureIgnoreCase);
+    private readonly Dictionary<Guid, decimal> _customerPurchasePriceByItem = new();
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
     private string _baselineStateSignature = string.Empty;
     private bool _lastSaveWasConcurrencyConflict;
     private int _paymentSummaryLoadVersion;
     private int _invoiceVersionLoadVersion;
+    private int _customerPurchasePriceLoadVersion;
+    private int _inventoryReloadVersion;
+    private bool _disposed;
+    private Guid? _customerPurchasePriceCustomerId;
     public string LastAutoSaveFailureMessage { get; private set; } = string.Empty;
 
     public event Action? InvoiceSaved;
 
-    // ?? 怨좉컼 ?뺣낫 (?곷떒) ??????????????????????????????????????????????????
+    // 고객 정보 (상단)
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanLoadPreviousHistory))]
     private LocalCustomer? _selectedCustomer;
@@ -78,7 +83,7 @@ public sealed partial class SalesViewModel : ObservableObject
     [ObservableProperty] private string _purchaseReceivingMemo = string.Empty;
     [ObservableProperty] private string _selectedResponsibleOfficeCode = DomainConstants.OfficeUsenet;
     [ObservableProperty] private string _selectedWarehouseCode = DomainConstants.WarehouseUsenetMain;
-    // ?? ?꾪몴 ?ㅻ뜑 ?????????????????????????????????????????????????????????
+    // 전표 헤더
     [ObservableProperty] private Guid _invoiceId = Guid.NewGuid();
     [ObservableProperty] private DateOnly _workDate = DateOnly.FromDateTime(DateTime.Today);
     [ObservableProperty] private string _invoiceMemo = string.Empty;
@@ -125,7 +130,7 @@ public sealed partial class SalesViewModel : ObservableObject
     private Guid? _linkedRentalBillingProfileId;
     private Guid? _linkedRentalBillingRunId;
 
-    // ?? ?쇱씤 ?낅젰 (?④굔) ??????????????????????????????????????????????????
+    // 라인 입력 (견적)
     [ObservableProperty] private string _inputItemName = string.Empty;
     [ObservableProperty] private string _inputSpec = string.Empty;
     [ObservableProperty] private decimal _inputQty = 1;
@@ -137,20 +142,20 @@ public sealed partial class SalesViewModel : ObservableObject
     [ObservableProperty] private string _inputMaterialNo = string.Empty;
     [ObservableProperty] private LocalItem? _selectedInputItem;
 
-    // ?? ?쇱씤 紐⑸줉 ?????????????????????????????????????????????????????????
+    // 라인 목록
     public ObservableCollection<InvoiceLineEditModel> Lines { get; } = new();
     [ObservableProperty] private InvoiceLineEditModel? _selectedLine;
 
-    // ?? ?⑷퀎 ?????????????????????????????????????????????????????????????
+    // 합계
     [ObservableProperty] private decimal _totalAmount;
     [ObservableProperty] private decimal _supplyAmount;
     [ObservableProperty] private decimal _vatAmount;
 
-    // ?? ?곹뭹 ?뺣낫 ?⑤꼸 (?섎떒) ?????????????????????????????????????????????
+    // 상품 정보 패널 (하단)
     [ObservableProperty] private string _itemSearchText = string.Empty;
     public ObservableCollection<LocalItem> ItemSearchResults { get; } = new();
 
-    // ?? ?몄뇙 ?듭뀡 ?????????????????????????????????????????????????????????
+    // 인쇄 옵션
     [ObservableProperty] private bool _printWithDate = true;
     [ObservableProperty] private bool _printWithPrice = true;
     [ObservableProperty] private bool _printStatementDocument = true;
@@ -159,7 +164,7 @@ public sealed partial class SalesViewModel : ObservableObject
     [ObservableProperty] private string _printType = "거래명1/2";
     public string[] PrintTypes { get; } = ["거래명1/2", "거래명A4", "영수증출력", "출고증A4"];
 
-    // ?? ?곹깭 ?????????????????????????????????????????????????????????????
+    // 상태
     [ObservableProperty] private string _statusMessage = string.Empty;
     [ObservableProperty] private string _lastSavedBy = string.Empty;
     [ObservableProperty] private string _lastSavedAtDisplay = string.Empty;
@@ -272,6 +277,68 @@ public sealed partial class SalesViewModel : ObservableObject
         _newInvoiceVoucherType = newInvoiceVoucherType;
         VoucherType = newInvoiceVoucherType;
         Lines.CollectionChanged += Lines_CollectionChanged;
+        if (_local is not null)
+            _local.InventoryStateChanged += LocalInventoryStateChanged;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        if (_local is not null)
+            _local.InventoryStateChanged -= LocalInventoryStateChanged;
+        Lines.CollectionChanged -= Lines_CollectionChanged;
+        foreach (var line in Lines)
+            line.PropertyChanged -= Line_PropertyChanged;
+    }
+
+    private void LocalInventoryStateChanged(object? sender, EventArgs e)
+    {
+        if (_disposed)
+            return;
+
+        var version = Interlocked.Increment(ref _inventoryReloadVersion);
+        UiTaskHelper.Forget(
+            RefreshItemsAfterInventoryChangedAsync(version),
+            "SALES",
+            "열린 전표창 품목/재고 최신화",
+            ex =>
+            {
+                if (!_disposed && version == _inventoryReloadVersion)
+                    StatusMessage = $"품목/재고 변경사항을 갱신하지 못했습니다. {ex.Message}";
+            });
+    }
+
+    private async Task RefreshItemsAfterInventoryChangedAsync(int version)
+    {
+        var refreshedItems = await _local.GetItemsAsync(_session);
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            ApplyRefreshedItems(refreshedItems, version);
+            return;
+        }
+
+        await dispatcher.InvokeAsync(() => ApplyRefreshedItems(refreshedItems, version));
+    }
+
+    private void ApplyRefreshedItems(List<LocalItem> refreshedItems, int version)
+    {
+        if (_disposed || version != _inventoryReloadVersion)
+            return;
+
+        var selectedItemId = SelectedInputItem?.Id;
+        _allItems = refreshedItems;
+        if (selectedItemId.HasValue)
+        {
+            var refreshedSelectedItem = FindItemById(selectedItemId.Value);
+            if (refreshedSelectedItem is not null)
+                SelectedInputItem = refreshedSelectedItem;
+        }
+
+        RefreshItemSearch();
     }
 
     private void Lines_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -411,6 +478,8 @@ public sealed partial class SalesViewModel : ObservableObject
         CustomerNote = string.Empty;
         CustomerBalance = 0;
         CustomerAdvanceBalance = 0;
+        _customerPurchasePriceByItem.Clear();
+        _customerPurchasePriceCustomerId = null;
         TaxInvoiceIssued = false;
         IsVatNone = false;
         InvoiceMemo = string.Empty;
@@ -439,7 +508,7 @@ public sealed partial class SalesViewModel : ObservableObject
         CaptureBaselineState();
     }
 
-    // ?? 怨좉컼 ?ㅼ젙 ?????????????????????????????????????????????????????????
+    // 고객 설정
     public void SetCustomer(LocalCustomer customer, bool ignoreTradeType = false)
     {
         if (!ignoreTradeType && !CanSelectCustomer(customer))
@@ -462,6 +531,37 @@ public sealed partial class SalesViewModel : ObservableObject
             ? SelectedResponsibleOfficeCode
             : OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(customer.ResponsibleOfficeCode, SelectedResponsibleOfficeCode);
         RequestRefreshPaymentSummary();
+        RequestRefreshCustomerPurchasePriceCache(customer.Id);
+    }
+
+    private void RequestRefreshCustomerPurchasePriceCache(Guid customerId)
+    {
+        var version = Interlocked.Increment(ref _customerPurchasePriceLoadVersion);
+        UiTaskHelper.Forget(
+            RefreshCustomerPurchasePriceCacheAsync(customerId, version),
+            "SALES",
+            "매입처별 최근 구매단가 조회",
+            ex =>
+            {
+                if (version == Volatile.Read(ref _customerPurchasePriceLoadVersion))
+                    StatusMessage = $"매입처별 최근 구매단가를 불러오지 못했습니다. {ex.Message}";
+            });
+    }
+
+    private async Task RefreshCustomerPurchasePriceCacheAsync(Guid customerId, int version)
+    {
+        var prices = await _local.GetLatestPurchasePriceByItemForCustomerAsync(customerId, _session);
+        if (version != Volatile.Read(ref _customerPurchasePriceLoadVersion))
+            return;
+
+        _customerPurchasePriceByItem.Clear();
+        foreach (var (itemId, price) in prices)
+        {
+            if (price > 0m)
+                _customerPurchasePriceByItem[itemId] = price;
+        }
+
+        _customerPurchasePriceCustomerId = customerId;
     }
 
     partial void OnVoucherTypeChanged(VoucherType value)
@@ -766,7 +866,7 @@ public sealed partial class SalesViewModel : ObservableObject
         return true;
     }
 
-    // ?? ?쇱씤 ?낅젰 ?????????????????????????????????????????????????????????
+    // 라인 입력
     partial void OnInputQtyChanged(decimal value) => RecalcInputAmount();
     partial void OnInputUnitPriceChanged(decimal value) => RecalcInputAmount();
     private void RecalcInputAmount()
@@ -843,6 +943,14 @@ public sealed partial class SalesViewModel : ObservableObject
     {
         if (IsPurchaseLikeDocument)
         {
+            if (SelectedCustomer is not null &&
+                _customerPurchasePriceCustomerId == SelectedCustomer.Id &&
+                _customerPurchasePriceByItem.TryGetValue(item.Id, out var vendorPrice) &&
+                vendorPrice > 0m)
+            {
+                return vendorPrice;
+            }
+
             if (item.PurchasePrice > 0) return item.PurchasePrice;
             if (item.SalePrice > 0) return item.SalePrice;
             if (item.RetailPrice > 0) return item.RetailPrice;
@@ -995,7 +1103,7 @@ public sealed partial class SalesViewModel : ObservableObject
     private static (decimal SupplyAmount, decimal VatAmount, decimal TotalAmount) CalculateTaxInclusiveTotals(IEnumerable<decimal> lineAmounts)
         => InvoiceVatModes.CalculateTotals(lineAmounts, InvoiceVatModes.Included);
 
-    // ?? ?곹뭹 寃???????????????????????????????????????????????????????????
+    // 상품 검색
     partial void OnItemSearchTextChanged(string value)
         => _itemSearchDebouncer.Debounce(TimeSpan.FromMilliseconds(250), RefreshItemSearch);
 
@@ -1013,7 +1121,7 @@ public sealed partial class SalesViewModel : ObservableObject
             ItemSearchResults.Add(i);
     }
 
-    // ?? ????????????????????????????????????????????????????????????????
+    // 저장
     [RelayCommand]
     private async Task SaveAsync()
         => await SaveCoreAsync();
@@ -1415,11 +1523,13 @@ public sealed partial class SalesViewModel : ObservableObject
         }
         CaptureBaselineState();
         await RefreshPaymentSummaryAsync();
+        if (IsPurchaseDocument && SelectedCustomer is not null)
+            await RefreshCustomerPurchasePriceCacheAsync(SelectedCustomer.Id, Interlocked.Increment(ref _customerPurchasePriceLoadVersion));
         InvoiceSaved?.Invoke();
         return true;
     }
 
-    // ?? 湲곗〈 ?꾪몴 遺덈윭?ㅺ린 (?섏젙?? ???????????????????????????????????????
+    // 기존 전표 불러오기 (수정용)
     public async Task LoadInvoiceAsync(LocalInvoice inv)
     {
         InvoiceId = inv.Id;
@@ -1494,7 +1604,7 @@ public sealed partial class SalesViewModel : ObservableObject
         await RefreshPaymentSummaryAsync();
     }
 
-    // ?? ?좉퇋 ?꾪몴 ?????????????????????????????????????????????????????????
+    // 신규 전표
     [RelayCommand]
     private void StartNewInvoice() => NewInvoice();
 
@@ -1534,7 +1644,7 @@ public sealed partial class SalesViewModel : ObservableObject
             var model = await LoadOrCreateInvoicePrintModelAsync(invoice, customer, company);
             var editorViewModel = new PrintEditViewModel(
                 model,
-                SaveInvoicePrintModelAsync,
+                editedModel => SaveInvoicePrintModelForInvoiceAsync(editedModel, invoice.Id),
                 (editedModel, selectedDocument) => BuildPrintEditPreviewDocument(invoice, customer, company, editedModel, selectedDocument));
             var editorWindow = new PrintEditWindow(editorViewModel)
             {
@@ -1558,7 +1668,7 @@ public sealed partial class SalesViewModel : ObservableObject
         }
     }
 
-    // ?? 嫄곕옒紐낆꽭???몄뇙 ???????????????????????????????????????????????????
+    // 거래명세서 인쇄
     [RelayCommand]
     private async Task PrintAsync()
     {
@@ -1868,8 +1978,20 @@ public sealed partial class SalesViewModel : ObservableObject
         return model;
     }
 
+    private async Task SaveInvoicePrintModelForInvoiceAsync(InvoicePrintModel model, Guid invoiceId)
+    {
+        if (invoiceId == Guid.Empty)
+            throw new InvalidOperationException("출력물 편집 내용을 저장할 전표를 확인할 수 없습니다.");
+
+        model.InvoiceId = invoiceId;
+        await SaveInvoicePrintModelAsync(model);
+    }
+
     private async Task SaveInvoicePrintModelAsync(InvoicePrintModel model)
     {
+        if (model.InvoiceId == Guid.Empty)
+            throw new InvalidOperationException("출력물 편집 내용을 저장할 전표를 확인할 수 없습니다.");
+
         NormalizeInvoicePrintSnapshotMetadata(model, null);
         model.SnapshotLastSavedAtUtc = DateTime.UtcNow;
         var payload = JsonSerializer.Serialize(model, PrintModelJsonOptions);

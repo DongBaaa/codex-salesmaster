@@ -10,7 +10,7 @@ public sealed class PaymentAttachmentsViewModel : ObservableObject
     private readonly GeoraePlanApiClient _api;
 
     private Guid _paymentId;
-    private string _titleText = "수금 첨부";
+    private string _titleText = "수금/지급 첨부";
     private string _statusMessage = "첨부 파일을 불러오세요.";
     private bool _isBusy;
 
@@ -45,7 +45,7 @@ public sealed class PaymentAttachmentsViewModel : ObservableObject
     public async Task InitializeAsync(Guid paymentId, string titleText)
     {
         _paymentId = paymentId;
-        TitleText = string.IsNullOrWhiteSpace(titleText) ? "수금 첨부" : titleText.Trim();
+        TitleText = string.IsNullOrWhiteSpace(titleText) ? "수금/지급 첨부" : titleText.Trim();
         await RefreshAsync();
     }
 

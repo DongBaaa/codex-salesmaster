@@ -9,7 +9,13 @@ public enum DataIntegrityDirectActionKind
 {
     None,
     OpenRentalBillingProfile,
-    OpenRentalAsset
+    OpenRentalAsset,
+    OpenInventoryItem,
+    OpenCustomer,
+    OpenInvoice,
+    OpenPaymentForInvoice,
+    OpenSyncDiagnostics,
+    OpenEnvironmentSettings
 }
 
 public static class DataIntegrityIssueCodes
@@ -100,6 +106,12 @@ public sealed class DataIntegrityIssueDetail
     {
         DataIntegrityDirectActionKind.OpenRentalAsset => "자산 바로가기",
         DataIntegrityDirectActionKind.OpenRentalBillingProfile => "청구관리 바로가기",
+        DataIntegrityDirectActionKind.OpenInventoryItem => "품목/재고 바로가기",
+        DataIntegrityDirectActionKind.OpenCustomer => "거래처 바로가기",
+        DataIntegrityDirectActionKind.OpenInvoice => "전표 바로가기",
+        DataIntegrityDirectActionKind.OpenPaymentForInvoice => "수금/지급 바로가기",
+        DataIntegrityDirectActionKind.OpenSyncDiagnostics => "동기화 진단 바로가기",
+        DataIntegrityDirectActionKind.OpenEnvironmentSettings => "환경설정 바로가기",
         _ => "수동 확인"
     };
 }
@@ -127,6 +139,14 @@ public sealed class DataIntegrityScanResult
     public IReadOnlyList<DataIntegrityIssueDetail> Issues { get; }
     public int TotalIssueCount => Issues.Count;
     public bool HasIssues => Issues.Count > 0;
+    public bool HasPassiveStartupNoticeIssues => Issues.Any(IntegrityIssueReviewPolicy.RequiresPassiveStartupNotice);
+    public string PassiveStartupNoticeSignature => string.Join(
+        "|",
+        Issues
+            .Where(IntegrityIssueReviewPolicy.RequiresPassiveStartupNotice)
+            .GroupBy(issue => issue.Code, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(group => $"{group.Key}:{group.Count()}"));
     public string IssueSignature { get; }
     public string ScannedAtText => ScannedAtLocal.ToString("yyyy-MM-dd HH:mm:ss");
 }
@@ -275,11 +295,11 @@ public sealed class DataIntegrityIssueService
             "전표를 열어 부가세 옵션과 품목 금액을 확인한 뒤 저장해 재계산하세요."),
         [DataIntegrityIssueCodes.InvoiceOverSettled] = new(
             DataIntegrityIssueCodes.InvoiceOverSettled,
-            "수금/지불 초과",
+            "수금/지급 초과",
             "Warning",
             "회계경리",
-            "전표 합계금액보다 수금 또는 지불 합계가 큽니다.",
-            "수금/지불 내역 중 중복 입력이나 잘못된 금액이 있는지 확인하세요."),
+            "전표 합계금액보다 수금 또는 지급 합계가 큽니다.",
+            "수금/지급 내역 중 중복 입력이나 잘못된 금액이 있는지 확인하세요."),
         [DataIntegrityIssueCodes.InventoryStockSnapshotMismatch] = new(
             DataIntegrityIssueCodes.InventoryStockSnapshotMismatch,
             "품목 재고 스냅샷 불일치",
@@ -748,7 +768,8 @@ public sealed class DataIntegrityIssueService
                 officeCode: ResolveCustomerOfficeCode(rows[0]),
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal}({row.Id:N})")),
                 expectedValue: "같은 거래처이면 1건으로 정리",
-                message: $"거래처명 '{rows[0].NameOriginal}' 기준 중복 후보 {rows.Count:N0}건이 있습니다.");
+                message: $"거래처명 '{rows[0].NameOriginal}' 기준 중복 후보 {rows.Count:N0}건이 있습니다.",
+                directActionKind: DataIntegrityDirectActionKind.OpenCustomer);
         }
 
         foreach (var group in customers
@@ -771,7 +792,8 @@ public sealed class DataIntegrityIssueService
                 officeCode: ResolveCustomerOfficeCode(rows[0]),
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal} / {row.BusinessNumber}({row.Id:N})")),
                 expectedValue: "같은 사업자이면 1건으로 정리",
-                message: $"사업자번호 '{rows[0].BusinessNumber}' 기준 거래처 중복 후보 {rows.Count:N0}건이 있습니다.");
+                message: $"사업자번호 '{rows[0].BusinessNumber}' 기준 거래처 중복 후보 {rows.Count:N0}건이 있습니다.",
+                directActionKind: DataIntegrityDirectActionKind.OpenCustomer);
         }
 
         foreach (var group in items
@@ -795,7 +817,8 @@ public sealed class DataIntegrityIssueService
                 officeCode: OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(rows[0].OfficeCode, OfficeCodeCatalog.Shared),
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal} / {row.SpecificationOriginal}({row.Id:N})")),
                 expectedValue: "같은 품목이면 1건으로 정리",
-                message: $"품목 '{rows[0].NameOriginal}' / 규격 '{rows[0].SpecificationOriginal}' 중복 후보 {rows.Count:N0}건이 있습니다.");
+                message: $"품목 '{rows[0].NameOriginal}' / 규격 '{rows[0].SpecificationOriginal}' 중복 후보 {rows.Count:N0}건이 있습니다.",
+                directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem);
         }
 
         foreach (var group in warehouses
@@ -822,7 +845,8 @@ public sealed class DataIntegrityIssueService
                 officeCode: rows[0].OfficeCode,
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.Code} / {row.Name}({row.Id:N})")),
                 expectedValue: "같은 창고이면 1건으로 정리",
-                message: $"담당지점 {rows[0].OfficeCode} 창고 중복 후보 {rows.Count:N0}건이 있습니다.");
+                message: $"담당지점 {rows[0].OfficeCode} 창고 중복 후보 {rows.Count:N0}건이 있습니다.",
+                directActionKind: DataIntegrityDirectActionKind.OpenEnvironmentSettings);
         }
 
         foreach (var invoice in invoices)
@@ -839,7 +863,8 @@ public sealed class DataIntegrityIssueService
                     officeCode: invoice.ResponsibleOfficeCode,
                     currentValue: $"공급 {invoice.SupplyAmount:N0} / 부가세 {invoice.VatAmount:N0} / 합계 {invoice.TotalAmount:N0}",
                     expectedValue: $"공급 {totals.SupplyAmount:N0} / 부가세 {totals.VatAmount:N0} / 합계 {totals.TotalAmount:N0}",
-                    message: $"{invoice.InvoiceDate:yyyy-MM-dd} {FormatVoucherType(invoice.VoucherType)} 전표 {NormalizeDisplay(invoice.InvoiceNumber, invoice.Id.ToString("N"))} 금액 계산이 품목 합계와 다릅니다.");
+                    message: $"{invoice.InvoiceDate:yyyy-MM-dd} {FormatVoucherType(invoice.VoucherType)} 전표 {NormalizeDisplay(invoice.InvoiceNumber, invoice.Id.ToString("N"))} 금액 계산이 품목 합계와 다릅니다.",
+                    directActionKind: DataIntegrityDirectActionKind.OpenInvoice);
             }
 
             var settlementTotal = invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount);
@@ -849,9 +874,10 @@ public sealed class DataIntegrityIssueService
                     entityType: "전표",
                     entityId: invoice.Id,
                     officeCode: invoice.ResponsibleOfficeCode,
-                    currentValue: $"전표 {invoice.TotalAmount:N0} / 수금·지불 {settlementTotal:N0}",
-                    expectedValue: "수금·지불 합계가 전표 합계 이하",
-                    message: $"{invoice.InvoiceDate:yyyy-MM-dd} {FormatVoucherType(invoice.VoucherType)} 전표 {NormalizeDisplay(invoice.InvoiceNumber, invoice.Id.ToString("N"))}의 수금/지불 합계가 전표 금액보다 큽니다.");
+                    currentValue: $"전표 {invoice.TotalAmount:N0} / 수금·지급 {settlementTotal:N0}",
+                    expectedValue: "수금·지급 합계가 전표 합계 이하",
+                    message: $"{invoice.InvoiceDate:yyyy-MM-dd} {FormatVoucherType(invoice.VoucherType)} 전표 {NormalizeDisplay(invoice.InvoiceNumber, invoice.Id.ToString("N"))}의 수금/지급 합계가 전표 금액보다 큽니다.",
+                    directActionKind: DataIntegrityDirectActionKind.OpenPaymentForInvoice);
             }
         }
 
@@ -873,7 +899,8 @@ public sealed class DataIntegrityIssueService
                 officeCode: item.OfficeCode,
                 currentValue: $"품목 현재재고 {item.CurrentStock:N2}",
                 expectedValue: $"창고별 합계 {stockTotal:N2}",
-                message: $"{NormalizeDisplay(item.NameOriginal, "품목")} 품목의 현재재고와 창고별 재고 합계가 다릅니다.");
+                message: $"{NormalizeDisplay(item.NameOriginal, "품목")} 품목의 현재재고와 창고별 재고 합계가 다릅니다.",
+                directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem);
         }
 
         var activeWarehouseCodes = warehouses
@@ -893,7 +920,8 @@ public sealed class DataIntegrityIssueService
                 officeCode: ResolveOfficeCodeFromWarehouseCode(warehouseCode, session.OfficeCode),
                 currentValue: warehouseCode,
                 expectedValue: "활성 창고 코드",
-                message: $"품목 재고 스냅샷이 존재하지 않거나 비활성인 창고 '{warehouseCode}'를 참조합니다.");
+                message: $"품목 재고 스냅샷이 존재하지 않거나 비활성인 창고 '{warehouseCode}'를 참조합니다.",
+                directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem);
         }
 
         foreach (var movement in inventoryMovements.Where(movement => movement.ItemId.HasValue && scopedItemIds.Contains(movement.ItemId.Value)))
@@ -904,12 +932,13 @@ public sealed class DataIntegrityIssueService
 
             AddGeneralIssue(issues, DataIntegrityIssueCodes.InventoryWarehouseReferenceMissing,
                 entityType: "재고 이동",
-                entityId: movement.Id,
+                entityId: movement.ItemId,
                 itemName: movement.ItemId.HasValue ? items.FirstOrDefault(item => item.Id == movement.ItemId.Value)?.NameOriginal ?? string.Empty : string.Empty,
                 officeCode: ResolveOfficeCodeFromWarehouseCode(warehouseCode, session.OfficeCode),
                 currentValue: warehouseCode,
                 expectedValue: "활성 창고 코드",
-                message: $"재고 이동 이력이 존재하지 않거나 비활성인 창고 '{warehouseCode}'를 참조합니다.");
+                message: $"재고 이동 이력이 존재하지 않거나 비활성인 창고 '{warehouseCode}'를 참조합니다.",
+                directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem);
         }
     }
 
@@ -999,7 +1028,8 @@ public sealed class DataIntegrityIssueService
         string? officeCode = null,
         string currentValue = "",
         string expectedValue = "",
-        string message = "")
+        string message = "",
+        DataIntegrityDirectActionKind directActionKind = DataIntegrityDirectActionKind.None)
     {
         var definition = GetDefinition(code);
         issues.Add(new DataIntegrityIssueDetail
@@ -1018,7 +1048,7 @@ public sealed class DataIntegrityIssueService
             ExpectedValue = expectedValue,
             Message = message,
             SuggestedAction = definition.SuggestedAction,
-            DirectActionKind = DataIntegrityDirectActionKind.None
+            DirectActionKind = directActionKind
         });
     }
 

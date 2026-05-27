@@ -99,7 +99,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             NormalizeUnitCatalogStepKey,
             async () => await NormalizeUnitCatalogAsync(db));
 
-        await UpsertSettingAsync(db, "LastSyncRevision", "0");
+        await EnsureSettingAsync(db, "LastSyncRevision", "0");
         await UpsertSettingAsync(db, "Theme", "Dark");
 
         await CleanupLegacyLinkedGeneralSettlementsAsync(db);
@@ -1081,6 +1081,20 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         }
 
         setting.Value = value;
+    }
+
+    private static async Task EnsureSettingAsync(LocalDbContext db, string key, string value)
+    {
+        var setting = db.Settings.Local.FirstOrDefault(current => string.Equals(current.Key, key, StringComparison.OrdinalIgnoreCase))
+            ?? await db.Settings.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Key == key);
+        if (setting is not null)
+            return;
+
+        db.Settings.Add(new LocalSetting
+        {
+            Key = key,
+            Value = value
+        });
     }
 
     private static async Task<bool> HasSettingValueAsync(LocalDbContext db, string key, string expectedValue)

@@ -55,11 +55,18 @@
             <Setter Property="AlternatingRowBackground" Value="#223754"/>
             <Setter Property="RowBackground" Value="#1E2D40"/>
         </Style>
+        <Style x:Key="InvoiceListCellStyle" TargetType="DataGridCell" BasedOn="{StaticResource {x:Type DataGridCell}}">
+            <Setter Property="BorderThickness" Value="0"/>
+        </Style>
         <Style TargetType="DataGridColumnHeader">
             <Setter Property="Background" Value="#1A2B4A"/>
             <Setter Property="Foreground" Value="#4FC3F7"/>
             <Setter Property="Padding" Value="10,7"/>
             <Setter Property="FontWeight" Value="Bold"/>
+        </Style>
+        <Style x:Key="InvoiceListColumnHeaderStyle" TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+            <Setter Property="BorderBrush" Value="#2E4060"/>
+            <Setter Property="BorderThickness" Value="0,0,1,1"/>
         </Style>
         <Style TargetType="TabControl">
             <Setter Property="Background" Value="#151F2E"/>
@@ -125,7 +132,6 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="거래플랜" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7" Margin="0,0,14,0"/>
-                    <TextBlock Text="{Binding SyncStatus}" Foreground="#9FB3C8" VerticalAlignment="Center" FontSize="11"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <!-- 재고/거래처 그룹 -->
@@ -148,7 +154,7 @@
                     <Button Content="매입/매출 장부" Background="#5E35B1" Margin="0,0,6,0" Click="YeonsuDeliveryButton_Click"
                             ToolTip="매입·매출 전표를 기간/구분별 장부 형태로 조회합니다."/>
                     <Button Content="기간별 집계" Background="#6A1B9A" Margin="0,0,6,0" Click="PeriodLedgerButton_Click"
-                            ToolTip="거래처별 집계, 판매/구매/수금지불 원장을 조회합니다."/>
+                            ToolTip="거래처별 집계, 판매/구매/수금·지급 원장을 조회합니다."/>
                     <Button x:Name="RentalManagementButton" Content="렌탈 업무" Background="#1565C0" Margin="0,0,6,0" Click="RentalManagementButton_Click"
                             ToolTip="렌탈 대시보드, 청구관리, 자산/설치현황, 기준설정을 선택합니다.">
                         <Button.ContextMenu>
@@ -307,7 +313,7 @@
                             <ColumnDefinition Width="8"/>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="8"/>
-                            <ColumnDefinition Width="300"/>
+                            <ColumnDefinition Width="360"/>
                         </Grid.ColumnDefinitions>
                         <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6">
                             <DockPanel>
@@ -352,8 +358,24 @@
                                 <RowDefinition Height="220"/>
                             </Grid.RowDefinitions>
 
-                            <Border Grid.Row="0" Background="#1A2B4A" CornerRadius="6">
-                                <DataGrid ItemsSource="{Binding InvoiceRows}" SelectedItem="{Binding SelectedInvoiceRow}" IsReadOnly="True" BorderThickness="0" MouseDoubleClick="InvoiceRowsDataGrid_MouseDoubleClick" SelectionMode="Extended" SelectionUnit="FullRow">
+                            <Border Grid.Row="0"
+                                    Background="#1A2B4A"
+                                    BorderBrush="#2E4060"
+                                    BorderThickness="1"
+                                    CornerRadius="6">
+                                <DataGrid ItemsSource="{Binding InvoiceRows}"
+                                          SelectedItem="{Binding SelectedInvoiceRow}"
+                                          IsReadOnly="True"
+                                          BorderThickness="0"
+                                          GridLinesVisibility="All"
+                                          HorizontalGridLinesBrush="#2E4060"
+                                          VerticalGridLinesBrush="#2E4060"
+                                          CellStyle="{StaticResource InvoiceListCellStyle}"
+                                          ColumnHeaderStyle="{StaticResource InvoiceListColumnHeaderStyle}"
+                                          PreviewMouseRightButtonDown="InvoiceRowsDataGrid_PreviewMouseRightButtonDown"
+                                          MouseDoubleClick="InvoiceRowsDataGrid_MouseDoubleClick"
+                                          SelectionMode="Extended"
+                                          SelectionUnit="FullRow">
                                     <DataGrid.ContextMenu>
                                         <ContextMenu>
                                             <MenuItem Header="선택한 전표 삭제" Click="DeleteSelectedInvoicesContextMenu_Click"/>
@@ -376,7 +398,7 @@
                                                 </Style>
                                             </DataGridTextColumn.ElementStyle>
                                             <DataGridTextColumn.CellStyle>
-                                                <Style TargetType="DataGridCell" BasedOn="{StaticResource {x:Type DataGridCell}}">
+                                                <Style TargetType="DataGridCell" BasedOn="{StaticResource InvoiceListCellStyle}">
                                                     <Setter Property="HorizontalContentAlignment" Value="Center"/>
                                                 </Style>
                                             </DataGridTextColumn.CellStyle>
@@ -389,12 +411,12 @@
                                             </DataGridTextColumn.HeaderTemplate>
                                         </DataGridTextColumn>
                                         <DataGridTextColumn Header="유형" Binding="{Binding VoucherTypeDisplay}" Width="70"/>
-                                        <DataGridTextColumn Header="입고확인" Binding="{Binding PurchaseReceivingDisplay}" Width="110"/>
+                                        <DataGridTextColumn Header="입고상태" Binding="{Binding PurchaseReceivingDisplay}" Width="110"/>
                                         <DataGridTextColumn Header="공급가" Binding="{Binding SupplyAmount, StringFormat=N0}" Width="100"/>
                                         <DataGridTextColumn Header="부가세" Binding="{Binding VatAmount, StringFormat=N0}" Width="90"/>
                                         <DataGridTextColumn Header="합계" Binding="{Binding TotalAmount, StringFormat=N0}" Width="100"/>
                                         <DataGridTextColumn Header="수금액" Binding="{Binding ReceiptAmount, StringFormat=N0}" Width="90"/>
-                                        <DataGridTextColumn Header="지불액" Binding="{Binding PaymentAmount, StringFormat=N0}" Width="90"/>
+                                        <DataGridTextColumn Header="지급액" Binding="{Binding PaymentAmount, StringFormat=N0}" Width="90"/>
                                         <DataGridTextColumn Header="잔액" Binding="{Binding BalanceAmount, StringFormat=N0}" Width="90"/>
                                     </DataGrid.Columns>
                                 </DataGrid>
@@ -437,7 +459,11 @@
 
                         <GridSplitter Grid.Column="3" Width="8" Background="#0D1B2A"/>
 
-                        <Border Grid.Column="4" Background="#1A2B4A" CornerRadius="6">
+                        <Border Grid.Column="4"
+                                Background="#1A2B4A"
+                                BorderBrush="#2E4060"
+                                BorderThickness="1"
+                                CornerRadius="6">
                             <DockPanel>
                                 <Border DockPanel.Dock="Top" Background="#102039" CornerRadius="6,6,0,0" Padding="10,8"><TextBlock Text="거래처 정보" Foreground="#4FC3F7" FontWeight="Bold"/></Border>
                                 <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -448,14 +474,18 @@
                                         <TextBox Text="{Binding EditCustBizNumber, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding HasSelectedCustomer}" Margin="0,4,0,8"/>
                                         <TextBlock Text="전화" FontSize="11" Foreground="#9FB3C8"/>
                                         <TextBox Text="{Binding EditCustPhone, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding HasSelectedCustomer}" Margin="0,4,0,8"/>
-                                        <TextBlock Text="부서" FontSize="11" Foreground="#9FB3C8"/>
-                                        <TextBox Text="{Binding EditCustDept, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding HasSelectedCustomer}" Margin="0,4,0,8"/>
                                         <TextBlock Text="담당자" FontSize="11" Foreground="#9FB3C8"/>
                                         <TextBox Text="{Binding EditCustContactPerson, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding HasSelectedCustomer}" Margin="0,4,0,8"/>
                                         <TextBlock Text="주소" FontSize="11" Foreground="#9FB3C8"/>
                                         <TextBox Text="{Binding EditCustAddress, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding HasSelectedCustomer}" TextWrapping="Wrap" Margin="0,4,0,8"/>
                                         <TextBlock Text="메모" FontSize="11" Foreground="#9FB3C8"/>
-                                        <TextBox Text="{Binding EditCustNotes, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding HasSelectedCustomer}" Height="74" TextWrapping="Wrap" AcceptsReturn="True" Margin="0,4,0,0"/>
+                                        <TextBox Text="{Binding EditCustNotes, UpdateSourceTrigger=LostFocus}"
+                                                 IsEnabled="{Binding HasSelectedCustomer}"
+                                                 Height="112"
+                                                 TextWrapping="Wrap"
+                                                 AcceptsReturn="True"
+                                                 VerticalScrollBarVisibility="Auto"
+                                                 Margin="0,4,0,0"/>
 
                                         <Border Margin="0,10,0,0"
                                                 Padding="10,8"
@@ -465,7 +495,7 @@
                                                 CornerRadius="4">
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="118"/>
                                                     <ColumnDefinition Width="*"/>
                                                 </Grid.ColumnDefinitions>
                                                 <Grid.RowDefinitions>
@@ -479,7 +509,7 @@
                                                 <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding PreviewCustomerAdvanceBalance, StringFormat={}{0:N0}원}" HorizontalAlignment="Right" FontWeight="Bold"/>
                                                 <TextBlock Grid.Row="1" Grid.Column="0" Text="미수금" Foreground="#9FB3C8" Margin="0,6,12,0"/>
                                                 <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PreviewCustomerReceivableBalance, StringFormat={}{0:N0}원}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
-                                                <TextBlock Grid.Row="2" Grid.Column="0" Text="미지불" Foreground="#9FB3C8" Margin="0,6,12,0"/>
+                                                <TextBlock Grid.Row="2" Grid.Column="0" Text="미지급금" Foreground="#9FB3C8" Margin="0,6,12,0"/>
                                                 <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding PreviewCustomerPayableBalance, StringFormat={}{0:N0}원}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
                                                 <TextBlock Grid.Row="3" Grid.Column="0" Text="선지급금" Foreground="#9FB3C8" Margin="0,6,12,0"/>
                                                 <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding PreviewCustomerPrepaymentBalance, StringFormat={}{0:N0}원}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
@@ -493,7 +523,7 @@
                                                 CornerRadius="4">
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="118"/>
                                                     <ColumnDefinition Width="*"/>
                                                 </Grid.ColumnDefinitions>
                                                 <Grid.RowDefinitions>
@@ -509,11 +539,19 @@
                                                 <TextBlock Grid.Row="2" Grid.Column="0" Text="거래내역" Foreground="#9FB3C8" Margin="0,6,12,0"/>
                                                 <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding PreviewLatestRentalItemSummary}" HorizontalAlignment="Right" TextAlignment="Right" TextWrapping="Wrap" Margin="0,6,0,0"/>
                                                 <TextBlock Grid.Row="3" Grid.Column="0" Text="청구금액 / 미수금" Foreground="#9FB3C8" Margin="0,6,12,0"/>
-                                                <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,6,0,0">
-                                                    <TextBlock Text="{Binding PreviewLatestRentalInvoiceAmount, StringFormat={}{0:N0}원}" FontWeight="Bold"/>
-                                                    <TextBlock Text=" / " Margin="4,0"/>
-                                                    <TextBlock Text="{Binding PreviewRentalOutstandingAmount, StringFormat={}{0:N0}원}" FontWeight="Bold" Foreground="#FFB74D"/>
-                                                </StackPanel>
+                                                <Grid Grid.Row="3" Grid.Column="1"
+                                                      MinWidth="180"
+                                                      HorizontalAlignment="Right"
+                                                      Margin="0,6,0,0">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{Binding PreviewLatestRentalInvoiceAmount, StringFormat={}{0:N0}원}" FontWeight="Bold" TextAlignment="Right"/>
+                                                    <TextBlock Grid.Column="1" Text=" / " Margin="4,0"/>
+                                                    <TextBlock Grid.Column="2" Text="{Binding PreviewRentalOutstandingAmount, StringFormat={}{0:N0}원}" FontWeight="Bold" Foreground="#FFB74D" TextAlignment="Right"/>
+                                                </Grid>
                                             </Grid>
                                         </Border>
                                         <Button Content="계약서 보기"

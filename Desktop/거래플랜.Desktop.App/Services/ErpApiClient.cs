@@ -320,6 +320,29 @@ public sealed class ErpApiClient
             ct);
     }
 
+    public async Task<SyncStatusDto?> WaitForSyncChangeAsync(
+        long sinceRevision,
+        TimeSpan timeout,
+        string? businessDatabaseNameOverride = null,
+        CancellationToken ct = default)
+    {
+        var timeoutSeconds = Math.Clamp((int)Math.Ceiling(timeout.TotalSeconds), 1, 30);
+        var query = BuildQuery(
+            "sync/wait",
+            ("sinceRev", Math.Max(0, sinceRevision).ToString()),
+            ("timeoutSeconds", timeoutSeconds.ToString()));
+
+        return await ExecuteWithRetryAsync(
+            operationName: "실시간 변경 대기(sync/wait)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader(includeBusinessDatabaseHeader: true, businessDatabaseNameOverride);
+                return await _http.GetAsync(query, token);
+            },
+            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<SyncStatusDto>(token),
+            ct);
+    }
+
     public async Task<EditSessionHeartbeatResponse?> HeartbeatEditSessionAsync(
         EditSessionHeartbeatRequest request,
         CancellationToken ct = default)
@@ -655,6 +678,9 @@ public sealed class ErpApiClient
         if (operationName.Contains("동기화 다운로드(sync/pull)", StringComparison.OrdinalIgnoreCase) ||
             operationName.Contains("서버 무결성 리포트 조회", StringComparison.OrdinalIgnoreCase))
             return TimeSpan.FromMinutes(2);
+
+        if (operationName.Contains("실시간 변경 대기(sync/wait)", StringComparison.OrdinalIgnoreCase))
+            return TimeSpan.FromSeconds(45);
 
         return TimeSpan.FromSeconds(30);
     }

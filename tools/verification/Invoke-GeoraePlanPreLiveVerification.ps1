@@ -1,0 +1,1005 @@
+﻿param(
+    [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
+    [string]$BaseUrl = 'http://127.0.0.1:19080',
+    [string]$Username = 'usenet',
+    [string]$Password = '1234',
+    [string]$AppDataRoot = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path '테스트 시행\실행환경\AppData'),
+    [string]$EvidenceDirectory = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'output\pre-live-verification'),
+    [string]$DotnetExe = '',
+    [switch]$SkipPackageProbe,
+    [switch]$SkipApiVisibilitySmoke,
+    [switch]$SkipObservation,
+    [switch]$SkipLocalCache,
+    [switch]$SkipSameAccountConcurrency,
+    [switch]$SkipDotnetTests,
+    [switch]$SkipDiffCheck,
+    [switch]$SkipDirtyCheck,
+    [switch]$IncludeInventoryStockSmoke,
+    [switch]$IncludeRentalBillingSmoke,
+    [switch]$IncludeRepeatedSaveSmoke,
+    [switch]$IncludePrintDocumentSmoke,
+    [switch]$IncludeMobileBuild,
+    [switch]$IncludeMobileE2E,
+    [string]$MobileAdbPath = '',
+    [string]$MobileApkPath = '',
+    [string]$MobileAndroidSdkDirectory = '',
+    [string]$MobileJavaSdkDirectory = '',
+    [int]$MinVisibleCustomers = 1,
+    [int]$MinVisibleItems = 1,
+    [int]$MinVisibleInvoices = 1,
+    [switch]$SkipPreValidationSync
+)
+
+$ErrorActionPreference = 'Stop'
+
+function New-DirectoryIfMissing {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Force -Path $Path | Out-Null
+    }
+}
+
+function Resolve-DotnetExe {
+    param([string]$ProjectRoot, [string]$ExplicitDotnetExe)
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitDotnetExe)) {
+        if (-not (Test-Path -LiteralPath $ExplicitDotnetExe)) {
+            throw "지정한 dotnet을 찾지 못했습니다: $ExplicitDotnetExe"
+        }
+
+        return $ExplicitDotnetExe
+    }
+
+    $candidates = @(
+        (Join-Path $ProjectRoot '.tooling\dotnet8\dotnet.exe'),
+        'D:\.dotnet-sdk\dotnet.exe'
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    $command = Get-Command dotnet -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    throw 'dotnet 실행 파일을 찾지 못했습니다.'
+}
+
+function Convert-OutputText {
+    param([object[]]$Output)
+
+    if ($null -eq $Output -or $Output.Count -eq 0) {
+        return ''
+    }
+
+    return (($Output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine)
+}
+
+function Add-StepResult {
+    param(
+        [string]$Name,
+        [bool]$Passed,
+        [string]$Detail,
+        [string]$ReportPath = '',
+        [string]$Output = ''
+    )
+
+    $script:Results.Add([pscustomobject]@{
+        Name = $Name
+        Passed = $Passed
+        Detail = $Detail
+        ReportPath = $ReportPath
+        Output = $Output
+    }) | Out-Null
+}
+
+function Invoke-Step {
+    param(
+        [string]$Name,
+        [scriptblock]$Script
+    )
+
+    try {
+        $result = & $Script
+        $detail = if ($null -eq $result) { 'OK' } else { [string]$result }
+        Add-StepResult -Name $Name -Passed $true -Detail $detail
+    }
+    catch {
+        Add-StepResult -Name $Name -Passed $false -Detail $_.Exception.Message
+    }
+}
+
+function Invoke-StepWithReport {
+    param(
+        [string]$Name,
+        [scriptblock]$Script
+    )
+
+    try {
+        $result = & $Script
+        Add-StepResult -Name $Name -Passed $true -Detail $result.Detail -ReportPath $result.ReportPath -Output $result.Output
+    }
+    catch {
+        Add-StepResult -Name $Name -Passed $false -Detail $_.Exception.Message
+    }
+}
+
+function Invoke-ApiHealthSummary {
+    param([string]$BaseUrl, [string]$Username, [string]$Password)
+
+    $health = (Invoke-WebRequest -UseBasicParsing -Uri ($BaseUrl.TrimEnd('/') + '/healthz') -TimeoutSec 5).StatusCode
+    $ready = (Invoke-WebRequest -UseBasicParsing -Uri ($BaseUrl.TrimEnd('/') + '/readyz') -TimeoutSec 5).StatusCode
+    $loginPayload = @{ username = $Username; password = $Password } | ConvertTo-Json -Compress
+    $login = Invoke-RestMethod -Method Post -Uri ($BaseUrl.TrimEnd('/') + '/auth/login') -ContentType 'application/json; charset=utf-8' -Body $loginPayload -TimeoutSec 15
+    if ([string]::IsNullOrWhiteSpace([string]$login.token)) {
+        throw '로그인 토큰을 받지 못했습니다.'
+    }
+
+    return "health=$health, ready=$ready, login=OK"
+}
+
+function Invoke-ObservationCheck {
+    param(
+        [string]$ProjectRoot,
+        [string]$BaseUrl,
+        [string]$Username,
+        [string]$Password,
+        [string]$AppDataRoot,
+        [string]$EvidenceDirectory,
+        [bool]$SkipPackageProbe
+    )
+
+    $scriptPath = Join-Path $ProjectRoot '테스트 시행\Invoke-LiveObservationCheck.ps1'
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        throw "관찰 점검 스크립트를 찾지 못했습니다: $scriptPath"
+    }
+
+    $reportPath = Join-Path $EvidenceDirectory ('observation-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.md')
+    $cacheEvidence = Join-Path $EvidenceDirectory 'local-cache-from-observation'
+    $arguments = @{
+        ProjectRoot = $ProjectRoot
+        BaseUrl = $BaseUrl
+        SampleCount = 1
+        IntervalSeconds = 1
+        ProbeUsername = $Username
+        ProbePassword = $Password
+        LocalCacheAppDataRoot = $AppDataRoot
+        LocalCacheEvidenceDirectory = $cacheEvidence
+        OutputPath = $reportPath
+    }
+    if ($SkipPackageProbe) {
+        $arguments.SkipPackageProbe = $true
+    }
+
+    $output = & $scriptPath @arguments 2>&1
+    [pscustomobject]@{
+        Detail = 'PASS'
+        ReportPath = $reportPath
+        Output = Convert-OutputText $output
+    }
+}
+
+function Invoke-ApiVisibilitySmoke {
+    param(
+        [string]$ProjectRoot,
+        [string]$BaseUrl,
+        [string]$Username,
+        [string]$Password,
+        [string]$EvidenceDirectory,
+        [int]$MinCustomers,
+        [int]$MinItems,
+        [int]$MinInvoices
+    )
+
+    $scriptPath = Join-Path $ProjectRoot 'tools\verification\Invoke-GeoraePlanApiVisibilitySmoke.ps1'
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        throw "API 표시성 스모크 스크립트를 찾지 못했습니다: $scriptPath"
+    }
+
+    $smokeEvidence = Join-Path $EvidenceDirectory 'api-visibility-smoke'
+    $output = & $scriptPath -BaseUrl $BaseUrl -Username $Username -Password $Password -EvidenceDirectory $smokeEvidence -MinCustomers $MinCustomers -MinItems $MinItems -MinInvoices $MinInvoices 2>&1
+    $reportLine = @($output | Where-Object { ([string]$_).StartsWith('api_visibility_smoke_report=') } | Select-Object -Last 1)
+    $reportPath = if ($reportLine.Count -gt 0) { ([string]$reportLine[0]).Substring('api_visibility_smoke_report='.Length).Trim() } else { '' }
+    if ([string]::IsNullOrWhiteSpace($reportPath) -and (Test-Path -LiteralPath $smokeEvidence)) {
+        $latest = Get-ChildItem -LiteralPath $smokeEvidence -Filter '*.md' -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($null -ne $latest) {
+            $reportPath = $latest.FullName
+        }
+    }
+
+    [pscustomobject]@{
+        Detail = 'PASS'
+        ReportPath = $reportPath
+        Output = Convert-OutputText $output
+    }
+}
+
+function Invoke-LocalCacheCheck {
+    param(
+        [string]$ProjectRoot,
+        [string]$BaseUrl,
+        [string]$Username,
+        [string]$Password,
+        [string]$AppDataRoot,
+        [string]$EvidenceDirectory
+    )
+
+    $scriptPath = Join-Path $ProjectRoot 'tools\verification\Invoke-GeoraePlanLocalCacheConsistency.ps1'
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        throw "로컬 캐시 검증 스크립트를 찾지 못했습니다: $scriptPath"
+    }
+
+    $cacheEvidence = Join-Path $EvidenceDirectory 'local-cache'
+    $output = & $scriptPath -BaseUrl $BaseUrl -Username $Username -Password $Password -AppDataRoot $AppDataRoot -EvidenceDirectory $cacheEvidence -FailOnCountMismatch 2>&1
+    $reportLine = @($output | Where-Object { ([string]$_).StartsWith('Report:') } | Select-Object -Last 1)
+    $reportPath = if ($reportLine.Count -gt 0) { ([string]$reportLine[0]).Substring('Report:'.Length).Trim() } else { '' }
+    if ([string]::IsNullOrWhiteSpace($reportPath) -and (Test-Path -LiteralPath $cacheEvidence)) {
+        $latest = Get-ChildItem -LiteralPath $cacheEvidence -Filter 'local-cache-consistency-*.md' -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($null -ne $latest) {
+            $reportPath = $latest.FullName
+        }
+    }
+
+    [pscustomobject]@{
+        Detail = 'PASS'
+        ReportPath = $reportPath
+        Output = Convert-OutputText $output
+    }
+}
+
+function Invoke-LocalPreValidationSync {
+    param(
+        [string]$ProjectRoot,
+        [string]$DotnetExe,
+        [string]$AppDataRoot,
+        [string]$BaseUrl,
+        [string]$Username,
+        [string]$Password
+    )
+
+    $projectPath = Join-Path $ProjectRoot '.tmp\syncdiag\syncdiag.csproj'
+    if (-not (Test-Path -LiteralPath $projectPath)) {
+        throw "syncdiag 프로젝트를 찾지 못했습니다: $projectPath"
+    }
+
+    $previous = @{
+        GEORAEPLAN_APP_ROOT = [Environment]::GetEnvironmentVariable('GEORAEPLAN_APP_ROOT', 'Process')
+        GEORAEPLAN_DISABLE_LEGACY_MERGE = [Environment]::GetEnvironmentVariable('GEORAEPLAN_DISABLE_LEGACY_MERGE', 'Process')
+        GEORAEPLAN_SYNC_USERNAME = [Environment]::GetEnvironmentVariable('GEORAEPLAN_SYNC_USERNAME', 'Process')
+        GEORAEPLAN_SYNC_PASSWORD = [Environment]::GetEnvironmentVariable('GEORAEPLAN_SYNC_PASSWORD', 'Process')
+        GEORAEPLAN_SYNC_BASEURL = [Environment]::GetEnvironmentVariable('GEORAEPLAN_SYNC_BASEURL', 'Process')
+    }
+
+    try {
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_APP_ROOT', $AppDataRoot, 'Process')
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_DISABLE_LEGACY_MERGE', '1', 'Process')
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_SYNC_USERNAME', $Username, 'Process')
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_SYNC_PASSWORD', $Password, 'Process')
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_SYNC_BASEURL', ($BaseUrl.TrimEnd('/') + '/'), 'Process')
+
+        $output = & $DotnetExe run --project $projectPath -- sync 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw (Convert-OutputText $output)
+        }
+
+        $text = Convert-OutputText $output
+        if ($text -notmatch 'sync_ok=True') {
+            throw "로컬 사전 동기화가 성공으로 끝나지 않았습니다. 출력: $text"
+        }
+
+        return $text
+    }
+    finally {
+        foreach ($key in $previous.Keys) {
+            [Environment]::SetEnvironmentVariable($key, $previous[$key], 'Process')
+        }
+    }
+}
+
+function Invoke-SameAccountConcurrencyCheck {
+    param(
+        [string]$ProjectRoot,
+        [string]$BaseUrl,
+        [string]$Username,
+        [string]$Password,
+        [string]$EvidenceDirectory
+    )
+
+    $scriptPath = Join-Path $ProjectRoot 'tools\verification\Invoke-GeoraePlanSameAccountConcurrencySmoke.ps1'
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        throw "같은 계정 동시수정 스모크 스크립트를 찾지 못했습니다: $scriptPath"
+    }
+
+    $smokeEvidence = Join-Path $EvidenceDirectory 'same-account-concurrency'
+    $output = & $scriptPath -BaseUrl $BaseUrl -Username $Username -Password $Password -EvidenceDirectory $smokeEvidence 2>&1
+    $reportLine = @($output | Where-Object { ([string]$_).StartsWith('Report:') } | Select-Object -Last 1)
+    $reportPath = if ($reportLine.Count -gt 0) { ([string]$reportLine[0]).Substring('Report:'.Length).Trim() } else { '' }
+    if ([string]::IsNullOrWhiteSpace($reportPath) -and (Test-Path -LiteralPath $smokeEvidence)) {
+        $latest = Get-ChildItem -LiteralPath $smokeEvidence -Filter '*.md' -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($null -ne $latest) {
+            $reportPath = $latest.FullName
+        }
+    }
+
+    [pscustomobject]@{
+        Detail = 'PASS'
+        ReportPath = $reportPath
+        Output = Convert-OutputText $output
+    }
+}
+
+function Invoke-DotnetTests {
+    param(
+        [string]$ProjectRoot,
+        [string]$DotnetExe,
+        [string]$LogFileName
+    )
+
+    $solution = Join-Path $ProjectRoot '거래플랜.sln'
+    if (-not (Test-Path -LiteralPath $solution)) {
+        throw "솔루션 파일을 찾지 못했습니다: $solution"
+    }
+
+    $output = & $DotnetExe test $solution -c Debug --no-restore --logger "trx;LogFileName=$LogFileName" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw (Convert-OutputText $output)
+    }
+
+    return Convert-OutputText $output
+}
+
+function Invoke-DirtyCheck {
+    param([string]$ProjectRoot, [string]$DotnetExe, [string]$AppDataRoot)
+
+    $projectPath = Join-Path $ProjectRoot '.tmp\syncdiag\syncdiag.csproj'
+    if (-not (Test-Path -LiteralPath $projectPath)) {
+        throw "syncdiag 프로젝트를 찾지 못했습니다: $projectPath"
+    }
+
+    $previousRoot = [Environment]::GetEnvironmentVariable('GEORAEPLAN_APP_ROOT', 'Process')
+    $previousLegacy = [Environment]::GetEnvironmentVariable('GEORAEPLAN_DISABLE_LEGACY_MERGE', 'Process')
+    try {
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_APP_ROOT', $AppDataRoot, 'Process')
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_DISABLE_LEGACY_MERGE', '1', 'Process')
+        $output = & $DotnetExe run --project $projectPath -- inspect 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw (Convert-OutputText $output)
+        }
+
+        $text = Convert-OutputText $output
+        foreach ($name in @('customers', 'contracts', 'items', 'invoices', 'payments')) {
+            if ($text -notmatch ($name + '_dirty=0')) {
+                throw "dirty 상태가 0이 아닙니다: $name"
+            }
+        }
+
+        return $text
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_APP_ROOT', $previousRoot, 'Process')
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_DISABLE_LEGACY_MERGE', $previousLegacy, 'Process')
+    }
+}
+
+function Resolve-AndroidSdkDirectory {
+    param([string]$RequestedPath)
+
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+        $candidates += $RequestedPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:ANDROID_HOME)) {
+        $candidates += $env:ANDROID_HOME
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:ANDROID_SDK_ROOT)) {
+        $candidates += $env:ANDROID_SDK_ROOT
+    }
+    $candidates += @(
+        (Join-Path $env:LOCALAPPDATA 'Android\Sdk'),
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\android-sdk')
+    )
+
+    foreach ($candidate in $candidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) {
+        if (Test-Path -LiteralPath (Join-Path $candidate 'platform-tools\adb.exe')) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    throw 'Android SDK를 찾지 못했습니다. -MobileAndroidSdkDirectory 값을 지정하세요.'
+}
+
+function Resolve-JavaSdkDirectory {
+    param([string]$RequestedPath)
+
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+        $candidates += $RequestedPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME)) {
+        $candidates += $env:JAVA_HOME
+    }
+    $candidates += @(
+        'C:\Program Files\Android\Android Studio\jbr',
+        'C:\Program Files\Eclipse Adoptium\jdk-17.0.10.7-hotspot',
+        'C:\Program Files\Java\jdk-17'
+    )
+
+    foreach ($candidate in $candidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) {
+        if (Test-Path -LiteralPath (Join-Path $candidate 'bin\java.exe')) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    throw 'Java SDK를 찾지 못했습니다. -MobileJavaSdkDirectory 값을 지정하세요.'
+}
+
+function Invoke-MobileDebugBuild {
+    param(
+        [string]$ProjectRoot,
+        [string]$DotnetExe,
+        [string]$AndroidSdkDirectory,
+        [string]$JavaSdkDirectory
+    )
+
+    $projectFile = Join-Path $ProjectRoot 'Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj'
+    if (-not (Test-Path -LiteralPath $projectFile)) {
+        throw "모바일 프로젝트를 찾지 못했습니다: $projectFile"
+    }
+
+    $resolvedAndroidSdk = Resolve-AndroidSdkDirectory -RequestedPath $AndroidSdkDirectory
+    $resolvedJavaSdk = Resolve-JavaSdkDirectory -RequestedPath $JavaSdkDirectory
+    $arguments = @(
+        'build',
+        $projectFile,
+        '-c', 'Debug',
+        '-f', 'net8.0-android',
+        '--no-restore',
+        "-p:AndroidSdkDirectory=$resolvedAndroidSdk",
+        "-p:JavaSdkDirectory=$resolvedJavaSdk"
+    )
+
+    $output = & $DotnetExe @arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw (Convert-OutputText $output)
+    }
+
+    $apk = Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'Mobile\GeoraePlan.Mobile.App\bin\Debug\net8.0-android') -Filter '*Signed.apk' -Recurse -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+
+    if ($null -eq $apk) {
+        return "PASS - APK 산출물은 기존 E2E 스크립트의 기본 탐색 경로에서 찾지 못했지만 Android Debug 빌드는 성공했습니다."
+    }
+
+    return "PASS - $($apk.FullName)"
+}
+
+function Invoke-RentalBillingInvoiceSmoke {
+    param(
+        [string]$ProjectRoot,
+        [string]$DotnetExe,
+        [string]$EvidenceDirectory
+    )
+
+    $projectPath = Join-Path $ProjectRoot 'tasks\RentalBillingInvoiceSmoke\RentalBillingInvoiceSmoke.csproj'
+    if (-not (Test-Path -LiteralPath $projectPath)) {
+        throw "렌탈 청구 스모크 프로젝트를 찾지 못했습니다: $projectPath"
+    }
+
+    New-DirectoryIfMissing $EvidenceDirectory
+    $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $rawPath = Join-Path $EvidenceDirectory "rental-billing-invoice-smoke-$timestamp.txt"
+    $jsonPath = Join-Path $EvidenceDirectory "rental-billing-invoice-smoke-$timestamp.json"
+    $mdPath = Join-Path $EvidenceDirectory "rental-billing-invoice-smoke-$timestamp.md"
+
+    $output = & $DotnetExe run --project $projectPath -c Debug 2>&1
+    $text = Convert-OutputText $output
+    $text | Set-Content -LiteralPath $rawPath -Encoding UTF8
+    if ($LASTEXITCODE -ne 0) {
+        throw $text
+    }
+
+    $jsonText = ''
+    $jsonStart = $text.IndexOf('{')
+    if ($jsonStart -ge 0) {
+        $jsonText = $text.Substring($jsonStart).Trim()
+        try {
+            $parsed = $jsonText | ConvertFrom-Json
+            $parsed | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+        }
+        catch {
+            $jsonPath = ''
+        }
+    }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('# 렌탈 청구 전표 스모크') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add("- 실행시각: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')") | Out-Null
+    $lines.Add('- 결과: **PASS**') | Out-Null
+    $lines.Add("- 원본 출력: $rawPath") | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($jsonPath)) {
+        $lines.Add("- JSON 결과: $jsonPath") | Out-Null
+    }
+    $lines.Add('') | Out-Null
+    $lines.Add('## 확인 범위') | Out-Null
+    $lines.Add('- 묶음 렌탈 청구 전표 생성/재사용') | Out-Null
+    $lines.Add('- 개별 렌탈 청구 전표 생성/재사용') | Out-Null
+    $lines.Add('- 1월 경계/후불/선불 청구기간 계산') | Out-Null
+    $lines.Add('- 거래처 해석 fallback') | Out-Null
+    $lines.Add('- 단일 후보 자산 자동 연결') | Out-Null
+    $lines.Add('- legacy 연결 자산 fallback') | Out-Null
+    $lines | Set-Content -LiteralPath $mdPath -Encoding UTF8
+
+    [pscustomobject]@{
+        Detail = 'PASS'
+        ReportPath = $mdPath
+        Output = $text
+    }
+}
+
+function Invoke-InventoryStockSmoke {
+    param(
+        [string]$ProjectRoot,
+        [string]$BaseUrl,
+        [string]$Username,
+        [string]$Password,
+        [string]$EvidenceDirectory
+    )
+
+    $scriptPath = Join-Path $ProjectRoot 'tools\verification\Invoke-GeoraePlanInventoryStockSmoke.ps1'
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        throw "재고 증감 스모크 스크립트를 찾지 못했습니다: $scriptPath"
+    }
+
+    $smokeEvidence = Join-Path $EvidenceDirectory 'inventory-stock-smoke'
+    $output = & $scriptPath -BaseUrl $BaseUrl -Username $Username -Password $Password -EvidenceDirectory $smokeEvidence 2>&1
+    $reportLine = @($output | Where-Object { ([string]$_).StartsWith('inventory_stock_smoke_report=') } | Select-Object -Last 1)
+    $reportPath = if ($reportLine.Count -gt 0) { ([string]$reportLine[0]).Substring('inventory_stock_smoke_report='.Length).Trim() } else { '' }
+    if ([string]::IsNullOrWhiteSpace($reportPath) -and (Test-Path -LiteralPath $smokeEvidence)) {
+        $latest = Get-ChildItem -LiteralPath $smokeEvidence -Filter '*.md' -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($null -ne $latest) {
+            $reportPath = $latest.FullName
+        }
+    }
+
+    [pscustomobject]@{
+        Detail = 'PASS'
+        ReportPath = $reportPath
+        Output = Convert-OutputText $output
+    }
+}
+
+function Invoke-RepeatedSaveSmoke {
+    param(
+        [string]$ProjectRoot,
+        [string]$BaseUrl,
+        [string]$Username,
+        [string]$Password,
+        [string]$EvidenceDirectory
+    )
+
+    $scriptPath = Join-Path $ProjectRoot 'tools\verification\Invoke-GeoraePlanRepeatedSaveSmoke.ps1'
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        throw "반복 저장 스모크 스크립트를 찾지 못했습니다: $scriptPath"
+    }
+
+    $smokeEvidence = Join-Path $EvidenceDirectory 'repeated-save-smoke'
+    $output = & $scriptPath -BaseUrl $BaseUrl -Username $Username -Password $Password -EvidenceDirectory $smokeEvidence -RepeatCount 3 2>&1
+    $reportLine = @($output | Where-Object { ([string]$_).StartsWith('repeated_save_smoke_report=') } | Select-Object -Last 1)
+    $reportPath = if ($reportLine.Count -gt 0) { ([string]$reportLine[0]).Substring('repeated_save_smoke_report='.Length).Trim() } else { '' }
+    if ([string]::IsNullOrWhiteSpace($reportPath) -and (Test-Path -LiteralPath $smokeEvidence)) {
+        $latest = Get-ChildItem -LiteralPath $smokeEvidence -Filter '*.md' -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($null -ne $latest) {
+            $reportPath = $latest.FullName
+        }
+    }
+
+    [pscustomobject]@{
+        Detail = 'PASS'
+        ReportPath = $reportPath
+        Output = Convert-OutputText $output
+    }
+}
+
+function Invoke-PrintDocumentSmoke {
+    param(
+        [string]$ProjectRoot,
+        [string]$DotnetExe,
+        [string]$EvidenceDirectory
+    )
+
+    $testProject = Join-Path $ProjectRoot 'Tests\GeoraePlan.Desktop.App.Tests\GeoraePlan.Desktop.App.Tests.csproj'
+    if (-not (Test-Path -LiteralPath $testProject)) {
+        throw "데스크톱 테스트 프로젝트를 찾지 못했습니다: $testProject"
+    }
+
+    $smokeEvidence = Join-Path $EvidenceDirectory 'print-document-smoke'
+    New-DirectoryIfMissing $smokeEvidence
+    $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $logPath = Join-Path $smokeEvidence "print-document-smoke-$timestamp.log"
+    $reportPath = Join-Path $smokeEvidence "print-document-smoke-$timestamp.md"
+
+    $output = & $DotnetExe test $testProject -c Debug --no-restore --filter PrintDocumentRenderingSmokeTests 2>&1
+    $text = Convert-OutputText $output
+    $text | Set-Content -LiteralPath $logPath -Encoding UTF8
+    if ($LASTEXITCODE -ne 0) {
+        throw $text
+    }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('# 출력물 렌더링 스모크') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add("- 실행시각: $([DateTimeOffset]::Now.ToString('o'))") | Out-Null
+    $lines.Add('- 결과: **PASS**') | Out-Null
+    $lines.Add('- 검증 범위: 거래명세서, 견적서, 대금청구서, 판매 전표 출력, 매입 명세서, 발주서') | Out-Null
+    $lines.Add('- 검증 내용: WPF 문서 첫 페이지 렌더링, 주요 업무 라벨/거래처/품목/금액 텍스트, 불필요한 단독 점 문자 미출력') | Out-Null
+    $lines.Add("- 로그: $logPath") | Out-Null
+    $lines | Set-Content -LiteralPath $reportPath -Encoding UTF8
+
+    [pscustomobject]@{
+        Detail = 'PASS'
+        ReportPath = $reportPath
+        Output = $text
+    }
+}
+
+function Get-MobileScriptReportPath {
+    param([object[]]$Output, [string]$Prefix, [string]$EvidenceDirectory)
+
+    $reportLine = @($Output | Where-Object { ([string]$_).StartsWith($Prefix) } | Select-Object -Last 1)
+    if ($reportLine.Count -gt 0) {
+        return ([string]$reportLine[0]).Substring($Prefix.Length).Trim()
+    }
+
+    if (Test-Path -LiteralPath $EvidenceDirectory) {
+        $latest = Get-ChildItem -LiteralPath $EvidenceDirectory -Filter '*.md' -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($null -ne $latest) {
+            return $latest.FullName
+        }
+    }
+
+    return ''
+}
+
+function Invoke-MobileE2EChecks {
+    param(
+        [string]$ProjectRoot,
+        [string]$BaseUrl,
+        [string]$Username,
+        [string]$Password,
+        [string]$EvidenceDirectory,
+        [string]$AdbPath,
+        [string]$ApkPath
+    )
+
+    $steps = New-Object System.Collections.Generic.List[object]
+
+    $smokeScript = Join-Path $ProjectRoot 'tools\mobile\Invoke-GeoraePlanAndroidSmoke.ps1'
+    $writeScript = Join-Path $ProjectRoot 'tools\mobile\Invoke-GeoraePlanAndroidWriteE2E.ps1'
+    $paymentScript = Join-Path $ProjectRoot 'tools\mobile\Invoke-GeoraePlanAndroidPaymentE2E.ps1'
+    foreach ($scriptPath in @($smokeScript, $writeScript, $paymentScript)) {
+        if (-not (Test-Path -LiteralPath $scriptPath)) {
+            throw "모바일 검증 스크립트를 찾지 못했습니다: $scriptPath"
+        }
+    }
+
+    $commonOptionalArgs = @{}
+    if (-not [string]::IsNullOrWhiteSpace($AdbPath)) {
+        $commonOptionalArgs.AdbPath = $AdbPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ApkPath)) {
+        $commonOptionalArgs.ApkPath = $ApkPath
+    }
+
+    $smokeEvidence = Join-Path $EvidenceDirectory 'mobile-smoke'
+    $smokeArgs = @{
+        ProjectRoot = $ProjectRoot
+        Username = $Username
+        Password = $Password
+        EvidenceDirectory = $smokeEvidence
+        IncludeDraftScreens = $true
+    }
+    foreach ($key in $commonOptionalArgs.Keys) { $smokeArgs[$key] = $commonOptionalArgs[$key] }
+    $smokeOutput = & $smokeScript @smokeArgs 2>&1
+    $steps.Add([pscustomobject]@{
+        Name = 'mobile-smoke'
+        ReportPath = Get-MobileScriptReportPath -Output $smokeOutput -Prefix 'mobile_smoke_report=' -EvidenceDirectory $smokeEvidence
+    }) | Out-Null
+
+    foreach ($voucherKind in @('Sales', 'Purchase')) {
+        $writeEvidence = Join-Path $EvidenceDirectory ("mobile-write-$($voucherKind.ToLowerInvariant())")
+        $writeArgs = @{
+            ProjectRoot = $ProjectRoot
+            BaseUrl = $BaseUrl
+            Username = $Username
+            Password = $Password
+            VoucherKind = $voucherKind
+            EvidenceDirectory = $writeEvidence
+            SkipInstall = $true
+        }
+        foreach ($key in $commonOptionalArgs.Keys) { $writeArgs[$key] = $commonOptionalArgs[$key] }
+        $writeOutput = & $writeScript @writeArgs 2>&1
+        $steps.Add([pscustomobject]@{
+            Name = "mobile-write-$voucherKind"
+            ReportPath = Get-MobileScriptReportPath -Output $writeOutput -Prefix 'mobile_write_e2e_report=' -EvidenceDirectory $writeEvidence
+        }) | Out-Null
+
+        $paymentEvidence = Join-Path $EvidenceDirectory ("mobile-payment-$($voucherKind.ToLowerInvariant())")
+        $paymentArgs = @{
+            ProjectRoot = $ProjectRoot
+            BaseUrl = $BaseUrl
+            Username = $Username
+            Password = $Password
+            VoucherKind = $voucherKind
+            EvidenceDirectory = $paymentEvidence
+            SkipInstall = $true
+        }
+        foreach ($key in $commonOptionalArgs.Keys) { $paymentArgs[$key] = $commonOptionalArgs[$key] }
+        $paymentOutput = & $paymentScript @paymentArgs 2>&1
+        $steps.Add([pscustomobject]@{
+            Name = "mobile-payment-$voucherKind"
+            ReportPath = Get-MobileScriptReportPath -Output $paymentOutput -Prefix 'mobile_payment_e2e_report=' -EvidenceDirectory $paymentEvidence
+        }) | Out-Null
+    }
+
+    $summaryPath = Join-Path $EvidenceDirectory ('mobile-e2e-summary-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.md')
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('# 모바일 E2E 통합 결과') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('| 단계 | 리포트 |') | Out-Null
+    $lines.Add('|---|---|') | Out-Null
+    foreach ($step in $steps) {
+        $report = if ([string]::IsNullOrWhiteSpace([string]$step.ReportPath)) { '-' } else { [string]$step.ReportPath }
+        $lines.Add("| $($step.Name) | $report |") | Out-Null
+    }
+    $lines | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+
+    [pscustomobject]@{
+        Detail = 'PASS'
+        ReportPath = $summaryPath
+        Output = ($steps | ConvertTo-Json -Depth 6)
+    }
+}
+
+New-DirectoryIfMissing $EvidenceDirectory
+$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$resolvedDotnet = Resolve-DotnetExe -ProjectRoot $ProjectRoot -ExplicitDotnetExe $DotnetExe
+$script:Results = New-Object System.Collections.Generic.List[object]
+
+Invoke-Step -Name 'health-ready-login' -Script {
+    Invoke-ApiHealthSummary -BaseUrl $BaseUrl -Username $Username -Password $Password
+}
+
+if (-not $SkipApiVisibilitySmoke) {
+    Invoke-StepWithReport -Name 'api-visibility-smoke' -Script {
+        Invoke-ApiVisibilitySmoke -ProjectRoot $ProjectRoot -BaseUrl $BaseUrl -Username $Username -Password $Password -EvidenceDirectory $EvidenceDirectory -MinCustomers $MinVisibleCustomers -MinItems $MinVisibleItems -MinInvoices $MinVisibleInvoices
+    }
+}
+else {
+    Add-StepResult -Name 'api-visibility-smoke' -Passed $true -Detail 'SKIP'
+}
+
+if (-not $SkipPreValidationSync) {
+    Invoke-Step -Name 'local-prevalidation-sync' -Script {
+        $output = Invoke-LocalPreValidationSync -ProjectRoot $ProjectRoot -DotnetExe $resolvedDotnet -AppDataRoot $AppDataRoot -BaseUrl $BaseUrl -Username $Username -Password $Password
+        $summary = @($output -split "`r?`n" | Where-Object { $_ -like 'sync_ok=*' -or $_ -like '*_dirty=*' }) -join '; '
+        if ([string]::IsNullOrWhiteSpace($summary)) { 'PASS' } else { $summary }
+    }
+}
+else {
+    Add-StepResult -Name 'local-prevalidation-sync' -Passed $true -Detail 'SKIP'
+}
+
+if (-not $SkipObservation) {
+    Invoke-StepWithReport -Name 'observation-with-local-cache' -Script {
+        Invoke-ObservationCheck -ProjectRoot $ProjectRoot -BaseUrl $BaseUrl -Username $Username -Password $Password -AppDataRoot $AppDataRoot -EvidenceDirectory $EvidenceDirectory -SkipPackageProbe ([bool]$SkipPackageProbe)
+    }
+}
+else {
+    Add-StepResult -Name 'observation-with-local-cache' -Passed $true -Detail 'SKIP'
+}
+
+if (-not $SkipLocalCache) {
+    Invoke-StepWithReport -Name 'local-cache-consistency' -Script {
+        Invoke-LocalCacheCheck -ProjectRoot $ProjectRoot -BaseUrl $BaseUrl -Username $Username -Password $Password -AppDataRoot $AppDataRoot -EvidenceDirectory $EvidenceDirectory
+    }
+}
+else {
+    Add-StepResult -Name 'local-cache-consistency' -Passed $true -Detail 'SKIP'
+}
+
+if (-not $SkipSameAccountConcurrency) {
+    Invoke-StepWithReport -Name 'same-account-concurrency' -Script {
+        Invoke-SameAccountConcurrencyCheck -ProjectRoot $ProjectRoot -BaseUrl $BaseUrl -Username $Username -Password $Password -EvidenceDirectory $EvidenceDirectory
+    }
+}
+else {
+    Add-StepResult -Name 'same-account-concurrency' -Passed $true -Detail 'SKIP'
+}
+
+if ($IncludeRentalBillingSmoke) {
+    Invoke-StepWithReport -Name 'rental-billing-invoice-smoke' -Script {
+        Invoke-RentalBillingInvoiceSmoke -ProjectRoot $ProjectRoot -DotnetExe $resolvedDotnet -EvidenceDirectory (Join-Path $EvidenceDirectory 'rental-billing-invoice-smoke')
+    }
+}
+else {
+    Add-StepResult -Name 'rental-billing-invoice-smoke' -Passed $true -Detail 'SKIP'
+}
+
+if ($IncludeRepeatedSaveSmoke) {
+    Invoke-StepWithReport -Name 'repeated-save-smoke' -Script {
+        Invoke-RepeatedSaveSmoke -ProjectRoot $ProjectRoot -BaseUrl $BaseUrl -Username $Username -Password $Password -EvidenceDirectory $EvidenceDirectory
+    }
+}
+else {
+    Add-StepResult -Name 'repeated-save-smoke' -Passed $true -Detail 'SKIP'
+}
+
+if ($IncludePrintDocumentSmoke) {
+    Invoke-StepWithReport -Name 'print-document-smoke' -Script {
+        Invoke-PrintDocumentSmoke -ProjectRoot $ProjectRoot -DotnetExe $resolvedDotnet -EvidenceDirectory $EvidenceDirectory
+    }
+}
+else {
+    Add-StepResult -Name 'print-document-smoke' -Passed $true -Detail 'SKIP'
+}
+
+if ($IncludeInventoryStockSmoke) {
+    Invoke-StepWithReport -Name 'inventory-stock-smoke' -Script {
+        Invoke-InventoryStockSmoke -ProjectRoot $ProjectRoot -BaseUrl $BaseUrl -Username $Username -Password $Password -EvidenceDirectory $EvidenceDirectory
+    }
+}
+else {
+    Add-StepResult -Name 'inventory-stock-smoke' -Passed $true -Detail 'SKIP'
+}
+
+if ($IncludeMobileBuild) {
+    Invoke-Step -Name 'mobile-debug-build' -Script {
+        Invoke-MobileDebugBuild -ProjectRoot $ProjectRoot -DotnetExe $resolvedDotnet -AndroidSdkDirectory $MobileAndroidSdkDirectory -JavaSdkDirectory $MobileJavaSdkDirectory
+    }
+}
+else {
+    Add-StepResult -Name 'mobile-debug-build' -Passed $true -Detail 'SKIP'
+}
+
+if ($IncludeMobileE2E) {
+    Invoke-StepWithReport -Name 'mobile-e2e' -Script {
+        Invoke-MobileE2EChecks -ProjectRoot $ProjectRoot -BaseUrl $BaseUrl -Username $Username -Password $Password -EvidenceDirectory (Join-Path $EvidenceDirectory 'mobile-e2e') -AdbPath $MobileAdbPath -ApkPath $MobileApkPath
+    }
+}
+else {
+    Add-StepResult -Name 'mobile-e2e' -Passed $true -Detail 'SKIP'
+}
+
+if (-not $SkipDotnetTests) {
+    Invoke-Step -Name 'dotnet-test-solution' -Script {
+        $output = Invoke-DotnetTests -ProjectRoot $ProjectRoot -DotnetExe $resolvedDotnet -LogFileName "pre-live-verification-$timestamp.trx"
+        if ($output -match '통과!\s+- 실패:\s+0') {
+            'PASS'
+        }
+        else {
+            'PASS - dotnet test exit 0'
+        }
+    }
+}
+else {
+    Add-StepResult -Name 'dotnet-test-solution' -Passed $true -Detail 'SKIP'
+}
+
+if (-not $SkipDirtyCheck) {
+    Invoke-Step -Name 'local-dirty-check' -Script {
+        $output = Invoke-DirtyCheck -ProjectRoot $ProjectRoot -DotnetExe $resolvedDotnet -AppDataRoot $AppDataRoot
+        $summary = @($output -split "`r?`n" | Where-Object { $_ -like '*_dirty=*' }) -join '; '
+        if ([string]::IsNullOrWhiteSpace($summary)) { 'PASS' } else { $summary }
+    }
+}
+else {
+    Add-StepResult -Name 'local-dirty-check' -Passed $true -Detail 'SKIP'
+}
+
+if (-not $SkipDiffCheck) {
+    Invoke-Step -Name 'git-diff-check' -Script {
+        Push-Location $ProjectRoot
+        try {
+            $output = & git diff --check 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw (Convert-OutputText $output)
+            }
+        }
+        finally {
+            Pop-Location
+        }
+
+        'PASS'
+    }
+}
+else {
+    Add-StepResult -Name 'git-diff-check' -Passed $true -Detail 'SKIP'
+}
+
+$failed = @($Results | Where-Object { -not $_.Passed })
+$overall = if ($failed.Count -eq 0) { 'PASS' } else { 'FAIL' }
+$jsonPath = Join-Path $EvidenceDirectory "pre-live-verification-$timestamp.json"
+$mdPath = Join-Path $EvidenceDirectory "pre-live-verification-$timestamp.md"
+
+$report = [pscustomobject]@{
+    GeneratedAt = (Get-Date).ToString('o')
+    ProjectRoot = $ProjectRoot
+    BaseUrl = $BaseUrl
+    AppDataRoot = $AppDataRoot
+    DotnetExe = $resolvedDotnet
+    SkipApiVisibilitySmoke = [bool]$SkipApiVisibilitySmoke
+    MinVisibleCustomers = $MinVisibleCustomers
+    MinVisibleItems = $MinVisibleItems
+    MinVisibleInvoices = $MinVisibleInvoices
+    IncludeInventoryStockSmoke = [bool]$IncludeInventoryStockSmoke
+    IncludeRentalBillingSmoke = [bool]$IncludeRentalBillingSmoke
+    IncludeRepeatedSaveSmoke = [bool]$IncludeRepeatedSaveSmoke
+    IncludePrintDocumentSmoke = [bool]$IncludePrintDocumentSmoke
+    IncludeMobileBuild = [bool]$IncludeMobileBuild
+    IncludeMobileE2E = [bool]$IncludeMobileE2E
+    Overall = $overall
+    Results = @($Results.ToArray())
+}
+$report | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+
+$lines = New-Object System.Collections.Generic.List[string]
+$lines.Add('# 거래플랜 pre-live 통합 검증') | Out-Null
+$lines.Add('') | Out-Null
+$lines.Add("- 실행시각: $($report.GeneratedAt)") | Out-Null
+$lines.Add("- 결과: **$overall**") | Out-Null
+$lines.Add("- BaseUrl: $BaseUrl") | Out-Null
+$lines.Add("- AppDataRoot: $AppDataRoot") | Out-Null
+$lines.Add("- dotnet: $resolvedDotnet") | Out-Null
+$lines.Add("- API 표시성 smoke 실행: $(-not [bool]$SkipApiVisibilitySmoke)") | Out-Null
+$lines.Add("- API 표시성 기준: 거래처 $MinVisibleCustomers / 품목 $MinVisibleItems / 전표 $MinVisibleInvoices") | Out-Null
+$lines.Add("- inventory stock smoke 포함: $([bool]$IncludeInventoryStockSmoke)") | Out-Null
+$lines.Add("- rental billing smoke 포함: $([bool]$IncludeRentalBillingSmoke)") | Out-Null
+$lines.Add("- repeated save smoke 포함: $([bool]$IncludeRepeatedSaveSmoke)") | Out-Null
+$lines.Add("- print document smoke 포함: $([bool]$IncludePrintDocumentSmoke)") | Out-Null
+$lines.Add("- mobile build 포함: $([bool]$IncludeMobileBuild)") | Out-Null
+$lines.Add("- mobile E2E 포함: $([bool]$IncludeMobileE2E)") | Out-Null
+$lines.Add('') | Out-Null
+$lines.Add('| 결과 | 단계 | 상세 | 리포트 |') | Out-Null
+$lines.Add('|---|---|---|---|') | Out-Null
+foreach ($row in $Results) {
+    $status = if ($row.Passed) { 'PASS' } else { 'FAIL' }
+    $detail = ([string]$row.Detail).Replace('|', '\|').Replace("`r", ' ').Replace("`n", ' ')
+    $reportPath = if ([string]::IsNullOrWhiteSpace([string]$row.ReportPath)) { '-' } else { ([string]$row.ReportPath).Replace('|', '\|') }
+    $lines.Add("| $status | $($row.Name) | $detail | $reportPath |") | Out-Null
+}
+
+if ($failed.Count -gt 0) {
+    $lines.Add('') | Out-Null
+    $lines.Add('## 실패 항목') | Out-Null
+    foreach ($row in $failed) {
+        $lines.Add("- $($row.Name): $($row.Detail)") | Out-Null
+    }
+}
+
+$lines | Set-Content -LiteralPath $mdPath -Encoding UTF8
+
+Write-Host "pre-live verification: $overall"
+Write-Host "Report: $mdPath"
+$Results | Select-Object Name, Passed, Detail, ReportPath | Format-Table -AutoSize
+
+if ($failed.Count -gt 0) {
+    throw "pre-live 통합 검증 실패: $mdPath"
+}

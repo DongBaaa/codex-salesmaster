@@ -1,6 +1,7 @@
 using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
+using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
 
@@ -20,6 +21,7 @@ public sealed class InvoicesPage : ContentPage
         _viewModel = ServiceHelper.GetRequiredService<InvoicesViewModel>();
         _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
         _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
+        _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
 
         var searchBar = GeoraePlanTheme.CreateSearchBar("거래처명 / 전표번호 / 메모");
@@ -79,13 +81,19 @@ public sealed class InvoicesPage : ContentPage
         searchGrid.Add(searchBar);
         searchGrid.Add(searchActions, 1, 0);
 
-        var createInvoiceButton = GeoraePlanTheme.CreateCompactButton("전표 작성", GeoraePlanTheme.Success);
-        createInvoiceButton.Clicked += (_, _) =>
+        var createSalesInvoiceButton = GeoraePlanTheme.CreateCompactButton("판매 작성", GeoraePlanTheme.Success);
+        createSalesInvoiceButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
-                async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InvoiceDraftPage>()),
+                async () => await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(VoucherType.Sales)),
                 "전표 작업");
 
-        var createPaymentButton = GeoraePlanTheme.CreateCompactButton("수금 입력", GeoraePlanTheme.Purple);
+        var createPurchaseInvoiceButton = GeoraePlanTheme.CreateCompactButton("구매 작성", GeoraePlanTheme.Brown);
+        createPurchaseInvoiceButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(VoucherType.Purchase)),
+                "전표 작업");
+
+        var createPaymentButton = GeoraePlanTheme.CreateCompactButton("수금/지급", GeoraePlanTheme.Purple);
         createPaymentButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>()),
@@ -96,12 +104,14 @@ public sealed class InvoicesPage : ContentPage
             ColumnDefinitions =
             {
                 new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star),
                 new ColumnDefinition(GridLength.Star)
             },
             ColumnSpacing = 8
         };
-        actionGrid.Add(createInvoiceButton);
-        actionGrid.Add(createPaymentButton, 1, 0);
+        actionGrid.Add(createSalesInvoiceButton, 0, 0);
+        actionGrid.Add(createPurchaseInvoiceButton, 1, 0);
+        actionGrid.Add(createPaymentButton, 2, 0);
 
         var statusLabel = GeoraePlanTheme.CreateStatusLabel();
         statusLabel.SetBinding(Label.TextProperty, nameof(InvoicesViewModel.StatusMessage));
@@ -187,7 +197,7 @@ public sealed class InvoicesPage : ContentPage
         linesView.SetBinding(ItemsView.ItemsSourceProperty, nameof(InvoicesViewModel.SelectedInvoiceLines));
         linesView.SetBinding(VisualElement.HeightRequestProperty, nameof(InvoicesViewModel.SelectedInvoiceLinesHeight));
 
-        var paymentsLabel = GeoraePlanTheme.CreateFieldLabel("수금 정보");
+        var paymentsLabel = GeoraePlanTheme.CreateFieldLabel("수금/지급 정보");
         var paymentSummary = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
         paymentSummary.LineHeight = 1.0;
         paymentSummary.SetBinding(Label.TextProperty, nameof(InvoicesViewModel.SelectedInvoicePaymentSummary));
@@ -196,7 +206,7 @@ public sealed class InvoicesPage : ContentPage
         {
             SelectionMode = SelectionMode.None,
             BackgroundColor = Colors.Transparent,
-            EmptyView = GeoraePlanTheme.CreateBodyText("연결된 수금 정보가 없습니다.", true, 11),
+            EmptyView = GeoraePlanTheme.CreateBodyText("연결된 수금/지급 정보가 없습니다.", true, 11),
             ItemTemplate = new DataTemplate(() =>
             {
                 var dateLabel = GeoraePlanTheme.CreateBodyText(string.Empty, false, 12);
@@ -232,6 +242,38 @@ public sealed class InvoicesPage : ContentPage
         paymentsView.SetBinding(ItemsView.ItemsSourceProperty, nameof(InvoicesViewModel.SelectedInvoicePayments));
         paymentsView.SetBinding(VisualElement.HeightRequestProperty, nameof(InvoicesViewModel.SelectedInvoicePaymentsHeight));
 
+        var selectedPaymentButton = GeoraePlanTheme.CreateCompactButton("수금/지급", GeoraePlanTheme.Purple);
+        selectedPaymentButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () =>
+                {
+                    if (_viewModel.SelectedInvoice is not null)
+                        await Shell.Current.Navigation.PushAsync(new PaymentDraftPage(_viewModel.SelectedInvoice));
+                },
+                "전표 작업");
+
+        var selectedEditButton = GeoraePlanTheme.CreateCompactButton("전표 수정", GeoraePlanTheme.Accent);
+        selectedEditButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () =>
+                {
+                    if (_viewModel.SelectedInvoice is not null)
+                        await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(_viewModel.SelectedInvoice));
+                },
+                "전표 작업");
+
+        var selectedDetailActionGrid = new Grid
+        {
+            ColumnSpacing = 8,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star)
+            }
+        };
+        selectedDetailActionGrid.Add(selectedPaymentButton, 0, 0);
+        selectedDetailActionGrid.Add(selectedEditButton, 1, 0);
+
         var detailCard = GeoraePlanTheme.CreateCompactCard(
             detailHeader,
             detailCustomer,
@@ -244,7 +286,8 @@ public sealed class InvoicesPage : ContentPage
             linesView,
             paymentsLabel,
             paymentSummary,
-            paymentsView);
+            paymentsView,
+            selectedDetailActionGrid);
         detailCard.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoicesViewModel.HasSelectedInvoice));
 
         var collectionView = new CollectionView
@@ -356,6 +399,21 @@ try
         }
             },
             "전표 화면 초기화");
+    }
+
+    private void HandleRealtimeRefreshRequested(object? sender, EventArgs e)
+    {
+        MainThread.BeginInvokeOnMainThread(() =>
+            MobileErrorHandler.FireAndForget(
+                async () =>
+                {
+                    if (Shell.Current?.CurrentPage == this)
+                    {
+                        await _viewModel.RefreshAsync();
+                        _seenInvoicesVersion = _refreshCoordinator.InvoicesVersion;
+                    }
+                },
+                "전표 실시간 갱신"));
     }
 
     protected override bool OnBackButtonPressed()

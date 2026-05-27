@@ -5,6 +5,9 @@ namespace GeoraePlan.Mobile.App.Models;
 public sealed class MobileSyncState
 {
     public string DeviceId { get; set; } = Guid.NewGuid().ToString("N");
+    public string OwnerUsername { get; set; } = string.Empty;
+    public string OwnerTenantCode { get; set; } = string.Empty;
+    public string OwnerOfficeCode { get; set; } = string.Empty;
     public long LastRevision { get; set; }
     public DateTime? LastSuccessUtc { get; set; }
     public DateTime? LastAttemptUtc { get; set; }
@@ -13,6 +16,7 @@ public sealed class MobileSyncState
     public int ConsecutiveFailureCount { get; set; }
     public int LastPulledCustomerCount { get; set; }
     public int LastPulledItemCount { get; set; }
+    public int LastPulledPriceGradeOptionCount { get; set; }
     public int LastPulledInvoiceCount { get; set; }
     public int LastPulledPaymentCount { get; set; }
     public int LastPulledTransactionCount { get; set; }
@@ -29,6 +33,7 @@ public sealed class MobileSyncState
     public List<RentalBillingProfileDto> SyncedRentalBillingProfiles { get; set; } = new();
     public List<RentalAssetDto> SyncedRentalAssets { get; set; } = new();
     public List<RentalBillingLogDto> SyncedRentalBillingLogs { get; set; } = new();
+    public List<PriceGradeOptionDto> SyncedPriceGradeOptions { get; set; } = new();
     public SyncPushRequest PendingPush { get; set; } = new();
     public List<PendingPaymentAttachmentRecord> PendingPaymentAttachments { get; set; } = new();
 
@@ -77,6 +82,7 @@ public sealed class MobileSyncState
         SyncedRentalBillingProfiles ??= new List<RentalBillingProfileDto>();
         SyncedRentalAssets ??= new List<RentalAssetDto>();
         SyncedRentalBillingLogs ??= new List<RentalBillingLogDto>();
+        SyncedPriceGradeOptions ??= new List<PriceGradeOptionDto>();
         PendingPaymentAttachments ??= new List<PendingPaymentAttachmentRecord>();
     }
 }

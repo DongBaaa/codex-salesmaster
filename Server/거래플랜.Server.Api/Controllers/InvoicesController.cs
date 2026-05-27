@@ -1,4 +1,4 @@
-﻿using 거래플랜.Server.Api.Data;
+using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Security;
@@ -21,19 +21,22 @@ public sealed class InvoicesController : ControllerBase
     private readonly IInvoiceNumberService _invoiceNumberService;
     private readonly OfficeScopeService _officeScopeService;
     private readonly InventoryLedgerService _inventoryLedgerService;
+    private readonly InvoiceStockSnapshotService _invoiceStockSnapshotService;
 
     public InvoicesController(
         AppDbContext dbContext,
         ICurrentUserContext currentUserContext,
         IInvoiceNumberService invoiceNumberService,
         OfficeScopeService officeScopeService,
-        InventoryLedgerService inventoryLedgerService)
+        InventoryLedgerService inventoryLedgerService,
+        InvoiceStockSnapshotService invoiceStockSnapshotService)
     {
         _dbContext = dbContext;
         _currentUserContext = currentUserContext;
         _invoiceNumberService = invoiceNumberService;
         _officeScopeService = officeScopeService;
         _inventoryLedgerService = inventoryLedgerService;
+        _invoiceStockSnapshotService = invoiceStockSnapshotService;
     }
 
     [HttpGet]
@@ -110,6 +113,11 @@ public sealed class InvoicesController : ControllerBase
         }
 
         ApplyInvoiceLines(entity, dto.Lines);
+        var currentStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
+        await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
+            new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
+            currentStockDeltas,
+            cancellationToken);
 
         _dbContext.Invoices.Add(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -132,6 +140,7 @@ public sealed class InvoicesController : ControllerBase
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Invoice)) is { } conflict)
             return conflict;
 
+        var previousStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
@@ -156,6 +165,11 @@ public sealed class InvoicesController : ControllerBase
         _dbContext.InvoiceLines.RemoveRange(entity.Lines);
         entity.Lines.Clear();
         ApplyInvoiceLines(entity, dto.Lines);
+        var currentStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
+        await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
+            previousStockDeltas,
+            currentStockDeltas,
+            cancellationToken);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
@@ -169,14 +183,19 @@ public sealed class InvoicesController : ControllerBase
         if (!_officeScopeService.CanEditInvoices())
             return Forbid();
 
-        var entity = await _dbContext.Invoices.Include(x => x.Customer).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+        var entity = await _dbContext.Invoices.Include(x => x.Customer).Include(x => x.Lines).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
         if (!_officeScopeService.CanWriteOfficeForInvoices(entity.ResponsibleOfficeCode, entity.TenantCode))
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Invoice)) is { } conflict)
             return conflict;
 
+        var previousStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
         entity.IsDeleted = true;
+        await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
+            previousStockDeltas,
+            new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
+            cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         return NoContent();

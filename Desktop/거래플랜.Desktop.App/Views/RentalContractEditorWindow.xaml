@@ -1,4 +1,4 @@
-﻿<Window x:Class="거래플랜.Desktop.App.Views.RentalContractEditorWindow"
+<Window x:Class="거래플랜.Desktop.App.Views.RentalContractEditorWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="렌탈계약서 작성"
@@ -64,14 +64,17 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
-            <Setter Property="MinHeight" Value="28"/>
-            <Setter Property="Padding" Value="8,1"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Padding" Value="0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="SelectedDateFormat" Value="Short"/>
             <Setter Property="IsEnabled" Value="False"/>
-            <Setter Property="MinWidth" Value="184"/>
-            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="MinWidth" Value="150"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Width" Value="150"/>
+            <Setter Property="MaxWidth" Value="150"/>
             <Style.Triggers>
                 <DataTrigger Binding="{Binding DataContext.IsEditMode, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
                     <Setter Property="IsEnabled" Value="True"/>
@@ -82,9 +85,9 @@
             <Setter Property="Background" Value="#D9E6F5"/>
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Height" Value="28"/>
-            <Setter Property="MinHeight" Value="28"/>
-            <Setter Property="Padding" Value="8,0,10,0"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Padding" Value="8,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style x:Key="DatePickerButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}"/>
@@ -214,7 +217,7 @@
                                         <Style TargetType="{x:Type Button}" BasedOn="{StaticResource DatePickerButtonStyle}"/>
                                     </DatePicker.Resources>
                                 </DatePicker>
-                                <TextBlock Grid.Row="1" Text="사업자번호" Margin="0,6,0,0"/>
+                                <TextBlock Grid.Row="1" Text="계약시작" Margin="0,6,0,0"/>
                                 <DatePicker Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" SelectedDate="{Binding ContractStartDate}">
                                     <DatePicker.Resources>
                                         <Style TargetType="{x:Type Button}" BasedOn="{StaticResource DatePickerButtonStyle}"/>
@@ -226,7 +229,7 @@
                                         <Style TargetType="{x:Type Button}" BasedOn="{StaticResource DatePickerButtonStyle}"/>
                                     </DatePicker.Resources>
                                 </DatePicker>
-                                <TextBlock Grid.Row="3" Text="담당자" Margin="0,6,0,0"/>
+                                <TextBlock Grid.Row="3" Text="설치위치" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" Text="{Binding InstallLocation, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock Grid.Row="4" Text="보증금" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" Text="{Binding DepositText, UpdateSourceTrigger=PropertyChanged}"/>

@@ -47,19 +47,22 @@
         <Style TargetType="DatePicker">
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
-            <Setter Property="MinHeight" Value="34"/>
-            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Padding" Value="0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
-            <Setter Property="MinWidth" Value="184"/>
-            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="MinWidth" Value="150"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Width" Value="150"/>
+            <Setter Property="MaxWidth" Value="150"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Height" Value="34"/>
-            <Setter Property="MinHeight" Value="34"/>
-            <Setter Property="Padding" Value="8,0,10,0"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Padding" Value="8,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style TargetType="{x:Type Calendar}">
@@ -72,15 +75,18 @@
             <Setter Property="MinHeight" Value="260"/>
         </Style>
         <Style x:Key="UnifiedDatePickerButtonStyle" TargetType="{x:Type Button}">
-            <Setter Property="MinHeight" Value="34"/>
-            <Setter Property="Height" Value="34"/>
-            <Setter Property="MinWidth" Value="34"/>
+            <Setter Property="MinHeight" Value="30"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="MinWidth" Value="30"/>
             <Setter Property="Padding" Value="0"/>
             <Setter Property="Margin" Value="0"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="VerticalAlignment" Value="Stretch"/>
             <Setter Property="HorizontalContentAlignment" Value="Center"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Width" Value="30"/>
+            <Setter Property="MaxWidth" Value="30"/>
+            <Setter Property="HorizontalAlignment" Value="Right"/>
         </Style>
         <Style TargetType="DataGridCell">
             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>

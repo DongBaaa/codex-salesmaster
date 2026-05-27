@@ -1,4 +1,4 @@
-﻿using 거래플랜.Shared.Contracts;
+using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Mobile.App.Models;
 
@@ -39,7 +39,7 @@ public sealed class InvoiceLineDraftItem
             Unit = string.IsNullOrWhiteSpace(item.Unit) ? "EA" : item.Unit,
             Quantity = quantity <= 0m ? 1m : quantity,
             UnitPrice = unitPrice,
-            Remark = item.SimpleMemo,
+            Remark = string.Empty,
             MaterialNumber = item.MaterialNumber,
             SerialNumber = item.SerialNumber,
             InstallLocation = item.InstallLocation,
@@ -47,6 +47,25 @@ public sealed class InvoiceLineDraftItem
             RentalEndDate = item.RentalEndDate
         };
     }
+
+    public static InvoiceLineDraftItem FromDto(InvoiceLineDto line)
+        => new()
+        {
+            Id = line.Id == Guid.Empty ? Guid.NewGuid() : line.Id,
+            ItemId = line.ItemId,
+            CategoryName = string.Empty,
+            ItemNameOriginal = line.ItemNameOriginal,
+            SpecificationOriginal = line.SpecificationOriginal,
+            Unit = string.IsNullOrWhiteSpace(line.Unit) ? "EA" : line.Unit,
+            Quantity = line.Quantity <= 0m ? 1m : line.Quantity,
+            UnitPrice = line.UnitPrice,
+            Remark = line.Remark,
+            MaterialNumber = line.MaterialNumber,
+            SerialNumber = line.SerialNumber,
+            InstallLocation = line.InstallLocation,
+            RentalStartDate = line.RentalStartDate,
+            RentalEndDate = line.RentalEndDate
+        };
 
     public InvoiceLineDto ToDto(Guid invoiceId)
         => new()

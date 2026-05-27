@@ -48,7 +48,17 @@ public sealed class ItemsViewModel : ObservableObject
     public string SearchText
     {
         get => _searchText;
-        set => SetProperty(ref _searchText, value);
+        set
+        {
+            if (!SetProperty(ref _searchText, value))
+                return;
+
+            OnPropertyChanged(nameof(HasSearchText));
+            OnPropertyChanged(nameof(IsCategoryChooserVisible));
+            OnPropertyChanged(nameof(CanShowItemList));
+            OnPropertyChanged(nameof(SelectedCategorySummary));
+            OnPropertyChanged(nameof(ItemListLabelText));
+        }
     }
 
     public string StatusMessage
@@ -75,6 +85,8 @@ public sealed class ItemsViewModel : ObservableObject
             OnPropertyChanged(nameof(IsCategoryChooserVisible));
             OnPropertyChanged(nameof(SelectedCategoryHeader));
             OnPropertyChanged(nameof(SelectedCategorySummary));
+            OnPropertyChanged(nameof(CanShowItemList));
+            OnPropertyChanged(nameof(ItemListLabelText));
         }
     }
 
@@ -96,16 +108,33 @@ public sealed class ItemsViewModel : ObservableObject
     }
 
     public bool HasSelectedCategory => SelectedCategory is not null;
-    public bool IsCategoryChooserVisible => !HasSelectedCategory;
+    public bool HasSearchText => !string.IsNullOrWhiteSpace(SearchText);
+    public bool CanShowItemList => HasSelectedCategory || HasSearchText;
+    public bool IsCategoryChooserVisible => !HasSelectedCategory && !HasSearchText;
     public bool HasSelectedItem => SelectedItem is not null;
 
     public string SelectedCategoryHeader => SelectedCategory is null
         ? "선택된 분류 없음"
         : $"선택된 분류: {NormalizeCategoryName(SelectedCategory.Name)}";
 
-    public string SelectedCategorySummary => SelectedCategory is null
-        ? "품목분류를 먼저 선택하세요."
-        : $"현재 분류 품목 {Items.Count:N0}건";
+    public string SelectedCategorySummary
+    {
+        get
+        {
+            if (SelectedCategory is not null)
+                return HasSearchText
+                    ? $"현재 분류 검색결과 {Items.Count:N0}건"
+                    : $"현재 분류 품목 {Items.Count:N0}건";
+
+            return HasSearchText
+                ? $"전체 품목 검색결과 {Items.Count:N0}건"
+                : "품목분류를 선택하거나 품명/규격으로 검색하세요.";
+        }
+    }
+
+    public string ItemListLabelText => SelectedCategory is null
+        ? "품목 검색 결과"
+        : "분류 품목 목록";
 
     public string SelectedItemTitle => SelectedItem?.NameOriginal ?? "품목 상세";
 
@@ -126,7 +155,7 @@ public sealed class ItemsViewModel : ObservableObject
     public string SelectedItemMemo => SelectedItem is null
         ? "메모 없음"
         : string.IsNullOrWhiteSpace(SelectedItem.SimpleMemo)
-            ? string.IsNullOrWhiteSpace(SelectedItem.Notes) ? "메모 없음" : SelectedItem.Notes
+            ? "메모 없음"
             : SelectedItem.SimpleMemo;
 
     public double ItemListHeight => CalculateListHeight(Items.Count, 72, 48, 7);
@@ -163,7 +192,7 @@ public sealed class ItemsViewModel : ObservableObject
                 ClearSelectedItem();
                 StatusMessage = ItemCategories.Count == 0
                     ? "등록된 품목분류가 없습니다."
-                    : "품목분류를 먼저 선택하세요.";
+                    : "품목분류를 선택하거나 품명/규격으로 검색하세요.";
             }
             else
             {
@@ -171,7 +200,7 @@ public sealed class ItemsViewModel : ObservableObject
                 if (matchedCategory is null)
                 {
                     ClearSelectedCategory();
-                    StatusMessage = "선택된 분류를 찾지 못했습니다. 분류를 다시 선택하세요.";
+                    StatusMessage = "선택한 분류를 찾지 못했습니다. 분류를 다시 선택하세요.";
                 }
                 else
                 {
@@ -215,8 +244,9 @@ public sealed class ItemsViewModel : ObservableObject
         SearchText = string.Empty;
         Items.Clear();
         ClearSelectedItem();
-        StatusMessage = "품목분류를 다시 선택하세요.";
+        StatusMessage = "품목분류를 선택하거나 품명/규격으로 검색하세요.";
         OnPropertyChanged(nameof(ItemListHeight));
+        OnPropertyChanged(nameof(SelectedCategorySummary));
     }
 
     public bool TryNavigateBackOneStep()
@@ -242,9 +272,14 @@ public sealed class ItemsViewModel : ObservableObject
         if (IsBusy)
             return;
 
-        if (SelectedCategory is null)
+        if (SelectedCategory is null && !HasSearchText)
         {
-            StatusMessage = "품목분류를 먼저 선택하세요.";
+            Items.Clear();
+            ClearSelectedItem();
+            StatusMessage = "검색어를 입력하거나 품목분류를 선택하세요.";
+            OnPropertyChanged(nameof(ItemListHeight));
+            OnPropertyChanged(nameof(SelectedCategorySummary));
+            OnPropertyChanged(nameof(CanShowItemList));
             return;
         }
 
@@ -261,6 +296,26 @@ public sealed class ItemsViewModel : ObservableObject
         {
             IsBusy = false;
         }
+    }
+
+    public async Task ClearSearchAsync()
+    {
+        if (IsBusy)
+            return;
+
+        SearchText = string.Empty;
+        if (SelectedCategory is null)
+        {
+            Items.Clear();
+            ClearSelectedItem();
+            StatusMessage = "품목분류를 선택하거나 품명/규격으로 검색하세요.";
+            OnPropertyChanged(nameof(ItemListHeight));
+            OnPropertyChanged(nameof(SelectedCategorySummary));
+            OnPropertyChanged(nameof(CanShowItemList));
+            return;
+        }
+
+        await SearchItemsAsync();
     }
 
     public async Task SelectItemAsync(ItemDto item)
@@ -315,12 +370,21 @@ public sealed class ItemsViewModel : ObservableObject
 
     private async Task SearchItemsCoreAsync()
     {
-        if (SelectedCategory is null)
+        if (SelectedCategory is null && !HasSearchText)
             return;
 
-        var normalizedCategory = NormalizeCategoryName(SelectedCategory.Name);
-        StatusMessage = $"{normalizedCategory} 분류 품목을 조회하고 있습니다.";
-        var items = await _api.GetItemsAsync(SearchText, BuildCategoryQueryValue(normalizedCategory));
+        var normalizedCategory = SelectedCategory is null
+            ? string.Empty
+            : NormalizeCategoryName(SelectedCategory.Name);
+        var trimmedSearch = SearchText.Trim();
+        var categoryQueryValue = string.IsNullOrWhiteSpace(normalizedCategory)
+            ? string.Empty
+            : BuildCategoryQueryValue(normalizedCategory);
+
+        StatusMessage = SelectedCategory is null
+            ? $"전체 품목에서 '{trimmedSearch}' 검색 중입니다."
+            : $"{normalizedCategory} 분류 품목을 조회하고 있습니다.";
+        var items = await _api.GetItemsAsync(trimmedSearch, categoryQueryValue);
 
         Items.Clear();
         foreach (var item in items.OrderBy(item => item.NameOriginal))
@@ -333,10 +397,16 @@ public sealed class ItemsViewModel : ObservableObject
             ClearSelectedItem();
 
         StatusMessage = items.Count == 0
-            ? "현재 분류에 표시할 품목이 없습니다."
-            : $"{normalizedCategory} 분류 품목 {items.Count:N0}건";
+            ? SelectedCategory is null
+                ? "검색 결과가 없습니다. 품명, 규격, 자재번호를 다시 확인하세요."
+                : "현재 분류에 표시할 품목이 없습니다."
+            : SelectedCategory is null
+                ? $"전체 품목 검색결과 {items.Count:N0}건"
+                : $"{normalizedCategory} 분류 품목 {items.Count:N0}건";
         OnPropertyChanged(nameof(ItemListHeight));
         OnPropertyChanged(nameof(SelectedCategorySummary));
+        OnPropertyChanged(nameof(CanShowItemList));
+        OnPropertyChanged(nameof(ItemListLabelText));
     }
 
     private void ReplaceCategories(IEnumerable<ItemCategorySummaryDto> categories)
@@ -411,7 +481,7 @@ public sealed class ItemsViewModel : ObservableObject
         if (normalized.Length == 0)
             return UncategorizedName;
 
-        if (normalized.All(ch => ch == '?' || ch == '�'))
+        if (normalized.All(ch => ch == '?' || ch == '\uFFFD'))
             return UncategorizedName;
 
         return normalized;

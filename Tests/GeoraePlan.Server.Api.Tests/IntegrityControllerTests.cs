@@ -337,6 +337,166 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_DoesNotWarnForSameCustomerNameInDifferentResponsibleOffices()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        dbContext.Customers.AddRange(
+            new Customer
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Same Office Customer",
+                NameMatchKey = "SAMEOFFICECUSTOMER",
+                TradeType = "매출"
+            },
+            new Customer
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "Same Office Customer",
+                NameMatchKey = "SAMEOFFICECUSTOMER",
+                TradeType = "매출"
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new IntegrityController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext));
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "duplicate_customer_match_keys");
+    }
+
+    [Fact]
+    public async Task GetReport_DoesNotWarnForExpectedRentalOrBillingItemDuplicates()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        dbContext.Items.AddRange(
+            new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Rental Asset Model",
+                NameMatchKey = "RENTALASSETMODEL",
+                CategoryName = "A3컬러복합기",
+                ItemKind = ItemKinds.Asset,
+                TrackingType = ItemTrackingTypes.Asset,
+                IsRental = true
+            },
+            new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Rental Asset Model",
+                NameMatchKey = "RENTALASSETMODEL",
+                CategoryName = "A3컬러복합기",
+                ItemKind = ItemKinds.Asset,
+                TrackingType = ItemTrackingTypes.Asset,
+                IsRental = true
+            },
+            new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "사무기기 렌탈대금[5월]",
+                NameMatchKey = "사무기기렌탈대금5월",
+                SpecificationOriginal = "SL-M2670FN",
+                SpecificationMatchKey = "SLM2670FN",
+                CategoryName = "렌탈료",
+                ItemKind = ItemKinds.Billing,
+                TrackingType = ItemTrackingTypes.NonStock
+            },
+            new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "사무기기 렌탈대금[5월]",
+                NameMatchKey = "사무기기렌탈대금5월",
+                SpecificationOriginal = "SL-M2670FN",
+                SpecificationMatchKey = "SLM2670FN",
+                CategoryName = "렌탈료",
+                ItemKind = ItemKinds.Billing,
+                TrackingType = ItemTrackingTypes.NonStock
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new IntegrityController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext));
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+
+        Assert.Contains(payload.Issues, issue => issue.Code == "duplicate_item_name_match_keys" && issue.Count == 4);
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "duplicate_item_match_keys");
+    }
+
+    [Fact]
+    public async Task GetReport_DoesNotWarnForSameItemWithDifferentMaterialNumber()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        dbContext.Items.AddRange(
+            new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "External HDD",
+                NameMatchKey = "EXTERNALHDD",
+                SpecificationOriginal = "LG XD5 500GB",
+                SpecificationMatchKey = "LGXD5500GB",
+                CategoryName = "주변기기/전자제품",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                MaterialNumber = "화이트핑크"
+            },
+            new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "External HDD",
+                NameMatchKey = "EXTERNALHDD",
+                SpecificationOriginal = "LG XD5 500GB",
+                SpecificationMatchKey = "LGXD5500GB",
+                CategoryName = "주변기기/전자제품",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                MaterialNumber = "블랙레드"
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new IntegrityController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext));
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+
+        Assert.Contains(payload.Issues, issue => issue.Code == "duplicate_item_name_match_keys" && issue.Count == 2);
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "duplicate_item_match_keys");
+    }
+
+    [Fact]
     public async Task GetReport_IncludesCrossTenantInventoryTransferIssue()
     {
         var currentUser = CreateAdminUser();

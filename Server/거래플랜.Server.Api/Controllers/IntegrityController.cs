@@ -47,12 +47,10 @@ public sealed class IntegrityController : ControllerBase
             .SumAsync(cancellationToken);
         AddIssue(issues, "duplicate_rental_asset_keys", duplicateAssetKeyCount, "Error", "중복된 렌탈 자산 키가 존재합니다.");
 
-        var duplicateCustomerMatchKeyCount = await _officeScopeService.ApplyCustomerScope(_dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
+        var scopedCustomers = await _officeScopeService.ApplyCustomerScope(_dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
             .Where(customer => !customer.IsDeleted && !string.IsNullOrWhiteSpace(customer.NameMatchKey))
-            .GroupBy(customer => customer.NameMatchKey)
-            .Where(group => group.Count() > 1)
-            .Select(group => group.Count())
-            .SumAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+        var duplicateCustomerMatchKeyCount = CountDuplicateRows(scopedCustomers, BuildScopedCustomerMatchKey);
         AddIssue(issues, "duplicate_customer_match_keys", duplicateCustomerMatchKeyCount, "Warning", "중복된 거래처 매칭키가 존재합니다.");
 
         var scopedItems = await _officeScopeService.ApplyItemScope(_dbContext.Items.IgnoreQueryFilters().AsNoTracking())
@@ -67,7 +65,9 @@ public sealed class IntegrityController : ControllerBase
             "Info",
             "동일 품명 매칭키를 공유하는 품목이 있습니다. 규격/분류가 다르면 정상일 수 있습니다.");
 
-        var duplicateItemMatchKeyCount = CountDuplicateRows(scopedItems, BuildScopedItemDescriptorConflictKey);
+        var duplicateItemMatchKeyCount = CountDuplicateRows(
+            scopedItems.Where(IsPotentiallyAmbiguousItemDuplicate),
+            BuildScopedItemDescriptorConflictKey);
         AddIssue(
             issues,
             "duplicate_item_match_keys",
@@ -328,24 +328,25 @@ public sealed class IntegrityController : ControllerBase
 
     private async Task<List<IntegrityIssueDetailRowDto>> LoadDuplicateCustomerMatchKeyDetailsAsync(CancellationToken cancellationToken)
     {
-        var scopedCustomers = _officeScopeService.ApplyCustomerScope(_dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
-            .Where(customer => !customer.IsDeleted && !string.IsNullOrWhiteSpace(customer.NameMatchKey));
+        var scopedCustomers = await _officeScopeService.ApplyCustomerScope(_dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
+            .Where(customer => !customer.IsDeleted && !string.IsNullOrWhiteSpace(customer.NameMatchKey))
+            .ToListAsync(cancellationToken);
 
-        var duplicateKeys = await scopedCustomers
-            .GroupBy(customer => customer.NameMatchKey)
+        var duplicateKeys = scopedCustomers
+            .GroupBy(BuildScopedCustomerMatchKey, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() > 1)
             .Select(group => group.Key)
-            .ToListAsync(cancellationToken);
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (duplicateKeys.Count == 0)
             return [];
 
-        var customers = await scopedCustomers
-            .Where(customer => duplicateKeys.Contains(customer.NameMatchKey))
+        var customers = scopedCustomers
+            .Where(customer => duplicateKeys.Contains(BuildScopedCustomerMatchKey(customer)))
             .OrderBy(customer => customer.NameMatchKey)
             .ThenBy(customer => customer.NameOriginal)
             .ThenBy(customer => customer.Id)
-            .ToListAsync(cancellationToken);
+            .ToList();
 
         return customers
             .Select(customer => CreateDetailRow(
@@ -407,6 +408,7 @@ public sealed class IntegrityController : ControllerBase
             .ToListAsync(cancellationToken);
 
         var keyedItems = scopedItems
+            .Where(IsPotentiallyAmbiguousItemDuplicate)
             .Select(item => new
             {
                 Item = item,
@@ -1004,6 +1006,21 @@ public sealed class IntegrityController : ControllerBase
             .Sum(group => group.Count());
     }
 
+    private static string BuildScopedCustomerMatchKey(Customer customer)
+    {
+        var nameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(
+            string.IsNullOrWhiteSpace(customer.NameMatchKey)
+                ? customer.NameOriginal
+                : customer.NameMatchKey);
+        if (string.IsNullOrWhiteSpace(nameKey))
+            return string.Empty;
+
+        return string.Join('|',
+            NormalizeDuplicateScopeValue(customer.TenantCode),
+            NormalizeDuplicateScopeValue(FirstNonEmpty(customer.ResponsibleOfficeCode, customer.OfficeCode)),
+            nameKey);
+    }
+
     private static string BuildScopedItemNameMatchKey(Item item)
         => ItemDuplicateKeyBuilder.BuildScopedItemNameMatchKey(
             item.TenantCode,
@@ -1012,7 +1029,8 @@ public sealed class IntegrityController : ControllerBase
             item.NameOriginal);
 
     private static string BuildScopedItemDescriptorConflictKey(Item item)
-        => ItemDuplicateKeyBuilder.BuildScopedItemDescriptorConflictKey(
+    {
+        var baseKey = ItemDuplicateKeyBuilder.BuildScopedItemDescriptorConflictKey(
             item.TenantCode,
             item.OfficeCode,
             item.NameMatchKey,
@@ -1023,6 +1041,41 @@ public sealed class IntegrityController : ControllerBase
             item.ItemKind,
             item.TrackingType,
             item.IsRental);
+        if (string.IsNullOrWhiteSpace(baseKey))
+            return string.Empty;
+
+        return string.Join('|',
+            baseKey,
+            RentalCatalogValueNormalizer.NormalizeLooseKey(item.MaterialNumber));
+    }
+
+    private static bool IsPotentiallyAmbiguousItemDuplicate(Item item)
+    {
+        if (item.IsRental)
+            return false;
+
+        var trackingType = ItemOperationalPolicy.NormalizeTrackingType(
+            item.TrackingType,
+            item.ItemKind,
+            item.CategoryName,
+            item.IsRental);
+        var itemKind = ItemOperationalPolicy.NormalizeItemKind(
+            item.ItemKind,
+            trackingType,
+            item.CategoryName,
+            item.IsRental);
+
+        if (string.Equals(trackingType, ItemTrackingTypes.NonStock, StringComparison.Ordinal) ||
+            string.Equals(itemKind, ItemKinds.Billing, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string NormalizeDuplicateScopeValue(string? value)
+        => (value ?? string.Empty).Trim().ToUpperInvariant();
 
     private static bool TryResolveIssueDefinition(string code, out IntegrityIssueDefinition definition)
     {

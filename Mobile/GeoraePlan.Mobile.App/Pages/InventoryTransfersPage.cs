@@ -1,6 +1,7 @@
 using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
+using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
 
@@ -10,6 +11,8 @@ public sealed class InventoryTransfersPage : ContentPage
 {
     private readonly InventoryTransfersViewModel _viewModel;
     private readonly SyncCoordinator _syncCoordinator;
+    private readonly MobileRefreshCoordinator _refreshCoordinator;
+    private int _seenInventoryTransfersVersion;
 
     public InventoryTransfersPage()
     {
@@ -17,6 +20,8 @@ public sealed class InventoryTransfersPage : ContentPage
 
         _viewModel = ServiceHelper.GetRequiredService<InventoryTransfersViewModel>();
         _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
+        _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
+        _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
 
         var searchBar = GeoraePlanTheme.CreateSearchBar("이동번호 / 메모 / 창고 검색");
@@ -179,6 +184,7 @@ public sealed class InventoryTransfersPage : ContentPage
                     GeoraePlanTheme.CreateCompactCard(
                         GeoraePlanTheme.CreateSectionTitle("재고이동", 15),
                         GeoraePlanTheme.CreateBodyText("같은 서버 sync 데이터 기준으로 이동요청/수령 상태를 조회합니다.", true, 12),
+                        GeoraePlanTheme.CreateBodyText("모바일 재고이동은 조회 전용입니다. 이동 생성, 수령 처리, 반려 처리는 PC 품목/재고 관리에서 처리하세요.", true, 12),
                         searchBar,
                         actionGrid,
                         summaryLabel,
@@ -200,8 +206,24 @@ public sealed class InventoryTransfersPage : ContentPage
 await _syncCoordinator.RefreshIfServerChangedAsync("inventory-transfers-page", TimeSpan.FromSeconds(5));
         if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             await _viewModel.RefreshAsync();
+        _seenInventoryTransfersVersion = _refreshCoordinator.InventoryTransfersVersion;
             },
             "재고이동 화면 초기화");
+    }
+
+    private void HandleRealtimeRefreshRequested(object? sender, EventArgs e)
+    {
+        MainThread.BeginInvokeOnMainThread(() =>
+            MobileErrorHandler.FireAndForget(
+                async () =>
+                {
+                    if (Shell.Current?.CurrentPage == this && _seenInventoryTransfersVersion != _refreshCoordinator.InventoryTransfersVersion)
+                    {
+                        await _viewModel.RefreshAsync();
+                        _seenInventoryTransfersVersion = _refreshCoordinator.InventoryTransfersVersion;
+                    }
+                },
+                "재고이동 실시간 갱신"));
     }
 
     protected override bool OnBackButtonPressed()
