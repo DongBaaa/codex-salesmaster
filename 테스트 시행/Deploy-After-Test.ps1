@@ -64,8 +64,15 @@ function Invoke-Git {
 
     Push-Location $ProjectRoot
     try {
-        $output = & $git.Source @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $output = & $git.Source @Arguments 2>&1
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
     }
     finally {
         Pop-Location
@@ -489,6 +496,5 @@ if (-not $SkipNas) {
     Write-Host "- live 사전 점검 리포트: $livePreflightReport" -ForegroundColor Green
     Write-Host "- live 사후 점검 리포트: $livePostflightReport" -ForegroundColor Green
 }
-
 
 
