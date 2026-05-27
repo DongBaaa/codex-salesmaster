@@ -909,7 +909,7 @@ Copy-Item -LiteralPath $tempExePath -Destination $stableExePath -Force
 Write-Sha256File -Path $versionedExePath
 Write-Sha256File -Path $stableExePath
 
-$removedVersionedInstallers = Remove-OldVersionedInstallerArchives -ArchiveRoot $archiveOutputRoot -PackageName $PackageName -KeepVersionCount $KeepVersionedInstallerCount
+$removedVersionedInstallers = @(Remove-OldVersionedInstallerArchives -ArchiveRoot $archiveOutputRoot -PackageName $PackageName -KeepVersionCount $KeepVersionedInstallerCount)
 if ($removedVersionedInstallers.Count -gt 0) {
     Write-Host "installer_archives_pruned=$($removedVersionedInstallers.Count)"
 }
