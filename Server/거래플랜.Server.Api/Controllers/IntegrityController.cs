@@ -1,3 +1,4 @@
+using System.Text.Json;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Services;
@@ -13,6 +14,11 @@ namespace 거래플랜.Server.Api.Controllers;
 [Route("integrity")]
 public sealed class IntegrityController : ControllerBase
 {
+    private static readonly JsonSerializerOptions RentalTemplateJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
 
@@ -129,10 +135,24 @@ public sealed class IntegrityController : ControllerBase
         });
         AddIssue(issues, "item_stock_snapshot_mismatch", stockMismatches, "Warning", "품목 현재재고와 창고 합계가 일치하지 않는 항목이 있습니다.");
 
+        var negativeCurrentStockCount = scopedItems.Count(item =>
+            ItemOperationalPolicy.SupportsInventory(item.TrackingType) &&
+            item.CurrentStock < 0m);
+        AddIssue(issues, "item_negative_current_stock", negativeCurrentStockCount, "Warning", "현재재고가 음수인 품목이 있습니다.");
+
         var orphanInvoiceCustomerCount = await _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
             .Where(invoice => !invoice.IsDeleted)
             .CountAsync(invoice => !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == invoice.CustomerId), cancellationToken);
         AddIssue(issues, "orphan_invoice_customer_refs", orphanInvoiceCustomerCount, "Error", "거래처가 없는 전표 참조가 존재합니다.");
+
+        var activeInvoiceLinesDeletedInvoiceCount = await (
+                from line in _dbContext.InvoiceLines.IgnoreQueryFilters().AsNoTracking()
+                join invoice in _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                    on line.InvoiceId equals invoice.Id
+                where !line.IsDeleted && invoice.IsDeleted
+                select line.Id)
+            .CountAsync(cancellationToken);
+        AddIssue(issues, "active_invoice_lines_deleted_invoice", activeInvoiceLinesDeletedInvoiceCount, "Error", "삭제된 전표에 활성 세부내역 행이 남아 있습니다.");
 
         var orphanTransactionCustomerCount = await _officeScopeService.ApplyTransactionScope(_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking())
             .Where(transaction => !transaction.IsDeleted)
@@ -143,6 +163,27 @@ public sealed class IntegrityController : ControllerBase
             .Where(profile => !profile.IsDeleted && profile.CustomerId.HasValue)
             .CountAsync(profile => !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == profile.CustomerId), cancellationToken);
         AddIssue(issues, "orphan_rental_profile_customer_refs", orphanRentalProfileCustomerCount, "Error", "거래처가 없는 렌탈 청구 프로필 참조가 존재합니다.");
+
+        var rentalProfileCustomerUnlinkedCount = await _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+            .Where(profile => !profile.IsDeleted && !profile.CustomerId.HasValue && !string.IsNullOrWhiteSpace(profile.CustomerName))
+            .CountAsync(cancellationToken);
+        AddIssue(issues, "rental_profile_customer_unlinked", rentalProfileCustomerUnlinkedCount, "Warning", "거래처 ID 없이 거래처명만 저장된 렌탈 청구 프로필이 있습니다.");
+
+        var rentalTemplateScanRows = await LoadRentalTemplateScanRowsAsync(cancellationToken);
+        var rentalProfileMonthlyAmountMismatchCount = rentalTemplateScanRows.Count(row =>
+            row.TemplateParseSucceeded &&
+            row.TemplateItems.Count > 0 &&
+            AmountDiffers(row.Profile.MonthlyAmount, row.TemplateMonthlyAmount));
+        AddIssue(issues, "rental_profile_monthly_amount_mismatch", rentalProfileMonthlyAmountMismatchCount, "Warning", "렌탈 청구 프로필 월 기준금액과 청구 품목 합계가 다릅니다.");
+
+        var rentalProfileAssetMonthlyAmountMismatchCount = rentalTemplateScanRows.Count(row =>
+            row.LinkedAssets.Count > 0 &&
+            row.LinkedAssetMonthlyAmount > 0m &&
+            AmountDiffers(row.Profile.MonthlyAmount, row.LinkedAssetMonthlyAmount));
+        AddIssue(issues, "rental_profile_asset_monthly_amount_mismatch", rentalProfileAssetMonthlyAmountMismatchCount, "Warning", "렌탈 청구 프로필 월 기준금액과 연결 자산 월요금 합계가 다릅니다.");
+
+        var rentalAssetTemplateMonthlyMismatchCount = CountRentalAssetTemplateMonthlyMismatches(rentalTemplateScanRows);
+        AddIssue(issues, "rental_asset_template_monthly_mismatch", rentalAssetTemplateMonthlyMismatchCount, "Warning", "렌탈 자산 월요금 합계와 청구 품목 금액이 다릅니다.");
 
         var orphanRentalAssetCustomerCount = await _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
             .Where(asset => !asset.IsDeleted && asset.CustomerId.HasValue)
@@ -235,9 +276,15 @@ public sealed class IntegrityController : ControllerBase
             "cross_tenant_inventory_transfers" => await LoadCrossTenantInventoryTransferDetailsAsync(cancellationToken),
             "orphan_item_warehouse_stock_refs" => await LoadOrphanItemWarehouseStockDetailsAsync(cancellationToken),
             "item_stock_snapshot_mismatch" => await LoadItemStockSnapshotMismatchDetailsAsync(cancellationToken),
+            "item_negative_current_stock" => await LoadNegativeCurrentStockDetailsAsync(cancellationToken),
             "orphan_invoice_customer_refs" => await LoadOrphanInvoiceCustomerDetailsAsync(cancellationToken),
+            "active_invoice_lines_deleted_invoice" => await LoadActiveInvoiceLinesDeletedInvoiceDetailsAsync(cancellationToken),
             "orphan_transaction_customer_refs" => await LoadOrphanTransactionCustomerDetailsAsync(cancellationToken),
             "orphan_rental_profile_customer_refs" => await LoadOrphanRentalProfileCustomerDetailsAsync(cancellationToken),
+            "rental_profile_customer_unlinked" => await LoadRentalProfileCustomerUnlinkedDetailsAsync(cancellationToken),
+            "rental_profile_monthly_amount_mismatch" => await LoadRentalProfileMonthlyAmountMismatchDetailsAsync(cancellationToken),
+            "rental_profile_asset_monthly_amount_mismatch" => await LoadRentalProfileAssetMonthlyAmountMismatchDetailsAsync(cancellationToken),
+            "rental_asset_template_monthly_mismatch" => await LoadRentalAssetTemplateMonthlyMismatchDetailsAsync(cancellationToken),
             "orphan_rental_asset_customer_refs" => await LoadOrphanRentalAssetCustomerDetailsAsync(cancellationToken),
             "orphan_rental_asset_profile_refs" => await LoadOrphanRentalAssetProfileDetailsAsync(cancellationToken),
             "orphan_rental_asset_item_refs" => await LoadOrphanRentalAssetItemDetailsAsync(cancellationToken),
@@ -563,6 +610,31 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadNegativeCurrentStockDetailsAsync(CancellationToken cancellationToken)
+    {
+        var scopedItems = await _officeScopeService.ApplyItemScope(_dbContext.Items.IgnoreQueryFilters().AsNoTracking())
+            .Where(item => !item.IsDeleted)
+            .ToListAsync(cancellationToken);
+
+        return scopedItems
+            .Where(item => ItemOperationalPolicy.SupportsInventory(item.TrackingType) && item.CurrentStock < 0m)
+            .OrderBy(item => item.NameOriginal, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.SpecificationOriginal, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Id)
+            .Select(item => CreateDetailRow(
+                entityType: "품목",
+                entityIdText: FormatGuid(item.Id),
+                primaryText: item.NameOriginal,
+                secondaryText: CombineParts(item.SpecificationOriginal, item.CategoryName),
+                referenceText: string.IsNullOrWhiteSpace(item.NameMatchKey) ? FormatGuid(item.Id) : $"품명키 {item.NameMatchKey}",
+                scopeText: FormatScope(item.TenantCode, item.OfficeCode),
+                detailText: CombineParts(
+                    $"현재재고 {FormatNumber(item.CurrentStock)}",
+                    string.IsNullOrWhiteSpace(item.TrackingType) ? null : $"재고방식 {item.TrackingType}",
+                    item.SafetyStock > 0m ? $"안전재고 {FormatNumber(item.SafetyStock)}" : null)))
+            .ToList();
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadOrphanInvoiceCustomerDetailsAsync(CancellationToken cancellationToken)
     {
         var invoices = await (
@@ -585,6 +657,36 @@ public sealed class IntegrityController : ControllerBase
                 referenceText: $"누락 거래처 {FormatGuid(invoice.CustomerId)}",
                 scopeText: FormatScope(invoice.TenantCode, invoice.OfficeCode, invoice.ResponsibleOfficeCode),
                 detailText: CombineParts($"전표유형 {invoice.VoucherType}", $"합계 {FormatMoney(invoice.TotalAmount)}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadActiveInvoiceLinesDeletedInvoiceDetailsAsync(CancellationToken cancellationToken)
+    {
+        var lines = await (
+                from line in _dbContext.InvoiceLines.IgnoreQueryFilters().AsNoTracking()
+                join invoice in _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                    on line.InvoiceId equals invoice.Id
+                where !line.IsDeleted && invoice.IsDeleted
+                orderby invoice.InvoiceDate, invoice.InvoiceNumber, line.ItemNameOriginal
+                select new
+                {
+                    Line = line,
+                    Invoice = invoice
+                })
+            .ToListAsync(cancellationToken);
+
+        return lines
+            .Select(row => CreateDetailRow(
+                entityType: "전표세부내역",
+                entityIdText: FormatGuid(row.Line.Id),
+                primaryText: FirstNonEmpty(row.Line.ItemNameOriginal, FormatGuid(row.Line.Id)),
+                secondaryText: CombineParts(row.Line.SpecificationOriginal, $"수량 {FormatNumber(row.Line.Quantity)}", $"금액 {FormatMoney(row.Line.LineAmount)}"),
+                referenceText: $"삭제 전표 {FirstNonEmpty(row.Invoice.InvoiceNumber, row.Invoice.LocalTempNumber, FormatGuid(row.Invoice.Id))}",
+                scopeText: FormatScope(row.Invoice.TenantCode, row.Invoice.OfficeCode, row.Invoice.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"전표일 {FormatDate(row.Invoice.InvoiceDate)}",
+                    $"전표유형 {row.Invoice.VoucherType}",
+                    $"전표ID {FormatGuid(row.Invoice.Id)}")))
             .ToList();
     }
 
@@ -641,6 +743,99 @@ public sealed class IntegrityController : ControllerBase
                     string.IsNullOrWhiteSpace(profile.ManagementCompanyCode) ? null : $"관리업체 {profile.ManagementCompanyCode}",
                     string.IsNullOrWhiteSpace(profile.InstallSiteName) ? null : $"설치처 {profile.InstallSiteName}",
                     string.IsNullOrWhiteSpace(profile.BillingStatus) ? null : $"청구상태 {profile.BillingStatus}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalProfileCustomerUnlinkedDetailsAsync(CancellationToken cancellationToken)
+    {
+        var profiles = await _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+            .Where(profile => !profile.IsDeleted && !profile.CustomerId.HasValue && !string.IsNullOrWhiteSpace(profile.CustomerName))
+            .OrderBy(profile => profile.CustomerName)
+            .ThenBy(profile => profile.ProfileKey)
+            .ThenBy(profile => profile.Id)
+            .ToListAsync(cancellationToken);
+
+        return profiles
+            .Select(profile => CreateDetailRow(
+                entityType: "렌탈청구프로필",
+                entityIdText: FormatGuid(profile.Id),
+                primaryText: FirstNonEmpty(profile.CustomerName, profile.ProfileKey, FormatGuid(profile.Id)),
+                secondaryText: CombineParts(profile.ItemName, profile.InstallSiteName),
+                referenceText: "거래처 ID 미연결",
+                scopeText: FormatScope(profile.TenantCode, profile.OfficeCode, profile.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"월기준금액 {FormatMoney(profile.MonthlyAmount)}",
+                    string.IsNullOrWhiteSpace(profile.BillingType) ? null : $"라인유형 {profile.BillingType}",
+                    string.IsNullOrWhiteSpace(profile.BillingStatus) ? null : $"청구상태 {profile.BillingStatus}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalProfileMonthlyAmountMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await LoadRentalTemplateScanRowsAsync(cancellationToken);
+
+        return rows
+            .Where(row => row.TemplateParseSucceeded && row.TemplateItems.Count > 0 && AmountDiffers(row.Profile.MonthlyAmount, row.TemplateMonthlyAmount))
+            .OrderBy(row => row.Profile.CustomerName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Profile.ProfileKey, StringComparer.OrdinalIgnoreCase)
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈청구프로필",
+                entityIdText: FormatGuid(row.Profile.Id),
+                primaryText: FirstNonEmpty(row.Profile.CustomerName, row.Profile.ProfileKey, FormatGuid(row.Profile.Id)),
+                secondaryText: CombineParts(row.Profile.ItemName, row.Profile.InstallSiteName),
+                referenceText: $"청구 품목 {row.TemplateItems.Count:N0}개",
+                scopeText: FormatScope(row.Profile.TenantCode, row.Profile.OfficeCode, row.Profile.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"월기준금액 {FormatMoney(row.Profile.MonthlyAmount)}",
+                    $"품목합계 {FormatMoney(row.TemplateMonthlyAmount)}",
+                    $"차이 {FormatMoney(row.Profile.MonthlyAmount - row.TemplateMonthlyAmount)}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalProfileAssetMonthlyAmountMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await LoadRentalTemplateScanRowsAsync(cancellationToken);
+
+        return rows
+            .Where(row => row.LinkedAssets.Count > 0 && row.LinkedAssetMonthlyAmount > 0m && AmountDiffers(row.Profile.MonthlyAmount, row.LinkedAssetMonthlyAmount))
+            .OrderBy(row => row.Profile.CustomerName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Profile.ProfileKey, StringComparer.OrdinalIgnoreCase)
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈청구프로필",
+                entityIdText: FormatGuid(row.Profile.Id),
+                primaryText: FirstNonEmpty(row.Profile.CustomerName, row.Profile.ProfileKey, FormatGuid(row.Profile.Id)),
+                secondaryText: CombineParts(row.Profile.ItemName, row.Profile.InstallSiteName),
+                referenceText: $"연결 자산 {row.LinkedAssets.Count:N0}대",
+                scopeText: FormatScope(row.Profile.TenantCode, row.Profile.OfficeCode, row.Profile.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"월기준금액 {FormatMoney(row.Profile.MonthlyAmount)}",
+                    $"자산월요금합계 {FormatMoney(row.LinkedAssetMonthlyAmount)}",
+                    $"차이 {FormatMoney(row.Profile.MonthlyAmount - row.LinkedAssetMonthlyAmount)}",
+                    BuildAssetMonthlyBreakdown(row.LinkedAssets))))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalAssetTemplateMonthlyMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await LoadRentalTemplateScanRowsAsync(cancellationToken);
+
+        return rows
+            .SelectMany(CreateRentalAssetTemplateMonthlyMismatchRows)
+            .OrderBy(row => row.Profile.CustomerName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Profile.ProfileKey, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.TemplateItem.DisplayItemName, StringComparer.OrdinalIgnoreCase)
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈청구품목",
+                entityIdText: FormatGuid(row.Profile.Id),
+                primaryText: FirstNonEmpty(row.Profile.CustomerName, row.Profile.ProfileKey, FormatGuid(row.Profile.Id)),
+                secondaryText: FirstNonEmpty(row.TemplateItem.DisplayItemName, row.Profile.ItemName, "청구 품목"),
+                referenceText: $"연결 자산 {row.LinkedAssets.Count:N0}대",
+                scopeText: FormatScope(row.Profile.TenantCode, row.Profile.OfficeCode, row.Profile.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"품목금액 {FormatMoney(row.TemplateMonthlyAmount)}",
+                    $"자산월요금합계 {FormatMoney(row.AssetMonthlyAmount)}",
+                    $"차이 {FormatMoney(row.TemplateMonthlyAmount - row.AssetMonthlyAmount)}",
+                    BuildAssetMonthlyBreakdown(row.LinkedAssets))))
             .ToList();
     }
 
@@ -982,6 +1177,150 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<RentalTemplateScanRow>> LoadRentalTemplateScanRowsAsync(CancellationToken cancellationToken)
+    {
+        var profiles = await _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+            .Where(profile => !profile.IsDeleted && profile.IsActive)
+            .ToListAsync(cancellationToken);
+        if (profiles.Count == 0)
+            return [];
+
+        var profileIds = profiles
+            .Select(profile => profile.Id)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+
+        var scopedAssets = await _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
+            .Where(asset => !asset.IsDeleted)
+            .ToListAsync(cancellationToken);
+        var assetsByProfile = scopedAssets
+            .Where(asset => asset.BillingProfileId.HasValue && profileIds.Contains(asset.BillingProfileId.Value))
+            .GroupBy(asset => asset.BillingProfileId!.Value)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(asset => FirstNonEmpty(asset.ManagementNumber, asset.AssetKey, asset.ManagementId), StringComparer.OrdinalIgnoreCase)
+                    .ToList());
+        var assetsById = scopedAssets
+            .Where(asset => asset.Id != Guid.Empty)
+            .GroupBy(asset => asset.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+
+        return profiles
+            .Select(profile =>
+            {
+                var parsed = ParseRentalBillingTemplateItems(profile);
+                var linkedAssets = assetsByProfile.TryGetValue(profile.Id, out var foundAssets)
+                    ? foundAssets
+                    : [];
+                return new RentalTemplateScanRow(
+                    profile,
+                    parsed.Success,
+                    parsed.Items,
+                    parsed.Items.Sum(ResolveTemplateMonthlyAmount),
+                    linkedAssets,
+                    linkedAssets.Sum(asset => Math.Max(0m, asset.MonthlyFee)),
+                    assetsById);
+            })
+            .ToList();
+    }
+
+    private static int CountRentalAssetTemplateMonthlyMismatches(IEnumerable<RentalTemplateScanRow> rows)
+        => rows.SelectMany(CreateRentalAssetTemplateMonthlyMismatchRows).Count();
+
+    private static IEnumerable<RentalAssetTemplateMonthlyMismatchRow> CreateRentalAssetTemplateMonthlyMismatchRows(RentalTemplateScanRow row)
+    {
+        if (!row.TemplateParseSucceeded)
+            yield break;
+
+        foreach (var templateItem in row.TemplateItems)
+        {
+            var includedAssetIds = (templateItem.IncludedAssetIds ?? [])
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+            if (includedAssetIds.Count == 0)
+                continue;
+
+            var linkedAssets = includedAssetIds
+                .Select(id => row.ScopedAssetsById.TryGetValue(id, out var asset) ? asset : null)
+                .Where(asset => asset is not null)
+                .Cast<RentalAsset>()
+                .ToList();
+            if (linkedAssets.Count == 0)
+                continue;
+
+            var assetMonthlyAmount = linkedAssets.Sum(asset => Math.Max(0m, asset.MonthlyFee));
+            var templateMonthlyAmount = ResolveTemplateMonthlyAmount(templateItem);
+            if (assetMonthlyAmount <= 0m || !AmountDiffers(assetMonthlyAmount, templateMonthlyAmount))
+                continue;
+
+            yield return new RentalAssetTemplateMonthlyMismatchRow(
+                row.Profile,
+                templateItem,
+                linkedAssets,
+                templateMonthlyAmount,
+                assetMonthlyAmount);
+        }
+    }
+
+    private static ParsedRentalBillingTemplateItems ParseRentalBillingTemplateItems(RentalBillingProfile profile)
+    {
+        if (string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
+            return new ParsedRentalBillingTemplateItems(true, []);
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<List<RentalBillingTemplateItemSnapshot>>(profile.BillingTemplateJson, RentalTemplateJsonOptions) ?? [];
+            var normalized = parsed
+                .Where(item => item is not null)
+                .Select(item => new RentalBillingTemplateItemSnapshot
+                {
+                    ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
+                    DisplayItemName = FirstNonEmpty(item.DisplayItemName, profile.ItemName, "렌탈 임대료"),
+                    BillingLineMode = item.BillingLineMode ?? string.Empty,
+                    Specification = item.Specification ?? string.Empty,
+                    Unit = item.Unit ?? string.Empty,
+                    MaterialNumber = item.MaterialNumber ?? string.Empty,
+                    RepresentativeAssetId = item.RepresentativeAssetId,
+                    Quantity = item.Quantity <= 0m ? 1m : item.Quantity,
+                    UnitPrice = Math.Max(0m, item.UnitPrice),
+                    Amount = Math.Max(0m, item.Amount),
+                    Note = item.Note ?? string.Empty,
+                    IncludedAssetIds = item.IncludedAssetIds?.Where(id => id != Guid.Empty).Distinct().ToList() ?? []
+                })
+                .ToList();
+
+            return new ParsedRentalBillingTemplateItems(true, normalized);
+        }
+        catch
+        {
+            return new ParsedRentalBillingTemplateItems(false, []);
+        }
+    }
+
+    private static decimal ResolveTemplateMonthlyAmount(RentalBillingTemplateItemSnapshot item)
+    {
+        var quantity = item.Quantity <= 0m ? 1m : item.Quantity;
+        var unitPrice = Math.Max(0m, item.UnitPrice);
+        var calculated = quantity * unitPrice;
+        return calculated > 0m ? calculated : Math.Max(0m, item.Amount);
+    }
+
+    private static bool AmountDiffers(decimal left, decimal right)
+        => Math.Abs(left - right) >= 1m;
+
+    private static string BuildAssetMonthlyBreakdown(IReadOnlyCollection<RentalAsset> assets)
+    {
+        if (assets.Count == 0)
+            return string.Empty;
+
+        return "자산별 " + string.Join(", ", assets
+            .OrderBy(asset => FirstNonEmpty(asset.ManagementNumber, asset.AssetKey, asset.ManagementId), StringComparer.OrdinalIgnoreCase)
+            .Take(6)
+            .Select(asset => $"{FirstNonEmpty(asset.ManagementNumber, asset.AssetKey, asset.ManagementId, FormatGuid(asset.Id))}:{FormatMoney(asset.MonthlyFee)}"));
+    }
+
     private static void AddIssue(ICollection<IntegrityIssueDto> issues, string code, int count, string severity, string message)
     {
         if (count <= 0)
@@ -1090,9 +1429,15 @@ public sealed class IntegrityController : ControllerBase
             "cross_tenant_inventory_transfers" => new IntegrityIssueDefinition("cross_tenant_inventory_transfers", "Error", "업체 간 직접 재고이동 문서가 존재합니다."),
             "orphan_item_warehouse_stock_refs" => new IntegrityIssueDefinition("orphan_item_warehouse_stock_refs", "Error", "품목이 없는 창고 재고 행이 존재합니다."),
             "item_stock_snapshot_mismatch" => new IntegrityIssueDefinition("item_stock_snapshot_mismatch", "Warning", "품목 현재재고와 창고 합계가 일치하지 않는 항목이 있습니다."),
+            "item_negative_current_stock" => new IntegrityIssueDefinition("item_negative_current_stock", "Warning", "현재재고가 음수인 품목이 있습니다."),
             "orphan_invoice_customer_refs" => new IntegrityIssueDefinition("orphan_invoice_customer_refs", "Error", "거래처가 없는 전표 참조가 존재합니다."),
+            "active_invoice_lines_deleted_invoice" => new IntegrityIssueDefinition("active_invoice_lines_deleted_invoice", "Error", "삭제된 전표에 활성 세부내역 행이 남아 있습니다."),
             "orphan_transaction_customer_refs" => new IntegrityIssueDefinition("orphan_transaction_customer_refs", "Error", "거래처가 없는 수금/지불 참조가 존재합니다."),
             "orphan_rental_profile_customer_refs" => new IntegrityIssueDefinition("orphan_rental_profile_customer_refs", "Error", "거래처가 없는 렌탈 청구 프로필 참조가 존재합니다."),
+            "rental_profile_customer_unlinked" => new IntegrityIssueDefinition("rental_profile_customer_unlinked", "Warning", "거래처 ID 없이 거래처명만 저장된 렌탈 청구 프로필이 있습니다."),
+            "rental_profile_monthly_amount_mismatch" => new IntegrityIssueDefinition("rental_profile_monthly_amount_mismatch", "Warning", "렌탈 청구 프로필 월 기준금액과 청구 품목 합계가 다릅니다."),
+            "rental_profile_asset_monthly_amount_mismatch" => new IntegrityIssueDefinition("rental_profile_asset_monthly_amount_mismatch", "Warning", "렌탈 청구 프로필 월 기준금액과 연결 자산 월요금 합계가 다릅니다."),
+            "rental_asset_template_monthly_mismatch" => new IntegrityIssueDefinition("rental_asset_template_monthly_mismatch", "Warning", "렌탈 자산 월요금 합계와 청구 품목 금액이 다릅니다."),
             "orphan_rental_asset_customer_refs" => new IntegrityIssueDefinition("orphan_rental_asset_customer_refs", "Error", "거래처가 없는 렌탈 자산 참조가 존재합니다."),
             "orphan_rental_asset_profile_refs" => new IntegrityIssueDefinition("orphan_rental_asset_profile_refs", "Error", "렌탈 청구 프로필이 없는 자산 연결이 존재합니다."),
             "orphan_rental_asset_item_refs" => new IntegrityIssueDefinition("orphan_rental_asset_item_refs", "Error", "품목이 없는 렌탈 자산 연결이 존재합니다."),
@@ -1235,4 +1580,40 @@ public sealed class IntegrityController : ControllerBase
         ItemScopeInferenceResult Inference);
 
     private sealed record ItemWarehouseStockSnapshot(Guid ItemId, string WarehouseCode, decimal Quantity);
+
+    private sealed record ParsedRentalBillingTemplateItems(
+        bool Success,
+        List<RentalBillingTemplateItemSnapshot> Items);
+
+    private sealed record RentalTemplateScanRow(
+        RentalBillingProfile Profile,
+        bool TemplateParseSucceeded,
+        List<RentalBillingTemplateItemSnapshot> TemplateItems,
+        decimal TemplateMonthlyAmount,
+        List<RentalAsset> LinkedAssets,
+        decimal LinkedAssetMonthlyAmount,
+        IReadOnlyDictionary<Guid, RentalAsset> ScopedAssetsById);
+
+    private sealed record RentalAssetTemplateMonthlyMismatchRow(
+        RentalBillingProfile Profile,
+        RentalBillingTemplateItemSnapshot TemplateItem,
+        List<RentalAsset> LinkedAssets,
+        decimal TemplateMonthlyAmount,
+        decimal AssetMonthlyAmount);
+
+    private sealed class RentalBillingTemplateItemSnapshot
+    {
+        public Guid ItemId { get; set; } = Guid.NewGuid();
+        public string DisplayItemName { get; set; } = string.Empty;
+        public string BillingLineMode { get; set; } = string.Empty;
+        public string Specification { get; set; } = string.Empty;
+        public string Unit { get; set; } = string.Empty;
+        public string MaterialNumber { get; set; } = string.Empty;
+        public Guid? RepresentativeAssetId { get; set; }
+        public decimal Quantity { get; set; } = 1m;
+        public decimal UnitPrice { get; set; }
+        public decimal Amount { get; set; }
+        public string Note { get; set; } = string.Empty;
+        public List<Guid> IncludedAssetIds { get; set; } = new();
+    }
 }

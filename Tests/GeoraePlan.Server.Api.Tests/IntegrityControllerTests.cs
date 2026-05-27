@@ -1,3 +1,4 @@
+using System.Text.Json;
 using 거래플랜.Server.Api.Controllers;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
@@ -526,6 +527,131 @@ public sealed class IntegrityControllerTests : IDisposable
 
         Assert.Equal("Error", issue.Severity);
         Assert.Equal(1, issue.Count);
+    }
+
+    [Fact]
+    public async Task GetReport_IncludesOperationalDataRiskSignals()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var negativeStockItemId = Guid.NewGuid();
+        var rentalProfileId = Guid.NewGuid();
+        var rentalAssetId = Guid.NewGuid();
+        var deletedInvoiceId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Integrity Customer",
+            NameMatchKey = "INTEGRITYCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.Items.Add(new Item
+        {
+            Id = negativeStockItemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Negative Stock Item",
+            NameMatchKey = "NEGATIVESTOCKITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = -3m
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = deletedInvoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-DELETED-LINE",
+            InvoiceDate = new DateOnly(2026, 5, 28),
+            IsDeleted = true,
+            Lines =
+            {
+                new InvoiceLine
+                {
+                    Id = Guid.NewGuid(),
+                    ItemNameOriginal = "Deleted Invoice Active Line",
+                    Quantity = 1m,
+                    UnitPrice = 1000m,
+                    LineAmount = 1000m
+                }
+            }
+        });
+
+        var templateJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                DisplayItemName = "렌탈료",
+                Quantity = 1m,
+                UnitPrice = 2_000m,
+                Amount = 2_000m,
+                IncludedAssetIds = new[] { rentalAssetId }
+            }
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = rentalProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "PROFILE-RISK-001",
+            CustomerName = "거래처명만 있는 프로필",
+            ItemName = "렌탈료",
+            BillingType = "묶음",
+            MonthlyAmount = 1_000m,
+            BillingTemplateJson = templateJson,
+            IsActive = true
+        });
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = rentalAssetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            BillingProfileId = rentalProfileId,
+            AssetKey = "ASSET-RISK-001",
+            ManagementId = "RISK-001",
+            ManagementNumber = "RISK-001",
+            CustomerName = "거래처명만 있는 프로필",
+            ItemName = "복합기",
+            MonthlyFee = 3_000m
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new IntegrityController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext));
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issues = payload.Issues.ToDictionary(issue => issue.Code, StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal(1, issues["item_negative_current_stock"].Count);
+        Assert.Equal(1, issues["active_invoice_lines_deleted_invoice"].Count);
+        Assert.Equal(1, issues["rental_profile_customer_unlinked"].Count);
+        Assert.Equal(1, issues["rental_profile_monthly_amount_mismatch"].Count);
+        Assert.Equal(1, issues["rental_profile_asset_monthly_amount_mismatch"].Count);
+        Assert.Equal(1, issues["rental_asset_template_monthly_mismatch"].Count);
+
+        var lineDetailsResponse = await controller.GetReportDetails("active_invoice_lines_deleted_invoice", CancellationToken.None);
+        var lineDetailsOk = Assert.IsType<OkObjectResult>(lineDetailsResponse.Result);
+        var lineDetails = Assert.IsType<IntegrityIssueDetailResultDto>(lineDetailsOk.Value);
+        Assert.Single(lineDetails.Rows);
+        Assert.Contains("삭제 전표", lineDetails.Rows[0].ReferenceText, StringComparison.Ordinal);
+
+        var rentalDetailsResponse = await controller.GetReportDetails("rental_profile_asset_monthly_amount_mismatch", CancellationToken.None);
+        var rentalDetailsOk = Assert.IsType<OkObjectResult>(rentalDetailsResponse.Result);
+        var rentalDetails = Assert.IsType<IntegrityIssueDetailResultDto>(rentalDetailsOk.Value);
+        Assert.Single(rentalDetails.Rows);
+        Assert.Contains("자산월요금합계 3,000", rentalDetails.Rows[0].DetailText, StringComparison.Ordinal);
     }
 
     [Fact]
