@@ -732,8 +732,6 @@ try {
         throw "메인 창을 찾지 못했습니다. windows=$($windowNames -join ', '); loginTexts=$($loginTexts -join ', ')"
     }
 
-    Start-Sleep -Seconds 5
-
     $requiredMainButtons = @(
         '품목/재고 관리',
         '신규 렌탈 등록',
@@ -748,12 +746,25 @@ try {
         '수금 입력',
         '전표 인쇄[F9]'
     )
+
     $missingMainButtons = @()
-    foreach ($buttonName in $requiredMainButtons) {
-        if (-not (Test-NameExists -Root $mainWindow -Name $buttonName)) {
-            $missingMainButtons += $buttonName
+    $buttonWaitDeadline = (Get-Date).AddSeconds(45)
+    do {
+        $missingMainButtons = @()
+        foreach ($buttonName in $requiredMainButtons) {
+            if (-not (Test-NameExists -Root $mainWindow -Name $buttonName)) {
+                $missingMainButtons += $buttonName
+            }
         }
+
+        if ($missingMainButtons.Count -eq 0) {
+            break
+        }
+
+        Start-Sleep -Milliseconds 750
     }
+    while ((Get-Date) -lt $buttonWaitDeadline)
+
     Add-Step -Steps $steps -Name 'main-buttons' -Passed ($missingMainButtons.Count -eq 0) -Detail ($(if ($missingMainButtons.Count -eq 0) { 'all found' } else { 'missing: ' + ($missingMainButtons -join ', ') }))
 
     if ($UseInAppSelfTest) {

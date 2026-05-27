@@ -44,7 +44,7 @@ public sealed class RuntimeEditSessionsController : ControllerBase
         var nowUtc = DateTime.UtcNow;
         var cleaned = await CleanupExpiredSessionsAsync(nowUtc, cancellationToken);
         if (cleaned)
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await SaveActiveEditSessionChangesAsync(cancellationToken);
 
         var currentTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
             _currentUserContext.TenantCode,
@@ -135,7 +135,7 @@ public sealed class RuntimeEditSessionsController : ControllerBase
         if (sameLocalEditorSessions.Count > 0)
             _dbContext.ActiveEditSessions.RemoveRange(sameLocalEditorSessions);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await SaveActiveEditSessionChangesAsync(cancellationToken);
 
         var others = await _dbContext.ActiveEditSessions
             .AsNoTracking()
@@ -183,7 +183,7 @@ public sealed class RuntimeEditSessionsController : ControllerBase
         }
 
         if (hasChanges)
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await SaveActiveEditSessionChangesAsync(cancellationToken);
 
         return Ok();
     }
@@ -199,6 +199,22 @@ public sealed class RuntimeEditSessionsController : ControllerBase
 
         _dbContext.ActiveEditSessions.RemoveRange(expiredSessions);
         return true;
+    }
+
+    private async Task<bool> SaveActiveEditSessionChangesAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+        catch (DbUpdateConcurrencyException ex) when (ex.Entries.All(entry => entry.Entity is ActiveEditSession))
+        {
+            foreach (var entry in ex.Entries)
+                entry.State = EntityState.Detached;
+
+            return false;
+        }
     }
 
     private bool IsOwnedByCurrentCaller(ActiveEditSession session, Guid requestAppSessionId, Guid requestEditSessionId)
