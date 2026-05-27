@@ -255,9 +255,10 @@ if (Test-Path -LiteralPath $NasStateRoot) {
     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "replica=$replica"
     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "cert=$cert"
 
-    $nasOk = ($daily -match 'healthz=ok') -and ($daily -match 'manifest=ok') -and ($daily -match 'backup=ok') -and ($daily -match 'replica=ok') -and ($backup -match 'backup=ok') -and ($replica -match 'replica=ok') -and ($cert -match 'cert=ok')
+    $dailyEndpointOk = ($daily -match 'healthz=ok') -or ($daily -match 'readyz=ok')
+    $nasOk = $dailyEndpointOk -and ($daily -match 'manifest=ok') -and ($daily -match 'backup=ok') -and ($daily -match 'replica=ok') -and ($backup -match 'backup=ok') -and ($replica -match 'replica=ok') -and ($cert -match 'cert=ok')
     if ($nasOk) {
-        Add-Check -Checks $checks -Name 'NAS status files' -Status 'PASS' -Detail 'daily/backup/replica/cert ok'
+        Add-Check -Checks $checks -Name 'NAS status files' -Status 'PASS' -Detail 'daily endpoint/manifest/backup/replica/cert ok'
     }
     else {
         Add-Check -Checks $checks -Name 'NAS status files' -Status 'WARN' -Detail 'NAS files readable but one or more ok markers missing'
@@ -274,13 +275,39 @@ $yeonsu = Get-AccountCredential -Secrets $secrets -Alias 'yeonsu' -UsernameEnvNa
 $admin = Get-AccountCredential -Secrets $secrets -Alias 'admin' -UsernameEnvName 'GEORAEPLAN_SCOPE_ADMIN_USERNAME' -PasswordEnvName 'GEORAEPLAN_SCOPE_ADMIN_PASSWORD'
 $accounts = @($admin, $itworld, $usenet, $yeonsu)
 
-$availableScopeAccounts = @($itworld, $usenet, $yeonsu) | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Username) -and -not [string]::IsNullOrWhiteSpace($_.Password) }
-if ($availableScopeAccounts.Count -gt 0) {
+$availableScopeAccounts = @(@($itworld, $usenet, $yeonsu) | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Username) -and -not [string]::IsNullOrWhiteSpace($_.Password) })
+if (@($availableScopeAccounts).Count -gt 0) {
     $accountScopeScript = Join-Path $resolvedRoot '테스트 시행\Invoke-AccountScopeRegressionCheck.ps1'
     $accountScopeReport = Join-Path $OutputDirectory 'account-scope-regression.md'
     if (Test-Path -LiteralPath $accountScopeScript) {
         try {
-            $scriptOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $accountScopeScript -ProjectRoot $resolvedRoot -BaseUrl $BaseUrl -ItworldUsername $itworld.Username -ItworldPassword $itworld.Password -UsenetUsername $usenet.Username -UsenetPassword $usenet.Password -YeonsuUsername $yeonsu.Username -YeonsuPassword $yeonsu.Password -OutputPath $accountScopeReport 2>&1 | Out-String -Width 4096
+            $accountScopeArgs = @(
+                '-NoProfile',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', $accountScopeScript,
+                '-ProjectRoot', $resolvedRoot,
+                '-BaseUrl', $BaseUrl
+            )
+            if (-not [string]::IsNullOrWhiteSpace([string]$itworld.Username)) {
+                $accountScopeArgs += @('-ItworldUsername', ([string]$itworld.Username))
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$itworld.Password)) {
+                $accountScopeArgs += @('-ItworldPassword', ([string]$itworld.Password))
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$usenet.Username)) {
+                $accountScopeArgs += @('-UsenetUsername', ([string]$usenet.Username))
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$usenet.Password)) {
+                $accountScopeArgs += @('-UsenetPassword', ([string]$usenet.Password))
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$yeonsu.Username)) {
+                $accountScopeArgs += @('-YeonsuUsername', ([string]$yeonsu.Username))
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$yeonsu.Password)) {
+                $accountScopeArgs += @('-YeonsuPassword', ([string]$yeonsu.Password))
+            }
+            $accountScopeArgs += @('-OutputPath', $accountScopeReport)
+            $scriptOutput = & powershell @accountScopeArgs 2>&1 | Out-String -Width 4096
             Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "`n## account scope regression"
             Add-Content -LiteralPath $logPath -Encoding UTF8 -Value $scriptOutput
             if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $accountScopeReport)) {
