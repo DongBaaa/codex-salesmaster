@@ -582,6 +582,91 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task InvoicesController_SalesCreate_RejectsWhenWarehouseStockWouldBecomeNegative()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Shortage customer",
+            NameMatchKey = "SHORTAGECUSTOMER",
+            TradeType = "Sales"
+        };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Shortage stock item",
+            NameMatchKey = "SHORTAGESTOCKITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 1m
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Items.Add(item);
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 1m,
+            Revision = 1
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+        var invoiceId = Guid.NewGuid();
+
+        var response = await controller.Create(new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 5, 28),
+            Lines =
+            [
+                new InvoiceLineDto
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoiceId,
+                    ItemId = item.Id,
+                    ItemNameOriginal = item.NameOriginal,
+                    ItemTrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    Quantity = 2m,
+                    UnitPrice = 1000m,
+                    LineAmount = 2000m
+                }
+            ]
+        }, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        var message = badRequest.Value?.GetType().GetProperty("message")?.GetValue(badRequest.Value)?.ToString();
+        Assert.Contains("재고", message);
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(invoice => invoice.Id == invoiceId));
+        Assert.Equal(1m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(1m, (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).CurrentStock);
+    }
+
+    [Fact]
     public async Task InvoicesController_PurchaseCreateUpdateDelete_AdjustsWarehouseStockSnapshots()
     {
         var currentUser = CreateAdminUser();

@@ -136,6 +136,58 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsNegativeItemWarehouseStockSnapshot()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Negative guard item",
+            NameMatchKey = "NEGATIVEGUARDITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 3m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 3m,
+            Revision = 1
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "negative-stock-device",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = -1m,
+                    Revision = 1
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(ItemWarehouseStock) &&
+            conflict.Reason.Contains("negative", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(3m, await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(3m, (await _dbContext.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId)).CurrentStock);
+    }
+
+    [Fact]
     public async Task Push_DeduplicatesMutationId_ForCustomerUpdates()
     {
         var customerId = Guid.NewGuid();

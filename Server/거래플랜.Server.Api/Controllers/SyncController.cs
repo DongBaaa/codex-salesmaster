@@ -3704,7 +3704,7 @@ public sealed class SyncController : ControllerBase
         var outOfScopeWarehouseCount = 0;
         var affectedItemIds = new HashSet<Guid>();
 
-        var sanitized = payload
+        var incomingRows = payload
             .Where(dto => dto.ItemId != Guid.Empty && !string.IsNullOrWhiteSpace(dto.WarehouseCode))
             .Select(dto => new ItemWarehouseStockDto
             {
@@ -3715,6 +3715,19 @@ public sealed class SyncController : ControllerBase
                 Revision = dto.Revision,
                 ExpectedRevision = dto.ExpectedRevision
             })
+            .ToList();
+
+        foreach (var dto in incomingRows.Where(dto => dto.Quantity < 0m))
+        {
+            AddClientConflict(
+                dto,
+                nameof(ItemWarehouseStock),
+                $"Warehouse stock quantity cannot be negative. item={dto.ItemId:D}, warehouse={dto.WarehouseCode}, quantity={dto.Quantity:N0}.",
+                result);
+        }
+
+        var sanitized = incomingRows
+            .Where(dto => dto.Quantity >= 0m)
             .GroupBy(dto => new { dto.ItemId, dto.WarehouseCode })
             .Select(group => group.Last())
             .ToList();

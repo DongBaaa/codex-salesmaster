@@ -137,6 +137,93 @@ public sealed class InvoiceStockSnapshotService
         }
     }
 
+    public async Task<IReadOnlyList<InvoiceStockShortage>> FindStockShortagesAsync(
+        IReadOnlyDictionary<InvoiceStockKey, decimal> previous,
+        IReadOnlyDictionary<InvoiceStockKey, decimal> current,
+        CancellationToken cancellationToken = default)
+    {
+        var keys = previous.Keys.Concat(current.Keys).Distinct().ToList();
+        if (keys.Count == 0)
+            return [];
+
+        var appliedDeltas = keys
+            .Select(key =>
+            {
+                previous.TryGetValue(key, out var previousQuantity);
+                current.TryGetValue(key, out var currentQuantity);
+                return new
+                {
+                    Key = key,
+                    Delta = currentQuantity - previousQuantity
+                };
+            })
+            .Where(row => row.Delta < 0m)
+            .ToList();
+        if (appliedDeltas.Count == 0)
+            return [];
+
+        var itemIds = appliedDeltas.Select(row => row.Key.ItemId).Distinct().ToList();
+        var items = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => itemIds.Contains(item.Id) && !item.IsDeleted)
+            .Select(item => new
+            {
+                item.Id,
+                item.NameOriginal,
+                item.SpecificationOriginal,
+                item.TrackingType
+            })
+            .ToDictionaryAsync(item => item.Id, cancellationToken);
+        var stocks = await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock => itemIds.Contains(stock.ItemId))
+            .ToListAsync(cancellationToken);
+
+        var shortages = new List<InvoiceStockShortage>();
+        foreach (var row in appliedDeltas)
+        {
+            if (!items.TryGetValue(row.Key.ItemId, out var item) ||
+                !ItemOperationalPolicy.SupportsInventory(item.TrackingType))
+            {
+                continue;
+            }
+
+            var currentQuantity = stocks
+                .Where(stock =>
+                    stock.ItemId == row.Key.ItemId &&
+                    string.Equals(stock.WarehouseCode, row.Key.WarehouseCode, StringComparison.OrdinalIgnoreCase))
+                .Select(stock => stock.Quantity)
+                .DefaultIfEmpty(0m)
+                .Sum();
+            var finalQuantity = currentQuantity + row.Delta;
+            if (finalQuantity >= 0m)
+                continue;
+
+            shortages.Add(new InvoiceStockShortage(
+                row.Key.ItemId,
+                row.Key.WarehouseCode,
+                item.NameOriginal,
+                item.SpecificationOriginal,
+                currentQuantity,
+                Math.Abs(row.Delta),
+                Math.Abs(finalQuantity)));
+        }
+
+        return shortages;
+    }
+
+    public static string FormatStockShortageMessage(IReadOnlyList<InvoiceStockShortage> shortages)
+    {
+        if (shortages.Count == 0)
+            return string.Empty;
+
+        var firstRows = shortages.Take(3).Select(shortage =>
+            $"{shortage.ItemName} / 창고 {shortage.WarehouseCode} / 현재 {shortage.CurrentQuantity:N0} / 차감 {shortage.RequestedDecrease:N0} / 부족 {shortage.ShortageQuantity:N0}");
+        var suffix = shortages.Count > 3 ? $" 외 {shortages.Count - 3:N0}건" : string.Empty;
+        return "재고가 부족하여 판매/전표 변경을 저장할 수 없습니다. " + string.Join("; ", firstRows) + suffix;
+    }
+
     private static string ResolveInvoiceWarehouseCode(Invoice invoice)
         => OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(
             invoice.SourceWarehouseCode,
@@ -144,4 +231,13 @@ public sealed class InvoiceStockSnapshotService
             invoice.OfficeCode);
 
     public readonly record struct InvoiceStockKey(Guid ItemId, string WarehouseCode);
+
+    public sealed record InvoiceStockShortage(
+        Guid ItemId,
+        string WarehouseCode,
+        string ItemName,
+        string Specification,
+        decimal CurrentQuantity,
+        decimal RequestedDecrease,
+        decimal ShortageQuantity);
 }

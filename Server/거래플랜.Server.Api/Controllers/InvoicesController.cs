@@ -114,6 +114,17 @@ public sealed class InvoicesController : ControllerBase
 
         ApplyInvoiceLines(entity, dto.Lines);
         var currentStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
+        var stockShortages = await _invoiceStockSnapshotService.FindStockShortagesAsync(
+            new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
+            currentStockDeltas,
+            cancellationToken);
+        if (stockShortages.Count > 0)
+            return BadRequest(new
+            {
+                message = InvoiceStockSnapshotService.FormatStockShortageMessage(stockShortages),
+                shortages = stockShortages
+            });
+
         await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
             new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
             currentStockDeltas,
@@ -166,6 +177,17 @@ public sealed class InvoicesController : ControllerBase
         entity.Lines.Clear();
         ApplyInvoiceLines(entity, dto.Lines);
         var currentStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
+        var stockShortages = await _invoiceStockSnapshotService.FindStockShortagesAsync(
+            previousStockDeltas,
+            currentStockDeltas,
+            cancellationToken);
+        if (stockShortages.Count > 0)
+            return BadRequest(new
+            {
+                message = InvoiceStockSnapshotService.FormatStockShortageMessage(stockShortages),
+                shortages = stockShortages
+            });
+
         await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
             previousStockDeltas,
             currentStockDeltas,
