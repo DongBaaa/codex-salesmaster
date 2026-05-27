@@ -3787,6 +3787,145 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SaveInventoryTransferAsync_RejectsWhenSourceWarehouseStockWouldBecomeNegative()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-transfer-stock-shortage-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("81266666-6666-6666-6666-666666666666");
+            var itemId = Guid.Parse("81277777-7777-7777-7777-777777777777");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Transfer stock customer",
+                NameMatchKey = "TRANSFERSTOCKCUSTOMER"
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Transfer stock item",
+                NameMatchKey = "TRANSFERSTOCKITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                PurchasePrice = 1000m
+            });
+            await db.SaveChangesAsync();
+
+            await service.SaveInvoiceAsync(new LocalInvoice
+            {
+                Id = Guid.Parse("81288888-8888-8888-8888-888888888888"),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                VoucherType = VoucherType.Purchase,
+                InvoiceDate = new DateOnly(2026, 5, 1),
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemId = itemId,
+                        ItemNameOriginal = "Transfer stock item",
+                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        Unit = "EA",
+                        Quantity = 1m,
+                        UnitPrice = 1000m,
+                        LineAmount = 1000m
+                    }
+                }
+            });
+
+            var result = await service.SaveInventoryTransferAsync(new LocalInventoryTransfer
+            {
+                Id = Guid.Parse("81299999-9999-9999-9999-999999999999"),
+                TransferDate = new DateOnly(2026, 5, 2),
+                FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                Lines =
+                {
+                    new LocalInventoryTransferLine
+                    {
+                        ItemId = itemId,
+                        ItemNameOriginal = "Transfer stock item",
+                        Unit = "EA",
+                        Quantity = 2m
+                    }
+                }
+            }, session);
+
+            Assert.False(result.Success);
+            Assert.Contains("재고가 부족", result.Message);
+            Assert.Equal(1m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+            Assert.Empty(await db.InventoryTransfers.ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SetItemOfficeStockAsync_RejectsNegativeManualStock()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-negative-manual-stock-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var itemId = Guid.Parse("812aaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Manual stock item",
+                NameMatchKey = "MANUALSTOCKITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA"
+            });
+            await db.SaveChangesAsync();
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => service.SetItemOfficeStockAsync(itemId, -1m, OfficeCodeCatalog.Usenet));
+
+            Assert.Contains("0 이상", exception.Message);
+            Assert.Empty(await db.ItemWarehouseStocks.ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RepairMissingItemMastersFromOperationalReferencesAsync_DoesNotRecoverSoftDeletedItems()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-missing-item-repair-{Guid.NewGuid():N}");

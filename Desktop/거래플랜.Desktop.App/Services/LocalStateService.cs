@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -25,8 +25,8 @@ public sealed partial class LocalStateService
 	private const string InventoryResetToZeroMovementType = "StockResetToZero";
 
 	private sealed record CompanyProfileDefaultDefinition(string ProfileName, string OfficeCode, string TradeName, string Representative, string BusinessNumber, string Address, string ContactNumber);
-	private readonly record struct LocalInvoiceStockKey(Guid ItemId, string WarehouseCode);
-	private sealed record LocalInvoiceStockShortage(
+	private readonly record struct LocalStockChangeKey(Guid ItemId, string WarehouseCode);
+	private sealed record LocalStockShortage(
 		Guid ItemId,
 		string WarehouseCode,
 		string ItemName,
@@ -1737,6 +1737,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<LocalItem?> SetItemOfficeStockAsync(Guid itemId, decimal quantity, string? officeCode, CancellationToken ct = default(CancellationToken))
 	{
+		if (quantity < 0m)
+		{
+			throw new InvalidOperationException("재고 수량은 0 이상으로 입력하세요.");
+		}
 		var item = await _db.Items.FindAsync(new object[1] { itemId }, ct);
 		if (item == null)
 		{
@@ -4942,6 +4946,20 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Conflict(conflictMessage);
 		}
+		string transferStatus = string.IsNullOrWhiteSpace(existing?.TransferStatus) ? "수령대기" : existing.TransferStatus.Trim();
+		Dictionary<Guid, string> itemTrackingMap = await BuildItemTrackingMapAsync(ct);
+		var stockShortages = await FindTransferStockShortagesAsync(
+			existing,
+			fromWarehouseCode,
+			toWarehouseCode,
+			transferStatus,
+			validLines,
+			itemTrackingMap,
+			ct);
+		if (stockShortages.Count > 0)
+		{
+			return OfficeMutationResult.Denied(FormatStockShortageMessage("재고가 부족하여 재고이동 문서를 저장할 수 없습니다.", stockShortages));
+		}
 		Guid transferId = existing?.Id ?? ((transfer.Id == Guid.Empty) ? Guid.NewGuid() : transfer.Id);
 		string text = ((!string.IsNullOrWhiteSpace(transfer.TransferNumber)) ? transfer.TransferNumber.Trim() : (await GenerateTransferNumberAsync(transfer.TransferDate, ct)));
 		string transferNumber = text;
@@ -4962,14 +4980,6 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		entity.IsDirty = true;
 		entity.UpdatedAtUtc = now;
 		LocalInventoryTransfer localInventoryTransfer = entity;
-		string? value = existing?.TransferStatus?.Trim();
-		if (1 == 0)
-		{
-		}
-		string transferStatus = ((value != null && !(value == "")) ? value : "수령대기");
-		if (1 == 0)
-		{
-		}
 		localInventoryTransfer.TransferStatus = transferStatus;
 		entity.RequestedByUsername = ((!string.IsNullOrWhiteSpace(existing?.RequestedByUsername)) ? existing.RequestedByUsername : (session.User?.Username ?? "local-user"));
 		entity.RequestedAtUtc = existing?.RequestedAtUtc ?? now;
@@ -6467,7 +6477,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return line.ItemId.HasValue ? "재고" : "비재고";
 	}
 
-	private async Task<IReadOnlyList<LocalInvoiceStockShortage>> FindInvoiceStockShortagesAsync(
+	private async Task<IReadOnlyList<LocalStockShortage>> FindInvoiceStockShortagesAsync(
 		LocalInvoice? previousInvoice,
 		VoucherType currentVoucherType,
 		string currentWarehouseCode,
@@ -6475,16 +6485,38 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		IReadOnlyDictionary<Guid, string> itemTrackingMap,
 		CancellationToken ct)
 	{
-		Dictionary<LocalInvoiceStockKey, decimal> previous = BuildInvoiceStockDeltas(previousInvoice, itemTrackingMap);
-		Dictionary<LocalInvoiceStockKey, decimal> current = BuildInvoiceStockDeltas(currentVoucherType, currentWarehouseCode, currentLines, itemTrackingMap);
-		List<LocalInvoiceStockKey> keys = previous.Keys.Concat(current.Keys).Distinct().ToList();
+		Dictionary<LocalStockChangeKey, decimal> previous = BuildInvoiceStockDeltas(previousInvoice, itemTrackingMap);
+		Dictionary<LocalStockChangeKey, decimal> current = BuildInvoiceStockDeltas(currentVoucherType, currentWarehouseCode, currentLines, itemTrackingMap);
+		return await FindStockShortagesAsync(previous, current, ct);
+	}
+
+	private async Task<IReadOnlyList<LocalStockShortage>> FindTransferStockShortagesAsync(
+		LocalInventoryTransfer? previousTransfer,
+		string currentFromWarehouseCode,
+		string currentToWarehouseCode,
+		string currentTransferStatus,
+		IReadOnlyList<LocalInventoryTransferLine> currentLines,
+		IReadOnlyDictionary<Guid, string> itemTrackingMap,
+		CancellationToken ct)
+	{
+		Dictionary<LocalStockChangeKey, decimal> previous = BuildTransferStockDeltas(previousTransfer, itemTrackingMap);
+		Dictionary<LocalStockChangeKey, decimal> current = BuildTransferStockDeltas(currentFromWarehouseCode, currentToWarehouseCode, currentTransferStatus, currentLines, itemTrackingMap);
+		return await FindStockShortagesAsync(previous, current, ct);
+	}
+
+	private async Task<IReadOnlyList<LocalStockShortage>> FindStockShortagesAsync(
+		IReadOnlyDictionary<LocalStockChangeKey, decimal> previous,
+		IReadOnlyDictionary<LocalStockChangeKey, decimal> current,
+		CancellationToken ct)
+	{
+		List<LocalStockChangeKey> keys = previous.Keys.Concat(current.Keys).Distinct().ToList();
 		if (keys.Count == 0)
 		{
-			return Array.Empty<LocalInvoiceStockShortage>();
+			return Array.Empty<LocalStockShortage>();
 		}
 
 		var appliedDeltas = keys
-			.Select((LocalInvoiceStockKey key) =>
+			.Select((LocalStockChangeKey key) =>
 			{
 				previous.TryGetValue(key, out decimal previousQuantity);
 				current.TryGetValue(key, out decimal currentQuantity);
@@ -6498,7 +6530,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.ToList();
 		if (appliedDeltas.Count == 0)
 		{
-			return Array.Empty<LocalInvoiceStockShortage>();
+			return Array.Empty<LocalStockShortage>();
 		}
 
 		List<Guid> itemIds = appliedDeltas.Select(row => row.Key.ItemId).Distinct().ToList();
@@ -6522,7 +6554,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.Where((LocalItemWarehouseStock stock) => itemIds.Contains(stock.ItemId))
 			.ToListAsync(ct);
 
-		List<LocalInvoiceStockShortage> shortages = new();
+		List<LocalStockShortage> shortages = new();
 		foreach (var row in appliedDeltas)
 		{
 			if (!items.TryGetValue(row.Key.ItemId, out var item))
@@ -6547,7 +6579,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				continue;
 			}
 
-			shortages.Add(new LocalInvoiceStockShortage(
+			shortages.Add(new LocalStockShortage(
 				row.Key.ItemId,
 				row.Key.WarehouseCode,
 				item.NameOriginal,
@@ -6560,26 +6592,87 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return shortages;
 	}
 
-	private static Dictionary<LocalInvoiceStockKey, decimal> BuildInvoiceStockDeltas(
+	private static Dictionary<LocalStockChangeKey, decimal> BuildTransferStockDeltas(
+		LocalInventoryTransfer? transfer,
+		IReadOnlyDictionary<Guid, string> itemTrackingMap)
+	{
+		if (transfer == null || transfer.IsDeleted)
+		{
+			return new Dictionary<LocalStockChangeKey, decimal>();
+		}
+
+		string fromWarehouseCode = NormalizeWarehouseCode(transfer.FromWarehouseCode, ResolveOfficeCodeFromWarehouseCode(transfer.FromWarehouseCode), DomainConstants.OfficeUsenet);
+		string toWarehouseCode = NormalizeWarehouseCode(transfer.ToWarehouseCode, ResolveOfficeCodeFromWarehouseCode(transfer.ToWarehouseCode), DomainConstants.OfficeYeonsu);
+		return BuildTransferStockDeltas(
+			fromWarehouseCode,
+			toWarehouseCode,
+			transfer.TransferStatus,
+			transfer.Lines.Where((LocalInventoryTransferLine line) => !line.IsDeleted).ToList(),
+			itemTrackingMap);
+	}
+
+	private static Dictionary<LocalStockChangeKey, decimal> BuildTransferStockDeltas(
+		string fromWarehouseCode,
+		string toWarehouseCode,
+		string transferStatus,
+		IEnumerable<LocalInventoryTransferLine> lines,
+		IReadOnlyDictionary<Guid, string> itemTrackingMap)
+	{
+		Dictionary<LocalStockChangeKey, decimal> deltas = new();
+		if (string.Equals(transferStatus, "반려", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(fromWarehouseCode, toWarehouseCode, StringComparison.OrdinalIgnoreCase))
+		{
+			return deltas;
+		}
+
+		bool isReceived = string.Equals(transferStatus, "수령확정", StringComparison.OrdinalIgnoreCase);
+		foreach (LocalInventoryTransferLine line in lines)
+		{
+			if (!line.ItemId.HasValue || line.ItemId.Value == Guid.Empty || line.Quantity <= 0m || line.IsDeleted)
+			{
+				continue;
+			}
+
+			if (!itemTrackingMap.TryGetValue(line.ItemId.Value, out string? trackingType) ||
+				!ItemOperationalPolicy.SupportsInventory(trackingType))
+			{
+				continue;
+			}
+
+			AddStockDelta(deltas, new LocalStockChangeKey(line.ItemId.Value, fromWarehouseCode), -Math.Abs(line.Quantity));
+			if (isReceived)
+			{
+				decimal receivedQuantity = Math.Min(Math.Abs(line.Quantity), Math.Max(0m, line.ReceivedQuantity ?? line.Quantity));
+				if (receivedQuantity > 0m)
+				{
+					AddStockDelta(deltas, new LocalStockChangeKey(line.ItemId.Value, toWarehouseCode), receivedQuantity);
+				}
+			}
+		}
+
+		return deltas;
+	}
+
+	private static Dictionary<LocalStockChangeKey, decimal> BuildInvoiceStockDeltas(
 		LocalInvoice? invoice,
 		IReadOnlyDictionary<Guid, string> itemTrackingMap)
 	{
 		if (invoice == null || invoice.IsDeleted || !invoice.IsLatestVersion)
 		{
-			return new Dictionary<LocalInvoiceStockKey, decimal>();
+			return new Dictionary<LocalStockChangeKey, decimal>();
 		}
 
 		string warehouseCode = NormalizeWarehouseCode(invoice.SourceWarehouseCode, invoice.ResponsibleOfficeCode, invoice.OfficeCode);
 		return BuildInvoiceStockDeltas(invoice.VoucherType, warehouseCode, invoice.Lines.Where((LocalInvoiceLine line) => !line.IsDeleted).ToList(), itemTrackingMap);
 	}
 
-	private static Dictionary<LocalInvoiceStockKey, decimal> BuildInvoiceStockDeltas(
+	private static Dictionary<LocalStockChangeKey, decimal> BuildInvoiceStockDeltas(
 		VoucherType voucherType,
 		string warehouseCode,
 		IEnumerable<LocalInvoiceLine> lines,
 		IReadOnlyDictionary<Guid, string> itemTrackingMap)
 	{
-		Dictionary<LocalInvoiceStockKey, decimal> deltas = new();
+		Dictionary<LocalStockChangeKey, decimal> deltas = new();
 		if (voucherType is not (VoucherType.Sales or VoucherType.Purchase or VoucherType.Procurement))
 		{
 			return deltas;
@@ -6605,7 +6698,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				continue;
 			}
 
-			LocalInvoiceStockKey key = new(line.ItemId.Value, warehouseCode);
+			LocalStockChangeKey key = new(line.ItemId.Value, warehouseCode);
 			deltas[key] = deltas.TryGetValue(key, out decimal current)
 				? current + signedQuantity
 				: signedQuantity;
@@ -6614,7 +6707,22 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return deltas;
 	}
 
-	private static string FormatInvoiceStockShortageMessage(IReadOnlyList<LocalInvoiceStockShortage> shortages)
+	private static void AddStockDelta(IDictionary<LocalStockChangeKey, decimal> deltas, LocalStockChangeKey key, decimal delta)
+	{
+		if (delta == 0m)
+		{
+			return;
+		}
+
+		deltas[key] = deltas.TryGetValue(key, out decimal current)
+			? current + delta
+			: delta;
+	}
+
+	private static string FormatInvoiceStockShortageMessage(IReadOnlyList<LocalStockShortage> shortages)
+		=> FormatStockShortageMessage("재고가 부족하여 판매/전표 변경을 저장할 수 없습니다.", shortages);
+
+	private static string FormatStockShortageMessage(string prefix, IReadOnlyList<LocalStockShortage> shortages)
 	{
 		if (shortages.Count == 0)
 		{
@@ -6623,13 +6731,13 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 		IEnumerable<string> rows = shortages
 			.Take(3)
-			.Select((LocalInvoiceStockShortage shortage) =>
+			.Select((LocalStockShortage shortage) =>
 			{
 				string specification = string.IsNullOrWhiteSpace(shortage.Specification) ? string.Empty : $" / 규격 {shortage.Specification}";
 				return $"{shortage.ItemName}{specification} / 창고 {shortage.WarehouseCode} / 현재 {shortage.CurrentQuantity:N0} / 차감 {shortage.RequestedDecrease:N0} / 부족 {shortage.ShortageQuantity:N0}";
 			});
 		string suffix = shortages.Count > 3 ? $" 외 {shortages.Count - 3:N0}건" : string.Empty;
-		return "재고가 부족하여 판매/전표 변경을 저장할 수 없습니다. " + string.Join("; ", rows) + suffix;
+		return prefix.TrimEnd() + " " + string.Join("; ", rows) + suffix;
 	}
 
 	private void ApplyInventoryResetToZeroEntry(LocalInventoryMovement reset, IDictionary<(Guid ItemId, string WarehouseCode), decimal> stockMap, IDictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>> layerMap)
