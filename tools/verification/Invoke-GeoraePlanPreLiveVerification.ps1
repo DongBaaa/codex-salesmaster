@@ -285,7 +285,7 @@ function Invoke-LocalPreValidationSync {
         [Environment]::SetEnvironmentVariable('GEORAEPLAN_SYNC_PASSWORD', $Password, 'Process')
         [Environment]::SetEnvironmentVariable('GEORAEPLAN_SYNC_BASEURL', ($BaseUrl.TrimEnd('/') + '/'), 'Process')
 
-        $output = & $DotnetExe run --project $projectPath -- sync 2>&1
+        $output = & $DotnetExe run --project $projectPath -- maintenance-sync 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw (Convert-OutputText $output)
         }
