@@ -444,6 +444,41 @@ function Join-RemoteUnixPath {
     return "$normalizedBase/$normalizedChild"
 }
 
+function Ensure-NasRuntimeStorageDirectories {
+    param(
+        [Parameter(Mandatory = $true)][string]$NasRoot,
+        [Parameter(Mandatory = $true)]$Config
+    )
+
+    $relativeDirectories = @(
+        'storage/files',
+        'storage/data-protection-keys'
+    )
+
+    if (Test-Path -LiteralPath $NasRoot) {
+        foreach ($relativeDirectory in $relativeDirectories) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $NasRoot $relativeDirectory) | Out-Null
+        }
+
+        return
+    }
+
+    if (-not (Test-NasSshConfigComplete -Config $Config)) {
+        return
+    }
+
+    $remoteRoot = (($Config.RemoteOpsPath -replace '/ops/?$', '').TrimEnd('/'))
+    if ([string]::IsNullOrWhiteSpace($remoteRoot)) {
+        return
+    }
+
+    $remoteDirectories = $relativeDirectories |
+        ForEach-Object { Convert-ToPosixSingleQuotedLiteral (Join-RemoteUnixPath -BasePath $remoteRoot -ChildPath $_) }
+    $dataProtectionDirectory = Convert-ToPosixSingleQuotedLiteral (Join-RemoteUnixPath -BasePath $remoteRoot -ChildPath 'storage/data-protection-keys')
+    $remoteCommand = "mkdir -p $($remoteDirectories -join ' ') && chmod 700 $dataProtectionDirectory"
+    Invoke-SshCommand -Config $Config -Command $remoteCommand -BatchMode | Out-Null
+}
+
 function Resolve-NasScheduledStatePaths {
     param(
         [Parameter(Mandatory = $true)][hashtable]$NasEnv,
@@ -775,6 +810,8 @@ elseif (Test-NasSshConfigComplete -Config $sshConfig) {
 else {
     throw "NAS release upload failed: UNC path '$NasRoot' is unavailable and SSH configuration is incomplete."
 }
+
+Ensure-NasRuntimeStorageDirectories -NasRoot $NasRoot -Config $sshConfig
 
 $appliedRemotely = $false
 $queuedForNasApply = $false
