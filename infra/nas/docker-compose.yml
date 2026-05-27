@@ -50,6 +50,7 @@ services:
       SeedUsers__UpdateExistingItwPassword: ${SEED_USERS_UPDATE_EXISTING_ITW_PASSWORD:-true}
       SeedUsers__WarnOnDefaultPasswords: ${SEED_USERS_WARN_ON_DEFAULT_PASSWORDS:-true}
       FileStorage__RootPath: /storage/files
+      DataProtection__KeyRingPath: /storage/data-protection-keys
     ports:
       - "${HOST_BIND_IP:-127.0.0.1}:${API_HOST_PORT:-18082}:8080"
     depends_on:
@@ -58,3 +59,4 @@ services:
     volumes:
       - "${NAS_ROOT_PATH:-/volume1/docker/georaeplan}/app/live:/app:ro"
       - "${NAS_ROOT_PATH:-/volume1/docker/georaeplan}/storage/files:/storage/files"
+      - "${NAS_ROOT_PATH:-/volume1/docker/georaeplan}/storage/data-protection-keys:/storage/data-protection-keys"

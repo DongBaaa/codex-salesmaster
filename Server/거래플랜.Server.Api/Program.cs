@@ -7,6 +7,7 @@ using 거래플랜.Server.Api.Services;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -36,6 +37,25 @@ builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(Sec
 builder.Services.Configure<SeedUsersOptions>(builder.Configuration.GetSection(SeedUsersOptions.SectionName));
 builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(UpdateOptions.SectionName));
 builder.Services.Configure<CentralFileStorageOptions>(builder.Configuration.GetSection(CentralFileStorageOptions.SectionName));
+
+var dataProtectionKeyRingPath = builder.Configuration["DataProtection:KeyRingPath"];
+if (string.IsNullOrWhiteSpace(dataProtectionKeyRingPath) &&
+    !builder.Environment.IsDevelopment() &&
+    Directory.Exists("/storage"))
+{
+    dataProtectionKeyRingPath = "/storage/data-protection-keys";
+}
+
+if (!string.IsNullOrWhiteSpace(dataProtectionKeyRingPath))
+{
+    var resolvedDataProtectionKeyRingPath = Path.IsPathRooted(dataProtectionKeyRingPath)
+        ? dataProtectionKeyRingPath
+        : Path.Combine(AppContext.BaseDirectory, dataProtectionKeyRingPath);
+    Directory.CreateDirectory(resolvedDataProtectionKeyRingPath);
+    builder.Services.AddDataProtection()
+        .SetApplicationName("GeoraePlan.Server.Api")
+        .PersistKeysToFileSystem(new DirectoryInfo(resolvedDataProtectionKeyRingPath));
+}
 
 var jwtOptions = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
 var securityOptions = builder.Configuration.GetSection(SecurityOptions.SectionName).Get<SecurityOptions>() ?? new SecurityOptions();
