@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using GeoraePlan.Mobile.App.Models;
 using 거래플랜.Shared.Contracts;
 
@@ -176,6 +177,10 @@ public sealed class SyncCoordinator
             {
                 await MarkConcurrencyConflictAndRefreshAsync(state, ex, ct);
             }
+            catch (Exception ex) when (IsNonRetryableClientFailure(ex))
+            {
+                MarkFailure(state, ex);
+            }
             catch (Exception ex)
             {
                 state.PendingPush.Invoices.Add(invoice);
@@ -260,6 +265,10 @@ public sealed class SyncCoordinator
             catch (Exception ex) when (IsConcurrencyConflict(ex))
             {
                 await MarkConcurrencyConflictAndRefreshAsync(state, ex, ct);
+            }
+            catch (Exception ex) when (IsNonRetryableClientFailure(ex))
+            {
+                MarkFailure(state, ex);
             }
             catch (Exception ex)
             {
@@ -559,6 +568,15 @@ public sealed class SyncCoordinator
     private static bool IsConcurrencyConflict(Exception ex)
         => ex is HttpRequestException { StatusCode: HttpStatusCode.Conflict };
 
+    private static bool IsNonRetryableClientFailure(Exception ex)
+        => ex is HttpRequestException
+        {
+            StatusCode: HttpStatusCode.BadRequest
+                or HttpStatusCode.Forbidden
+                or HttpStatusCode.NotFound
+                or HttpStatusCode.UnprocessableEntity
+        };
+
     private static void MarkFailure(MobileSyncState state, Exception ex)
     {
         state.LastError = TranslateFailureMessage(ex);
@@ -577,6 +595,12 @@ public sealed class SyncCoordinator
                 => "서버 오류(500)가 발생했습니다. 잠시 후 다시 시도해 주세요.",
             HttpRequestException httpEx when httpEx.StatusCode == HttpStatusCode.Conflict
                 => ConcurrencyConflictUserMessage,
+            HttpRequestException httpEx when httpEx.StatusCode == HttpStatusCode.BadRequest
+                => BuildClientValidationMessage(httpEx),
+            HttpRequestException httpEx when httpEx.StatusCode == HttpStatusCode.Forbidden
+                => "현재 계정 권한 또는 지점 범위 때문에 저장할 수 없습니다. 담당지점/권한을 확인해 주세요.",
+            HttpRequestException httpEx when httpEx.StatusCode == HttpStatusCode.NotFound
+                => "저장 대상 데이터를 찾지 못했습니다. 최신 데이터를 다시 불러온 뒤 시도해 주세요.",
             HttpRequestException httpEx when httpEx.StatusCode.HasValue
                 => $"서버 요청에 실패했습니다. ({(int)httpEx.StatusCode.Value} {httpEx.StatusCode.Value})",
             TaskCanceledException or TimeoutException
@@ -587,6 +611,64 @@ public sealed class SyncCoordinator
                 ? "알 수 없는 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
                 : ex.Message
         };
+    }
+
+    private static string BuildClientValidationMessage(HttpRequestException httpEx)
+    {
+        var detail = ExtractHttpErrorDetail(httpEx);
+        return string.IsNullOrWhiteSpace(detail)
+            ? "저장할 수 없습니다. 입력값, 거래처, 품목, 재고 상태를 확인해 주세요."
+            : $"저장할 수 없습니다. {detail}";
+    }
+
+    private static string ExtractHttpErrorDetail(HttpRequestException httpEx)
+    {
+        var message = httpEx.Message?.Trim() ?? string.Empty;
+        if (message.Length == 0)
+            return string.Empty;
+
+        var body = message;
+        if (body.StartsWith("400", StringComparison.Ordinal))
+        {
+            body = body[3..].TrimStart();
+            if (body.StartsWith("Bad Request", StringComparison.OrdinalIgnoreCase))
+                body = body["Bad Request".Length..].TrimStart();
+            else if (body.StartsWith("BadRequest", StringComparison.OrdinalIgnoreCase))
+                body = body["BadRequest".Length..].TrimStart();
+        }
+
+        if (body.Length == 0)
+            return string.Empty;
+
+        if (body[0] == '{')
+        {
+            try
+            {
+                using var json = JsonDocument.Parse(body);
+                if (json.RootElement.TryGetProperty("message", out var messageProperty) &&
+                    messageProperty.ValueKind == JsonValueKind.String)
+                {
+                    var parsed = messageProperty.GetString();
+                    if (!string.IsNullOrWhiteSpace(parsed))
+                        return TrimForStatus(parsed);
+                }
+            }
+            catch (JsonException)
+            {
+                // Fall through to a plain-text fallback.
+            }
+        }
+
+        if (body.StartsWith("<", StringComparison.Ordinal))
+            return string.Empty;
+
+        return TrimForStatus(body);
+    }
+
+    private static string TrimForStatus(string value)
+    {
+        var normalized = string.Join(" ", value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return normalized.Length <= 160 ? normalized : normalized[..160] + "...";
     }
 
     private static bool HasPendingServerSyncPayload(MobileSyncState state)

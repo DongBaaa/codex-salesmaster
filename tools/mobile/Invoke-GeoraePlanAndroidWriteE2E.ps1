@@ -597,6 +597,31 @@ function New-TestFixture {
         notes = 'mobile android write e2e fixture'
     }
 
+    $stockPush = Invoke-Api -Method Post -BaseUrl $BaseUrl -Relative 'sync/push' -Headers $Headers -Body @{
+        deviceId = "mobile-write-e2e-$Stamp"
+        itemWarehouseStocks = @(
+            @{
+                itemId = $item.id
+                warehouseCode = 'USENET_MAIN'
+                quantity = 10
+                updatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+                revision = 0
+                expectedRevision = 0
+            }
+        )
+    }
+
+    $stockPushConflictCount = 0
+    if ($stockPush -and $null -ne $stockPush.conflictCount) {
+        $stockPushConflictCount = [int]$stockPush.conflictCount
+    }
+
+    if ($stockPushConflictCount -gt 0) {
+        throw "테스트 품목 창고 재고 생성 중 충돌이 발생했습니다: $($stockPush | ConvertTo-Json -Compress -Depth 8)"
+    }
+
+    $item = Invoke-Api -Method Get -BaseUrl $BaseUrl -Relative "items/$($item.id)" -Headers $Headers
+
     return [pscustomobject]@{
         Customer = $customer
         Item = $item

@@ -3738,7 +3738,7 @@ public sealed class SyncController : ControllerBase
             .Select(dto => new ItemWarehouseStockDto
             {
                 ItemId = dto.ItemId,
-                WarehouseCode = dto.WarehouseCode.Trim(),
+                WarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeLoose(dto.WarehouseCode),
                 Quantity = dto.Quantity,
                 UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc),
                 Revision = dto.Revision,
