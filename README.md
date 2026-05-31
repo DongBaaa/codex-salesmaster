@@ -142,7 +142,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\relea
 
 ## 관련 문서
 - 통합 진행 문서: `D:\거래플랜\기획.md`
-- 레거시 비교 문서: `D:\거래플랜\외부 레거시.md`
 - NAS 운영 런북: `D:\거래플랜\infra\NAS-운영-런북.md`
 - NAS 실운영 최소 체크리스트: `D:\거래플랜\infra\NAS-실운영-최소체크리스트_2026-03-19.md`
 - NAS 실행 명령 요약: `D:\거래플랜\infra\NAS-실행-명령요약_2026-03-19.md`
