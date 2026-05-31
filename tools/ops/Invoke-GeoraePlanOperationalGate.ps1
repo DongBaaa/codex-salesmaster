@@ -515,10 +515,21 @@ if (Test-Path -LiteralPath $rentalMonthlyRepairScript) {
             }
 
             $candidateCount = $null
+            $candidatePreview = ''
             if (-not [string]::IsNullOrWhiteSpace($rentalMonthlyRepairJson) -and (Test-Path -LiteralPath $rentalMonthlyRepairJson)) {
                 try {
                     $repairJson = Get-Content -LiteralPath $rentalMonthlyRepairJson -Raw -Encoding UTF8 | ConvertFrom-Json
                     $candidateCount = [int](Get-JsonPropertyValue -Object $repairJson -Name 'CandidateCount')
+                    $repairRows = @(Get-JsonPropertyValue -Object $repairJson -Name 'Rows')
+                    if ($repairRows.Count -gt 0) {
+                        $firstRow = $repairRows[0]
+                        $customerName = [string](Get-JsonPropertyValue -Object $firstRow -Name 'CustomerName')
+                        $difference = Get-JsonPropertyValue -Object $firstRow -Name 'Difference'
+                        $missingCount = Get-JsonPropertyValue -Object $firstRow -Name 'MissingAssetCount'
+                        $missingMonthly = Get-JsonPropertyValue -Object $firstRow -Name 'MissingAssetMonthlyAmount'
+                        $profileId = [string](Get-JsonPropertyValue -Object $firstRow -Name 'ProfileId')
+                        $candidatePreview = ("top={0}, diff={1:N0}, missingAssets={2}, missingMonthly={3:N0}, profileId={4}" -f $customerName, [decimal]$difference, [int]$missingCount, [decimal]$missingMonthly, $profileId)
+                    }
                 }
                 catch {
                     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value ("rental_monthly_repair_json_parse_failed={0}" -f $_.Exception.Message)
@@ -542,6 +553,9 @@ if (Test-Path -LiteralPath $rentalMonthlyRepairScript) {
             }
             else {
                 ("candidate_count={0}; report=missing" -f $candidateCountText)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($candidatePreview)) {
+                $repairDetail = "$repairDetail; $candidatePreview"
             }
 
             if ($repairExitCode -eq 0 -and $null -ne $candidateCount -and $candidateCount -eq 0) {

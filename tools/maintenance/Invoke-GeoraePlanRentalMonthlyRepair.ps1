@@ -161,6 +161,41 @@ function Get-TemplateLineAmount {
     return [Math]::Max([decimal]0, (Get-Decimal $Item.Amount))
 }
 
+function New-MissingAssetRows {
+    param(
+        [string[]]$MissingIds,
+        [hashtable]$LinkedAssetMap
+    )
+
+    @($MissingIds | ForEach-Object {
+        $id = [string]$_
+        if (-not [string]::IsNullOrWhiteSpace($id) -and $LinkedAssetMap.ContainsKey($id)) {
+            $asset = $LinkedAssetMap[$id]
+            [pscustomobject]@{
+                AssetId = $id
+                ItemName = [string]$asset.itemName
+                SerialNumber = [string]$asset.serialNumber
+                InstallLocation = [string]$asset.installLocation
+                MonthlyFee = [Math]::Max([decimal]0, (Get-Decimal $asset.monthlyFee))
+            }
+        }
+    })
+}
+
+function Format-MissingAssetPreview {
+    param([object[]]$MissingAssets)
+    $rows = @($MissingAssets | Select-Object -First 5 | ForEach-Object {
+        $name = Get-StringValue $_.ItemName
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = Get-StringValue $_.AssetId }
+        $fee = [decimal]$_.MonthlyFee
+        if ($fee -gt 0) { "$name $($fee.ToString('N0'))" } else { "$name 0" }
+    })
+    if ($MissingAssets.Count -gt 5) {
+        $rows += "외 $($MissingAssets.Count - 5)건"
+    }
+    return ($rows -join ', ')
+}
+
 function Get-DefaultRentalFeeName {
     return -join ([char[]](0xB80C, 0xD0C8, 0xB8CC))
 }
@@ -222,6 +257,8 @@ function Set-NormalizedTemplateFromAssets {
     }
 
     $missingIds = @($linkedIds | Where-Object { -not $assigned.Contains([string]$_) })
+    $missingAssets = @(New-MissingAssetRows -MissingIds $missingIds -LinkedAssetMap $linkedAssetMap)
+    $missingAssetMonthlyAmount = [decimal](@($missingAssets | ForEach-Object { [Math]::Max([decimal]0, (Get-Decimal $_.MonthlyFee)) }) | Measure-Object -Sum).Sum
     if ($missingIds.Count -gt 0) {
         if ($targetIndex -lt 0) { $targetIndex = 0 }
         $currentIds = New-Object System.Collections.Generic.List[string]
@@ -283,6 +320,11 @@ function Set-NormalizedTemplateFromAssets {
         LinkedAssetMonthlyAmount = $linkedMonthlyAmount
         TemplateMonthlyAmount = $templateMonthlyAmount
         TemplateJson = $templateJson
+        ExistingTemplateLinkedAssetCount = $assigned.Count
+        MissingAssetCount = $missingAssets.Count
+        MissingAssetMonthlyAmount = $missingAssetMonthlyAmount
+        MissingAssets = @($missingAssets)
+        MissingAssetsPreview = Format-MissingAssetPreview -MissingAssets $missingAssets
     }
 }
 
@@ -367,6 +409,11 @@ foreach ($profile in @($pull.rentalBillingProfiles | Where-Object { -not $_.isDe
         LinkedAssetCount = $normalization.LinkedAssetCount
         TemplateMonthlyAmountAfter = $normalization.TemplateMonthlyAmount
         TemplateChanged = $templateChanged
+        ExistingTemplateLinkedAssetCount = $normalization.ExistingTemplateLinkedAssetCount
+        MissingAssetCount = $normalization.MissingAssetCount
+        MissingAssetMonthlyAmount = $normalization.MissingAssetMonthlyAmount
+        MissingAssetsPreview = $normalization.MissingAssetsPreview
+        MissingAssets = @($normalization.MissingAssets)
         Applied = $applied
         PushedRevision = $pushRevision
     }) | Out-Null
@@ -397,13 +444,17 @@ $lines.Add("- applyAllAllowed: $([bool]$AllowApplyAll)") | Out-Null
 $lines.Add("- failOnCandidates: $([bool]$FailOnCandidates)") | Out-Null
 $lines.Add("- candidateCount: $($rows.Count)") | Out-Null
 $lines.Add('') | Out-Null
-$lines.Add('| applied | customer | item | mode | currentMonthly | linkedAssetMonthly | difference | assetCount | templateChanged | profileId |') | Out-Null
-$lines.Add('|---|---|---|---|---:|---:|---:|---:|---|---|') | Out-Null
+$lines.Add('| applied | customer | item | mode | currentMonthly | linkedAssetMonthly | difference | assetCount | missingAssets | missingMonthly | templateChanged | profileId |') | Out-Null
+$lines.Add('|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|') | Out-Null
 foreach ($row in $rows) {
     $customer = ([string]$row.CustomerName).Replace('|','\|')
     $item = ([string]$row.ItemName).Replace('|','\|')
     $mode = ([string]$row.BillingType).Replace('|','\|')
-    $lines.Add("| $($row.Applied) | $customer | $item | $mode | $($row.CurrentMonthlyAmount.ToString('N0')) | $($row.LinkedAssetMonthlyAmount.ToString('N0')) | $($row.Difference.ToString('N0')) | $($row.LinkedAssetCount) | $($row.TemplateChanged) | $($row.ProfileId) |") | Out-Null
+    $lines.Add("| $($row.Applied) | $customer | $item | $mode | $($row.CurrentMonthlyAmount.ToString('N0')) | $($row.LinkedAssetMonthlyAmount.ToString('N0')) | $($row.Difference.ToString('N0')) | $($row.LinkedAssetCount) | $($row.MissingAssetCount) | $($row.MissingAssetMonthlyAmount.ToString('N0')) | $($row.TemplateChanged) | $($row.ProfileId) |") | Out-Null
+    if ($row.MissingAssetCount -gt 0) {
+        $missingPreview = ([string]$row.MissingAssetsPreview).Replace('|','\|')
+        $lines.Add("  - missing linked assets: $missingPreview") | Out-Null
+    }
 }
 $lines.Add('') | Out-Null
 $lines.Add("JSON: $jsonPath") | Out-Null
