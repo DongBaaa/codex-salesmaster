@@ -511,7 +511,13 @@ function Test-NasUpdatePackage {
 
     $package = Get-ObjectPropertyValue -Object $Manifest -Name $Platform
     if ($null -eq $package) {
-        return "$Platform=missing"
+        throw "$Platform update package entry is missing from manifest"
+    }
+
+    $declaredPlatform = [string](Get-ObjectPropertyValue -Object $package -Name 'platform')
+    if (-not [string]::IsNullOrWhiteSpace($declaredPlatform) -and
+        -not [string]::Equals($declaredPlatform.Trim(), $Platform, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Platform update package platform mismatch: declared=$declaredPlatform"
     }
 
     $fileName = [string](Get-ObjectPropertyValue -Object $package -Name 'fileName')
@@ -528,6 +534,33 @@ function Test-NasUpdatePackage {
         throw "$Platform update package fileName is not safe: $fileName"
     }
 
+    if ([string]::IsNullOrWhiteSpace($packageUrl)) {
+        throw "$Platform update package has no packageUrl"
+    }
+
+    $packagePath = $packageUrl.Trim()
+    $absolutePackageUri = $null
+    if ([Uri]::TryCreate($packagePath, [UriKind]::Absolute, [ref]$absolutePackageUri)) {
+        $packagePath = $absolutePackageUri.AbsolutePath
+    }
+    $packagePath = ($packagePath -split '[?#]', 2)[0]
+    if (-not $packagePath.StartsWith('/', [System.StringComparison]::Ordinal)) {
+        throw "$Platform update packageUrl must be root-relative or absolute: $packageUrl"
+    }
+
+    $expectedPrefix = "/updates/download/$Platform/"
+    if (-not $packagePath.StartsWith($expectedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Platform update packageUrl route mismatch: expectedPrefix=$expectedPrefix actual=$packageUrl"
+    }
+
+    $urlFileName = [Uri]::UnescapeDataString(($packagePath.Substring($expectedPrefix.Length)))
+    if ([string]::IsNullOrWhiteSpace($urlFileName) -or $urlFileName.Contains('/')) {
+        throw "$Platform update packageUrl fileName is invalid: $packageUrl"
+    }
+    if (-not [string]::Equals($urlFileName, $safeFileName, [System.StringComparison]::Ordinal)) {
+        throw "$Platform update packageUrl fileName mismatch: url=$urlFileName fileName=$safeFileName"
+    }
+
     $filePath = Join-Path (Join-Path $StorageRoot 'downloads') (Join-Path $Platform $safeFileName)
     if (-not (Test-Path -LiteralPath $filePath)) {
         throw "$Platform update package file is missing: $filePath"
@@ -540,14 +573,20 @@ function Test-NasUpdatePackage {
     }
 
     $expectedHash = ([string](Get-ObjectPropertyValue -Object $package -Name 'sha256')).Trim()
-    if (-not [string]::IsNullOrWhiteSpace($expectedHash)) {
-        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $filePath).Hash
-        if (-not [string]::Equals($actualHash, $expectedHash, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "$Platform update package hash mismatch: expected=$expectedHash actual=$actualHash file=$filePath"
-        }
+    if ([string]::IsNullOrWhiteSpace($expectedHash)) {
+        throw "$Platform update package has no sha256"
+    }
+
+    $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $filePath).Hash
+    if (-not [string]::Equals($actualHash, $expectedHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Platform update package hash mismatch: expected=$expectedHash actual=$actualHash file=$filePath"
     }
 
     $version = [string](Get-ObjectPropertyValue -Object $package -Name 'version')
+    if ([string]::IsNullOrWhiteSpace($version)) {
+        throw "$Platform update package has no version"
+    }
+
     return "$Platform=$safeFileName version=$version size=$($file.Length) sha256=ok"
 }
 
