@@ -173,14 +173,57 @@ function Get-UiDump {
     $remote = '/sdcard/georaeplan-window.xml'
     $local = Join-Path $EvidenceDirectory "$Name.xml"
 
+    function Convert-ToValidHierarchyDump {
+        param([string]$Candidate)
+
+        if ([string]::IsNullOrWhiteSpace($Candidate)) {
+            return $null
+        }
+
+        $start = $Candidate.IndexOf('<hierarchy', [StringComparison]::Ordinal)
+        if ($start -lt 0) {
+            return $null
+        }
+
+        $content = $Candidate.Substring($start)
+        $end = $content.LastIndexOf('</hierarchy>', [StringComparison]::Ordinal)
+        if ($end -ge 0) {
+            $content = $content.Substring(0, $end + '</hierarchy>'.Length)
+        }
+
+        if ($content.Contains('<hierarchy')) {
+            return $content
+        }
+
+        return $null
+    }
+
     $lastError = $null
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         try {
             Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'uiautomator', 'dump', $remote) | Out-Null
             Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'pull', $remote, $local) | Out-Null
             $content = Get-Content -LiteralPath $local -Raw -Encoding UTF8
-            if (-not [string]::IsNullOrWhiteSpace($content) -and $content.Contains('<hierarchy')) {
-                return [pscustomobject]@{ Path = $local; Content = $content }
+            $validContent = Convert-ToValidHierarchyDump -Candidate $content
+            if ($null -ne $validContent) {
+                [System.IO.File]::WriteAllText($local, $validContent, [System.Text.UTF8Encoding]::new($false))
+                return [pscustomobject]@{ Path = $local; Content = $validContent }
+            }
+        }
+        catch {
+            $lastError = $_
+            Start-Sleep -Seconds 1
+        }
+
+        try {
+            # 일부 에뮬레이터에서는 /sdcard 파일 덤프가 UiAutomation 연결 타임아웃을 유발합니다.
+            # /dev/tty로 직접 덤프한 XML을 보조 경로로 저장해 검증 스크립트가 중단되지 않게 합니다.
+            $raw = Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'exec-out', 'uiautomator', 'dump', '/dev/tty')
+            $content = ($raw -join "`n")
+            $validContent = Convert-ToValidHierarchyDump -Candidate $content
+            if ($null -ne $validContent) {
+                [System.IO.File]::WriteAllText($local, $validContent, [System.Text.UTF8Encoding]::new($false))
+                return [pscustomobject]@{ Path = $local; Content = $validContent }
             }
         }
         catch {
@@ -567,7 +610,11 @@ if (-not $SkipInstall) {
     $steps.Add([pscustomobject]@{ Step = 'app-data-clear'; Result = 'PASS'; Detail = $PackageName })
 }
 
-Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'am', 'force-stop', 'com.google.android.apps.nexuslauncher') | Out-Null
+# Android 런처를 강제로 종료하면 일부 에뮬레이터에서 포커스 윈도우가 사라져
+# 앱 시작 ANR 또는 홈 화면 체류가 발생할 수 있습니다. 기본값은 거래플랜 앱만 정리합니다.
+if ([string]::Equals($env:GEORAEPLAN_ANDROID_SMOKE_FORCE_STOP_LAUNCHER, '1', [StringComparison]::OrdinalIgnoreCase)) {
+    Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'am', 'force-stop', 'com.google.android.apps.nexuslauncher') | Out-Null
+}
 Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'am', 'force-stop', $PackageName) | Out-Null
 Start-Sleep -Seconds 1
 Start-MobileApp -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName

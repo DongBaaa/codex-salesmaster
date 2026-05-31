@@ -18,6 +18,7 @@ param(
     [int]$KeepArtifactDirectoryCount = 2,
     [ValidateSet('apk', 'aab', 'both')]
     [string]$PackageFormat = 'apk',
+    [switch]$LocalTest,
     [switch]$DisableAot,
     [switch]$DisableTrimming,
     [switch]$SkipEnvironmentCheck,
@@ -332,6 +333,11 @@ $shouldDisableTrimming = $DisableTrimming.IsPresent
 if ($shouldDisableTrimming) {
     $arguments += '-p:PublishTrimmed=false'
     Write-Host 'publish_trimmed=false'
+}
+
+if ($LocalTest.IsPresent) {
+    $arguments += '-p:GeoraePlanMobileLocalTest=true'
+    Write-Host 'mobile_local_test=true'
 }
 
 switch ($PackageFormat) {

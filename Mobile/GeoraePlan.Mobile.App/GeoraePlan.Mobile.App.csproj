@@ -24,6 +24,10 @@
     <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
     <AndroidManifestPlaceholders>usesCleartextTraffic=true</AndroidManifestPlaceholders>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(GeoraePlanMobileLocalTest)' == 'true'">
+    <DefineConstants>$(DefineConstants);GEORAEPLAN_MOBILE_LOCAL_TEST</DefineConstants>
+    <AndroidManifestPlaceholders>usesCleartextTraffic=true</AndroidManifestPlaceholders>
+  </PropertyGroup>
   <ItemGroup>
     <MauiIcon Remove="Resources\AppIcon\appicon.svg" />
     <MauiIcon Remove="Resources\AppIcon\appiconfg.svg" />
