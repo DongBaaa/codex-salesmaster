@@ -5,6 +5,9 @@
     [string]$BearerToken = '',
     [string]$EvidenceDirectory = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'output\rental-monthly-repair'),
     [string[]]$ProfileIds = @(),
+    [int]$ExpectedCandidateCount = -1,
+    [switch]$AllowApplyAll,
+    [switch]$FailOnCandidates,
     [switch]$Apply
 )
 
@@ -302,6 +305,11 @@ function Invoke-SyncPushRentalProfile {
 
 New-DirectoryIfMissing -Path $EvidenceDirectory
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+
+if ($Apply -and $ProfileIds.Count -eq 0 -and -not $AllowApplyAll) {
+    throw 'Apply 모드에서는 실수 방지를 위해 -ProfileIds를 지정해야 합니다. 전체 후보를 적용하려면 -AllowApplyAll을 함께 지정하세요.'
+}
+
 $headers = New-AuthHeaders
 $pull = (Invoke-Api -Method GET -Relative 'sync/pull?sinceRev=0' -Headers $headers -ExpectedStatus @(200) -TimeoutSec 180).Body
 
@@ -364,6 +372,10 @@ foreach ($profile in @($pull.rentalBillingProfiles | Where-Object { -not $_.isDe
     }) | Out-Null
 }
 
+if ($ExpectedCandidateCount -ge 0 -and $rows.Count -ne $ExpectedCandidateCount) {
+    throw "candidate count mismatch. expected=$ExpectedCandidateCount actual=$($rows.Count)"
+}
+
 $jsonPath = Join-Path $EvidenceDirectory "rental-monthly-repair-$timestamp.json"
 $mdPath = Join-Path $EvidenceDirectory "rental-monthly-repair-$timestamp.md"
 $report = [pscustomobject]@{
@@ -381,6 +393,8 @@ $lines.Add('') | Out-Null
 $lines.Add("- generatedAt: $($report.GeneratedAt)") | Out-Null
 $lines.Add("- baseUrl: $BaseUrl") | Out-Null
 $lines.Add("- apply: $([bool]$Apply)") | Out-Null
+$lines.Add("- applyAllAllowed: $([bool]$AllowApplyAll)") | Out-Null
+$lines.Add("- failOnCandidates: $([bool]$FailOnCandidates)") | Out-Null
 $lines.Add("- candidateCount: $($rows.Count)") | Out-Null
 $lines.Add('') | Out-Null
 $lines.Add('| applied | customer | item | mode | currentMonthly | linkedAssetMonthly | difference | assetCount | templateChanged | profileId |') | Out-Null
@@ -399,3 +413,7 @@ Write-Host "rental_monthly_repair_report=$mdPath"
 Write-Host "rental_monthly_repair_json=$jsonPath"
 Write-Host "candidate_count=$($rows.Count)"
 Write-Host "apply=$([bool]$Apply)"
+
+if ($FailOnCandidates -and -not $Apply -and $rows.Count -gt 0) {
+    throw "rental monthly repair candidates remain. count=$($rows.Count). report=$mdPath"
+}
