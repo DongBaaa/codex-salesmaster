@@ -513,7 +513,7 @@ public static partial class DbInitializer
                 templateItems[0].IncludedAssetIds = linkedAssetIds;
         }
 
-        var changed = false;
+        var changed = NormalizeTemplateAssetCoverageForStartup(templateItems, linkedAssetIds);
         foreach (var templateItem in templateItems)
         {
             var includedAssetIds = (templateItem.IncludedAssetIds ?? [])
@@ -565,6 +565,50 @@ public static partial class DbInitializer
 
         normalizedTemplateJson = serialized;
         return changed || profile.MonthlyAmount != normalizedMonthlyAmount;
+    }
+
+    private static bool NormalizeTemplateAssetCoverageForStartup(
+        IReadOnlyList<RentalBillingTemplateBackfillItem> templateItems,
+        IReadOnlyList<Guid> linkedAssetIds)
+    {
+        if (templateItems.Count == 0 || linkedAssetIds.Count == 0)
+            return false;
+
+        var changed = false;
+        var linkedIdSet = linkedAssetIds.ToHashSet();
+        var assignedIds = new HashSet<Guid>();
+        var targetIndex = -1;
+
+        for (var i = 0; i < templateItems.Count; i++)
+        {
+            var item = templateItems[i];
+            var normalizedIds = (item.IncludedAssetIds ?? [])
+                .Where(id => id != Guid.Empty && linkedIdSet.Contains(id))
+                .Distinct()
+                .Where(id => assignedIds.Add(id))
+                .ToList();
+
+            if (targetIndex < 0 && normalizedIds.Count > 0)
+                targetIndex = i;
+
+            if (!normalizedIds.SequenceEqual(item.IncludedAssetIds ?? []))
+            {
+                item.IncludedAssetIds = normalizedIds;
+                changed = true;
+            }
+        }
+
+        var missingIds = linkedAssetIds
+            .Where(id => id != Guid.Empty && !assignedIds.Contains(id))
+            .ToList();
+        if (missingIds.Count == 0)
+            return changed;
+
+        if (targetIndex < 0)
+            targetIndex = 0;
+
+        templateItems[targetIndex].IncludedAssetIds.AddRange(missingIds);
+        return true;
     }
 
     private static List<RentalBillingTemplateBackfillItem>? ParseStartupBillingTemplateItems(string? billingTemplateJson)

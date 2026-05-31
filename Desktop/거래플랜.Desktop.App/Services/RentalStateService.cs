@@ -6244,11 +6244,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (templateItems.Count == 0 || profileAssets.Count == 0)
             return false;
 
-        var changed = false;
         var assetsById = profileAssets
             .Where(asset => asset.Id != Guid.Empty && !asset.IsDeleted)
             .GroupBy(asset => asset.Id)
             .ToDictionary(group => group.Key, group => group.First());
+        var billableAssetIds = assetsById.Values
+            .Where(asset => !RentalAssetStatusRules.IsNonOperating(asset.AssetStatus))
+            .Select(asset => asset.Id)
+            .Distinct()
+            .ToList();
+        var changed = NormalizeTemplateAssetCoverage(templateItems, billableAssetIds);
         var profileBillingType = NormalizeBillingType(profile.BillingType);
 
         foreach (var templateItem in templateItems)
@@ -6304,6 +6309,50 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         return changed;
+    }
+
+    private static bool NormalizeTemplateAssetCoverage(
+        IReadOnlyList<RentalBillingTemplateItemModel> templateItems,
+        IReadOnlyList<Guid> linkedAssetIds)
+    {
+        if (templateItems.Count == 0 || linkedAssetIds.Count == 0)
+            return false;
+
+        var changed = false;
+        var linkedIdSet = linkedAssetIds.ToHashSet();
+        var assignedIds = new HashSet<Guid>();
+        var targetIndex = -1;
+
+        for (var i = 0; i < templateItems.Count; i++)
+        {
+            var item = templateItems[i];
+            var normalizedIds = (item.IncludedAssetIds ?? new List<Guid>())
+                .Where(id => id != Guid.Empty && linkedIdSet.Contains(id))
+                .Distinct()
+                .Where(id => assignedIds.Add(id))
+                .ToList();
+
+            if (targetIndex < 0 && normalizedIds.Count > 0)
+                targetIndex = i;
+
+            if (!normalizedIds.SequenceEqual(item.IncludedAssetIds ?? new List<Guid>()))
+            {
+                item.IncludedAssetIds = normalizedIds;
+                changed = true;
+            }
+        }
+
+        var missingIds = linkedAssetIds
+            .Where(id => id != Guid.Empty && !assignedIds.Contains(id))
+            .ToList();
+        if (missingIds.Count == 0)
+            return changed;
+
+        if (targetIndex < 0)
+            targetIndex = 0;
+
+        templateItems[targetIndex].IncludedAssetIds.AddRange(missingIds);
+        return true;
     }
 
     private static Dictionary<Guid, decimal> BuildTemplateAssetMonthlyFeeMap(

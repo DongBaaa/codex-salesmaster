@@ -614,6 +614,127 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task RepairRentalCustomerLinkageAsync_AddsMissingLinkedAssetsToMultiLineTemplate()
+    {
+        var customerId = Guid.Parse("97777777-7777-7777-7777-777777777701");
+        var profileId = Guid.Parse("97777777-7777-7777-7777-777777777702");
+        var firstAssetId = Guid.Parse("97777777-7777-7777-7777-777777777711");
+        var missingAssetId = Guid.Parse("97777777-7777-7777-7777-777777777712");
+        var secondLineAssetId = Guid.Parse("97777777-7777-7777-7777-777777777713");
+
+        var templateJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                ItemId = Guid.Parse("97777777-7777-7777-7777-777777777721"),
+                DisplayItemName = "복합기 렌탈료",
+                BillingLineMode = "묶음",
+                Quantity = 1m,
+                UnitPrice = 110000m,
+                Amount = 110000m,
+                IncludedAssetIds = new[] { firstAssetId }
+            },
+            new
+            {
+                ItemId = Guid.Parse("97777777-7777-7777-7777-777777777722"),
+                DisplayItemName = "프린터 렌탈료",
+                BillingLineMode = "묶음",
+                Quantity = 1m,
+                UnitPrice = 220000m,
+                Amount = 220000m,
+                IncludedAssetIds = new[] { secondLineAssetId }
+            }
+        });
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "렌탈 월요금 검증 거래처",
+            NameMatchKey = "렌탈월요금검증거래처"
+        });
+
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "렌탈 월요금 검증 거래처",
+            InstallSiteName = "본관",
+            ItemName = "렌탈료",
+            BillingType = "묶음",
+            MonthlyAmount = 330000m,
+            BillingTemplateJson = templateJson,
+            IsActive = true
+        });
+
+        _dbContext.RentalAssets.AddRange(
+            BuildRentalAsset(firstAssetId, profileId, customerId, "MONTHLY-MULTI-001", 110000m),
+            BuildRentalAsset(missingAssetId, profileId, customerId, "MONTHLY-MULTI-002", 40000m),
+            BuildRentalAsset(secondLineAssetId, profileId, customerId, "MONTHLY-MULTI-003", 220000m));
+
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "RepairRentalCustomerLinkageAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
+
+        var profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
+        Assert.Equal(370000m, profile.MonthlyAmount);
+
+        using var document = JsonDocument.Parse(profile.BillingTemplateJson);
+        var items = document.RootElement.EnumerateArray().ToList();
+        Assert.Equal(2, items.Count);
+        Assert.Equal(150000m, items[0].GetProperty("Amount").GetDecimal());
+        Assert.Equal(220000m, items[1].GetProperty("Amount").GetDecimal());
+
+        var allIncludedAssetIds = items
+            .SelectMany(item => item.GetProperty("IncludedAssetIds").EnumerateArray().Select(value => value.GetGuid()))
+            .OrderBy(value => value)
+            .ToList();
+        Assert.Equal(new[] { firstAssetId, missingAssetId, secondLineAssetId }.OrderBy(value => value), allIncludedAssetIds);
+    }
+
+    private static RentalAsset BuildRentalAsset(
+        Guid assetId,
+        Guid profileId,
+        Guid customerId,
+        string managementNumber,
+        decimal monthlyFee)
+        => new()
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            BillingProfileId = profileId,
+            CustomerId = customerId,
+            AssetKey = $"USENET|{managementNumber}|SN-{managementNumber}",
+            CustomerName = "렌탈 월요금 검증 거래처",
+            CurrentCustomerName = "렌탈 월요금 검증 거래처",
+            InstallSiteName = "본관",
+            InstallLocation = "본관",
+            ItemName = "복합기",
+            ManagementNumber = managementNumber,
+            MachineNumber = $"SN-{managementNumber}",
+            AssetStatus = "임대",
+            MonthlyFee = monthlyFee
+        };
+
+    [Fact]
     public async Task RepairRentalCustomerLinkageAsync_ResolvesProfileCustomerFromTemplateLinkedAsset()
     {
         var customerId = Guid.Parse("9bbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");

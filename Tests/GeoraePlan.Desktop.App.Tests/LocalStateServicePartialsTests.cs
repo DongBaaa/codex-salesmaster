@@ -2935,6 +2935,127 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SaveAssetAsync_AddsMissingProfileAssetToMultiLineTemplate()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-asset-monthly-multiline-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("55666666-6666-6666-6666-666666666660");
+            var firstAssetId = Guid.Parse("55666666-6666-6666-6666-666666666661");
+            var missingAssetId = Guid.Parse("55666666-6666-6666-6666-666666666662");
+            var secondLineAssetId = Guid.Parse("55666666-6666-6666-6666-666666666663");
+
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Monthly Sync Customer",
+                InstallSiteName = "Main Office",
+                ItemName = "Printer",
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                MonthlyAmount = 330000m,
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        DisplayItemName = "Printer A",
+                        BillingLineMode = "묶음",
+                        Quantity = 1m,
+                        UnitPrice = 110000m,
+                        Amount = 110000m,
+                        IncludedAssetIds = [firstAssetId]
+                    },
+                    new()
+                    {
+                        DisplayItemName = "Printer B",
+                        BillingLineMode = "묶음",
+                        Quantity = 1m,
+                        UnitPrice = 220000m,
+                        Amount = 220000m,
+                        IncludedAssetIds = [secondLineAssetId]
+                    }
+                })
+            });
+
+            db.RentalAssets.AddRange(
+                CreateMonthlySyncAsset(firstAssetId, profileId, "A-001", 110000m),
+                CreateMonthlySyncAsset(missingAssetId, profileId, "A-002", 40000m),
+                CreateMonthlySyncAsset(secondLineAssetId, profileId, "A-003", 220000m));
+            await db.SaveChangesAsync();
+
+            var session = new SessionState();
+            session.SetOfflineSession(new UserSessionDto
+            {
+                Username = "admin",
+                Role = DomainConstants.RoleAdmin,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ScopeType = TenantScopeCatalog.ScopeAdmin
+            });
+
+            var rental = new RentalStateService(db);
+            var result = await rental.SaveAssetAsync(CreateMonthlySyncAsset(missingAssetId, profileId, "A-002", 40000m), session);
+
+            Assert.True(result.Success, result.Message);
+            var storedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .FirstAsync(profile => profile.Id == profileId);
+            var storedTemplateItems = rental.GetBillingTemplateItems(storedProfile);
+
+            Assert.Equal(370000m, storedProfile.MonthlyAmount);
+            Assert.Equal(2, storedTemplateItems.Count);
+            Assert.Equal(150000m, storedTemplateItems[0].Amount);
+            Assert.Equal(220000m, storedTemplateItems[1].Amount);
+
+            var allIncludedAssetIds = storedTemplateItems
+                .SelectMany(item => item.IncludedAssetIds)
+                .OrderBy(id => id)
+                .ToList();
+            Assert.Equal(new[] { firstAssetId, missingAssetId, secondLineAssetId }.OrderBy(id => id), allIncludedAssetIds);
+            Assert.True(storedProfile.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    private static LocalRentalAsset CreateMonthlySyncAsset(Guid assetId, Guid profileId, string managementNumber, decimal monthlyFee)
+        => new()
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            BillingProfileId = profileId,
+            AssetKey = $"USENET|{managementNumber}|SN-{managementNumber}|Monthly Sync Customer|Printer",
+            CustomerName = "Monthly Sync Customer",
+            CurrentCustomerName = "Monthly Sync Customer",
+            InstallSiteName = "Main Office",
+            InstallLocation = "Main Office",
+            ItemName = "Printer",
+            ManagementNumber = managementNumber,
+            MachineNumber = $"SN-{managementNumber}",
+            AssetStatus = "임대",
+            BillingEligibilityStatus = "청구대상",
+            MonthlyFee = monthlyFee
+        };
+
+    [Fact]
     public async Task LocalDbInitializer_RepairRentalCustomerLinkage_NormalizesItworldScope_AndKeepsYeonsuScope()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-scope-repair-{Guid.NewGuid():N}");
