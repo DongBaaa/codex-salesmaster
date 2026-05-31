@@ -1215,28 +1215,44 @@ function Initialize-TestUpdateManifest {
         [Parameter(Mandatory = $true)][string]$ServerDataRoot
     )
 
+    $updatesRoot = Join-Path $ServerDataRoot 'updates'
+    $manifestRoot = Join-Path $updatesRoot 'manifest'
+    $downloadRoot = Join-Path $updatesRoot 'downloads\android'
+    New-Item -ItemType Directory -Force -Path $manifestRoot | Out-Null
+
     $mobileDir = Join-Path $PSScriptRoot 'Mobile'
     $apkSource = Join-Path $mobileDir '거래플랜-Mobile-Test-Debug.apk'
     if (-not (Test-Path -LiteralPath $apkSource)) {
         $apkSource = Join-Path $mobileDir 'kr.georaeplan.mobile-Signed.apk'
     }
 
-    if (-not (Test-Path -LiteralPath $apkSource)) {
-        Write-Log 'Mobile APK not found. Skipping test update manifest.'
-        return
+    $apkTarget = $null
+    $androidManifest = $null
+    if (Test-Path -LiteralPath $apkSource) {
+        New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
+        $apkTargetName = '거래플랜-Mobile-Test-Debug.apk'
+        $apkTarget = Join-Path $downloadRoot $apkTargetName
+        Copy-Item -LiteralPath $apkSource -Destination $apkTarget -Force
+
+        $apkFile = Get-Item -LiteralPath $apkTarget
+        $hash = Get-FileHash -LiteralPath $apkTarget -Algorithm SHA256
+        $androidManifest = [ordered]@{
+            platform = 'android'
+            version = '0.2.18'
+            mandatory = $false
+            minimumSupportedVersion = '0.2.18'
+            fileName = $apkTargetName
+            packageUrl = ''
+            sha256 = $hash.Hash
+            fileSize = $apkFile.Length
+            notes = '테스트 실행환경 모바일 APK입니다.'
+            releasedAtUtc = [DateTime]::UtcNow.ToString('O')
+        }
+    }
+    else {
+        Write-Log 'Mobile APK not found. Skipping mobile test update manifest entry only.'
     }
 
-    $updatesRoot = Join-Path $ServerDataRoot 'updates'
-    $manifestRoot = Join-Path $updatesRoot 'manifest'
-    $downloadRoot = Join-Path $updatesRoot 'downloads\android'
-    New-Item -ItemType Directory -Force -Path $manifestRoot, $downloadRoot | Out-Null
-
-    $apkTargetName = '거래플랜-Mobile-Test-Debug.apk'
-    $apkTarget = Join-Path $downloadRoot $apkTargetName
-    Copy-Item -LiteralPath $apkSource -Destination $apkTarget -Force
-
-    $apkFile = Get-Item -LiteralPath $apkTarget
-    $hash = Get-FileHash -LiteralPath $apkTarget -Algorithm SHA256
     $stableManifestPath = Join-Path $manifestRoot 'stable.json'
     $existingDesktopManifest = $null
     if (Test-Path -LiteralPath $stableManifestPath) {
@@ -1254,18 +1270,9 @@ function Initialize-TestUpdateManifest {
     $manifest = [ordered]@{
         channel = 'stable'
         generatedAtUtc = [DateTime]::UtcNow.ToString('O')
-        android = [ordered]@{
-            platform = 'android'
-            version = '0.2.18'
-            mandatory = $false
-            minimumSupportedVersion = '0.2.18'
-            fileName = $apkTargetName
-            packageUrl = ''
-            sha256 = $hash.Hash
-            fileSize = $apkFile.Length
-            notes = '테스트 실행환경 모바일 APK입니다.'
-            releasedAtUtc = [DateTime]::UtcNow.ToString('O')
-        }
+    }
+    if ($null -ne $androidManifest) {
+        $manifest.android = $androidManifest
     }
 
     if ($null -ne $existingDesktopManifest) {
@@ -1329,7 +1336,8 @@ function Initialize-TestUpdateManifest {
 
     $manifestJson = $manifest | ConvertTo-Json -Depth 8
     Set-Content -LiteralPath $stableManifestPath -Value $manifestJson -Encoding UTF8
-    Write-Log ("Test update manifest prepared. apk={0}; desktopPreserved={1}" -f $apkTarget, ($null -ne $manifest.desktop))
+    $apkLogValue = if ($null -ne $apkTarget) { [string]$apkTarget } else { 'none' }
+    Write-Log ("Test update manifest prepared. apk={0}; desktopPreserved={1}; hasDesktop={2}" -f $apkLogValue, ($null -ne $existingDesktopManifest), ($null -ne $manifest.desktop))
 }
 
 Set-Content -LiteralPath $traceLogPath -Value @() -Encoding UTF8
