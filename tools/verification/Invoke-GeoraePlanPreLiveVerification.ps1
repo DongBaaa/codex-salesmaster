@@ -24,12 +24,15 @@
     [string]$MobileApkPath = '',
     [string]$MobileAndroidSdkDirectory = '',
     [string]$MobileJavaSdkDirectory = '',
+    [string]$NasRoot = '\\192.168.0.200\docker\georaeplan',
+    [int]$ExpectedNasReleaseCount = 2,
     [int]$MinVisibleCustomers = 1,
     [int]$MinVisibleItems = 1,
     [int]$MinVisibleInvoices = 1,
     [switch]$FailOnIntegrityWarnings,
     [string[]]$AllowedIntegrityWarningCodes = @(),
-    [switch]$SkipPreValidationSync
+    [switch]$SkipPreValidationSync,
+    [switch]$SkipNasLiveDriftCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -400,6 +403,83 @@ function Invoke-DotnetTests {
     }
 
     return Convert-OutputText $output
+}
+
+function Convert-ReleaseInfoToMap {
+    param([string[]]$Lines)
+
+    $map = @{}
+    foreach ($line in $Lines) {
+        if ($line -match '^\s*([^=]+?)\s*=\s*(.*)\s*$') {
+            $map[$Matches[1].Trim()] = $Matches[2].Trim()
+        }
+    }
+
+    return $map
+}
+
+function Invoke-NasLiveDriftCheck {
+    param(
+        [string]$ProjectRoot,
+        [string]$NasRoot,
+        [int]$ExpectedReleaseCount
+    )
+
+    if ([string]::IsNullOrWhiteSpace($NasRoot)) {
+        return 'SKIP - NAS root not configured'
+    }
+
+    if (-not (Test-Path -LiteralPath $NasRoot)) {
+        return "SKIP - NAS root unavailable: $NasRoot"
+    }
+
+    $liveInfoPath = Join-Path $NasRoot 'app\live\release-info.txt'
+    if (-not (Test-Path -LiteralPath $liveInfoPath)) {
+        return "SKIP - live release-info not found: $liveInfoPath"
+    }
+
+    Push-Location $ProjectRoot
+    try {
+        $headCommit = ((& git rev-parse HEAD 2>$null) | Select-Object -First 1)
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($headCommit)) {
+            throw 'git rev-parse HEAD failed'
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    $liveInfo = Convert-ReleaseInfoToMap -Lines (Get-Content -LiteralPath $liveInfoPath -ErrorAction Stop)
+    $liveCommit = [string]$liveInfo['commit']
+    $releaseId = [string]$liveInfo['release_id']
+    $builtAt = [string]$liveInfo['built_at']
+    $isSameCommit = (-not [string]::IsNullOrWhiteSpace($liveCommit)) -and
+        ($headCommit.StartsWith($liveCommit, [System.StringComparison]::OrdinalIgnoreCase) -or
+         $liveCommit.StartsWith($headCommit, [System.StringComparison]::OrdinalIgnoreCase))
+
+    $releasesRoot = Join-Path $NasRoot 'releases'
+    $releaseCount = if (Test-Path -LiteralPath $releasesRoot) {
+        @(Get-ChildItem -LiteralPath $releasesRoot -Directory -ErrorAction SilentlyContinue).Count
+    }
+    else {
+        -1
+    }
+    $releaseCountStatus = if ($releaseCount -lt 0) {
+        'unknown'
+    }
+    elseif ($ExpectedReleaseCount -gt 0 -and $releaseCount -gt $ExpectedReleaseCount) {
+        "exceeds_expected_$ExpectedReleaseCount"
+    }
+    else {
+        'ok'
+    }
+
+    $detail = "live_release_id=$releaseId; live_built_at=$builtAt; head_commit=$headCommit; live_commit=$liveCommit; live_matches_head=$isSameCommit; nas_release_count=$releaseCount; nas_release_count_status=$releaseCountStatus"
+    if ($releaseCountStatus -like 'exceeds_expected_*') {
+        throw $detail
+    }
+
+    return $detail
 }
 
 function Invoke-DirtyCheck {
@@ -1050,6 +1130,15 @@ else {
     Add-StepResult -Name 'local-dirty-check' -Passed $true -Detail 'SKIP'
 }
 
+if (-not $SkipNasLiveDriftCheck) {
+    Invoke-Step -Name 'nas-live-drift-check' -Script {
+        Invoke-NasLiveDriftCheck -ProjectRoot $ProjectRoot -NasRoot $NasRoot -ExpectedReleaseCount $ExpectedNasReleaseCount
+    }
+}
+else {
+    Add-StepResult -Name 'nas-live-drift-check' -Passed $true -Detail 'SKIP'
+}
+
 if (-not $SkipDiffCheck) {
     Invoke-Step -Name 'git-diff-check' -Script {
         Push-Location $ProjectRoot
@@ -1104,6 +1193,9 @@ $report = [pscustomobject]@{
     IncludePrintDocumentSmoke = [bool]$IncludePrintDocumentSmoke
     IncludeMobileBuild = [bool]$IncludeMobileBuild
     IncludeMobileE2E = [bool]$IncludeMobileE2E
+    NasRoot = $NasRoot
+    ExpectedNasReleaseCount = $ExpectedNasReleaseCount
+    SkipNasLiveDriftCheck = [bool]$SkipNasLiveDriftCheck
     Overall = $overall
     Results = @($Results.ToArray())
 }
@@ -1129,6 +1221,11 @@ $lines.Add("- repeated save smoke 포함: $([bool]$IncludeRepeatedSaveSmoke)") |
 $lines.Add("- print document smoke 포함: $([bool]$IncludePrintDocumentSmoke)") | Out-Null
 $lines.Add("- mobile build 포함: $([bool]$IncludeMobileBuild)") | Out-Null
 $lines.Add("- mobile E2E 포함: $([bool]$IncludeMobileE2E)") | Out-Null
+$lines.Add("- NAS live drift 확인: $(-not [bool]$SkipNasLiveDriftCheck)") | Out-Null
+if (-not [string]::IsNullOrWhiteSpace($NasRoot)) {
+    $lines.Add("- NAS root: $NasRoot") | Out-Null
+    $lines.Add("- NAS release 보관 기대 개수: $ExpectedNasReleaseCount") | Out-Null
+}
 $lines.Add('') | Out-Null
 $lines.Add('| 결과 | 단계 | 상세 | 리포트 |') | Out-Null
 $lines.Add('|---|---|---|---|') | Out-Null
