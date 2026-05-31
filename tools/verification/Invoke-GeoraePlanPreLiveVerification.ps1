@@ -443,12 +443,6 @@ function Invoke-DirtyCheck {
             throw '현재 로그인 범위 dirty 상태를 확인하지 못했습니다.'
         }
 
-        foreach ($name in @('customers', 'contracts', 'items', 'invoices', 'payments')) {
-            if ($text -notmatch ($name + '_dirty=0')) {
-                throw "dirty 상태가 0이 아닙니다: $name"
-            }
-        }
-
         return $text
     }
     finally {
@@ -1048,7 +1042,7 @@ else {
 if (-not $SkipDirtyCheck) {
     Invoke-Step -Name 'local-dirty-check' -Script {
         $output = Invoke-DirtyCheck -ProjectRoot $ProjectRoot -DotnetExe $resolvedDotnet -AppDataRoot $AppDataRoot -BaseUrl $BaseUrl -Username $Username -Password $Password
-        $summary = @($output -split "`r?`n" | Where-Object { $_ -like 'current_scope_dirty=*' -or $_ -like '*_dirty=*' }) -join '; '
+        $summary = @($output -split "`r?`n" | Where-Object { $_ -like 'current_scope_dirty=*' -or $_ -like 'dirty_scope_note=*' }) -join '; '
         if ([string]::IsNullOrWhiteSpace($summary)) { 'PASS' } else { $summary }
     }
 }
@@ -1064,12 +1058,23 @@ if (-not $SkipDiffCheck) {
             if ($LASTEXITCODE -ne 0) {
                 throw (Convert-OutputText $output)
             }
+
+            $statusOutput = & git status --porcelain 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw (Convert-OutputText $statusOutput)
+            }
+
+            $statusText = Convert-OutputText $statusOutput
+            if ([string]::IsNullOrWhiteSpace($statusText)) {
+                return 'whitespace_check=PASS; worktree_clean=True'
+            }
+
+            $pendingCount = @($statusText -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+            return "whitespace_check=PASS; worktree_clean=False; pending_changes=$pendingCount"
         }
         finally {
             Pop-Location
         }
-
-        'PASS'
     }
 }
 else {

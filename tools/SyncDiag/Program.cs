@@ -56,16 +56,17 @@ static async Task PrintDirtyInspectionAsync(LocalDbContext db)
         Console.WriteLine($"current_scope_dirty={currentScopeDirty.Value}");
     }
 
-    Console.WriteLine($"customers_dirty={await CountDirtyAsync(db.Customers.IgnoreQueryFilters())}");
-    Console.WriteLine($"contracts_dirty={await CountDirtyAsync(db.CustomerContracts.IgnoreQueryFilters())}");
-    Console.WriteLine($"items_dirty={await CountDirtyAsync(db.Items.IgnoreQueryFilters())}");
-    Console.WriteLine($"invoices_dirty={await CountDirtyAsync(db.Invoices.IgnoreQueryFilters())}");
-    Console.WriteLine($"payments_dirty={await CountDirtyAsync(db.Payments.IgnoreQueryFilters())}");
-    Console.WriteLine($"transactions_dirty={await CountDirtyAsync(db.Transactions.IgnoreQueryFilters())}");
-    Console.WriteLine($"rental_profiles_dirty={await CountDirtyAsync(db.RentalBillingProfiles.IgnoreQueryFilters())}");
-    Console.WriteLine($"rental_assets_dirty={await CountDirtyAsync(db.RentalAssets.IgnoreQueryFilters())}");
-    Console.WriteLine($"rental_asset_histories_dirty={await CountDirtyAsync(db.RentalAssetAssignmentHistories.IgnoreQueryFilters())}");
-    Console.WriteLine($"outbox_count={await db.SyncOutboxEntries.CountAsync()}");
+    Console.WriteLine("dirty_scope_note=current_scope_dirty is the authoritative value for the current login; all_scope_* values include cached tenants/offices outside the current login scope.");
+    Console.WriteLine($"all_scope_customers_dirty={await CountDirtyAsync(db.Customers.IgnoreQueryFilters())}");
+    Console.WriteLine($"all_scope_contracts_dirty={await CountDirtyAsync(db.CustomerContracts.IgnoreQueryFilters())}");
+    Console.WriteLine($"all_scope_items_dirty={await CountDirtyAsync(db.Items.IgnoreQueryFilters())}");
+    Console.WriteLine($"all_scope_invoices_dirty={await CountDirtyAsync(db.Invoices.IgnoreQueryFilters())}");
+    Console.WriteLine($"all_scope_payments_dirty={await CountDirtyAsync(db.Payments.IgnoreQueryFilters())}");
+    Console.WriteLine($"all_scope_transactions_dirty={await CountDirtyAsync(db.Transactions.IgnoreQueryFilters())}");
+    Console.WriteLine($"all_scope_rental_profiles_dirty={await CountDirtyAsync(db.RentalBillingProfiles.IgnoreQueryFilters())}");
+    Console.WriteLine($"all_scope_rental_assets_dirty={await CountDirtyAsync(db.RentalAssets.IgnoreQueryFilters())}");
+    Console.WriteLine($"all_scope_rental_asset_histories_dirty={await CountDirtyAsync(db.RentalAssetAssignmentHistories.IgnoreQueryFilters())}");
+    Console.WriteLine($"all_scope_outbox_count={await db.SyncOutboxEntries.CountAsync()}");
 }
 
 static async Task<int?> TryCountCurrentScopeDirtyAsync(LocalDbContext db)
