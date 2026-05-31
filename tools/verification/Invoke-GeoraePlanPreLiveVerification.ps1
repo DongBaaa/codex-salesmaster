@@ -26,6 +26,7 @@
     [string]$MobileJavaSdkDirectory = '',
     [string]$NasRoot = '\\192.168.0.200\docker\georaeplan',
     [string]$UpdateChannel = 'stable',
+    [string]$UpdateHttpBaseUrl = '',
     [int]$ExpectedNasReleaseCount = 2,
     [int]$MinVisibleCustomers = 1,
     [int]$MinVisibleItems = 1,
@@ -34,7 +35,8 @@
     [string[]]$AllowedIntegrityWarningCodes = @(),
     [switch]$SkipPreValidationSync,
     [switch]$SkipNasLiveDriftCheck,
-    [switch]$SkipNasUpdateManifestCheck
+    [switch]$SkipNasUpdateManifestCheck,
+    [switch]$SkipUpdateHttpRouteCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -616,6 +618,114 @@ function Invoke-NasUpdateManifestCheck {
     $generatedAtUtc = [string](Get-ObjectPropertyValue -Object $manifest -Name 'generatedAtUtc')
 
     return "channel=$Channel; generatedAtUtc=$generatedAtUtc; $desktopDetail; $androidDetail"
+}
+
+function New-AbsoluteUpdateUri {
+    param(
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [Parameter(Mandatory = $true)][string]$PathOrUrl
+    )
+
+    $baseUri = [Uri]($BaseUrl.TrimEnd('/') + '/')
+    $absoluteUri = $null
+    if ([Uri]::TryCreate($PathOrUrl, [UriKind]::Absolute, [ref]$absoluteUri)) {
+        return $absoluteUri
+    }
+
+    return [Uri]::new($baseUri, $PathOrUrl.TrimStart('/'))
+}
+
+function Send-UpdateProbeRequest {
+    param(
+        [Parameter(Mandatory = $true)][System.Net.Http.HttpClient]$Client,
+        [Parameter(Mandatory = $true)][Uri]$Uri
+    )
+
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Uri)
+    try {
+        return $Client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+    }
+    catch {
+        $request.Dispose()
+        throw
+    }
+}
+
+function Test-UpdateHttpPackage {
+    param(
+        [Parameter(Mandatory = $true)][object]$Manifest,
+        [Parameter(Mandatory = $true)][string]$Platform,
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [Parameter(Mandatory = $true)][System.Net.Http.HttpClient]$Client
+    )
+
+    $package = Get-ObjectPropertyValue -Object $Manifest -Name $Platform
+    if ($null -eq $package) {
+        throw "$Platform HTTP update package entry is missing from manifest"
+    }
+
+    $packageUrl = [string](Get-ObjectPropertyValue -Object $package -Name 'packageUrl')
+    if ([string]::IsNullOrWhiteSpace($packageUrl)) {
+        throw "$Platform HTTP update package has no packageUrl"
+    }
+
+    $expectedSize = Get-ObjectPropertyValue -Object $package -Name 'fileSize'
+    $uri = New-AbsoluteUpdateUri -BaseUrl $BaseUrl -PathOrUrl $packageUrl
+    $response = Send-UpdateProbeRequest -Client $Client -Uri $uri
+    try {
+        if (-not $response.IsSuccessStatusCode) {
+            throw "$Platform HTTP update package failed: status=$([int]$response.StatusCode) uri=$uri"
+        }
+
+        $actualLength = $response.Content.Headers.ContentLength
+        if ($null -ne $expectedSize -and [long]$expectedSize -gt 0 -and $null -ne $actualLength -and [long]$actualLength -ne [long]$expectedSize) {
+            throw "$Platform HTTP update package length mismatch: expected=$expectedSize actual=$actualLength uri=$uri"
+        }
+
+        $contentType = if ($null -ne $response.Content.Headers.ContentType) { [string]$response.Content.Headers.ContentType } else { '' }
+        $version = [string](Get-ObjectPropertyValue -Object $package -Name 'version')
+        return "$Platform=$([int]$response.StatusCode) version=$version length=$actualLength contentType=$contentType"
+    }
+    finally {
+        $response.Dispose()
+    }
+}
+
+function Invoke-UpdateHttpRouteCheck {
+    param(
+        [string]$BaseUrl,
+        [string]$Channel
+    )
+
+    if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
+        return 'SKIP - update HTTP base URL not configured'
+    }
+
+    Add-Type -AssemblyName System.Net.Http
+    $client = [System.Net.Http.HttpClient]::new()
+    $client.Timeout = [TimeSpan]::FromSeconds(60)
+    try {
+        $manifestUri = New-AbsoluteUpdateUri -BaseUrl $BaseUrl -PathOrUrl ("updates/manifest?channel={0}" -f [Uri]::EscapeDataString($Channel))
+        $manifestResponse = Send-UpdateProbeRequest -Client $client -Uri $manifestUri
+        try {
+            if (-not $manifestResponse.IsSuccessStatusCode) {
+                throw "update HTTP manifest failed: status=$([int]$manifestResponse.StatusCode) uri=$manifestUri"
+            }
+
+            $manifestJson = $manifestResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            $manifest = $manifestJson | ConvertFrom-Json
+            $desktopDetail = Test-UpdateHttpPackage -Manifest $manifest -Platform 'desktop' -BaseUrl $BaseUrl -Client $client
+            $androidDetail = Test-UpdateHttpPackage -Manifest $manifest -Platform 'android' -BaseUrl $BaseUrl -Client $client
+            $generatedAtUtc = [string](Get-ObjectPropertyValue -Object $manifest -Name 'generatedAtUtc')
+            return "baseUrl=$($BaseUrl.TrimEnd('/')); channel=$Channel; generatedAtUtc=$generatedAtUtc; $desktopDetail; $androidDetail"
+        }
+        finally {
+            $manifestResponse.Dispose()
+        }
+    }
+    finally {
+        $client.Dispose()
+    }
 }
 
 function Invoke-DirtyCheck {
@@ -1284,6 +1394,15 @@ else {
     Add-StepResult -Name 'nas-update-manifest-check' -Passed $true -Detail 'SKIP'
 }
 
+if (-not $SkipUpdateHttpRouteCheck) {
+    Invoke-Step -Name 'update-http-route-check' -Script {
+        Invoke-UpdateHttpRouteCheck -BaseUrl $UpdateHttpBaseUrl -Channel $UpdateChannel
+    }
+}
+else {
+    Add-StepResult -Name 'update-http-route-check' -Passed $true -Detail 'SKIP'
+}
+
 if (-not $SkipDiffCheck) {
     Invoke-Step -Name 'git-diff-check' -Script {
         Push-Location $ProjectRoot
@@ -1340,9 +1459,11 @@ $report = [pscustomobject]@{
     IncludeMobileE2E = [bool]$IncludeMobileE2E
     NasRoot = $NasRoot
     UpdateChannel = $UpdateChannel
+    UpdateHttpBaseUrl = $UpdateHttpBaseUrl
     ExpectedNasReleaseCount = $ExpectedNasReleaseCount
     SkipNasLiveDriftCheck = [bool]$SkipNasLiveDriftCheck
     SkipNasUpdateManifestCheck = [bool]$SkipNasUpdateManifestCheck
+    SkipUpdateHttpRouteCheck = [bool]$SkipUpdateHttpRouteCheck
     Overall = $overall
     Results = @($Results.ToArray())
 }
@@ -1370,7 +1491,11 @@ $lines.Add("- mobile build 포함: $([bool]$IncludeMobileBuild)") | Out-Null
 $lines.Add("- mobile E2E 포함: $([bool]$IncludeMobileE2E)") | Out-Null
 $lines.Add("- NAS live drift 확인: $(-not [bool]$SkipNasLiveDriftCheck)") | Out-Null
 $lines.Add("- NAS update manifest 확인: $(-not [bool]$SkipNasUpdateManifestCheck)") | Out-Null
+$lines.Add("- 업데이트 HTTP route 확인: $(-not [bool]$SkipUpdateHttpRouteCheck)") | Out-Null
 $lines.Add("- 업데이트 채널: $UpdateChannel") | Out-Null
+if (-not [string]::IsNullOrWhiteSpace($UpdateHttpBaseUrl)) {
+    $lines.Add("- 업데이트 HTTP BaseUrl: $UpdateHttpBaseUrl") | Out-Null
+}
 if (-not [string]::IsNullOrWhiteSpace($NasRoot)) {
     $lines.Add("- NAS root: $NasRoot") | Out-Null
     $lines.Add("- NAS release 보관 기대 개수: $ExpectedNasReleaseCount") | Out-Null
