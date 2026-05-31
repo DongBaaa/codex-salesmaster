@@ -1,110 +1,229 @@
+﻿[CmdletBinding()]
 param(
-    [switch]$StopOnFailure
+    [switch]$StopOnFailure,
+    [switch]$SkipSolutionTests,
+    [switch]$SkipTaskBuilds,
+    [switch]$IncludeTaskSmokes,
+    [switch]$IncludeWpfTaskSmokes,
+    [switch]$IncludeWorkbookChecks
 )
 
 $ErrorActionPreference = 'Stop'
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$dotnet = 'D:\.dotnet-sdk\dotnet.exe'
-$outputPath = Join-Path $root 'tasks\full-verification-result.json'
-$solutionPath = (Get-ChildItem -Path $root -Filter '*.sln' | Select-Object -First 1).FullName
-if ([string]::IsNullOrWhiteSpace($solutionPath)) {
-    throw '솔루션 파일을 찾을 수 없습니다.'
-}
+$outputJsonPath = Join-Path $root 'tasks\full-verification-result.json'
+$outputMarkdownPath = Join-Path $root 'tasks\full-verification-result.md'
 
-$syncRecoveryScript = (Get-ChildItem -Path $root -Recurse -File -Filter 'Invoke-SyncRecoveryCheck.ps1' | Select-Object -First 1).FullName
-$multiPcConflictScript = (Get-ChildItem -Path $root -Recurse -File -Filter 'Invoke-MultiPcConflictCheck.ps1' | Select-Object -First 1).FullName
-$accountScopeRegressionScript = Join-Path $root 'tasks\Run-OptionalAccountScopeRegression.ps1'
-$runtimeSafetyScript = Join-Path $root 'tasks\verify-runtime-safety.ps1'
+function Resolve-DotnetCommand {
+    $candidates = @(
+        $env:DOTNET_EXE,
+        'D:\.dotnet-sdk\dotnet.exe',
+        'C:\Users\beene\.dotnet-sdk\dotnet.exe',
+        'C:\Users\beene\AppData\Local\GeoraePlan.Android\dotnet8\dotnet.exe',
+        'C:\Program Files\dotnet\dotnet.exe'
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
-foreach ($requiredScript in @($runtimeSafetyScript, $syncRecoveryScript, $multiPcConflictScript, $accountScopeRegressionScript)) {
-    if ([string]::IsNullOrWhiteSpace($requiredScript) -or -not (Test-Path -LiteralPath $requiredScript)) {
-        throw "필수 검증 스크립트를 찾을 수 없습니다: $requiredScript"
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        try {
+            & $candidate --version *> $null
+            if ($LASTEXITCODE -eq 0) { return (Resolve-Path -LiteralPath $candidate).Path }
+        }
+        catch { }
     }
+
+    $command = Get-Command dotnet -ErrorAction SilentlyContinue
+    if ($null -ne $command) { return $command.Source }
+    throw 'dotnet executable was not found.'
 }
 
-$steps = @(
-    @{ Name = 'build'; Command = $dotnet + ' build "' + $solutionPath + '" -c Debug -nodeReuse:false /p:UseSharedCompilation=false' },
-    @{ Name = 'server-tests'; Command = "$dotnet test $root\Tests\GeoraePlan.Server.Api.Tests\GeoraePlan.Server.Api.Tests.csproj -c Debug --no-build" },
-    @{ Name = 'runtime-safety'; Command = "& '$runtimeSafetyScript'" },
-    @{ Name = 'sync-recovery'; Command = "& '$syncRecoveryScript' -ProjectRoot '$root'" },
-    @{ Name = 'multi-pc-conflict'; Command = "& '$multiPcConflictScript' -ProjectRoot '$root'" },
-    @{ Name = 'account-scope-regression'; Command = "& '$accountScopeRegressionScript' -ProjectRoot '$root'" },
-    @{ Name = 'office-code-verifier'; Command = "$dotnet run --project $root\tasks\OfficeCodeVerifier\OfficeCodeVerifier.csproj -c Debug" },
-    @{ Name = 'sync-probe-inspect'; Command = "$dotnet run --project $root\tmp\SyncProbe\SyncProbe.csproj -c Debug -- inspect" },
-    @{ Name = 'syncdiag-inspect'; Command = "$dotnet run --project $root\.tmp\syncdiag\syncdiag.csproj -c Debug -- inspect" },
-    @{ Name = 'pgcheck'; Command = "$dotnet run --project $root\.tmp\pgcheck\pgcheck.csproj -c Debug" },
-    @{ Name = 'payment-transfer-scenario'; Command = "$dotnet run --project $root\tasks\PaymentTransferScenario\PaymentTransferScenario.csproj -c Debug" },
-    @{ Name = 'payment-transfer-verifier'; Command = "$dotnet run --project $root\tasks\PaymentTransferVerifier\PaymentTransferVerifier.csproj -c Debug" },
-    @{ Name = 'rental-ui-verifier'; Command = "$dotnet run --project $root\tasks\RentalUiVerifier\RentalUiVerifier.csproj -c Debug" },
-    @{ Name = 'supplement-doc-smoke'; Command = "$dotnet run --project $root\tasks\SupplementDocSmoke\SupplementDocSmoke.csproj -c Debug" },
-    @{ Name = 'document-audit'; Command = "$dotnet run --project $root\tasks\DocumentAudit\DocumentAudit.csproj -c Debug" },
-    @{ Name = 'backup-restore-smoke'; Command = "$dotnet run --project $root\tasks\BackupRestoreSmoke\BackupRestoreSmoke.csproj -c Debug" },
-    @{ Name = 'operational-batch-verify'; Command = "$dotnet run --project $root\tasks\OperationalBatchRunner\OperationalBatchRunner.csproj -c Debug -- --mode=verify" },
-    @{ Name = 'rental-catalog-repair'; Command = "$dotnet run --project $root\tasks\RentalCatalogRepairRunner\RentalCatalogRepairRunner.csproj -c Debug" },
-    @{ Name = 'rental-term-verify'; Command = "$dotnet run --project $root\.tmp\rental_term_verify\rental_term_verify.csproj -c Debug" }
-)
+function Convert-OutputText {
+    param([object[]]$Output)
+    if ($null -eq $Output -or $Output.Count -eq 0) { return '' }
+    return (($Output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine)
+}
 
-$results = New-Object System.Collections.Generic.List[object]
+function Invoke-VerificationStep {
+    param(
+        [string]$Name,
+        [string]$Command,
+        [scriptblock]$Script
+    )
 
-foreach ($step in $steps) {
-    Write-Host "==> $($step.Name)" -ForegroundColor Cyan
+    Write-Host "==> $Name" -ForegroundColor Cyan
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $stdout = ''
-    $stderr = ''
-    $exitCode = -1
+    $global:LASTEXITCODE = 0
+    $output = @()
+    $exitCode = 0
     try {
         Push-Location $root
-        $combined = @()
         try {
-            $script = [scriptblock]::Create($step.Command)
-            $combined = & $script 2>&1
+            $output = & $Script 2>&1
             $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
         }
         catch {
-            $combined = @($_ | Out-String)
+            $output = @($_ | Out-String)
             $exitCode = if ($LASTEXITCODE) { [int]$LASTEXITCODE } else { 1 }
         }
-
-        $lines = @($combined | ForEach-Object { $_.ToString() })
-        $stdout = ($lines | Where-Object { $_ -ne $null }) -join [Environment]::NewLine
-        $stderr = ''
     }
     finally {
         Pop-Location
         $sw.Stop()
     }
 
-    $result = [ordered]@{
-        name = $step.Name
-        command = $step.Command
+    $text = (Convert-OutputText $output).TrimEnd()
+    $result = [pscustomobject][ordered]@{
+        name = $Name
+        command = $Command
         exitCode = $exitCode
         succeeded = ($exitCode -eq 0)
         durationSeconds = [Math]::Round($sw.Elapsed.TotalSeconds, 2)
-        stdout = $stdout.TrimEnd()
-        stderr = $stderr.TrimEnd()
+        output = $text
     }
-    $results.Add([pscustomobject]$result) | Out-Null
 
-    if ($exitCode -eq 0) {
-        Write-Host "PASS $($step.Name) ($([Math]::Round($sw.Elapsed.TotalSeconds,2))s)" -ForegroundColor Green
+    if ($result.succeeded) {
+        Write-Host "PASS $Name ($($result.durationSeconds)s)" -ForegroundColor Green
     }
     else {
-        Write-Host "FAIL $($step.Name) ($([Math]::Round($sw.Elapsed.TotalSeconds,2))s)" -ForegroundColor Red
-        if ($StopOnFailure) { break }
+        Write-Host "FAIL $Name ($($result.durationSeconds)s)" -ForegroundColor Red
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            ($text -split "`r?`n" | Select-Object -Last 20) | ForEach-Object { Write-Host $_ }
+        }
+    }
+
+    return $result
+}
+
+function Find-RequiredFile {
+    param([string]$Filter)
+    $file = Get-ChildItem -LiteralPath $root -Recurse -File -Filter $Filter | Select-Object -First 1
+    if ($null -eq $file) { throw "Required file not found: $Filter" }
+    return $file.FullName
+}
+
+$dotnet = Resolve-DotnetCommand
+$solutionPath = (Get-ChildItem -LiteralPath $root -Filter '*.sln' | Select-Object -First 1).FullName
+if ([string]::IsNullOrWhiteSpace($solutionPath)) { throw 'Solution file was not found.' }
+$serverTests = Join-Path $root 'Tests\GeoraePlan.Server.Api.Tests\GeoraePlan.Server.Api.Tests.csproj'
+$desktopTests = Join-Path $root 'Tests\GeoraePlan.Desktop.App.Tests\GeoraePlan.Desktop.App.Tests.csproj'
+$syncRecoveryScript = Find-RequiredFile -Filter 'Invoke-SyncRecoveryCheck.ps1'
+$multiPcConflictScript = Find-RequiredFile -Filter 'Invoke-MultiPcConflictCheck.ps1'
+$accountScopeRegressionScript = Join-Path $root 'tasks\Run-OptionalAccountScopeRegression.ps1'
+if (-not (Test-Path -LiteralPath $accountScopeRegressionScript)) { throw "Required file not found: $accountScopeRegressionScript" }
+
+$steps = New-Object System.Collections.Generic.List[object]
+$shouldStop = $false
+
+$steps.Add((Invoke-VerificationStep -Name 'build-solution' -Command "$dotnet build $solutionPath -c Debug" -Script {
+    & $dotnet build $solutionPath -c Debug -nodeReuse:false /p:UseSharedCompilation=false
+})) | Out-Null
+$shouldStop = $shouldStop -or ($StopOnFailure -and -not $steps[$steps.Count - 1].succeeded)
+
+if (-not $shouldStop -and -not $SkipSolutionTests) {
+    $steps.Add((Invoke-VerificationStep -Name 'server-tests' -Command "$dotnet test $serverTests" -Script {
+        & $dotnet test $serverTests -c Debug --no-restore --logger 'console;verbosity=minimal'
+    })) | Out-Null
+    $shouldStop = $shouldStop -or ($StopOnFailure -and -not $steps[$steps.Count - 1].succeeded)
+
+    $steps.Add((Invoke-VerificationStep -Name 'desktop-tests' -Command "$dotnet test $desktopTests" -Script {
+        & $dotnet test $desktopTests -c Debug --no-restore --logger 'console;verbosity=minimal'
+    })) | Out-Null
+    $shouldStop = $shouldStop -or ($StopOnFailure -and -not $steps[$steps.Count - 1].succeeded)
+}
+
+if (-not $shouldStop) {
+$steps.Add((Invoke-VerificationStep -Name 'sync-recovery-regression' -Command "$syncRecoveryScript -ProjectRoot $root" -Script {
+    & $syncRecoveryScript -ProjectRoot $root
+})) | Out-Null
+$shouldStop = $shouldStop -or ($StopOnFailure -and -not $steps[$steps.Count - 1].succeeded)
+}
+
+if (-not $shouldStop) {
+$steps.Add((Invoke-VerificationStep -Name 'multi-pc-conflict-regression' -Command "$multiPcConflictScript -ProjectRoot $root" -Script {
+    & $multiPcConflictScript -ProjectRoot $root
+})) | Out-Null
+$shouldStop = $shouldStop -or ($StopOnFailure -and -not $steps[$steps.Count - 1].succeeded)
+}
+
+$accountCommand = "powershell -NoProfile -ExecutionPolicy Bypass -File $accountScopeRegressionScript -ProjectRoot $root"
+if (-not $shouldStop) {
+$steps.Add((Invoke-VerificationStep -Name 'account-scope-regression' -Command $accountCommand -Script {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $accountScopeRegressionScript -ProjectRoot $root
+})) | Out-Null
+$shouldStop = $shouldStop -or ($StopOnFailure -and -not $steps[$steps.Count - 1].succeeded)
+}
+
+if (-not $shouldStop -and -not $SkipTaskBuilds) {
+    $taskProjects = Get-ChildItem -LiteralPath (Join-Path $root 'tasks') -Recurse -File -Filter '*.csproj' | Sort-Object FullName
+    foreach ($project in $taskProjects) {
+        $name = 'task-build-' + $project.Directory.Name
+        $steps.Add((Invoke-VerificationStep -Name $name -Command "$dotnet build $($project.FullName)" -Script {
+            & $dotnet build $project.FullName -c Debug --no-restore -v minimal
+        })) | Out-Null
+        $shouldStop = $shouldStop -or ($StopOnFailure -and -not $steps[$steps.Count - 1].succeeded)
     }
 }
 
+if (-not $shouldStop -and $IncludeTaskSmokes) {
+    $smokeNames = @('OfficeCodeVerifier', 'ContractPreviewSmoke', 'RentalAssetStatusSmoke', 'RentalBillingInvoiceSmoke', 'PaymentTransferScenario')
+    if ($IncludeWpfTaskSmokes) { $smokeNames += 'PaymentTransferVerifier' }
+    if ($IncludeWorkbookChecks) { $smokeNames += @('RentalWorkbookAudit', 'RentalWorkbookRebuild', 'RentalWorkbookReviewReport') }
+
+    foreach ($smokeName in $smokeNames) {
+        $project = Join-Path $root "tasks\$smokeName\$smokeName.csproj"
+        if (-not (Test-Path -LiteralPath $project)) {
+            $steps.Add([pscustomobject][ordered]@{ name = "task-smoke-$smokeName"; command = "dotnet run $project"; exitCode = 1; succeeded = $false; durationSeconds = 0; output = "Project not found: $project" }) | Out-Null
+            $shouldStop = $true
+            continue
+        }
+        $steps.Add((Invoke-VerificationStep -Name "task-smoke-$smokeName" -Command "$dotnet run --project $project" -Script {
+            & $dotnet run --project $project -c Debug --no-restore
+        })) | Out-Null
+        $shouldStop = $shouldStop -or ($StopOnFailure -and -not $steps[$steps.Count - 1].succeeded)
+    }
+}
+
+$failed = @($steps | Where-Object { -not $_.succeeded })
 $summary = [ordered]@{
-    generatedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-    total = $results.Count
-    passed = @($results | Where-Object { $_.succeeded }).Count
-    failed = @($results | Where-Object { -not $_.succeeded }).Count
-    results = $results
+    generatedAt = (Get-Date).ToString('o')
+    projectRoot = $root
+    dotnet = $dotnet
+    solution = $solutionPath
+    total = $steps.Count
+    passed = @($steps | Where-Object { $_.succeeded }).Count
+    failed = $failed.Count
+    results = @($steps.ToArray())
 }
+$summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $outputJsonPath -Encoding UTF8
 
-$summary | ConvertTo-Json -Depth 6 | Set-Content -Path $outputPath -Encoding UTF8
-Write-Host "결과 저장: $outputPath" -ForegroundColor Yellow
-
-if (@($results | Where-Object { -not $_.succeeded }).Count -gt 0) {
-    exit 1
+$lines = New-Object System.Collections.Generic.List[string]
+$overall = if ($failed.Count -eq 0) { 'PASS' } else { 'FAIL' }
+$lines.Add('# GeoraePlan full verification') | Out-Null
+$lines.Add('') | Out-Null
+$lines.Add("- GeneratedAt: $($summary.generatedAt)") | Out-Null
+$lines.Add("- Result: **$overall**") | Out-Null
+$lines.Add("- ProjectRoot: $root") | Out-Null
+$lines.Add("- dotnet: $dotnet") | Out-Null
+$lines.Add('') | Out-Null
+$lines.Add('| Result | Step | Seconds | Command |') | Out-Null
+$lines.Add('|---|---|---:|---|') | Out-Null
+foreach ($row in $steps) {
+    $status = if ($row.succeeded) { 'PASS' } else { 'FAIL' }
+    $commandText = ([string]$row.command).Replace('|', '\|')
+    $lines.Add("| $status | $($row.name) | $($row.durationSeconds) | $commandText |") | Out-Null
 }
+if ($failed.Count -gt 0) {
+    $lines.Add('') | Out-Null
+    $lines.Add('## Failed output tail') | Out-Null
+    foreach ($row in $failed) {
+        $tail = (([string]$row.output -split "`r?`n") | Select-Object -Last 30) -join ' / '
+        $lines.Add("- $($row.name): $tail") | Out-Null
+    }
+}
+$lines | Set-Content -LiteralPath $outputMarkdownPath -Encoding UTF8
+
+Write-Host "Full verification: $overall" -ForegroundColor Yellow
+Write-Host "JSON: $outputJsonPath"
+Write-Host "Markdown: $outputMarkdownPath"
+$steps | Select-Object name, succeeded, durationSeconds, exitCode | Format-Table -AutoSize
+
+if ($failed.Count -gt 0) { exit 1 }
