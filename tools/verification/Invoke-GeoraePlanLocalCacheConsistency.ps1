@@ -3,6 +3,8 @@
     [string]$Username = 'usenet',
     [string]$Password = '1234',
     [string]$BearerToken = '',
+    [string]$ScopeTenantCode = '',
+    [string]$ScopeOfficeCode = '',
     [string]$AppDataRoot = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path '테스트 시행\실행환경\AppData'),
     [string]$EvidenceDirectory = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'output\local-cache-consistency'),
     [switch]$FailOnCountMismatch
@@ -225,6 +227,8 @@ import sqlite3
 
 db_path = os.environ["GEORAEPLAN_LOCAL_DB"]
 tables = json.loads(os.environ["GEORAEPLAN_TABLES_JSON"])
+scope_tenant = (os.environ.get("GEORAEPLAN_SCOPE_TENANT") or "").strip()
+scope_office = (os.environ.get("GEORAEPLAN_SCOPE_OFFICE") or "").strip()
 
 con = sqlite3.connect(db_path)
 con.row_factory = sqlite3.Row
@@ -232,12 +236,19 @@ con.row_factory = sqlite3.Row
 existing = {row["name"] for row in con.execute("select name from sqlite_master where type='table'")}
 result = {"tables": {}, "settings": {}}
 
+def build_where(conditions):
+    if not conditions:
+        return ""
+    return "where " + " and ".join(conditions)
+
 for key, table in tables.items():
     info = {
         "table": table,
         "exists": table in existing,
         "totalCount": None,
+        "activeAllCount": None,
         "activeCount": None,
+        "outOfScopeActiveCount": 0,
         "activeIds": [],
         "activeRows": {},
         "sampleRows": [],
@@ -245,20 +256,36 @@ for key, table in tables.items():
     if table in existing:
         cols = {row["name"] for row in con.execute(f'pragma table_info("{table}")')}
         total = con.execute(f'select count(*) from "{table}"').fetchone()[0]
+        active_all_conditions = []
         if "IsDeleted" in cols:
-            active_where = 'where "IsDeleted" = 0'
-            active = con.execute(f'select count(*) from "{table}" {active_where}').fetchone()[0]
-        else:
-            active_where = ''
-            active = total
+            active_all_conditions.append('"IsDeleted" = 0')
+
+        active_conditions = list(active_all_conditions)
+        active_params = []
+        if scope_tenant and "TenantCode" in cols:
+            active_conditions.append('"TenantCode" = ?')
+            active_params.append(scope_tenant)
+        if scope_office and "OfficeCode" in cols:
+            active_conditions.append('("OfficeCode" = ? or "OfficeCode" = ? or "OfficeCode" = "" or "OfficeCode" is null)')
+            active_params.append(scope_office)
+            active_params.append("ALL")
+
+        active_all_where = build_where(active_all_conditions)
+        active_where = build_where(active_conditions)
+        active_all = con.execute(f'select count(*) from "{table}" {active_all_where}').fetchone()[0]
+        active = con.execute(f'select count(*) from "{table}" {active_where}', tuple(active_params)).fetchone()[0]
         info["totalCount"] = total
+        info["activeAllCount"] = active_all
         info["activeCount"] = active
+        info["outOfScopeActiveCount"] = max(0, active_all - active)
         if "Id" in cols:
-            id_rows = con.execute(f'select "Id" from "{table}" {active_where}').fetchall()
+            id_rows = con.execute(f'select "Id" from "{table}" {active_where}', tuple(active_params)).fetchall()
             info["activeIds"] = [str(row["Id"]) for row in id_rows if row["Id"] is not None]
             sample_cols = [
                 col for col in (
                     "Id",
+                    "TenantCode",
+                    "OfficeCode",
                     "NameOriginal",
                     "SpecificationOriginal",
                     "TradeType",
@@ -277,7 +304,7 @@ for key, table in tables.items():
             ]
             if sample_cols:
                 projection = ", ".join(f'"{col}"' for col in sample_cols)
-                active_detail_rows = con.execute(f'select {projection} from "{table}" {active_where}').fetchall()
+                active_detail_rows = con.execute(f'select {projection} from "{table}" {active_where}', tuple(active_params)).fetchall()
                 info["activeRows"] = {
                     str(row["Id"]): {col: row[col] for col in sample_cols}
                     for row in active_detail_rows
@@ -285,7 +312,8 @@ for key, table in tables.items():
                 }
                 order_col = "UpdatedAtUtc" if "UpdatedAtUtc" in cols else "Id"
                 sample_rows = con.execute(
-                    f'select {projection} from "{table}" {active_where} order by "{order_col}" desc limit 50'
+                    f'select {projection} from "{table}" {active_where} order by "{order_col}" desc limit 50',
+                    tuple(active_params)
                 ).fetchall()
                 info["sampleRows"] = [
                     {col: row[col] for col in sample_cols}
@@ -329,8 +357,29 @@ else {
     }
 
     $headers = @{ Authorization = "Bearer $($login.Body.token)" }
+    if ([string]::IsNullOrWhiteSpace($ScopeTenantCode) -and -not [string]::IsNullOrWhiteSpace([string]$login.Body.user.tenantCode)) {
+        $ScopeTenantCode = [string]$login.Body.user.tenantCode
+    }
+    if ([string]::IsNullOrWhiteSpace($ScopeOfficeCode) -and -not [string]::IsNullOrWhiteSpace([string]$login.Body.user.officeCode)) {
+        $ScopeOfficeCode = [string]$login.Body.user.officeCode
+    }
 }
 $pull = (Invoke-Api -Method GET -Path 'sync/pull?sinceRev=0' -Headers $headers -ExpectedStatus @(200) -TimeoutSec 120).Body
+
+if ([string]::IsNullOrWhiteSpace($ScopeTenantCode)) {
+    $tenantCandidates = @()
+    foreach ($key in @('customers', 'items', 'invoices', 'rentalBillingProfiles', 'rentalAssets')) {
+        $tenantCandidates += @(Convert-ToArray $pull.$key | Where-Object { $_.isDeleted -ne $true } | ForEach-Object { [string]$_.tenantCode } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    $ScopeTenantCode = @($tenantCandidates | Group-Object | Sort-Object Count -Descending | Select-Object -First 1 -ExpandProperty Name)[0]
+}
+if ([string]::IsNullOrWhiteSpace($ScopeOfficeCode)) {
+    $officeCandidates = @()
+    foreach ($key in @('customers', 'items', 'invoices', 'rentalBillingProfiles', 'rentalAssets')) {
+        $officeCandidates += @(Convert-ToArray $pull.$key | Where-Object { $_.isDeleted -ne $true } | ForEach-Object { [string]$_.officeCode } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    $ScopeOfficeCode = @($officeCandidates | Group-Object | Sort-Object Count -Descending | Select-Object -First 1 -ExpandProperty Name)[0]
+}
 
 $tableMap = [ordered]@{
     customers = 'Customers'
@@ -343,6 +392,8 @@ $tableMap = [ordered]@{
     rentalBillingLogs = 'RentalBillingLogs'
 }
 
+$env:GEORAEPLAN_SCOPE_TENANT = $ScopeTenantCode
+$env:GEORAEPLAN_SCOPE_OFFICE = $ScopeOfficeCode
 $local = Invoke-LocalSqliteSnapshot -DatabasePath $databasePath -TableMap $tableMap
 
 $criticalKeys = @('customers', 'items', 'invoices')
@@ -358,6 +409,8 @@ foreach ($key in $tableMap.Keys) {
     $serverActive = $serverActiveRows.Count
     $localInfo = $local.tables.$key
     $localActive = if ($null -eq $localInfo.activeCount) { $null } else { [int]$localInfo.activeCount }
+    $localActiveAll = if ($null -eq $localInfo.activeAllCount) { $null } else { [int]$localInfo.activeAllCount }
+    $localOutOfScopeActive = if ($null -eq $localInfo.outOfScopeActiveCount) { 0 } else { [int]$localInfo.outOfScopeActiveCount }
     $localTotal = if ($null -eq $localInfo.totalCount) { $null } else { [int]$localInfo.totalCount }
 
     $status = 'PASS'
@@ -371,18 +424,18 @@ foreach ($key in $tableMap.Keys) {
     }
     elseif ($serverActive -gt 0 -and $localActive -lt $serverActive) {
         $status = 'WARN'
-        $warnings.Add("${key} 로컬 활성 ${localActive}건이 서버 활성 ${serverActive}건보다 적습니다. 동기화 직후 재확인이 필요합니다.")
+        $warnings.Add("${key} 현재 scope 로컬 활성 ${localActive}건이 서버 활성 ${serverActive}건보다 적습니다. 동기화 직후 재확인이 필요합니다.")
         if ($FailOnCountMismatch) {
             $status = 'FAIL'
-            $failures.Add("${key} count mismatch: local active ${localActive} < server active ${serverActive}")
+            $failures.Add("${key} count mismatch: scoped local active ${localActive} < server active ${serverActive}")
         }
     }
     elseif ($serverActive -ge 0 -and $localActive -gt $serverActive) {
         $status = 'WARN'
-        $warnings.Add("${key} 로컬 활성 ${localActive}건이 서버 활성 ${serverActive}건보다 많습니다. 서버에 없는 로컬 잔여 캐시가 화면에 보일 수 있으므로 전체 캐시 재구성이 필요합니다.")
+        $warnings.Add("${key} 현재 scope 로컬 활성 ${localActive}건이 서버 활성 ${serverActive}건보다 많습니다. 서버에 없는 로컬 잔여 캐시가 현재 사용자 화면에 보일 수 있으므로 전체 캐시 재구성이 필요합니다.")
         if ($FailOnCountMismatch -and $criticalKeys -contains $key) {
             $status = 'FAIL'
-            $failures.Add("${key} count mismatch: local active ${localActive} > server active ${serverActive}")
+            $failures.Add("${key} count mismatch: scoped local active ${localActive} > server active ${serverActive}")
         }
     }
 
@@ -476,6 +529,8 @@ foreach ($key in $tableMap.Keys) {
         ServerActive = $serverActive
         LocalTotal = $localTotal
         LocalActive = $localActive
+        LocalActiveAll = $localActiveAll
+        LocalOutOfScopeActive = $localOutOfScopeActive
         SampleChecked = $sampleChecked
         FieldChecked = $fieldChecked
         FieldMismatch = $fieldMismatch
@@ -492,6 +547,8 @@ $result = [pscustomobject]@{
     BaseUrl = $BaseUrl
     AppDataRoot = $AppDataRoot
     DatabasePath = $databasePath
+    ScopeTenantCode = $ScopeTenantCode
+    ScopeOfficeCode = $ScopeOfficeCode
     Overall = $overall
     Rows = $rowsArray
     LocalSettings = $local.settings
@@ -509,14 +566,15 @@ $md.Add("")
 $md.Add("- 실행시각: $($result.GeneratedAt)")
 $md.Add("- 서버: $BaseUrl")
 $md.Add("- 로컬 DB: $databasePath")
+$md.Add("- 비교 scope: Tenant=$ScopeTenantCode / Office=$ScopeOfficeCode")
 $md.Add("- 결과: **$overall**")
 $md.Add("")
 $md.Add("## 핵심 목록 비교")
 $md.Add("")
-$md.Add("| 데이터 | 서버 전체 | 서버 활성 | 로컬 전체 | 로컬 활성 | 샘플 확인 | 필드 확인 | 필드 불일치 | 결과 |")
-$md.Add("|---|---:|---:|---:|---:|---:|---:|---:|---|")
+$md.Add("| 데이터 | 서버 전체 | 서버 활성 | 로컬 전체 | 현재 scope 로컬 활성 | scope 외 로컬 활성 | 샘플 확인 | 필드 확인 | 필드 불일치 | 결과 |")
+$md.Add("|---|---:|---:|---:|---:|---:|---:|---:|---:|---|")
 foreach ($row in $rows) {
-    $md.Add("| $($row.Key) | $($row.ServerTotal) | $($row.ServerActive) | $($row.LocalTotal) | $($row.LocalActive) | $($row.SampleChecked) | $($row.FieldChecked) | $($row.FieldMismatch) | $($row.Status) |")
+    $md.Add("| $($row.Key) | $($row.ServerTotal) | $($row.ServerActive) | $($row.LocalTotal) | $($row.LocalActive) | $($row.LocalOutOfScopeActive) | $($row.SampleChecked) | $($row.FieldChecked) | $($row.FieldMismatch) | $($row.Status) |")
 }
 $md.Add("")
 $md.Add("## 로컬 동기화 설정")
