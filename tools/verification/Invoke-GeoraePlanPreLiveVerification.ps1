@@ -25,6 +25,7 @@
     [string]$MobileAndroidSdkDirectory = '',
     [string]$MobileJavaSdkDirectory = '',
     [string]$NasRoot = '\\192.168.0.200\docker\georaeplan',
+    [string]$UpdateChannel = 'stable',
     [int]$ExpectedNasReleaseCount = 2,
     [int]$MinVisibleCustomers = 1,
     [int]$MinVisibleItems = 1,
@@ -32,7 +33,8 @@
     [switch]$FailOnIntegrityWarnings,
     [string[]]$AllowedIntegrityWarningCodes = @(),
     [switch]$SkipPreValidationSync,
-    [switch]$SkipNasLiveDriftCheck
+    [switch]$SkipNasLiveDriftCheck,
+    [switch]$SkipNasUpdateManifestCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -480,6 +482,101 @@ function Invoke-NasLiveDriftCheck {
     }
 
     return $detail
+}
+
+function Get-ObjectPropertyValue {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+
+    if ($null -eq $Object) {
+        return $null
+    }
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+
+    return $property.Value
+}
+
+function Test-NasUpdatePackage {
+    param(
+        [Parameter(Mandatory = $true)][object]$Manifest,
+        [Parameter(Mandatory = $true)][string]$Platform,
+        [Parameter(Mandatory = $true)][string]$StorageRoot
+    )
+
+    $package = Get-ObjectPropertyValue -Object $Manifest -Name $Platform
+    if ($null -eq $package) {
+        return "$Platform=missing"
+    }
+
+    $fileName = [string](Get-ObjectPropertyValue -Object $package -Name 'fileName')
+    $packageUrl = [string](Get-ObjectPropertyValue -Object $package -Name 'packageUrl')
+    if ([string]::IsNullOrWhiteSpace($fileName) -and -not [string]::IsNullOrWhiteSpace($packageUrl)) {
+        $fileName = [System.IO.Path]::GetFileName(([Uri]::UnescapeDataString($packageUrl)))
+    }
+    if ([string]::IsNullOrWhiteSpace($fileName)) {
+        throw "$Platform update package has no fileName/packageUrl"
+    }
+
+    $safeFileName = [System.IO.Path]::GetFileName($fileName)
+    if (-not [string]::Equals($safeFileName, $fileName, [System.StringComparison]::Ordinal)) {
+        throw "$Platform update package fileName is not safe: $fileName"
+    }
+
+    $filePath = Join-Path (Join-Path $StorageRoot 'downloads') (Join-Path $Platform $safeFileName)
+    if (-not (Test-Path -LiteralPath $filePath)) {
+        throw "$Platform update package file is missing: $filePath"
+    }
+
+    $file = Get-Item -LiteralPath $filePath -ErrorAction Stop
+    $expectedSizeValue = Get-ObjectPropertyValue -Object $package -Name 'fileSize'
+    if ($null -ne $expectedSizeValue -and [long]$expectedSizeValue -gt 0 -and $file.Length -ne [long]$expectedSizeValue) {
+        throw "$Platform update package size mismatch: expected=$expectedSizeValue actual=$($file.Length) file=$filePath"
+    }
+
+    $expectedHash = ([string](Get-ObjectPropertyValue -Object $package -Name 'sha256')).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($expectedHash)) {
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $filePath).Hash
+        if (-not [string]::Equals($actualHash, $expectedHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "$Platform update package hash mismatch: expected=$expectedHash actual=$actualHash file=$filePath"
+        }
+    }
+
+    $version = [string](Get-ObjectPropertyValue -Object $package -Name 'version')
+    return "$Platform=$safeFileName version=$version size=$($file.Length) sha256=ok"
+}
+
+function Invoke-NasUpdateManifestCheck {
+    param(
+        [string]$NasRoot,
+        [string]$Channel
+    )
+
+    if ([string]::IsNullOrWhiteSpace($NasRoot)) {
+        return 'SKIP - NAS root not configured'
+    }
+
+    if (-not (Test-Path -LiteralPath $NasRoot)) {
+        return "SKIP - NAS root unavailable: $NasRoot"
+    }
+
+    $storageRoot = Join-Path $NasRoot 'app\live\updates'
+    $manifestPath = Join-Path (Join-Path $storageRoot 'manifest') (($Channel.Trim().ToLowerInvariant()) + '.json')
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        throw "update manifest is missing: $manifestPath"
+    }
+
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $desktopDetail = Test-NasUpdatePackage -Manifest $manifest -Platform 'desktop' -StorageRoot $storageRoot
+    $androidDetail = Test-NasUpdatePackage -Manifest $manifest -Platform 'android' -StorageRoot $storageRoot
+    $generatedAtUtc = [string](Get-ObjectPropertyValue -Object $manifest -Name 'generatedAtUtc')
+
+    return "channel=$Channel; generatedAtUtc=$generatedAtUtc; $desktopDetail; $androidDetail"
 }
 
 function Invoke-DirtyCheck {
@@ -1139,6 +1236,15 @@ else {
     Add-StepResult -Name 'nas-live-drift-check' -Passed $true -Detail 'SKIP'
 }
 
+if (-not $SkipNasUpdateManifestCheck) {
+    Invoke-Step -Name 'nas-update-manifest-check' -Script {
+        Invoke-NasUpdateManifestCheck -NasRoot $NasRoot -Channel $UpdateChannel
+    }
+}
+else {
+    Add-StepResult -Name 'nas-update-manifest-check' -Passed $true -Detail 'SKIP'
+}
+
 if (-not $SkipDiffCheck) {
     Invoke-Step -Name 'git-diff-check' -Script {
         Push-Location $ProjectRoot
@@ -1194,8 +1300,10 @@ $report = [pscustomobject]@{
     IncludeMobileBuild = [bool]$IncludeMobileBuild
     IncludeMobileE2E = [bool]$IncludeMobileE2E
     NasRoot = $NasRoot
+    UpdateChannel = $UpdateChannel
     ExpectedNasReleaseCount = $ExpectedNasReleaseCount
     SkipNasLiveDriftCheck = [bool]$SkipNasLiveDriftCheck
+    SkipNasUpdateManifestCheck = [bool]$SkipNasUpdateManifestCheck
     Overall = $overall
     Results = @($Results.ToArray())
 }
@@ -1222,6 +1330,8 @@ $lines.Add("- print document smoke 포함: $([bool]$IncludePrintDocumentSmoke)")
 $lines.Add("- mobile build 포함: $([bool]$IncludeMobileBuild)") | Out-Null
 $lines.Add("- mobile E2E 포함: $([bool]$IncludeMobileE2E)") | Out-Null
 $lines.Add("- NAS live drift 확인: $(-not [bool]$SkipNasLiveDriftCheck)") | Out-Null
+$lines.Add("- NAS update manifest 확인: $(-not [bool]$SkipNasUpdateManifestCheck)") | Out-Null
+$lines.Add("- 업데이트 채널: $UpdateChannel") | Out-Null
 if (-not [string]::IsNullOrWhiteSpace($NasRoot)) {
     $lines.Add("- NAS root: $NasRoot") | Out-Null
     $lines.Add("- NAS release 보관 기대 개수: $ExpectedNasReleaseCount") | Out-Null
