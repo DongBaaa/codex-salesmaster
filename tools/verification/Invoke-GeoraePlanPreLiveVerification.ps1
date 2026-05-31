@@ -27,6 +27,8 @@
     [int]$MinVisibleCustomers = 1,
     [int]$MinVisibleItems = 1,
     [int]$MinVisibleInvoices = 1,
+    [switch]$FailOnIntegrityWarnings,
+    [string[]]$AllowedIntegrityWarningCodes = @(),
     [switch]$SkipPreValidationSync
 )
 
@@ -192,7 +194,9 @@ function Invoke-ApiVisibilitySmoke {
         [string]$EvidenceDirectory,
         [int]$MinCustomers,
         [int]$MinItems,
-        [int]$MinInvoices
+        [int]$MinInvoices,
+        [bool]$FailOnIntegrityWarnings,
+        [string[]]$AllowedIntegrityWarningCodes
     )
 
     $scriptPath = Join-Path $ProjectRoot 'tools\verification\Invoke-GeoraePlanApiVisibilitySmoke.ps1'
@@ -201,7 +205,21 @@ function Invoke-ApiVisibilitySmoke {
     }
 
     $smokeEvidence = Join-Path $EvidenceDirectory 'api-visibility-smoke'
-    $output = & $scriptPath -BaseUrl $BaseUrl -Username $Username -Password $Password -EvidenceDirectory $smokeEvidence -MinCustomers $MinCustomers -MinItems $MinItems -MinInvoices $MinInvoices 2>&1
+    $arguments = @{
+        BaseUrl = $BaseUrl
+        Username = $Username
+        Password = $Password
+        EvidenceDirectory = $smokeEvidence
+        MinCustomers = $MinCustomers
+        MinItems = $MinItems
+        MinInvoices = $MinInvoices
+        AllowedIntegrityWarningCodes = $AllowedIntegrityWarningCodes
+    }
+    if ($FailOnIntegrityWarnings) {
+        $arguments.FailOnIntegrityWarnings = $true
+    }
+
+    $output = & $scriptPath @arguments 2>&1
     $reportLine = @($output | Where-Object { ([string]$_).StartsWith('api_visibility_smoke_report=') } | Select-Object -Last 1)
     $reportPath = if ($reportLine.Count -gt 0) { ([string]$reportLine[0]).Substring('api_visibility_smoke_report='.Length).Trim() } else { '' }
     if ([string]::IsNullOrWhiteSpace($reportPath) -and (Test-Path -LiteralPath $smokeEvidence)) {
@@ -862,7 +880,7 @@ Invoke-Step -Name 'health-ready-login' -Script {
 
 if (-not $SkipApiVisibilitySmoke) {
     Invoke-StepWithReport -Name 'api-visibility-smoke' -Script {
-        Invoke-ApiVisibilitySmoke -ProjectRoot $ProjectRoot -BaseUrl $BaseUrl -Username $Username -Password $Password -EvidenceDirectory $EvidenceDirectory -MinCustomers $MinVisibleCustomers -MinItems $MinVisibleItems -MinInvoices $MinVisibleInvoices
+        Invoke-ApiVisibilitySmoke -ProjectRoot $ProjectRoot -BaseUrl $BaseUrl -Username $Username -Password $Password -EvidenceDirectory $EvidenceDirectory -MinCustomers $MinVisibleCustomers -MinItems $MinVisibleItems -MinInvoices $MinVisibleInvoices -FailOnIntegrityWarnings ([bool]$FailOnIntegrityWarnings) -AllowedIntegrityWarningCodes $AllowedIntegrityWarningCodes
     }
 }
 else {
@@ -1022,6 +1040,8 @@ $report = [pscustomobject]@{
     MinVisibleCustomers = $MinVisibleCustomers
     MinVisibleItems = $MinVisibleItems
     MinVisibleInvoices = $MinVisibleInvoices
+    FailOnIntegrityWarnings = [bool]$FailOnIntegrityWarnings
+    AllowedIntegrityWarningCodes = @($AllowedIntegrityWarningCodes)
     IncludeInventoryStockSmoke = [bool]$IncludeInventoryStockSmoke
     IncludeRentalBillingSmoke = [bool]$IncludeRentalBillingSmoke
     IncludeRepeatedSaveSmoke = [bool]$IncludeRepeatedSaveSmoke
@@ -1043,6 +1063,10 @@ $lines.Add("- AppDataRoot: $AppDataRoot") | Out-Null
 $lines.Add("- dotnet: $resolvedDotnet") | Out-Null
 $lines.Add("- API 표시성 smoke 실행: $(-not [bool]$SkipApiVisibilitySmoke)") | Out-Null
 $lines.Add("- API 표시성 기준: 거래처 $MinVisibleCustomers / 품목 $MinVisibleItems / 전표 $MinVisibleInvoices") | Out-Null
+$lines.Add("- 무결성 Warning 실패 처리: $([bool]$FailOnIntegrityWarnings)") | Out-Null
+if ($AllowedIntegrityWarningCodes.Count -gt 0) {
+    $lines.Add("- 허용 Warning 코드: $($AllowedIntegrityWarningCodes -join ', ')") | Out-Null
+}
 $lines.Add("- inventory stock smoke 포함: $([bool]$IncludeInventoryStockSmoke)") | Out-Null
 $lines.Add("- rental billing smoke 포함: $([bool]$IncludeRentalBillingSmoke)") | Out-Null
 $lines.Add("- repeated save smoke 포함: $([bool]$IncludeRepeatedSaveSmoke)") | Out-Null

@@ -10,7 +10,9 @@
     [int]$IntegrityRetryDelaySeconds = 5,
     [int]$MinCustomers = 1,
     [int]$MinItems = 1,
-    [int]$MinInvoices = 1
+    [int]$MinInvoices = 1,
+    [switch]$FailOnIntegrityWarnings,
+    [string[]]$AllowedIntegrityWarningCodes = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -142,6 +144,19 @@ $unitCount = Get-ListCount $units
 $integrityIssues = @($integrity.issues)
 $integrityErrorMeasure = $integrityIssues | Where-Object { [string]$_.severity -eq 'Error' } | Measure-Object
 $integrityErrorCount = [int]$integrityErrorMeasure.Count
+$allowedWarningCodeSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($code in $AllowedIntegrityWarningCodes) {
+    if (-not [string]::IsNullOrWhiteSpace($code)) {
+        [void]$allowedWarningCodeSet.Add($code.Trim())
+    }
+}
+$integrityWarnings = @($integrityIssues | Where-Object { [string]$_.severity -eq 'Warning' })
+$blockingIntegrityWarnings = @($integrityWarnings | Where-Object {
+    $code = [string]$_.code
+    [string]::IsNullOrWhiteSpace($code) -or -not $allowedWarningCodeSet.Contains($code.Trim())
+})
+$integrityWarningCount = [int]$integrityWarnings.Count
+$blockingIntegrityWarningCount = [int]$blockingIntegrityWarnings.Count
 
 $customerDetailOk = $false
 $customerRecentInvoiceCount = 0
@@ -180,6 +195,10 @@ if ($customerCount -gt 0 -and -not $customerDetailOk) { $failures.Add('거래처
 if ($invoiceCount -gt 0 -and -not $invoiceDetailOk) { $failures.Add('전표 상세 API가 첫 전표를 정상 반환하지 않았습니다.') | Out-Null }
 if ($invoiceCount -gt 0 -and -not $paymentListOk) { $failures.Add('수금/지급 API가 첫 전표 기준 목록을 정상 반환하지 않았습니다.') | Out-Null }
 if ($integrityErrorCount -gt 0) { $failures.Add("무결성 Error 항목이 남아 있습니다. count=$integrityErrorCount") | Out-Null }
+if ($FailOnIntegrityWarnings -and $blockingIntegrityWarningCount -gt 0) {
+    $warningSummary = (@($blockingIntegrityWarnings | ForEach-Object { '{0}({1})' -f ([string]$_.code), ([int]$_.count) }) -join ', ')
+    $failures.Add("무결성 Warning 항목이 남아 있습니다. count=$blockingIntegrityWarningCount, warnings=$warningSummary") | Out-Null
+}
 
 $overall = if ($failures.Count -eq 0) { 'PASS' } else { 'FAIL' }
 $result = [pscustomobject]@{
@@ -195,6 +214,8 @@ $result = [pscustomobject]@{
         Units = $unitCount
         IntegrityIssues = Get-ListCount $integrityIssues
         IntegrityErrors = $integrityErrorCount
+        IntegrityWarnings = $integrityWarningCount
+        BlockingIntegrityWarnings = $blockingIntegrityWarningCount
         CustomerRecentInvoices = $customerRecentInvoiceCount
         FirstInvoicePayments = $paymentCount
     }
@@ -206,6 +227,9 @@ $result = [pscustomobject]@{
         PaymentListOk = $paymentListOk
     }
     IntegrityIssues = $integrityIssues
+    BlockingIntegrityWarnings = $blockingIntegrityWarnings
+    FailOnIntegrityWarnings = [bool]$FailOnIntegrityWarnings
+    AllowedIntegrityWarningCodes = @($AllowedIntegrityWarningCodes)
     EndpointObservations = @($script:EndpointObservations.ToArray())
     Failures = @($failures.ToArray())
 }
@@ -227,7 +251,14 @@ $lines.Add("| 전표 | $invoiceCount | $MinInvoices |") | Out-Null
 $lines.Add("| 고객분류 | $categoryCount | - |") | Out-Null
 $lines.Add("| 단위 | $unitCount | - |") | Out-Null
 $lines.Add("| 무결성 Error | $integrityErrorCount | 0 |") | Out-Null
+$warningCriterion = if ($FailOnIntegrityWarnings) { '0' } else { '-' }
+$lines.Add("| 무결성 Warning | $integrityWarningCount | $warningCriterion |") | Out-Null
+$lines.Add("| 차단 대상 Warning | $blockingIntegrityWarningCount | 0 |") | Out-Null
 $lines.Add('') | Out-Null
+$lines.Add("- 무결성 Warning 실패 처리: $([bool]$FailOnIntegrityWarnings)") | Out-Null
+if ($AllowedIntegrityWarningCodes.Count -gt 0) {
+    $lines.Add("- 허용 Warning 코드: $($AllowedIntegrityWarningCodes -join ', ')") | Out-Null
+}
 $lines.Add('## 상세 API 확인') | Out-Null
 $lines.Add("- 첫 거래처 상세: $customerDetailOk ($firstCustomerId)") | Out-Null
 $lines.Add("- 첫 전표 상세: $invoiceDetailOk ($firstInvoiceId)") | Out-Null
