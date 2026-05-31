@@ -17,7 +17,12 @@ param(
     [string]$NasSshUser,
     [int]$NasSshPort = 0,
     [string]$NasSshKeyPath,
-    [string]$NasRemoteOpsPath
+    [string]$NasRemoteOpsPath,
+    [switch]$SkipPreDeployOperationalGate,
+    [string]$PreDeployBaseUrl = '',
+    [string]$PreDeploySecretPath = '',
+    [string]$PreDeployOutputDirectory = '',
+    [string[]]$PreDeployAllowedIntegrityWarningCodes = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -100,6 +105,55 @@ function Invoke-PowerShellFile {
     if ($LASTEXITCODE -ne 0) {
         throw "스크립트 실행이 실패했습니다: $FilePath"
     }
+}
+
+function Get-FirstConfiguredValue {
+    param([string[]]$Candidates)
+
+    foreach ($candidate in $Candidates) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            return $candidate.Trim()
+        }
+    }
+
+    return ''
+}
+
+function Invoke-PreDeployOperationalGate {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$OperationalGateScript,
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [Parameter(Mandatory = $true)][string]$OutputDirectory,
+        [string]$SecretPath = '',
+        [string[]]$AllowedIntegrityWarningCodes = @()
+    )
+
+    if (-not (Test-Path -LiteralPath $OperationalGateScript)) {
+        throw "운영 게이트 스크립트를 찾지 못했습니다: $OperationalGateScript"
+    }
+    if ([string]::IsNullOrWhiteSpace($BaseUrl) -or $BaseUrl -eq 'https://api.example.invalid') {
+        throw 'live 반영 전 운영 게이트 BaseUrl을 확인할 수 없습니다. -PreDeployBaseUrl 또는 PUBLIC_BASE_URL을 지정하세요.'
+    }
+
+    $nasStateRoot = '\\192.168.0.200\docker\georaeplan\ops\state'
+    $arguments = @(
+        '-ProjectRoot', $ProjectRoot,
+        '-BaseUrl', $BaseUrl,
+        '-NasStateRoot', $nasStateRoot,
+        '-OutputDirectory', $OutputDirectory,
+        '-FailOnIntegrityWarnings',
+        '-SkipWriteSafetyChecks'
+    )
+    if (-not [string]::IsNullOrWhiteSpace($SecretPath)) {
+        $arguments += @('-SecretPath', $SecretPath)
+    }
+    if ($AllowedIntegrityWarningCodes.Count -gt 0) {
+        $arguments += '-AllowedIntegrityWarningCodes'
+        $arguments += $AllowedIntegrityWarningCodes
+    }
+
+    Invoke-PowerShellFile -FilePath $OperationalGateScript -Arguments $arguments
 }
 
 function Test-ChecklistChecked {
@@ -283,9 +337,10 @@ foreach ($path in @($ChecklistPath, $ChangedFilesPath)) {
 $buildInstallerScript = Join-Path $ProjectRoot 'tools\release\Build-GeoraePlanDesktopInstaller.ps1'
 $updateAssetsScript = Join-Path $ProjectRoot 'tools\release\Publish-GeoraePlanUpdateAssets.ps1'
 $nasPublishScript = Join-Path $ProjectRoot 'tools\nas\Publish-GeoraeplanNasRelease.ps1'
+$operationalGateScript = Join-Path $ProjectRoot 'tools\ops\Invoke-GeoraePlanOperationalGate.ps1'
 $liveReadinessScript = Join-Path $scriptRoot 'Invoke-LiveReleaseReadinessCheck.ps1'
 if (-not $SkipNas) {
-    foreach ($path in @($buildInstallerScript, $updateAssetsScript, $nasPublishScript, $liveReadinessScript)) {
+    foreach ($path in @($buildInstallerScript, $updateAssetsScript, $nasPublishScript, $operationalGateScript, $liveReadinessScript)) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "배포 스크립트를 찾지 못했습니다: $path"
         }
@@ -307,6 +362,12 @@ $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $sessionRoot = Join-Path $LogRoot ("deploy-" + $timestamp)
 $livePreflightReport = Join-Path $sessionRoot 'live-preflight.md'
 $livePostflightReport = Join-Path $sessionRoot 'live-postflight.md'
+$preDeployOperationalGateDirectory = if ([string]::IsNullOrWhiteSpace($PreDeployOutputDirectory)) {
+    Join-Path $sessionRoot 'pre-deploy-operational-gate'
+}
+else {
+    $PreDeployOutputDirectory
+}
 New-Item -ItemType Directory -Force -Path $sessionRoot | Out-Null
 Copy-Item -LiteralPath $ChecklistPath -Destination (Join-Path $sessionRoot '검증 체크리스트.md') -Force
 Copy-Item -LiteralPath $ChangedFilesPath -Destination (Join-Path $sessionRoot '최근 수정 파일.md') -Force
@@ -368,6 +429,25 @@ if (-not $SkipNas) {
         '-Mode', 'Pre',
         '-Channel', 'stable',
         '-OutputPath', $livePreflightReport)
+
+    if (-not $SkipPreDeployOperationalGate) {
+        $resolvedPreDeployBaseUrl = Get-FirstConfiguredValue @(
+            $PreDeployBaseUrl,
+            [string][Environment]::GetEnvironmentVariable('PUBLIC_BASE_URL'),
+            'https://trade.2884.kr'
+        )
+        Write-Info 'live 반영 전 운영 게이트를 실행합니다. 실패 시 Git/NAS 반영을 시작하지 않습니다.'
+        Invoke-PreDeployOperationalGate `
+            -ProjectRoot $ProjectRoot `
+            -OperationalGateScript $operationalGateScript `
+            -BaseUrl $resolvedPreDeployBaseUrl `
+            -OutputDirectory $preDeployOperationalGateDirectory `
+            -SecretPath $PreDeploySecretPath `
+            -AllowedIntegrityWarningCodes $PreDeployAllowedIntegrityWarningCodes
+    }
+    else {
+        Write-Warning 'live 반영 전 운영 게이트를 SkipPreDeployOperationalGate 옵션으로 생략했습니다. 별도 엄격 게이트가 이미 통과한 경우에만 사용하세요.'
+    }
 }
 
 if ($DryRun) {
@@ -381,7 +461,8 @@ if ($DryRun) {
         "- NAS 메인(live/stable) 반영 예정: $([bool](-not $SkipNas))",
         "- Git 반영 예정: $([bool](-not $SkipGit))",
         "- Git push 예정: $([bool](-not $SkipGit -and -not $SkipPush))",
-        "- live 사전 점검 리포트: $(if ($SkipNas) { '-' } else { $livePreflightReport })"
+        "- live 사전 점검 리포트: $(if ($SkipNas) { '-' } else { $livePreflightReport })",
+        "- live 전 운영 게이트 리포트: $(if ($SkipNas -or $SkipPreDeployOperationalGate) { '-' } else { Join-Path $preDeployOperationalGateDirectory 'operational-gate-report.md' })"
     ) -join [Environment]::NewLine
     Write-Utf8File -Path (Join-Path $sessionRoot '반영 결과.md') -Content $dryRunSummary
 
@@ -463,6 +544,22 @@ if (-not $SkipNas) {
     if (-not [string]::IsNullOrWhiteSpace($NasRemoteOpsPath)) {
         $nasArgs += @('-NasRemoteOpsPath', $NasRemoteOpsPath)
     }
+    if ($SkipPreDeployOperationalGate) {
+        $nasArgs += '-SkipPreDeployOperationalGate'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) {
+        $nasArgs += @('-PreDeployBaseUrl', $PreDeployBaseUrl)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PreDeploySecretPath)) {
+        $nasArgs += @('-PreDeploySecretPath', $PreDeploySecretPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PreDeployOutputDirectory)) {
+        $nasArgs += @('-PreDeployOutputDirectory', $PreDeployOutputDirectory)
+    }
+    if ($PreDeployAllowedIntegrityWarningCodes.Count -gt 0) {
+        $nasArgs += '-PreDeployAllowedIntegrityWarningCodes'
+        $nasArgs += $PreDeployAllowedIntegrityWarningCodes
+    }
 
     Write-Info '메인(live) stable 배포본의 NAS 반영을 진행합니다.'
     Invoke-PowerShellFile -FilePath $nasPublishScript -Arguments $nasArgs
@@ -487,6 +584,7 @@ $finalSummary = @(
     "- Git 반영 수행: $([bool](-not $SkipGit))",
     "- Git push 수행: $([bool](-not $SkipGit -and -not $SkipPush))",
     "- live 사전 점검 리포트: $(if ($SkipNas) { '-' } else { $livePreflightReport })",
+    "- live 전 운영 게이트 리포트: $(if ($SkipNas -or $SkipPreDeployOperationalGate) { '-' } else { Join-Path $preDeployOperationalGateDirectory 'operational-gate-report.md' })",
     "- live 사후 점검 리포트: $(if ($SkipNas) { '-' } else { $livePostflightReport })"
 ) -join [Environment]::NewLine
 Write-Utf8File -Path (Join-Path $sessionRoot '반영 결과.md') -Content $finalSummary
@@ -496,6 +594,8 @@ Write-Host "- 로그 폴더: $sessionRoot" -ForegroundColor Green
 Write-Host "- 현재 커밋: $afterCommit" -ForegroundColor Green
 if (-not $SkipNas) {
     Write-Host "- live 사전 점검 리포트: $livePreflightReport" -ForegroundColor Green
+    if (-not $SkipPreDeployOperationalGate) {
+        Write-Host "- live 전 운영 게이트 리포트: $(Join-Path $preDeployOperationalGateDirectory 'operational-gate-report.md')" -ForegroundColor Green
+    }
     Write-Host "- live 사후 점검 리포트: $livePostflightReport" -ForegroundColor Green
 }
-
