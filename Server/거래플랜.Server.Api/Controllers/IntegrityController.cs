@@ -136,11 +136,6 @@ public sealed class IntegrityController : ControllerBase
         });
         AddIssue(issues, "item_stock_snapshot_mismatch", stockMismatches, "Warning", "품목 현재재고와 창고 합계가 일치하지 않는 항목이 있습니다.");
 
-        var negativeCurrentStockCount = scopedItems.Count(item =>
-            ItemOperationalPolicy.SupportsInventory(item.TrackingType) &&
-            item.CurrentStock < 0m);
-        AddIssue(issues, "item_negative_current_stock", negativeCurrentStockCount, "Warning", "현재재고가 음수인 품목이 있습니다.");
-
         var orphanInvoiceCustomerCount = await _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
             .Where(invoice => !invoice.IsDeleted)
             .CountAsync(invoice => !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == invoice.CustomerId), cancellationToken);
@@ -277,7 +272,6 @@ public sealed class IntegrityController : ControllerBase
             "cross_tenant_inventory_transfers" => await LoadCrossTenantInventoryTransferDetailsAsync(cancellationToken),
             "orphan_item_warehouse_stock_refs" => await LoadOrphanItemWarehouseStockDetailsAsync(cancellationToken),
             "item_stock_snapshot_mismatch" => await LoadItemStockSnapshotMismatchDetailsAsync(cancellationToken),
-            "item_negative_current_stock" => await LoadNegativeCurrentStockDetailsAsync(cancellationToken),
             "orphan_invoice_customer_refs" => await LoadOrphanInvoiceCustomerDetailsAsync(cancellationToken),
             "active_invoice_lines_deleted_invoice" => await LoadActiveInvoiceLinesDeletedInvoiceDetailsAsync(cancellationToken),
             "orphan_transaction_customer_refs" => await LoadOrphanTransactionCustomerDetailsAsync(cancellationToken),
@@ -1576,7 +1570,6 @@ public sealed class IntegrityController : ControllerBase
             "cross_tenant_inventory_transfers" => new IntegrityIssueDefinition("cross_tenant_inventory_transfers", "Error", "업체 간 직접 재고이동 문서가 존재합니다."),
             "orphan_item_warehouse_stock_refs" => new IntegrityIssueDefinition("orphan_item_warehouse_stock_refs", "Error", "품목이 없는 창고 재고 행이 존재합니다."),
             "item_stock_snapshot_mismatch" => new IntegrityIssueDefinition("item_stock_snapshot_mismatch", "Warning", "품목 현재재고와 창고 합계가 일치하지 않는 항목이 있습니다."),
-            "item_negative_current_stock" => new IntegrityIssueDefinition("item_negative_current_stock", "Warning", "현재재고가 음수인 품목이 있습니다."),
             "orphan_invoice_customer_refs" => new IntegrityIssueDefinition("orphan_invoice_customer_refs", "Error", "거래처가 없는 전표 참조가 존재합니다."),
             "active_invoice_lines_deleted_invoice" => new IntegrityIssueDefinition("active_invoice_lines_deleted_invoice", "Error", "삭제된 전표에 활성 세부내역 행이 남아 있습니다."),
             "orphan_transaction_customer_refs" => new IntegrityIssueDefinition("orphan_transaction_customer_refs", "Error", "거래처가 없는 수금/지불 참조가 존재합니다."),

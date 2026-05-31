@@ -3756,17 +3756,7 @@ public sealed class SyncController : ControllerBase
             })
             .ToList();
 
-        foreach (var dto in incomingRows.Where(dto => dto.Quantity < 0m))
-        {
-            AddClientConflict(
-                dto,
-                nameof(ItemWarehouseStock),
-                $"Warehouse stock quantity cannot be negative. item={dto.ItemId:D}, warehouse={dto.WarehouseCode}, quantity={dto.Quantity:N0}.",
-                result);
-        }
-
         var sanitized = incomingRows
-            .Where(dto => dto.Quantity >= 0m)
             .GroupBy(dto => new { dto.ItemId, dto.WarehouseCode })
             .Select(group => group.Last())
             .ToList();

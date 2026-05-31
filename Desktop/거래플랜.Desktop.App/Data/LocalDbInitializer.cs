@@ -1171,58 +1171,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
 
     private static async Task RepairNegativeItemWarehouseStockSnapshotsAsync(LocalDbContext db)
     {
-        var now = DateTime.UtcNow;
-        var negativeStocks = await db.ItemWarehouseStocks
-            .Where(stock => stock.Quantity < 0m)
-            .ToListAsync();
-        var negativeCurrentStockItems = await db.Items
-            .IgnoreQueryFilters()
-            .Where(item => item.CurrentStock < 0m)
-            .ToListAsync();
-        if (negativeStocks.Count == 0 && negativeCurrentStockItems.Count == 0)
-            return;
-
-        var affectedItemIds = negativeStocks
-            .Select(stock => stock.ItemId)
-            .Concat(negativeCurrentStockItems.Select(item => item.Id))
-            .Distinct()
-            .ToList();
-
-        foreach (var stock in negativeStocks)
-        {
-            stock.Quantity = 0m;
-            stock.UpdatedAtUtc = now;
-        }
-
-        var affectedStocks = await db.ItemWarehouseStocks
-            .Where(stock => affectedItemIds.Contains(stock.ItemId))
-            .ToListAsync();
-        var stockTotals = affectedStocks
-            .GroupBy(stock => stock.ItemId)
-            .ToDictionary(
-                group => group.Key,
-                group => Math.Max(0m, group.Sum(stock => Math.Max(0m, stock.Quantity))));
-        var affectedItems = await db.Items
-            .IgnoreQueryFilters()
-            .Where(item => affectedItemIds.Contains(item.Id))
-            .ToListAsync();
-
-        foreach (var item in affectedItems)
-        {
-            var repairedCurrentStock = stockTotals.TryGetValue(item.Id, out var total)
-                ? total
-                : 0m;
-            if (item.CurrentStock == repairedCurrentStock)
-                continue;
-
-            item.CurrentStock = repairedCurrentStock;
-            item.IsDirty = true;
-            item.UpdatedAtUtc = now;
-        }
-
-        AppLogger.Warn(
-            "LOCALDB",
-            $"음수 재고 스냅샷 자동 복구: stockRows={negativeStocks.Count}, itemRows={negativeCurrentStockItems.Count}");
+        await Task.CompletedTask;
     }
 
     private static async Task NormalizeOfficeReferenceDataAsync(LocalDbContext db)

@@ -665,19 +665,13 @@ public sealed class IntegrityControllerTests : IDisposable
         var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
         var issues = payload.Issues.ToDictionary(issue => issue.Code, StringComparer.OrdinalIgnoreCase);
 
-        Assert.Equal(1, issues["item_negative_current_stock"].Count);
+        Assert.False(issues.ContainsKey("item_negative_current_stock"));
         Assert.Equal(1, issues["active_invoice_lines_deleted_invoice"].Count);
         Assert.Equal(1, issues["rental_profile_customer_unlinked"].Count);
         Assert.Equal(1, issues["rental_profile_monthly_amount_mismatch"].Count);
         Assert.Equal(1, issues["rental_profile_asset_monthly_amount_mismatch"].Count);
         Assert.Equal(1, issues["rental_asset_template_monthly_mismatch"].Count);
 
-        var negativeDetailsResponse = await controller.GetReportDetails("item_negative_current_stock", CancellationToken.None);
-        var negativeDetailsOk = Assert.IsType<OkObjectResult>(negativeDetailsResponse.Result);
-        var negativeDetails = Assert.IsType<IntegrityIssueDetailResultDto>(negativeDetailsOk.Value);
-        var negativeRow = Assert.Single(negativeDetails.Rows);
-        Assert.Contains("INV-NEG-STOCK", negativeRow.ReferenceText, StringComparison.Ordinal);
-        Assert.Contains(OfficeCodeCatalog.UsenetMainWarehouse, negativeRow.DetailText + negativeRow.ReferenceText, StringComparison.Ordinal);
 
         var lineDetailsResponse = await controller.GetReportDetails("active_invoice_lines_deleted_invoice", CancellationToken.None);
         var lineDetailsOk = Assert.IsType<OkObjectResult>(lineDetailsResponse.Result);

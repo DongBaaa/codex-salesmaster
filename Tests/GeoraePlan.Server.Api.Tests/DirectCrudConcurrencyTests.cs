@@ -208,7 +208,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
-    public async Task DbInitializer_RepairNegativeItemWarehouseStocks_ClampsRowsBeforeSnapshotRecalculation()
+    public async Task DbInitializer_PreservesNegativeWarehouseStockAndRecalculatesSnapshots()
     {
         var currentUser = CreateAdminUser();
         await using var dbContext = CreateDbContext(currentUser);
@@ -255,13 +255,13 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var repairedSnapshots = await Assert.IsType<Task<int>>(repairSnapshotMethod!.Invoke(null, new object[] { dbContext, CancellationToken.None }));
         await dbContext.SaveChangesAsync();
 
-        Assert.Equal(1, repairedNegativeRows);
+        Assert.Equal(0, repairedNegativeRows);
         Assert.Equal(1, repairedSnapshots);
-        Assert.Equal(0m, await dbContext.ItemWarehouseStocks
+        Assert.Equal(-1m, await dbContext.ItemWarehouseStocks
             .Where(row => row.ItemId == item.Id && row.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
             .Select(row => row.Quantity)
             .SingleAsync());
-        Assert.Equal(2m, await dbContext.Items.IgnoreQueryFilters()
+        Assert.Equal(1m, await dbContext.Items.IgnoreQueryFilters()
             .Where(row => row.Id == item.Id)
             .Select(row => row.CurrentStock)
             .SingleAsync());
@@ -642,7 +642,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
-    public async Task InvoicesController_SalesCreate_RejectsWhenWarehouseStockWouldBecomeNegative()
+    public async Task InvoicesController_SalesCreate_AllowsNegativeWarehouseStockWhenInventoryIsShort()
     {
         var currentUser = CreateAdminUser();
         await using var dbContext = CreateDbContext(currentUser);
@@ -715,15 +715,15 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             ]
         }, CancellationToken.None);
 
-        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
-        var message = badRequest.Value?.GetType().GetProperty("message")?.GetValue(badRequest.Value)?.ToString();
-        Assert.Contains("재고", message);
-        Assert.False(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(invoice => invoice.Id == invoiceId));
-        Assert.Equal(1m, await dbContext.ItemWarehouseStocks
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var savedInvoice = Assert.IsType<InvoiceDto>(ok.Value);
+        Assert.Equal(invoiceId, savedInvoice.Id);
+        Assert.True(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(invoice => invoice.Id == invoiceId));
+        Assert.Equal(-1m, await dbContext.ItemWarehouseStocks
             .Where(stock => stock.ItemId == item.Id && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
             .Select(stock => stock.Quantity)
             .SingleAsync());
-        Assert.Equal(1m, (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).CurrentStock);
+        Assert.Equal(-1m, (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).CurrentStock);
     }
 
     [Fact]

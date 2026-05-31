@@ -4189,7 +4189,7 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public async Task SaveInvoiceAsync_SalesCreate_RejectsWhenLocalStockWouldBecomeNegative()
+    public async Task SaveInvoiceAsync_SalesCreate_AllowsNegativeLocalStockWhenInventoryIsShort()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-local-stock-shortage-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -4288,13 +4288,14 @@ public sealed class LocalStateServicePartialsTests
                 },
                 session);
 
-            Assert.False(result.Success);
-            Assert.Contains("재고가 부족", result.Message);
-            Assert.Equal(1m, await db.ItemWarehouseStocks
+            Assert.True(result.Success, result.Message);
+            Assert.NotNull(result.Message);
+            Assert.Equal(-1m, await db.ItemWarehouseStocks
                 .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
                 .Select(stock => stock.Quantity)
                 .SingleAsync());
-            Assert.Equal(1, await db.Invoices.CountAsync(invoice => invoice.IsLatestVersion && !invoice.IsDeleted));
+            Assert.Equal(2, await db.Invoices.CountAsync(invoice => invoice.IsLatestVersion && !invoice.IsDeleted));
+            Assert.Equal(-1m, (await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId)).CurrentStock);
         }
         finally
         {
@@ -4443,7 +4444,7 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public async Task RepairNegativeItemWarehouseStocksAsync_ClampsInvalidSnapshotsAndMarksItemDirty()
+    public async Task RepairNegativeItemWarehouseStocksAsync_PreservesAllowedNegativeSaleStock()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-repair-negative-stock-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -4481,14 +4482,14 @@ public sealed class LocalStateServicePartialsTests
 
             var repaired = await service.RepairNegativeItemWarehouseStocksAsync();
 
-            Assert.Equal(2, repaired);
-            Assert.Equal(0m, await db.ItemWarehouseStocks
+            Assert.Equal(0, repaired);
+            Assert.Equal(-1m, await db.ItemWarehouseStocks
                 .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
                 .Select(stock => stock.Quantity)
                 .SingleAsync());
             var item = await db.Items.IgnoreQueryFilters().SingleAsync(current => current.Id == itemId);
-            Assert.Equal(0m, item.CurrentStock);
-            Assert.True(item.IsDirty);
+            Assert.Equal(-1m, item.CurrentStock);
+            Assert.False(item.IsDirty);
         }
         finally
         {

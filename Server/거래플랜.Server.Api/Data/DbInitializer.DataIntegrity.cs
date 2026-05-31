@@ -255,20 +255,8 @@ public static partial class DbInitializer
         AppDbContext dbContext,
         CancellationToken cancellationToken)
     {
-        var negativeStocks = await dbContext.ItemWarehouseStocks
-            .Where(current => current.Quantity < 0m)
-            .ToListAsync(cancellationToken);
-        if (negativeStocks.Count == 0)
-            return 0;
-
-        var now = DateTime.UtcNow;
-        foreach (var stock in negativeStocks)
-        {
-            stock.Quantity = 0m;
-            stock.UpdatedAtUtc = now;
-        }
-
-        return negativeStocks.Count;
+        await Task.CompletedTask;
+        return 0;
     }
 
     private static async Task<int> RepairItemCurrentStockSnapshotsAsync(

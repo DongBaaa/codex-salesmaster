@@ -137,7 +137,7 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Push_RejectsNegativeItemWarehouseStockSnapshot()
+    public async Task Push_AllowsNegativeItemWarehouseStockSnapshotForShortageSales()
     {
         var itemId = Guid.NewGuid();
         _dbContext.Items.Add(new Item
@@ -177,15 +177,13 @@ public sealed class SyncControllerTests : IDisposable
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPushResult>(ok.Value);
 
-        Assert.Equal(1, result.ConflictCount);
-        Assert.Contains(result.Conflicts, conflict =>
-            conflict.EntityName == nameof(ItemWarehouseStock) &&
-            conflict.Reason.Contains("negative", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal(3m, await _dbContext.ItemWarehouseStocks
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Empty(result.Conflicts);
+        Assert.Equal(-1m, await _dbContext.ItemWarehouseStocks
             .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
             .Select(stock => stock.Quantity)
             .SingleAsync());
-        Assert.Equal(3m, (await _dbContext.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId)).CurrentStock);
+        Assert.Equal(-1m, (await _dbContext.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId)).CurrentStock);
     }
 
     [Fact]
