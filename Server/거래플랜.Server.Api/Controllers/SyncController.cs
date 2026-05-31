@@ -3607,8 +3607,18 @@ public sealed class SyncController : ControllerBase
                     }
                     else
                     {
-                        AddClientConflict(dto, nameof(CustomerContract),
-                            "Contract file content is required when a contract PDF is attached.", result);
+                        dto.FileContent = [];
+                        dto.FileName = "PDF not registered";
+                        dto.MimeType = string.Empty;
+                        dto.FileSize = 0;
+                        dto.FileHash = string.Empty;
+                        AddNotice(
+                            result,
+                            nameof(CustomerContract),
+                            dto.Id,
+                            "customer-contract-file-payload-missing",
+                            "Contract PDF metadata was received without file content, so it was saved as a draft contract. Reattach the PDF if needed.");
+                        valid.Add(dto);
                         continue;
                     }
                 }

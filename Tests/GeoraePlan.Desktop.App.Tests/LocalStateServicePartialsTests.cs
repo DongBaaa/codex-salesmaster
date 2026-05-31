@@ -2563,6 +2563,141 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SyncService_TryPrepareItemRevisionRetryAsync_RebasesNewerLocalItemAndRequeuesOutbox()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-item-retry-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse("87111111-1111-1111-1111-111111111111");
+            const long localRevision = 1779954478941L;
+            const long serverRevision = 1779954716831L;
+            var serverUpdatedAtUtc = new DateTime(2026, 5, 28, 7, 51, 56, DateTimeKind.Utc);
+            var localUpdatedAtUtc = serverUpdatedAtUtc.AddSeconds(30);
+            const string deviceId = "DESKTOP-VGCK877:item-retry";
+
+            var item = new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                NameOriginal = "[C]Toner MLT-K250L",
+                NameMatchKey = "CTONERMLTK250L",
+                SpecificationOriginal = "SL-M2680FN",
+                SpecificationMatchKey = "SLM2680FN",
+                CategoryName = "Supplies",
+                Unit = "EA",
+                TrackingType = ItemTrackingTypes.Stock,
+                CurrentStock = 2m,
+                PurchasePrice = 32000m,
+                CreatedAtUtc = serverUpdatedAtUtc.AddDays(-1),
+                UpdatedAtUtc = localUpdatedAtUtc,
+                Revision = localRevision,
+                IsDirty = true
+            };
+            db.Items.Add(item);
+
+            var clientSnapshot = LocalMappings.ToDto(item);
+            clientSnapshot.ExpectedRevision = localRevision;
+            clientSnapshot.MutationCreatedAtUtc = localUpdatedAtUtc;
+            clientSnapshot.MutationId = InvokePrivateStatic<string>(
+                typeof(SyncService),
+                "BuildMutationId",
+                deviceId,
+                nameof(LocalItem),
+                clientSnapshot);
+
+            db.SyncOutboxEntries.Add(new LocalSyncOutboxEntry
+            {
+                Id = Guid.NewGuid(),
+                MutationId = clientSnapshot.MutationId,
+                DeviceId = deviceId,
+                EntityName = nameof(LocalItem),
+                EntityId = itemId,
+                ExpectedRevision = localRevision,
+                TenantCode = item.TenantCode,
+                OfficeCode = item.OfficeCode,
+                Status = "Sent",
+                PreparedAtUtc = localUpdatedAtUtc,
+                SentAtUtc = localUpdatedAtUtc.AddSeconds(1)
+            });
+            await db.SaveChangesAsync();
+
+            var serverSnapshot = LocalMappings.ToDto(item);
+            serverSnapshot.CategoryName = string.Empty;
+            serverSnapshot.Unit = string.Empty;
+            serverSnapshot.Revision = serverRevision;
+            serverSnapshot.UpdatedAtUtc = serverUpdatedAtUtc;
+            serverSnapshot.ExpectedRevision = 0;
+            serverSnapshot.MutationId = string.Empty;
+            serverSnapshot.MutationCreatedAtUtc = null;
+
+            var conflict = new ConflictLogDto
+            {
+                EntityName = "Item",
+                EntityId = itemId.ToString("D"),
+                Reason = $"Expected revision mismatch. client={localRevision}, server={serverRevision}",
+                ClientJson = JsonSerializer.Serialize(clientSnapshot),
+                ServerJson = JsonSerializer.Serialize(serverSnapshot)
+            };
+
+            var session = new SessionState();
+            session.SetOfflineSession(new UserSessionDto
+            {
+                Username = "admin",
+                Role = DomainConstants.RoleAdmin,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ScopeType = TenantScopeCatalog.ScopeAdmin
+            });
+
+            var officeAccess = new OfficeAccessService();
+            var dispatcher = new SyncRequestDispatcher();
+            var diagnostics = new SyncDiagnosticsService(session);
+            var localState = new LocalStateService(db, officeAccess, dispatcher, session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+
+            var prepared = await InvokePrivateInstanceAsync<bool>(
+                sync,
+                "TryPrepareItemRevisionRetryAsync",
+                conflict,
+                deviceId,
+                session,
+                CancellationToken.None);
+
+            Assert.True(prepared);
+
+            var storedItem = await db.Items.IgnoreQueryFilters()
+                .SingleAsync(current => current.Id == itemId);
+            var outboxRow = await db.SyncOutboxEntries.AsNoTracking()
+                .SingleAsync(entry => entry.EntityName == nameof(LocalItem) && entry.EntityId == itemId);
+
+            Assert.Equal(serverRevision, storedItem.Revision);
+            Assert.Equal("Supplies", storedItem.CategoryName);
+            Assert.Equal("EA", storedItem.Unit);
+            Assert.True(storedItem.IsDirty);
+            Assert.Equal("Prepared", outboxRow.Status);
+            Assert.Equal(serverRevision, outboxRow.ExpectedRevision);
+            Assert.True(string.IsNullOrWhiteSpace(outboxRow.ErrorMessage));
+            Assert.Null(outboxRow.SentAtUtc);
+            Assert.Null(outboxRow.AcknowledgedAtUtc);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public void RentalBillingProfileKey_IncludesLinkedCustomerDisplayName()
     {
         var customerId = Guid.Parse("11111111-2222-3333-4444-555555555555");

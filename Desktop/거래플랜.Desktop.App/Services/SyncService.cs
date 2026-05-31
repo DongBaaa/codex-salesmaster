@@ -1707,7 +1707,7 @@ public sealed class SyncService : IDisposable
                     await AppendConflictSummaryAsync($"중복 품목 자연키/리비전 충돌 {repairedItemRevisionConflicts.Count}건을 서버 기준 품목으로 자동 복구했습니다.");
                 }
 
-                var preparedRentalProfileRevisionRetries = await PrepareRentalBillingProfileRevisionRetriesAsync(
+                var preparedItemRevisionRetryConflicts = await PrepareItemRevisionRetriesAsync(
                     result.Conflicts
                         .Except(serverNewerConflicts)
                         .Except(repairedItemRevisionConflicts)
@@ -1716,16 +1716,33 @@ public sealed class SyncService : IDisposable
                     session,
                     ct);
 
-                if (preparedRentalProfileRevisionRetries > 0)
+                if (preparedItemRevisionRetryConflicts.Count > 0)
                 {
-                    AppLogger.Warn("SYNC", $"렌탈 청구 프로필 리비전 충돌 {preparedRentalProfileRevisionRetries}건을 서버 최신 rev 기준 재시도로 준비했습니다.");
-                    await AppendConflictSummaryAsync($"렌탈 청구 프로필 리비전 충돌 {preparedRentalProfileRevisionRetries}건을 서버 최신 rev 기준으로 재시도 준비했습니다.");
+                    AppLogger.Warn("SYNC", $"Item revision retry prepared: {preparedItemRevisionRetryConflicts.Count} conflict(s).");
+                    await AppendConflictSummaryAsync($"Item revision retry prepared: {preparedItemRevisionRetryConflicts.Count} conflict(s).");
                 }
 
+                var preparedRentalProfileRevisionRetryConflicts = await PrepareRentalBillingProfileRevisionRetriesAsync(
+                    result.Conflicts
+                        .Except(serverNewerConflicts)
+                        .Except(repairedItemRevisionConflicts)
+                        .Except(preparedItemRevisionRetryConflicts)
+                        .ToList(),
+                    req.DeviceId,
+                    session,
+                    ct);
+
+                if (preparedRentalProfileRevisionRetryConflicts.Count > 0)
+                {
+                    AppLogger.Warn("SYNC", $"Rental profile revision retry prepared: {preparedRentalProfileRevisionRetryConflicts.Count} conflict(s).");
+                    await AppendConflictSummaryAsync($"Rental profile revision retry prepared: {preparedRentalProfileRevisionRetryConflicts.Count} conflict(s).");
+                }
                 var rentalAssetConflictRepair = await RepairRentalAssetRevisionConflictsAsync(
                     result.Conflicts
                         .Except(serverNewerConflicts)
                         .Except(repairedItemRevisionConflicts)
+                        .Except(preparedItemRevisionRetryConflicts)
+                        .Except(preparedRentalProfileRevisionRetryConflicts)
                         .ToList(),
                     req.DeviceId,
                     session,
@@ -1746,7 +1763,10 @@ public sealed class SyncService : IDisposable
                 var equivalentRevisionConflicts = result.Conflicts
                     .Except(serverNewerConflicts)
                     .Except(repairedItemRevisionConflicts)
+                    .Except(preparedItemRevisionRetryConflicts)
+                    .Except(preparedRentalProfileRevisionRetryConflicts)
                     .Except(rentalAssetConflictRepair.ResolvedConflicts)
+                    .Except(rentalAssetConflictRepair.PreparedRetryConflicts)
                     .Where(IsEquivalentRevisionConflict)
                     .ToList();
 
@@ -1760,6 +1780,10 @@ public sealed class SyncService : IDisposable
                 var remainingConflicts = result.Conflicts
                     .Except(serverNewerConflicts)
                     .Except(repairedItemRevisionConflicts)
+                    .Except(preparedItemRevisionRetryConflicts)
+                    .Except(preparedRentalProfileRevisionRetryConflicts)
+                    .Except(rentalAssetConflictRepair.ResolvedConflicts)
+                    .Except(rentalAssetConflictRepair.PreparedRetryConflicts)
                     .Except(equivalentRevisionConflicts)
                     .ToList();
 
@@ -2114,25 +2138,133 @@ public sealed class SyncService : IDisposable
         return resolved;
     }
 
-    private async Task<int> PrepareRentalBillingProfileRevisionRetriesAsync(
+    private async Task<List<ConflictLogDto>> PrepareItemRevisionRetriesAsync(
         IReadOnlyCollection<ConflictLogDto> conflicts,
         string deviceId,
         SessionState session,
         CancellationToken ct)
     {
-        var preparedCount = 0;
+        var prepared = new List<ConflictLogDto>();
+        foreach (var conflict in conflicts)
+        {
+            if (await TryPrepareItemRevisionRetryAsync(conflict, deviceId, session, ct))
+                prepared.Add(conflict);
+        }
+
+        return prepared;
+    }
+
+    private async Task<bool> TryPrepareItemRevisionRetryAsync(
+        ConflictLogDto conflict,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (!string.Equals(conflict.EntityName, "Item", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var reason = (conflict.Reason ?? string.Empty).Trim();
+        if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!Guid.TryParse(conflict.EntityId, out var itemId) || itemId == Guid.Empty)
+            return false;
+
+        if (!TryDeserializeConflictItemDto(conflict.ClientJson, out var clientSnapshot) ||
+            clientSnapshot is null ||
+            clientSnapshot.Id != itemId ||
+            clientSnapshot.IsDeleted)
+        {
+            return false;
+        }
+
+        if (!TryDeserializeConflictItemDto(conflict.ServerJson, out var serverSnapshot) ||
+            serverSnapshot is null ||
+            serverSnapshot.Id != itemId ||
+            serverSnapshot.IsDeleted)
+        {
+            return false;
+        }
+
+        var item = await _db.Items
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == itemId, ct);
+        if (item is null || !item.IsDirty || item.IsDeleted)
+            return false;
+
+        var localSnapshot = LocalMappings.ToDto(item);
+        if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
+            return false;
+
+        var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
+        var serverUpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
+        if (localUpdatedAtUtc < serverUpdatedAtUtc)
+            return false;
+
+        if (!HaveCompatibleItemScope(localSnapshot, serverSnapshot))
+            return false;
+
+        item.Revision = serverSnapshot.Revision;
+        item.IsDirty = true;
+
+        var rebasedSnapshot = LocalMappings.ToDto(item);
+        await RequeuePreparedMutationAsync(
+            nameof(LocalItem),
+            itemId,
+            clientSnapshot.MutationId,
+            rebasedSnapshot,
+            deviceId,
+            session,
+            ct);
+
+        await _db.SaveChangesAsync(ct);
+        return true;
+    }
+
+    private static bool HaveCompatibleItemScope(ItemDto localSnapshot, ItemDto serverSnapshot)
+    {
+        if (localSnapshot.Id != serverSnapshot.Id)
+            return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.TenantCode, serverSnapshot.TenantCode))
+            return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.OfficeCode, serverSnapshot.OfficeCode))
+            return false;
+
+        return true;
+    }
+
+    private static bool IsSameNonEmptyScope(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            return true;
+
+        return string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<List<ConflictLogDto>> PrepareRentalBillingProfileRevisionRetriesAsync(
+        IReadOnlyCollection<ConflictLogDto> conflicts,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var prepared = new List<ConflictLogDto>();
         foreach (var conflict in conflicts)
         {
             if (await TryPrepareRentalBillingProfileRevisionRetryAsync(conflict, deviceId, session, ct))
-                preparedCount++;
+                prepared.Add(conflict);
         }
 
-        return preparedCount;
+        return prepared;
     }
 
     private sealed record RentalAssetConflictRepairResult(
         IReadOnlyList<ConflictLogDto> ResolvedConflicts,
-        int PreparedRetryCount);
+        IReadOnlyList<ConflictLogDto> PreparedRetryConflicts)
+    {
+        public int PreparedRetryCount => PreparedRetryConflicts.Count;
+    }
 
     private async Task<RentalAssetConflictRepairResult> RepairRentalAssetRevisionConflictsAsync(
         IReadOnlyCollection<ConflictLogDto> conflicts,
@@ -2141,7 +2273,7 @@ public sealed class SyncService : IDisposable
         CancellationToken ct)
     {
         var resolved = new List<ConflictLogDto>();
-        var preparedRetryCount = 0;
+        var preparedRetries = new List<ConflictLogDto>();
 
         foreach (var conflict in conflicts)
         {
@@ -2152,10 +2284,10 @@ public sealed class SyncService : IDisposable
             if (outcome.Value.IsResolved)
                 resolved.Add(conflict);
             else if (outcome.Value.PreparedRetry)
-                preparedRetryCount++;
+                preparedRetries.Add(conflict);
         }
 
-        return new RentalAssetConflictRepairResult(resolved, preparedRetryCount);
+        return new RentalAssetConflictRepairResult(resolved, preparedRetries);
     }
 
     private async Task<(bool IsResolved, bool PreparedRetry)?> TryRepairRentalAssetRevisionConflictAsync(

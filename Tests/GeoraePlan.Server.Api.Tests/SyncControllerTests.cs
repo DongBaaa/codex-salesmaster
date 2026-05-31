@@ -2993,6 +2993,65 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DowngradesNewCustomerContractMetadataOnlyPdf_ToDraftNotice()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CONTRACT-DRAFT-CUSTOMER",
+            NameMatchKey = "CONTRACTDRAFTCUSTOMER",
+            TradeType = "Sales"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var contractId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = contractId,
+                    CustomerId = customer.Id,
+                    ContractType = "Contract",
+                    FileName = "contract.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = 1024,
+                    FileHash = "HASH-WITHOUT-CONTENT",
+                    Description = "metadata only",
+                    UploadedAtUtc = new DateTime(2026, 5, 28, 9, 0, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 5, 28, 9, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 5, 28, 9, 1, 0, DateTimeKind.Utc),
+                    FileContent = []
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Contains(result.Notices, notice =>
+            notice.EntityName == nameof(CustomerContract) &&
+            notice.EntityId == contractId.ToString("D") &&
+            notice.Code == "customer-contract-file-payload-missing");
+
+        var stored = await _dbContext.CustomerContracts.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == contractId);
+        Assert.Equal("PDF not registered", stored.FileName);
+        Assert.Equal("application/pdf", stored.MimeType);
+        Assert.Equal(0, stored.FileSize);
+        Assert.Equal(string.Empty, stored.FileHash);
+        Assert.Empty(stored.FileContent);
+        Assert.Equal("metadata only", stored.Description);
+    }
+
+    [Fact]
     public async Task Push_AllowsTransactionReferencingInvoiceCreatedInSameBatch()
     {
         var customer = new Customer
