@@ -6,6 +6,7 @@
     [string]$EvidenceDirectory = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'output\rental-monthly-repair'),
     [string[]]$ProfileIds = @(),
     [int]$ExpectedCandidateCount = -1,
+    [string]$ApprovalPlanPath = '',
     [switch]$AllowApplyAll,
     [switch]$FailOnCandidates,
     [switch]$BackupConfirmed,
@@ -348,6 +349,87 @@ function Invoke-SyncPushRentalProfile {
     return $result
 }
 
+function Assert-DecimalEquals {
+    param(
+        [string]$Name,
+        [object]$Expected,
+        [object]$Actual,
+        [decimal]$Tolerance = 0.01
+    )
+
+    $expectedDecimal = Get-Decimal $Expected
+    $actualDecimal = Get-Decimal $Actual
+    if ([Math]::Abs([double]($expectedDecimal - $actualDecimal)) -gt [double]$Tolerance) {
+        throw "approval plan mismatch for $Name. expected=$expectedDecimal actual=$actualDecimal"
+    }
+}
+
+function Assert-StringEquals {
+    param(
+        [string]$Name,
+        [object]$Expected,
+        [object]$Actual
+    )
+
+    $expectedText = Get-StringValue $Expected
+    $actualText = Get-StringValue $Actual
+    if (-not [string]::Equals($expectedText, $actualText, [System.StringComparison]::Ordinal)) {
+        throw "approval plan mismatch for $Name. expected='$expectedText' actual='$actualText'"
+    }
+}
+
+function Assert-ApprovalPlanMatches {
+    param(
+        [string]$Path,
+        [string]$CurrentBaseUrl,
+        [object[]]$Rows
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw 'Apply 모드에서는 최근 dry-run에서 생성된 -ApprovalPlanPath JSON을 지정해야 합니다.'
+    }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "ApprovalPlanPath 파일을 찾지 못했습니다: $Path"
+    }
+
+    $plan = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $planBaseUrl = Get-StringValue $plan.BaseUrl
+    if (-not [string]::Equals($planBaseUrl.TrimEnd('/'), $CurrentBaseUrl.TrimEnd('/'), [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "approval plan baseUrl mismatch. expected=$planBaseUrl actual=$CurrentBaseUrl"
+    }
+
+    $planRows = @($plan.Rows)
+    if ($planRows.Count -ne $Rows.Count) {
+        throw "approval plan row count mismatch. expected=$($planRows.Count) actual=$($Rows.Count)"
+    }
+
+    $planIds = @($planRows | ForEach-Object { Get-StringValue $_.ProfileId } | Sort-Object)
+    $actualIds = @($Rows | ForEach-Object { Get-StringValue $_.ProfileId } | Sort-Object)
+    if (($planIds -join '|') -ne ($actualIds -join '|')) {
+        throw "approval plan profile id set mismatch. expected=$($planIds -join ',') actual=$($actualIds -join ',')"
+    }
+
+    $planById = @{}
+    foreach ($row in $planRows) {
+        $planById[(Get-StringValue $row.ProfileId)] = $row
+    }
+
+    foreach ($row in $Rows) {
+        $profileId = Get-StringValue $row.ProfileId
+        $expected = $planById[$profileId]
+        Assert-StringEquals -Name "$profileId.CustomerName" -Expected $expected.CustomerName -Actual $row.CustomerName
+        Assert-StringEquals -Name "$profileId.ItemName" -Expected $expected.ItemName -Actual $row.ItemName
+        Assert-StringEquals -Name "$profileId.BillingType" -Expected $expected.BillingType -Actual $row.BillingType
+        Assert-DecimalEquals -Name "$profileId.CurrentMonthlyAmount" -Expected $expected.CurrentMonthlyAmount -Actual $row.CurrentMonthlyAmount
+        Assert-DecimalEquals -Name "$profileId.LinkedAssetMonthlyAmount" -Expected $expected.LinkedAssetMonthlyAmount -Actual $row.LinkedAssetMonthlyAmount
+        Assert-DecimalEquals -Name "$profileId.Difference" -Expected $expected.Difference -Actual $row.Difference
+        Assert-DecimalEquals -Name "$profileId.LinkedAssetCount" -Expected $expected.LinkedAssetCount -Actual $row.LinkedAssetCount
+        Assert-DecimalEquals -Name "$profileId.TemplateMonthlyAmountAfter" -Expected $expected.TemplateMonthlyAmountAfter -Actual $row.TemplateMonthlyAmountAfter
+        Assert-DecimalEquals -Name "$profileId.MissingAssetCount" -Expected $expected.MissingAssetCount -Actual $row.MissingAssetCount
+        Assert-DecimalEquals -Name "$profileId.MissingAssetMonthlyAmount" -Expected $expected.MissingAssetMonthlyAmount -Actual $row.MissingAssetMonthlyAmount
+    }
+}
+
 New-DirectoryIfMissing -Path $EvidenceDirectory
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 
@@ -357,6 +439,10 @@ if ($Apply -and $ProfileIds.Count -eq 0 -and -not $AllowApplyAll) {
 
 if ($Apply -and (-not $BackupConfirmed -or -not $RestorePossible -or [string]::IsNullOrWhiteSpace($ApprovedBy))) {
     throw 'Apply 모드에서는 운영 데이터 보호를 위해 -BackupConfirmed -RestorePossible -ApprovedBy 값을 모두 지정해야 합니다.'
+}
+
+if ($Apply -and [string]::IsNullOrWhiteSpace($ApprovalPlanPath)) {
+    throw 'Apply 모드에서는 최신 dry-run 결과 JSON을 -ApprovalPlanPath로 지정해야 합니다.'
 }
 
 $headers = New-AuthHeaders
@@ -373,6 +459,7 @@ foreach ($asset in @($pull.rentalAssets | Where-Object { -not $_.isDeleted -and 
 }
 
 $rows = New-Object System.Collections.Generic.List[object]
+$pendingApplications = New-Object System.Collections.Generic.List[object]
 foreach ($profile in @($pull.rentalBillingProfiles | Where-Object { -not $_.isDeleted })) {
     $profileId = [string]$profile.id
     if ($profileIdSet.Count -gt 0 -and -not $profileIdSet.Contains($profileId)) { continue }
@@ -395,14 +482,11 @@ foreach ($profile in @($pull.rentalBillingProfiles | Where-Object { -not $_.isDe
     $applied = $false
     $pushRevision = [long]0
     if ($Apply) {
-        $profile.monthlyAmount = $normalization.LinkedAssetMonthlyAmount
-        $profile.billingTemplateJson = $normalization.TemplateJson
-        $profile.expectedRevision = [long]$profile.revision
-        $profile.mutationId = ([guid]::NewGuid()).ToString()
-        $profile.mutationCreatedAtUtc = [DateTime]::UtcNow.ToString('o')
-        Invoke-SyncPushRentalProfile -Profile $profile -Headers $headers | Out-Null
-        $applied = $true
-        $pushRevision = [long]$profile.revision
+        $pendingApplications.Add([pscustomobject]@{
+            Profile = $profile
+            MonthlyAmount = $normalization.LinkedAssetMonthlyAmount
+            TemplateJson = $normalization.TemplateJson
+        }) | Out-Null
     }
 
     $rows.Add([pscustomobject]@{
@@ -430,12 +514,34 @@ if ($ExpectedCandidateCount -ge 0 -and $rows.Count -ne $ExpectedCandidateCount) 
     throw "candidate count mismatch. expected=$ExpectedCandidateCount actual=$($rows.Count)"
 }
 
+if ($Apply) {
+    Assert-ApprovalPlanMatches -Path $ApprovalPlanPath -CurrentBaseUrl $BaseUrl -Rows @($rows.ToArray())
+
+    foreach ($application in @($pendingApplications.ToArray())) {
+        $profile = $application.Profile
+        $profileId = Get-StringValue $profile.id
+        $profile.monthlyAmount = [decimal]$application.MonthlyAmount
+        $profile.billingTemplateJson = [string]$application.TemplateJson
+        $profile.expectedRevision = [long]$profile.revision
+        $profile.mutationId = ([guid]::NewGuid()).ToString()
+        $profile.mutationCreatedAtUtc = [DateTime]::UtcNow.ToString('o')
+        Invoke-SyncPushRentalProfile -Profile $profile -Headers $headers | Out-Null
+
+        $row = @($rows | Where-Object { [string]::Equals((Get-StringValue $_.ProfileId), $profileId, [System.StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1)
+        if ($row.Count -gt 0) {
+            $row[0].Applied = $true
+            $row[0].PushedRevision = [long]$profile.revision
+        }
+    }
+}
+
 $jsonPath = Join-Path $EvidenceDirectory "rental-monthly-repair-$timestamp.json"
 $mdPath = Join-Path $EvidenceDirectory "rental-monthly-repair-$timestamp.md"
 $report = [pscustomobject]@{
     GeneratedAt = (Get-Date).ToString('o')
     BaseUrl = $BaseUrl
     Apply = [bool]$Apply
+    ApprovalPlanPath = $ApprovalPlanPath
     BackupConfirmed = [bool]$BackupConfirmed
     RestorePossible = [bool]$RestorePossible
     ApprovedBy = $ApprovedBy
@@ -450,6 +556,7 @@ $lines.Add('') | Out-Null
 $lines.Add("- generatedAt: $($report.GeneratedAt)") | Out-Null
 $lines.Add("- baseUrl: $BaseUrl") | Out-Null
 $lines.Add("- apply: $([bool]$Apply)") | Out-Null
+$lines.Add("- approvalPlanPath: $ApprovalPlanPath") | Out-Null
 $lines.Add("- applyAllAllowed: $([bool]$AllowApplyAll)") | Out-Null
 $lines.Add("- backupConfirmed: $([bool]$BackupConfirmed)") | Out-Null
 $lines.Add("- restorePossible: $([bool]$RestorePossible)") | Out-Null
@@ -485,6 +592,7 @@ if (-not $Apply -and $rows.Count -gt 0) {
     $lines.Add('  -Password $env:GEORAEPLAN_SCOPE_USENET_PASSWORD `') | Out-Null
     $lines.Add("  -ProfileIds @($profileArgs) ``") | Out-Null
     $lines.Add("  -ExpectedCandidateCount $($rows.Count) ``") | Out-Null
+    $lines.Add("  -ApprovalPlanPath '$jsonPath' ``") | Out-Null
     $lines.Add("  -BackupConfirmed -RestorePossible -ApprovedBy '<승인자>' ``") | Out-Null
     $lines.Add('  -Apply') | Out-Null
     $lines.Add('```') | Out-Null
