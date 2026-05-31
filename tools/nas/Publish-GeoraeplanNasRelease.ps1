@@ -15,7 +15,12 @@ param(
     [string]$NasRemoteOpsPath,
     [int]$KeepNasReleaseCount = 2,
     [switch]$AllowScheduledApplyTrigger,
+    [switch]$SkipPreDeployOperationalGate,
     [switch]$SkipPostDeployOperationalGate,
+    [string]$PreDeployBaseUrl = "",
+    [string]$PreDeploySecretPath = "",
+    [string]$PreDeployOutputDirectory = "",
+    [string[]]$PreDeployAllowedIntegrityWarningCodes = @(),
     [string]$PostDeployBaseUrl = "",
     [string]$PostDeploySecretPath = "",
     [string]$PostDeployOutputDirectory = "",
@@ -688,6 +693,87 @@ function Invoke-NasApplyRelease {
     }
 }
 
+function Resolve-OperationalGateBaseUrl {
+    param(
+        [string]$PrimaryBaseUrl,
+        [string]$FallbackBaseUrl,
+        [hashtable]$NasEnv
+    )
+
+    $publicBaseUrl = if ($NasEnv.ContainsKey('PUBLIC_BASE_URL')) {
+        "$($NasEnv['PUBLIC_BASE_URL'])".Trim()
+    }
+    else {
+        ''
+    }
+
+    return Get-FirstConfiguredValue @(
+        $PrimaryBaseUrl,
+        $FallbackBaseUrl,
+        $publicBaseUrl
+    )
+}
+
+function Invoke-ReleaseOperationalGate {
+    param(
+        [Parameter(Mandatory = $true)][string]$Phase,
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [string]$SecretPath = '',
+        [string]$NasStateRoot = '',
+        [string]$OutputDirectory = '',
+        [string[]]$AllowedIntegrityWarningCodes = @(),
+        [string]$ReleaseId = ''
+    )
+
+    $operationalGateScript = Join-Path $ProjectRoot 'tools\ops\Invoke-GeoraePlanOperationalGate.ps1'
+    if (-not (Test-Path -LiteralPath $operationalGateScript)) {
+        throw "$Phase operational gate script not found: $operationalGateScript"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($BaseUrl) -or $BaseUrl -eq 'https://api.example.invalid') {
+        throw "$Phase operational gate cannot run because PUBLIC_BASE_URL/BaseUrl is missing or placeholder."
+    }
+
+    if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+        $safePhase = ($Phase -replace '[^A-Za-z0-9_-]', '-').Trim('-').ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($safePhase)) {
+            $safePhase = 'operational'
+        }
+        $suffix = if ([string]::IsNullOrWhiteSpace($ReleaseId)) { Get-Date -Format 'yyyyMMdd-HHmmss' } else { $ReleaseId }
+        $OutputDirectory = Join-Path $ProjectRoot ("audit-output\$safePhase-operational-gate-$suffix")
+    }
+
+    $gateArgs = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $operationalGateScript,
+        '-ProjectRoot', $ProjectRoot,
+        '-BaseUrl', $BaseUrl,
+        '-OutputDirectory', $OutputDirectory,
+        '-FailOnIntegrityWarnings',
+        '-SkipWriteSafetyChecks'
+    )
+    if (-not [string]::IsNullOrWhiteSpace($SecretPath)) {
+        $gateArgs += @('-SecretPath', $SecretPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($NasStateRoot)) {
+        $gateArgs += @('-NasStateRoot', $NasStateRoot)
+    }
+    if ($AllowedIntegrityWarningCodes.Count -gt 0) {
+        $gateArgs += '-AllowedIntegrityWarningCodes'
+        $gateArgs += $AllowedIntegrityWarningCodes
+    }
+
+    Write-Host "$($Phase)_operational_gate_start base_url=$BaseUrl output=$OutputDirectory"
+    & powershell @gateArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Phase operational gate failed with exit code $LASTEXITCODE. Report directory: $OutputDirectory"
+    }
+
+    Write-Host "$($Phase)_operational_gate_done output=$OutputDirectory"
+}
+
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = (Resolve-Path (Join-Path $scriptRoot '..\..')).Path
@@ -717,6 +803,26 @@ if (-not (Test-Path -LiteralPath $serverProject)) {
 
 if (-not $solutionPath) {
     throw "Solution file not found under: $ProjectRoot"
+}
+
+if ($MirrorToLive -and -not $SkipPreDeployOperationalGate.IsPresent) {
+    $resolvedPreDeployBaseUrl = Resolve-OperationalGateBaseUrl `
+        -PrimaryBaseUrl $PreDeployBaseUrl `
+        -FallbackBaseUrl $PostDeployBaseUrl `
+        -NasEnv $nasEnv
+
+    Invoke-ReleaseOperationalGate `
+        -Phase 'pre-deploy' `
+        -ProjectRoot $ProjectRoot `
+        -BaseUrl $resolvedPreDeployBaseUrl `
+        -SecretPath (Get-FirstConfiguredValue @($PreDeploySecretPath, $PostDeploySecretPath)) `
+        -NasStateRoot (Join-Path $NasRoot 'ops\state') `
+        -OutputDirectory $PreDeployOutputDirectory `
+        -AllowedIntegrityWarningCodes $PreDeployAllowedIntegrityWarningCodes `
+        -ReleaseId $ReleaseId
+}
+elseif ($MirrorToLive -and $SkipPreDeployOperationalGate.IsPresent) {
+    Write-Warning 'Pre-deploy operational gate was skipped by request. Use only when a separate strict gate has already passed.'
 }
 
 Remove-Item $tempPublishRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -862,49 +968,20 @@ if ($MirrorToLive) {
 }
 
 if ($MirrorToLive -and -not $SkipPostDeployOperationalGate.IsPresent) {
-    $operationalGateScript = Join-Path $ProjectRoot 'tools\ops\Invoke-GeoraePlanOperationalGate.ps1'
-    if (-not (Test-Path -LiteralPath $operationalGateScript)) {
-        throw "Post-deploy operational gate script not found: $operationalGateScript"
-    }
+    $resolvedPostDeployBaseUrl = Resolve-OperationalGateBaseUrl `
+        -PrimaryBaseUrl $PostDeployBaseUrl `
+        -FallbackBaseUrl $PreDeployBaseUrl `
+        -NasEnv $nasEnv
 
-    $resolvedPostDeployBaseUrl = $PostDeployBaseUrl
-    if ([string]::IsNullOrWhiteSpace($resolvedPostDeployBaseUrl) -and $nasEnv.ContainsKey('PUBLIC_BASE_URL')) {
-        $resolvedPostDeployBaseUrl = "$($nasEnv['PUBLIC_BASE_URL'])".Trim()
-    }
-
-    if ([string]::IsNullOrWhiteSpace($resolvedPostDeployBaseUrl) -or $resolvedPostDeployBaseUrl -eq 'https://api.example.invalid') {
-        throw 'MirrorToLive completed but post-deploy operational gate cannot run because PUBLIC_BASE_URL/PostDeployBaseUrl is missing or placeholder.'
-    }
-
-    if ([string]::IsNullOrWhiteSpace($PostDeployOutputDirectory)) {
-        $PostDeployOutputDirectory = Join-Path $ProjectRoot ("audit-output\post-deploy-operational-gate-{0}" -f $ReleaseId)
-    }
-
-    $gateArgs = @(
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', $operationalGateScript,
-        '-ProjectRoot', $ProjectRoot,
-        '-BaseUrl', $resolvedPostDeployBaseUrl,
-        '-OutputDirectory', $PostDeployOutputDirectory,
-        '-FailOnIntegrityWarnings',
-        '-SkipWriteSafetyChecks'
-    )
-    if (-not [string]::IsNullOrWhiteSpace($PostDeploySecretPath)) {
-        $gateArgs += @('-SecretPath', $PostDeploySecretPath)
-    }
-    if ($PostDeployAllowedIntegrityWarningCodes.Count -gt 0) {
-        $gateArgs += '-AllowedIntegrityWarningCodes'
-        $gateArgs += $PostDeployAllowedIntegrityWarningCodes
-    }
-
-    Write-Host "post_deploy_operational_gate_start base_url=$resolvedPostDeployBaseUrl output=$PostDeployOutputDirectory"
-    & powershell @gateArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "Post-deploy operational gate failed with exit code $LASTEXITCODE. Report directory: $PostDeployOutputDirectory"
-    }
-
-    Write-Host "post_deploy_operational_gate_done output=$PostDeployOutputDirectory"
+    Invoke-ReleaseOperationalGate `
+        -Phase 'post-deploy' `
+        -ProjectRoot $ProjectRoot `
+        -BaseUrl $resolvedPostDeployBaseUrl `
+        -SecretPath $PostDeploySecretPath `
+        -NasStateRoot (Join-Path $NasRoot 'ops\state') `
+        -OutputDirectory $PostDeployOutputDirectory `
+        -AllowedIntegrityWarningCodes $PostDeployAllowedIntegrityWarningCodes `
+        -ReleaseId $ReleaseId
 }
 
 if ($MirrorToLive -and $SkipPostDeployOperationalGate.IsPresent) {

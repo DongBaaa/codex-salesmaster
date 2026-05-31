@@ -16,7 +16,12 @@ param(
     [int]$NasSshPort = 0,
     [string]$NasSshKeyPath,
     [string]$NasRemoteOpsPath,
+    [switch]$SkipPreDeployOperationalGate,
     [switch]$SkipPostDeployOperationalGate,
+    [string]$PreDeployBaseUrl = "",
+    [string]$PreDeploySecretPath = "",
+    [string]$PreDeployOutputDirectory = "",
+    [string[]]$PreDeployAllowedIntegrityWarningCodes = @(),
     [string]$PostDeployBaseUrl = "",
     [string]$PostDeploySecretPath = "",
     [string]$PostDeployOutputDirectory = "",
@@ -199,8 +204,24 @@ if ($DeployToNas) {
     if (-not [string]::IsNullOrWhiteSpace($NasRemoteOpsPath)) {
         $nasArgs += @('-NasRemoteOpsPath', $NasRemoteOpsPath)
     }
+    if ($SkipPreDeployOperationalGate) {
+        $nasArgs += '-SkipPreDeployOperationalGate'
+    }
     if ($SkipPostDeployOperationalGate) {
         $nasArgs += '-SkipPostDeployOperationalGate'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) {
+        $nasArgs += @('-PreDeployBaseUrl', $PreDeployBaseUrl)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PreDeploySecretPath)) {
+        $nasArgs += @('-PreDeploySecretPath', $PreDeploySecretPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PreDeployOutputDirectory)) {
+        $nasArgs += @('-PreDeployOutputDirectory', $PreDeployOutputDirectory)
+    }
+    if ($PreDeployAllowedIntegrityWarningCodes.Count -gt 0) {
+        $nasArgs += '-PreDeployAllowedIntegrityWarningCodes'
+        $nasArgs += $PreDeployAllowedIntegrityWarningCodes
     }
     if (-not [string]::IsNullOrWhiteSpace($PostDeployBaseUrl)) {
         $nasArgs += @('-PostDeployBaseUrl', $PostDeployBaseUrl)
