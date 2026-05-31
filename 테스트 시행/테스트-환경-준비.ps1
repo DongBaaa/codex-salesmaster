@@ -751,7 +751,11 @@ function Copy-CurrentAppSnapshot {
         }
     }
 
-    Invoke-RobocopyMirror -Source $SourceRoot -Destination $TargetRoot -ExcludeDirectories @('backup', 'diagnostics', 'logs', 'temp') -ExcludeFiles @('거래플랜.db')
+    Invoke-RobocopyMirror `
+        -Source $SourceRoot `
+        -Destination $TargetRoot `
+        -ExcludeDirectories @('backup', 'diagnostics', 'logs', 'temp') `
+        -ExcludeFiles @('거래플랜.db', '거래플랜.db-shm', '거래플랜.db-wal', '*.db-shm', '*.db-wal')
     Reset-TransientAppDataDirectories -Root $TargetRoot
 
     foreach ($child in @('data', 'attachments', 'backup', 'diagnostics', 'logs', 'temp')) {
@@ -762,6 +766,13 @@ function Copy-CurrentAppSnapshot {
     $targetDb = Join-Path $TargetRoot 'data\거래플랜.db'
     $databaseSource = $sourceDb
     $usedBackupFallback = $false
+
+    foreach ($sqliteSidecar in @(
+        (Join-Path $TargetRoot 'data\거래플랜.db-shm'),
+        (Join-Path $TargetRoot 'data\거래플랜.db-wal')
+    )) {
+        Remove-Item -LiteralPath $sqliteSidecar -Force -ErrorAction SilentlyContinue
+    }
 
     try {
         if (-not (Test-Path -LiteralPath $sourceDb)) {
@@ -782,6 +793,13 @@ function Copy-CurrentAppSnapshot {
         Copy-Item -LiteralPath $backupDb.FullName -Destination $targetDb -Force
         $databaseSource = $backupDb.FullName
         $usedBackupFallback = $true
+    }
+
+    foreach ($sqliteSidecar in @(
+        (Join-Path $TargetRoot 'data\거래플랜.db-shm'),
+        (Join-Path $TargetRoot 'data\거래플랜.db-wal')
+    )) {
+        Remove-Item -LiteralPath $sqliteSidecar -Force -ErrorAction SilentlyContinue
     }
 
     return [pscustomobject]@{

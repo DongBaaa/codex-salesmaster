@@ -422,6 +422,7 @@ function Test-LocalCacheConsistencyProbe {
             BaseUrl = $BaseUrl
             AppDataRoot = $LocalCacheAppDataRoot
             EvidenceDirectory = $LocalCacheEvidenceDirectory
+            FailOnCountMismatch = $true
         }
 
         if (-not [string]::IsNullOrWhiteSpace($BearerToken)) {
