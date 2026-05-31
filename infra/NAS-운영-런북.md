@@ -77,7 +77,7 @@ Windows SMB 예시:
 
 - `D:\거래플랜\infra\nas\docker-compose.yml`
 - `D:\거래플랜\infra\nas\.env.example`
-- `D:\거래플랜\infra\nas\.env.api.example.invalid.example`
+- `D:\거래플랜\infra\nas\.env.public.example`
 - `D:\거래플랜\tools\nas\Sync-GeoraeplanNasConfig.ps1`
 - `D:\거래플랜\tools\nas\Publish-GeoraeplanNasRelease.ps1`
 
@@ -89,7 +89,7 @@ Windows SMB 예시:
 
 `api.example.invalid` 기준 예시값이 필요하면 아래 파일을 바로 시작점으로 쓰면 된다.
 
-- `D:\거래플랜\infra\nas\.env.api.example.invalid.example`
+- `D:\거래플랜\infra\nas\.env.public.example`
 
 ## 6. NAS ops 동기화 절차
 

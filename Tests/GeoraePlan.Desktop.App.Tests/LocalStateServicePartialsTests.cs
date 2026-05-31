@@ -345,7 +345,7 @@ public sealed class LocalStateServicePartialsTests
                 TenantCode = TenantScopeCatalog.UsenetGroup,
                 OfficeCode = OfficeCodeCatalog.Usenet,
                 ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
-                NameOriginal = "?? ??? ? ?? ?? ???",
+                NameOriginal = "?? ??? ?? ???",
                 NameMatchKey = "POSTLOGINREVISIONCUSTOMER",
                 TradeType = "??",
                 IsDeleted = false

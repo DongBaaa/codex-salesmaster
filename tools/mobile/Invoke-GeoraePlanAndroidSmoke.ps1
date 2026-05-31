@@ -125,7 +125,7 @@ function Start-MobileApp {
         Where-Object { $_ -match '^[^/]+/[^\s]+$' } |
         Select-Object -Last 1
     if ([string]::IsNullOrWhiteSpace($activity)) {
-        throw "Android launcher activity? ?? ?????: $PackageName"
+        throw "Android launcher activity? ?? ??? ?????: $PackageName"
     }
 
     Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'am', 'start', '-n', $activity) | Out-Null

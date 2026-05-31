@@ -141,8 +141,8 @@ public sealed partial class LocalStateService
 
 	private static readonly CompanyProfileDefaultDefinition[] RequiredCompanyProfileDefaults = new CompanyProfileDefaultDefinition[3]
 	{
-		new CompanyProfileDefaultDefinition("USENET 기본", "USENET", "USENET", "[REDACTED_NAME]", "[REDACTED_BUSINESS_NUMBER]", "[REDACTED_ADDRESS]", "[REDACTED_PHONE]"),
-		new CompanyProfileDefaultDefinition("ITWORLD 기본", "ITWORLD", "ITWORLD", "[REDACTED_NAME]", "[REDACTED_BUSINESS_NUMBER]", "[REDACTED_ADDRESS]", "[REDACTED_PHONE]"),
+		new CompanyProfileDefaultDefinition("USENET 기본", "USENET", "USENET", "", "", "", ""),
+		new CompanyProfileDefaultDefinition("ITWORLD 기본", "ITWORLD", "ITWORLD", "", "", "", ""),
 		new CompanyProfileDefaultDefinition("YEONSU 기본", "YEONSU", "YEONSU", string.Empty, string.Empty, string.Empty, string.Empty)
 	};
 

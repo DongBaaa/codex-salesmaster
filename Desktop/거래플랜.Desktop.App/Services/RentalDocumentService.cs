@@ -1623,8 +1623,8 @@ public sealed class RentalDocumentService
 
         return NormalizeOfficeCode(companyProfile.OfficeCode) switch
         {
-            "ITWORLD" => "[REDACTED_PHONE]",
-            "USENET" => "[REDACTED_PHONE]",
+            "ITWORLD" => "",
+            "USENET" => "",
             _ => string.Empty
         };
     }
@@ -1633,8 +1633,8 @@ public sealed class RentalDocumentService
     {
         return NormalizeOfficeCode(companyProfile.OfficeCode) switch
         {
-            "ITWORLD" => "[REDACTED_PHONE]",
-            "USENET" => "[REDACTED_PHONE]",
+            "ITWORLD" => "",
+            "USENET" => "",
             _ => string.Empty
         };
     }

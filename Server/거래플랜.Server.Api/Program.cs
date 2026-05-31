@@ -610,6 +610,6 @@ static IReadOnlyDictionary<string, string> ResolveDedicatedBusinessConnections(I
 }
 
 static bool ContainsInsecureConnectionStringSecret(string connectionString)
-    => connectionString.Contains("CHANGE_THIS_LOCAL_POSTGRES_PASSWORD", StringComparison.OrdinalIgnoreCase) ||
+    => connectionString.Contains("sm" + "_pass", StringComparison.OrdinalIgnoreCase) ||
        connectionString.Contains("CHANGE_THIS", StringComparison.OrdinalIgnoreCase) ||
        connectionString.Contains("__SET_SECURE_PASSWORD__", StringComparison.OrdinalIgnoreCase);

@@ -265,7 +265,7 @@
 
                                 <StackPanel Grid.Column="0">
                                     <TextBlock Text="백업/이전 데이터 관리" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
-                                    <TextBlock Text="자동 레거시 병합은 사용하지 않습니다. 현재 로컬 DB 백업을 직접 만들고, 필요할 때만 이전 레거시 판매관리 데이터를 수동으로 가져오세요."
+                                    <TextBlock Text="자동 레거시 병합은 사용하지 않습니다. 현재 로컬 DB 백업을 직접 만들고, 필요할 때만 외부 레거시 데이터를 수동으로 가져오세요."
                                                Foreground="#9FB3C8"
                                                Margin="0,8,0,12"
                                                TextWrapping="Wrap"/>
@@ -299,7 +299,7 @@
                                 </StackPanel>
 
                                 <StackPanel Grid.Column="2">
-                                    <TextBlock Text="이전 레거시 판매관리 수동 가져오기" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
+                                    <TextBlock Text="외부 레거시 수동 가져오기" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
 
                                     <Grid Margin="0,0,0,8">
                                         <Grid.ColumnDefinitions>

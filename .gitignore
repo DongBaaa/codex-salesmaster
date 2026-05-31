@@ -103,3 +103,17 @@ temp/
 자료기간별 조회/
 테스트 시행/실행환경/
 Server/거래플랜.Server.Api/Data/Seeds/rental-assignment-history-workbook-seed.json
+
+# Private/publication cleanup
+업데이트 내역.md
+업데이트 내역*.md
+배포/설치패키지/*.zip
+*.pfx
+*.p12
+*.pem
+*.key
+*.keystore
+*.jks
+*.sqlite
+*.sqlite3
+*.fdb

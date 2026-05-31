@@ -149,7 +149,7 @@ function Start-IsolatedTestServer {
         'ERP_DB_FALLBACK_SQLITE' = '1'
         'SeedUsers__EnableSeedUsers' = 'true'
         'SeedUsers__UsenetUsername' = 'usenet'
-        'SeedUsers__UsenetPassword' = '1234'
+        'SeedUsers__UsenetPassword' = 'CHANGE_THIS_USENET_PASSWORD'
         'SeedUsers__UpdateExistingUsenetPassword' = 'true'
         'Logging__LogLevel__Default' = 'Warning'
         'Logging__LogLevel__Microsoft' = 'Warning'

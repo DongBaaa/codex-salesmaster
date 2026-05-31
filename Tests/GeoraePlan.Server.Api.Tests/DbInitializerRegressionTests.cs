@@ -522,7 +522,7 @@ public sealed class DbInitializerRegressionTests : IDisposable
             OfficeCode = OfficeCodeCatalog.Usenet,
             ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
             NameOriginal = "?? ??? ??? ???",
-            NameMatchKey = "???????????"
+            NameMatchKey = "??? ??????? ???????"
         });
 
         _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
@@ -747,8 +747,8 @@ public sealed class DbInitializerRegressionTests : IDisposable
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
             ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
-            NameOriginal = "????[?????]",
-            NameMatchKey = "?????????"
+            NameOriginal = "??? ????[??? ?????]",
+            NameMatchKey = "??? ??????? ?????"
         });
 
         var templateJson = JsonSerializer.Serialize(new[]
@@ -772,8 +772,8 @@ public sealed class DbInitializerRegressionTests : IDisposable
             OfficeCode = OfficeCodeCatalog.Usenet,
             ManagementCompanyCode = OfficeCodeCatalog.Usenet,
             ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
-            CustomerName = "[???]???-?????",
-            InstallSiteName = "[???]???-?????",
+            CustomerName = "[???]???-??? ?????",
+            InstallSiteName = "[???]???-??? ?????",
             ItemName = "IMC2010",
             BillingType = "??",
             MonthlyAmount = 240000m,
@@ -790,8 +790,8 @@ public sealed class DbInitializerRegressionTests : IDisposable
             ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
             CustomerId = customerId,
             AssetKey = "USENET|HEALTH-001|SN-HEALTH",
-            CustomerName = "????[?????]",
-            CurrentCustomerName = "????[?????]",
+            CustomerName = "??? ????[??? ?????]",
+            CurrentCustomerName = "??? ????[??? ?????]",
             InstallSiteName = "?.??",
             InstallLocation = "?.??",
             ItemName = "IMC2010",
@@ -816,7 +816,7 @@ public sealed class DbInitializerRegressionTests : IDisposable
 
         var profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
         Assert.Equal(customerId, profile.CustomerId);
-        Assert.Equal("????[?????]", profile.CustomerName);
+        Assert.Equal("??? ????[??? ?????]", profile.CustomerName);
         Assert.Equal(TenantScopeCatalog.UsenetGroup, profile.TenantCode);
         Assert.Equal(OfficeCodeCatalog.Usenet, profile.OfficeCode);
         Assert.Equal(OfficeCodeCatalog.Usenet, profile.ManagementCompanyCode);

@@ -1572,7 +1572,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     private static string GetDefaultLegacySourceDbPath()
     {
-        var candidate = @"C:\LegacyVendor\LegacySalesApp\DATA\SALE_ACE_DATA.FDB";
+        var candidate = @"C:\LegacySalesApp\DATA\LEGACY_DATA.FDB";
         if (File.Exists(candidate))
             return candidate;
         return string.Empty;

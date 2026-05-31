@@ -591,6 +591,7 @@ function Resolve-IsolatedUserDefinitions {
 function Sync-IsolatedServerUsers {
     param(
         [Parameter(Mandatory = $true)][string]$TargetBaseUrl,
+        [Parameter(Mandatory = $true)][string]$AdminPassword,
         [Parameter(Mandatory = $true)][object[]]$Users,
         [Parameter(Mandatory = $true)][string]$LogPath
     )
@@ -603,7 +604,7 @@ function Sync-IsolatedServerUsers {
         -Method Post `
         -Uri ($trimmedTargetBaseUrl + '/auth/login') `
         -ContentType 'application/json' `
-        -Body (@{ username = 'admin'; password = 'CHANGE_THIS_ADMIN_PASSWORD' } | ConvertTo-Json) `
+        -Body (@{ username = 'admin'; password = $AdminPassword } | ConvertTo-Json) `
         -TimeoutSec 20
 
     $adminToken = if ($adminLogin.token) { [string]$adminLogin.token } elseif ($adminLogin.accessToken) { [string]$adminLogin.accessToken } else { '' }
@@ -872,6 +873,10 @@ function Repair-ProcessPathEnvironmentForChildProcess {
     }
 }
 
+function New-LocalTestPassword {
+    return ('local-test-' + [Guid]::NewGuid().ToString('N'))
+}
+
 function Start-IsolatedServerProcess {
     param(
         [Parameter(Mandatory = $true)][string]$DotnetExe,
@@ -879,7 +884,9 @@ function Start-IsolatedServerProcess {
         [Parameter(Mandatory = $true)][string]$ServerWorkingDirectory,
         [Parameter(Mandatory = $true)][int]$Port,
         [Parameter(Mandatory = $true)][string]$FileStorageRoot,
-        [Parameter(Mandatory = $true)][string]$UpdatesRoot
+        [Parameter(Mandatory = $true)][string]$UpdatesRoot,
+        [Parameter(Mandatory = $true)][string]$AdminPassword,
+        [Parameter(Mandatory = $true)][string]$UsenetPassword
     )
 
     $serverUrl = "http://127.0.0.1:$Port"
@@ -890,6 +897,13 @@ function Start-IsolatedServerProcess {
         'ASPNETCORE_URLS' = $serverUrl
         'Kestrel__Endpoints__Http__Url' = $serverUrl
         'ERP_DB_FALLBACK_SQLITE' = '1'
+        'SeedUsers__EnableSeedUsers' = 'true'
+        'SeedUsers__AdminPassword' = $AdminPassword
+        'SeedUsers__UserPassword' = (New-LocalTestPassword)
+        'SeedUsers__ItwPassword' = (New-LocalTestPassword)
+        'SeedUsers__UsenetUsername' = 'usenet'
+        'SeedUsers__UsenetPassword' = $UsenetPassword
+        'SeedUsers__UpdateExistingUsenetPassword' = 'true'
         'Logging__LogLevel__Default' = 'Warning'
         'Logging__LogLevel__Microsoft' = 'Warning'
         'Logging__LogLevel__Microsoft.EntityFrameworkCore' = 'Warning'
@@ -1024,9 +1038,16 @@ set "DOTNET_ENVIRONMENT=Development"
 set "ASPNETCORE_URLS=%SERVER_URL%"
 set "Kestrel__Endpoints__Http__Url=%SERVER_URL%"
 set "ERP_DB_FALLBACK_SQLITE=1"
+set "LOCAL_TEST_ADMIN_PASSWORD=local-test-%RANDOM%-%RANDOM%"
+set "LOCAL_TEST_USER_PASSWORD=local-test-%RANDOM%-%RANDOM%"
+set "LOCAL_TEST_ITW_PASSWORD=local-test-%RANDOM%-%RANDOM%"
+set "LOCAL_TEST_USENET_PASSWORD=local-test-%RANDOM%-%RANDOM%"
 set "SeedUsers__EnableSeedUsers=true"
+set "SeedUsers__AdminPassword=%LOCAL_TEST_ADMIN_PASSWORD%"
+set "SeedUsers__UserPassword=%LOCAL_TEST_USER_PASSWORD%"
+set "SeedUsers__ItwPassword=%LOCAL_TEST_ITW_PASSWORD%"
 set "SeedUsers__UsenetUsername=usenet"
-set "SeedUsers__UsenetPassword=CHANGE_THIS_USENET_PASSWORD"
+set "SeedUsers__UsenetPassword=%LOCAL_TEST_USENET_PASSWORD%"
 set "SeedUsers__UpdateExistingUsenetPassword=true"
 set "Logging__LogLevel__Default=Warning"
 set "Logging__LogLevel__Microsoft=Warning"
@@ -1123,7 +1144,9 @@ function Start-HiddenServerProcess {
         [Parameter(Mandatory = $true)][string]$ServerDir,
         [Parameter(Mandatory = $true)][string]$ServerDll,
         [Parameter(Mandatory = $true)][string]$ServerUrl,
-        [Parameter(Mandatory = $true)][string]$ServerDataRoot
+        [Parameter(Mandatory = $true)][string]$ServerDataRoot,
+        [Parameter(Mandatory = $true)][string]$AdminPassword,
+        [Parameter(Mandatory = $true)][string]$UsenetPassword
     )
 
     $serverEnv = @{
@@ -1133,8 +1156,11 @@ function Start-HiddenServerProcess {
         'Kestrel__Endpoints__Http__Url' = $ServerUrl
         'ERP_DB_FALLBACK_SQLITE' = '1'
         'SeedUsers__EnableSeedUsers' = 'true'
+        'SeedUsers__AdminPassword' = $AdminPassword
+        'SeedUsers__UserPassword' = (New-LocalTestPassword)
+        'SeedUsers__ItwPassword' = (New-LocalTestPassword)
         'SeedUsers__UsenetUsername' = 'usenet'
-        'SeedUsers__UsenetPassword' = '1234'
+        'SeedUsers__UsenetPassword' = $UsenetPassword
         'SeedUsers__UpdateExistingUsenetPassword' = 'true'
         'Logging__LogLevel__Default' = 'Warning'
         'Logging__LogLevel__Microsoft' = 'Warning'
@@ -1346,7 +1372,7 @@ try {
         }
 
         Write-Log 'Launching hidden test server process.'
-        $serverProcess = Start-HiddenServerProcess -DotnetExe $dotnetExe -ServerDir $serverDir -ServerDll $serverDll -ServerUrl $serverUrl -ServerDataRoot $serverDataRoot
+        $serverProcess = Start-HiddenServerProcess -DotnetExe $dotnetExe -ServerDir $serverDir -ServerDll $serverDll -ServerUrl $serverUrl -ServerDataRoot $serverDataRoot -AdminPassword (New-LocalTestPassword) -UsenetPassword (New-LocalTestPassword)
         Write-Log ("Hidden test server process started. pid={0}" -f $serverProcess.Id)
         Start-Sleep -Milliseconds 300
         if ($serverProcess.HasExited) {
@@ -1466,6 +1492,8 @@ function Initialize-IsolatedServerData {
 
     New-Item -ItemType Directory -Force -Path $SeedLogRoot | Out-Null
     New-Item -ItemType Directory -Force -Path $ServerDataRoot | Out-Null
+    $adminPassword = New-LocalTestPassword
+    $usenetPassword = New-LocalTestPassword
 
     $prepareResult = Invoke-WithProcessEnvironment -Variables @{
         GEORAEPLAN_APP_ROOT = $TestAppRoot
@@ -1480,7 +1508,7 @@ function Initialize-IsolatedServerData {
     }
 
     $seedPort = Get-FreeTcpPort -StartingPort 19080
-    $serverState = Start-IsolatedServerProcess -DotnetExe $DotnetExe -ServerDll $ServerDll -ServerWorkingDirectory $ServerWorkingDirectory -Port $seedPort -FileStorageRoot (Join-Path $ServerDataRoot 'FileStore') -UpdatesRoot (Join-Path $ServerDataRoot 'updates')
+    $serverState = Start-IsolatedServerProcess -DotnetExe $DotnetExe -ServerDll $ServerDll -ServerWorkingDirectory $ServerWorkingDirectory -Port $seedPort -FileStorageRoot (Join-Path $ServerDataRoot 'FileStore') -UpdatesRoot (Join-Path $ServerDataRoot 'updates') -AdminPassword $adminPassword -UsenetPassword $usenetPassword
 
     try {
         if (-not (Wait-HttpReady -Url ($serverState.ServerUrl + '/healthz') -TimeoutSeconds 50)) {
@@ -1491,7 +1519,7 @@ function Initialize-IsolatedServerData {
             GEORAEPLAN_APP_ROOT = $TestAppRoot
             GEORAEPLAN_DISABLE_LEGACY_MERGE = '1'
             GEORAEPLAN_SYNC_USERNAME = 'admin'
-            GEORAEPLAN_SYNC_PASSWORD = 'CHANGE_THIS_ADMIN_PASSWORD'
+            GEORAEPLAN_SYNC_PASSWORD = $adminPassword
             GEORAEPLAN_SYNC_BASEURL = ($serverState.ServerUrl + '/')
         } -Action {
             Invoke-DotnetWithOutput -DotnetExe $DotnetExe -Arguments @('run', '--project', $SyncDiagProject, '--', 'preseed-sync')
@@ -1519,7 +1547,7 @@ function Initialize-IsolatedServerData {
             GEORAEPLAN_APP_ROOT = $TestAppRoot
             GEORAEPLAN_DISABLE_LEGACY_MERGE = '1'
             GEORAEPLAN_SYNC_USERNAME = 'admin'
-            GEORAEPLAN_SYNC_PASSWORD = 'CHANGE_THIS_ADMIN_PASSWORD'
+            GEORAEPLAN_SYNC_PASSWORD = $adminPassword
             GEORAEPLAN_SYNC_BASEURL = ($serverState.ServerUrl + '/')
         } -Action {
             Invoke-DotnetWithOutput -DotnetExe $DotnetExe -Arguments @('run', '--project', $SyncDiagProject, '--', 'sync')
@@ -1581,6 +1609,7 @@ function Initialize-IsolatedServerData {
 
         Sync-IsolatedServerUsers `
             -TargetBaseUrl $serverState.ServerUrl `
+            -AdminPassword $adminPassword `
             -Users $resolvedUsers `
             -LogPath (Join-Path $SeedLogRoot 'user-bootstrap.json')
 

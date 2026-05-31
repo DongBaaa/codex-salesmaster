@@ -269,7 +269,7 @@ internal static class Program
             Id = Guid.NewGuid(),
             NameOriginal = "아이티월드 결제검증 거래처",
             ResponsibleOfficeCode = DomainConstants.OfficeItworld,
-            Phone = "[REDACTED_PHONE]",
+            Phone = "",
             MobilePhone = "010-1000-1000"
         };
         await local.UpsertCustomerAsync(itworldCustomer, session);

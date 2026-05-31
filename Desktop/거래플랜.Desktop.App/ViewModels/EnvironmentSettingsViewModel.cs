@@ -404,7 +404,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             }
 
             IsBusy = true;
-            LegacyMigrationStatus = "이전 레거시 판매관리 데이터를 엑셀로 추출 중...";
+            LegacyMigrationStatus = "외부 레거시 데이터를 엑셀로 추출 중...";
             var result = await _legacyMigrationService.ExportFromOriginalAsync(
                 LegacySourceDbPath,
                 LegacyCustomerExcelPath,
@@ -751,7 +751,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
 
     private static string GetDefaultLegacySourceDbPath()
     {
-        var candidate = @"C:\LegacyVendor\LegacySalesApp\DATA\SALE_ACE_DATA.FDB";
+        var candidate = @"C:\LegacySalesApp\DATA\LEGACY_DATA.FDB";
         return File.Exists(candidate) ? candidate : string.Empty;
     }
 

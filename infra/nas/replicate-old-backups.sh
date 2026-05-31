@@ -4,7 +4,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
 EXTERNAL_REPLICA_ENABLED="${EXTERNAL_REPLICA_ENABLED:-true}"
 EXTERNAL_REPLICA_MIN_AGE_DAYS="${EXTERNAL_REPLICA_MIN_AGE_DAYS:-1}"
-EXTERNAL_REPLICA_PATH="${EXTERNAL_REPLICA_PATH:-/volume1/???????/???? ??}"
+EXTERNAL_REPLICA_PATH="${EXTERNAL_REPLICA_PATH:-/volume1/??? ???????/??? ???? ??}"
 
 if [[ "${EXTERNAL_REPLICA_ENABLED,,}" != "true" ]]; then
   echo "replica_skipped reason=disabled"

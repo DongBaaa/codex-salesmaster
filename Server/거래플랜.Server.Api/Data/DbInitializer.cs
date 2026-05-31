@@ -38,8 +38,8 @@ public static partial class DbInitializer
     ];
     private static readonly (Guid Id, string ProfileName, string OfficeCode, string TradeName, string Representative, string BusinessNumber, string Address, string ContactNumber)[] DefaultCompanyProfiles =
     [
-        (OfficeCodeCatalog.UsenetDefaultCompanyProfileId, "USENET 기본", OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Usenet, "[REDACTED_NAME]", "[REDACTED_BUSINESS_NUMBER]", "[REDACTED_ADDRESS]", "[REDACTED_PHONE]"),
-        (OfficeCodeCatalog.ItworldDefaultCompanyProfileId, "ITWORLD 기본", OfficeCodeCatalog.Itworld, OfficeCodeCatalog.Itworld, "[REDACTED_NAME]", "[REDACTED_BUSINESS_NUMBER]", "[REDACTED_ADDRESS]", "[REDACTED_PHONE]"),
+        (OfficeCodeCatalog.UsenetDefaultCompanyProfileId, "USENET 기본", OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Usenet, "", "", "", ""),
+        (OfficeCodeCatalog.ItworldDefaultCompanyProfileId, "ITWORLD 기본", OfficeCodeCatalog.Itworld, OfficeCodeCatalog.Itworld, "", "", "", ""),
         (OfficeCodeCatalog.YeonsuDefaultCompanyProfileId, "YEONSU 기본", OfficeCodeCatalog.Yeonsu, OfficeCodeCatalog.Yeonsu, string.Empty, string.Empty, string.Empty, string.Empty)
     ];
 

@@ -39,7 +39,7 @@ internal static class Program
             Id = Guid.NewGuid(),
             NameOriginal = "아이티월드 시나리오 거래처",
             ResponsibleOfficeCode = DomainConstants.OfficeItworld,
-            Phone = "[REDACTED_PHONE]"
+            Phone = ""
         };
         var itworldCustomerResult = local.UpsertCustomerAsync(itworldCustomer, itworldSession).GetAwaiter().GetResult();
 
