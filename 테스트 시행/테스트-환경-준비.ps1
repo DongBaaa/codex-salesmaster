@@ -1038,10 +1038,10 @@ set "DOTNET_ENVIRONMENT=Development"
 set "ASPNETCORE_URLS=%SERVER_URL%"
 set "Kestrel__Endpoints__Http__Url=%SERVER_URL%"
 set "ERP_DB_FALLBACK_SQLITE=1"
-set "LOCAL_TEST_ADMIN_PASSWORD=local-test-%RANDOM%-%RANDOM%"
-set "LOCAL_TEST_USER_PASSWORD=local-test-%RANDOM%-%RANDOM%"
-set "LOCAL_TEST_ITW_PASSWORD=local-test-%RANDOM%-%RANDOM%"
-set "LOCAL_TEST_USENET_PASSWORD=local-test-%RANDOM%-%RANDOM%"
+set "LOCAL_TEST_ADMIN_PASSWORD=1234"
+set "LOCAL_TEST_USER_PASSWORD=1234"
+set "LOCAL_TEST_ITW_PASSWORD=1234"
+set "LOCAL_TEST_USENET_PASSWORD=1234"
 set "SeedUsers__EnableSeedUsers=true"
 set "SeedUsers__AdminPassword=%LOCAL_TEST_ADMIN_PASSWORD%"
 set "SeedUsers__UserPassword=%LOCAL_TEST_USER_PASSWORD%"
@@ -1136,6 +1136,10 @@ function Repair-ProcessPathEnvironmentForChildProcess {
         [Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
         [Environment]::SetEnvironmentVariable('Path', $pathValue, 'Process')
     }
+}
+
+function New-LocalTestPassword {
+    return '1234'
 }
 
 function Start-HiddenServerProcess {
@@ -1796,4 +1800,3 @@ if ($Launch) {
     Start-Process -FilePath (Join-Path $OutputRoot 'Run-All.cmd') -WorkingDirectory $OutputRoot
     Write-Host '로컬 테스트 서버/앱 실행을 시작했습니다.'
 }
-
