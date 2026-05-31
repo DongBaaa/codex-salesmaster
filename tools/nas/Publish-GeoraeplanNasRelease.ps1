@@ -14,7 +14,12 @@ param(
     [string]$NasSshKeyPath,
     [string]$NasRemoteOpsPath,
     [int]$KeepNasReleaseCount = 2,
-    [switch]$AllowScheduledApplyTrigger
+    [switch]$AllowScheduledApplyTrigger,
+    [switch]$SkipPostDeployOperationalGate,
+    [string]$PostDeployBaseUrl = "",
+    [string]$PostDeploySecretPath = "",
+    [string]$PostDeployOutputDirectory = "",
+    [string[]]$PostDeployAllowedIntegrityWarningCodes = @()
 )
 
 function Resolve-DotnetCommand {
@@ -854,6 +859,56 @@ if ($MirrorToLive) {
     else {
         throw 'MirrorToLive was requested, but NAS SSH settings are incomplete and NAS scheduled apply is disabled. Configure NAS_SSH_USER/HOST/PORT/KEY_PATH/REMOTE_OPS_PATH, set NAS_SCHEDULED_APPLY_ENABLED=true with auto-apply-release.sh configured on the NAS, or use -AllowLegacyLiveMirror only as a temporary fallback.'
     }
+}
+
+if ($MirrorToLive -and -not $SkipPostDeployOperationalGate.IsPresent) {
+    $operationalGateScript = Join-Path $ProjectRoot 'tools\ops\Invoke-GeoraePlanOperationalGate.ps1'
+    if (-not (Test-Path -LiteralPath $operationalGateScript)) {
+        throw "Post-deploy operational gate script not found: $operationalGateScript"
+    }
+
+    $resolvedPostDeployBaseUrl = $PostDeployBaseUrl
+    if ([string]::IsNullOrWhiteSpace($resolvedPostDeployBaseUrl) -and $nasEnv.ContainsKey('PUBLIC_BASE_URL')) {
+        $resolvedPostDeployBaseUrl = "$($nasEnv['PUBLIC_BASE_URL'])".Trim()
+    }
+
+    if ([string]::IsNullOrWhiteSpace($resolvedPostDeployBaseUrl) -or $resolvedPostDeployBaseUrl -eq 'https://api.example.invalid') {
+        throw 'MirrorToLive completed but post-deploy operational gate cannot run because PUBLIC_BASE_URL/PostDeployBaseUrl is missing or placeholder.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($PostDeployOutputDirectory)) {
+        $PostDeployOutputDirectory = Join-Path $ProjectRoot ("audit-output\post-deploy-operational-gate-{0}" -f $ReleaseId)
+    }
+
+    $gateArgs = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $operationalGateScript,
+        '-ProjectRoot', $ProjectRoot,
+        '-BaseUrl', $resolvedPostDeployBaseUrl,
+        '-OutputDirectory', $PostDeployOutputDirectory,
+        '-FailOnIntegrityWarnings',
+        '-SkipWriteSafetyChecks'
+    )
+    if (-not [string]::IsNullOrWhiteSpace($PostDeploySecretPath)) {
+        $gateArgs += @('-SecretPath', $PostDeploySecretPath)
+    }
+    if ($PostDeployAllowedIntegrityWarningCodes.Count -gt 0) {
+        $gateArgs += '-AllowedIntegrityWarningCodes'
+        $gateArgs += $PostDeployAllowedIntegrityWarningCodes
+    }
+
+    Write-Host "post_deploy_operational_gate_start base_url=$resolvedPostDeployBaseUrl output=$PostDeployOutputDirectory"
+    & powershell @gateArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Post-deploy operational gate failed with exit code $LASTEXITCODE. Report directory: $PostDeployOutputDirectory"
+    }
+
+    Write-Host "post_deploy_operational_gate_done output=$PostDeployOutputDirectory"
+}
+
+if ($MirrorToLive -and $SkipPostDeployOperationalGate.IsPresent) {
+    Write-Warning 'Post-deploy operational gate was skipped by request. Use only when a separate strict gate has already passed.'
 }
 
 if ($MirrorToLive -and (Test-Path -LiteralPath $NasRoot)) {

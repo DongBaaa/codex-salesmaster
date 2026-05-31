@@ -9,6 +9,7 @@ param(
     [string]$OutputDirectory = "",
     [switch]$FailOnIntegrityWarnings,
     [string[]]$AllowedIntegrityWarningCodes = @(),
+    [switch]$SkipWriteSafetyChecks,
     [switch]$UseEphemeralOperationalWrites,
     [switch]$AllowOperationalWrites
 )
@@ -273,6 +274,7 @@ Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "BaseUrl=$BaseUrl"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "Channel=$Channel"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "FailOnIntegrityWarnings=$([bool]$FailOnIntegrityWarnings)"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "AllowedIntegrityWarningCodes=$($AllowedIntegrityWarningCodes -join ',')"
+Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "SkipWriteSafetyChecks=$([bool]$SkipWriteSafetyChecks)"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "SecretPathExists=$(Test-Path -LiteralPath $SecretPath)"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "ApprovedTargetsPath=$ApprovedTargetsPath exists=$(Test-Path -LiteralPath $ApprovedTargetsPath)"
 
@@ -528,7 +530,11 @@ $safetyBackupConfirmed = $false
 $safetyRestorePossible = $false
 $safetyApprovedBy = ''
 $hasApprovedTargets = $false
-if (Test-Path -LiteralPath $ApprovedTargetsPath) {
+if ($SkipWriteSafetyChecks.IsPresent) {
+    Add-Check -Checks $checks -Name 'approved target file' -Status 'PASS' -Detail 'SKIP: read-only gate mode'
+    Add-Check -Checks $checks -Name 'write safety metadata' -Status 'PASS' -Detail 'SKIP: read-only gate mode'
+}
+elseif (Test-Path -LiteralPath $ApprovedTargetsPath) {
     try {
         $targets = Get-Content -LiteralPath $ApprovedTargetsPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $safety = Get-JsonPropertyValue -Object $targets -Name 'safety'
@@ -554,7 +560,9 @@ else {
     }
 }
 
-if ($null -ne $targets) {
+if ($SkipWriteSafetyChecks.IsPresent) {
+}
+elseif ($null -ne $targets) {
     if ($safetyBackupConfirmed -and $safetyRestorePossible -and -not [string]::IsNullOrWhiteSpace($safetyApprovedBy)) {
         Add-Check -Checks $checks -Name 'write safety metadata' -Status 'PASS' -Detail 'backupConfirmed/restorePossible/approvedBy present'
     }
@@ -573,7 +581,10 @@ else {
 
 $ephemeralOperationalWritesReport = ''
 $ephemeralOperationalWritesAccount = ''
-if ($UseEphemeralOperationalWrites.IsPresent) {
+if ($SkipWriteSafetyChecks.IsPresent) {
+    Add-Check -Checks $checks -Name 'operational writes' -Status 'PASS' -Detail 'SKIP: read-only gate mode'
+}
+elseif ($UseEphemeralOperationalWrites.IsPresent) {
     $ephemeralScript = Join-Path $resolvedRoot 'tools\verification\Invoke-GeoraePlanRepeatedSaveSmoke.ps1'
     if (-not (Test-Path -LiteralPath $ephemeralScript)) {
         Add-Check -Checks $checks -Name 'operational writes' -Status 'FAIL' -Detail 'ephemeral write smoke script not found'
@@ -658,6 +669,7 @@ $reportLines.Add(('- BaseUrl: `{0}`' -f $BaseUrl)) | Out-Null
 $reportLines.Add(('- Channel: `{0}`' -f $Channel)) | Out-Null
 $reportLines.Add(('- OutputDirectory: `{0}`' -f $OutputDirectory)) | Out-Null
 $reportLines.Add(('- 무결성 Warning 실패 처리: `{0}`' -f ([bool]$FailOnIntegrityWarnings))) | Out-Null
+$reportLines.Add(('- 쓰기 안전성 점검 생략: `{0}`' -f ([bool]$SkipWriteSafetyChecks))) | Out-Null
 if ($AllowedIntegrityWarningCodes.Count -gt 0) {
     $reportLines.Add(('- 허용 Warning 코드: `{0}`' -f ($AllowedIntegrityWarningCodes -join ', '))) | Out-Null
 }
@@ -708,7 +720,10 @@ if ($null -ne $targets) {
     }
 }
 else {
-    if ($UseEphemeralOperationalWrites.IsPresent) {
+    if ($SkipWriteSafetyChecks.IsPresent) {
+        $reportLines.Add('- 읽기 전용 게이트 모드로 승인 대상 JSON/운영 쓰기 검증을 생략함') | Out-Null
+    }
+    elseif ($UseEphemeralOperationalWrites.IsPresent) {
         $reportLines.Add('- 승인 대상 JSON이 없어 기존 운영 데이터 직접 수정/원복 검증은 생략하고, 임시 데이터 생성/수정/삭제 smoke만 수행함') | Out-Null
     }
     else {
@@ -720,7 +735,10 @@ $reportLines.Add('') | Out-Null
 $reportLines.Add('## 4. 운영 데이터 변경 여부') | Out-Null
 $reportLines.Add('') | Out-Null
 $reportLines.Add('- 이 게이트는 기본적으로 운영 데이터를 변경하지 않는다.') | Out-Null
-if ($UseEphemeralOperationalWrites.IsPresent) {
+if ($SkipWriteSafetyChecks.IsPresent) {
+    $reportLines.Add('- 읽기 전용 게이트 모드로 운영 데이터 쓰기/원복 검증을 생략했다.') | Out-Null
+}
+elseif ($UseEphemeralOperationalWrites.IsPresent) {
     $reportLines.Add(('- 임시 데이터 생성/반복수정/삭제 smoke 실행: `{0}`' -f (-not [string]::IsNullOrWhiteSpace($ephemeralOperationalWritesReport)))) | Out-Null
     if (-not [string]::IsNullOrWhiteSpace($ephemeralOperationalWritesReport)) {
         $reportLines.Add(('- 임시 쓰기 검증 리포트: `{0}`' -f $ephemeralOperationalWritesReport)) | Out-Null

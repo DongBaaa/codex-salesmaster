@@ -15,7 +15,12 @@ param(
     [string]$NasSshUser,
     [int]$NasSshPort = 0,
     [string]$NasSshKeyPath,
-    [string]$NasRemoteOpsPath
+    [string]$NasRemoteOpsPath,
+    [switch]$SkipPostDeployOperationalGate,
+    [string]$PostDeployBaseUrl = "",
+    [string]$PostDeploySecretPath = "",
+    [string]$PostDeployOutputDirectory = "",
+    [string[]]$PostDeployAllowedIntegrityWarningCodes = @()
 )
 
 function Resolve-ProjectRoot {
@@ -193,6 +198,22 @@ if ($DeployToNas) {
     }
     if (-not [string]::IsNullOrWhiteSpace($NasRemoteOpsPath)) {
         $nasArgs += @('-NasRemoteOpsPath', $NasRemoteOpsPath)
+    }
+    if ($SkipPostDeployOperationalGate) {
+        $nasArgs += '-SkipPostDeployOperationalGate'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PostDeployBaseUrl)) {
+        $nasArgs += @('-PostDeployBaseUrl', $PostDeployBaseUrl)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PostDeploySecretPath)) {
+        $nasArgs += @('-PostDeploySecretPath', $PostDeploySecretPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PostDeployOutputDirectory)) {
+        $nasArgs += @('-PostDeployOutputDirectory', $PostDeployOutputDirectory)
+    }
+    if ($PostDeployAllowedIntegrityWarningCodes.Count -gt 0) {
+        $nasArgs += '-PostDeployAllowedIntegrityWarningCodes'
+        $nasArgs += $PostDeployAllowedIntegrityWarningCodes
     }
 
     & powershell @nasArgs
