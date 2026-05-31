@@ -1443,7 +1443,6 @@ public sealed class SyncService : IDisposable
         var dirtyItemWarehouseStocks = canSyncItemWarehouseStocks
             ? await _db.ItemWarehouseStocks
                 .AsNoTracking()
-                .Where(stock => stock.Quantity >= 0m)
                 .ToListAsync(ct)
             : [];
         var dirtyTransactions = await _local.GetDirtyTransactionsForSyncAsync(session, ct);

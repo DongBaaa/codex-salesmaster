@@ -153,6 +153,7 @@ $itemName = "검증용 재고스모크 품목 $suffix"
 
 $createdCustomer = $null
 $createdItem = $null
+$zeroStockSalesInvoice = $null
 $purchaseInvoice = $null
 $salesInvoice = $null
 $snapshots = New-Object System.Collections.Generic.List[object]
@@ -199,6 +200,28 @@ try {
     $initial = Get-ItemSnapshot -ItemId $createdItem.id -Headers $headers
     $snapshots.Add([pscustomobject]@{ Step = 'initial'; CurrentStock = $initial.CurrentStock; WarehouseStock = $initial.WarehouseStock }) | Out-Null
     Assert-EqualDecimal -Name '초기 현재재고' -Actual $initial.CurrentStock -Expected 0
+
+    $zeroStockSalesInvoice = Invoke-ApiJson -Method 'Post' -Path '/invoices' -Headers $headers -Body (New-InvoicePayload `
+        -VoucherType 'Sales' `
+        -CustomerId $createdCustomer.id `
+        -CustomerName $createdCustomer.nameOriginal `
+        -ItemId $createdItem.id `
+        -ItemName $createdItem.nameOriginal `
+        -Quantity 1 `
+        -UnitPrice 1500 `
+        -Memo '재고스모크 0재고 매출')
+
+    $afterZeroStockSales = Get-ItemSnapshot -ItemId $createdItem.id -Headers $headers
+    $snapshots.Add([pscustomobject]@{ Step = 'after-zero-stock-sales-1'; CurrentStock = $afterZeroStockSales.CurrentStock; WarehouseStock = $afterZeroStockSales.WarehouseStock }) | Out-Null
+    Assert-EqualDecimal -Name '0재고 매출 후 현재재고' -Actual $afterZeroStockSales.CurrentStock -Expected -1
+    Assert-EqualDecimal -Name '0재고 매출 후 창고재고' -Actual $afterZeroStockSales.WarehouseStock -Expected -1
+
+    Invoke-ApiNoContent -Method 'Delete' -Path "/invoices/$($zeroStockSalesInvoice.id)?expectedRevision=$($zeroStockSalesInvoice.revision)" -Headers $headers
+    $zeroStockSalesInvoice = $null
+    $afterZeroStockSalesDelete = Get-ItemSnapshot -ItemId $createdItem.id -Headers $headers
+    $snapshots.Add([pscustomobject]@{ Step = 'after-zero-stock-sales-delete'; CurrentStock = $afterZeroStockSalesDelete.CurrentStock; WarehouseStock = $afterZeroStockSalesDelete.WarehouseStock }) | Out-Null
+    Assert-EqualDecimal -Name '0재고 매출 삭제 후 현재재고' -Actual $afterZeroStockSalesDelete.CurrentStock -Expected 0
+    Assert-EqualDecimal -Name '0재고 매출 삭제 후 창고재고' -Actual $afterZeroStockSalesDelete.WarehouseStock -Expected 0
 
     $purchaseInvoice = Invoke-ApiJson -Method 'Post' -Path '/invoices' -Headers $headers -Body (New-InvoicePayload `
         -VoucherType 'Purchase' `
@@ -252,6 +275,12 @@ try {
     $overall = 'PASS'
 }
 finally {
+    if ($null -ne $zeroStockSalesInvoice) {
+        try {
+            Invoke-ApiNoContent -Method 'Delete' -Path "/invoices/$($zeroStockSalesInvoice.id)?expectedRevision=$($zeroStockSalesInvoice.revision)" -Headers $headers
+            $cleanup.Add("zero stock sales invoice deleted: $($zeroStockSalesInvoice.id)") | Out-Null
+        } catch { $cleanup.Add("zero stock sales invoice cleanup failed: $($_.Exception.Message)") | Out-Null }
+    }
     if ($null -ne $salesInvoice) {
         try {
             Invoke-ApiNoContent -Method 'Delete' -Path "/invoices/$($salesInvoice.id)?expectedRevision=$($salesInvoice.revision)" -Headers $headers
@@ -305,6 +334,9 @@ foreach ($snapshot in $snapshots) {
 }
 $lines.Add('') | Out-Null
 $lines.Add('## 확인 범위') | Out-Null
+$lines.Add('- 재고 0 품목도 판매 전표 생성 가능') | Out-Null
+$lines.Add('- 재고 0 판매 전표 생성 시 음수 재고 반영') | Out-Null
+$lines.Add('- 재고 0 판매 전표 삭제 시 재고 복구') | Out-Null
 $lines.Add('- 매입 전표 생성 시 재고 증가') | Out-Null
 $lines.Add('- 판매 전표 생성 시 재고 감소') | Out-Null
 $lines.Add('- 판매 전표 삭제 시 재고 복구') | Out-Null

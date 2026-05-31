@@ -1,6 +1,7 @@
 ﻿using System.Reflection;
 using System.Globalization;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -4499,6 +4500,68 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SyncService_PushDirtyAsync_IncludesNegativeWarehouseStockSnapshots()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-negative-stock-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateOnlineAdminSession();
+            var itemId = Guid.Parse("82433333-3333-3333-3333-333333333333");
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Negative sync stock item",
+                NameMatchKey = "NEGATIVESYNCSTOCKITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                CurrentStock = -2m
+            });
+            db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = -2m,
+                Revision = 7,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db);
+            var handler = new CapturePushHandler();
+            var api = new ErpApiClient(new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") }, session);
+            var diagnostics = new SyncDiagnosticsService(session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+
+            var method = typeof(SyncService).GetMethod("PushDirtyAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.NotNull(method);
+            var task = Assert.IsAssignableFrom<Task>(method!.Invoke(sync, new object?[] { api, session, true, CancellationToken.None }));
+            await task;
+
+            Assert.NotNull(handler.LastPushRequest);
+            var stock = Assert.Single(handler.LastPushRequest!.ItemWarehouseStocks);
+            Assert.Equal(itemId, stock.ItemId);
+            Assert.Equal(OfficeCodeCatalog.UsenetMainWarehouse, stock.WarehouseCode);
+            Assert.Equal(-2m, stock.Quantity);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RepairMissingItemMastersFromOperationalReferencesAsync_DoesNotRecoverSoftDeletedItems()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-missing-item-repair-{Guid.NewGuid():N}");
@@ -5280,6 +5343,34 @@ public sealed class LocalStateServicePartialsTests
             {
                 Content = new StringContent("{}", Encoding.UTF8, "application/json")
             });
+        }
+    }
+
+    private sealed class CapturePushHandler : HttpMessageHandler
+    {
+        public SyncPushRequest? LastPushRequest { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.Equals("/sync/push", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                LastPushRequest = await request.Content!.ReadFromJsonAsync<SyncPushRequest>(cancellationToken: cancellationToken);
+                var json = JsonSerializer.Serialize(new SyncPushResult
+                {
+                    AcceptedCount = LastPushRequest?.ItemWarehouseStocks.Count ?? 0,
+                    CurrentServerRevision = 1
+                });
+
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(json, Encoding.UTF8, "application/json")
+                };
+            }
+
+            return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json")
+            };
         }
     }
 
