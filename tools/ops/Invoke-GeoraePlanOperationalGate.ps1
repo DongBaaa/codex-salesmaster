@@ -7,6 +7,8 @@ param(
     [string]$ApprovedTargetsPath = "",
     [string]$NasStateRoot = "\\192.0.2.10\docker\georaeplan\ops\state",
     [string]$OutputDirectory = "",
+    [switch]$FailOnIntegrityWarnings,
+    [string[]]$AllowedIntegrityWarningCodes = @(),
     [switch]$UseEphemeralOperationalWrites,
     [switch]$AllowOperationalWrites
 )
@@ -269,6 +271,8 @@ $BaseUrl = $BaseUrl.TrimEnd('/')
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "ProjectRoot=$resolvedRoot"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "BaseUrl=$BaseUrl"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "Channel=$Channel"
+Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "FailOnIntegrityWarnings=$([bool]$FailOnIntegrityWarnings)"
+Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "AllowedIntegrityWarningCodes=$($AllowedIntegrityWarningCodes -join ',')"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "SecretPathExists=$(Test-Path -LiteralPath $SecretPath)"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "ApprovedTargetsPath=$ApprovedTargetsPath exists=$(Test-Path -LiteralPath $ApprovedTargetsPath)"
 
@@ -402,6 +406,16 @@ else {
                 $integrityErrors = @($integrityIssues | Where-Object { [string]$_.severity -eq 'Error' })
                 $integrityWarnings = @($integrityIssues | Where-Object { [string]$_.severity -eq 'Warning' })
                 $integrityInfos = @($integrityIssues | Where-Object { [string]$_.severity -eq 'Info' })
+                $allowedWarningCodeSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+                foreach ($code in $AllowedIntegrityWarningCodes) {
+                    if (-not [string]::IsNullOrWhiteSpace($code)) {
+                        [void]$allowedWarningCodeSet.Add($code.Trim())
+                    }
+                }
+                $blockingIntegrityWarnings = @($integrityWarnings | Where-Object {
+                    $code = [string]$_.code
+                    [string]::IsNullOrWhiteSpace($code) -or -not $allowedWarningCodeSet.Contains($code.Trim())
+                })
 
                 $summaryLines = New-Object System.Collections.Generic.List[string]
                 $summaryLines.Add('# 무결성 리포트 요약') | Out-Null
@@ -411,6 +425,10 @@ else {
                 $summaryLines.Add(('- TenantCode: `{0}`' -f ([string](Get-JsonPropertyValue -Object $integrity.Body -Name 'tenantCode')))) | Out-Null
                 $summaryLines.Add(('- OfficeCode: `{0}`' -f ([string](Get-JsonPropertyValue -Object $integrity.Body -Name 'officeCode')))) | Out-Null
                 $summaryLines.Add(('- Error: `{0}` / Warning: `{1}` / Info: `{2}`' -f $integrityErrors.Count, $integrityWarnings.Count, $integrityInfos.Count)) | Out-Null
+                $summaryLines.Add(('- Warning 실패 처리: `{0}` / 차단 Warning: `{1}`' -f ([bool]$FailOnIntegrityWarnings), $blockingIntegrityWarnings.Count)) | Out-Null
+                if ($AllowedIntegrityWarningCodes.Count -gt 0) {
+                    $summaryLines.Add(('- 허용 Warning 코드: `{0}`' -f ($AllowedIntegrityWarningCodes -join ', '))) | Out-Null
+                }
                 $summaryLines.Add('') | Out-Null
                 $summaryLines.Add('| 심각도 | 코드 | 건수 | 메시지 |') | Out-Null
                 $summaryLines.Add('| --- | --- | ---: | --- |') | Out-Null
@@ -422,6 +440,10 @@ else {
 
                 if ($integrityErrors.Count -gt 0) {
                     Add-Check -Checks $checks -Name 'integrity report' -Status 'FAIL' -Detail ("Error={0}, Warning={1}; {2}" -f $integrityErrors.Count, $integrityWarnings.Count, $integrityReportSummaryPath)
+                }
+                elseif ($FailOnIntegrityWarnings -and $blockingIntegrityWarnings.Count -gt 0) {
+                    $warningSummary = (@($blockingIntegrityWarnings | ForEach-Object { '{0}({1})' -f ([string]$_.code), ([int]$_.count) }) -join ', ')
+                    Add-Check -Checks $checks -Name 'integrity report' -Status 'FAIL' -Detail ("Warning={0}, blocking={1}; {2}; {3}" -f $integrityWarnings.Count, $blockingIntegrityWarnings.Count, $warningSummary, $integrityReportSummaryPath)
                 }
                 elseif ($integrityWarnings.Count -gt 0) {
                     Add-Check -Checks $checks -Name 'integrity report' -Status 'WARN' -Detail ("Warning={0}; {1}" -f $integrityWarnings.Count, $integrityReportSummaryPath)
@@ -635,6 +657,10 @@ $reportLines.Add(('- ProjectRoot: `{0}`' -f $resolvedRoot)) | Out-Null
 $reportLines.Add(('- BaseUrl: `{0}`' -f $BaseUrl)) | Out-Null
 $reportLines.Add(('- Channel: `{0}`' -f $Channel)) | Out-Null
 $reportLines.Add(('- OutputDirectory: `{0}`' -f $OutputDirectory)) | Out-Null
+$reportLines.Add(('- 무결성 Warning 실패 처리: `{0}`' -f ([bool]$FailOnIntegrityWarnings))) | Out-Null
+if ($AllowedIntegrityWarningCodes.Count -gt 0) {
+    $reportLines.Add(('- 허용 Warning 코드: `{0}`' -f ($AllowedIntegrityWarningCodes -join ', '))) | Out-Null
+}
 $reportLines.Add('') | Out-Null
 $reportLines.Add('## 1. 체크 결과') | Out-Null
 $reportLines.Add('') | Out-Null
