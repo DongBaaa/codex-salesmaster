@@ -146,11 +146,15 @@ function Remove-OldPackages {
     param(
         [Parameter(Mandatory = $true)][string]$DirectoryPath,
         [Parameter(Mandatory = $true)][int]$KeepCount,
-        [Parameter(Mandatory = $true)]$PreserveFileNames
+        $PreserveFileNames
     )
 
     if ($KeepCount -lt 1 -or -not (Test-Path -LiteralPath $DirectoryPath)) {
         return @()
+    }
+
+    if ($null -eq $PreserveFileNames) {
+        $PreserveFileNames = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
     }
 
     $removed = New-Object System.Collections.Generic.List[string]
