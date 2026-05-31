@@ -92,3 +92,14 @@ temp/
 테스트 시행/임시소스스냅샷/
 **/__pycache__/
 *.codex-stage.*
+
+# Personal/business data files (do not commit)
+/*.xlsx
+/*.xls
+/*.xlsb
+/*.pdf
+/*.csv
+양식/
+자료기간별 조회/
+테스트 시행/실행환경/
+Server/거래플랜.Server.Api/Data/Seeds/rental-assignment-history-workbook-seed.json
