@@ -98,11 +98,20 @@ function Install-MobileApk {
 
     $installArgs = @('-s', $DeviceId, 'install', '-r', '-d', $ApkPath)
 
+    try { Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'pm', 'trim-caches', '1024M') | Out-Null } catch {}
+
     try {
         Invoke-Adb -AdbPath $AdbPath -Arguments $installArgs | Out-Null
     }
     catch {
         $message = $_.Exception.Message
+        if ($message -match 'INSTALL_FAILED_INSUFFICIENT_STORAGE') {
+            try { Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'pm', 'trim-caches', '1024M') | Out-Null } catch {}
+            try { Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'uninstall', $PackageName) | Out-Null } catch {}
+            Invoke-Adb -AdbPath $AdbPath -Arguments $installArgs | Out-Null
+            return
+        }
+
         if ($message -notmatch 'INSTALL_FAILED_UPDATE_INCOMPATIBLE|INSTALL_FAILED_VERSION_DOWNGRADE|Downgrade detected|signatures do not match') {
             throw
         }
