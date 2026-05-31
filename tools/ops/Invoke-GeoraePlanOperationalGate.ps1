@@ -461,6 +461,108 @@ else {
     }
 }
 
+$rentalMonthlyRepairScript = Join-Path $resolvedRoot 'tools\maintenance\Invoke-GeoraePlanRentalMonthlyRepair.ps1'
+$rentalMonthlyRepairDirectory = Join-Path $OutputDirectory 'rental-monthly-repair'
+if (Test-Path -LiteralPath $rentalMonthlyRepairScript) {
+    if ([string]::IsNullOrWhiteSpace([string]$usenet.Username) -or [string]::IsNullOrWhiteSpace([string]$usenet.Password)) {
+        Add-Check -Checks $checks -Name 'rental monthly amount consistency' -Status 'BLOCKED' -Detail 'USENET credentials are required to compare rental profile monthly amounts with linked asset monthly amounts'
+    }
+    else {
+        New-Item -ItemType Directory -Force -Path $rentalMonthlyRepairDirectory | Out-Null
+        try {
+            $repairArgs = @(
+                '-NoProfile',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', $rentalMonthlyRepairScript,
+                '-BaseUrl', $BaseUrl,
+                '-Username', ([string]$usenet.Username),
+                '-Password', ([string]$usenet.Password),
+                '-EvidenceDirectory', $rentalMonthlyRepairDirectory
+            )
+            $scriptOutput = & powershell @repairArgs 2>&1 | Out-String -Width 4096
+            $repairExitCode = $LASTEXITCODE
+            Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "`n## rental monthly amount consistency"
+            Add-Content -LiteralPath $logPath -Encoding UTF8 -Value $scriptOutput
+
+            $reportLine = @($scriptOutput -split "`r?`n" | Where-Object { $_ -like 'rental_monthly_repair_report=*' } | Select-Object -Last 1)
+            $jsonLine = @($scriptOutput -split "`r?`n" | Where-Object { $_ -like 'rental_monthly_repair_json=*' } | Select-Object -Last 1)
+            $countLine = @($scriptOutput -split "`r?`n" | Where-Object { $_ -like 'candidate_count=*' } | Select-Object -Last 1)
+
+            $rentalMonthlyRepairReport = ''
+            if ($reportLine.Count -gt 0) {
+                $rentalMonthlyRepairReport = ([string]$reportLine[0]).Substring('rental_monthly_repair_report='.Length).Trim()
+            }
+            elseif (Test-Path -LiteralPath $rentalMonthlyRepairDirectory) {
+                $latestReport = Get-ChildItem -LiteralPath $rentalMonthlyRepairDirectory -File -Filter 'rental-monthly-repair-*.md' -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -First 1
+                if ($null -ne $latestReport) {
+                    $rentalMonthlyRepairReport = $latestReport.FullName
+                }
+            }
+
+            $rentalMonthlyRepairJson = ''
+            if ($jsonLine.Count -gt 0) {
+                $rentalMonthlyRepairJson = ([string]$jsonLine[0]).Substring('rental_monthly_repair_json='.Length).Trim()
+            }
+            elseif (Test-Path -LiteralPath $rentalMonthlyRepairDirectory) {
+                $latestJson = Get-ChildItem -LiteralPath $rentalMonthlyRepairDirectory -File -Filter 'rental-monthly-repair-*.json' -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -First 1
+                if ($null -ne $latestJson) {
+                    $rentalMonthlyRepairJson = $latestJson.FullName
+                }
+            }
+
+            $candidateCount = $null
+            if (-not [string]::IsNullOrWhiteSpace($rentalMonthlyRepairJson) -and (Test-Path -LiteralPath $rentalMonthlyRepairJson)) {
+                try {
+                    $repairJson = Get-Content -LiteralPath $rentalMonthlyRepairJson -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $candidateCount = [int](Get-JsonPropertyValue -Object $repairJson -Name 'CandidateCount')
+                }
+                catch {
+                    Add-Content -LiteralPath $logPath -Encoding UTF8 -Value ("rental_monthly_repair_json_parse_failed={0}" -f $_.Exception.Message)
+                }
+            }
+            if ($null -eq $candidateCount -and $countLine.Count -gt 0) {
+                $rawCount = ([string]$countLine[0]).Substring('candidate_count='.Length).Trim()
+                $parsedCount = 0
+                if ([int]::TryParse($rawCount, [ref]$parsedCount)) {
+                    $candidateCount = $parsedCount
+                }
+            }
+
+            $candidateCountText = 'unknown'
+            if ($null -ne $candidateCount) {
+                $candidateCountText = [string]$candidateCount
+            }
+
+            $repairDetail = if (-not [string]::IsNullOrWhiteSpace($rentalMonthlyRepairReport)) {
+                ("candidate_count={0}; report={1}" -f $candidateCountText, $rentalMonthlyRepairReport)
+            }
+            else {
+                ("candidate_count={0}; report=missing" -f $candidateCountText)
+            }
+
+            if ($repairExitCode -eq 0 -and $null -ne $candidateCount -and $candidateCount -eq 0) {
+                Add-Check -Checks $checks -Name 'rental monthly amount consistency' -Status 'PASS' -Detail $repairDetail
+            }
+            elseif ($null -ne $candidateCount -and $candidateCount -gt 0) {
+                Add-Check -Checks $checks -Name 'rental monthly amount consistency' -Status 'FAIL' -Detail ("repair candidates remain; {0}" -f $repairDetail)
+            }
+            else {
+                Add-Check -Checks $checks -Name 'rental monthly amount consistency' -Status 'FAIL' -Detail ("repair check failed, exit={0}; {1}" -f $repairExitCode, $repairDetail)
+            }
+        }
+        catch {
+            Add-Check -Checks $checks -Name 'rental monthly amount consistency' -Status 'FAIL' -Detail $_.Exception.Message
+        }
+    }
+}
+else {
+    Add-Check -Checks $checks -Name 'rental monthly amount consistency' -Status 'WARN' -Detail 'repair inspection script not found'
+}
+
 $availableScopeAccounts = @(@($itworld, $usenet, $yeonsu) | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Username) -and -not [string]::IsNullOrWhiteSpace($_.Password) })
 if (@($availableScopeAccounts).Count -gt 0) {
     $accountScopeScript = Join-Path $resolvedRoot '테스트 시행\Invoke-AccountScopeRegressionCheck.ps1'
