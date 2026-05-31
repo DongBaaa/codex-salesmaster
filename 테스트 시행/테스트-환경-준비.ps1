@@ -84,8 +84,43 @@ function Invoke-DotnetWithOutput {
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    $output = & $DotnetExe @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $quoteArgument = {
+        param([string]$Value)
+
+        if ($null -eq $Value -or $Value.Length -eq 0) {
+            return '""'
+        }
+
+        if ($Value -notmatch '[\s"]') {
+            return $Value
+        }
+
+        return '"' + ($Value.Replace('"', '\"')) + '"'
+    }
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $DotnetExe
+    $startInfo.Arguments = (($Arguments | ForEach-Object { & $quoteArgument $_ }) -join ' ')
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    [void]$process.Start()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    $exitCode = $process.ExitCode
+
+    $output = @()
+    if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+        $output += ($stdout -split "`r?`n")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+        $output += ($stderr -split "`r?`n")
+    }
 
     return [pscustomobject]@{
         ExitCode = $exitCode
@@ -1581,7 +1616,7 @@ if ([string]::IsNullOrWhiteSpace($solutionPath)) {
 
 $desktopProject = Find-FirstFile -Root (Join-Path $ProjectRoot 'Desktop') -Filter '*.Desktop.App.csproj'
 $serverProject = Find-FirstFile -Root (Join-Path $ProjectRoot 'Server') -Filter '*.Server.Api.csproj'
-$syncDiagProject = Join-Path $ProjectRoot '.tmp\syncdiag\syncdiag.csproj'
+$syncDiagProject = Join-Path $ProjectRoot 'tools\SyncDiag\SyncDiag.csproj'
 $deploymentRoot = Find-DeploymentRoot -ProjectRoot $ProjectRoot
 $templatePath = Join-Path $scriptRoot '검증 체크리스트 템플릿.md'
 $recordsRoot = Join-Path $scriptRoot '기록'
@@ -1732,3 +1767,4 @@ if ($Launch) {
     Start-Process -FilePath (Join-Path $OutputRoot 'Run-All.cmd') -WorkingDirectory $OutputRoot
     Write-Host '로컬 테스트 서버/앱 실행을 시작했습니다.'
 }
+
