@@ -8,6 +8,9 @@
     [int]$ExpectedCandidateCount = -1,
     [switch]$AllowApplyAll,
     [switch]$FailOnCandidates,
+    [switch]$BackupConfirmed,
+    [switch]$RestorePossible,
+    [string]$ApprovedBy = '',
     [switch]$Apply
 )
 
@@ -352,6 +355,10 @@ if ($Apply -and $ProfileIds.Count -eq 0 -and -not $AllowApplyAll) {
     throw 'Apply 모드에서는 실수 방지를 위해 -ProfileIds를 지정해야 합니다. 전체 후보를 적용하려면 -AllowApplyAll을 함께 지정하세요.'
 }
 
+if ($Apply -and (-not $BackupConfirmed -or -not $RestorePossible -or [string]::IsNullOrWhiteSpace($ApprovedBy))) {
+    throw 'Apply 모드에서는 운영 데이터 보호를 위해 -BackupConfirmed -RestorePossible -ApprovedBy 값을 모두 지정해야 합니다.'
+}
+
 $headers = New-AuthHeaders
 $pull = (Invoke-Api -Method GET -Relative 'sync/pull?sinceRev=0' -Headers $headers -ExpectedStatus @(200) -TimeoutSec 180).Body
 
@@ -429,6 +436,9 @@ $report = [pscustomobject]@{
     GeneratedAt = (Get-Date).ToString('o')
     BaseUrl = $BaseUrl
     Apply = [bool]$Apply
+    BackupConfirmed = [bool]$BackupConfirmed
+    RestorePossible = [bool]$RestorePossible
+    ApprovedBy = $ApprovedBy
     CandidateCount = $rows.Count
     Rows = @($rows.ToArray())
 }
@@ -441,6 +451,9 @@ $lines.Add("- generatedAt: $($report.GeneratedAt)") | Out-Null
 $lines.Add("- baseUrl: $BaseUrl") | Out-Null
 $lines.Add("- apply: $([bool]$Apply)") | Out-Null
 $lines.Add("- applyAllAllowed: $([bool]$AllowApplyAll)") | Out-Null
+$lines.Add("- backupConfirmed: $([bool]$BackupConfirmed)") | Out-Null
+$lines.Add("- restorePossible: $([bool]$RestorePossible)") | Out-Null
+$lines.Add("- approvedBy: $ApprovedBy") | Out-Null
 $lines.Add("- failOnCandidates: $([bool]$FailOnCandidates)") | Out-Null
 $lines.Add("- candidateCount: $($rows.Count)") | Out-Null
 $lines.Add('') | Out-Null
@@ -457,6 +470,28 @@ foreach ($row in $rows) {
     }
 }
 $lines.Add('') | Out-Null
+if (-not $Apply -and $rows.Count -gt 0) {
+    $profileArgs = (@($rows | ForEach-Object { "'$($_.ProfileId)'" }) -join ',')
+    $lines.Add('## 안전 적용 예시') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('운영 데이터 적용 전에는 최신 백업과 복구 가능 여부를 먼저 확인한 뒤, 아래처럼 대상 프로필을 명시해서 실행하세요.') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('```powershell') | Out-Null
+    $lines.Add('$env:GEORAEPLAN_SCOPE_USENET_USERNAME = ''usenet''') | Out-Null
+    $lines.Add('$env:GEORAEPLAN_SCOPE_USENET_PASSWORD = ''<비밀번호>''') | Out-Null
+    $lines.Add("& 'D:\거래플랜\tools\maintenance\Invoke-GeoraePlanRentalMonthlyRepair.ps1' ``") | Out-Null
+    $lines.Add("  -BaseUrl '$BaseUrl' ``") | Out-Null
+    $lines.Add('  -Username $env:GEORAEPLAN_SCOPE_USENET_USERNAME `') | Out-Null
+    $lines.Add('  -Password $env:GEORAEPLAN_SCOPE_USENET_PASSWORD `') | Out-Null
+    $lines.Add("  -ProfileIds @($profileArgs) ``") | Out-Null
+    $lines.Add("  -ExpectedCandidateCount $($rows.Count) ``") | Out-Null
+    $lines.Add("  -BackupConfirmed -RestorePossible -ApprovedBy '<승인자>' ``") | Out-Null
+    $lines.Add('  -Apply') | Out-Null
+    $lines.Add('```') | Out-Null
+    $lines.Add('') | Out-Null
+    $lines.Add('적용 후에는 같은 명령에서 `-Apply`를 빼고 `-ExpectedCandidateCount 0`으로 재검증하세요.') | Out-Null
+    $lines.Add('') | Out-Null
+}
 $lines.Add("JSON: $jsonPath") | Out-Null
 Set-Content -LiteralPath $mdPath -Value $lines -Encoding UTF8
 
