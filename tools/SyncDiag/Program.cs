@@ -6,7 +6,7 @@ using 거래플랜.Desktop.App.Services;
 var command = args.FirstOrDefault()?.Trim().ToLowerInvariant();
 if (string.IsNullOrWhiteSpace(command))
 {
-    Console.Error.WriteLine("usage: SyncDiag <prepare-test-seed|preseed-sync|mark-all-dirty|sync|stored-credentials>");
+    Console.Error.WriteLine("usage: SyncDiag <prepare-test-seed|preseed-sync|mark-all-dirty|sync|maintenance-sync|inspect|stored-credentials>");
     return 2;
 }
 
@@ -29,6 +29,11 @@ try
             return 0;
         case "sync":
             return await RunSyncAsync(db);
+        case "maintenance-sync":
+            return await RunSyncAsync(db);
+        case "inspect":
+            await PrintDirtyInspectionAsync(db);
+            return 0;
         case "stored-credentials":
             await PrintStoredCredentialsAsync(db);
             return 0;
@@ -42,6 +47,62 @@ catch (Exception ex)
     Console.Error.WriteLine(ex);
     return 1;
 }
+
+static async Task PrintDirtyInspectionAsync(LocalDbContext db)
+{
+    var currentScopeDirty = await TryCountCurrentScopeDirtyAsync(db);
+    if (currentScopeDirty.HasValue)
+    {
+        Console.WriteLine($"current_scope_dirty={currentScopeDirty.Value}");
+    }
+
+    Console.WriteLine($"customers_dirty={await CountDirtyAsync(db.Customers.IgnoreQueryFilters())}");
+    Console.WriteLine($"contracts_dirty={await CountDirtyAsync(db.CustomerContracts.IgnoreQueryFilters())}");
+    Console.WriteLine($"items_dirty={await CountDirtyAsync(db.Items.IgnoreQueryFilters())}");
+    Console.WriteLine($"invoices_dirty={await CountDirtyAsync(db.Invoices.IgnoreQueryFilters())}");
+    Console.WriteLine($"payments_dirty={await CountDirtyAsync(db.Payments.IgnoreQueryFilters())}");
+    Console.WriteLine($"transactions_dirty={await CountDirtyAsync(db.Transactions.IgnoreQueryFilters())}");
+    Console.WriteLine($"rental_profiles_dirty={await CountDirtyAsync(db.RentalBillingProfiles.IgnoreQueryFilters())}");
+    Console.WriteLine($"rental_assets_dirty={await CountDirtyAsync(db.RentalAssets.IgnoreQueryFilters())}");
+    Console.WriteLine($"rental_asset_histories_dirty={await CountDirtyAsync(db.RentalAssetAssignmentHistories.IgnoreQueryFilters())}");
+    Console.WriteLine($"outbox_count={await db.SyncOutboxEntries.CountAsync()}");
+}
+
+static async Task<int?> TryCountCurrentScopeDirtyAsync(LocalDbContext db)
+{
+    var username = Environment.GetEnvironmentVariable("GEORAEPLAN_SYNC_USERNAME");
+    var password = Environment.GetEnvironmentVariable("GEORAEPLAN_SYNC_PASSWORD");
+    var baseUrl = Environment.GetEnvironmentVariable("GEORAEPLAN_SYNC_BASEURL");
+
+    if (string.IsNullOrWhiteSpace(username) ||
+        string.IsNullOrEmpty(password) ||
+        string.IsNullOrWhiteSpace(baseUrl))
+    {
+        return null;
+    }
+
+    var session = new SessionState();
+    using var http = new HttpClient
+    {
+        BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"),
+        Timeout = TimeSpan.FromSeconds(120)
+    };
+
+    var api = new ErpApiClient(http, session);
+    var login = await api.LoginAsync(username, password);
+    if (login is null || string.IsNullOrWhiteSpace(login.Token))
+    {
+        throw new InvalidOperationException("inspect_login_failed=True");
+    }
+
+    session.SetSession(login.Token, login.User);
+    var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+    return await local.CountDirtyAsync(session);
+}
+
+static Task<int> CountDirtyAsync<TEntity>(IQueryable<TEntity> query)
+    where TEntity : class, ILocalSyncEntity
+    => query.CountAsync(entity => entity.IsDirty);
 
 static async Task PrepareTestSeedAsync(LocalDbContext db)
 {

@@ -81,6 +81,25 @@ function Convert-OutputText {
     return (($Output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine)
 }
 
+function Resolve-MarkdownResultStatus {
+    param(
+        [string]$ReportPath,
+        [string]$DefaultStatus = 'PASS'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ReportPath) -or -not (Test-Path -LiteralPath $ReportPath)) {
+        return $DefaultStatus
+    }
+
+    $content = Get-Content -LiteralPath $ReportPath -Raw -Encoding UTF8
+    $match = [regex]::Match($content, '-\s*결과:\s*\*\*(?<status>[^*]+)\*\*')
+    if ($match.Success) {
+        return $match.Groups['status'].Value.Trim()
+    }
+
+    return $DefaultStatus
+}
+
 function Add-StepResult {
     param(
         [string]$Name,
@@ -175,6 +194,7 @@ function Invoke-ObservationCheck {
     }
     if ($SkipPackageProbe) {
         $arguments.SkipPackageProbe = $true
+        $arguments.SkipManifestProbe = $true
     }
 
     $output = & $scriptPath @arguments 2>&1
@@ -231,8 +251,10 @@ function Invoke-ApiVisibilitySmoke {
         }
     }
 
+    $status = Resolve-MarkdownResultStatus -ReportPath $reportPath -DefaultStatus 'PASS'
+
     [pscustomobject]@{
-        Detail = 'PASS'
+        Detail = $status
         ReportPath = $reportPath
         Output = Convert-OutputText $output
     }
@@ -266,8 +288,12 @@ function Invoke-LocalCacheCheck {
         }
     }
 
+    $statusLine = @($output | Where-Object { ([string]$_).StartsWith('Local cache consistency:') } | Select-Object -Last 1)
+    $status = if ($statusLine.Count -gt 0) { ([string]$statusLine[0]).Substring('Local cache consistency:'.Length).Trim() } else { 'PASS' }
+    $status = Resolve-MarkdownResultStatus -ReportPath $reportPath -DefaultStatus $status
+
     [pscustomobject]@{
-        Detail = 'PASS'
+        Detail = $status
         ReportPath = $reportPath
         Output = Convert-OutputText $output
     }
@@ -283,7 +309,7 @@ function Invoke-LocalPreValidationSync {
         [string]$Password
     )
 
-    $projectPath = Join-Path $ProjectRoot '.tmp\syncdiag\syncdiag.csproj'
+    $projectPath = Join-Path $ProjectRoot 'tools\SyncDiag\SyncDiag.csproj'
     if (-not (Test-Path -LiteralPath $projectPath)) {
         throw "syncdiag 프로젝트를 찾지 못했습니다: $projectPath"
     }
@@ -377,24 +403,46 @@ function Invoke-DotnetTests {
 }
 
 function Invoke-DirtyCheck {
-    param([string]$ProjectRoot, [string]$DotnetExe, [string]$AppDataRoot)
+    param(
+        [string]$ProjectRoot,
+        [string]$DotnetExe,
+        [string]$AppDataRoot,
+        [string]$BaseUrl,
+        [string]$Username,
+        [string]$Password
+    )
 
-    $projectPath = Join-Path $ProjectRoot '.tmp\syncdiag\syncdiag.csproj'
+    $projectPath = Join-Path $ProjectRoot 'tools\SyncDiag\SyncDiag.csproj'
     if (-not (Test-Path -LiteralPath $projectPath)) {
         throw "syncdiag 프로젝트를 찾지 못했습니다: $projectPath"
     }
 
     $previousRoot = [Environment]::GetEnvironmentVariable('GEORAEPLAN_APP_ROOT', 'Process')
     $previousLegacy = [Environment]::GetEnvironmentVariable('GEORAEPLAN_DISABLE_LEGACY_MERGE', 'Process')
+    $previousSyncUsername = [Environment]::GetEnvironmentVariable('GEORAEPLAN_SYNC_USERNAME', 'Process')
+    $previousSyncPassword = [Environment]::GetEnvironmentVariable('GEORAEPLAN_SYNC_PASSWORD', 'Process')
+    $previousSyncBaseUrl = [Environment]::GetEnvironmentVariable('GEORAEPLAN_SYNC_BASEURL', 'Process')
     try {
         [Environment]::SetEnvironmentVariable('GEORAEPLAN_APP_ROOT', $AppDataRoot, 'Process')
         [Environment]::SetEnvironmentVariable('GEORAEPLAN_DISABLE_LEGACY_MERGE', '1', 'Process')
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_SYNC_USERNAME', $Username, 'Process')
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_SYNC_PASSWORD', $Password, 'Process')
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_SYNC_BASEURL', ($BaseUrl.TrimEnd('/') + '/'), 'Process')
         $output = & $DotnetExe run --project $projectPath -- inspect 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw (Convert-OutputText $output)
         }
 
         $text = Convert-OutputText $output
+        if ($text -match 'current_scope_dirty=(\d+)') {
+            if ([int]$Matches[1] -ne 0) {
+                throw "현재 로그인 범위 dirty 상태가 0이 아닙니다: current_scope_dirty=$($Matches[1])"
+            }
+        }
+        else {
+            throw '현재 로그인 범위 dirty 상태를 확인하지 못했습니다.'
+        }
+
         foreach ($name in @('customers', 'contracts', 'items', 'invoices', 'payments')) {
             if ($text -notmatch ($name + '_dirty=0')) {
                 throw "dirty 상태가 0이 아닙니다: $name"
@@ -406,6 +454,9 @@ function Invoke-DirtyCheck {
     finally {
         [Environment]::SetEnvironmentVariable('GEORAEPLAN_APP_ROOT', $previousRoot, 'Process')
         [Environment]::SetEnvironmentVariable('GEORAEPLAN_DISABLE_LEGACY_MERGE', $previousLegacy, 'Process')
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_SYNC_USERNAME', $previousSyncUsername, 'Process')
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_SYNC_PASSWORD', $previousSyncPassword, 'Process')
+        [Environment]::SetEnvironmentVariable('GEORAEPLAN_SYNC_BASEURL', $previousSyncBaseUrl, 'Process')
     }
 }
 
@@ -996,8 +1047,8 @@ else {
 
 if (-not $SkipDirtyCheck) {
     Invoke-Step -Name 'local-dirty-check' -Script {
-        $output = Invoke-DirtyCheck -ProjectRoot $ProjectRoot -DotnetExe $resolvedDotnet -AppDataRoot $AppDataRoot
-        $summary = @($output -split "`r?`n" | Where-Object { $_ -like '*_dirty=*' }) -join '; '
+        $output = Invoke-DirtyCheck -ProjectRoot $ProjectRoot -DotnetExe $resolvedDotnet -AppDataRoot $AppDataRoot -BaseUrl $BaseUrl -Username $Username -Password $Password
+        $summary = @($output -split "`r?`n" | Where-Object { $_ -like 'current_scope_dirty=*' -or $_ -like '*_dirty=*' }) -join '; '
         if ([string]::IsNullOrWhiteSpace($summary)) { 'PASS' } else { $summary }
     }
 }

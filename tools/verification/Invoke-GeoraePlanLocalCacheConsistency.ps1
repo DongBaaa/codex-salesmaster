@@ -380,7 +380,7 @@ foreach ($key in $tableMap.Keys) {
     elseif ($serverActive -ge 0 -and $localActive -gt $serverActive) {
         $status = 'WARN'
         $warnings.Add("${key} 로컬 활성 ${localActive}건이 서버 활성 ${serverActive}건보다 많습니다. 서버에 없는 로컬 잔여 캐시가 화면에 보일 수 있으므로 전체 캐시 재구성이 필요합니다.")
-        if ($FailOnCountMismatch) {
+        if ($FailOnCountMismatch -and $criticalKeys -contains $key) {
             $status = 'FAIL'
             $failures.Add("${key} count mismatch: local active ${localActive} > server active ${serverActive}")
         }

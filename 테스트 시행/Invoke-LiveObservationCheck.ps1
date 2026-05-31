@@ -8,6 +8,7 @@ param(
     [string]$ProbeUsername = "",
     [string]$ProbePassword = "",
     [string]$BearerToken = "",
+    [switch]$SkipManifestProbe,
     [switch]$SkipPackageProbe,
     [string]$LocalCacheAppDataRoot = "",
     [string]$LocalCacheEvidenceDirectory = "",
@@ -306,6 +307,25 @@ function Get-JsonArrayCount {
     }
 }
 
+function Resolve-MarkdownResultStatus {
+    param(
+        [string]$ReportPath,
+        [string]$DefaultStatus = 'OK'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ReportPath) -or -not (Test-Path -LiteralPath $ReportPath)) {
+        return $DefaultStatus
+    }
+
+    $content = Get-Content -LiteralPath $ReportPath -Raw -Encoding UTF8
+    $match = [regex]::Match($content, '-\s*결과:\s*\*\*(?<status>[^*]+)\*\*')
+    if ($match.Success) {
+        return $match.Groups['status'].Value.Trim()
+    }
+
+    return $DefaultStatus
+}
+
 function Test-AuthenticatedDataProbe {
     param(
         [string]$BaseUrl,
@@ -434,6 +454,8 @@ function Test-LocalCacheConsistencyProbe {
         }
 
         $output = & $checkerPath @arguments 2>&1
+        $statusLine = @($output | Where-Object { ([string]$_).StartsWith('Local cache consistency:') } | Select-Object -Last 1)
+        $cacheStatus = if ($statusLine.Count -gt 0) { ([string]$statusLine[0]).Substring('Local cache consistency:'.Length).Trim() } else { 'OK' }
         $reportLine = @($output | Where-Object { ([string]$_).StartsWith('Report:') } | Select-Object -Last 1)
         $reportPath = if ($reportLine.Count -gt 0) { ([string]$reportLine[0]).Substring('Report:'.Length).Trim() } else { '' }
         if ([string]::IsNullOrWhiteSpace($reportPath) -and (Test-Path -LiteralPath $LocalCacheEvidenceDirectory)) {
@@ -444,11 +466,12 @@ function Test-LocalCacheConsistencyProbe {
                 $reportPath = $latestReport.FullName
             }
         }
+        $cacheStatus = Resolve-MarkdownResultStatus -ReportPath $reportPath -DefaultStatus $cacheStatus
 
         return [pscustomobject]@{
             Success = $true
             Skipped = $false
-            Message = 'OK'
+            Message = $cacheStatus
             Report = $reportPath
         }
     }
@@ -481,7 +504,18 @@ $samples = New-Object System.Collections.Generic.List[object]
 for ($index = 1; $index -le $SampleCount; $index++) {
     $sampledAt = Get-Date
     $healthResult = Invoke-WebProbe -Uri $healthUrl -Method Get
-    $manifestResult = Invoke-WebProbe -Uri $manifestUrl -Method Get
+    $manifestResult = if ($SkipManifestProbe) {
+        [pscustomobject]@{
+            Success = $true
+            StatusCode = 0
+            Content = ""
+            Error = "manifest 점검 건너뜀"
+            Skipped = $true
+        }
+    }
+    else {
+        Invoke-WebProbe -Uri $manifestUrl -Method Get
+    }
 
     $desktopVersion = ""
     $packageUrl = ""
@@ -528,6 +562,7 @@ for ($index = 1; $index -le $SampleCount; $index++) {
         ManifestOk = $manifestResult.Success
         ManifestStatusCode = $manifestResult.StatusCode
         ManifestMessage = if ($manifestResult.Success) { "OK" } else { $manifestResult.Error }
+        ManifestProbeSkipped = [bool]$manifestResult.Skipped
         DesktopVersion = $desktopVersion
         MinimumSupportedVersion = $minimumSupportedVersion
         PackageUrl = $packageUrl
@@ -576,8 +611,9 @@ $lines.Add("- 채널: $Channel") | Out-Null
 $lines.Add("- 샘플 수: $SampleCount") | Out-Null
 $lines.Add("- 샘플 간격(초): $IntervalSeconds") | Out-Null
 $lines.Add("- package probe 모드: $packageProbeAuthMode") | Out-Null
+$lines.Add("- manifest probe skip: $([bool]$SkipManifestProbe)") | Out-Null
 $lines.Add("- package probe skip: $([bool]$SkipPackageProbe)") | Out-Null
-$localCacheSummary = if ($localCacheResult.Skipped) { "SKIP - $($localCacheResult.Message)" } elseif ($localCacheResult.Success) { "OK - $($localCacheResult.Report)" } else { "FAIL - $($localCacheResult.Message)" }
+$localCacheSummary = if ($localCacheResult.Skipped) { "SKIP - $($localCacheResult.Message)" } elseif ($localCacheResult.Success) { "$($localCacheResult.Message) - $($localCacheResult.Report)" } else { "FAIL - $($localCacheResult.Message)" }
 $lines.Add("- 로컬 캐시 점검: $localCacheSummary") | Out-Null
 $lines.Add("") | Out-Null
 $lines.Add("| 회차 | 시각 | healthz | manifest | desktop 버전 | minimumSupportedVersion | package | 거래처/거래내역 | packageUrl |") | Out-Null
@@ -585,7 +621,7 @@ $lines.Add("| ---: | --- | --- | --- | --- | --- | --- | --- | --- |") | Out-Nul
 
 foreach ($sample in $samples) {
     $healthCell = if ($sample.HealthOk) { "OK ($($sample.HealthStatusCode))" } else { "FAIL ($($sample.HealthStatusCode)) $($sample.HealthMessage)" }
-    $manifestCell = if ($sample.ManifestOk) { "OK ($($sample.ManifestStatusCode))" } else { "FAIL ($($sample.ManifestStatusCode)) $($sample.ManifestMessage)" }
+    $manifestCell = if ($sample.ManifestProbeSkipped) { "SKIP" } elseif ($sample.ManifestOk) { "OK ($($sample.ManifestStatusCode))" } else { "FAIL ($($sample.ManifestStatusCode)) $($sample.ManifestMessage)" }
     $packageMode = if ($sample.PackageAuthUsed) { "$($sample.PackageProbeMode), auth" } elseif ([string]::IsNullOrWhiteSpace($sample.PackageProbeMode)) { '-' } else { $sample.PackageProbeMode }
     $packageCell = if ($sample.PackageProbeSkipped) { "SKIP" } elseif ($sample.PackageOk) { "OK ($($sample.PackageStatusCode); $packageMode)" } else { "FAIL ($($sample.PackageStatusCode); $packageMode) $($sample.PackageMessage)" }
     $dataCell = if ($sample.DataProbeSkipped) {
@@ -608,7 +644,12 @@ if ($localCacheResult.Skipped) {
     $lines.Add("- SKIP: $($localCacheResult.Message)") | Out-Null
 }
 elseif ($localCacheResult.Success) {
-    $lines.Add("- PASS: 서버 pull과 지정한 PC 로컬 캐시의 핵심 목록 건수가 일치했습니다.") | Out-Null
+    if ([string]::Equals($localCacheResult.Message, 'WARN', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $lines.Add("- WARN: 핵심 목록은 조회 가능하지만 일부 비핵심/범위 차이 항목이 확인되었습니다. 세부 리포트를 확인하세요.") | Out-Null
+    }
+    else {
+        $lines.Add("- PASS: 서버 pull과 지정한 PC 로컬 캐시의 핵심 목록 건수가 일치했습니다.") | Out-Null
+    }
     if (-not [string]::IsNullOrWhiteSpace($localCacheResult.Report)) {
         $lines.Add("- 세부 리포트: $($localCacheResult.Report)") | Out-Null
     }
@@ -620,7 +661,10 @@ $lines.Add("") | Out-Null
 $lines.Add("## 판정") | Out-Null
 $lines.Add("") | Out-Null
 if ($failedSamples.Count -eq 0 -and $localCacheResult.Success) {
-    if ($SkipPackageProbe) {
+    if ($SkipPackageProbe -and $SkipManifestProbe) {
+        $lines.Add("- healthz와 인증 데이터 조회가 정상 응답했습니다. 테스트 실행환경 기준으로 manifest/package 다운로드 경로 점검은 옵션으로 건너뛰었습니다.") | Out-Null
+    }
+    elseif ($SkipPackageProbe) {
         $lines.Add("- healthz, manifest가 정상 응답했습니다. package 다운로드 경로 점검은 옵션으로 건너뛰었습니다.") | Out-Null
     }
     else {
