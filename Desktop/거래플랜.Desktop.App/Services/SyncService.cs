@@ -714,6 +714,17 @@ public sealed class SyncService : IDisposable
 
     private static bool IsTransient(Exception ex, CancellationToken ct)
     {
+        if (ex is AggregateException aggregate)
+            return aggregate.InnerExceptions.Any(inner => IsTransient(inner, ct));
+
+        if (IsTransientSingle(ex, ct))
+            return true;
+
+        return ex.InnerException is not null && IsTransient(ex.InnerException, ct);
+    }
+
+    private static bool IsTransientSingle(Exception ex, CancellationToken ct)
+    {
         if (ex is TaskCanceledException && !ct.IsCancellationRequested)
             return true;
 

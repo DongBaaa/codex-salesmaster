@@ -4625,6 +4625,73 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public void SyncService_IsTransient_TreatsWrappedRetryableFailuresAsTransient()
+    {
+        var wrappedTimeout = new InvalidOperationException(
+            "outer sync wrapper",
+            new TimeoutException("inner timeout"));
+        var wrappedGatewayTimeout = new InvalidOperationException(
+            "outer sync wrapper",
+            new HttpRequestException("gateway timeout", null, System.Net.HttpStatusCode.GatewayTimeout));
+        var aggregateRetryable = new AggregateException(
+            new InvalidOperationException("wrapper", new TimeoutException("inner timeout")));
+        var wrappedConflict = new InvalidOperationException(
+            "outer sync wrapper",
+            new HttpRequestException("conflict", null, System.Net.HttpStatusCode.Conflict));
+
+        Assert.True(InvokePrivateStatic<bool>(
+            typeof(SyncService),
+            "IsTransient",
+            wrappedTimeout,
+            CancellationToken.None));
+        Assert.True(InvokePrivateStatic<bool>(
+            typeof(SyncService),
+            "IsTransient",
+            wrappedGatewayTimeout,
+            CancellationToken.None));
+        Assert.True(InvokePrivateStatic<bool>(
+            typeof(SyncService),
+            "IsTransient",
+            aggregateRetryable,
+            CancellationToken.None));
+        Assert.False(InvokePrivateStatic<bool>(
+            typeof(SyncService),
+            "IsTransient",
+            wrappedConflict,
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public void ErpApiClient_IsTransient_TreatsWrappedRetryableFailuresAsTransient()
+    {
+        var wrappedTimeout = new InvalidOperationException(
+            "outer api wrapper",
+            new TimeoutException("inner timeout"));
+        var wrappedServiceUnavailable = new InvalidOperationException(
+            "outer api wrapper",
+            new HttpRequestException("service unavailable", null, System.Net.HttpStatusCode.ServiceUnavailable));
+        var wrappedConflict = new InvalidOperationException(
+            "outer api wrapper",
+            new HttpRequestException("conflict", null, System.Net.HttpStatusCode.Conflict));
+
+        Assert.True(InvokePrivateStatic<bool>(
+            typeof(ErpApiClient),
+            "IsTransient",
+            wrappedTimeout,
+            CancellationToken.None));
+        Assert.True(InvokePrivateStatic<bool>(
+            typeof(ErpApiClient),
+            "IsTransient",
+            wrappedServiceUnavailable,
+            CancellationToken.None));
+        Assert.False(InvokePrivateStatic<bool>(
+            typeof(ErpApiClient),
+            "IsTransient",
+            wrappedConflict,
+            CancellationToken.None));
+    }
+
+    [Fact]
     public async Task SyncService_DeferPullRefreshUntilDirtyChangesArePushed_MarksRefreshAndShowsWaitingStatus()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-pull-defer-{Guid.NewGuid():N}");
