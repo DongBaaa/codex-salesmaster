@@ -2157,24 +2157,20 @@ public sealed class SyncController : ControllerBase
         if (entityId == Guid.Empty)
             return;
 
+        var now = DateTime.UtcNow;
+        var normalizedNote = (resolutionNote ?? string.Empty).Trim();
         var entityIdText = entityId.ToString();
-        var rows = await _dbContext.ConflictLogs
+
+        await _dbContext.ConflictLogs
             .Where(conflict =>
                 conflict.EntityName == entityName &&
                 conflict.EntityId == entityIdText &&
                 conflict.Status != "Resolved")
-            .ToListAsync(cancellationToken);
-        if (rows.Count == 0)
-            return;
-
-        var now = DateTime.UtcNow;
-        var normalizedNote = (resolutionNote ?? string.Empty).Trim();
-        foreach (var row in rows)
-        {
-            row.Status = "Resolved";
-            row.ResolvedAtUtc = now;
-            row.ResolutionNote = normalizedNote;
-        }
+            .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(conflict => conflict.Status, "Resolved")
+                    .SetProperty(conflict => conflict.ResolvedAtUtc, now)
+                    .SetProperty(conflict => conflict.ResolutionNote, normalizedNote),
+                cancellationToken);
     }
 
     private static string NormalizeDeviceId(string? deviceId)

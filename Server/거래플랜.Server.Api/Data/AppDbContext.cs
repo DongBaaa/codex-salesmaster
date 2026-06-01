@@ -77,6 +77,7 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<TenantDefinition>().HasIndex(x => x.TenantCode).IsUnique();
         modelBuilder.Entity<TenantOfficeDefinition>().HasIndex(x => x.OfficeCode).IsUnique();
         modelBuilder.Entity<TenantOfficeDefinition>().HasIndex(x => new { x.TenantCode, x.OfficeCode }).IsUnique();
+        modelBuilder.Entity<ConflictLog>().HasIndex(x => new { x.EntityName, x.EntityId, x.Status });
         modelBuilder.Entity<PriceGradeOption>().HasIndex(x => x.Name).IsUnique();
         modelBuilder.Entity<TradeTypeOption>().HasIndex(x => x.Name).IsUnique();
         modelBuilder.Entity<ItemCategoryOption>().HasIndex(x => x.Name).IsUnique();

@@ -233,10 +233,11 @@ public static partial class DbInitializer
 
         foreach (var sql in new[]
                  {
-                     conflictStatusBackfillSql,
-                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ProcessedSyncMutations_MutationId\" ON \"ProcessedSyncMutations\" (\"MutationId\");",
-                     "CREATE INDEX IF NOT EXISTS \"IX_ConflictLogs_Status_CreatedAtUtc\" ON \"ConflictLogs\" (\"Status\", \"CreatedAtUtc\");",
-                     "CREATE INDEX IF NOT EXISTS \"IX_InventoryLedgerEntries_ItemId_OccurredDate\" ON \"InventoryLedgerEntries\" (\"ItemId\", \"OccurredDate\");",
+                      conflictStatusBackfillSql,
+                      "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ProcessedSyncMutations_MutationId\" ON \"ProcessedSyncMutations\" (\"MutationId\");",
+                      "CREATE INDEX IF NOT EXISTS \"IX_ConflictLogs_Status_CreatedAtUtc\" ON \"ConflictLogs\" (\"Status\", \"CreatedAtUtc\");",
+                      "CREATE INDEX IF NOT EXISTS \"IX_ConflictLogs_EntityName_EntityId_Status\" ON \"ConflictLogs\" (\"EntityName\", \"EntityId\", \"Status\");",
+                      "CREATE INDEX IF NOT EXISTS \"IX_InventoryLedgerEntries_ItemId_OccurredDate\" ON \"InventoryLedgerEntries\" (\"ItemId\", \"OccurredDate\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_InventoryLedgerEntries_WarehouseCode\" ON \"InventoryLedgerEntries\" (\"WarehouseCode\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_AssetId_IsCurrent\" ON \"RentalAssetAssignmentHistories\" (\"AssetId\", \"IsCurrent\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_BillingProfileId\" ON \"RentalAssetAssignmentHistories\" (\"BillingProfileId\");",
