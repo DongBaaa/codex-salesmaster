@@ -308,7 +308,13 @@ public partial class MainWindow : Window
                     continue;
                 }
 
-                var baselineRevision = Math.Max(await ResolveLocalLastSyncRevisionAsync(), _lastPassiveServerRevisionHint);
+                if (_sync.HasActiveOrQueuedSync || _centralRefreshInProgress)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                    continue;
+                }
+
+                var baselineRevision = _lastPassiveServerRevisionHint;
                 var status = await _api.WaitForSyncChangeAsync(
                     baselineRevision,
                     TimeSpan.FromSeconds(25),
@@ -319,7 +325,11 @@ public partial class MainWindow : Window
 
                 await Dispatcher.InvokeAsync(
                     () => UiTaskHelper.Forget(
-                        RunPassiveSyncRefreshAsync("실시간 변경 감지", TimeSpan.Zero, requireServerRevisionChange: false),
+                        RunPassiveSyncRefreshAsync(
+                            "실시간 변경 감지",
+                            TimeSpan.Zero,
+                            requireServerRevisionChange: false,
+                            observedServerRevision: status.CurrentServerRevision),
                         "SYNC",
                         "실시간 변경 감지 후 재동기화",
                         ex => AppLogger.Warn("SYNC", $"실시간 변경 감지 후 재동기화 실패: {ex.Message}")),
@@ -642,7 +652,11 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task RunPassiveSyncRefreshAsync(string reason, TimeSpan minInterval, bool requireServerRevisionChange)
+    private async Task RunPassiveSyncRefreshAsync(
+        string reason,
+        TimeSpan minInterval,
+        bool requireServerRevisionChange,
+        long? observedServerRevision = null)
     {
         if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode || _centralRefreshInProgress || _vm.ForceSyncCommand.IsRunning)
             return;
@@ -651,7 +665,10 @@ public partial class MainWindow : Window
         _centralRefreshInProgress = true;
         try
         {
-            var pendingServerRevision = await GetPendingPassiveServerRevisionAsync(minInterval, requireServerRevisionChange);
+            var pendingServerRevision = await GetPendingPassiveServerRevisionAsync(
+                minInterval,
+                requireServerRevisionChange,
+                observedServerRevision);
             if (!pendingServerRevision.HasValue)
                 return;
 
@@ -867,7 +884,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<long?> GetPendingPassiveServerRevisionAsync(TimeSpan minInterval, bool requireServerRevisionChange)
+    private async Task<long?> GetPendingPassiveServerRevisionAsync(
+        TimeSpan minInterval,
+        bool requireServerRevisionChange,
+        long? observedServerRevision = null)
     {
         if (_sync.HasActiveOrQueuedSync)
             return null;
@@ -882,18 +902,24 @@ public partial class MainWindow : Window
         if (await _local.HasPendingSyncChangesAsync())
             return 0L;
 
-        if (!requireServerRevisionChange)
+        if (!requireServerRevisionChange && !observedServerRevision.HasValue)
             return 0L;
 
-        var status = await _api.GetSyncStatusAsync();
-        if (status is null)
-            return null;
+        var currentServerRevision = observedServerRevision;
+        if (!currentServerRevision.HasValue)
+        {
+            var status = await _api.GetSyncStatusAsync();
+            if (status is null)
+                return null;
+
+            currentServerRevision = status.CurrentServerRevision;
+        }
 
         var lastSyncRevisionRaw = await _local.GetSettingAsync("LastSyncRevision");
         _ = long.TryParse(lastSyncRevisionRaw, out var lastSyncRevision);
         var baselineRevision = Math.Max(lastSyncRevision, _lastPassiveServerRevisionHint);
-        return status.CurrentServerRevision > baselineRevision
-            ? status.CurrentServerRevision
+        return currentServerRevision.Value > baselineRevision
+            ? currentServerRevision.Value
             : null;
     }
 

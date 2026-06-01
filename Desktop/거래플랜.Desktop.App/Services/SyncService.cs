@@ -609,6 +609,11 @@ public sealed class SyncService : IDisposable
             AppLogger.Info("SYNC", "동기화 완료");
             return true;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            AppLogger.Info("SYNC", "동기화 요청이 더 최신 변경/종료 요청으로 취소되어 조용히 재예약합니다.");
+            return false;
+        }
         catch (Exception ex) when (IsDisposedContextException(ex))
         {
             AppLogger.Warn("SYNC", $"동기화 종료 중 안전 무시: {ex.Message}");
@@ -733,7 +738,7 @@ public sealed class SyncService : IDisposable
             if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
                 return;
 
-            await StartSyncAsync(waitForRunningSync: true, ct);
+            await StartSyncAsync(waitForRunningSync: true, CancellationToken.None);
         }
         catch (OperationCanceledException)
         {
@@ -1636,6 +1641,7 @@ public sealed class SyncService : IDisposable
            req.Customers.Count +
            req.CustomerContracts.Count +
            req.Items.Count +
+           req.ItemWarehouseStocks.Count +
            req.Transactions.Count +
            req.TransactionAttachments.Count +
            req.InventoryTransfers.Count +
@@ -1851,27 +1857,7 @@ public sealed class SyncService : IDisposable
                 SynchronizeTrackedInvoiceAssignment(assigned.Key, assigned.Value);
             }
 
-            await MarkCleanAsync<LocalCompanyProfile>(req.CompanyProfiles.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalUnit>(req.Units.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalCustomerCategory>(req.CustomerCategories.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalPriceGradeOption>(req.PriceGradeOptions.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalTradeTypeOption>(req.TradeTypeOptions.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalItemCategoryOption>(req.ItemCategoryOptions.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalCustomerMaster>(req.CustomerMasters.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalCustomer>(req.Customers.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalCustomerContract>(req.CustomerContracts.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalItem>(req.Items.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalTransaction>(req.Transactions.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalTransactionAttachment>(req.TransactionAttachments.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanInventoryTransfersAsync(req.InventoryTransfers.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalRentalManagementCompany>(req.RentalManagementCompanies.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalRentalBillingProfile>(req.RentalBillingProfiles.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalRentalAsset>(req.RentalAssets.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalRentalAssetAssignmentHistory>(req.RentalAssetAssignmentHistories.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalRentalBillingLog>(req.RentalBillingLogs.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanInvoicesAsync(req.Invoices.Select(entity => entity.Id).ToList(), ct);
-            await MarkCleanAsync<LocalPayment>(req.Payments.Select(entity => entity.Id).ToList(), ct);
-            await MarkOutboxAcknowledgedAsync(req, ct);
+            await MarkOutboxAcknowledgedAsync(req, result.AcceptedRevisions, ct);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
@@ -6258,9 +6244,24 @@ public sealed class SyncService : IDisposable
         await _db.SaveChangesAsync(ct);
     }
 
-    private async Task MarkOutboxAcknowledgedAsync(SyncPushRequest request, CancellationToken ct)
+    private async Task MarkOutboxAcknowledgedAsync(
+        SyncPushRequest request,
+        IReadOnlyCollection<SyncAcceptedRevisionDto> acceptedRevisions,
+        CancellationToken ct)
     {
+        if (acceptedRevisions.Count == 0)
+            return;
+
+        var acceptedKeys = acceptedRevisions
+            .Where(revision => revision.EntityId != Guid.Empty)
+            .Select(revision => new SyncEntityKey(NormalizeSyncEntityName(revision.EntityName), revision.EntityId))
+            .ToHashSet();
+
+        if (acceptedKeys.Count == 0)
+            return;
+
         var mutationIds = EnumerateOutgoingMutations(request)
+            .Where(entry => acceptedKeys.Contains(new SyncEntityKey(NormalizeSyncEntityName(entry.EntityName), entry.Entity.Id)))
             .Select(entry => entry.Entity.MutationId)
             .Where(mutationId => !string.IsNullOrWhiteSpace(mutationId))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -6280,6 +6281,21 @@ public sealed class SyncService : IDisposable
         }
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    private readonly record struct SyncEntityKey(string EntityName, Guid EntityId);
+
+    private static string NormalizeSyncEntityName(string? entityName)
+    {
+        var normalized = (entityName ?? string.Empty).Trim();
+        if (normalized.StartsWith("Local", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[5..];
+
+        return normalized switch
+        {
+            "Transaction" => "TransactionRecord",
+            _ => normalized
+        };
     }
 
     private async Task TryMarkOutboxFailedAsync(SyncPushRequest request, string? errorMessage, CancellationToken ct)

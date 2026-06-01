@@ -4562,6 +4562,153 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public void SyncService_IsPushRequestEmpty_TreatsWarehouseStockSnapshotsAsPayload()
+    {
+        var request = new SyncPushRequest();
+
+        var empty = InvokePrivateStatic<bool>(
+            typeof(SyncService),
+            "IsPushRequestEmpty",
+            request);
+
+        request.ItemWarehouseStocks.Add(new ItemWarehouseStockDto
+        {
+            ItemId = Guid.NewGuid(),
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = -1m,
+            Revision = 7
+        });
+
+        var withWarehouseStock = InvokePrivateStatic<bool>(
+            typeof(SyncService),
+            "IsPushRequestEmpty",
+            request);
+
+        Assert.True(empty);
+        Assert.False(withWarehouseStock);
+    }
+
+    [Fact]
+    public async Task SyncService_MarkOutboxAcknowledgedAsync_AcknowledgesOnlyAcceptedEntities()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-accepted-outbox-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateOnlineAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            var diagnostics = new SyncDiagnosticsService(session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+
+            var itemId = Guid.Parse("83611111-1111-1111-1111-111111111111");
+            var customerId = Guid.Parse("83622222-2222-2222-2222-222222222222");
+            const string itemMutationId = "device|LocalItem|item";
+            const string customerMutationId = "device|LocalCustomer|customer";
+            var now = DateTime.UtcNow;
+
+            var request = new SyncPushRequest();
+            request.Items.Add(new ItemDto
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Accepted item",
+                NameMatchKey = "ACCEPTEDITEM",
+                UpdatedAtUtc = now,
+                Revision = 3,
+                ExpectedRevision = 3,
+                MutationId = itemMutationId
+            });
+            request.Customers.Add(new CustomerDto
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Conflicted customer",
+                NameMatchKey = "CONFLICTEDCUSTOMER",
+                UpdatedAtUtc = now,
+                Revision = 4,
+                ExpectedRevision = 4,
+                MutationId = customerMutationId
+            });
+
+            db.SyncOutboxEntries.AddRange(
+                new LocalSyncOutboxEntry
+                {
+                    Id = Guid.NewGuid(),
+                    MutationId = itemMutationId,
+                    DeviceId = "device",
+                    EntityName = nameof(LocalItem),
+                    EntityId = itemId,
+                    ExpectedRevision = 3,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    Status = "Sent",
+                    SentAtUtc = now
+                },
+                new LocalSyncOutboxEntry
+                {
+                    Id = Guid.NewGuid(),
+                    MutationId = customerMutationId,
+                    DeviceId = "device",
+                    EntityName = nameof(LocalCustomer),
+                    EntityId = customerId,
+                    ExpectedRevision = 4,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    Status = "Sent",
+                    SentAtUtc = now
+                });
+            await db.SaveChangesAsync();
+
+            var accepted = new List<SyncAcceptedRevisionDto>
+            {
+                new()
+                {
+                    EntityName = "Item",
+                    EntityId = itemId,
+                    Revision = 5,
+                    UpdatedAtUtc = now.AddSeconds(1)
+                }
+            };
+
+            await InvokePrivateInstanceTaskResultAsync(
+                sync,
+                "MarkOutboxAcknowledgedAsync",
+                request,
+                accepted,
+                CancellationToken.None);
+
+            var itemOutbox = await db.SyncOutboxEntries.AsNoTracking()
+                .SingleAsync(entry => entry.MutationId == itemMutationId);
+            var customerOutbox = await db.SyncOutboxEntries.AsNoTracking()
+                .SingleAsync(entry => entry.MutationId == customerMutationId);
+
+            Assert.Equal("Acknowledged", itemOutbox.Status);
+            Assert.NotNull(itemOutbox.AcknowledgedAtUtc);
+            Assert.Equal("Sent", customerOutbox.Status);
+            Assert.Null(customerOutbox.AcknowledgedAtUtc);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RepairMissingItemMastersFromOperationalReferencesAsync_DoesNotRecoverSoftDeletedItems()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-missing-item-repair-{Guid.NewGuid():N}");
