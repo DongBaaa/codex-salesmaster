@@ -1832,11 +1832,28 @@ public sealed class SyncService : IDisposable
                     await AppendConflictSummaryAsync($"거래처 리비전 충돌 {preparedCustomerRevisionRetryConflicts.Count}건을 서버 최신 rev 기준 재시도로 준비했습니다.");
                 }
 
+                var preparedInvoiceRevisionRetryConflicts = await PrepareInvoiceRevisionRetriesAsync(
+                    result.Conflicts
+                        .Except(serverNewerConflicts)
+                        .Except(preparedCompanyProfileRevisionRetryConflicts)
+                        .Except(preparedCustomerRevisionRetryConflicts)
+                        .ToList(),
+                    req.DeviceId,
+                    session,
+                    ct);
+
+                if (preparedInvoiceRevisionRetryConflicts.Count > 0)
+                {
+                    AppLogger.Warn("SYNC", $"Invoice revision retry prepared: {preparedInvoiceRevisionRetryConflicts.Count} conflict(s).");
+                    await AppendConflictSummaryAsync($"전표 리비전 충돌 {preparedInvoiceRevisionRetryConflicts.Count}건을 서버 최신 rev 기준 재시도로 준비했습니다.");
+                }
+
                 var repairedItemRevisionConflicts = await ResolveCanonicalItemRevisionConflictsAsync(
                     result.Conflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
+                        .Except(preparedInvoiceRevisionRetryConflicts)
                         .ToList(),
                     ct);
 
@@ -1851,6 +1868,7 @@ public sealed class SyncService : IDisposable
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
+                        .Except(preparedInvoiceRevisionRetryConflicts)
                         .Except(repairedItemRevisionConflicts)
                         .ToList(),
                     req.DeviceId,
@@ -1868,6 +1886,7 @@ public sealed class SyncService : IDisposable
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
+                        .Except(preparedInvoiceRevisionRetryConflicts)
                         .Except(repairedItemRevisionConflicts)
                         .Except(preparedItemRevisionRetryConflicts)
                         .ToList(),
@@ -1885,6 +1904,7 @@ public sealed class SyncService : IDisposable
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
+                        .Except(preparedInvoiceRevisionRetryConflicts)
                         .Except(repairedItemRevisionConflicts)
                         .Except(preparedItemRevisionRetryConflicts)
                         .Except(preparedRentalProfileRevisionRetryConflicts)
@@ -1909,6 +1929,7 @@ public sealed class SyncService : IDisposable
                     .Except(serverNewerConflicts)
                     .Except(preparedCompanyProfileRevisionRetryConflicts)
                     .Except(preparedCustomerRevisionRetryConflicts)
+                    .Except(preparedInvoiceRevisionRetryConflicts)
                     .Except(repairedItemRevisionConflicts)
                     .Except(preparedItemRevisionRetryConflicts)
                     .Except(preparedRentalProfileRevisionRetryConflicts)
@@ -1928,6 +1949,7 @@ public sealed class SyncService : IDisposable
                     .Except(serverNewerConflicts)
                     .Except(preparedCompanyProfileRevisionRetryConflicts)
                     .Except(preparedCustomerRevisionRetryConflicts)
+                    .Except(preparedInvoiceRevisionRetryConflicts)
                     .Except(repairedItemRevisionConflicts)
                     .Except(preparedItemRevisionRetryConflicts)
                     .Except(preparedRentalProfileRevisionRetryConflicts)
@@ -2440,6 +2462,121 @@ public sealed class SyncService : IDisposable
     {
         if (localSnapshot.Id != serverSnapshot.Id)
             return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.TenantCode, serverSnapshot.TenantCode))
+            return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.OfficeCode, serverSnapshot.OfficeCode))
+            return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.ResponsibleOfficeCode, serverSnapshot.ResponsibleOfficeCode))
+            return false;
+
+        return true;
+    }
+
+    private async Task<List<ConflictLogDto>> PrepareInvoiceRevisionRetriesAsync(
+        IReadOnlyCollection<ConflictLogDto> conflicts,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var prepared = new List<ConflictLogDto>();
+        foreach (var conflict in conflicts)
+        {
+            if (await TryPrepareInvoiceRevisionRetryAsync(conflict, deviceId, session, ct))
+                prepared.Add(conflict);
+        }
+
+        return prepared;
+    }
+
+    private async Task<bool> TryPrepareInvoiceRevisionRetryAsync(
+        ConflictLogDto conflict,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (!string.Equals(conflict.EntityName, "Invoice", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var reason = (conflict.Reason ?? string.Empty).Trim();
+        if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!Guid.TryParse(conflict.EntityId, out var invoiceId) || invoiceId == Guid.Empty)
+            return false;
+
+        if (!TryDeserializeConflictInvoiceDto(conflict.ClientJson, out var clientSnapshot) ||
+            clientSnapshot is null ||
+            clientSnapshot.Id != invoiceId ||
+            clientSnapshot.IsDeleted)
+        {
+            return false;
+        }
+
+        if (!TryDeserializeConflictInvoiceDto(conflict.ServerJson, out var serverSnapshot) ||
+            serverSnapshot is null ||
+            serverSnapshot.Id != invoiceId ||
+            serverSnapshot.IsDeleted)
+        {
+            return false;
+        }
+
+        var invoice = await _db.Invoices
+            .IgnoreQueryFilters()
+            .Include(current => current.Lines)
+            .Include(current => current.Payments)
+            .FirstOrDefaultAsync(current => current.Id == invoiceId, ct);
+        if (invoice is null || !invoice.IsDirty || invoice.IsDeleted)
+            return false;
+
+        var localSnapshot = LocalMappings.ToDto(invoice);
+        if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
+            return false;
+
+        var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
+        var serverUpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
+        if (localUpdatedAtUtc < serverUpdatedAtUtc)
+            return false;
+
+        if (!HaveCompatibleInvoiceScope(localSnapshot, serverSnapshot))
+            return false;
+
+        invoice.Revision = serverSnapshot.Revision;
+        invoice.IsDirty = true;
+
+        var rebasedSnapshot = LocalMappings.ToDto(invoice);
+        await RequeuePreparedMutationAsync(
+            nameof(LocalInvoice),
+            invoiceId,
+            clientSnapshot.MutationId,
+            rebasedSnapshot,
+            deviceId,
+            session,
+            ct);
+
+        await _db.SaveChangesAsync(ct);
+        return true;
+    }
+
+    private static bool HaveCompatibleInvoiceScope(InvoiceDto localSnapshot, InvoiceDto serverSnapshot)
+    {
+        if (localSnapshot.Id != serverSnapshot.Id)
+            return false;
+
+        if (localSnapshot.CustomerId != serverSnapshot.CustomerId)
+            return false;
+
+        if (localSnapshot.VoucherType != serverSnapshot.VoucherType)
+            return false;
+
+        if (localSnapshot.VersionGroupId != Guid.Empty &&
+            serverSnapshot.VersionGroupId != Guid.Empty &&
+            localSnapshot.VersionGroupId != serverSnapshot.VersionGroupId)
+        {
+            return false;
+        }
 
         if (!IsSameNonEmptyScope(localSnapshot.TenantCode, serverSnapshot.TenantCode))
             return false;
@@ -3087,6 +3224,23 @@ public sealed class SyncService : IDisposable
         try
         {
             dto = System.Text.Json.JsonSerializer.Deserialize<CustomerDto>(json);
+            return dto is not null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryDeserializeConflictInvoiceDto(string? json, out InvoiceDto? dto)
+    {
+        dto = null;
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        try
+        {
+            dto = System.Text.Json.JsonSerializer.Deserialize<InvoiceDto>(json);
             return dto is not null;
         }
         catch
