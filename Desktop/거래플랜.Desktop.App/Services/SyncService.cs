@@ -1694,9 +1694,24 @@ public sealed class SyncService : IDisposable
                     await AppendConflictSummaryAsync($"서버 최신값 우선으로 동기화 충돌 {serverNewerConflicts.Count}건을 자동 정리했습니다.");
                 }
 
+                var preparedCompanyProfileRevisionRetryConflicts = await PrepareCompanyProfileRevisionRetriesAsync(
+                    result.Conflicts
+                        .Except(serverNewerConflicts)
+                        .ToList(),
+                    req.DeviceId,
+                    session,
+                    ct);
+
+                if (preparedCompanyProfileRevisionRetryConflicts.Count > 0)
+                {
+                    AppLogger.Warn("SYNC", $"Company profile revision retry prepared: {preparedCompanyProfileRevisionRetryConflicts.Count} conflict(s).");
+                    await AppendConflictSummaryAsync($"회사설정 리비전 충돌 {preparedCompanyProfileRevisionRetryConflicts.Count}건을 서버 최신 rev 기준 재시도로 준비했습니다.");
+                }
+
                 var repairedItemRevisionConflicts = await ResolveCanonicalItemRevisionConflictsAsync(
                     result.Conflicts
                         .Except(serverNewerConflicts)
+                        .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .ToList(),
                     ct);
 
@@ -1709,6 +1724,7 @@ public sealed class SyncService : IDisposable
                 var preparedItemRevisionRetryConflicts = await PrepareItemRevisionRetriesAsync(
                     result.Conflicts
                         .Except(serverNewerConflicts)
+                        .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(repairedItemRevisionConflicts)
                         .ToList(),
                     req.DeviceId,
@@ -1724,6 +1740,7 @@ public sealed class SyncService : IDisposable
                 var preparedRentalProfileRevisionRetryConflicts = await PrepareRentalBillingProfileRevisionRetriesAsync(
                     result.Conflicts
                         .Except(serverNewerConflicts)
+                        .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(repairedItemRevisionConflicts)
                         .Except(preparedItemRevisionRetryConflicts)
                         .ToList(),
@@ -1739,6 +1756,7 @@ public sealed class SyncService : IDisposable
                 var rentalAssetConflictRepair = await RepairRentalAssetRevisionConflictsAsync(
                     result.Conflicts
                         .Except(serverNewerConflicts)
+                        .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(repairedItemRevisionConflicts)
                         .Except(preparedItemRevisionRetryConflicts)
                         .Except(preparedRentalProfileRevisionRetryConflicts)
@@ -1761,6 +1779,7 @@ public sealed class SyncService : IDisposable
 
                 var equivalentRevisionConflicts = result.Conflicts
                     .Except(serverNewerConflicts)
+                    .Except(preparedCompanyProfileRevisionRetryConflicts)
                     .Except(repairedItemRevisionConflicts)
                     .Except(preparedItemRevisionRetryConflicts)
                     .Except(preparedRentalProfileRevisionRetryConflicts)
@@ -1778,6 +1797,7 @@ public sealed class SyncService : IDisposable
 
                 var remainingConflicts = result.Conflicts
                     .Except(serverNewerConflicts)
+                    .Except(preparedCompanyProfileRevisionRetryConflicts)
                     .Except(repairedItemRevisionConflicts)
                     .Except(preparedItemRevisionRetryConflicts)
                     .Except(preparedRentalProfileRevisionRetryConflicts)
@@ -1814,6 +1834,9 @@ public sealed class SyncService : IDisposable
                     throw new InvalidOperationException(detail);
                 }
             }
+
+            if (result.AcceptedRevisions.Count > 0)
+                await ApplyAcceptedRevisionsAsync(result.AcceptedRevisions, ct);
 
             foreach (var assigned in result.AssignedInvoiceNumbers)
             {
@@ -2135,6 +2158,89 @@ public sealed class SyncService : IDisposable
         }
 
         return resolved;
+    }
+
+    private async Task<List<ConflictLogDto>> PrepareCompanyProfileRevisionRetriesAsync(
+        IReadOnlyCollection<ConflictLogDto> conflicts,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var prepared = new List<ConflictLogDto>();
+        foreach (var conflict in conflicts)
+        {
+            if (await TryPrepareCompanyProfileRevisionRetryAsync(conflict, deviceId, session, ct))
+                prepared.Add(conflict);
+        }
+
+        return prepared;
+    }
+
+    private async Task<bool> TryPrepareCompanyProfileRevisionRetryAsync(
+        ConflictLogDto conflict,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (!string.Equals(conflict.EntityName, "CompanyProfile", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var reason = (conflict.Reason ?? string.Empty).Trim();
+        if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!Guid.TryParse(conflict.EntityId, out var profileId) || profileId == Guid.Empty)
+            return false;
+
+        if (!TryDeserializeConflictCompanyProfileDto(conflict.ClientJson, out var clientSnapshot) ||
+            clientSnapshot is null ||
+            clientSnapshot.Id != profileId ||
+            clientSnapshot.IsDeleted)
+        {
+            return false;
+        }
+
+        if (!TryDeserializeConflictCompanyProfileDto(conflict.ServerJson, out var serverSnapshot) ||
+            serverSnapshot is null ||
+            serverSnapshot.Id != profileId ||
+            serverSnapshot.IsDeleted)
+        {
+            return false;
+        }
+
+        var profile = await _db.CompanyProfiles
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == profileId, ct);
+        if (profile is null || !profile.IsDirty || profile.IsDeleted)
+            return false;
+
+        var localSnapshot = LocalMappings.ToDto(profile);
+        if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
+            return false;
+
+        var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
+        var serverUpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
+        if (localUpdatedAtUtc < serverUpdatedAtUtc)
+            return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.OfficeCode, serverSnapshot.OfficeCode))
+            return false;
+
+        profile.Revision = serverSnapshot.Revision;
+        profile.IsDirty = true;
+
+        var rebasedSnapshot = LocalMappings.ToDto(profile);
+        await RequeuePreparedMutationAsync(
+            nameof(LocalCompanyProfile),
+            profileId,
+            clientSnapshot.MutationId,
+            rebasedSnapshot,
+            deviceId,
+            session,
+            ct);
+
+        await _db.SaveChangesAsync(ct);
+        return true;
     }
 
     private async Task<List<ConflictLogDto>> PrepareItemRevisionRetriesAsync(
@@ -2737,6 +2843,23 @@ public sealed class SyncService : IDisposable
         try
         {
             dto = System.Text.Json.JsonSerializer.Deserialize<ItemDto>(json);
+            return dto is not null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryDeserializeConflictCompanyProfileDto(string? json, out CompanyProfileDto? dto)
+    {
+        dto = null;
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        try
+        {
+            dto = System.Text.Json.JsonSerializer.Deserialize<CompanyProfileDto>(json);
             return dto is not null;
         }
         catch
@@ -3525,6 +3648,80 @@ public sealed class SyncService : IDisposable
         SynchronizeTrackedCleanState<T>(ids);
     }
 
+    private async Task ApplyAcceptedRevisionsAsync(
+        IReadOnlyCollection<SyncAcceptedRevisionDto> acceptedRevisions,
+        CancellationToken ct)
+    {
+        if (acceptedRevisions.Count == 0)
+            return;
+
+        await ApplyAcceptedRevisionsAsync<LocalCompanyProfile>(acceptedRevisions, ct, nameof(LocalCompanyProfile), "CompanyProfile");
+        await ApplyAcceptedRevisionsAsync<LocalUnit>(acceptedRevisions, ct, nameof(LocalUnit), "Unit");
+        await ApplyAcceptedRevisionsAsync<LocalCustomerCategory>(acceptedRevisions, ct, nameof(LocalCustomerCategory), "CustomerCategory");
+        await ApplyAcceptedRevisionsAsync<LocalPriceGradeOption>(acceptedRevisions, ct, nameof(LocalPriceGradeOption), "PriceGradeOption");
+        await ApplyAcceptedRevisionsAsync<LocalTradeTypeOption>(acceptedRevisions, ct, nameof(LocalTradeTypeOption), "TradeTypeOption");
+        await ApplyAcceptedRevisionsAsync<LocalItemCategoryOption>(acceptedRevisions, ct, nameof(LocalItemCategoryOption), "ItemCategoryOption");
+        await ApplyAcceptedRevisionsAsync<LocalCustomerMaster>(acceptedRevisions, ct, nameof(LocalCustomerMaster), "CustomerMaster");
+        await ApplyAcceptedRevisionsAsync<LocalCustomer>(acceptedRevisions, ct, nameof(LocalCustomer), "Customer");
+        await ApplyAcceptedRevisionsAsync<LocalCustomerContract>(acceptedRevisions, ct, nameof(LocalCustomerContract), "CustomerContract");
+        await ApplyAcceptedRevisionsAsync<LocalItem>(acceptedRevisions, ct, nameof(LocalItem), "Item");
+        await ApplyAcceptedRevisionsAsync<LocalTransaction>(acceptedRevisions, ct, nameof(LocalTransaction), "TransactionRecord", "Transaction");
+        await ApplyAcceptedRevisionsAsync<LocalTransactionAttachment>(acceptedRevisions, ct, nameof(LocalTransactionAttachment), "TransactionAttachment");
+        await ApplyAcceptedRevisionsAsync<LocalInventoryTransfer>(acceptedRevisions, ct, nameof(LocalInventoryTransfer), "InventoryTransfer");
+        await ApplyAcceptedRevisionsAsync<LocalRentalManagementCompany>(acceptedRevisions, ct, nameof(LocalRentalManagementCompany), "RentalManagementCompany");
+        await ApplyAcceptedRevisionsAsync<LocalRentalBillingProfile>(acceptedRevisions, ct, nameof(LocalRentalBillingProfile), "RentalBillingProfile");
+        await ApplyAcceptedRevisionsAsync<LocalRentalAsset>(acceptedRevisions, ct, nameof(LocalRentalAsset), "RentalAsset");
+        await ApplyAcceptedRevisionsAsync<LocalRentalAssetAssignmentHistory>(acceptedRevisions, ct, nameof(LocalRentalAssetAssignmentHistory), "RentalAssetAssignmentHistory");
+        await ApplyAcceptedRevisionsAsync<LocalRentalBillingLog>(acceptedRevisions, ct, nameof(LocalRentalBillingLog), "RentalBillingLog");
+        await ApplyAcceptedRevisionsAsync<LocalInvoice>(acceptedRevisions, ct, nameof(LocalInvoice), "Invoice");
+        await ApplyAcceptedRevisionsAsync<LocalPayment>(acceptedRevisions, ct, nameof(LocalPayment), "Payment");
+    }
+
+    private async Task ApplyAcceptedRevisionsAsync<T>(
+        IReadOnlyCollection<SyncAcceptedRevisionDto> acceptedRevisions,
+        CancellationToken ct,
+        params string[] entityNames)
+        where T : class, ILocalSyncEntity
+    {
+        var revisionsById = acceptedRevisions
+            .Where(revision => revision.EntityId != Guid.Empty &&
+                               entityNames.Any(name => string.Equals(revision.EntityName, name, StringComparison.OrdinalIgnoreCase)))
+            .GroupBy(revision => revision.EntityId)
+            .Select(group => group
+                .OrderByDescending(revision => revision.Revision)
+                .ThenByDescending(revision => revision.UpdatedAtUtc)
+                .First())
+            .ToDictionary(revision => revision.EntityId);
+
+        if (revisionsById.Count == 0)
+            return;
+
+        var ids = revisionsById.Keys.ToList();
+        var rows = await _db.Set<T>().IgnoreQueryFilters()
+            .Where(entity => ids.Contains(entity.Id))
+            .ToListAsync(ct);
+
+        if (rows.Count == 0)
+            return;
+
+        foreach (var row in rows)
+        {
+            if (!revisionsById.TryGetValue(row.Id, out var accepted))
+                continue;
+
+            if (accepted.Revision > 0 && accepted.Revision >= row.Revision)
+                row.Revision = accepted.Revision;
+
+            if (accepted.UpdatedAtUtc != default)
+                row.UpdatedAtUtc = accepted.UpdatedAtUtc;
+
+            row.IsDirty = false;
+        }
+
+        await _db.SaveChangesAsync(ct);
+        SynchronizeTrackedAcceptedRevisionState<T>(revisionsById);
+    }
+
     private async Task MarkServerNewerConflictsCleanAsync<T>(IReadOnlyCollection<Guid> ids, CancellationToken ct)
         where T : class, ILocalSyncEntity
     {
@@ -3614,6 +3811,29 @@ public sealed class SyncService : IDisposable
         {
             if (!ids.Contains(entry.Entity.Id))
                 continue;
+
+            entry.Entity.IsDirty = false;
+            entry.State = EntityState.Unchanged;
+        }
+    }
+
+    private void SynchronizeTrackedAcceptedRevisionState<T>(
+        IReadOnlyDictionary<Guid, SyncAcceptedRevisionDto> revisionsById)
+        where T : class, ILocalSyncEntity
+    {
+        if (revisionsById.Count == 0)
+            return;
+
+        foreach (var entry in _db.ChangeTracker.Entries<T>())
+        {
+            if (!revisionsById.TryGetValue(entry.Entity.Id, out var accepted))
+                continue;
+
+            if (accepted.Revision > 0 && accepted.Revision >= entry.Entity.Revision)
+                entry.Entity.Revision = accepted.Revision;
+
+            if (accepted.UpdatedAtUtc != default)
+                entry.Entity.UpdatedAtUtc = accepted.UpdatedAtUtc;
 
             entry.Entity.IsDirty = false;
             entry.State = EntityState.Unchanged;

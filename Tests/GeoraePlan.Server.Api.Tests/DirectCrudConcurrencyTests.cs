@@ -925,6 +925,61 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task SyncPush_ReturnsAcceptedRevision_ForConsecutiveCompanyProfileSaves()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var profile = new CompanyProfile
+        {
+            Id = Guid.NewGuid(),
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileName = "USENET 기본",
+            TradeName = "유즈넷",
+            IsDefaultForOffice = true,
+            IsActive = true
+        };
+        dbContext.CompanyProfiles.Add(profile);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.CompanyProfiles.IgnoreQueryFilters().SingleAsync(row => row.Id == profile.Id);
+        var baselineRevision = stored.Revision;
+        var firstDto = stored.ToDto();
+        firstDto.ExpectedRevision = stored.Revision;
+        firstDto.TradeName = "유즈넷 1차 저장";
+
+        var controller = CreateSyncController(dbContext, currentUser);
+        var firstResult = AssertSyncOk(await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "test-device",
+            CompanyProfiles = [firstDto]
+        }, CancellationToken.None));
+
+        var accepted = Assert.Single(firstResult.AcceptedRevisions, revision => revision.EntityId == profile.Id);
+        Assert.Equal(nameof(CompanyProfile), accepted.EntityName);
+        Assert.True(accepted.Revision > baselineRevision);
+
+        var secondDto = firstDto;
+        secondDto.Revision = accepted.Revision;
+        secondDto.ExpectedRevision = accepted.Revision;
+        secondDto.UpdatedAtUtc = accepted.UpdatedAtUtc;
+        secondDto.TradeName = "유즈넷 2차 저장";
+
+        var secondResult = AssertSyncOk(await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "test-device",
+            CompanyProfiles = [secondDto]
+        }, CancellationToken.None));
+
+        Assert.Equal(0, secondResult.ConflictCount);
+        Assert.Contains(secondResult.AcceptedRevisions, revision => revision.EntityId == profile.Id && revision.Revision > accepted.Revision);
+        Assert.Equal("유즈넷 2차 저장", await dbContext.CompanyProfiles.IgnoreQueryFilters()
+            .Where(row => row.Id == profile.Id)
+            .Select(row => row.TradeName)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task UsersController_Update_ReturnsConflict_WhenExpectedRevisionDoesNotMatch()
     {
         var currentUser = CreateAdminUser();
@@ -1041,6 +1096,24 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         return Assert.IsType<TDto>(ok.Value);
     }
+
+    private static SyncPushResult AssertSyncOk(ActionResult<SyncPushResult> response)
+    {
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        return Assert.IsType<SyncPushResult>(ok.Value);
+    }
+
+    private static SyncController CreateSyncController(AppDbContext dbContext, TestCurrentUserContext currentUser)
+        => new(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new StubCentralFileStorage(),
+            new RevisionClock(),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalAssignmentHistoryService(dbContext));
 
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
     {

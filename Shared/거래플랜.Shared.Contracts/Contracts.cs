@@ -743,8 +743,17 @@ public sealed class SyncPushResult
     public long CurrentServerRevision { get; set; }
     public List<ConflictLogDto> Conflicts { get; set; } = new();
     public List<SyncNoticeDto> Notices { get; set; } = new();
+    public List<SyncAcceptedRevisionDto> AcceptedRevisions { get; set; } = new();
     /// <summary>Key = local invoice Id, Value = assigned server InvoiceNumber.</summary>
     public Dictionary<Guid, string> AssignedInvoiceNumbers { get; set; } = new();
+}
+
+public sealed class SyncAcceptedRevisionDto
+{
+    public string EntityName { get; set; } = string.Empty;
+    public Guid EntityId { get; set; }
+    public long Revision { get; set; }
+    public DateTime UpdatedAtUtc { get; set; }
 }
 
 public sealed class SyncNoticeDto

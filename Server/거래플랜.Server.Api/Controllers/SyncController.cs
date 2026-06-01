@@ -408,6 +408,10 @@ public sealed class SyncController : ControllerBase
                     (e, d) => e.Apply(d), d => new Payment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
 
                 await _dbContext.SaveChangesAsync(cancellationToken);
+                await PopulateAcceptedRevisionsAsync(result, validRentalAssets, _dbContext.RentalAssets, nameof(RentalAsset), cancellationToken);
+                await PopulateAcceptedRevisionsAsync(result, scopedRentalAssignmentHistories, _dbContext.RentalAssetAssignmentHistories, nameof(RentalAssetAssignmentHistory), cancellationToken);
+                await PopulateAcceptedRevisionsAsync(result, validRentalBillingLogs, _dbContext.RentalBillingLogs, nameof(RentalBillingLog), cancellationToken);
+                await PopulateAcceptedRevisionsAsync(result, validPayments, _dbContext.Payments, nameof(Payment), cancellationToken);
                 if (validRentalAssets.Count > 0)
                     requiresRentalAssignmentRefresh = true;
             }
@@ -424,6 +428,22 @@ public sealed class SyncController : ControllerBase
                 await _inventoryLedgerService.RebuildAsync(cancellationToken);
 
             await _dbContext.SaveChangesAsync(cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, request.CompanyProfiles ?? [], _dbContext.CompanyProfiles, nameof(CompanyProfile), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, request.Units ?? [], _dbContext.Units, nameof(Unit), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, request.CustomerCategories ?? [], _dbContext.CustomerCategories, nameof(CustomerCategory), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, request.PriceGradeOptions ?? [], _dbContext.PriceGradeOptions, nameof(PriceGradeOption), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, request.TradeTypeOptions ?? [], _dbContext.TradeTypeOptions, nameof(TradeTypeOption), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, request.ItemCategoryOptions ?? [], _dbContext.ItemCategoryOptions, nameof(ItemCategoryOption), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, validCustomerMasters, _dbContext.CustomerMasters, nameof(CustomerMaster), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, validCustomers, _dbContext.Customers, nameof(Customer), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, validCustomerContracts, _dbContext.CustomerContracts, nameof(CustomerContract), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, scopedItems, _dbContext.Items, nameof(Item), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, validInvoices, _dbContext.Invoices, nameof(Invoice), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, validTransactions, _dbContext.Transactions, nameof(TransactionRecord), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, validTransactionAttachments, _dbContext.TransactionAttachments, nameof(TransactionAttachment), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, validInventoryTransfers, _dbContext.InventoryTransfers, nameof(InventoryTransfer), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, scopedRentalCompanies, _dbContext.RentalManagementCompanies, nameof(RentalManagementCompany), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, validRentalProfiles, _dbContext.RentalBillingProfiles, nameof(RentalBillingProfile), cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
         catch
@@ -434,6 +454,56 @@ public sealed class SyncController : ControllerBase
 
         result.CurrentServerRevision = await GetCurrentRevisionAsync(cancellationToken);
         return Ok(result);
+    }
+
+    private async Task PopulateAcceptedRevisionsAsync<TEntity, TDto>(
+        SyncPushResult result,
+        IEnumerable<TDto> payload,
+        DbSet<TEntity> dbSet,
+        string entityName,
+        CancellationToken cancellationToken)
+        where TEntity : TrackedEntity
+        where TDto : SyncEntityDto
+    {
+        var conflictIds = result.Conflicts
+            .Where(conflict => string.Equals(conflict.EntityName, entityName, StringComparison.OrdinalIgnoreCase))
+            .Select(conflict => conflict.EntityId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var ids = payload
+            .Select(dto => dto.Id)
+            .Where(id => id != Guid.Empty && !conflictIds.Contains(id.ToString("D")))
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0)
+            return;
+
+        var alreadyRecorded = result.AcceptedRevisions
+            .Where(revision => string.Equals(revision.EntityName, entityName, StringComparison.OrdinalIgnoreCase))
+            .Select(revision => revision.EntityId)
+            .ToHashSet();
+
+        ids = ids
+            .Where(id => !alreadyRecorded.Contains(id))
+            .ToList();
+
+        if (ids.Count == 0)
+            return;
+
+        var rows = await dbSet.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(entity => ids.Contains(entity.Id))
+            .Select(entity => new SyncAcceptedRevisionDto
+            {
+                EntityName = entityName,
+                EntityId = entity.Id,
+                Revision = entity.Revision,
+                UpdatedAtUtc = entity.UpdatedAtUtc
+            })
+            .ToListAsync(cancellationToken);
+
+        result.AcceptedRevisions.AddRange(rows);
     }
 
     private async Task UpsertEntitiesAsync<TEntity, TDto>(

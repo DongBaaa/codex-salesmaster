@@ -160,9 +160,14 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             return;
         }
 
+        var source = SelectedCompanyProfile;
         var profile = new LocalCompanyProfile
         {
             Id = _companyProfileId,
+            CreatedAtUtc = source?.CreatedAtUtc ?? default,
+            UpdatedAtUtc = source?.UpdatedAtUtc ?? default,
+            Revision = source?.Revision ?? 0,
+            IsDeleted = source?.IsDeleted ?? false,
             ProfileName = CompanyProfileName,
             OfficeCode = CompanyOfficeCode,
             TradeName = CompanyTradeName,
@@ -175,7 +180,8 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             Email = CompanyEmail,
             BankAccountText = CompanyBankAccountText,
             StampImage = CompanyStampImage,
-            IsDefaultForOffice = CompanyIsDefaultForOffice
+            IsDefaultForOffice = CompanyIsDefaultForOffice,
+            IsActive = source?.IsActive ?? true
         };
 
         await _local.SaveCompanyProfileAsync(profile);
@@ -962,4 +968,3 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         => Guid.TryParse(value, out var profileId) ? profileId : null;
 
 }
-

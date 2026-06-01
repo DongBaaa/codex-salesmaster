@@ -210,6 +210,7 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _legacyItemExcelPath = string.Empty;
     [ObservableProperty] private string _legacyMigrationStatus = "원본 데이터 추출/가져오기 대기";
     private Guid _companyProfileId = Guid.NewGuid();
+    private LocalCompanyProfile? _loadedCompanyProfile;
 
     public MainViewModel(
         LocalStateService local,
@@ -1482,6 +1483,7 @@ public sealed partial class MainViewModel : ObservableObject
         var profile = await _local.GetCompanyProfileAsync(_session);
         if (profile is null) return;
 
+        _loadedCompanyProfile = profile;
         _companyProfileId = profile.Id;
         CompanyTradeName = profile.TradeName;
         CompanyRepresentative = profile.Representative;
@@ -1506,9 +1508,18 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
+        var source = _loadedCompanyProfile;
         var profile = new LocalCompanyProfile
         {
             Id = _companyProfileId,
+            ProfileName = source?.ProfileName ?? string.Empty,
+            OfficeCode = source?.OfficeCode ?? _session.BusinessOfficeCode,
+            IsDefaultForOffice = source?.IsDefaultForOffice ?? true,
+            IsActive = source?.IsActive ?? true,
+            CreatedAtUtc = source?.CreatedAtUtc ?? default,
+            UpdatedAtUtc = source?.UpdatedAtUtc ?? default,
+            Revision = source?.Revision ?? 0,
+            IsDeleted = source?.IsDeleted ?? false,
             TradeName = CompanyTradeName,
             Representative = CompanyRepresentative,
             BusinessNumber = CompanyBusinessNumber,
@@ -1522,6 +1533,7 @@ public sealed partial class MainViewModel : ObservableObject
         };
 
         await _local.SaveCompanyProfileAsync(profile);
+        await LoadCompanyProfileAsync();
         System.Windows.MessageBox.Show("회사 정보가 저장되었습니다.", "알림", System.Windows.MessageBoxButton.OK);
     }
 
