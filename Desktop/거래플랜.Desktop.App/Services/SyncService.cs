@@ -2015,6 +2015,57 @@ public sealed class SyncService : IDisposable
                     await AppendConflictSummaryAsync($"렌탈 자산 리비전 충돌 {rentalAssetConflictRepair.PreparedRetryCount}건을 서버 최신 rev 기준으로 재시도 준비했습니다.");
                 }
 
+                var resolvedItemWarehouseStockRevisionConflicts = await ResolveItemWarehouseStockRevisionConflictsAsync(
+                    result.Conflicts
+                        .Except(serverNewerConflicts)
+                        .Except(preparedCompanyProfileRevisionRetryConflicts)
+                        .Except(preparedCustomerRevisionRetryConflicts)
+                        .Except(preparedInvoiceRevisionRetryConflicts)
+                        .Except(preparedPaymentRevisionRetryConflicts)
+                        .Except(preparedTransactionRevisionRetryConflicts)
+                        .Except(preparedTransactionAttachmentRevisionRetryConflicts)
+                        .Except(preparedInventoryTransferRevisionRetryConflicts)
+                        .Except(repairedItemRevisionConflicts)
+                        .Except(preparedItemRevisionRetryConflicts)
+                        .Except(preparedRentalProfileRevisionRetryConflicts)
+                        .Except(rentalAssetConflictRepair.ResolvedConflicts)
+                        .Except(rentalAssetConflictRepair.PreparedRetryConflicts)
+                        .ToList(),
+                    ct);
+
+                if (resolvedItemWarehouseStockRevisionConflicts.Count > 0)
+                {
+                    AppLogger.Warn("SYNC", $"Item warehouse stock revision conflicts resolved/rebased: {resolvedItemWarehouseStockRevisionConflicts.Count} conflict(s).");
+                    await AppendConflictSummaryAsync($"재고 스냅샷 리비전 충돌 {resolvedItemWarehouseStockRevisionConflicts.Count}건을 서버 최신 rev 기준으로 자동 정리했습니다.");
+                }
+
+                var preparedGenericRevisionRetryConflicts = await PrepareGenericRevisionRetriesAsync(
+                    result.Conflicts
+                        .Except(serverNewerConflicts)
+                        .Except(preparedCompanyProfileRevisionRetryConflicts)
+                        .Except(preparedCustomerRevisionRetryConflicts)
+                        .Except(preparedInvoiceRevisionRetryConflicts)
+                        .Except(preparedPaymentRevisionRetryConflicts)
+                        .Except(preparedTransactionRevisionRetryConflicts)
+                        .Except(preparedTransactionAttachmentRevisionRetryConflicts)
+                        .Except(preparedInventoryTransferRevisionRetryConflicts)
+                        .Except(repairedItemRevisionConflicts)
+                        .Except(preparedItemRevisionRetryConflicts)
+                        .Except(preparedRentalProfileRevisionRetryConflicts)
+                        .Except(rentalAssetConflictRepair.ResolvedConflicts)
+                        .Except(rentalAssetConflictRepair.PreparedRetryConflicts)
+                        .Except(resolvedItemWarehouseStockRevisionConflicts)
+                        .ToList(),
+                    req.DeviceId,
+                    session,
+                    ct);
+
+                if (preparedGenericRevisionRetryConflicts.Count > 0)
+                {
+                    AppLogger.Warn("SYNC", $"Generic revision retry prepared: {preparedGenericRevisionRetryConflicts.Count} conflict(s).");
+                    await AppendConflictSummaryAsync($"일반 데이터 리비전 충돌 {preparedGenericRevisionRetryConflicts.Count}건을 서버 최신 rev 기준으로 재시도 준비했습니다.");
+                }
+
                 var equivalentRevisionConflicts = result.Conflicts
                     .Except(serverNewerConflicts)
                     .Except(preparedCompanyProfileRevisionRetryConflicts)
@@ -2029,6 +2080,8 @@ public sealed class SyncService : IDisposable
                     .Except(preparedRentalProfileRevisionRetryConflicts)
                     .Except(rentalAssetConflictRepair.ResolvedConflicts)
                     .Except(rentalAssetConflictRepair.PreparedRetryConflicts)
+                    .Except(resolvedItemWarehouseStockRevisionConflicts)
+                    .Except(preparedGenericRevisionRetryConflicts)
                     .Where(IsEquivalentRevisionConflict)
                     .ToList();
 
@@ -2053,6 +2106,8 @@ public sealed class SyncService : IDisposable
                     .Except(preparedRentalProfileRevisionRetryConflicts)
                     .Except(rentalAssetConflictRepair.ResolvedConflicts)
                     .Except(rentalAssetConflictRepair.PreparedRetryConflicts)
+                    .Except(resolvedItemWarehouseStockRevisionConflicts)
+                    .Except(preparedGenericRevisionRetryConflicts)
                     .Except(equivalentRevisionConflicts)
                     .ToList();
 
@@ -3250,6 +3305,366 @@ public sealed class SyncService : IDisposable
         return string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
+    private async Task<List<ConflictLogDto>> PrepareGenericRevisionRetriesAsync(
+        IReadOnlyCollection<ConflictLogDto> conflicts,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var prepared = new List<ConflictLogDto>();
+        foreach (var conflict in conflicts)
+        {
+            if (await TryPrepareGenericRevisionRetryAsync(conflict, deviceId, session, ct))
+                prepared.Add(conflict);
+        }
+
+        return prepared;
+    }
+
+    private Task<bool> TryPrepareGenericRevisionRetryAsync(
+        ConflictLogDto conflict,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var entityName = (conflict.EntityName ?? string.Empty).Trim();
+        return entityName switch
+        {
+            "CompanyProfile" => TryPrepareGenericRevisionRetryAsync<LocalCompanyProfile, CompanyProfileDto>(
+                conflict,
+                nameof(LocalCompanyProfile),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleCompanyProfileScope,
+                null,
+                ct),
+            "Unit" => TryPrepareGenericRevisionRetryAsync<LocalUnit, UnitDto>(
+                conflict,
+                nameof(LocalUnit),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleSharedCatalogScope,
+                null,
+                ct),
+            "CustomerCategory" => TryPrepareGenericRevisionRetryAsync<LocalCustomerCategory, CustomerCategoryDto>(
+                conflict,
+                nameof(LocalCustomerCategory),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleSharedCatalogScope,
+                null,
+                ct),
+            "PriceGradeOption" => TryPrepareGenericRevisionRetryAsync<LocalPriceGradeOption, PriceGradeOptionDto>(
+                conflict,
+                nameof(LocalPriceGradeOption),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleSharedCatalogScope,
+                null,
+                ct),
+            "TradeTypeOption" => TryPrepareGenericRevisionRetryAsync<LocalTradeTypeOption, TradeTypeOptionDto>(
+                conflict,
+                nameof(LocalTradeTypeOption),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleSharedCatalogScope,
+                null,
+                ct),
+            "ItemCategoryOption" => TryPrepareGenericRevisionRetryAsync<LocalItemCategoryOption, ItemCategoryOptionDto>(
+                conflict,
+                nameof(LocalItemCategoryOption),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleSharedCatalogScope,
+                null,
+                ct),
+            "CustomerMaster" => TryPrepareGenericRevisionRetryAsync<LocalCustomerMaster, CustomerMasterDto>(
+                conflict,
+                nameof(LocalCustomerMaster),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleCustomerMasterScope,
+                null,
+                ct),
+            "Customer" => TryPrepareGenericRevisionRetryAsync<LocalCustomer, CustomerDto>(
+                conflict,
+                nameof(LocalCustomer),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleCustomerScope,
+                null,
+                ct),
+            "CustomerContract" => TryPrepareGenericRevisionRetryAsync<LocalCustomerContract, CustomerContractDto>(
+                conflict,
+                nameof(LocalCustomerContract),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleCustomerContractScope,
+                HasValidCustomerContractRetryReferencesAsync,
+                ct),
+            "Item" => TryPrepareGenericRevisionRetryAsync<LocalItem, ItemDto>(
+                conflict,
+                nameof(LocalItem),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleItemScope,
+                null,
+                ct),
+            "Transaction" or "TransactionRecord" => TryPrepareGenericRevisionRetryAsync<LocalTransaction, TransactionDto>(
+                conflict,
+                nameof(LocalTransaction),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleTransactionScope,
+                null,
+                ct),
+            "Payment" => TryPrepareGenericRevisionRetryAsync<LocalPayment, PaymentDto>(
+                conflict,
+                nameof(LocalPayment),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatiblePaymentScope,
+                null,
+                ct),
+            "RentalManagementCompany" => TryPrepareGenericRevisionRetryAsync<LocalRentalManagementCompany, RentalManagementCompanyDto>(
+                conflict,
+                nameof(LocalRentalManagementCompany),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleRentalManagementCompanyScope,
+                null,
+                ct),
+            "RentalBillingProfile" => TryPrepareGenericRevisionRetryAsync<LocalRentalBillingProfile, RentalBillingProfileDto>(
+                conflict,
+                nameof(LocalRentalBillingProfile),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleRentalBillingProfileScope,
+                null,
+                ct),
+            "RentalAsset" => TryPrepareGenericRevisionRetryAsync<LocalRentalAsset, RentalAssetDto>(
+                conflict,
+                nameof(LocalRentalAsset),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleRentalAssetScope,
+                HasValidRentalAssetRetryReferencesAsync,
+                ct),
+            "RentalAssetAssignmentHistory" => TryPrepareGenericRevisionRetryAsync<LocalRentalAssetAssignmentHistory, RentalAssetAssignmentHistoryDto>(
+                conflict,
+                nameof(LocalRentalAssetAssignmentHistory),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleRentalAssetAssignmentHistoryScope,
+                null,
+                ct),
+            "RentalBillingLog" => TryPrepareGenericRevisionRetryAsync<LocalRentalBillingLog, RentalBillingLogDto>(
+                conflict,
+                nameof(LocalRentalBillingLog),
+                deviceId,
+                session,
+                LocalMappings.ToDto,
+                HaveCompatibleRentalBillingLogScope,
+                null,
+                ct),
+            _ => Task.FromResult(false)
+        };
+    }
+
+    private async Task<bool> TryPrepareGenericRevisionRetryAsync<TLocal, TDto>(
+        ConflictLogDto conflict,
+        string localEntityName,
+        string deviceId,
+        SessionState session,
+        Func<TLocal, TDto> mapToDto,
+        Func<TDto, TDto, bool> haveCompatibleScope,
+        Func<TLocal, CancellationToken, Task<bool>>? canRetryLocal,
+        CancellationToken ct)
+        where TLocal : class, ILocalSyncEntity
+        where TDto : SyncEntityDto
+    {
+        var reason = (conflict.Reason ?? string.Empty).Trim();
+        if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!Guid.TryParse(conflict.EntityId, out var entityId) || entityId == Guid.Empty)
+            return false;
+
+        if (!TryDeserializeConflictDto<TDto>(conflict.ClientJson, out var clientSnapshot) ||
+            clientSnapshot is null ||
+            clientSnapshot.Id != entityId)
+        {
+            return false;
+        }
+
+        if (!TryDeserializeConflictDto<TDto>(conflict.ServerJson, out var serverSnapshot) ||
+            serverSnapshot is null ||
+            serverSnapshot.Id != entityId)
+        {
+            return false;
+        }
+
+        if (serverSnapshot.IsDeleted)
+            return false;
+
+        var localEntity = await _db.Set<TLocal>()
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == entityId, ct);
+        if (localEntity is null || !localEntity.IsDirty)
+            return false;
+
+        var localSnapshot = mapToDto(localEntity);
+        if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
+            return false;
+
+        var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
+        var serverUpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
+        if (localUpdatedAtUtc < serverUpdatedAtUtc)
+            return false;
+
+        if (!haveCompatibleScope(localSnapshot, serverSnapshot))
+            return false;
+
+        if (canRetryLocal is not null && !await canRetryLocal(localEntity, ct))
+            return false;
+
+        localEntity.Revision = serverSnapshot.Revision;
+        localEntity.IsDirty = true;
+
+        var rebasedSnapshot = mapToDto(localEntity);
+        await RequeuePreparedMutationAsync(
+            localEntityName,
+            entityId,
+            clientSnapshot.MutationId,
+            rebasedSnapshot,
+            deviceId,
+            session,
+            ct);
+
+        await _db.SaveChangesAsync(ct);
+        return true;
+    }
+
+    private static bool HaveCompatibleSharedCatalogScope<TDto>(TDto localSnapshot, TDto serverSnapshot)
+        where TDto : SyncEntityDto
+        => localSnapshot.Id == serverSnapshot.Id;
+
+    private static bool HaveCompatibleCompanyProfileScope(CompanyProfileDto localSnapshot, CompanyProfileDto serverSnapshot)
+        => localSnapshot.Id == serverSnapshot.Id &&
+           IsSameNonEmptyScope(localSnapshot.OfficeCode, serverSnapshot.OfficeCode);
+
+    private static bool HaveCompatibleCustomerMasterScope(CustomerMasterDto localSnapshot, CustomerMasterDto serverSnapshot)
+        => localSnapshot.Id == serverSnapshot.Id &&
+           IsSameNonEmptyScope(localSnapshot.TenantCode, serverSnapshot.TenantCode) &&
+           IsSameNonEmptyScope(localSnapshot.OfficeCode, serverSnapshot.OfficeCode);
+
+    private static bool HaveCompatibleCustomerContractScope(CustomerContractDto localSnapshot, CustomerContractDto serverSnapshot)
+        => localSnapshot.Id == serverSnapshot.Id &&
+           localSnapshot.CustomerId != Guid.Empty &&
+           localSnapshot.CustomerId == serverSnapshot.CustomerId;
+
+    private async Task<bool> HasValidCustomerContractRetryReferencesAsync(LocalCustomerContract contract, CancellationToken ct)
+    {
+        if (contract.IsDeleted)
+            return true;
+
+        return contract.CustomerId != Guid.Empty &&
+               await _db.Customers.IgnoreQueryFilters()
+                   .AnyAsync(customer => customer.Id == contract.CustomerId && !customer.IsDeleted, ct);
+    }
+
+    private static bool HaveCompatibleRentalManagementCompanyScope(
+        RentalManagementCompanyDto localSnapshot,
+        RentalManagementCompanyDto serverSnapshot)
+        => localSnapshot.Id == serverSnapshot.Id &&
+           IsSameNonEmptyScope(localSnapshot.TenantCode, serverSnapshot.TenantCode) &&
+           IsSameNonEmptyScope(localSnapshot.Code, serverSnapshot.Code);
+
+    private static bool HaveCompatibleRentalBillingProfileScope(
+        RentalBillingProfileDto localSnapshot,
+        RentalBillingProfileDto serverSnapshot)
+    {
+        if (localSnapshot.Id != serverSnapshot.Id)
+            return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.TenantCode, serverSnapshot.TenantCode) ||
+            !IsSameNonEmptyScope(localSnapshot.OfficeCode, serverSnapshot.OfficeCode) ||
+            !IsSameNonEmptyScope(localSnapshot.ResponsibleOfficeCode, serverSnapshot.ResponsibleOfficeCode))
+        {
+            return false;
+        }
+
+        if (!IsSameNonEmptyScope(localSnapshot.ProfileKey, serverSnapshot.ProfileKey))
+            return false;
+
+        if (localSnapshot.CustomerId.HasValue &&
+            serverSnapshot.CustomerId.HasValue &&
+            localSnapshot.CustomerId.Value != serverSnapshot.CustomerId.Value)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool HaveCompatibleRentalAssetScope(RentalAssetDto localSnapshot, RentalAssetDto serverSnapshot)
+    {
+        if (localSnapshot.Id != serverSnapshot.Id)
+            return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.TenantCode, serverSnapshot.TenantCode) ||
+            !IsSameNonEmptyScope(localSnapshot.OfficeCode, serverSnapshot.OfficeCode) ||
+            !IsSameNonEmptyScope(localSnapshot.ResponsibleOfficeCode, serverSnapshot.ResponsibleOfficeCode))
+        {
+            return false;
+        }
+
+        if (!IsSameNonEmptyScope(localSnapshot.AssetKey, serverSnapshot.AssetKey) ||
+            !IsSameNonEmptyScope(localSnapshot.ManagementNumber, serverSnapshot.ManagementNumber))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool HaveCompatibleRentalAssetAssignmentHistoryScope(
+        RentalAssetAssignmentHistoryDto localSnapshot,
+        RentalAssetAssignmentHistoryDto serverSnapshot)
+        => localSnapshot.Id == serverSnapshot.Id &&
+           localSnapshot.AssetId != Guid.Empty &&
+           localSnapshot.AssetId == serverSnapshot.AssetId &&
+           IsSameNonEmptyScope(localSnapshot.TenantCode, serverSnapshot.TenantCode) &&
+           IsSameNonEmptyScope(localSnapshot.OfficeCode, serverSnapshot.OfficeCode) &&
+           IsSameNonEmptyScope(localSnapshot.ResponsibleOfficeCode, serverSnapshot.ResponsibleOfficeCode);
+
+    private static bool HaveCompatibleRentalBillingLogScope(
+        RentalBillingLogDto localSnapshot,
+        RentalBillingLogDto serverSnapshot)
+        => localSnapshot.Id == serverSnapshot.Id &&
+           localSnapshot.BillingProfileId != Guid.Empty &&
+           localSnapshot.BillingProfileId == serverSnapshot.BillingProfileId &&
+           IsSameNonEmptyScope(localSnapshot.BillingYearMonth, serverSnapshot.BillingYearMonth) &&
+           IsSameNonEmptyScope(localSnapshot.TenantCode, serverSnapshot.TenantCode) &&
+           IsSameNonEmptyScope(localSnapshot.OfficeCode, serverSnapshot.OfficeCode) &&
+           IsSameNonEmptyScope(localSnapshot.ResponsibleOfficeCode, serverSnapshot.ResponsibleOfficeCode);
+
     private async Task<List<ConflictLogDto>> PrepareRentalBillingProfileRevisionRetriesAsync(
         IReadOnlyCollection<ConflictLogDto> conflicts,
         string deviceId,
@@ -3919,6 +4334,116 @@ public sealed class SyncService : IDisposable
     private static bool AreEquivalentItemSnapshots(LocalItem local, ItemDto server)
         => AreEquivalentConflictPayloads(LocalMappings.ToDto(local), server, ItemCanonicalRepairIgnoredPropertyNames);
 
+    private async Task<List<ConflictLogDto>> ResolveItemWarehouseStockRevisionConflictsAsync(
+        IReadOnlyCollection<ConflictLogDto> conflicts,
+        CancellationToken ct)
+    {
+        var resolved = new List<ConflictLogDto>();
+        foreach (var conflict in conflicts)
+        {
+            if (await TryResolveItemWarehouseStockRevisionConflictAsync(conflict, ct))
+                resolved.Add(conflict);
+        }
+
+        return resolved;
+    }
+
+    private async Task<bool> TryResolveItemWarehouseStockRevisionConflictAsync(
+        ConflictLogDto conflict,
+        CancellationToken ct)
+    {
+        if (!string.Equals(conflict.EntityName, "ItemWarehouseStock", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var reason = (conflict.Reason ?? string.Empty).Trim();
+        if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!TryDeserializeConflictItemWarehouseStockDto(conflict.ClientJson, out var clientSnapshot) ||
+            clientSnapshot is null ||
+            !TryDeserializeConflictItemWarehouseStockDto(conflict.ServerJson, out var serverSnapshot) ||
+            serverSnapshot is null)
+        {
+            return false;
+        }
+
+        if (!IsSameItemWarehouseStockIdentity(clientSnapshot, serverSnapshot))
+            return false;
+
+        if (TryParseItemWarehouseStockConflictId(conflict.EntityId, out var entityItemId, out var entityWarehouseCode) &&
+            (entityItemId != clientSnapshot.ItemId ||
+             !string.Equals(NormalizeWarehouseCode(entityWarehouseCode), NormalizeWarehouseCode(clientSnapshot.WarehouseCode), StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        var normalizedWarehouseCode = NormalizeWarehouseCode(clientSnapshot.WarehouseCode);
+        var stock = await _db.ItemWarehouseStocks
+            .FirstOrDefaultAsync(
+                current => current.ItemId == clientSnapshot.ItemId &&
+                           current.WarehouseCode == normalizedWarehouseCode,
+                ct);
+        if (stock is null)
+        {
+            stock = await _db.ItemWarehouseStocks
+                .FirstOrDefaultAsync(
+                    current => current.ItemId == clientSnapshot.ItemId &&
+                               current.WarehouseCode == clientSnapshot.WarehouseCode,
+                    ct);
+        }
+
+        if (stock is null)
+            return false;
+
+        var localSnapshot = LocalMappings.ToDto(stock);
+        var localMatchesClient = AreEquivalentConflictPayloads(localSnapshot, clientSnapshot);
+        var localMatchesServer = AreEquivalentConflictPayloads(localSnapshot, serverSnapshot);
+        if (!localMatchesClient && !localMatchesServer)
+            return false;
+
+        var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
+        var serverUpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
+        if (localMatchesClient && localUpdatedAtUtc >= serverUpdatedAtUtc)
+        {
+            stock.Revision = serverSnapshot.Revision;
+        }
+        else
+        {
+            stock.Quantity = serverSnapshot.Quantity;
+            stock.UpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
+            stock.Revision = serverSnapshot.Revision;
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return true;
+    }
+
+    private static bool IsSameItemWarehouseStockIdentity(ItemWarehouseStockDto left, ItemWarehouseStockDto right)
+        => left.ItemId != Guid.Empty &&
+           left.ItemId == right.ItemId &&
+           string.Equals(NormalizeWarehouseCode(left.WarehouseCode), NormalizeWarehouseCode(right.WarehouseCode), StringComparison.OrdinalIgnoreCase);
+
+    private static bool TryParseItemWarehouseStockConflictId(
+        string? value,
+        out Guid itemId,
+        out string warehouseCode)
+    {
+        itemId = Guid.Empty;
+        warehouseCode = string.Empty;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var parts = value.Split('|', 2, StringSplitOptions.TrimEntries);
+        if (parts.Length != 2 || !Guid.TryParse(parts[0], out itemId) || itemId == Guid.Empty)
+            return false;
+
+        warehouseCode = NormalizeWarehouseCode(parts[1]);
+        return !string.IsNullOrWhiteSpace(warehouseCode);
+    }
+
+    private static string NormalizeWarehouseCode(string? warehouseCode)
+        => (warehouseCode ?? string.Empty).Trim();
+
     private static bool IsEquivalentRevisionConflict(ConflictLogDto conflict)
     {
         var reason = (conflict.Reason ?? string.Empty).Trim();
@@ -4037,6 +4562,29 @@ public sealed class SyncService : IDisposable
         primary.SentAtUtc = null;
         primary.AcknowledgedAtUtc = null;
     }
+
+    private static bool TryDeserializeConflictDto<TDto>(string? json, out TDto? dto)
+        where TDto : class
+    {
+        dto = null;
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        try
+        {
+            dto = System.Text.Json.JsonSerializer.Deserialize<TDto>(json);
+            return dto is not null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryDeserializeConflictItemWarehouseStockDto(
+        string? json,
+        out ItemWarehouseStockDto? dto)
+        => TryDeserializeConflictDto(json, out dto);
 
     private static bool TryDeserializeConflictRentalBillingProfileDto(
         string? json,
