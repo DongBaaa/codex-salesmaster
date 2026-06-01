@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 
 using System.Threading;
 
@@ -1326,11 +1326,11 @@ public partial class App : Application
 
             StartAutoSaveTimer(sp, mainVm);
 
-            mainVm.SyncStatus = "종료 전 서버 동기화 처리 중 오류가 발생했습니다.";
+            mainVm.SyncStatus = "종료 전 서버 동기화 확인이 필요합니다.";
 
             MessageBox.Show(
 
-                $"종료 전 동기화 처리 중 오류가 발생했습니다.{Environment.NewLine}{ex.Message}",
+                $"종료 전 동기화 확인이 필요합니다.{Environment.NewLine}{ex.Message}",
 
                 "거래플랜 오류",
 

@@ -1125,7 +1125,7 @@
 
                                 <Border Background="#102039" CornerRadius="6" Padding="12">
                                     <StackPanel>
-                                        <TextBlock Text="마지막 오류" Foreground="#9FB3C8" FontSize="11"/>
+                                        <TextBlock Text="마지막 확인 항목" Foreground="#9FB3C8" FontSize="11"/>
                                         <TextBlock Text="{Binding SyncLastErrorText}" Foreground="#EF9A9A" FontWeight="Bold" Margin="0,4,0,0" TextWrapping="Wrap"/>
                                     </StackPanel>
                                 </Border>

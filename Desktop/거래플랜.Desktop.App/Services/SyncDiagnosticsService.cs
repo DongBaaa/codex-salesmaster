@@ -515,11 +515,11 @@ public sealed class SyncDiagnosticsService
         builder.AppendLine("# 동기화 진단 리포트");
         builder.AppendLine();
         builder.AppendLine($"- 생성시각: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        builder.AppendLine($"- 미해결 오류: {summary.OpenIssueCount:N0}건");
+        builder.AppendLine($"- 미해결 확인 항목: {summary.OpenIssueCount:N0}건");
         builder.AppendLine($"- 자동 복구 가능: {summary.RecoverableIssueCount:N0}건");
         builder.AppendLine($"- 수동 확인 필요: {manualReviewIssueCount:N0}건");
         builder.AppendLine($"- 마지막 성공: {(summary.LastSuccessAtUtc.HasValue ? summary.LastSuccessAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "없음")}");
-        builder.AppendLine($"- 마지막 오류: {(string.IsNullOrWhiteSpace(summary.LastError) ? "없음" : summary.LastError)}");
+        builder.AppendLine($"- 마지막 확인 항목: {(string.IsNullOrWhiteSpace(summary.LastError) ? "없음" : summary.LastError)}");
         builder.AppendLine();
         builder.AppendLine("## 최근 진단 이벤트");
         builder.AppendLine();
@@ -596,7 +596,7 @@ public sealed class SyncDiagnosticsService
             return new SyncDiagnosticClassification(
                 syncPhase,
                 resolvedSeverity,
-                "저장/동기화 오류",
+                "저장/동기화 확인",
                 "remaining_dirty",
                 "PendingSyncScope",
                 scopeKey,
@@ -648,7 +648,7 @@ public sealed class SyncDiagnosticsService
             return new SyncDiagnosticClassification(syncPhase, resolvedSeverity, "시작 복구 오류", "startup_recovery", entityName, entityId, referenceEntityName, referenceEntityId, normalized, true, "앱을 재실행하거나 공유 캐시 재구성을 실행하세요.");
         }
 
-        return new SyncDiagnosticClassification(syncPhase, resolvedSeverity, "저장/동기화 오류", "general_sync_failure", entityName, entityId, referenceEntityName, referenceEntityId, normalized, recoveryAttempted || recoverySucceeded, recoverySucceeded ? "자동 복구가 완료되었습니다." : "동기화 재시도 후 동일하면 진단 리포트를 저장하세요.");
+        return new SyncDiagnosticClassification(syncPhase, resolvedSeverity, "저장/동기화 확인", "general_sync_failure", entityName, entityId, referenceEntityName, referenceEntityId, normalized, recoveryAttempted || recoverySucceeded, recoverySucceeded ? "자동 복구가 완료되었습니다." : "동기화 재시도 후 동일하면 진단 리포트를 저장하세요.");
     }
 
     private static string ResolveScopeTargetDisplayName(string scopeKey, string officeCode, string tenantCode)

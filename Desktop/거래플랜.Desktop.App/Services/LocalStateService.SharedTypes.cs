@@ -46,7 +46,7 @@ public static class IntegrityIssueGuidance
         if (normalizedCode.Contains("sync_outbox_failed", StringComparison.Ordinal) ||
             normalizedCode.Contains("sync_outbox_sent_stuck", StringComparison.Ordinal))
         {
-            return "동기화 진단에서 실패/대기 outbox를 확인한 뒤 재시도하고, 계속 실패하면 진단 리포트를 저장해 서버 오류 원인을 확인하세요.";
+            return "동기화 진단에서 실패/대기 outbox를 확인한 뒤 재시도하고, 계속 실패하면 진단 리포트를 저장해 서버 처리 원인을 확인하세요.";
         }
 
         if (normalizedCode.StartsWith("out_of_scope_", StringComparison.Ordinal))

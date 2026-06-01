@@ -24,7 +24,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     private int _reloadVersion;
 
     public ObservableCollection<SyncDiagnosticListItem> Events { get; } = new();
-    public IReadOnlyList<string> CategoryOptions { get; } = ["전체", "권한/범위 오류", "참조 누락 오류", "동시성 충돌", "통신 오류", "서버 처리 오류", "시작 복구 오류", "저장/동기화 오류"];
+    public IReadOnlyList<string> CategoryOptions { get; } = ["전체", "권한/범위 오류", "참조 누락 오류", "동시성 충돌", "통신 오류", "서버 처리 오류", "시작 복구 오류", "저장/동기화 확인"];
     public IReadOnlyList<string> StatusOptions { get; } = ["전체", "Open", "Resolved", "Recovered"];
     public IReadOnlyList<string> SeverityOptions { get; } = ["전체", "Error", "Warning"];
 
@@ -127,8 +127,8 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
             LastErrorText = string.IsNullOrWhiteSpace(summary.LastError) ? "없음" : summary.LastError;
             LastRevisionText = summary.LastKnownSyncRevision.ToString("N0");
             SummaryStatusText = summary.OpenIssueCount == 0
-                ? "현재 미해결 동기화 오류가 없습니다."
-                : $"현재 미해결 동기화 오류 {summary.OpenIssueCount:N0}건, 자동 복구 가능 {summary.RecoverableIssueCount:N0}건, 수동 확인 필요 {ManualReviewIssueCount:N0}건";
+                ? "현재 미해결 동기화 확인 항목이 없습니다."
+                : $"현재 미해결 동기화 확인 항목 {summary.OpenIssueCount:N0}건, 자동 복구 가능 {summary.RecoverableIssueCount:N0}건, 수동 확인 필요 {ManualReviewIssueCount:N0}건";
 
             var selectedId = SelectedEvent?.Id;
             Events.Clear();
@@ -247,7 +247,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     {
         if (events.Count == 0)
         {
-            SummaryStatusText = selectedOnly ? "선택한 오류가 없습니다." : "복구할 미해결 오류가 없습니다.";
+            SummaryStatusText = selectedOnly ? "선택한 확인 항목이 없습니다." : "복구할 미해결 확인 항목이 없습니다.";
             return;
         }
 
@@ -257,7 +257,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         {
             SummaryStatusText = selectedOnly
                 ? $"{plan.Title} 복구를 실행하는 중..."
-                : "미해결 동기화 오류를 유형별로 자동 복구하는 중...";
+                : "미해결 동기화 확인 항목을 유형별로 자동 복구하는 중...";
 
             var summaryParts = new List<string>();
 
@@ -342,7 +342,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
             await RefreshAllPanelsAsync(refreshServerIntegrity: true);
             SummaryStatusText = selectedOnly
                 ? $"{plan.Title} 복구를 완료했습니다. 필요 시 동기화를 다시 시도해 주세요."
-                : "미해결 오류 유형별 자동 복구를 완료했습니다. 필요 시 동기화를 다시 시도해 주세요.";
+                : "미해결 확인 항목 유형별 자동 복구를 완료했습니다. 필요 시 동기화를 다시 시도해 주세요.";
         }
         finally
         {

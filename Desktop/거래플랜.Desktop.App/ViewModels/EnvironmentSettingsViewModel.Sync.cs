@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Linq;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -118,8 +118,8 @@ public sealed partial class EnvironmentSettingsViewModel
         var summary = await _diagnostics.GetSummaryAsync();
         var manualReviewIssueCount = Math.Max(0, summary.OpenIssueCount - summary.RecoverableIssueCount);
         var syncSummaryText = summary.OpenIssueCount == 0
-            ? "현재 미해결 동기화 오류가 없습니다."
-            : $"현재 미해결 동기화 오류 {summary.OpenIssueCount:N0}건 / 자동 복구 가능 {summary.RecoverableIssueCount:N0}건 / 수동 확인 필요 {manualReviewIssueCount:N0}건";
+            ? "현재 미해결 동기화 확인 항목이 없습니다."
+            : $"현재 미해결 동기화 확인 항목 {summary.OpenIssueCount:N0}건 / 자동 복구 가능 {summary.RecoverableIssueCount:N0}건 / 수동 확인 필요 {manualReviewIssueCount:N0}건";
         var lastConflictSummary = await _local.GetSettingAsync("Sync.LastConflictSummary");
         if (!string.IsNullOrWhiteSpace(lastConflictSummary))
             syncSummaryText += Environment.NewLine + lastConflictSummary.Trim();
@@ -393,7 +393,7 @@ public sealed partial class EnvironmentSettingsViewModel
                     ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다. 동기화 진단을 확인하세요."
                 : syncOk
                     ? "동기화를 완료했습니다."
-                    : "동기화가 완료되었지만 일부 오류가 남아 있습니다. 동기화 진단을 확인하세요.";
+                    : "동기화가 완료되었지만 확인이 필요한 항목이 남아 있습니다. 동기화 진단을 확인하세요.";
         }
         finally
         {

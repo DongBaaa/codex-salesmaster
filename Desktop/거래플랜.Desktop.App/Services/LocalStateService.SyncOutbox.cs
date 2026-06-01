@@ -154,7 +154,7 @@ public sealed partial class LocalStateService
     {
         var normalized = (value ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(normalized))
-            return "동기화 중 알 수 없는 오류가 발생했습니다.";
+            return "동기화 확인이 필요한 상태가 발생했습니다.";
 
         return normalized.Length <= 500
             ? normalized

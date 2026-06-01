@@ -295,7 +295,7 @@ public sealed class SyncService : IDisposable
             var detail = ex.InnerException?.Message ?? ex.Message;
             await TryRecordDiagnosticAsync(
                 phase: "scope-sync",
-                rawMessage: $"{blockingReason.ScopeDisplayName} 범위 동기화 실패: {detail}",
+                rawMessage: $"{blockingReason.ScopeDisplayName} 범위 동기화 확인 필요: {detail}",
                 exception: ex,
                 severity: "Warning");
             return new SyncScopeExecutionResult(
@@ -663,8 +663,8 @@ public sealed class SyncService : IDisposable
                 exception: ex,
                 severity: "Error");
 
-            SetStatus($"동기화 오류: {detail}");
-            AppLogger.Error("SYNC", "동기화 실패", ex);
+            SetStatus($"동기화 확인 필요: {detail}");
+            AppLogger.Error("SYNC", "동기화 확인 필요", ex);
             return false;
         }
     }
@@ -822,7 +822,7 @@ public sealed class SyncService : IDisposable
         }
         catch (Exception ex)
         {
-            AppLogger.Error("SYNC", "즉시 동기화 실패", ex);
+            AppLogger.Error("SYNC", "즉시 동기화 확인 필요", ex);
             await TryRecordDiagnosticAsync(
                 phase: "debounced-sync",
                 rawMessage: ex.InnerException?.Message ?? ex.Message,
@@ -1007,10 +1007,10 @@ public sealed class SyncService : IDisposable
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
-                AppLogger.Warn("SYNC", $"지점별 추가 동기화 실패: office={normalizedOfficeCode}, detail={ex.Message}");
+                AppLogger.Warn("SYNC", $"지점별 추가 동기화 확인 필요: office={normalizedOfficeCode}, detail={ex.Message}");
                 await TryRecordDiagnosticAsync(
                     phase: "office-sync",
-                    rawMessage: $"지점별 추가 동기화 실패({normalizedOfficeCode}): {ex.InnerException?.Message ?? ex.Message}",
+                    rawMessage: $"지점별 추가 동기화 확인 필요({normalizedOfficeCode}): {ex.InnerException?.Message ?? ex.Message}",
                     exception: ex,
                     severity: "Warning");
             }

@@ -332,7 +332,7 @@ public partial class MainWindow : Window
                             observedServerRevision: status.CurrentServerRevision),
                         "SYNC",
                         "실시간 변경 감지 후 재동기화",
-                        ex => AppLogger.Warn("SYNC", $"실시간 변경 감지 후 재동기화 실패: {ex.Message}")),
+                        ex => AppLogger.Warn("SYNC", $"실시간 변경 감지 후 재동기화 재시도: {ex.Message}")),
                     DispatcherPriority.Background,
                     ct);
                 await Task.Delay(TimeSpan.FromSeconds(2), ct);
@@ -346,7 +346,7 @@ public partial class MainWindow : Window
                 if (IsRealtimeRevisionWaitTransient(ex))
                     AppLogger.Info("SYNC", $"실시간 변경 감지 대기 재시도: {ex.Message}");
                 else
-                    AppLogger.Warn("SYNC", $"실시간 변경 감지 대기 실패: {ex.Message}");
+                    AppLogger.Warn("SYNC", $"실시간 변경 감지 대기 확인 필요: {ex.Message}");
 
                 try
                 {

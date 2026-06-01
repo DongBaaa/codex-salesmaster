@@ -1741,7 +1741,7 @@ public sealed class LocalStateServicePartialsTests
         var defaultMessage = InvokePrivateStatic<string>("NormalizeOutboxErrorMessage", new object?[] { null });
 
         Assert.Equal(500, truncated.Length);
-        Assert.Equal("동기화 중 알 수 없는 오류가 발생했습니다.", defaultMessage);
+        Assert.Equal("동기화 확인이 필요한 상태가 발생했습니다.", defaultMessage);
     }
 
     [Fact]

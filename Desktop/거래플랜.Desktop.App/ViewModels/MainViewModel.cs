@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -262,7 +262,7 @@ public sealed partial class MainViewModel : ObservableObject
 
         if (!status.StartsWith("동기화 완료", StringComparison.Ordinal)
             && !status.StartsWith("중앙 서버 기준 캐시 재구성 완료", StringComparison.Ordinal)
-            && !status.StartsWith("동기화 오류", StringComparison.Ordinal))
+            && !IsSyncAttentionStatus(status))
         {
             return status;
         }
@@ -271,13 +271,17 @@ public sealed partial class MainViewModel : ObservableObject
         if (dirtyCount <= 0)
             return status;
 
-        if (status.StartsWith("동기화 오류", StringComparison.Ordinal))
+        if (IsSyncAttentionStatus(status))
             return await _local.GetPendingSyncWaitingMessageAsync(_session, $"{status} /", CancellationToken.None)
                    ?? $"{status} / 서버 반영 대기 데이터 {dirtyCount:N0}건";
 
         return await _local.GetPendingSyncWaitingMessageAsync(_session, "동기화 작업은 완료됐지만", CancellationToken.None)
                ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다.";
     }
+
+    private static bool IsSyncAttentionStatus(string status)
+        => status.StartsWith("동기화 확인 필요", StringComparison.Ordinal)
+           || status.StartsWith("서버 응답 지연", StringComparison.Ordinal);
 
     public async Task LoadAsync()
     {
@@ -401,7 +405,7 @@ public sealed partial class MainViewModel : ObservableObject
                     $"Post-login auto sync failed with {dirtyAfter} dirty rows. Auto-backup {(backupOk ? "succeeded" : "failed")}.");
                 await _diagnostics.RecordIssueAsync(
                     phase: "post-login-sync",
-                    rawMessage: $"로그인 후 자동 동기화 실패. dirty={dirtyAfter}, backup={(backupOk ? "ok" : "failed")}.",
+                    rawMessage: $"로그인 후 자동 동기화 확인 필요. dirty={dirtyAfter}, backup={(backupOk ? "ok" : "failed")}.",
                     severity: "Warning",
                     recoveryAttempted: true,
                     recoverySucceeded: false);
@@ -410,7 +414,7 @@ public sealed partial class MainViewModel : ObservableObject
             {
                 await _diagnostics.RecordIssueAsync(
                     phase: "post-login-sync",
-                    rawMessage: "로그인 후 자동 동기화 실패. dirty row는 없지만 서버 캐시 재구성 또는 네트워크 상태를 확인해야 합니다.",
+                    rawMessage: "로그인 후 자동 동기화 확인 필요. dirty row는 없지만 서버 캐시 재구성 또는 네트워크 상태를 확인해야 합니다.",
                     severity: "Warning",
                     recoveryAttempted: false,
                     recoverySucceeded: false);
@@ -425,18 +429,18 @@ public sealed partial class MainViewModel : ObservableObject
             }
             else
             {
-                SyncStatus = "동기화 오류가 발생했지만 앱은 계속 사용할 수 있습니다.";
+                SyncStatus = "동기화 확인이 지연되어 백그라운드에서 다시 확인합니다. 앱은 계속 사용할 수 있습니다.";
             }
         }
         catch (Exception ex)
         {
-            AppLogger.Error("APP", "로그인 후 자동 동기화 실패", ex);
+            AppLogger.Error("APP", "로그인 후 자동 동기화 확인 필요", ex);
             await _diagnostics.RecordIssueAsync(
                 phase: "post-login-sync",
                 rawMessage: ex.InnerException?.Message ?? ex.Message,
                 exception: ex,
                 severity: "Warning");
-            SyncStatus = "로그인 후 자동 동기화에 실패했지만 앱은 계속 사용할 수 있습니다.";
+            SyncStatus = "로그인 후 서버 확인이 지연되었습니다. 백그라운드에서 다시 확인하며 앱은 계속 사용할 수 있습니다.";
         }
     }
 
@@ -1804,7 +1808,7 @@ public sealed partial class MainViewModel : ObservableObject
                 ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다."
             : syncOk
                 ? $"동기화 완료 {DateTime.Now:HH:mm:ss}"
-                : "동기화가 완료되었지만 일부 오류가 남아 있습니다. 동기화 진단을 확인하세요.";
+                : "동기화가 완료되었지만 확인이 필요한 항목이 남아 있습니다. 동기화 진단을 확인하세요.";
     }
 
     // Backup

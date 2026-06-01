@@ -93,7 +93,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0">
                     <TextBlock Text="동기화 진단" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
-                    <TextBlock Text="동기화 실패 원인, 서버/로컬 무결성, sync outbox 재시도 상태를 한 화면에서 확인합니다."
+                    <TextBlock Text="동기화 확인 항목, 서버/로컬 무결성, sync outbox 재시도 상태를 한 화면에서 확인합니다."
                                Foreground="#9FB3C8"
                                Margin="0,4,0,0"/>
                     <TextBlock Text="{Binding SummaryStatusText}" Foreground="#90CAF9" Margin="0,8,0,0" TextWrapping="Wrap"/>
@@ -102,8 +102,8 @@
                     <Button Content="새로고침(F5)" Background="#37474F" Command="{Binding RefreshCommand}" Margin="0,0,6,0"/>
                     <Button Content="동기화 재시도" Background="#1565C0" Command="{Binding RetrySyncCommand}" Margin="0,0,6,0"/>
                     <Button Content="공유 캐시 다시 만들기" Background="#0277BD" Command="{Binding RebuildSharedCacheCommand}" Margin="0,0,6,0"/>
-                    <Button Content="선택 오류만 복구" Background="#00897B" Command="{Binding RunSelectedRepairCommand}" Margin="0,0,6,0"/>
-                    <Button Content="복구 가능 오류 전체 처리" Background="#2E7D32" Command="{Binding RunAutoRepairCommand}" Margin="0,0,6,0"/>
+                    <Button Content="선택 항목 복구" Background="#00897B" Command="{Binding RunSelectedRepairCommand}" Margin="0,0,6,0"/>
+                    <Button Content="복구 가능 항목 전체 처리" Background="#2E7D32" Command="{Binding RunAutoRepairCommand}" Margin="0,0,6,0"/>
                     <Button Content="닫기(F12)" Background="#6C5B7B" Click="CloseButton_Click"/>
                 </StackPanel>
             </Grid>
@@ -124,7 +124,7 @@
 
             <Border Grid.Column="0" Background="#102039" CornerRadius="8" Padding="14" BorderBrush="#2E4060" BorderThickness="1">
                 <StackPanel>
-                    <TextBlock Text="미해결 오류" Foreground="#9FB3C8" FontSize="12"/>
+                    <TextBlock Text="미해결 확인 항목" Foreground="#9FB3C8" FontSize="12"/>
                     <TextBlock Text="{Binding OpenIssueCount, StringFormat={}{0:N0}건}" FontSize="28" FontWeight="Bold" Foreground="#FFCC80" Margin="0,8,0,0"/>
                 </StackPanel>
             </Border>
@@ -328,7 +328,7 @@
                                     <DataGridTextColumn Header="기대 rev" Binding="{Binding ExpectedRevision, StringFormat={}{0:N0}}" Width="80"/>
                                     <DataGridTextColumn Header="준비시각" Binding="{Binding PreparedAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="160"/>
                                     <DataGridTextColumn Header="전송시각" Binding="{Binding SentAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="160"/>
-                                    <DataGridTextColumn Header="오류사유" Binding="{Binding ErrorMessage}" Width="*"/>
+                                    <DataGridTextColumn Header="확인사유" Binding="{Binding ErrorMessage}" Width="*"/>
                                 </DataGrid.Columns>
                             </DataGrid>
                         </DockPanel>
@@ -423,7 +423,7 @@
                                     <TextBlock Grid.Row="4" Grid.Column="1" Margin="0,6,0,0" TextWrapping="Wrap">
                                         <Run Text="고객 "/><Run Text="{Binding SelectedEvent.Snapshot.MissingCustomerReferenceCount}"/><Run Text="건 / 전표 "/><Run Text="{Binding SelectedEvent.Snapshot.MissingInvoiceReferenceCount}"/><Run Text="건 / 거래 "/><Run Text="{Binding SelectedEvent.Snapshot.MissingTransactionReferenceCount}"/><Run Text="건 / 렌탈항목 "/><Run Text="{Binding SelectedEvent.Snapshot.MissingRentalItemReferenceCount}"/><Run Text="건"/>
                                     </TextBlock>
-                                    <TextBlock Grid.Row="5" Grid.Column="0" Text="마지막 sync 오류" Foreground="#9FB3C8" Margin="0,6,0,0"/>
+                                    <TextBlock Grid.Row="5" Grid.Column="0" Text="마지막 sync 확인 항목" Foreground="#9FB3C8" Margin="0,6,0,0"/>
                                     <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding SelectedEvent.Snapshot.LastKnownSyncError}" Margin="0,6,0,0" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="54" MaxHeight="140" VerticalScrollBarVisibility="Auto" IsReadOnly="True"/>
                                 </Grid>
 
