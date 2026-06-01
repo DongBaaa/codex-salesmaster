@@ -5,6 +5,7 @@ param(
     [string]$OutputRoot,
     [string]$PackageName,
     [string]$AppDisplayName,
+    [string]$ApiBaseUrl = 'https://trade.2884.kr',
     [switch]$SkipNativeInstallers
 )
 
@@ -213,6 +214,36 @@ endlocal
     $launchScript | Set-Content -LiteralPath $launchScriptPath -Encoding ASCII
 }
 
+function Set-DesktopPackageApiBaseUrl {
+    param(
+        [Parameter(Mandatory = $true)][string]$AppRoot,
+        [Parameter(Mandatory = $true)][string]$BaseUrl
+    )
+
+    $normalizedBaseUrl = $BaseUrl.Trim().TrimEnd('/')
+    if ([string]::IsNullOrWhiteSpace($normalizedBaseUrl)) {
+        throw 'ApiBaseUrl is empty.'
+    }
+
+    $appSettingsPath = Join-Path $AppRoot 'appsettings.json'
+    if (-not (Test-Path -LiteralPath $appSettingsPath)) {
+        throw "appsettings.json not found in desktop package: $appSettingsPath"
+    }
+
+    $json = Get-Content -LiteralPath $appSettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($null -eq $json.PSObject.Properties['Api']) {
+        $json | Add-Member -NotePropertyName Api -NotePropertyValue ([pscustomobject]@{ BaseUrl = $normalizedBaseUrl })
+    }
+    elseif ($null -eq $json.Api.PSObject.Properties['BaseUrl']) {
+        $json.Api | Add-Member -NotePropertyName BaseUrl -NotePropertyValue $normalizedBaseUrl
+    }
+    else {
+        $json.Api.BaseUrl = $normalizedBaseUrl
+    }
+
+    $json | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $appSettingsPath -Encoding UTF8
+}
+
 function Prepare-DefaultClientSourceFolder {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
@@ -298,6 +329,7 @@ Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyConti
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
 Invoke-RobocopyMirror -Source $SourceFolder -Destination $appRoot
+Set-DesktopPackageApiBaseUrl -AppRoot $appRoot -BaseUrl $ApiBaseUrl
 
 $updaterProject = Join-Path $ProjectRoot 'Updater\거래플랜.Updater\거래플랜.Updater.csproj'
 if (Test-Path -LiteralPath $updaterProject) {
