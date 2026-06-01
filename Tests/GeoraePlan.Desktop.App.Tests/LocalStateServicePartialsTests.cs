@@ -4625,6 +4625,39 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public void SyncService_DispatcherRequestsAreHandledOnlyAfterStart()
+    {
+        using var db = new LocalDbContext();
+        var session = new SessionState();
+        session.SetSession(
+            "test-token",
+            new UserSessionDto
+            {
+                Username = "admin",
+                Role = DomainConstants.RoleAdmin,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ScopeType = TenantScopeCatalog.ScopeAdmin
+            });
+        var dispatcher = new SyncRequestDispatcher();
+        var localState = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+        var rental = new RentalStateService(db);
+        var diagnostics = new SyncDiagnosticsService(session);
+        var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+
+        using var idleSync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+        dispatcher.RequestDebouncedSync();
+
+        Assert.False(idleSync.HasActiveOrQueuedSync);
+
+        using var startedSync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+        startedSync.Start(TimeSpan.FromMinutes(5));
+        dispatcher.RequestDebouncedSync();
+
+        Assert.True(startedSync.HasActiveOrQueuedSync);
+    }
+
+    [Fact]
     public async Task SyncService_MarkOutboxAcknowledgedAsync_AcknowledgesOnlyAcceptedEntities()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-accepted-outbox-{Guid.NewGuid():N}");

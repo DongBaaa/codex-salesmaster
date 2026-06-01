@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private readonly BackupService _backup;
     private readonly SyncDiagnosticsService _diagnostics;
     private readonly DataIntegrityIssueService _dataIntegrity;
+    private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly DesktopAppUpdateService _updateService;
     private readonly RuntimeSafetyMonitorService _runtimeSafety;
     private readonly DispatcherTimer _centralRevisionPollTimer;
@@ -48,6 +49,8 @@ public partial class MainWindow : Window
     private string _lastDataIntegrityIssueSignature = string.Empty;
     private string? _deferredStartupDashboardMessage;
     private string? _deferredStartupClockWarningMessage;
+    private IServiceScope? _runtimeSyncScope;
+    private SyncService? _runtimeSyncService;
 
     public MainWindow(MainViewModel vm, LocalStateService local,
                       RentalStateService rental,
@@ -76,6 +79,7 @@ public partial class MainWindow : Window
         _backup = backup;
         _diagnostics = diagnostics;
         _dataIntegrity = dataIntegrity;
+        _serviceScopeFactory = serviceScopeFactory;
         _updateService = new DesktopAppUpdateService(api);
         _runtimeSafety = new RuntimeSafetyMonitorService(local, sync, backup, session, api, diagnostics, serviceScopeFactory);
         DataContext = vm;
@@ -101,6 +105,7 @@ public partial class MainWindow : Window
 
         _isClosingOrClosed = true;
         StopRealtimeRevisionMonitor();
+        StopRuntimeSyncService();
         _centralRevisionPollTimer?.Stop();
         _runtimeSafetyTimer?.Stop();
     }
@@ -118,6 +123,7 @@ public partial class MainWindow : Window
         _isClosingOrClosed = false;
         if (_isInitialized && !_session.IsOfflineMode)
         {
+            StartRuntimeSyncService();
             StartRealtimeRevisionMonitor();
             _centralRevisionPollTimer?.Start();
             _runtimeSafetyTimer?.Start();
@@ -257,10 +263,55 @@ public partial class MainWindow : Window
             return;
 
         _runtimeServicesStarted = true;
-        _sync.Start(TimeSpan.FromMinutes(5));
+        StartRuntimeSyncService();
         StartRealtimeRevisionMonitor();
         _centralRevisionPollTimer.Start();
         _runtimeSafetyTimer.Start();
+    }
+
+    private void StartRuntimeSyncService()
+    {
+        if (_runtimeSyncScope is not null || _session.IsOfflineMode || _isClosingOrClosed)
+            return;
+
+        _runtimeSyncScope = _serviceScopeFactory.CreateScope();
+        _runtimeSyncService = _runtimeSyncScope.ServiceProvider.GetRequiredService<SyncService>();
+        _runtimeSyncService.SyncStatusChanged += HandleRuntimeSyncStatusChanged;
+        _runtimeSyncService.Start(TimeSpan.FromMinutes(5));
+    }
+
+    private void StopRuntimeSyncService()
+    {
+        var sync = _runtimeSyncService;
+        _runtimeSyncService = null;
+        if (sync is not null)
+            sync.SyncStatusChanged -= HandleRuntimeSyncStatusChanged;
+
+        _runtimeSyncScope?.Dispose();
+        _runtimeSyncScope = null;
+    }
+
+    private void HandleRuntimeSyncStatusChanged(string status)
+    {
+        if (_isClosingOrClosed || string.IsNullOrWhiteSpace(status))
+            return;
+
+        _vm.ApplyExternalSyncStatus(status);
+    }
+
+    private async Task<bool> RunIsolatedSyncAsync(Func<SyncService, Task<bool>> operation)
+    {
+        using var scope = _serviceScopeFactory.CreateScope();
+        var sync = scope.ServiceProvider.GetRequiredService<SyncService>();
+        sync.SyncStatusChanged += HandleRuntimeSyncStatusChanged;
+        try
+        {
+            return await operation(sync);
+        }
+        finally
+        {
+            sync.SyncStatusChanged -= HandleRuntimeSyncStatusChanged;
+        }
     }
 
     private void StartRealtimeRevisionMonitor()
@@ -690,7 +741,7 @@ public partial class MainWindow : Window
             if (!pendingServerRevision.HasValue)
                 return;
 
-            var syncOk = await _sync.TrySyncAsync();
+            var syncOk = await RunIsolatedSyncAsync(sync => sync.TrySyncAsync());
             if (!syncOk)
                 return;
 
@@ -1698,7 +1749,7 @@ public partial class MainWindow : Window
             {
                 _vm.SyncStatus = $"{reason} 전 변경사항을 백그라운드로 동기화합니다...";
                 UiTaskHelper.Forget(
-                    _sync.TrySyncAsync(),
+                    RunIsolatedSyncAsync(sync => sync.TrySyncAsync()),
                     "SYNC",
                     $"{reason} 백그라운드 동기화",
                     ex => AppLogger.Warn("SYNC", $"{reason} background sync failed: {ex.Message}"));
@@ -1707,7 +1758,7 @@ public partial class MainWindow : Window
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             _vm.SyncStatus = $"{reason} 전 중앙 서버에 변경사항 저장 중...";
-            var flushed = await _sync.FlushPendingChangesAsync(cts.Token);
+            var flushed = await RunIsolatedSyncAsync(sync => sync.FlushPendingChangesAsync(cts.Token));
             var remainingDirtyCount = await _local.CountDirtyAsync(_session);
             if (!flushed || remainingDirtyCount > 0)
             {

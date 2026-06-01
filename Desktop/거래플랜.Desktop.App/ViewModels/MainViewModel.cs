@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Win32;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
@@ -25,6 +26,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly SyncDiagnosticsService _diagnostics;
     private readonly ErpApiClient _api;
     private readonly SessionState _session;
+    private readonly IServiceScopeFactory? _serviceScopeFactory;
     private readonly IPrintService _invoicePrintService = new WpfInvoicePrintService();
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan RecentPostLoginSyncSkipWindow = TimeSpan.FromMinutes(2);
@@ -219,7 +221,8 @@ public sealed partial class MainViewModel : ObservableObject
         RentalStateService rental,
         SyncDiagnosticsService diagnostics,
         ErpApiClient api,
-        SessionState session)
+        SessionState session,
+        IServiceScopeFactory? serviceScopeFactory = null)
     {
         _local = local;
         _sync = sync;
@@ -228,6 +231,7 @@ public sealed partial class MainViewModel : ObservableObject
         _diagnostics = diagnostics;
         _api = api;
         _session = session;
+        _serviceScopeFactory = serviceScopeFactory;
         _legacyMigrationService = new LegacyDataMigrationService(local);
 
         _sync.SyncStatusChanged += HandleSyncStatusChanged;
@@ -243,6 +247,26 @@ public sealed partial class MainViewModel : ObservableObject
             "동기화 상태 표시 갱신",
             ex => AppLogger.Warn("SYNC-UI", $"동기화 상태 표시 갱신 실패: {ex.Message}"));
         AppLogger.Info("SYNC-UI", status);
+    }
+
+    public void ApplyExternalSyncStatus(string status) => HandleSyncStatusChanged(status);
+
+    private async Task<T> RunIsolatedSyncAsync<T>(Func<SyncService, Task<T>> operation)
+    {
+        if (_serviceScopeFactory is null)
+            return await operation(_sync);
+
+        using var scope = _serviceScopeFactory.CreateScope();
+        var sync = scope.ServiceProvider.GetRequiredService<SyncService>();
+        sync.SyncStatusChanged += HandleSyncStatusChanged;
+        try
+        {
+            return await operation(sync);
+        }
+        finally
+        {
+            sync.SyncStatusChanged -= HandleSyncStatusChanged;
+        }
     }
 
     private async Task ApplySyncStatusAsync(string status)
@@ -354,7 +378,7 @@ public sealed partial class MainViewModel : ObservableObject
                 ? "초기 데이터 동기화 중입니다. 거래처/거래내역을 서버에서 받는 동안 잠시만 기다려 주세요."
                 : "로그인 후 서버 동기화 중...";
 
-            var syncOk = await _sync.TrySyncAsync();
+            var syncOk = await RunIsolatedSyncAsync(sync => sync.TrySyncAsync());
             var dirtyAfter = await _local.CountDirtyAsync(_session);
 
             // 업데이트 직후 전체 캐시 재구성은 동기화 내부 복구 경로에서 완료될 수 있다.
@@ -367,7 +391,7 @@ public sealed partial class MainViewModel : ObservableObject
             {
                 var refreshOk = true;
                 if (shouldRefreshCurrentBusinessScope && await _local.IsServerMirrorRefreshRequiredAsync())
-                    refreshOk = await _sync.RefreshCurrentBusinessScopeFromServerAsync();
+                    refreshOk = await RunIsolatedSyncAsync(sync => sync.RefreshCurrentBusinessScopeFromServerAsync());
 
                 await ReloadAfterPassiveSyncAsync();
                 hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session);
@@ -375,7 +399,7 @@ public sealed partial class MainViewModel : ObservableObject
                 if (initialDataLoadRequired && !hasVisiblePrimaryWorkCache)
                 {
                     SyncStatus = "초기 데이터 표시 확인 중입니다. 서버 기준으로 한 번 더 받습니다...";
-                    var mirrorRefreshOk = await _sync.RefreshSharedMirrorFromServerAsync();
+                    var mirrorRefreshOk = await RunIsolatedSyncAsync(sync => sync.RefreshSharedMirrorFromServerAsync());
                     await ReloadAfterPassiveSyncAsync();
                     hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session);
                     if (mirrorRefreshOk && hasVisiblePrimaryWorkCache)
@@ -1796,10 +1820,10 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task ForceSyncAsync()
     {
         SyncStatus = "수동 동기화 중...";
-        var syncOk = await _sync.TrySyncAsync();
+        var syncOk = await RunIsolatedSyncAsync(sync => sync.TrySyncAsync());
         var dirtyCount = await _local.CountDirtyAsync(_session);
         if (syncOk && dirtyCount == 0)
-            await _sync.RefreshSharedMirrorFromServerAsync();
+            await RunIsolatedSyncAsync(sync => sync.RefreshSharedMirrorFromServerAsync());
         await LoadCustomersAsync();
         await LoadInvoiceListAsync();
 

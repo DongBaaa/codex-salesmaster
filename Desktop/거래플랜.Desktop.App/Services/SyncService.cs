@@ -97,6 +97,8 @@ public sealed class SyncService : IDisposable
     private bool _resyncRequested;
     private bool _flushRequested;
     private bool _disposed;
+    private bool _dispatcherSubscribed;
+    private static int _globalSyncOperationActiveCount;
     private DateTime _lastSyncStartedUtc = DateTime.MinValue;
     private DateTime _lastSyncCompletedUtc = DateTime.MinValue;
     private DateTime _lastAdministrativeBusinessCacheRefreshUtc = DateTime.MinValue;
@@ -117,7 +119,8 @@ public sealed class SyncService : IDisposable
             {
                 return (_currentSyncTask is not null && !_currentSyncTask.IsCompleted)
                        || _resyncRequested
-                       || (_immediateSyncCts is not null && !_immediateSyncCts.IsCancellationRequested);
+                       || (_immediateSyncCts is not null && !_immediateSyncCts.IsCancellationRequested)
+                       || Volatile.Read(ref _globalSyncOperationActiveCount) > 0;
             }
         }
     }
@@ -138,7 +141,6 @@ public sealed class SyncService : IDisposable
         _session = session;
         _dispatcher = dispatcher;
         _diagnostics = diagnostics;
-        _dispatcher.SyncRequested += HandleSyncRequested;
     }
 
     public void Start(TimeSpan interval, bool runImmediately = false)
@@ -146,6 +148,7 @@ public sealed class SyncService : IDisposable
         if (_disposed || IsServerSyncDisabled())
             return;
 
+        SubscribeToDispatcher();
         _timer?.Dispose();
         var normalizedInterval = interval <= TimeSpan.Zero ? TimeSpan.FromMinutes(5) : interval;
         var due = runImmediately ? TimeSpan.Zero : normalizedInterval;
@@ -156,6 +159,15 @@ public sealed class SyncService : IDisposable
     public void Start(int intervalMinutes = 5, bool runImmediately = false)
     {
         Start(TimeSpan.FromMinutes(intervalMinutes), runImmediately);
+    }
+
+    private void SubscribeToDispatcher()
+    {
+        if (_dispatcherSubscribed)
+            return;
+
+        _dispatcher.SyncRequested += HandleSyncRequested;
+        _dispatcherSubscribed = true;
     }
 
     public Task<bool> TrySyncAsync(CancellationToken ct = default)
@@ -558,12 +570,16 @@ public sealed class SyncService : IDisposable
         {
             await GlobalSyncOperationLock.WaitAsync(ct);
             entered = true;
+            Interlocked.Increment(ref _globalSyncOperationActiveCount);
             return await operation();
         }
         finally
         {
             if (entered)
+            {
+                Interlocked.Decrement(ref _globalSyncOperationActiveCount);
                 GlobalSyncOperationLock.Release();
+            }
         }
     }
 
@@ -6806,7 +6822,11 @@ public sealed class SyncService : IDisposable
 
         _disposed = true;
         _administrativeBusinessCacheRefreshLock.Dispose();
-        _dispatcher.SyncRequested -= HandleSyncRequested;
+        if (_dispatcherSubscribed)
+        {
+            _dispatcher.SyncRequested -= HandleSyncRequested;
+            _dispatcherSubscribed = false;
+        }
         _timer?.Dispose();
 
         lock (_immediateSyncGate)
