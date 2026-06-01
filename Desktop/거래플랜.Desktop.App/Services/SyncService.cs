@@ -34,6 +34,7 @@ public sealed class SyncService : IDisposable
     private static readonly TimeSpan AdministrativeBusinessCachePullTimeout = TimeSpan.FromSeconds(25);
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DebouncedSyncDelay = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan TransientFailureRetryDelay = TimeSpan.FromSeconds(30);
     private static readonly HashSet<string> EquivalentConflictIgnoredPropertyNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "CreatedAtUtc",
@@ -91,6 +92,7 @@ public sealed class SyncService : IDisposable
     private readonly object _immediateSyncGate = new();
     private Timer? _timer;
     private CancellationTokenSource? _immediateSyncCts;
+    private CancellationTokenSource? _transientFailureRetryCts;
     private Task<bool>? _currentSyncTask;
     private bool _resyncRequested;
     private bool _flushRequested;
@@ -629,6 +631,27 @@ public sealed class SyncService : IDisposable
             if (detail.Length > 220)
                 detail = detail[..220] + "...";
 
+            if (IsTransient(ex, ct))
+            {
+                var retryMessage = $"서버 응답 지연으로 동기화를 잠시 후 자동 재시도합니다. 업무는 계속 가능합니다. ({detail})";
+                await TrySetSettingSafeAsync(
+                    "Sync.LastError",
+                    string.Empty,
+                    CancellationToken.None);
+
+                await TryRecordDiagnosticAsync(
+                    phase: "sync-transient",
+                    rawMessage: detail,
+                    exception: ex,
+                    severity: "Warning",
+                    recoveryAttempted: true);
+
+                SetStatus(retryMessage);
+                AppLogger.Warn("SYNC", retryMessage);
+                ScheduleTransientFailureRetry();
+                return false;
+            }
+
             await TrySetSettingSafeAsync(
                 "Sync.LastError",
                 $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {detail}",
@@ -682,9 +705,62 @@ public sealed class SyncService : IDisposable
             return true;
 
         if (ex is HttpRequestException httpEx)
-            return httpEx.StatusCode is null;
+            return httpEx.StatusCode is null
+                   || httpEx.StatusCode == System.Net.HttpStatusCode.RequestTimeout
+                   || (int?)httpEx.StatusCode == 429
+                   || httpEx.StatusCode == System.Net.HttpStatusCode.InternalServerError
+                   || httpEx.StatusCode == System.Net.HttpStatusCode.BadGateway
+                   || httpEx.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable
+                   || httpEx.StatusCode == System.Net.HttpStatusCode.GatewayTimeout;
 
         return false;
+    }
+
+    private void ScheduleTransientFailureRetry()
+    {
+        if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
+            return;
+
+        CancellationTokenSource retryCts;
+        lock (_immediateSyncGate)
+        {
+            if (_transientFailureRetryCts is not null && !_transientFailureRetryCts.IsCancellationRequested)
+                return;
+
+            _transientFailureRetryCts = new CancellationTokenSource();
+            retryCts = _transientFailureRetryCts;
+        }
+
+        ObserveBackgroundTask(
+            RunTransientFailureRetryAsync(retryCts),
+            "서버 응답 지연 후 동기화 자동 재시도");
+    }
+
+    private async Task RunTransientFailureRetryAsync(CancellationTokenSource retryCts)
+    {
+        try
+        {
+            await Task.Delay(TransientFailureRetryDelay, retryCts.Token);
+
+            if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
+                return;
+
+            await StartSyncAsync(waitForRunningSync: true, CancellationToken.None);
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer sync request or shutdown superseded this retry.
+        }
+        finally
+        {
+            lock (_immediateSyncGate)
+            {
+                if (ReferenceEquals(_transientFailureRetryCts, retryCts))
+                    _transientFailureRetryCts = null;
+            }
+
+            retryCts.Dispose();
+        }
     }
 
     private void HandleSyncRequested(SyncRequestMode mode)
@@ -6738,6 +6814,9 @@ public sealed class SyncService : IDisposable
             _immediateSyncCts?.Cancel();
             _immediateSyncCts?.Dispose();
             _immediateSyncCts = null;
+            _transientFailureRetryCts?.Cancel();
+            _transientFailureRetryCts?.Dispose();
+            _transientFailureRetryCts = null;
             _currentSyncTask = null;
             _resyncRequested = false;
             _flushRequested = false;

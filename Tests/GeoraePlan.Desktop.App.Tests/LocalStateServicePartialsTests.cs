@@ -4589,6 +4589,42 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public void SyncService_IsTransient_TreatsRetryableHttpFailuresAsTransient()
+    {
+        var gatewayTimeout = new HttpRequestException(
+            "gateway timeout",
+            inner: null,
+            statusCode: System.Net.HttpStatusCode.GatewayTimeout);
+        var internalServerError = new HttpRequestException(
+            "server error",
+            inner: null,
+            statusCode: System.Net.HttpStatusCode.InternalServerError);
+        var userCancelled = new TaskCanceledException("cancelled by caller");
+        using var userCancellation = new CancellationTokenSource();
+        userCancellation.Cancel();
+
+        var gatewayTimeoutTransient = InvokePrivateStatic<bool>(
+            typeof(SyncService),
+            "IsTransient",
+            gatewayTimeout,
+            CancellationToken.None);
+        var internalServerErrorTransient = InvokePrivateStatic<bool>(
+            typeof(SyncService),
+            "IsTransient",
+            internalServerError,
+            CancellationToken.None);
+        var userCancelledTransient = InvokePrivateStatic<bool>(
+            typeof(SyncService),
+            "IsTransient",
+            userCancelled,
+            userCancellation.Token);
+
+        Assert.True(gatewayTimeoutTransient);
+        Assert.True(internalServerErrorTransient);
+        Assert.False(userCancelledTransient);
+    }
+
+    [Fact]
     public async Task SyncService_MarkOutboxAcknowledgedAsync_AcknowledgesOnlyAcceptedEntities()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-accepted-outbox-{Guid.NewGuid():N}");

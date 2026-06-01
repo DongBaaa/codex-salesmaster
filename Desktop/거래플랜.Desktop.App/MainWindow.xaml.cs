@@ -343,7 +343,11 @@ public partial class MainWindow : Window
             }
             catch (Exception ex)
             {
-                AppLogger.Warn("SYNC", $"실시간 변경 감지 대기 실패: {ex.Message}");
+                if (IsRealtimeRevisionWaitTransient(ex))
+                    AppLogger.Info("SYNC", $"실시간 변경 감지 대기 재시도: {ex.Message}");
+                else
+                    AppLogger.Warn("SYNC", $"실시간 변경 감지 대기 실패: {ex.Message}");
+
                 try
                 {
                     await Task.Delay(TimeSpan.FromSeconds(5), ct);
@@ -354,6 +358,20 @@ public partial class MainWindow : Window
                 }
             }
         }
+    }
+
+    private static bool IsRealtimeRevisionWaitTransient(Exception ex)
+    {
+        var detail = ex.ToString();
+        return ex is TaskCanceledException
+               || ex is TimeoutException
+               || detail.Contains("실시간 변경 대기(sync/wait)", StringComparison.OrdinalIgnoreCase)
+               || detail.Contains("The operation was canceled", StringComparison.OrdinalIgnoreCase)
+               || detail.Contains("A task was canceled", StringComparison.OrdinalIgnoreCase)
+               || detail.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+               || detail.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+               || detail.Contains("Gateway Time-out", StringComparison.OrdinalIgnoreCase)
+               || detail.Contains("504", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<long> ResolveLocalLastSyncRevisionAsync()
