@@ -17,6 +17,7 @@
     [switch]$IncludeInventoryStockSmoke,
     [switch]$IncludeRentalBillingSmoke,
     [switch]$IncludeRepeatedSaveSmoke,
+    [switch]$IncludeSyncErrorGuard,
     [switch]$IncludePrintDocumentSmoke,
     [switch]$IncludeMobileBuild,
     [switch]$IncludeMobileE2E,
@@ -1005,6 +1006,53 @@ function Invoke-RepeatedSaveSmoke {
     }
 }
 
+function Invoke-SyncErrorGuard {
+    param(
+        [string]$ProjectRoot,
+        [string]$BaseUrl,
+        [string]$Username,
+        [string]$Password,
+        [string]$NasRoot,
+        [string]$EvidenceDirectory
+    )
+
+    $scriptPath = Join-Path $ProjectRoot 'tools\verification\Invoke-GeoraePlanSyncErrorGuard.ps1'
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        throw "동기화 오류 방지 가드 스크립트를 찾지 못했습니다: $scriptPath"
+    }
+
+    $guardEvidence = Join-Path $EvidenceDirectory 'sync-error-guard'
+    New-DirectoryIfMissing $guardEvidence
+    $global:LASTEXITCODE = 0
+    $output = & $scriptPath `
+        -ProjectRoot $ProjectRoot `
+        -BaseUrl $BaseUrl `
+        -Username $Username `
+        -Password $Password `
+        -EvidenceDirectory $guardEvidence `
+        -NasRoot $NasRoot `
+        -ScanNasDockerLogs 2>&1
+    $text = Convert-OutputText $output
+    $rawPath = Join-Path $guardEvidence ('sync-error-guard-wrapper-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.txt')
+    $text | Set-Content -LiteralPath $rawPath -Encoding UTF8
+    if ($LASTEXITCODE -ne 0) {
+        throw $text
+    }
+
+    $reportPath = ''
+    foreach ($line in @($text -split "`r?`n")) {
+        if ($line -match '^sync_error_guard_report=(?<path>.+)$') {
+            $reportPath = $matches['path'].Trim()
+        }
+    }
+
+    [pscustomobject]@{
+        Detail = 'PASS'
+        ReportPath = $reportPath
+        Output = $text
+    }
+}
+
 function Invoke-PrintDocumentSmoke {
     param(
         [string]$ProjectRoot,
@@ -1314,6 +1362,15 @@ else {
     Add-StepResult -Name 'repeated-save-smoke' -Passed $true -Detail 'SKIP'
 }
 
+if ($IncludeSyncErrorGuard) {
+    Invoke-StepWithReport -Name 'sync-error-guard' -Script {
+        Invoke-SyncErrorGuard -ProjectRoot $ProjectRoot -BaseUrl $BaseUrl -Username $Username -Password $Password -NasRoot $NasRoot -EvidenceDirectory $EvidenceDirectory
+    }
+}
+else {
+    Add-StepResult -Name 'sync-error-guard' -Passed $true -Detail 'SKIP'
+}
+
 if ($IncludePrintDocumentSmoke) {
     Invoke-StepWithReport -Name 'print-document-smoke' -Script {
         Invoke-PrintDocumentSmoke -ProjectRoot $ProjectRoot -DotnetExe $resolvedDotnet -EvidenceDirectory $EvidenceDirectory
@@ -1454,6 +1511,7 @@ $report = [pscustomobject]@{
     IncludeInventoryStockSmoke = [bool]$IncludeInventoryStockSmoke
     IncludeRentalBillingSmoke = [bool]$IncludeRentalBillingSmoke
     IncludeRepeatedSaveSmoke = [bool]$IncludeRepeatedSaveSmoke
+    IncludeSyncErrorGuard = [bool]$IncludeSyncErrorGuard
     IncludePrintDocumentSmoke = [bool]$IncludePrintDocumentSmoke
     IncludeMobileBuild = [bool]$IncludeMobileBuild
     IncludeMobileE2E = [bool]$IncludeMobileE2E
@@ -1486,6 +1544,7 @@ if ($AllowedIntegrityWarningCodes.Count -gt 0) {
 $lines.Add("- inventory stock smoke 포함: $([bool]$IncludeInventoryStockSmoke)") | Out-Null
 $lines.Add("- rental billing smoke 포함: $([bool]$IncludeRentalBillingSmoke)") | Out-Null
 $lines.Add("- repeated save smoke 포함: $([bool]$IncludeRepeatedSaveSmoke)") | Out-Null
+$lines.Add("- sync error guard 포함: $([bool]$IncludeSyncErrorGuard)") | Out-Null
 $lines.Add("- print document smoke 포함: $([bool]$IncludePrintDocumentSmoke)") | Out-Null
 $lines.Add("- mobile build 포함: $([bool]$IncludeMobileBuild)") | Out-Null
 $lines.Add("- mobile E2E 포함: $([bool]$IncludeMobileE2E)") | Out-Null
