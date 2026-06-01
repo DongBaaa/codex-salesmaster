@@ -2790,6 +2790,181 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SyncService_PrepareTransactionAttachmentRevisionRetry_RebasesRevisionAndRequeuesOutbox()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-transaction-attachment-retry-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.Parse("74222222-2222-2222-2222-222222222222");
+            var transactionId = Guid.Parse("84333333-3333-3333-3333-333333333333");
+            var attachmentId = Guid.Parse("94444444-4444-4444-4444-444444444444");
+            var localRevision = 610L;
+            var serverRevision = 645L;
+            var updatedAtUtc = new DateTime(2026, 6, 2, 10, 40, 0, DateTimeKind.Utc);
+            const string deviceId = "DESKTOP-VGCK877:sync-test";
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "연수구 연수1동행정복지센터",
+                NameMatchKey = "연수구연수1동행정복지센터",
+                TradeType = CustomerTradeTypes.Sales,
+                CreatedAtUtc = updatedAtUtc.AddDays(-30),
+                UpdatedAtUtc = updatedAtUtc.AddDays(-30),
+                Revision = 10
+            });
+
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 2),
+                TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                SettlementAmount = 150_000m,
+                BankReceipt = 150_000m,
+                ReceiptTotal = 150_000m,
+                Note = "일반 수금",
+                Memo = "거래내역",
+                CreatedAtUtc = updatedAtUtc.AddDays(-1),
+                UpdatedAtUtc = updatedAtUtc.AddDays(-1),
+                Revision = 500
+            });
+
+            var attachment = new LocalTransactionAttachment
+            {
+                Id = attachmentId,
+                TransactionId = transactionId,
+                AttachmentType = "통장사본",
+                FileName = "receipt.txt",
+                StoredFileName = "receipt.txt",
+                StoredPath = "transactions/receipt.txt",
+                MimeType = "text/plain",
+                FileSize = 11,
+                FileHash = "hash-local",
+                Description = "로컬에서 수정한 증빙 설명",
+                UploadedByUsername = "admin",
+                UploadedAtUtc = updatedAtUtc.AddHours(-1),
+                VerificationStatus = "미확인",
+                SortOrder = 1,
+                CreatedAtUtc = updatedAtUtc.AddHours(-2),
+                UpdatedAtUtc = updatedAtUtc,
+                Revision = localRevision,
+                IsDirty = true
+            };
+            db.TransactionAttachments.Add(attachment);
+
+            var clientSnapshot = LocalMappings.ToDto(attachment, Encoding.UTF8.GetBytes("hello world"));
+            clientSnapshot.ExpectedRevision = localRevision;
+            clientSnapshot.MutationCreatedAtUtc = updatedAtUtc;
+            clientSnapshot.MutationId = InvokePrivateStatic<string>(
+                typeof(SyncService),
+                "BuildMutationId",
+                deviceId,
+                nameof(LocalTransactionAttachment),
+                clientSnapshot);
+
+            db.SyncOutboxEntries.Add(new LocalSyncOutboxEntry
+            {
+                Id = Guid.NewGuid(),
+                MutationId = clientSnapshot.MutationId,
+                DeviceId = deviceId,
+                EntityName = nameof(LocalTransactionAttachment),
+                EntityId = attachmentId,
+                ExpectedRevision = localRevision,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                Status = "Sent",
+                PreparedAtUtc = updatedAtUtc,
+                SentAtUtc = updatedAtUtc.AddMinutes(1)
+            });
+            await db.SaveChangesAsync();
+
+            var serverSnapshot = LocalMappings.ToDto(attachment, Encoding.UTF8.GetBytes("server copy"));
+            serverSnapshot.Revision = serverRevision;
+            serverSnapshot.UpdatedAtUtc = updatedAtUtc.AddMinutes(-5);
+            serverSnapshot.Description = "서버에 먼저 저장된 증빙 설명";
+
+            var conflict = new ConflictLogDto
+            {
+                EntityName = "TransactionAttachment",
+                EntityId = attachmentId.ToString("D"),
+                Reason = $"Expected revision mismatch. client={localRevision}, server={serverRevision}",
+                ClientJson = JsonSerializer.Serialize(clientSnapshot),
+                ServerJson = JsonSerializer.Serialize(serverSnapshot)
+            };
+
+            var session = new SessionState();
+            session.SetOfflineSession(new UserSessionDto
+            {
+                Username = "admin",
+                Role = DomainConstants.RoleAdmin,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ScopeType = TenantScopeCatalog.ScopeAdmin
+            });
+
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            var diagnostics = new SyncDiagnosticsService(session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+
+            var prepared = await InvokePrivateInstanceAsync<bool>(
+                sync,
+                "TryPrepareTransactionAttachmentRevisionRetryAsync",
+                conflict,
+                deviceId,
+                session,
+                CancellationToken.None);
+
+            Assert.True(prepared);
+
+            var storedAttachment = await db.TransactionAttachments.IgnoreQueryFilters()
+                .SingleAsync(current => current.Id == attachmentId);
+            var outboxRow = await db.SyncOutboxEntries.AsNoTracking()
+                .SingleAsync(entry => entry.EntityName == nameof(LocalTransactionAttachment) && entry.EntityId == attachmentId);
+
+            Assert.Equal(serverRevision, storedAttachment.Revision);
+            Assert.True(storedAttachment.IsDirty);
+            Assert.Equal("로컬에서 수정한 증빙 설명", storedAttachment.Description);
+            Assert.Equal("Prepared", outboxRow.Status);
+            Assert.Null(outboxRow.SentAtUtc);
+            Assert.Equal(serverRevision, outboxRow.ExpectedRevision);
+
+            var rebasedSnapshot = LocalMappings.ToDto(storedAttachment);
+            rebasedSnapshot.ExpectedRevision = serverRevision;
+            rebasedSnapshot.MutationCreatedAtUtc = updatedAtUtc;
+            var expectedMutationId = InvokePrivateStatic<string>(
+                typeof(SyncService),
+                "BuildMutationId",
+                deviceId,
+                nameof(LocalTransactionAttachment),
+                rebasedSnapshot);
+            Assert.Equal(expectedMutationId, outboxRow.MutationId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SyncService_TryRepairRentalAssetRevisionConflictAsync_ResolvesWhenServerCanReplaceInvalidItemReference()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-rental-asset-resolve-{Guid.NewGuid():N}");
