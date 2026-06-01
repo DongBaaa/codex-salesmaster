@@ -1902,6 +1902,26 @@ public sealed class SyncService : IDisposable
                     await AppendConflictSummaryAsync($"거래내역 첨부 리비전 충돌 {preparedTransactionAttachmentRevisionRetryConflicts.Count}건을 서버 최신 rev 기준 재시도로 준비했습니다.");
                 }
 
+                var preparedInventoryTransferRevisionRetryConflicts = await PrepareInventoryTransferRevisionRetriesAsync(
+                    result.Conflicts
+                        .Except(serverNewerConflicts)
+                        .Except(preparedCompanyProfileRevisionRetryConflicts)
+                        .Except(preparedCustomerRevisionRetryConflicts)
+                        .Except(preparedInvoiceRevisionRetryConflicts)
+                        .Except(preparedPaymentRevisionRetryConflicts)
+                        .Except(preparedTransactionRevisionRetryConflicts)
+                        .Except(preparedTransactionAttachmentRevisionRetryConflicts)
+                        .ToList(),
+                    req.DeviceId,
+                    session,
+                    ct);
+
+                if (preparedInventoryTransferRevisionRetryConflicts.Count > 0)
+                {
+                    AppLogger.Warn("SYNC", $"Inventory transfer revision retry prepared: {preparedInventoryTransferRevisionRetryConflicts.Count} conflict(s).");
+                    await AppendConflictSummaryAsync($"재고이동 리비전 충돌 {preparedInventoryTransferRevisionRetryConflicts.Count}건을 서버 최신 rev 기준 재시도로 준비했습니다.");
+                }
+
                 var repairedItemRevisionConflicts = await ResolveCanonicalItemRevisionConflictsAsync(
                     result.Conflicts
                         .Except(serverNewerConflicts)
@@ -1911,6 +1931,7 @@ public sealed class SyncService : IDisposable
                         .Except(preparedPaymentRevisionRetryConflicts)
                         .Except(preparedTransactionRevisionRetryConflicts)
                         .Except(preparedTransactionAttachmentRevisionRetryConflicts)
+                        .Except(preparedInventoryTransferRevisionRetryConflicts)
                         .ToList(),
                     ct);
 
@@ -1929,6 +1950,7 @@ public sealed class SyncService : IDisposable
                         .Except(preparedPaymentRevisionRetryConflicts)
                         .Except(preparedTransactionRevisionRetryConflicts)
                         .Except(preparedTransactionAttachmentRevisionRetryConflicts)
+                        .Except(preparedInventoryTransferRevisionRetryConflicts)
                         .Except(repairedItemRevisionConflicts)
                         .ToList(),
                     req.DeviceId,
@@ -1950,6 +1972,7 @@ public sealed class SyncService : IDisposable
                         .Except(preparedPaymentRevisionRetryConflicts)
                         .Except(preparedTransactionRevisionRetryConflicts)
                         .Except(preparedTransactionAttachmentRevisionRetryConflicts)
+                        .Except(preparedInventoryTransferRevisionRetryConflicts)
                         .Except(repairedItemRevisionConflicts)
                         .Except(preparedItemRevisionRetryConflicts)
                         .ToList(),
@@ -1971,6 +1994,7 @@ public sealed class SyncService : IDisposable
                         .Except(preparedPaymentRevisionRetryConflicts)
                         .Except(preparedTransactionRevisionRetryConflicts)
                         .Except(preparedTransactionAttachmentRevisionRetryConflicts)
+                        .Except(preparedInventoryTransferRevisionRetryConflicts)
                         .Except(repairedItemRevisionConflicts)
                         .Except(preparedItemRevisionRetryConflicts)
                         .Except(preparedRentalProfileRevisionRetryConflicts)
@@ -1999,6 +2023,7 @@ public sealed class SyncService : IDisposable
                     .Except(preparedPaymentRevisionRetryConflicts)
                     .Except(preparedTransactionRevisionRetryConflicts)
                     .Except(preparedTransactionAttachmentRevisionRetryConflicts)
+                    .Except(preparedInventoryTransferRevisionRetryConflicts)
                     .Except(repairedItemRevisionConflicts)
                     .Except(preparedItemRevisionRetryConflicts)
                     .Except(preparedRentalProfileRevisionRetryConflicts)
@@ -2022,6 +2047,7 @@ public sealed class SyncService : IDisposable
                     .Except(preparedPaymentRevisionRetryConflicts)
                     .Except(preparedTransactionRevisionRetryConflicts)
                     .Except(preparedTransactionAttachmentRevisionRetryConflicts)
+                    .Except(preparedInventoryTransferRevisionRetryConflicts)
                     .Except(repairedItemRevisionConflicts)
                     .Except(preparedItemRevisionRetryConflicts)
                     .Except(preparedRentalProfileRevisionRetryConflicts)
@@ -2992,6 +3018,133 @@ public sealed class SyncService : IDisposable
         return localSnapshot.TransactionId == serverSnapshot.TransactionId;
     }
 
+    private async Task<List<ConflictLogDto>> PrepareInventoryTransferRevisionRetriesAsync(
+        IReadOnlyCollection<ConflictLogDto> conflicts,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var prepared = new List<ConflictLogDto>();
+        foreach (var conflict in conflicts)
+        {
+            if (await TryPrepareInventoryTransferRevisionRetryAsync(conflict, deviceId, session, ct))
+                prepared.Add(conflict);
+        }
+
+        return prepared;
+    }
+
+    private async Task<bool> TryPrepareInventoryTransferRevisionRetryAsync(
+        ConflictLogDto conflict,
+        string deviceId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (!string.Equals(conflict.EntityName, "InventoryTransfer", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var reason = (conflict.Reason ?? string.Empty).Trim();
+        if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!Guid.TryParse(conflict.EntityId, out var transferId) || transferId == Guid.Empty)
+            return false;
+
+        if (!TryDeserializeConflictInventoryTransferDto(conflict.ClientJson, out var clientSnapshot) ||
+            clientSnapshot is null ||
+            clientSnapshot.Id != transferId ||
+            clientSnapshot.IsDeleted)
+        {
+            return false;
+        }
+
+        if (!TryDeserializeConflictInventoryTransferDto(conflict.ServerJson, out var serverSnapshot) ||
+            serverSnapshot is null ||
+            serverSnapshot.Id != transferId ||
+            serverSnapshot.IsDeleted)
+        {
+            return false;
+        }
+
+        var transfer = await _db.InventoryTransfers
+            .IgnoreQueryFilters()
+            .Include(current => current.Lines)
+            .FirstOrDefaultAsync(current => current.Id == transferId, ct);
+        if (transfer is null || !transfer.IsDirty || transfer.IsDeleted)
+            return false;
+
+        var localSnapshot = LocalMappings.ToDto(transfer);
+        if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
+            return false;
+
+        var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
+        var serverUpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
+        if (localUpdatedAtUtc < serverUpdatedAtUtc)
+            return false;
+
+        if (!HaveCompatibleInventoryTransferScope(localSnapshot, serverSnapshot))
+            return false;
+
+        transfer.Revision = serverSnapshot.Revision;
+        transfer.IsDirty = true;
+
+        var rebasedSnapshot = LocalMappings.ToDto(transfer);
+        await RequeuePreparedMutationAsync(
+            nameof(LocalInventoryTransfer),
+            transferId,
+            clientSnapshot.MutationId,
+            rebasedSnapshot,
+            deviceId,
+            session,
+            ct);
+
+        await _db.SaveChangesAsync(ct);
+        return true;
+    }
+
+    private static bool HaveCompatibleInventoryTransferScope(
+        InventoryTransferDto localSnapshot,
+        InventoryTransferDto serverSnapshot)
+    {
+        if (localSnapshot.Id != serverSnapshot.Id)
+            return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.TenantCode, serverSnapshot.TenantCode))
+            return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.SourceOfficeCode, serverSnapshot.SourceOfficeCode))
+            return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.TargetOfficeCode, serverSnapshot.TargetOfficeCode))
+            return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.FromWarehouseCode, serverSnapshot.FromWarehouseCode))
+            return false;
+
+        if (!IsSameNonEmptyScope(localSnapshot.ToWarehouseCode, serverSnapshot.ToWarehouseCode))
+            return false;
+
+        if (!string.Equals(
+                InventoryTransferStatusNormalizer.Normalize(
+                    localSnapshot.TransferStatus,
+                    localSnapshot.ReceivedByUsername,
+                    localSnapshot.ReceivedAtUtc,
+                    localSnapshot.RejectedByUsername,
+                    localSnapshot.RejectedAtUtc),
+                InventoryTransferStatusNormalizer.Normalize(
+                    serverSnapshot.TransferStatus,
+                    serverSnapshot.ReceivedByUsername,
+                    serverSnapshot.ReceivedAtUtc,
+                    serverSnapshot.RejectedByUsername,
+                    serverSnapshot.RejectedAtUtc),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private async Task<List<ConflictLogDto>> PrepareItemRevisionRetriesAsync(
         IReadOnlyCollection<ConflictLogDto> conflicts,
         string deviceId,
@@ -3694,6 +3847,23 @@ public sealed class SyncService : IDisposable
         try
         {
             dto = System.Text.Json.JsonSerializer.Deserialize<TransactionAttachmentDto>(json);
+            return dto is not null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryDeserializeConflictInventoryTransferDto(string? json, out InventoryTransferDto? dto)
+    {
+        dto = null;
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        try
+        {
+            dto = System.Text.Json.JsonSerializer.Deserialize<InventoryTransferDto>(json);
             return dto is not null;
         }
         catch

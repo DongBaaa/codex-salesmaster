@@ -2965,6 +2965,175 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SyncService_PrepareInventoryTransferRevisionRetry_RebasesRevisionAndRequeuesOutbox()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-inventory-transfer-retry-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse("75222222-2222-2222-2222-222222222222");
+            var transferId = Guid.Parse("85333333-3333-3333-3333-333333333333");
+            var lineId = Guid.Parse("95444444-4444-4444-4444-444444444444");
+            var localRevision = 710L;
+            var serverRevision = 745L;
+            var updatedAtUtc = new DateTime(2026, 6, 2, 11, 20, 0, DateTimeKind.Utc);
+            const string deviceId = "DESKTOP-VGCK877:sync-test";
+
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "A3컬러복합기",
+                NameMatchKey = "A3컬러복합기",
+                SpecificationOriginal = "IMC2010",
+                SpecificationMatchKey = "IMC2010",
+                Unit = "EA",
+                TrackingType = ItemTrackingTypes.Stock,
+                ItemKind = "일반상품",
+                CreatedAtUtc = updatedAtUtc.AddDays(-30),
+                UpdatedAtUtc = updatedAtUtc.AddDays(-30),
+                Revision = 20
+            });
+
+            var transfer = new LocalInventoryTransfer
+            {
+                Id = transferId,
+                TransferNumber = "MV-20260602-001",
+                TransferDate = new DateOnly(2026, 6, 2),
+                FromWarehouseCode = DomainConstants.WarehouseUsenetMain,
+                ToWarehouseCode = DomainConstants.WarehouseYeonsuMain,
+                Memo = "로컬에서 수정한 재고이동 메모",
+                CreatedByUsername = "admin",
+                LastSavedByUsername = "admin",
+                LastSavedAtUtc = updatedAtUtc,
+                TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                RequestedByUsername = "admin",
+                RequestedAtUtc = updatedAtUtc.AddHours(-1),
+                CreatedAtUtc = updatedAtUtc.AddDays(-1),
+                UpdatedAtUtc = updatedAtUtc,
+                Revision = localRevision,
+                IsDirty = true
+            };
+            transfer.Lines.Add(new LocalInventoryTransferLine
+            {
+                Id = lineId,
+                TransferId = transferId,
+                ItemId = itemId,
+                ItemNameOriginal = "A3컬러복합기",
+                SpecificationOriginal = "IMC2010",
+                Unit = "EA",
+                Quantity = 1m,
+                Remark = "이동"
+            });
+            db.InventoryTransfers.Add(transfer);
+
+            var clientSnapshot = LocalMappings.ToDto(transfer);
+            clientSnapshot.ExpectedRevision = localRevision;
+            clientSnapshot.MutationCreatedAtUtc = updatedAtUtc;
+            clientSnapshot.MutationId = InvokePrivateStatic<string>(
+                typeof(SyncService),
+                "BuildMutationId",
+                deviceId,
+                nameof(LocalInventoryTransfer),
+                clientSnapshot);
+
+            db.SyncOutboxEntries.Add(new LocalSyncOutboxEntry
+            {
+                Id = Guid.NewGuid(),
+                MutationId = clientSnapshot.MutationId,
+                DeviceId = deviceId,
+                EntityName = nameof(LocalInventoryTransfer),
+                EntityId = transferId,
+                ExpectedRevision = localRevision,
+                TenantCode = clientSnapshot.TenantCode,
+                OfficeCode = clientSnapshot.SourceOfficeCode,
+                ResponsibleOfficeCode = clientSnapshot.SourceOfficeCode,
+                Status = "Sent",
+                PreparedAtUtc = updatedAtUtc,
+                SentAtUtc = updatedAtUtc.AddMinutes(1)
+            });
+            await db.SaveChangesAsync();
+
+            var serverSnapshot = LocalMappings.ToDto(transfer);
+            serverSnapshot.Revision = serverRevision;
+            serverSnapshot.UpdatedAtUtc = updatedAtUtc.AddMinutes(-5);
+            serverSnapshot.Memo = "서버에 먼저 저장된 재고이동 메모";
+
+            var conflict = new ConflictLogDto
+            {
+                EntityName = "InventoryTransfer",
+                EntityId = transferId.ToString("D"),
+                Reason = $"Expected revision mismatch. client={localRevision}, server={serverRevision}",
+                ClientJson = JsonSerializer.Serialize(clientSnapshot),
+                ServerJson = JsonSerializer.Serialize(serverSnapshot)
+            };
+
+            var session = new SessionState();
+            session.SetOfflineSession(new UserSessionDto
+            {
+                Username = "admin",
+                Role = DomainConstants.RoleAdmin,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ScopeType = TenantScopeCatalog.ScopeAdmin
+            });
+
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            var diagnostics = new SyncDiagnosticsService(session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+
+            var prepared = await InvokePrivateInstanceAsync<bool>(
+                sync,
+                "TryPrepareInventoryTransferRevisionRetryAsync",
+                conflict,
+                deviceId,
+                session,
+                CancellationToken.None);
+
+            Assert.True(prepared);
+
+            var storedTransfer = await db.InventoryTransfers.IgnoreQueryFilters()
+                .Include(current => current.Lines)
+                .SingleAsync(current => current.Id == transferId);
+            var outboxRow = await db.SyncOutboxEntries.AsNoTracking()
+                .SingleAsync(entry => entry.EntityName == nameof(LocalInventoryTransfer) && entry.EntityId == transferId);
+
+            Assert.Equal(serverRevision, storedTransfer.Revision);
+            Assert.True(storedTransfer.IsDirty);
+            Assert.Equal("로컬에서 수정한 재고이동 메모", storedTransfer.Memo);
+            Assert.Equal("Prepared", outboxRow.Status);
+            Assert.Null(outboxRow.SentAtUtc);
+            Assert.Equal(serverRevision, outboxRow.ExpectedRevision);
+
+            var rebasedSnapshot = LocalMappings.ToDto(storedTransfer);
+            rebasedSnapshot.ExpectedRevision = serverRevision;
+            rebasedSnapshot.MutationCreatedAtUtc = updatedAtUtc;
+            var expectedMutationId = InvokePrivateStatic<string>(
+                typeof(SyncService),
+                "BuildMutationId",
+                deviceId,
+                nameof(LocalInventoryTransfer),
+                rebasedSnapshot);
+            Assert.Equal(expectedMutationId, outboxRow.MutationId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SyncService_TryRepairRentalAssetRevisionConflictAsync_ResolvesWhenServerCanReplaceInvalidItemReference()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-rental-asset-resolve-{Guid.NewGuid():N}");
