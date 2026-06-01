@@ -3965,7 +3965,8 @@ public sealed class SyncService : IDisposable
     {
         var revStr = await _local.GetSettingAsync("LastSyncRevision", ct) ?? "0";
         var sinceRev = long.TryParse(revStr, out var r) ? r : 0L;
-        var hasPendingDirty = await _local.CountDirtyAsync(ct) > 0;
+        var pendingDirtyCount = await _local.CountDirtyAsync(ct);
+        var hasPendingDirty = pendingDirtyCount > 0;
         var requiresMirrorRefresh = await _local.IsServerMirrorRefreshRequiredAsync(ct);
 
         if (!requiresMirrorRefresh && !hasPendingDirty && await _local.HasLikelyCorruptedPrimaryWorkCacheAsync(_session, ct))
@@ -4014,15 +4015,21 @@ public sealed class SyncService : IDisposable
 
             if (hasPendingDirty)
             {
-                AppLogger.Warn("SYNC", $"증분 pull 반영 중 동시성 충돌이 발생했지만 미동기화 변경이 남아 있어 전체 캐시 재구성은 건너뜁니다: {ex.Message}");
+                var deferredMessage =
+                    $"증분 pull 반영 중 동시성 충돌이 발생했지만 미동기화 변경 {pendingDirtyCount:N0}건을 보존하기 위해 전체 캐시 재구성을 보류했습니다. " +
+                    "대기 변경이 서버에 반영된 뒤 자동으로 다시 불러옵니다.";
+                AppLogger.Warn("SYNC", $"{deferredMessage} {ex.Message}");
+                await _local.MarkServerMirrorRefreshRequiredAsync(CancellationToken.None);
                 await TryRecordDiagnosticAsync(
                     phase: "pull",
-                    rawMessage: $"증분 pull 반영 중 동시성 충돌(미동기화 변경 보존): {ex.Message}",
+                    rawMessage: $"{deferredMessage} detail={ex.Message}",
                     exception: ex,
                     severity: "Warning",
-                    recoveryAttempted: false,
+                    recoveryAttempted: true,
                     recoverySucceeded: false);
-                throw;
+                SetStatus(deferredMessage);
+                ScheduleTransientFailureRetry();
+                return;
             }
 
             AppLogger.Info("SYNC", $"증분 pull 반영 중 동시성 충돌이 발생해 전체 캐시 재구성을 수행합니다: {ex.Message}");
