@@ -4625,6 +4625,48 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SyncService_DeferPullRefreshUntilDirtyChangesArePushed_MarksRefreshAndShowsWaitingStatus()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-pull-defer-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = new SessionState();
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var diagnostics = new SyncDiagnosticsService(session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+
+            string? statusMessage = null;
+            sync.SyncStatusChanged += message => statusMessage = message;
+
+            await InvokePrivateInstanceTaskResultAsync(
+                sync,
+                "DeferPullRefreshUntilDirtyChangesArePushedAsync",
+                3,
+                new DbUpdateConcurrencyException("pull conflict"));
+
+            Assert.True(await localState.IsServerMirrorRefreshRequiredAsync());
+            Assert.NotNull(statusMessage);
+            Assert.Contains("미동기화 변경 3", statusMessage);
+            Assert.Contains("자동으로 다시 불러옵니다", statusMessage);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public void SyncService_DispatcherRequestsAreHandledOnlyAfterStart()
     {
         using var db = new LocalDbContext();

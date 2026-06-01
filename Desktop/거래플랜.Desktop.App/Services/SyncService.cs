@@ -4015,20 +4015,7 @@ public sealed class SyncService : IDisposable
 
             if (hasPendingDirty)
             {
-                var deferredMessage =
-                    $"증분 pull 반영 중 동시성 충돌이 발생했지만 미동기화 변경 {pendingDirtyCount:N0}건을 보존하기 위해 전체 캐시 재구성을 보류했습니다. " +
-                    "대기 변경이 서버에 반영된 뒤 자동으로 다시 불러옵니다.";
-                AppLogger.Warn("SYNC", $"{deferredMessage} {ex.Message}");
-                await _local.MarkServerMirrorRefreshRequiredAsync(CancellationToken.None);
-                await TryRecordDiagnosticAsync(
-                    phase: "pull",
-                    rawMessage: $"{deferredMessage} detail={ex.Message}",
-                    exception: ex,
-                    severity: "Warning",
-                    recoveryAttempted: true,
-                    recoverySucceeded: false);
-                SetStatus(deferredMessage);
-                ScheduleTransientFailureRetry();
+                await DeferPullRefreshUntilDirtyChangesArePushedAsync(pendingDirtyCount, ex);
                 return;
             }
 
@@ -5866,6 +5853,26 @@ public sealed class SyncService : IDisposable
         {
             await UpsertPulledInventoryTransferAsync(dto, ct);
         }
+    }
+
+    private async Task DeferPullRefreshUntilDirtyChangesArePushedAsync(
+        int pendingDirtyCount,
+        DbUpdateConcurrencyException exception)
+    {
+        var deferredMessage =
+            $"증분 pull 반영 중 동시성 충돌이 발생했지만 미동기화 변경 {pendingDirtyCount:N0}건을 보존하기 위해 전체 캐시 재구성을 보류했습니다. " +
+            "대기 변경이 서버에 반영된 뒤 자동으로 다시 불러옵니다.";
+        AppLogger.Warn("SYNC", $"{deferredMessage} {exception.Message}");
+        await _local.MarkServerMirrorRefreshRequiredAsync(CancellationToken.None);
+        await TryRecordDiagnosticAsync(
+            phase: "pull",
+            rawMessage: $"{deferredMessage} detail={exception.Message}",
+            exception: exception,
+            severity: "Warning",
+            recoveryAttempted: true,
+            recoverySucceeded: false);
+        SetStatus(deferredMessage);
+        ScheduleTransientFailureRetry();
     }
 
     private async Task<bool> TryRefreshSharedMirrorCoreAsync(CancellationToken ct)
