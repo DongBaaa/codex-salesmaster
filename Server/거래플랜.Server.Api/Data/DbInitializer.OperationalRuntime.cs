@@ -228,16 +228,31 @@ public static partial class DbInitializer
         await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "Revision", "INTEGER NOT NULL DEFAULT 0", "bigint NOT NULL DEFAULT 0", cancellationToken);
 
         var conflictStatusBackfillSql = providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase)
-            ? "UPDATE \"ConflictLogs\" SET \"Status\" = CASE WHEN \"ResolvedAtUtc\" IS NOT NULL THEN 'Resolved' ELSE COALESCE(NULLIF(TRIM(\"Status\"), ''), 'Open') END;"
-            : "UPDATE \"ConflictLogs\" SET \"Status\" = CASE WHEN \"ResolvedAtUtc\" IS NOT NULL THEN 'Resolved' ELSE COALESCE(NULLIF(TRIM(\"Status\"), ''), 'Open') END;";
+            ? """
+              UPDATE "ConflictLogs"
+              SET "Status" = 'Resolved'
+              WHERE "ResolvedAtUtc" IS NOT NULL AND "Status" <> 'Resolved';
+              UPDATE "ConflictLogs"
+              SET "Status" = 'Open'
+              WHERE "ResolvedAtUtc" IS NULL AND ("Status" IS NULL OR "Status" = '');
+              """
+            : """
+              UPDATE "ConflictLogs"
+              SET "Status" = 'Resolved'
+              WHERE "ResolvedAtUtc" IS NOT NULL AND "Status" <> 'Resolved';
+              UPDATE "ConflictLogs"
+              SET "Status" = 'Open'
+              WHERE "ResolvedAtUtc" IS NULL AND ("Status" IS NULL OR "Status" = '');
+              """;
 
         foreach (var sql in new[]
                  {
-                      conflictStatusBackfillSql,
-                      "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ProcessedSyncMutations_MutationId\" ON \"ProcessedSyncMutations\" (\"MutationId\");",
-                      "CREATE INDEX IF NOT EXISTS \"IX_ConflictLogs_Status_CreatedAtUtc\" ON \"ConflictLogs\" (\"Status\", \"CreatedAtUtc\");",
-                      "CREATE INDEX IF NOT EXISTS \"IX_ConflictLogs_EntityName_EntityId_Status\" ON \"ConflictLogs\" (\"EntityName\", \"EntityId\", \"Status\");",
-                      "CREATE INDEX IF NOT EXISTS \"IX_InventoryLedgerEntries_ItemId_OccurredDate\" ON \"InventoryLedgerEntries\" (\"ItemId\", \"OccurredDate\");",
+                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ProcessedSyncMutations_MutationId\" ON \"ProcessedSyncMutations\" (\"MutationId\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_ConflictLogs_Status_CreatedAtUtc\" ON \"ConflictLogs\" (\"Status\", \"CreatedAtUtc\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_ConflictLogs_EntityName_EntityId_Status\" ON \"ConflictLogs\" (\"EntityName\", \"EntityId\", \"Status\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_ConflictLogs_ResolvedAtUtc\" ON \"ConflictLogs\" (\"ResolvedAtUtc\");",
+                     conflictStatusBackfillSql,
+                     "CREATE INDEX IF NOT EXISTS \"IX_InventoryLedgerEntries_ItemId_OccurredDate\" ON \"InventoryLedgerEntries\" (\"ItemId\", \"OccurredDate\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_InventoryLedgerEntries_WarehouseCode\" ON \"InventoryLedgerEntries\" (\"WarehouseCode\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_AssetId_IsCurrent\" ON \"RentalAssetAssignmentHistories\" (\"AssetId\", \"IsCurrent\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_BillingProfileId\" ON \"RentalAssetAssignmentHistories\" (\"BillingProfileId\");",
