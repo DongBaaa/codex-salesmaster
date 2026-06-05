@@ -16,7 +16,7 @@ public sealed class RentalsPage : ContentPage
 
     public RentalsPage()
     {
-        GeoraePlanTheme.ApplyPage(this, "렌탈");
+        GeoraePlanTheme.ApplyPage(this, "렌탈 조회");
 
         _viewModel = ServiceHelper.GetRequiredService<RentalsViewModel>();
         _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
@@ -108,7 +108,7 @@ public sealed class RentalsPage : ContentPage
                 Children =
                 {
                     GeoraePlanTheme.CreateCompactCard(
-                        GeoraePlanTheme.CreateSectionTitle("렌탈", 15),
+                        GeoraePlanTheme.CreateSectionTitle("렌탈 조회", 15),
                         GeoraePlanTheme.CreateBodyText("같은 서버 sync 데이터 기준으로 청구프로필, 자산, 청구 이력을 조회합니다.", true, 12),
                         GeoraePlanTheme.CreateBodyText("모바일 렌탈은 조회 전용입니다. 청구 생성, 입금 등록, 프로필/자산 수정은 PC 렌탈 청구관리에서 처리하세요.", true, 12),
                         sectionGrid,

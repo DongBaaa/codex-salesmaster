@@ -2289,6 +2289,46 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SyncService_FlushPendingChangesAsync_RespectsCancellationWhenSyncIsAlreadyRunning()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-shutdown-sync-cancel-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateOnlineAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            var diagnostics = new SyncDiagnosticsService(session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+            var runningSync = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            typeof(SyncService)
+                .GetField("_currentSyncTask", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(sync, runningSync.Task);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                sync.FlushPendingChangesAsync(cts.Token));
+
+            runningSync.SetResult(false);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SyncService_ResolveItemWarehouseStockRevisionConflict_RebasesLocalNewerSnapshot()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-stock-revision-retry-{Guid.NewGuid():N}");
@@ -5295,6 +5335,99 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SaveInvoiceAsync_PurchaseStockIsAppliedOnlyAfterReceivingConfirmed()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-purchase-receiving-stock-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("81111111-1111-1111-1111-111111111111");
+            var itemId = Guid.Parse("81122222-2222-2222-2222-222222222222");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Receiving customer",
+                NameMatchKey = "RECEIVINGCUSTOMER"
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Receiving stock item",
+                NameMatchKey = "RECEIVINGSTOCKITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                PurchasePrice = 1000m
+            });
+            await db.SaveChangesAsync();
+
+            var saved = await service.SaveInvoiceAsync(new LocalInvoice
+            {
+                Id = Guid.Parse("81133333-3333-3333-3333-333333333333"),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                VoucherType = VoucherType.Purchase,
+                PurchaseReceivingRequired = true,
+                PurchaseReceivingStatus = InvoiceReceivingStatuses.Pending,
+                InvoiceDate = new DateOnly(2026, 5, 1),
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemId = itemId,
+                        ItemNameOriginal = "Receiving stock item",
+                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        Unit = "EA",
+                        Quantity = 4m,
+                        UnitPrice = 1000m,
+                        LineAmount = 4000m
+                    }
+                }
+            });
+
+            Assert.Equal(0m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleOrDefaultAsync());
+            Assert.Equal(0m, (await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId)).CurrentStock);
+
+            saved.PurchaseReceivingRequired = true;
+            saved.PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed;
+            saved.PurchaseReceivedAtUtc = DateTime.UtcNow;
+            saved.PurchaseReceivedByUsername = "admin";
+
+            await service.SaveInvoiceAsync(saved);
+
+            Assert.Equal(4m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+            Assert.Equal(4m, (await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId)).CurrentStock);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ResetItemInventoryValueAsync_KeepsZeroAfterInventoryRebuild()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-inventory-reset-{Guid.NewGuid():N}");
@@ -5341,6 +5474,10 @@ public sealed class LocalStateServicePartialsTests
                 OfficeCode = OfficeCodeCatalog.Usenet,
                 ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
                 VoucherType = VoucherType.Purchase,
+                PurchaseReceivingRequired = true,
+                PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed,
+                PurchaseReceivedAtUtc = DateTime.UtcNow,
+                PurchaseReceivedByUsername = "admin",
                 InvoiceDate = new DateOnly(2026, 5, 1),
                 Lines =
                 {
@@ -5463,6 +5600,10 @@ public sealed class LocalStateServicePartialsTests
                 ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
                 SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
                 VoucherType = VoucherType.Purchase,
+                PurchaseReceivingRequired = true,
+                PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed,
+                PurchaseReceivedAtUtc = DateTime.UtcNow,
+                PurchaseReceivedByUsername = "admin",
                 InvoiceDate = new DateOnly(2026, 5, 1),
                 Lines =
                 {
@@ -5578,6 +5719,10 @@ public sealed class LocalStateServicePartialsTests
                 ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
                 SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
                 VoucherType = VoucherType.Purchase,
+                PurchaseReceivingRequired = true,
+                PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed,
+                PurchaseReceivedAtUtc = DateTime.UtcNow,
+                PurchaseReceivedByUsername = "admin",
                 InvoiceDate = new DateOnly(2026, 5, 1),
                 Lines =
                 {

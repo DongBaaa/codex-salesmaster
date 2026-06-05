@@ -57,6 +57,37 @@ sanitize_release_id() {
 }
 
 compose() {
+  local requested_command="${1:-}"
+  case "$requested_command" in
+    down)
+      echo "blocked unsafe compose command: 'down' stops/removes every georaeplan service in the project. Deploy one service at a time with 'compose up -d postgres' or 'compose up -d --force-recreate api'." >&2
+      exit 1
+      ;;
+    stop|restart|kill|rm)
+      local has_target_service="false"
+      local arg
+      for arg in "$@"; do
+        case "$arg" in
+          api|postgres)
+            has_target_service="true"
+            ;;
+          -*|"")
+            ;;
+          "$requested_command")
+            ;;
+          *)
+            echo "blocked unsafe compose command: '$requested_command' may only target georaeplan services api/postgres, got '$arg'." >&2
+            exit 1
+            ;;
+        esac
+      done
+      if [[ "$has_target_service" != "true" ]]; then
+        echo "blocked unsafe compose command: '$requested_command' must name an explicit georaeplan service api/postgres." >&2
+        exit 1
+      fi
+      ;;
+  esac
+
   local args=()
   if [[ -f "$ENV_FILE" ]]; then
     args+=(--env-file "$ENV_FILE")

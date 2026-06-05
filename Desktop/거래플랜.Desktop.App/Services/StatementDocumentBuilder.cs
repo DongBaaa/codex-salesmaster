@@ -272,7 +272,11 @@ public static class StatementDocumentBuilder
         header.Cells.Add(CreateLabelCell("공급가액", accent, center: true));
         rows.Rows.Add(header);
 
-        var lines = invoice.Lines.Where(line => !line.IsDeleted).ToList();
+        var lines = invoice.Lines
+            .Where(line => !line.IsDeleted)
+            .OrderBy(line => line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue)
+            .ThenBy(line => line.Id)
+            .ToList();
         var rowCount = Math.Max(minRows, lines.Count + 1);
         var addedBlankGuide = false;
 
@@ -468,7 +472,11 @@ public static class StatementDocumentBuilder
         header.Cells.Add(CreateLabelCell("금액", BlueAccentBrush, center: true));
         group.Rows.Add(header);
 
-        var lines = invoice.Lines.Where(line => !line.IsDeleted).ToList();
+        var lines = invoice.Lines
+            .Where(line => !line.IsDeleted)
+            .OrderBy(line => line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue)
+            .ThenBy(line => line.Id)
+            .ToList();
         var rowCount = Math.Max(8, lines.Count);
         for (var i = 0; i < rowCount; i++)
         {

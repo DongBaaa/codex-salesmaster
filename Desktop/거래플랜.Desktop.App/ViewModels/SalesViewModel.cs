@@ -144,7 +144,10 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     // 라인 목록
     public ObservableCollection<InvoiceLineEditModel> Lines { get; } = new();
-    [ObservableProperty] private InvoiceLineEditModel? _selectedLine;
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(MoveLineUpCommand))]
+    [NotifyCanExecuteChangedFor(nameof(MoveLineDownCommand))]
+    private InvoiceLineEditModel? _selectedLine;
 
     // 합계
     [ObservableProperty] private decimal _totalAmount;
@@ -357,6 +360,8 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
         RenumberLines();
         RecalcTotals();
+        MoveLineUpCommand.NotifyCanExecuteChanged();
+        MoveLineDownCommand.NotifyCanExecuteChanged();
     }
 
     private void Line_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -772,10 +777,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             return lookupItems.Take(maxCount).ToList();
 
         return lookupItems
-            .Where(i =>
-                i.NameOriginal.Contains(text, StringComparison.OrdinalIgnoreCase) ||
-                i.SpecificationOriginal.Contains(text, StringComparison.OrdinalIgnoreCase) ||
-                i.MaterialNumber.Contains(text, StringComparison.OrdinalIgnoreCase))
+            .Where(i => MatchesInvoiceLookupItem(i, text))
             .Take(maxCount)
             .ToList();
     }
@@ -799,14 +801,21 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         return _allItems.FirstOrDefault(item => item.Id == itemId.Value);
     }
 
-    private LocalItem? TryResolveLinkedItemFromInput(string? itemName, string? specification, string? materialNumber)
+    private LocalItem? TryResolveLinkedItemFromInput(
+        string? itemName,
+        string? specification,
+        string? materialNumber,
+        string? serialNumber = null)
     {
         var normalizedName = (itemName ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(normalizedName))
+        var normalizedSerialNumber = (serialNumber ?? string.Empty).Trim();
+        var normalizedMaterialNumber = (materialNumber ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedName)
+            && string.IsNullOrWhiteSpace(normalizedMaterialNumber)
+            && string.IsNullOrWhiteSpace(normalizedSerialNumber))
             return null;
 
         var normalizedSpecification = (specification ?? string.Empty).Trim();
-        var normalizedMaterialNumber = (materialNumber ?? string.Empty).Trim();
         var lookupItems = GetInvoiceLookupItems().ToList();
 
         if (!string.IsNullOrWhiteSpace(normalizedMaterialNumber))
@@ -817,6 +826,18 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             if (materialMatches.Count == 1)
                 return materialMatches[0];
         }
+
+        if (!string.IsNullOrWhiteSpace(normalizedSerialNumber))
+        {
+            var serialMatches = lookupItems
+                .Where(item => string.Equals(item.SerialNumber?.Trim(), normalizedSerialNumber, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (serialMatches.Count == 1)
+                return serialMatches[0];
+        }
+
+        if (string.IsNullOrWhiteSpace(normalizedName))
+            return null;
 
         var exactMatches = lookupItems
             .Where(item => string.Equals(item.NameOriginal?.Trim(), normalizedName, StringComparison.OrdinalIgnoreCase)
@@ -837,6 +858,34 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         return null;
     }
 
+    private static bool MatchesInvoiceLookupItem(LocalItem item, string rawText)
+    {
+        var tokens = rawText
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length == 0)
+            return true;
+
+        return tokens.All(token => ContainsAnyItemField(item, token));
+    }
+
+    private static bool ContainsAnyItemField(LocalItem item, string token)
+        => ContainsText(item.NameOriginal, token)
+           || ContainsText(item.SpecificationOriginal, token)
+           || ContainsText(item.MaterialNumber, token)
+           || ContainsText(item.SerialNumber, token)
+           || ContainsText(item.CategoryName, token)
+           || ContainsText(item.Unit, token)
+           || ContainsText(item.ItemKind, token)
+           || ContainsText(item.TrackingType, token)
+           || ContainsText(item.StorageLocation, token)
+           || ContainsText(item.InstallLocation, token)
+           || ContainsText(item.SimpleMemo, token)
+           || ContainsText(item.Notes, token);
+
+    private static bool ContainsText(string? value, string token)
+        => !string.IsNullOrWhiteSpace(value)
+           && value.Contains(token, StringComparison.OrdinalIgnoreCase);
+
     private bool TryResolveLineItemForSave(
         InvoiceLineEditModel line,
         LocalItem? selectedInputItem,
@@ -854,7 +903,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
         resolvedItem = selectedInputItem
             ?? (keepExistingLink ? previousItem : null)
-            ?? TryResolveLinkedItemFromInput(InputItemName, InputSpec, InputMaterialNo);
+            ?? TryResolveLinkedItemFromInput(InputItemName, InputSpec, InputMaterialNo, InputSerialNumber);
 
         if (line.ItemId.HasValue && line.ItemId.Value != Guid.Empty && resolvedItem is null && !keepExistingLink)
         {
@@ -993,7 +1042,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     private void AddLine()
     {
         if (string.IsNullOrWhiteSpace(InputItemName)) return;
-        var resolvedItem = SelectedInputItem ?? TryResolveLinkedItemFromInput(InputItemName, InputSpec, InputMaterialNo);
+        var resolvedItem = SelectedInputItem ?? TryResolveLinkedItemFromInput(InputItemName, InputSpec, InputMaterialNo, InputSerialNumber);
         var line = new InvoiceLineEditModel
         {
             ItemId = resolvedItem?.Id,
@@ -1063,6 +1112,39 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         RecalcTotals();
     }
 
+    private bool CanMoveSelectedLineUp() => SelectedLine is not null && Lines.IndexOf(SelectedLine) > 0;
+
+    [RelayCommand(CanExecute = nameof(CanMoveSelectedLineUp))]
+    private void MoveLineUp()
+    {
+        if (SelectedLine is null)
+            return;
+
+        var index = Lines.IndexOf(SelectedLine);
+        if (index <= 0)
+            return;
+
+        Lines.Move(index, index - 1);
+        RenumberLines();
+    }
+
+    private bool CanMoveSelectedLineDown()
+        => SelectedLine is not null && Lines.IndexOf(SelectedLine) >= 0 && Lines.IndexOf(SelectedLine) < Lines.Count - 1;
+
+    [RelayCommand(CanExecute = nameof(CanMoveSelectedLineDown))]
+    private void MoveLineDown()
+    {
+        if (SelectedLine is null)
+            return;
+
+        var index = Lines.IndexOf(SelectedLine);
+        if (index < 0 || index >= Lines.Count - 1)
+            return;
+
+        Lines.Move(index, index + 1);
+        RenumberLines();
+    }
+
     partial void OnSelectedLineChanged(InvoiceLineEditModel? value)
     {
         if (value is null) return;
@@ -1114,9 +1196,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         var lookupItems = GetInvoiceLookupItems();
         var list = string.IsNullOrEmpty(text)
             ? lookupItems.Take(50)
-            : lookupItems.Where(i =>
-                i.NameOriginal.Contains(text, StringComparison.OrdinalIgnoreCase) ||
-                i.SpecificationOriginal.Contains(text, StringComparison.OrdinalIgnoreCase));
+            : lookupItems.Where(i => MatchesInvoiceLookupItem(i, text));
         foreach (var i in list)
             ItemSearchResults.Add(i);
     }
@@ -1273,7 +1353,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
         foreach (var invoice in selectedInvoices)
         {
-            foreach (var line in invoice.Lines.Where(line => !line.IsDeleted))
+            foreach (var line in GetActiveLinesInOrder(invoice.Lines))
             {
                 Lines.Add(InvoiceLineEditModel.FromLocal(line));
             }
@@ -1412,6 +1492,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
                 System.Windows.MessageBox.Show("거래처를 선택하세요.", "알림", System.Windows.MessageBoxButton.OK);
             return false;
         }
+        RenumberLines();
         var validLines = Lines.Where(l => !string.IsNullOrWhiteSpace(l.ItemName)).ToList();
         if (!validLines.Any())
         {
@@ -1590,7 +1671,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         if (customer is not null) SetCustomer(customer, ignoreTradeType: true);
 
         Lines.Clear();
-        foreach (var line in inv.Lines.Where(l => !l.IsDeleted))
+        foreach (var line in GetActiveLinesInOrder(inv.Lines))
             Lines.Add(InvoiceLineEditModel.FromLocal(line));
         RecalcTotals();
         await LoadInvoiceVersionsAsync(inv, Interlocked.Increment(ref _invoiceVersionLoadVersion));
@@ -2133,8 +2214,17 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     private void RenumberLines()
     {
         for (var i = 0; i < Lines.Count; i++)
+        {
             Lines[i].RowNo = i + 1;
+            Lines[i].OrderIndex = i + 1;
+        }
     }
+
+    private static IEnumerable<LocalInvoiceLine> GetActiveLinesInOrder(IEnumerable<LocalInvoiceLine> lines)
+        => lines
+            .Where(line => !line.IsDeleted)
+            .OrderBy(line => line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue)
+            .ThenBy(line => line.Id);
 
     private List<AttachmentSelectionState> BuildDefaultAttachmentSelections()
     {
@@ -2393,7 +2483,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         headerRow.Cells.Add(CreateHeaderCell("비고"));
         lineGroup.Rows.Add(headerRow);
 
-        var lines = invoice.Lines.Where(l => !l.IsDeleted).ToList();
+        var lines = GetActiveLinesInOrder(invoice.Lines).ToList();
         if (lines.Count == 0)
         {
             var emptyRow = new System.Windows.Documents.TableRow();

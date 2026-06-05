@@ -4019,14 +4019,14 @@ public sealed class SyncController : ControllerBase
         }
     }
 
-    private static InvoiceLine CreateInvoiceLine(Guid invoiceId, InvoiceLineDto line, Guid resolvedId)
+    private static InvoiceLine CreateInvoiceLine(Guid invoiceId, InvoiceLineDto line, Guid resolvedId, int fallbackOrderIndex)
     {
         var entity = new InvoiceLine();
-        ApplyInvoiceLine(entity, invoiceId, line, resolvedId);
+        ApplyInvoiceLine(entity, invoiceId, line, resolvedId, fallbackOrderIndex);
         return entity;
     }
 
-    private static void ApplyInvoiceLine(InvoiceLine entity, Guid invoiceId, InvoiceLineDto line, Guid resolvedId)
+    private static void ApplyInvoiceLine(InvoiceLine entity, Guid invoiceId, InvoiceLineDto line, Guid resolvedId, int fallbackOrderIndex)
     {
         var lineAmount = line.LineAmount == 0 ? line.Quantity * line.UnitPrice : line.LineAmount;
         entity.Id = resolvedId;
@@ -4044,6 +4044,7 @@ public sealed class SyncController : ControllerBase
         entity.InstallLocation = line.InstallLocation;
         entity.RentalStartDate = line.RentalStartDate;
         entity.RentalEndDate = line.RentalEndDate;
+        entity.OrderIndex = line.OrderIndex > 0 ? line.OrderIndex : fallbackOrderIndex;
         entity.ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType);
         entity.IsDeleted = line.IsDeleted;
     }
@@ -4080,12 +4081,13 @@ public sealed class SyncController : ControllerBase
         if (invoice.IsDeleted)
             return;
 
+        var order = 1;
         foreach (var line in lines)
         {
             if (line.IsDeleted)
                 continue;
 
-            invoice.Lines.Add(CreateInvoiceLine(invoice.Id, line, line.Id == Guid.Empty ? Guid.NewGuid() : line.Id));
+            invoice.Lines.Add(CreateInvoiceLine(invoice.Id, line, line.Id == Guid.Empty ? Guid.NewGuid() : line.Id, order++));
         }
     }
 

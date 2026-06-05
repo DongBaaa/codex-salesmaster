@@ -215,7 +215,10 @@ public sealed class InvoicesViewModel : ObservableObject
     private void ReplaceSelectedInvoiceLines(IEnumerable<InvoiceLineDto>? lines)
     {
         SelectedInvoiceLines.Clear();
-        foreach (var line in (lines ?? Enumerable.Empty<InvoiceLineDto>()).Where(line => !line.IsDeleted))
+        foreach (var line in (lines ?? Enumerable.Empty<InvoiceLineDto>())
+                     .Where(line => !line.IsDeleted)
+                     .OrderBy(line => line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue)
+                     .ThenBy(line => line.Id))
             SelectedInvoiceLines.Add(line);
 
         OnPropertyChanged(nameof(SelectedInvoiceLinesHeight));

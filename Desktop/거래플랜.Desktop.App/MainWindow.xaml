@@ -320,7 +320,14 @@
                                 <Border DockPanel.Dock="Top" Background="#102039" CornerRadius="6,6,0,0" Padding="10,8">
                                     <StackPanel>
                                         <TextBlock Text="거래처 목록" Foreground="#4FC3F7" FontWeight="Bold"/>
-                                        <TextBox Text="{Binding CustomerFilterText, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,0,0"/>
+                                        <TextBox Text="{Binding CustomerFilterText, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,8,0,0"
+                                                 ToolTip="상호, 전화, 휴대폰, 사업자번호, 담당자, 담당지점, 메모로 검색할 수 있습니다."/>
+                                        <TextBlock Text="상호/전화/사업자번호/담당자 검색"
+                                                   Foreground="#90CAF9"
+                                                   FontSize="11"
+                                                   Margin="0,4,0,0"
+                                                   TextWrapping="Wrap"/>
                                         <Button Content="전체 보기" Background="#2E4158" Command="{Binding ClearCustomerFilterCommand}" Margin="0,8,0,0"/>
                                     </StackPanel>
                                 </Border>
@@ -470,6 +477,11 @@
                                     <StackPanel Margin="10,8">
                                         <TextBlock Text="상호" FontSize="11" Foreground="#9FB3C8"/>
                                         <TextBlock Text="{Binding PreviewCustomerName}" FontSize="16" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,4,0,8"/>
+                                        <TextBlock Text="{Binding CustomerInlineSaveStatus}"
+                                                   Foreground="#A5D6A7"
+                                                   FontSize="11"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,0,0,8"/>
                                         <TextBlock Text="사업자번호" FontSize="11" Foreground="#9FB3C8"/>
                                         <TextBox Text="{Binding EditCustBizNumber, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding HasSelectedCustomer}" Margin="0,4,0,8"/>
                                         <TextBlock Text="전화" FontSize="11" Foreground="#9FB3C8"/>

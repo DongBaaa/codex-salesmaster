@@ -27,7 +27,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     private string _lineUnitPriceText = "0";
     private string _lineRemark = string.Empty;
     private string _memo = string.Empty;
-    private string _statusMessage = "거래처를 찾고 품목을 추가한 뒤 전표를 저장하세요.";
+    private string _statusMessage = "1단계 거래처 선택 → 2단계 품목 추가 → 마지막 저장 카드에서 전표 저장 순서로 입력하세요.";
     private bool _isBusy;
     private bool _isLoaded;
     private bool _isItemEntrySheetVisible;
@@ -315,8 +315,8 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public string WarehouseLabelText => IsPurchaseDocument ? "입고창고" : "출고창고";
     public string WarehousePickerTitleText => $"{WarehouseLabelText} 선택";
     public string DocumentSaveSectionTitle => IsEditMode
-        ? IsPurchaseDocument ? "구매 전표 수정 저장" : "판매 전표 수정 저장"
-        : IsPurchaseDocument ? "구매 전표 저장" : "판매 전표 저장";
+        ? IsPurchaseDocument ? "마지막 단계 · 구매 전표 수정 저장" : "마지막 단계 · 판매 전표 수정 저장"
+        : IsPurchaseDocument ? "마지막 단계 · 구매 전표 저장" : "마지막 단계 · 판매 전표 저장";
     public string SaveButtonText => IsEditMode
         ? IsPurchaseDocument ? "구매 전표 수정 저장" : "판매 전표 수정 저장"
         : IsPurchaseDocument ? "구매 전표 저장" : "판매 전표 저장";
@@ -415,7 +415,10 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         SelectSourceWarehouseByCode(invoice.SourceWarehouseCode);
 
         LineItems.Clear();
-        foreach (var line in invoice.Lines.Where(line => !line.IsDeleted))
+        foreach (var line in invoice.Lines
+                     .Where(line => !line.IsDeleted)
+                     .OrderBy(line => line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue)
+                     .ThenBy(line => line.Id))
             LineItems.Add(InvoiceLineDraftItem.FromDto(line));
 
         OnPropertyChanged(nameof(PageTitleText));
@@ -423,7 +426,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         OnPropertyChanged(nameof(SaveButtonText));
         OnPropertyChanged(nameof(DraftSummary));
         OnPropertyChanged(nameof(VatSummary));
-        StatusMessage = $"{DocumentKindText} 전표를 수정 중입니다. 필요한 항목을 바꾼 뒤 저장하세요.";
+        StatusMessage = $"{DocumentKindText} 전표를 수정 중입니다. 필요한 항목을 바꾼 뒤 마지막 저장 카드에서 저장하세요.";
     }
 
     public async Task LoadAsync()
@@ -533,7 +536,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
         SelectedCustomer = customer;
         CustomerSearchText = customer.NameOriginal;
-        StatusMessage = $"{customer.NameOriginal} {CustomerNameLabelText} 기준으로 {DocumentKindText} 전표를 입력하세요.";
+        StatusMessage = $"{customer.NameOriginal} {CustomerNameLabelText} 기준입니다. 품목을 추가한 뒤 마지막 저장 카드에서 {DocumentKindText} 전표를 저장하세요.";
     }
 
     public async Task SelectCategoryAsync(ItemCategorySummaryDto category, bool resetSearch = true)
@@ -697,12 +700,12 @@ public sealed class InvoiceDraftViewModel : ObservableObject
                 LineItems[index] = draft;
             }
 
-            StatusMessage = "전표 품목을 수정했습니다. 같은 분류에서 다음 품목을 계속 추가하세요.";
+            StatusMessage = "전표 품목을 수정했습니다. 더 추가하거나 마지막 저장 카드에서 전표를 저장하세요.";
         }
         else
         {
             LineItems.Add(draft);
-            StatusMessage = "전표 품목을 추가했습니다. 같은 분류에서 다음 품목을 계속 선택하세요.";
+            StatusMessage = "전표 품목을 추가했습니다. 더 추가하거나 마지막 저장 카드에서 전표를 저장하세요.";
         }
 
         await RecordRecentSelectionAsync(SelectedItem);
@@ -893,7 +896,11 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     {
         var now = DateTime.UtcNow;
         var invoiceId = _editingInvoice?.Id ?? Guid.NewGuid();
-        var lines = LineItems.Select(line => line.ToDto(invoiceId)).ToList();
+        var lines = LineItems.Select((line, index) =>
+        {
+            line.OrderIndex = index + 1;
+            return line.ToDto(invoiceId);
+        }).ToList();
         var totals = CalculateTotals(lines.Select(line => line.LineAmount));
 
         return new InvoiceDto
@@ -982,7 +989,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             await RecordRecentSelectionAsync(SelectedItem);
 
         IsItemEntrySheetVisible = true;
-        StatusMessage = $"{item.NameOriginal} 품목을 선택했습니다. 수량과 단가를 입력하세요.";
+        StatusMessage = $"{item.NameOriginal} 품목을 선택했습니다. 수량과 단가를 입력한 뒤 품목 추가를 누르세요.";
     }
 
     private void ResetItemSelection(bool clearCategory)

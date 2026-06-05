@@ -236,7 +236,8 @@ public sealed partial class RentalBillingViewModel
         await _autoSaveGate.WaitAsync(ct);
         try
         {
-            if (HasMeaningfulDraftState())
+            if (HasMeaningfulDraftState() &&
+                (string.IsNullOrWhiteSpace(_selectedRowBaselineSignature) || HasUnsavedEditorChangesAgainstBaseline()))
             {
                 await _rental.SaveBillingEditorDraftAsync(BuildBillingEditorDraft(), _session, ct);
             }
@@ -255,6 +256,7 @@ public sealed partial class RentalBillingViewModel
         => new()
         {
             EditId = EditId,
+            Revision = _editRevision,
             CustomerId = EditCustomerId,
             CustomerName = EditCustomerName,
             BusinessNumber = EditBusinessNumber,
@@ -300,6 +302,7 @@ public sealed partial class RentalBillingViewModel
     {
         SelectedRow = null;
         EditId = draft.EditId == Guid.Empty ? Guid.NewGuid() : draft.EditId;
+        _editRevision = draft.Revision;
         EditCustomerId = draft.CustomerId;
         EditCustomerName = draft.CustomerName ?? string.Empty;
         EditBusinessNumber = draft.BusinessNumber ?? string.Empty;
@@ -394,6 +397,7 @@ public sealed partial class RentalBillingViewModel
 
         SelectedTemplateItem = TemplateItems.FirstOrDefault(item => item.ItemId == draft.SelectedTemplateItemId)
             ?? TemplateItems.FirstOrDefault();
+        _selectedRowBaselineSignature = string.Empty;
         UpdateTemplateDerivedValues();
     }
 
@@ -401,10 +405,15 @@ public sealed partial class RentalBillingViewModel
     {
         if (IsAutoSaveSuppressed || !HasMeaningfulDraftState())
             return;
+        if (!string.IsNullOrWhiteSpace(_selectedRowBaselineSignature) && !HasUnsavedEditorChangesAgainstBaseline())
+            return;
 
         var snapshot = BuildBillingEditorDraft();
         _ = SafePersistSnapshotAsync(snapshot);
     }
+
+    private bool HasUnsavedEditorChangesAgainstBaseline()
+        => !string.Equals(_selectedRowBaselineSignature, BuildCurrentEditorSignature(), StringComparison.Ordinal);
 
     private async Task SafePersistSnapshotAsync(RentalBillingEditorDraftModel snapshot)
     {

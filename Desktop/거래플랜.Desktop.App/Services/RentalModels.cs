@@ -290,6 +290,7 @@ public sealed class RentalBillingRunModel
 public sealed class RentalBillingEditorDraftModel
 {
     public Guid EditId { get; set; }
+    public long Revision { get; set; }
     public Guid? CustomerId { get; set; }
     public string CustomerName { get; set; } = string.Empty;
     public string BusinessNumber { get; set; } = string.Empty;

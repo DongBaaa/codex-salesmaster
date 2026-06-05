@@ -81,6 +81,7 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _editCustContactPerson = string.Empty;
     [ObservableProperty] private string _editCustAddress = string.Empty;
     [ObservableProperty] private string _editCustNotes = string.Empty;
+    [ObservableProperty] private string _customerInlineSaveStatus = "거래처를 선택하면 빠른 수정 상태가 표시됩니다.";
 
     partial void OnEditCustBizNumberChanged(string value) => TriggerCustomerAutoSave();
     partial void OnEditCustPhoneChanged(string value) => TriggerCustomerAutoSave();
@@ -91,16 +92,24 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void TriggerCustomerAutoSave()
     {
+        if (_suppressCustomerSave)
+            return;
+
         _customerAutoSaveCts?.Cancel();
         _customerAutoSaveCts?.Dispose();
         _customerAutoSaveCts = new CancellationTokenSource();
         var version = Interlocked.Increment(ref _customerAutoSaveVersion);
         var token = _customerAutoSaveCts.Token;
+        CustomerInlineSaveStatus = "거래처 정보 변경 감지 - 잠시 후 자동저장합니다.";
         UiTaskHelper.Forget(
             AutoSaveCustomerAsync(token, version),
             "MAIN",
             "거래처 인라인 자동저장",
-            ex => AppLogger.Warn("AUTOSAVE", $"Customer inline auto-save failed: {ex.Message}"));
+            ex =>
+            {
+                CustomerInlineSaveStatus = $"거래처 정보 자동저장 실패: {ex.Message}";
+                AppLogger.Warn("AUTOSAVE", $"Customer inline auto-save failed: {ex.Message}");
+            });
     }
 
     private async Task AutoSaveCustomerAsync(CancellationToken cancellationToken, int version)
@@ -121,6 +130,7 @@ public sealed partial class MainViewModel : ObservableObject
         if (customer is null)
             return;
 
+        CustomerInlineSaveStatus = "거래처 정보 저장 중...";
         customer.BusinessNumber = EditCustBizNumber;
         customer.Phone = EditCustPhone;
         customer.Department = EditCustDept;
@@ -130,7 +140,15 @@ public sealed partial class MainViewModel : ObservableObject
         customer.NameMatchKey = customer.NameOriginal.ToUpperInvariant();
         var result = await _local.UpsertCustomerAsync(customer, _session);
         if (!result.Success)
+        {
+            CustomerInlineSaveStatus = string.IsNullOrWhiteSpace(result.Message)
+                ? "거래처 정보 저장 실패 - 권한 또는 동기화 상태를 확인하세요."
+                : $"거래처 정보 저장 실패: {result.Message}";
             AppLogger.Warn("AUTOSAVE", $"Customer inline auto-save failed for '{customer.NameOriginal}'. {result.Message}");
+            return;
+        }
+
+        CustomerInlineSaveStatus = $"거래처 정보 저장됨 · {DateTime.Now:HH:mm:ss}";
     }
 
     // 전표 목록 - Bottom panel (선택한 전표 라인 미리보기)
@@ -553,10 +571,38 @@ public sealed partial class MainViewModel : ObservableObject
         FilteredCustomers.Clear();
         var filtered = string.IsNullOrEmpty(text)
             ? _allCustomers
-            : _allCustomers.Where(c => c.NameOriginal.Contains(text, StringComparison.OrdinalIgnoreCase));
+            : _allCustomers.Where(c => MatchesCustomerQuickFilter(c, text));
         foreach (var c in filtered)
             FilteredCustomers.Add(c);
     }
+
+    private static bool MatchesCustomerQuickFilter(LocalCustomer customer, string rawText)
+    {
+        var tokens = rawText
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length == 0)
+            return true;
+
+        return tokens.All(token => ContainsAnyCustomerField(customer, token));
+    }
+
+    private static bool ContainsAnyCustomerField(LocalCustomer customer, string token)
+        => ContainsText(customer.NameOriginal, token)
+           || ContainsText(customer.BusinessNumber, token)
+           || ContainsText(customer.Phone, token)
+           || ContainsText(customer.MobilePhone, token)
+           || ContainsText(customer.ContactPerson, token)
+           || ContainsText(customer.Department, token)
+           || ContainsText(customer.TradeType, token)
+           || ContainsText(customer.PriceGrade, token)
+           || ContainsText(customer.ResponsibleOfficeCode, token)
+           || ContainsText(customer.Address, token)
+           || ContainsText(customer.DetailAddress, token)
+           || ContainsText(customer.Notes, token);
+
+    private static bool ContainsText(string? value, string token)
+        => !string.IsNullOrWhiteSpace(value)
+           && value.Contains(token, StringComparison.OrdinalIgnoreCase);
 
     partial void OnCustomerFilterTextChanged(string value) => ApplyCustomerFilter();
     partial void OnSelectedCustomerFilterChanged(LocalCustomer? value)
@@ -571,6 +617,9 @@ public sealed partial class MainViewModel : ObservableObject
             EditCustContactPerson = value?.ContactPerson ?? string.Empty;
             EditCustAddress = value?.Address ?? string.Empty;
             EditCustNotes = value?.Notes ?? string.Empty;
+            CustomerInlineSaveStatus = value is null
+                ? "거래처를 선택하면 빠른 수정 상태가 표시됩니다."
+                : "거래처 정보 빠른 수정 가능 - 입력칸을 벗어나면 자동저장됩니다.";
         }
         finally { _suppressCustomerSave = false; }
 
@@ -785,9 +834,11 @@ public sealed partial class MainViewModel : ObservableObject
         Guid? customerId = SelectedCustomerFilter?.Id;
         var queryDateRange = ResolveMainInvoiceQueryDateRange(FilterFrom, FilterTo);
         var invoices = await _local.GetInvoicesAsync(queryDateRange.From, queryDateRange.To, customerId, _session);
-        var customerMap = await _local.GetCustomerNameMapAsync(invoices.Select(invoice => invoice.CustomerId));
+        var invoiceList = invoices.ToList();
+        var canReuseAsAllInvoiceSet = customerId is null && queryDateRange.From is null && queryDateRange.To is null;
+        var customerMap = await _local.GetCustomerNameMapAsync(invoiceList.Select(invoice => invoice.CustomerId));
         var showCustomerName = customerId is null;
-        IEnumerable<LocalInvoice> filteredInvoices = invoices;
+        IEnumerable<LocalInvoice> filteredInvoices = invoiceList;
         var hiddenTextFilters = NormalizeHiddenInvoiceTextFilters(
             FilterCustomerName,
             FilterMinAmountText,
@@ -840,8 +891,8 @@ public sealed partial class MainViewModel : ObservableObject
             InvoiceRows.Add(InvoiceListRow.From(inv, custName, showCustomerName));
         }
 
-        await RefreshDashboardMetricsAsync();
-        await LoadInvoiceFavoritesAsync();
+        await RefreshDashboardMetricsAsync(canReuseAsAllInvoiceSet ? invoiceList : null);
+        await LoadInvoiceFavoritesAsync(canReuseAsAllInvoiceSet ? invoiceList : null);
         await RefreshSelectedCustomerFinancialPreviewAsync();
     }
 
@@ -1051,11 +1102,12 @@ public sealed partial class MainViewModel : ObservableObject
         return _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(FavoriteInvoiceIdsSettingKey), payload);
     }
 
-    private async Task LoadInvoiceFavoritesAsync()
+    private async Task LoadInvoiceFavoritesAsync(IEnumerable<LocalInvoice>? sourceInvoices = null)
     {
         var selectedId = SelectedFavoriteInvoice?.InvoiceId;
         var ids = await GetFavoriteInvoiceIdsAsync();
-        var allInvoices = await _local.GetInvoicesAsync(from: null, to: null, customerId: null, session: _session);
+        var allInvoices = sourceInvoices?.ToList()
+            ?? await _local.GetInvoicesAsync(from: null, to: null, customerId: null, session: _session);
         var invoiceMap = allInvoices.ToDictionary(i => i.Id);
         var customerMap = await _local.GetCustomerNameMapAsync(allInvoices.Select(invoice => invoice.CustomerId));
 

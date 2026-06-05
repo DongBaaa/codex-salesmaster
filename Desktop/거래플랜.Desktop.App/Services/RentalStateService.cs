@@ -1706,7 +1706,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var existing = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == profile.Id, ct);
-        if (existing is not null && !CanAccessRental(
+        if (existing is not null && !CanEditRental(
                 RentalScopeNormalizer.ResolveResponsibleOfficeCode(
                     existing.TenantCode,
                     existing.OfficeCode,
@@ -1822,7 +1822,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile.RequiresFollowUp = profile.RequiresFollowUp || profile.OutstandingAmount > 0m;
         profile.ResponsibleOfficeCode = officeCode;
         profile.ManagementCompanyCode = profileScope.OwnerOfficeCode;
-        if (!CanAccessRental(profile.ResponsibleOfficeCode, session))
+        if (!CanEditRental(profile.ResponsibleOfficeCode, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 저장할 수 없습니다.");
 
         var templateItems = GetBillingTemplateItems(profile, Array.Empty<LocalRentalAsset>());
@@ -1934,7 +1934,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .FirstOrDefaultAsync(current => current.Id == profileId, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanAccessRental(
+        if (!CanEditRental(
                 string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
                     ? profile.ManagementCompanyCode
                     : profile.ResponsibleOfficeCode,
@@ -2010,7 +2010,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanAccessRental(
+        if (!CanEditRental(
                 string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
                     ? profile.ManagementCompanyCode
                     : profile.ResponsibleOfficeCode,
@@ -2046,7 +2046,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 }
 
                 linkedInvoice.Lines = lineBuildResult.Lines;
-                var rebuiltInvoice = await _local.SaveInvoiceAsync(linkedInvoice, ct);
+                var rebuiltInvoiceResult = await SaveRentalBillingInvoiceAsync(linkedInvoice, session, ct);
+                if (!rebuiltInvoiceResult.Success || rebuiltInvoiceResult.Invoice is null)
+                    return LocalMutationResult.Denied(rebuiltInvoiceResult.Message);
+                var rebuiltInvoice = rebuiltInvoiceResult.Invoice;
                 invoiceId = rebuiltInvoice.Id;
                 billedAmount = rebuiltInvoice.TotalAmount;
                 currentRun.Items = CloneTemplateItemsForRun(templateItems, Math.Max(1, currentRun.CycleMonths));
@@ -2054,7 +2057,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
             }
             else if (NormalizeRentalBillingInvoiceLineItemNames(linkedInvoice, currentRun))
             {
-                var normalizedInvoice = await _local.SaveInvoiceAsync(linkedInvoice, ct);
+                var normalizedInvoiceResult = await SaveRentalBillingInvoiceAsync(linkedInvoice, session, ct);
+                if (!normalizedInvoiceResult.Success || normalizedInvoiceResult.Invoice is null)
+                    return LocalMutationResult.Denied(normalizedInvoiceResult.Message);
+                var normalizedInvoice = normalizedInvoiceResult.Invoice;
                 invoiceId = normalizedInvoice.Id;
                 billedAmount = normalizedInvoice.TotalAmount;
             }
@@ -2110,7 +2116,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 Lines = lineBuildResult.Lines
             };
 
-            var savedInvoice = await _local.SaveInvoiceAsync(invoice, ct);
+            var savedInvoiceResult = await SaveRentalBillingInvoiceAsync(invoice, session, ct);
+            if (!savedInvoiceResult.Success || savedInvoiceResult.Invoice is null)
+                return LocalMutationResult.Denied(savedInvoiceResult.Message);
+            var savedInvoice = savedInvoiceResult.Invoice;
             invoiceId = savedInvoice.Id;
             billedAmount = savedInvoice.TotalAmount;
         }
@@ -2126,15 +2135,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         profile.BillingStatus = PaymentFlowConstants.BillingStatusInProgress;
         profile.CompletionStatus = PaymentFlowConstants.CompletionPending;
-        profile.SettledAmount = Math.Max(0m, profile.SettledAmount);
-        profile.OutstandingAmount = Math.Max(0m, billedAmount - profile.SettledAmount);
-        profile.SettlementStatus = DetermineBillingSettlementStatus(profile, profile.SettledAmount, billedAmount);
+        var runSettledAmount = await GetRentalBillingRunSettledAmountAsync(profile.Id, currentRun.RunId, ct);
+        if (runSettledAmount <= 0m)
+            runSettledAmount = Math.Max(0m, currentRun.SettledAmount);
+        profile.SettledAmount = runSettledAmount;
+        profile.OutstandingAmount = Math.Max(0m, billedAmount - runSettledAmount);
+        profile.SettlementStatus = DetermineBillingSettlementStatus(profile, runSettledAmount, billedAmount);
         if (string.Equals(profile.SettlementStatus, PaymentFlowConstants.SettlementStatusUnpaid, StringComparison.OrdinalIgnoreCase))
             profile.SettlementStatus = PaymentFlowConstants.SettlementStatusPending;
         profile.RequiresFollowUp = profile.RequiresFollowUp || profile.OutstandingAmount > 0m;
         currentRun.Status = PaymentFlowConstants.BillingStatusInProgress;
         currentRun.BilledAmount = billedAmount;
-        currentRun.SettledAmount = profile.SettledAmount;
+        currentRun.SettledAmount = runSettledAmount;
         currentRun.SettlementStatus = profile.SettlementStatus;
         UpsertBillingRun(profile, currentRun);
         profile.IsDirty = true;
@@ -2146,8 +2158,73 @@ WHERE ""AssignedUsername"" <> '';", ct);
             invoiceId);
     }
 
+    private async Task<(bool Success, string Message, LocalInvoice? Invoice)> SaveRentalBillingInvoiceAsync(
+        LocalInvoice invoice,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (_local is null)
+            return (false, "렌탈 청구 전표 저장 서비스를 사용할 수 없습니다.", null);
+
+        var saveContext = new InvoiceSaveContext
+        {
+            Username = session.User?.Username ?? "rental-billing",
+            Role = session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet),
+            ForceOverride = true
+        };
+        var saveResult = await _local.SaveInvoiceAsync(invoice, saveContext, session, ct);
+        if (!saveResult.Success)
+        {
+            var message = string.IsNullOrWhiteSpace(saveResult.Message)
+                ? "렌탈 청구 전표를 저장할 수 없습니다."
+                : saveResult.Message;
+            return (false, message, null);
+        }
+
+        var savedInvoice = await _local.GetInvoiceAsync(saveResult.SavedInvoiceId, ct);
+        return savedInvoice is null
+            ? (false, "저장한 렌탈 청구 전표를 다시 불러올 수 없습니다.", null)
+            : (true, string.Empty, savedInvoice);
+    }
+
+    private async Task<decimal> GetRentalBillingRunSettledAmountAsync(
+        Guid billingProfileId,
+        Guid billingRunId,
+        CancellationToken ct)
+    {
+        if (billingProfileId == Guid.Empty || billingRunId == Guid.Empty)
+            return 0m;
+
+        var amounts = await _db.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(transaction =>
+                !transaction.IsDeleted &&
+                transaction.LinkedRentalBillingProfileId == billingProfileId &&
+                transaction.LinkedRentalBillingRunId == billingRunId)
+            .Select(transaction => transaction.SettlementAmount)
+            .ToListAsync(ct);
+        return Math.Max(0m, amounts.Sum());
+    }
+
     public async Task<LocalMutationResult> HoldBillingAsync(
         Guid billingProfileId,
+        string note,
+        SessionState session,
+        CancellationToken ct = default,
+        long? expectedRevision = null)
+        => await HoldBillingAsync(
+            billingProfileId,
+            DateOnly.FromDateTime(DateTime.Today),
+            note,
+            session,
+            ct,
+            expectedRevision);
+
+    public async Task<LocalMutationResult> HoldBillingAsync(
+        Guid billingProfileId,
+        DateOnly referenceDate,
         string note,
         SessionState session,
         CancellationToken ct = default,
@@ -2157,7 +2234,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanAccessRental(
+        if (!CanEditRental(
                 string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
                     ? profile.ManagementCompanyCode
                     : profile.ResponsibleOfficeCode,
@@ -2166,11 +2243,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
 
+        NormalizeBillingSchedule(profile, referenceDate);
         profile.BillingStatus = PaymentFlowConstants.BillingStatusOnHold;
         profile.CompletionStatus = PaymentFlowConstants.CompletionPending;
         profile.RequiresFollowUp = true;
         var normalizedNote = (note ?? string.Empty).Trim();
-        var currentRun = GetOrCreateBillingRun(profile, DateOnly.FromDateTime(DateTime.Today), persistChanges: true);
+        var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
         if (currentRun is not null)
         {
             currentRun.Status = PaymentFlowConstants.BillingStatusOnHold;
@@ -2197,7 +2275,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanAccessRental(
+        if (!CanEditRental(
                 string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
                     ? profile.ManagementCompanyCode
                     : profile.ResponsibleOfficeCode,
@@ -3616,7 +3694,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanAccessRental(
+        if (!CanEditRental(
                 string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
                     ? profile.ManagementCompanyCode
                     : profile.ResponsibleOfficeCode,
@@ -4168,6 +4246,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return GetReadableRentalOfficeCodes(session).Contains(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet));
     }
 
+    private bool CanEditRental(string? officeCode, SessionState session)
+    {
+        if (!CanEditRentalProfiles(session))
+            return false;
+
+        if (CanEditAllRental(session) || session.HasGlobalDataScope)
+            return true;
+
+        return GetWritableRentalOfficeCodes(session).Contains(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet));
+    }
+
     private bool CanViewAllRental(SessionState? session)
         => session is not null && session.IsLoggedIn && (
             session.HasAdministrativePrivileges ||
@@ -4190,6 +4279,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         => session is not null && session.IsLoggedIn && (
             session.HasAdministrativePrivileges ||
             session.HasPermission(AppPermissionNames.RentalEditAll));
+
+    private static bool CanEditRentalProfiles(SessionState? session)
+        => session is not null && session.IsLoggedIn && (
+            session.HasAdministrativePrivileges ||
+            session.HasPermission(AppPermissionNames.RentalEditAll) ||
+            session.HasPermission(AppPermissionNames.RentalProfileEdit));
 
     public bool CanViewAllAssetScope(SessionState? session)
         => session is not null && session.IsLoggedIn;
@@ -5428,6 +5523,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         Quantity = 1m,
                         UnitPrice = monthlyAmount,
                         LineAmount = monthlyAmount,
+                        OrderIndex = lines.Count + 1,
                         MaterialNumber = FirstNonEmpty(templateItem.MaterialNumber, representativeAsset.ManagementNumber),
                         SerialNumber = representativeAsset.MachineNumber?.Trim() ?? string.Empty,
                         InstallLocation = FirstNonEmpty(representativeAsset.InstallLocation, representativeAsset.InstallSiteName),
@@ -5450,10 +5546,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             foreach (var billingMonth in billingMonths)
             {
-                foreach (var asset in templateAssets
-                             .OrderBy(asset => RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName), StringComparer.CurrentCultureIgnoreCase)
-                             .ThenBy(asset => asset.MachineNumber, StringComparer.CurrentCultureIgnoreCase)
-                             .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase))
+                foreach (var asset in templateAssets)
                 {
                     var quantity = 1m;
                     var unitPrice = asset.MonthlyFee;
@@ -5468,6 +5561,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         Quantity = quantity,
                         UnitPrice = unitPrice,
                         LineAmount = quantity * unitPrice,
+                        OrderIndex = lines.Count + 1,
                         MaterialNumber = FirstNonEmpty(templateItem.MaterialNumber, asset.ManagementNumber),
                         SerialNumber = asset.MachineNumber?.Trim() ?? string.Empty,
                         InstallLocation = FirstNonEmpty(asset.InstallLocation, asset.InstallSiteName),
@@ -5572,10 +5666,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var activeLines = (invoice.Lines ?? new List<LocalInvoiceLine>())
             .Where(line => !line.IsDeleted)
-            .OrderBy(BuildRentalBillingInvoiceLineComparisonKey, StringComparer.Ordinal)
+            .OrderBy(ResolveRentalInvoiceLineSortOrder)
+            .ThenBy(BuildRentalBillingInvoiceLineComparisonKey, StringComparer.Ordinal)
             .ToList();
         var expectedOrderedLines = expectedLines
-            .OrderBy(BuildRentalBillingInvoiceLineComparisonKey, StringComparer.Ordinal)
+            .OrderBy(ResolveRentalInvoiceLineSortOrder)
+            .ThenBy(BuildRentalBillingInvoiceLineComparisonKey, StringComparer.Ordinal)
             .ToList();
         if (activeLines.Count != expectedOrderedLines.Count)
             return true;
@@ -5602,6 +5698,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             (line.SerialNumber ?? string.Empty).Trim(),
             (line.InstallLocation ?? string.Empty).Trim(),
             (line.Remark ?? string.Empty).Trim());
+
+    private static int ResolveRentalInvoiceLineSortOrder(LocalInvoiceLine line)
+        => line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue;
 
     private static bool AreRentalBillingInvoiceLinesEquivalent(LocalInvoiceLine current, LocalInvoiceLine expected)
         => string.Equals((current.ItemNameOriginal ?? string.Empty).Trim(), (expected.ItemNameOriginal ?? string.Empty).Trim(), StringComparison.Ordinal) &&

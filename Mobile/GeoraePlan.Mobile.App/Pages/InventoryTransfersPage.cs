@@ -16,7 +16,7 @@ public sealed class InventoryTransfersPage : ContentPage
 
     public InventoryTransfersPage()
     {
-        GeoraePlanTheme.ApplyPage(this, "재고이동");
+        GeoraePlanTheme.ApplyPage(this, "재고이동 조회");
 
         _viewModel = ServiceHelper.GetRequiredService<InventoryTransfersViewModel>();
         _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
@@ -182,7 +182,7 @@ public sealed class InventoryTransfersPage : ContentPage
                 Children =
                 {
                     GeoraePlanTheme.CreateCompactCard(
-                        GeoraePlanTheme.CreateSectionTitle("재고이동", 15),
+                        GeoraePlanTheme.CreateSectionTitle("재고이동 조회", 15),
                         GeoraePlanTheme.CreateBodyText("같은 서버 sync 데이터 기준으로 이동요청/수령 상태를 조회합니다.", true, 12),
                         GeoraePlanTheme.CreateBodyText("모바일 재고이동은 조회 전용입니다. 이동 생성, 수령 처리, 반려 처리는 PC 품목/재고 관리에서 처리하세요.", true, 12),
                         searchBar,

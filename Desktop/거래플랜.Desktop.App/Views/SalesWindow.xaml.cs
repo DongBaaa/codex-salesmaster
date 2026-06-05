@@ -140,7 +140,11 @@ public partial class SalesWindow : Window
         var rows = invoices
             .Select(invoice =>
             {
-                var activeLines = invoice.Lines.Where(line => !line.IsDeleted).ToList();
+                var activeLines = invoice.Lines
+                    .Where(line => !line.IsDeleted)
+                    .OrderBy(line => line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue)
+                    .ThenBy(line => line.Id)
+                    .ToList();
                 var displayNumber = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
                     ? invoice.LocalTempNumber
                     : invoice.InvoiceNumber;

@@ -222,7 +222,13 @@ public sealed class PeriodLedgerAggregationService
         if (lineCount <= 0)
             return string.IsNullOrWhiteSpace(invoice.Memo) ? "(품목 없음)" : invoice.Memo.Trim();
 
-        var first = invoice.Lines.FirstOrDefault(l => !l.IsDeleted)?.ItemNameOriginal?.Trim();
+        var first = invoice.Lines
+            .Where(l => !l.IsDeleted)
+            .OrderBy(l => l.OrderIndex > 0 ? l.OrderIndex : int.MaxValue)
+            .ThenBy(l => l.Id)
+            .FirstOrDefault()
+            ?.ItemNameOriginal
+            ?.Trim();
         if (string.IsNullOrWhiteSpace(first))
             first = "(품목)";
 
@@ -896,6 +902,5 @@ public sealed class PeriodLedgerAggregationService
         return "수금/지급 전표";
     }
 }
-
 
 

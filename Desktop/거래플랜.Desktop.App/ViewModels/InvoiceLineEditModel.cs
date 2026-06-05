@@ -14,6 +14,7 @@ public sealed partial class InvoiceLineEditModel : ObservableObject
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid? ItemId { get; set; }
     public string ItemTrackingType { get; set; } = ItemTrackingTypes.Stock;
+    public int OrderIndex { get; set; }
     [ObservableProperty] private int _rowNo;
 
     [ObservableProperty]
@@ -74,6 +75,7 @@ public sealed partial class InvoiceLineEditModel : ObservableObject
         InstallLocation = l.InstallLocation,
         RentalStartDate = l.RentalStartDate,
         RentalEndDate = l.RentalEndDate,
+        OrderIndex = l.OrderIndex,
         ItemTrackingType = ItemTrackingTypes.Normalize(l.ItemTrackingType)
     };
 
@@ -94,6 +96,7 @@ public sealed partial class InvoiceLineEditModel : ObservableObject
         InstallLocation = InstallLocation,
         RentalStartDate = RentalStartDate,
         RentalEndDate = RentalEndDate,
+        OrderIndex = OrderIndex > 0 ? OrderIndex : RowNo,
         ItemTrackingType = ItemTrackingTypes.Normalize(ItemTrackingType)
     };
 }

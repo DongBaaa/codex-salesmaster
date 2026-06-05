@@ -190,7 +190,7 @@ public sealed class SyncService : IDisposable
         while (attempts < 3)
         {
             attempts++;
-            var synced = await StartSyncAsync(waitForRunningSync: true, ct);
+            var synced = await StartSyncAsync(waitForRunningSync: true, ct).WaitAsync(ct);
             var hasPendingChanges = await _local.HasPendingSyncChangesAsync(ct);
             if (!hasPendingChanges)
                 return synced;

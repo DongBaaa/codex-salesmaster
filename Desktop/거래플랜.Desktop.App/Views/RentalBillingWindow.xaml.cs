@@ -86,6 +86,26 @@ public partial class RentalBillingWindow : Window
                     return;
             }
 
+            if (viewModel.SelectedRow?.IsAggregateRow == true)
+            {
+                var row = viewModel.SelectedRow;
+                var profileCount = row.GroupedPersistedProfileIds
+                    .Where(id => id != Guid.Empty)
+                    .Distinct()
+                    .Count();
+                var excludedUnlinkedText = row.GroupedUnlinkedAssetCount > 0
+                    ? $"{Environment.NewLine}청구설정 필요 장비 {row.GroupedUnlinkedAssetCount:N0}대는 제외됩니다."
+                    : string.Empty;
+                var confirm = MessageBox.Show(
+                    this,
+                    $"{row.CustomerDisplayName} 거래처 그룹의 개별 청구 프로필 {profileCount:N0}건을 선택한 청구월 기준으로 청구 시작하시겠습니까?{excludedUnlinkedText}{Environment.NewLine}{Environment.NewLine}일부 프로필에서 실패하면 성공/실패 건수가 나뉘어 표시됩니다.",
+                    "거래처 그룹 청구 확인",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+                if (confirm != MessageBoxResult.Yes)
+                    return;
+            }
+
             await viewModel.StartBillingCommand.ExecuteAsync(null);
             if (!viewModel.InvoiceToOpenAfterClose.HasValue)
                 return;

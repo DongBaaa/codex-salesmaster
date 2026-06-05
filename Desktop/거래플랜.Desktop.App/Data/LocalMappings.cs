@@ -450,7 +450,11 @@ public static class LocalMappings
         Revision = dto.Revision,
         IsDeleted = dto.IsDeleted,
         IsDirty = false,
-        Lines = dto.Lines.Select(ToLocal).ToList(),
+        Lines = dto.Lines
+            .OrderBy(line => line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue)
+            .ThenBy(line => line.Id)
+            .Select(ToLocal)
+            .ToList(),
         Payments = dto.Payments.Select(ToLocal).ToList()
     };
 
@@ -496,7 +500,12 @@ public static class LocalMappings
         UpdatedAtUtc = e.UpdatedAtUtc,
         Revision = e.Revision,
         IsDeleted = e.IsDeleted,
-        Lines = e.Lines.Where(l => !l.IsDeleted).Select(ToDto).ToList(),
+        Lines = e.Lines
+            .Where(l => !l.IsDeleted)
+            .OrderBy(l => l.OrderIndex > 0 ? l.OrderIndex : int.MaxValue)
+            .ThenBy(l => l.Id)
+            .Select(ToDto)
+            .ToList(),
         Payments = e.Payments.Where(p => !p.IsDeleted).Select(ToDto).ToList()
     };
 
@@ -518,6 +527,7 @@ public static class LocalMappings
         InstallLocation = dto.InstallLocation,
         RentalStartDate = dto.RentalStartDate,
         RentalEndDate = dto.RentalEndDate,
+        OrderIndex = dto.OrderIndex,
         ItemTrackingType = ItemTrackingTypes.Normalize(dto.ItemTrackingType),
         IsDeleted = dto.IsDeleted
     };
@@ -539,6 +549,7 @@ public static class LocalMappings
         InstallLocation = e.InstallLocation,
         RentalStartDate = e.RentalStartDate,
         RentalEndDate = e.RentalEndDate,
+        OrderIndex = e.OrderIndex,
         ItemTrackingType = ItemTrackingTypes.Normalize(e.ItemTrackingType),
         IsDeleted = e.IsDeleted
     };

@@ -18,7 +18,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
     private DateTime _paymentDate = DateTime.Today;
     private string _amountText = "0";
     private string _note = string.Empty;
-    private string _statusMessage = "전표를 선택하고 수금/지급 정보를 입력하세요.";
+    private string _statusMessage = "1단계 전표 선택 → 2단계 수금/지급 방식·금액 확인 → 마지막 저장 순서로 입력하세요.";
     private bool _isBusy;
     private InvoiceDto? _initialInvoice;
 
@@ -116,7 +116,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
     public string PaymentMethodHelpText => SelectedInvoice?.VoucherType == VoucherType.Purchase
         ? "PC 구매 전표와 동일하게 지급 금액 칸에 반영됩니다."
         : "PC 판매 전표와 동일하게 수금 금액 칸에 반영됩니다.";
-    public string SaveButtonText => SelectedInvoice is null ? "수금/지급 저장" : $"{PaymentActionText} 저장";
+    public string SaveButtonText => SelectedInvoice is null ? "마지막 단계 · 수금/지급 저장" : $"마지막 단계 · {PaymentActionText} 저장";
     public string AttachmentSectionTitle => SelectedInvoice is null ? "증빙 첨부" : $"{PaymentActionText} 증빙 첨부";
     public string SelectedInvoiceSummary
     {
@@ -166,7 +166,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
 
             ApplyInitialInvoice();
 
-            StatusMessage = $"전표 {Invoices.Count:N0}건";
+            StatusMessage = $"전표 {Invoices.Count:N0}건을 불러왔습니다. 수금/지급할 전표를 먼저 선택하세요.";
         }
         catch (Exception ex)
         {
@@ -203,7 +203,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
         }
 
         SelectedInvoice = matched;
-        StatusMessage = $"{PaymentActionText}할 전표가 선택되었습니다.";
+        StatusMessage = $"{PaymentActionText}할 전표가 선택되었습니다. 방식과 금액을 확인한 뒤 마지막 저장 버튼을 누르세요.";
     }
 
     public async Task AddPdfAttachmentAsync()

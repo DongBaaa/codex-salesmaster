@@ -42,6 +42,8 @@ public sealed class WpfInvoicePrintService : IPrintService
         var isPurchase = invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement;
         var lines = invoice.Lines
             .Where(l => !l.IsDeleted)
+            .OrderBy(l => l.OrderIndex > 0 ? l.OrderIndex : int.MaxValue)
+            .ThenBy(l => l.Id)
             .Select((line, index) => InvoicePrintLineSynchronizer.FromInvoiceLine(line, index + 1))
             .ToList();
 

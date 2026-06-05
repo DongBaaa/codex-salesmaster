@@ -1,6 +1,6 @@
-﻿# Phase 2 TODO
+# Phase 2 TODO
 
-- 문서 기준시점: 2026-03-12
+- 문서 기준시점: 2026-06-03
 - 이 파일은 현재 코드 기준으로 남은 Phase 2 과제를 관리합니다.
 - `[x]` 는 반영 완료, `[ ]` 는 미완료/후속 작업입니다.
 
@@ -17,10 +17,12 @@
 
 ## 2. 안드로이드 앱
 
-- [ ] MAUI 또는 Kotlin 클라이언트
-- [ ] 동일한 `/sync/pull`, `/sync/push` API 재사용
-- [ ] 오프라인 SQLite (Room 또는 MAUI SQLite)
-- [ ] 터치 최적화 전표 입력 UI
+- [x] .NET MAUI Android 클라이언트 기본 앱 구성
+- [x] 동일한 `/sync/pull`, `/sync/push` API 재사용
+- [x] JSON 기반 모바일 동기화 상태 / 대기 업로드 캐시
+- [ ] 오프라인 SQLite 고도화 (현재는 `JsonSyncStateStore` 기반)
+- [ ] 터치 최적화 전표 입력 UI 추가 고도화
+- [ ] 실기기 운영 E2E 회귀 테스트 시나리오 정례화
 
 ---
 

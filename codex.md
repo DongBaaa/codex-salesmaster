@@ -45,3 +45,15 @@
   - 업데이트 자산 재생성
   - NAS 배포
 - 모바일 배포본은 항상 `D:\거래플랜\배포` 경로에 최신 APK를 둔다.
+
+## NAS 운영 안전 규칙
+
+- 앞으로 거래플랜, 워크플랜, itw 홈페이지는 한 번에 하나의 서비스만 작업한다.
+- 거래플랜 작업 중에는 워크플랜/itw 홈페이지 배포, 재시작, 정리 작업을 함께 진행하지 않는다.
+- Docker 전체 재시작/정리 명령은 금지한다.
+  - 금지: `docker compose down`, `docker system prune`, `docker container prune`, `docker image prune`, `docker volume prune`, `docker stop $(docker ps -q)`, `docker restart $(docker ps -q)`.
+  - 허용: 거래플랜 compose project 안에서 명시 서비스만 대상으로 하는 `compose up -d postgres`, `compose up -d --force-recreate api`.
+- Container Manager 전체 재시작, Web Station 재시작, PHP/MariaDB 재시작, nginx/Reverse Proxy 변경은 다른 서비스까지 영향을 줄 수 있으므로 먼저 보고하고 승인 후 진행한다.
+- live 반영 전에는 `trade.2884.kr`, `work.2884.kr`, `itw.2884.kr` 상태를 확인한다.
+- live 반영 후에도 위 3개 도메인과 NAS 로그에서 502, timeout, Docker daemon 오류 여부를 확인한다.
+- 장애가 발생하면 추가 배포를 중단하고 서비스별 원인 분리 결과를 먼저 보고한다.

@@ -16,7 +16,7 @@ public sealed class SyncPage : ContentPage
         BindingContext = _viewModel;
 
         var revisionLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false);
-        revisionLabel.SetBinding(Label.TextProperty, nameof(SyncViewModel.LastRevisionText), stringFormat: "마지막 Revision: {0}");
+        revisionLabel.SetBinding(Label.TextProperty, nameof(SyncViewModel.LastRevisionText), stringFormat: "마지막 서버 변경번호: {0}");
 
         var pendingLabel = GeoraePlanTheme.CreateBodyText(string.Empty);
         pendingLabel.SetBinding(Label.TextProperty, nameof(SyncViewModel.PendingText));
@@ -51,13 +51,13 @@ public sealed class SyncPage : ContentPage
         var refreshButton = GeoraePlanTheme.CreateButton("상태 새로고침", GeoraePlanTheme.SecondaryButton);
         refreshButton.SetBinding(Button.CommandProperty, nameof(SyncViewModel.RefreshCommand));
 
-        var syncNowButton = GeoraePlanTheme.CreateButton("동기화", GeoraePlanTheme.Accent);
+        var syncNowButton = GeoraePlanTheme.CreateButton("권장 동기화 실행", GeoraePlanTheme.Accent);
         syncNowButton.SetBinding(Button.CommandProperty, nameof(SyncViewModel.SyncNowCommand));
 
-        var pullButton = GeoraePlanTheme.CreateButton("다운로드만", GeoraePlanTheme.Success);
+        var pullButton = GeoraePlanTheme.CreateButton("서버에서 받기", GeoraePlanTheme.Success);
         pullButton.SetBinding(Button.CommandProperty, nameof(SyncViewModel.PullCommand));
 
-        var pushButton = GeoraePlanTheme.CreateButton("업로드만", GeoraePlanTheme.Purple);
+        var pushButton = GeoraePlanTheme.CreateButton("서버에 올리기", GeoraePlanTheme.Purple);
         pushButton.SetBinding(Button.CommandProperty, nameof(SyncViewModel.PushCommand));
 
         Content = new ScrollView
@@ -75,7 +75,7 @@ public sealed class SyncPage : ContentPage
                         summaryLabel,
                         autoSyncLabel,
                         attentionCard,
-                        GeoraePlanTheme.CreateBodyText("기본 추천: 저장 후 즉시 서버 반영 + 첨부 업로드 + 최신 데이터 pull", true, 12),
+                        GeoraePlanTheme.CreateBodyText("기본 권장: 저장 시 자동 서버 반영 + 첨부 업로드 + 최신 데이터 받기. 문제가 있을 때만 수동 버튼을 사용하세요.", true, 12),
                         syncNowButton,
                         refreshButton,
                         pullButton,

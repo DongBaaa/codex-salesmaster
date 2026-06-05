@@ -850,6 +850,8 @@ public static class SupplementDocumentBuilder
 
         return invoice.Lines
             .Where(l => !l.IsDeleted)
+            .OrderBy(l => l.OrderIndex > 0 ? l.OrderIndex : int.MaxValue)
+            .ThenBy(l => l.Id)
             .Select((line, index) => new EstimatePrintLine
             {
                 No = index + 1,

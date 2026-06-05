@@ -126,7 +126,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                               _session.HasAssignedPermission(AppPermissionNames.RentalViewAll) ||
                               _session.HasAssignedPermission(AppPermissionNames.RentalEditAll);
     public bool CanManageAll => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.RentalEditAll);
-    public bool CanSave => SelectedRow is null || (CanEditCurrentSelection && CanEditSelectedRowInEditor);
+    private bool CanEditRentalProfiles => _session.HasAdministrativePrivileges ||
+                                           _session.HasPermission(AppPermissionNames.RentalEditAll) ||
+                                           _session.HasPermission(AppPermissionNames.RentalProfileEdit);
+    public bool CanSave => CanEditRentalProfiles && (SelectedRow is null || (CanEditCurrentSelection && CanEditSelectedRowInEditor));
     public bool IsCustomerGroupSelection => SelectedRow?.IsAggregateRow == true;
     public bool CanEditBillingProfileDetails => SelectedRow is null || !SelectedRow.IsAggregateRow;
     public bool CanOpenAssetLinkDialog => CanEditBillingProfileDetails &&
@@ -134,7 +137,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                           !string.IsNullOrWhiteSpace(EditCustomerName);
     public bool CanExpandSelectedSummary => SelectedRow?.IsAggregateRow == true && !ShowIndividualProfiles;
     public bool CanStartBillingSelected => SelectedRow is not null &&
-                                           CanAccessCurrentSelection &&
+                                           CanEditCurrentSelection &&
                                            (SelectedRow.IsAggregateRow
                                                ? SelectedRow.GroupedPersistedProfileIds.Any(id => id != Guid.Empty)
                                                : HasPersistedSelectedProfile);
@@ -146,7 +149,16 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                             CanEditCurrentSelection &&
                                             !SelectedRow.IsAggregateRow &&
                                             SelectedRow.OutstandingAmount <= 0m;
-    public bool CanRemoveTemplateItem => CanEditBillingProfileDetails && SelectedTemplateItem is not null;
+    public bool CanRemoveTemplateItem => CanEditBillingProfileDetails && CanEditCurrentSelection && SelectedTemplateItem is not null;
+    public bool CanMoveTemplateItemUp => CanEditBillingProfileDetails &&
+                                         CanEditCurrentSelection &&
+                                         SelectedTemplateItem is not null &&
+                                         TemplateItems.IndexOf(SelectedTemplateItem) > 0;
+    public bool CanMoveTemplateItemDown => CanEditBillingProfileDetails &&
+                                           CanEditCurrentSelection &&
+                                           SelectedTemplateItem is not null &&
+                                           TemplateItems.IndexOf(SelectedTemplateItem) >= 0 &&
+                                           TemplateItems.IndexOf(SelectedTemplateItem) < TemplateItems.Count - 1;
     public bool CanRemoveIncludedAsset => CanEditBillingProfileDetails &&
                                           SelectedTemplateItem is not null &&
                                           SelectedIncludedAsset is not null &&
@@ -164,7 +176,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public bool CanEditIncludedAssetAssignmentHistory => CanAddIncludedAssetAssignmentHistory &&
                                                          SelectedIncludedAssetAssignmentHistory is not null;
     public bool CanDeleteIncludedAssetAssignmentHistory => CanEditIncludedAssetAssignmentHistory;
-    public bool CanApplySelectedAssets => CanEditBillingProfileDetails && SelectedTemplateItem is not null && CandidateAssets.Any(asset => asset.IsSelected);
+    public bool CanApplySelectedAssets => CanEditBillingProfileDetails && CanEditCurrentSelection && SelectedTemplateItem is not null && CandidateAssets.Any(asset => asset.IsSelected);
     public bool CanOpenCustomerContract => EditCustomerId.HasValue && EditCustomerId.Value != Guid.Empty;
     public bool IsFixedBillingDayMode => string.Equals(EditBillingDayMode, RentalBillingScheduleRules.BillingDayModeFixedDay, StringComparison.Ordinal);
     public bool IsDocumentLeadDaysVisible => string.Equals(EditDocumentIssueMode, RentalBillingScheduleRules.DocumentIssueModeDaysBeforeDueDate, StringComparison.Ordinal);
@@ -190,8 +202,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private bool HasPersistedSelectedProfile => SelectedRow?.HasPersistedProfile == true;
     private bool CanEditSelectedRowInEditor => SelectedRow is null || !SelectedRow.IsAggregateRow;
 
-    private bool CanEditCurrentSelection => SelectedRow is null || CanOperateScope(
-        ResolveProfileOfficeCode(SelectedRow.Source, _session.OfficeCode));
+    private bool CanEditCurrentSelection => CanEditRentalProfiles && (SelectedRow is null || CanOperateScope(
+        ResolveProfileOfficeCode(SelectedRow.Source, _session.OfficeCode)));
 
     public RentalBillingViewModel(RentalStateService rental, LocalStateService local, SessionState session)
     {
@@ -356,8 +368,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         SyncAssetSelectionFromTemplate();
         SyncIncludedAssetsFromTemplate();
         UpdateTemplateDerivedValues();
-        OnPropertyChanged(nameof(CanRemoveTemplateItem));
-        RemoveTemplateItemCommand.NotifyCanExecuteChanged();
+        NotifyTemplateItemMoveState();
         RemoveIncludedAssetCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanRemoveIncludedAsset));
         SetRepresentativeAssetCommand.NotifyCanExecuteChanged();
@@ -410,15 +421,31 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
+        StatusMessage = "렌탈 청구관리 준비 중입니다. 기존 연결 정보와 필터 기준을 확인합니다.";
         await _rental.CleanupLegacyAssignedUsernamesAsync();
+
+        StatusMessage = "렌탈 청구 필터 기준을 불러오는 중입니다.";
         await ReloadFiltersAsync();
+
+        StatusMessage = "렌탈 청구 목록을 조회하는 중입니다.";
         await ReloadAsync();
 
         BeginAutoSaveSuppression();
         try
         {
-            if (!await RestoreAutoSaveDraftAsync())
+            StatusMessage = "이전 작성 중인 청구 설정을 확인하는 중입니다.";
+            var restoredDraft = await RestoreAutoSaveDraftAsync();
+            if (!restoredDraft)
                 NewProfile();
+
+            var unlinkedCount = Rows.Sum(row => row.GroupedUnlinkedAssetCount);
+            StatusMessage = restoredDraft
+                ? "이전 작성 중인 청구 설정을 복원했습니다. 내용을 확인한 뒤 저장하세요."
+                : Rows.Count == 0
+                    ? "조건에 맞는 렌탈 청구 대상이 없습니다. 새 청구 프로필을 입력할 수 있습니다."
+                    : unlinkedCount > 0
+                        ? $"렌탈 청구 {Rows.Count:N0}건을 불러왔습니다. 청구 설정이 필요한 장비 {unlinkedCount:N0}대가 포함되어 있습니다."
+                        : $"렌탈 청구 {Rows.Count:N0}건을 불러왔습니다. 목록을 선택하거나 새 청구 프로필을 입력하세요.";
         }
         finally
         {
@@ -448,6 +475,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (IsBusy)
         {
             _pendingFilterReload = true;
+            StatusMessage = "현재 조회 중입니다. 변경한 필터는 조회가 끝난 뒤 자동으로 다시 적용됩니다.";
             return;
         }
 
@@ -456,6 +484,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             _pendingFilterReload = false;
             var selectedId = SelectedRow?.SelectionId;
             IsBusy = true;
+            StatusMessage = "렌탈 청구 목록을 조회하는 중입니다. 데이터가 많은 경우 잠시 걸릴 수 있습니다.";
             try
             {
                 var rows = await _rental.GetBillingRowsAsync(new RentalBillingFilter
@@ -751,7 +780,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var targetId = SelectedRow.Source.Id;
         var expectedRevision = SelectedRow.Source.Revision;
-        var result = await _rental.HoldBillingAsync(targetId, string.Empty, _session, expectedRevision: expectedRevision);
+        var result = await _rental.HoldBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision);
         StatusMessage = result.Message;
         if (!result.Success)
         {
@@ -826,6 +855,18 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         if (TryRejectAggregateSelection("삭제"))
+            return;
+
+        var confirmationMessage = SelectedRow.HasPersistedProfile
+            ? $"선택한 렌탈 청구 프로필을 삭제하시겠습니까?{Environment.NewLine}연결된 자산 정보는 삭제되지 않고 청구 목록에서는 제외됩니다."
+            : $"청구설정 필요 장비를 청구 목록에서 제외하시겠습니까?{Environment.NewLine}자산 정보는 삭제되지 않습니다.";
+        var confirmation = MessageBox.Show(
+            GetActiveWindow(),
+            confirmationMessage,
+            "렌탈 청구 삭제",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+        if (confirmation != MessageBoxResult.OK)
             return;
 
         var targetProfileId = SelectedRow.Source.Id;
@@ -1127,6 +1168,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [RelayCommand]
     private void AddTemplateItem()
     {
+        if (!CanEditCurrentSelection)
+        {
+            StatusMessage = "권한이 없어 렌탈 청구 품목을 편집할 수 없습니다.";
+            return;
+        }
+
         if (!CanEditBillingProfileDetails)
         {
             StatusMessage = "거래처 그룹에서는 표시 품목을 직접 편집할 수 없습니다. '개별 청구건 보기'로 전환한 뒤 진행하세요.";
@@ -1142,6 +1189,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanRemoveTemplateItem))]
     private void RemoveTemplateItem()
     {
+        if (!CanEditCurrentSelection)
+            return;
+
         if (SelectedTemplateItem is null)
             return;
 
@@ -1151,6 +1201,49 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             TemplateItems.Add(CreateDefaultTemplateItem());
         SelectedTemplateItem = TemplateItems[Math.Clamp(index, 0, TemplateItems.Count - 1)];
         UpdateTemplateDerivedValues();
+        NotifyTemplateItemMoveState();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanMoveTemplateItemUp))]
+    private void MoveTemplateItemUp()
+    {
+        if (!CanEditCurrentSelection)
+            return;
+
+        if (SelectedTemplateItem is null)
+            return;
+
+        var index = TemplateItems.IndexOf(SelectedTemplateItem);
+        if (index <= 0)
+            return;
+
+        var item = SelectedTemplateItem;
+        TemplateItems.Move(index, index - 1);
+        SelectedTemplateItem = item;
+        UpdateTemplateDerivedValues();
+        NotifyTemplateItemMoveState();
+        StatusMessage = "표시 품목 순서를 위로 이동했습니다. 저장하면 청구서 품목 순서에 반영됩니다.";
+    }
+
+    [RelayCommand(CanExecute = nameof(CanMoveTemplateItemDown))]
+    private void MoveTemplateItemDown()
+    {
+        if (!CanEditCurrentSelection)
+            return;
+
+        if (SelectedTemplateItem is null)
+            return;
+
+        var index = TemplateItems.IndexOf(SelectedTemplateItem);
+        if (index < 0 || index >= TemplateItems.Count - 1)
+            return;
+
+        var item = SelectedTemplateItem;
+        TemplateItems.Move(index, index + 1);
+        SelectedTemplateItem = item;
+        UpdateTemplateDerivedValues();
+        NotifyTemplateItemMoveState();
+        StatusMessage = "표시 품목 순서를 아래로 이동했습니다. 저장하면 청구서 품목 순서에 반영됩니다.";
     }
 
     [RelayCommand(CanExecute = nameof(CanRemoveIncludedAsset))]
@@ -1381,16 +1474,25 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         OnPropertyChanged(nameof(CanRegisterSettlementSelected));
         OnPropertyChanged(nameof(CanDeleteSelected));
         OnPropertyChanged(nameof(CanMarkCompletedSelected));
-        OnPropertyChanged(nameof(CanRemoveTemplateItem));
+        NotifyTemplateItemMoveState();
         OnPropertyChanged(nameof(CanRemoveIncludedAsset));
         OnPropertyChanged(nameof(CanSetRepresentativeAsset));
         OnPropertyChanged(nameof(CanApplySelectedAssets));
         ExpandSelectedSummaryCommand.NotifyCanExecuteChanged();
-        RemoveTemplateItemCommand.NotifyCanExecuteChanged();
         RemoveIncludedAssetCommand.NotifyCanExecuteChanged();
         SetRepresentativeAssetCommand.NotifyCanExecuteChanged();
         ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
         NotifyIncludedAssetAssignmentHistoryCommandState();
+    }
+
+    private void NotifyTemplateItemMoveState()
+    {
+        OnPropertyChanged(nameof(CanRemoveTemplateItem));
+        OnPropertyChanged(nameof(CanMoveTemplateItemUp));
+        OnPropertyChanged(nameof(CanMoveTemplateItemDown));
+        RemoveTemplateItemCommand.NotifyCanExecuteChanged();
+        MoveTemplateItemUpCommand.NotifyCanExecuteChanged();
+        MoveTemplateItemDownCommand.NotifyCanExecuteChanged();
     }
 
     private static Window? GetActiveWindow()
@@ -3375,7 +3477,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (SelectedRow is null)
             return false;
 
-        return !string.Equals(_selectedRowBaselineSignature, BuildCurrentEditorSignature(), StringComparison.Ordinal);
+        return HasUnsavedEditorChangesAgainstBaseline();
     }
 
     private string BuildCurrentEditorSignature()

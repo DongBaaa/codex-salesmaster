@@ -414,7 +414,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
 
         var invoiceLineCols = new (string col, string def)[]
         {
-            ("ItemTrackingType", "TEXT NOT NULL DEFAULT '재고'")
+            ("ItemTrackingType", "TEXT NOT NULL DEFAULT '재고'"),
+            ("OrderIndex", "INTEGER NOT NULL DEFAULT 0")
         };
         foreach (var (col, def) in invoiceLineCols)
             await TryAddColumnAsync(db, "InvoiceLines", col, def);

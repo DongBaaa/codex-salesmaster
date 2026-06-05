@@ -278,6 +278,7 @@ public sealed class InvoiceLine
     public string InstallLocation { get; set; } = string.Empty;
     public DateOnly? RentalStartDate { get; set; }
     public DateOnly? RentalEndDate { get; set; }
+    public int OrderIndex { get; set; }
     public string ItemTrackingType { get; set; } = ItemTrackingTypes.Stock;
     public bool IsDeleted { get; set; }
 }

@@ -95,7 +95,11 @@ public sealed class MobileInvoicePdfExportService
         content.Line(54, y, 540, y);
         y -= 18;
 
-        var lines = invoice.Lines.Where(line => !line.IsDeleted).ToList();
+        var lines = invoice.Lines
+            .Where(line => !line.IsDeleted)
+            .OrderBy(line => line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue)
+            .ThenBy(line => line.Id)
+            .ToList();
         for (var index = 0; index < Math.Min(lines.Count, 15); index++)
         {
             var line = lines[index];

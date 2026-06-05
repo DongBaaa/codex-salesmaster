@@ -18,6 +18,7 @@ public sealed class InvoiceLineDraftItem
     public string InstallLocation { get; set; } = string.Empty;
     public DateOnly? RentalStartDate { get; set; }
     public DateOnly? RentalEndDate { get; set; }
+    public int OrderIndex { get; set; }
     public decimal LineAmount => Math.Round(Quantity * UnitPrice, 2, MidpointRounding.AwayFromZero);
 
     public static InvoiceLineDraftItem FromItem(ItemDto item, decimal quantity = 1m)
@@ -64,7 +65,8 @@ public sealed class InvoiceLineDraftItem
             SerialNumber = line.SerialNumber,
             InstallLocation = line.InstallLocation,
             RentalStartDate = line.RentalStartDate,
-            RentalEndDate = line.RentalEndDate
+            RentalEndDate = line.RentalEndDate,
+            OrderIndex = line.OrderIndex
         };
 
     public InvoiceLineDto ToDto(Guid invoiceId)
@@ -84,6 +86,7 @@ public sealed class InvoiceLineDraftItem
             SerialNumber = SerialNumber,
             InstallLocation = InstallLocation,
             RentalStartDate = RentalStartDate,
-            RentalEndDate = RentalEndDate
+            RentalEndDate = RentalEndDate,
+            OrderIndex = OrderIndex
         };
 }

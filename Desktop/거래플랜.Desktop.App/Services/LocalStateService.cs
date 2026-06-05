@@ -5941,7 +5941,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private static List<LocalInvoiceLine> CloneLines(IEnumerable<LocalInvoiceLine> source, Guid invoiceId)
 	{
-		return source.Select((LocalInvoiceLine line) => new LocalInvoiceLine
+		return source.Select((LocalInvoiceLine line, int index) => new LocalInvoiceLine
 		{
 			Id = Guid.NewGuid(),
 			InvoiceId = invoiceId,
@@ -5958,6 +5958,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			InstallLocation = (line.InstallLocation ?? string.Empty),
 			RentalStartDate = line.RentalStartDate,
 			RentalEndDate = line.RentalEndDate,
+			OrderIndex = line.OrderIndex > 0 ? line.OrderIndex : index + 1,
 			ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType),
 			IsDeleted = false
 		}).ToList();
@@ -6225,7 +6226,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			CostStatus = invoice.CostStatus,
 			Lines = (from line in invoice.Lines
 				where !line.IsDeleted
-				select new { line.Id, line.ItemId, line.ItemNameOriginal, line.Quantity, line.UnitPrice, line.LineAmount, line.SerialNumber }).ToList()
+				orderby (line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue), line.Id
+				select new { line.Id, line.OrderIndex, line.ItemId, line.ItemNameOriginal, line.Quantity, line.UnitPrice, line.LineAmount, line.SerialNumber }).ToList()
 		};
 	}
 
@@ -6658,7 +6660,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 
 		string warehouseCode = NormalizeWarehouseCode(invoice.SourceWarehouseCode, invoice.ResponsibleOfficeCode, invoice.OfficeCode);
-		return BuildInvoiceStockDeltas(invoice.VoucherType, warehouseCode, invoice.Lines.Where((LocalInvoiceLine line) => !line.IsDeleted).ToList(), itemTrackingMap);
+		return BuildInvoiceStockDeltas(
+			invoice.VoucherType,
+			warehouseCode,
+			invoice.PurchaseReceivingStatus,
+			invoice.Lines.Where((LocalInvoiceLine line) => !line.IsDeleted).ToList(),
+			itemTrackingMap);
 	}
 
 	private static Dictionary<LocalStockChangeKey, decimal> BuildInvoiceStockDeltas(
@@ -6666,9 +6673,22 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		string warehouseCode,
 		IEnumerable<LocalInvoiceLine> lines,
 		IReadOnlyDictionary<Guid, string> itemTrackingMap)
+		=> BuildInvoiceStockDeltas(voucherType, warehouseCode, null, lines, itemTrackingMap);
+
+	private static Dictionary<LocalStockChangeKey, decimal> BuildInvoiceStockDeltas(
+		VoucherType voucherType,
+		string warehouseCode,
+		string? purchaseReceivingStatus,
+		IEnumerable<LocalInvoiceLine> lines,
+		IReadOnlyDictionary<Guid, string> itemTrackingMap)
 	{
 		Dictionary<LocalStockChangeKey, decimal> deltas = new();
 		if (voucherType is not (VoucherType.Sales or VoucherType.Purchase or VoucherType.Procurement))
+		{
+			return deltas;
+		}
+		if (voucherType == VoucherType.Purchase &&
+			!InvoiceReceivingStatuses.IsConfirmed(purchaseReceivingStatus))
 		{
 			return deltas;
 		}
@@ -6865,6 +6885,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				});
 			}
 			voucherType = invoice.VoucherType;
+			if (voucherType == VoucherType.Purchase &&
+				!InvoiceReceivingStatuses.IsConfirmed(invoice.PurchaseReceivingStatus))
+			{
+				continue;
+			}
 			if ((uint)(voucherType - 1) <= 1u)
 			{
 				decimal num2 = ResolveUnitCost(line);

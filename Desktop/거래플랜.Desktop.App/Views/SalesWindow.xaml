@@ -488,6 +488,8 @@
 
                             <StackPanel Grid.Row="1" Grid.Column="8" Orientation="Horizontal" Margin="4,0,0,0" HorizontalAlignment="Left">
                                 <Button Style="{StaticResource BaseButtonStyle}" Content="항목추가" Width="80" Height="34" MinWidth="80" Padding="6,0" Margin="0,0,4,0" Command="{Binding AddLineCommand}"/>
+                                <Button Style="{StaticResource BaseButtonStyle}" Content="▲" Width="34" Height="34" MinWidth="34" Padding="0" Margin="0,0,4,0" ToolTip="선택한 품목을 위로 이동" Command="{Binding MoveLineUpCommand}"/>
+                                <Button Style="{StaticResource BaseButtonStyle}" Content="▼" Width="34" Height="34" MinWidth="34" Padding="0" Margin="0,0,4,0" ToolTip="선택한 품목을 아래로 이동" Command="{Binding MoveLineDownCommand}"/>
                                 <Button Style="{StaticResource BaseButtonStyle}" Content="항목수정" Width="80" Height="34" MinWidth="80" Padding="6,0" Margin="0,0,4,0" Command="{Binding UpdateLineCommand}"/>
                                 <Button Style="{StaticResource BaseButtonStyle}" Content="항목삭제" Width="80" Height="34" MinWidth="80" Padding="6,0" Command="{Binding DeleteLineCommand}"/>
                             </StackPanel>

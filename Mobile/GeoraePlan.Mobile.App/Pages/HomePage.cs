@@ -88,13 +88,13 @@ public sealed class HomePage : ContentPage
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>()),
                 "빠른 메뉴 이동");
 
-        var inventoryTransferButton = GeoraePlanTheme.CreateButton("재고이동", GeoraePlanTheme.Accent);
+        var inventoryTransferButton = GeoraePlanTheme.CreateButton("재고이동 조회", GeoraePlanTheme.Accent);
         inventoryTransferButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<InventoryTransfersPage>()),
                 "빠른 메뉴 이동");
 
-        var rentalsButton = GeoraePlanTheme.CreateButton("렌탈", GeoraePlanTheme.SecondaryButton);
+        var rentalsButton = GeoraePlanTheme.CreateButton("렌탈 조회", GeoraePlanTheme.SecondaryButton);
         rentalsButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<RentalsPage>()),
@@ -145,7 +145,7 @@ public sealed class HomePage : ContentPage
                     pendingNoticeCard,
                     GeoraePlanTheme.CreateCard(
                         GeoraePlanTheme.CreateSectionTitle("빠른 안내"),
-                        GeoraePlanTheme.CreateBodyText("모바일에서 판매·구매·수금/지급은 입력 가능하며, 재고이동·렌탈은 조회 전용입니다."),
+                        GeoraePlanTheme.CreateBodyText("모바일에서 판매·구매·수금/지급은 입력 가능하며, 재고이동·렌탈은 조회 전용입니다. 생성·수정·확정은 PC에서 처리하세요."),
                         GeoraePlanTheme.CreateBodyText("거래처, 품목, 전표, 수금/지급, 재고이동, 렌탈 화면은 같은 NAS 서버 sync 데이터를 기준으로 동작합니다."),
                         quickActionGrid,
                         refreshButton,

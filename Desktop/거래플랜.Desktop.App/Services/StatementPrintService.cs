@@ -159,7 +159,12 @@ public sealed class StatementPrintService
                     h.Cell().Element(HeaderCell).Text("비고").FontColor("#FFFFFF").Bold();
                 });
 
-                var lines = invoice.Lines.Where(l => !l.IsDeleted).Take(13).ToList();
+                var lines = invoice.Lines
+                    .Where(l => !l.IsDeleted)
+                    .OrderBy(l => l.OrderIndex > 0 ? l.OrderIndex : int.MaxValue)
+                    .ThenBy(l => l.Id)
+                    .Take(13)
+                    .ToList();
                 for (var i = 0; i < 13; i++)
                 {
                     var line = i < lines.Count ? lines[i] : null;

@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\거래플랜.Shared.Contracts\거래플랜.Shared.Contracts.csproj" />
+    <ProjectReference Include="..\..\Updater\거래플랜.Updater\거래플랜.Updater.csproj" ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
@@ -44,5 +45,16 @@
       <StaleWpfTempArtifacts Include="$(IntermediateOutputPath)**\*_wpftmp*" />
     </ItemGroup>
     <Delete Files="@(StaleWpfTempArtifacts)" ContinueOnError="WarnAndContinue" />
+  </Target>
+  <Target Name="CopyUpdaterOutput" AfterTargets="Build">
+    <PropertyGroup>
+      <UpdaterOutputDir>$(MSBuildThisFileDirectory)..\..\Updater\거래플랜.Updater\bin\$(Configuration)\net8.0-windows\</UpdaterOutputDir>
+      <UpdaterDestinationDir>$(OutDir)Updater\</UpdaterDestinationDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <UpdaterOutputFiles Include="$(UpdaterOutputDir)**\*" />
+    </ItemGroup>
+    <MakeDir Directories="$(UpdaterDestinationDir)" />
+    <Copy SourceFiles="@(UpdaterOutputFiles)" DestinationFiles="@(UpdaterOutputFiles->'$(UpdaterDestinationDir)%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
 </Project>

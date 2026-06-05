@@ -678,7 +678,9 @@
                         </Border>
 
                         <WrapPanel Margin="0,0,0,8">
-                            <Button Content="표시 품목 추가" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,8,0" Command="{Binding AddTemplateItemCommand}" IsEnabled="{Binding CanEditBillingProfileDetails}"/>
+                            <Button Content="표시 품목 추가" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,8,0" Command="{Binding AddTemplateItemCommand}" IsEnabled="{Binding CanSave}"/>
+                            <Button Content="▲" Width="34" MinWidth="34" Padding="0" Background="#455A64" BorderBrush="#455A64" Margin="0,0,4,0" Command="{Binding MoveTemplateItemUpCommand}" ToolTip="선택한 표시 품목을 위로 이동"/>
+                            <Button Content="▼" Width="34" MinWidth="34" Padding="0" Background="#455A64" BorderBrush="#455A64" Margin="0,0,8,0" Command="{Binding MoveTemplateItemDownCommand}" ToolTip="선택한 표시 품목을 아래로 이동"/>
                             <Button Content="선택 품목 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveTemplateItemCommand}"/>
                             <Button Content="새 장비연결" Background="#6A1B9A" BorderBrush="#6A1B9A" Click="OpenAssetLinkDialogButton_Click" IsEnabled="{Binding CanOpenAssetLinkDialog}"/>
                         </WrapPanel>

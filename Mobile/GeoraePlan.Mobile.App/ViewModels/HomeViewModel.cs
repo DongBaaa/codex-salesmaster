@@ -76,7 +76,7 @@ public sealed class HomeViewModel : ObservableObject
             ? $"권한: {session.Role}"
             : "권한 정보 없음";
         AutoSyncText = session.IsAuthenticated
-            ? "저장 시 즉시 서버 반영하고, 화면 진입/복귀 시 최신 변경만 재확인합니다."
+            ? "저장하면 서버에 바로 올리고, 화면 진입/복귀 시 최신 변경만 확인합니다."
             : "로그인 후 자동 동기화가 시작됩니다.";
 
         var sync = await _syncStateStore.LoadAsync();
@@ -101,7 +101,7 @@ public sealed class HomeViewModel : ObservableObject
         }
 
         StatusMessage = string.IsNullOrWhiteSpace(sync.LastError)
-            ? "NAS 서버와 자동 동기화 준비됨"
+            ? "NAS 서버와 자동 동기화 준비됨 · 재고이동/렌탈은 모바일 조회 전용"
             : $"최근 동기화 주의: {sync.LastError}";
     }
 }

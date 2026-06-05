@@ -42,6 +42,8 @@ public partial class App : Application
 
     private sealed record SaveCycleResult(bool SyncAttempted, bool SyncSucceeded, int RemainingDirtyCount, bool BackupSucceeded);
 
+    private static readonly TimeSpan ShutdownSyncTimeout = TimeSpan.FromSeconds(12);
+
 
 
     private ServiceProvider? _services;
@@ -234,6 +236,9 @@ public partial class App : Application
 
 
 
+#if DEBUG
+            AppLogger.Info("UPDATE", "Debug build skips canonical install relaunch for local verification.");
+#else
             if (DesktopAppUpdateService.TryRelaunchCanonicalInstallIfNeeded(out var relaunchMessage))
 
             {
@@ -249,6 +254,7 @@ public partial class App : Application
                 return;
 
             }
+#endif
 
 
 
@@ -1281,33 +1287,9 @@ public partial class App : Application
             var result = await RunSaveCycleAsync(sp, mainVm, isShutdown: true);
 
             if (!result.SyncSucceeded && result.RemainingDirtyCount > 0)
-
             {
-
-                shouldClose = false;
-
-                _shutdownInProgress = false;
-
-                mainWin.IsEnabled = true;
-
-                mainWin.EndShutdownProtection();
-
-                StartAutoSaveTimer(sp, mainVm);
-
-                mainVm.SyncStatus = "종료 전 서버 동기화가 완료되지 않았습니다. 동기화 후 다시 종료해 주세요.";
-
-                MessageBox.Show(
-
-                    $"서버에 아직 반영되지 않은 변경 데이터가 {result.RemainingDirtyCount}건 남아 있습니다.{Environment.NewLine}" +
-
-                    "네트워크를 확인한 뒤 자동/수동 동기화를 완료하고 다시 종료해 주세요.",
-
-                    "거래플랜 동기화 필요",
-
-                    MessageBoxButton.OK,
-
-                    MessageBoxImage.Warning);
-
+                AppLogger.Warn("APP", $"Shutdown continues with {result.RemainingDirtyCount:N0} pending sync item(s). They remain saved locally and will sync on the next run.");
+                mainVm.SyncStatus = $"로컬 저장 완료. 미동기화 {result.RemainingDirtyCount:N0}건은 다음 실행 시 다시 동기화됩니다.";
             }
 
         }
@@ -1732,7 +1714,22 @@ public partial class App : Application
 
                 syncAttempted = true;
 
-                syncSucceeded = await sync.FlushPendingChangesAsync();
+                using var shutdownSyncCts = new CancellationTokenSource(ShutdownSyncTimeout);
+
+                try
+                {
+                    syncSucceeded = await sync.FlushPendingChangesAsync(shutdownSyncCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    syncSucceeded = false;
+                    AppLogger.Warn("APP", $"Shutdown sync timed out after {ShutdownSyncTimeout.TotalSeconds:N0}s. Pending changes will remain in the local sync queue.");
+                }
+                catch (Exception ex)
+                {
+                    syncSucceeded = false;
+                    AppLogger.Error("APP", "Shutdown sync failed. Pending changes will remain in the local sync queue.", ex);
+                }
 
             }
 

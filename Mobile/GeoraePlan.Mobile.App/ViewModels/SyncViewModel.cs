@@ -8,9 +8,9 @@ public sealed class SyncViewModel : ObservableObject
 
     private string _lastRevisionText = "0";
     private string _lastPullSummary = "-";
-    private string _pendingText = "대기 전표 0건 / 대기 수금·지급 0건 / 대기 첨부 0건";
-    private string _statusMessage = "동기화 준비";
-    private string _autoSyncText = "저장 시 즉시 서버 반영하고, 화면 진입/복귀 시 서버 revision을 재확인합니다. 필요할 때만 수동 동기화를 사용하세요.";
+    private string _pendingText = "저장 대기: 전표 0건 / 수금·지급 0건 / 첨부 0건";
+    private string _statusMessage = "동기화 상태를 확인할 준비가 되었습니다.";
+    private string _autoSyncText = "저장하면 서버에 바로 올리고, 화면 진입/복귀 시 최신 변경만 확인합니다. 문제가 있을 때만 아래 수동 동기화를 사용하세요.";
     private string _attentionText = string.Empty;
     private bool _hasAttention;
     private bool _isBusy;
@@ -83,7 +83,7 @@ public sealed class SyncViewModel : ObservableObject
         ApplyState(state);
         StatusMessage = string.IsNullOrWhiteSpace(state.LastError)
             ? "동기화 상태를 불러왔습니다."
-            : $"최근 오류: {state.LastError}";
+            : $"최근 동기화 오류: {state.LastError}";
     }
 
     public async Task PullAsync()
@@ -94,12 +94,12 @@ public sealed class SyncViewModel : ObservableObject
         try
         {
             IsBusy = true;
-            StatusMessage = "다운로드 동기화 중...";
+            StatusMessage = "서버에서 최신 데이터를 받는 중입니다.";
             var state = await _syncCoordinator.PullAsync();
             ApplyState(state);
             StatusMessage = string.IsNullOrWhiteSpace(state.LastError)
-                ? "다운로드 동기화 완료"
-                : $"다운로드 오류: {state.LastError}";
+                ? "서버 데이터 받기 완료"
+                : $"서버 데이터 받기 오류: {state.LastError}";
         }
         finally
         {
@@ -115,12 +115,12 @@ public sealed class SyncViewModel : ObservableObject
         try
         {
             IsBusy = true;
-            StatusMessage = "업로드 동기화 중...";
+            StatusMessage = "내 기기 저장 내용을 서버에 올리는 중입니다.";
             var state = await _syncCoordinator.PushAsync();
             ApplyState(state);
             StatusMessage = string.IsNullOrWhiteSpace(state.LastError)
-                ? "업로드 동기화 완료"
-                : $"업로드 오류: {state.LastError}";
+                ? "서버 올리기 완료"
+                : $"서버 올리기 오류: {state.LastError}";
         }
         finally
         {
@@ -136,7 +136,7 @@ public sealed class SyncViewModel : ObservableObject
         try
         {
             IsBusy = true;
-            StatusMessage = "권장 동기화(업로드 → 첨부 업로드 → 다운로드) 진행 중...";
+            StatusMessage = "권장 동기화(내 변경 올리기 → 첨부 올리기 → 서버 최신 받기) 진행 중입니다.";
             var state = await _syncCoordinator.SynchronizeNowAsync();
             ApplyState(state);
             StatusMessage = string.IsNullOrWhiteSpace(state.LastError)
@@ -153,18 +153,18 @@ public sealed class SyncViewModel : ObservableObject
     {
         LastRevisionText = state.LastRevision.ToString("N0");
         PendingText =
-            $"대기 전표 {state.PendingInvoiceCount}건 / 대기 수금·지급 {state.PendingPaymentCount}건 / 대기 첨부 {state.PendingPaymentAttachmentCount}건"
+            $"저장 대기: 전표 {state.PendingInvoiceCount}건 / 수금·지급 {state.PendingPaymentCount}건 / 첨부 {state.PendingPaymentAttachmentCount}건"
             + $" / 거래 {state.PendingTransactionCount}건 / 거래첨부 {state.PendingTransactionAttachmentCount}건 / 재고이동 {state.PendingInventoryTransferCount}건"
             + $" / 렌탈 {state.PendingRentalBillingProfileCount + state.PendingRentalAssetCount + state.PendingRentalBillingLogCount}건";
         LastPullSummary =
-            $"최근 pull: 거래처 {state.LastPulledCustomerCount} / 품목 {state.LastPulledItemCount} / 전표 {state.LastPulledInvoiceCount} / 수금·지급 {state.LastPulledPaymentCount}"
+            $"마지막 서버 받기: 거래처 {state.LastPulledCustomerCount} / 품목 {state.LastPulledItemCount} / 전표 {state.LastPulledInvoiceCount} / 수금·지급 {state.LastPulledPaymentCount}"
             + $" / 거래 {state.LastPulledTransactionCount} / 거래첨부 {state.LastPulledTransactionAttachmentCount}"
             + $" / 재고이동 {state.LastPulledInventoryTransferCount} / 렌탈 {state.LastPulledRentalBillingProfileCount + state.LastPulledRentalAssetCount + state.LastPulledRentalBillingLogCount}";
 
         if (state.PendingPaymentAttachmentCount > 0)
         {
             HasAttention = true;
-            AttentionText = $"첨부 {state.PendingPaymentAttachmentCount:N0}건이 업로드 대기 중입니다. 네트워크 복구 후 자동 재시도됩니다.";
+            AttentionText = $"첨부 {state.PendingPaymentAttachmentCount:N0}건이 서버 올리기 대기 중입니다. 네트워크가 복구되면 자동으로 다시 올립니다.";
         }
         else if (!string.IsNullOrWhiteSpace(state.LastError))
         {

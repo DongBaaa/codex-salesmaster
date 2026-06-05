@@ -1046,7 +1046,12 @@ public static class DtoMappings
             PurchaseReceivingWarehouseCode = entity.PurchaseReceivingWarehouseCode,
             PurchaseReceivingMemo = entity.PurchaseReceivingMemo,
             Memo = entity.Memo,
-            Lines = entity.Lines.Where(x => !x.IsDeleted).OrderBy(x => x.Id).Select(x => x.ToDto()).ToList(),
+            Lines = entity.Lines
+                .Where(x => !x.IsDeleted)
+                .OrderBy(x => x.OrderIndex > 0 ? x.OrderIndex : int.MaxValue)
+                .ThenBy(x => x.Id)
+                .Select(x => x.ToDto())
+                .ToList(),
             Payments = entity.Payments.Where(x => !x.IsDeleted).OrderByDescending(x => x.PaymentDate).Select(x => x.ToDto()).ToList()
         };
 
@@ -1059,7 +1064,8 @@ public static class DtoMappings
             LineAmount = entity.LineAmount, Remark = entity.Remark,
             SerialNumber = entity.SerialNumber, MaterialNumber = entity.MaterialNumber,
             InstallLocation = entity.InstallLocation, RentalStartDate = entity.RentalStartDate,
-            RentalEndDate = entity.RentalEndDate, ItemTrackingType = ItemTrackingTypes.Normalize(entity.ItemTrackingType), IsDeleted = entity.IsDeleted
+            RentalEndDate = entity.RentalEndDate, OrderIndex = entity.OrderIndex,
+            ItemTrackingType = ItemTrackingTypes.Normalize(entity.ItemTrackingType), IsDeleted = entity.IsDeleted
         };
 
     public static void Apply(this Invoice entity, InvoiceDto dto)

@@ -2707,6 +2707,27 @@ public static partial class DbInitializer
 
         try
         {
+#pragma warning disable EF1002
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"InvoiceLines\" ADD COLUMN \"OrderIndex\" INTEGER NOT NULL DEFAULT 0;",
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"InvoiceLines\" ADD COLUMN IF NOT EXISTS \"OrderIndex\" integer NOT NULL DEFAULT 0;",
+                    cancellationToken);
+            }
+#pragma warning restore EF1002
+        }
+        catch
+        {
+        }
+
+        try
+        {
             await dbContext.Database.ExecuteSqlRawAsync(
                 """
                 UPDATE "InvoiceLines"
