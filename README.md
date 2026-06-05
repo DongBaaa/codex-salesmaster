@@ -40,7 +40,7 @@ cmd /c "배포\전체실행.cmd"
 - 2026-03-20 실제 검증 결과:
   - `배포\전체실행.cmd` 는 로컬 테스트용으로 `Development` 환경 + SQLite fallback 기준에서 실행되도록 조정함
   - 서버는 `http://127.0.0.1:19080` 계열이 아니라, 스크립트가 잡은 실제 포트로 기동
-  - 외부 NAS 실서버 확인은 `https://api.example.invalid` 기준으로 별도 검증
+  - 외부 live 실서버 확인은 `https://trade.2884.kr` 기준으로 별도 검증
 
 ### 개발 모드 실행
 서버:
@@ -61,8 +61,8 @@ cd "D:\거래플랜\배포\거래플랜"
 .\거래플랜.exe
 ```
 
-- 위 실행본은 `https://api.example.invalid` 를 바라보는 포터블 배포본이다.
-- 로컬 서버 없이 외부 NAS API에 붙여서 UI/로그인 테스트할 때 가장 단순하다.
+- 위 실행본은 배포 설정에 따라 `https://trade.2884.kr` live API를 바라보는 포터블 배포본이다.
+- 로컬 서버 없이 Linux PC live API에 붙여서 UI/로그인 테스트할 때 가장 단순하다.
 
 ## 빌드/테스트
 ```powershell
@@ -77,44 +77,51 @@ dotnet test "거래플랜.sln" -c Release --no-build
 
 - 참고: 현재는 `Tests\GeoraePlan.Server.Api.Tests` 중심의 서버 자동 테스트와 task 기반 스모크 검증이 포함되어 있어 `dotnet test` 는 최소 서버 회귀 검증까지 수행합니다.
 
-## NAS 주기 점검 / 백업 / 인증서 갱신
-- infra/nas/run-auto-apply.sh 는 기존 자동 배포 확인 외에 주기 점검도 같이 수행합니다.
-- 매일 1회 실행되는 점검:
-  - https://api.example.invalid/healthz
-  - https://api.example.invalid/updates/manifest?channel=stable
-  - PostgreSQL DB 백업 생성 및 최신 백업 존재 확인
-  - 계약서/PDF/첨부파일을 실제 파일 스냅샷으로 추출 백업
-  - 1일 이상 지난 백업을 외부 복제 경로(\\192.0.2.10\\서비스기술자료\\거래플랜 백업)로 동기화
-- 주 1회 실행되는 점검:
-  - 외부 URL 재확인
-  - HTTPS 인증서 만료 상태 점검
-  - Let's Encrypt 인증서가 갱신 윈도우(기본 30일) 안에 들어오면 Synology syno-letsencrypt renew-all 시도
-- 상태 파일/로그:
-  - \\192.0.2.10\\docker\\georaeplan\\ops\\state\\daily-check-status.txt
-  - \\192.0.2.10\\docker\\georaeplan\\ops\\state\\weekly-check-status.txt
-  - \\192.0.2.10\\docker\\georaeplan\\ops\\state\\backup-status.txt
-  - \\192.0.2.10\\docker\\georaeplan\\ops\\state\\external-replica-status.txt
-  - \\192.0.2.10\\docker\\georaeplan\\ops\\state\\cert-status.txt
-  - \\192.0.2.10\\docker\\georaeplan\\ops\\state\\routine-ops.log
-  - DB 백업 폴더: \\192.0.2.10\\docker\\georaeplan\\backups\\db
-  - 파일 백업 폴더: \\192.0.2.10\\docker\\georaeplan\\backups\\files
-  - 외부 복제 폴더: \\192.0.2.10\\서비스기술자료\\거래플랜 백업
-## NAS 자동 배포(권장)
-PC 설치파일, Android APK, 업데이트 자산 생성 후 NAS에 **파일 복사 + `apply-release.sh` 자동 실행 + 컨테이너 재기동**까지 한 번에 처리하려면 아래 명령을 사용합니다.
+## Linux PC 주기 점검 / 백업 / 인증서 갱신
+- 현재 거래플랜 서버 본체는 NAS가 아니라 Linux PC `itw@192.168.0.199:2222`의 `/srv/georaeplan` 기준으로 운영합니다.
+- 운영 공개 URL:
+  - https://trade.2884.kr/healthz
+  - https://trade.2884.kr/updates/manifest?channel=stable
+- live 반영 전후 공통 NAS 장애 여부를 조기에 확인하기 위해 함께 확인할 URL:
+  - https://work.2884.kr/healthz
+  - https://itw.2884.kr/
+- Linux PC 상태 파일/로그 기준 경로:
+  - `/srv/georaeplan/ops/state/daily-check-status.txt`
+  - `/srv/georaeplan/ops/state/weekly-check-status.txt`
+  - `/srv/georaeplan/ops/state/backup-status.txt`
+  - `/srv/georaeplan/ops/state/external-replica-status.txt`
+  - `/srv/georaeplan/ops/state/cert-status.txt`
+  - `/srv/georaeplan/ops/state/routine-ops.log`
+  - DB 백업 폴더: `/srv/georaeplan/backups/db`
+  - 파일 백업 폴더: `/srv/georaeplan/backups/files`
+
+## Linux PC 자동 배포(권장)
+PC 설치파일, Android APK, 업데이트 자산 생성 후 Linux PC에 **release 업로드 + `apply-release.sh` 실행 + 거래플랜 서비스 단위 반영**까지 한 번에 처리하려면 아래 명령을 사용합니다.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\release\Publish-GeoraePlanFullRelease.ps1" -ProjectRoot "D:\거래플랜" -SigningConfigPath "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\android-signing.local.json" -DeployToNas
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\release\Publish-GeoraePlanFullRelease.ps1" `
+  -ProjectRoot "D:\거래플랜" `
+  -SigningConfigPath "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\android-signing.local.json" `
+  -DeployToLinuxPc `
+  -SkipPreDeployOperationalGate `
+  -SkipPostDeployOperationalGate
+```
+
+서버 publish/live 반영만 다시 할 때는 아래 Linux PC 전용 래퍼를 사용합니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux\Publish-GeoraeplanLinuxPcRelease.ps1" `
+  -ProjectRoot "D:\거래플랜" `
+  -MirrorToLive `
+  -SkipPreDeployOperationalGate `
+  -SkipPostDeployOperationalGate
 ```
 
 사전 조건:
-- `D:\거래플랜\infra\nas\.env.example` 또는 운영용 `.env`에 `NAS_SSH_USER`를 포함한 SSH 정보가 채워져 있어야 합니다.
-- `NAS_SSH_KEY_PATH`는 **Windows 배포 PC 기준 경로**입니다.
-- 권장 동작 순서:
-  1. SSH 설정이 있으면 배포 PC가 NAS의 `apply-release.sh`를 바로 실행
-  2. SSH 설정이 없고 `NAS_SCHEDULED_APPLY_ENABLED=true`이면 NAS 작업 스케줄러의 `auto-apply-release.sh`가 pending release를 감지해 로컬에서 `apply-release.sh`를 실행
-- scheduled apply trigger 대기(`pending-release.txt` 기록, `current-release.txt` 확인)도 SSH 설정이 있으면 UNC 공유 대신 SSH로 처리합니다.
-- 데스크톱 자동업데이트는 같은 호스트의 패키지 다운로드가 인증을 요구하더라도, 실행 중 세션의 인증 헤더를 업데이터에 안전하게 전달해 다운로드를 계속할 수 있습니다.
-- 정말 필요한 경우에만 `-AllowLegacyLiveMirror`를 명시해 예전 방식의 직접 미러링을 허용할 수 있습니다.
+- Windows 배포 PC에 `C:\Users\beene\.ssh\itwserver_codex_ed25519` 키가 있어야 합니다.
+- Linux PC의 `/srv/georaeplan/ops/apply-release.sh`가 존재하고 `bash -n` 검사를 통과해야 합니다.
+- 새 작업에서는 `tools\linux` 스크립트를 우선 사용하고, `tools\nas`는 legacy 호환용으로만 사용합니다.
+- Linux PC 전용 래퍼는 `-SkipConfigSync`를 기본 적용해 예전 NAS 설정이 `/srv/georaeplan/ops`에 덮어써지는 일을 방지합니다.
 
 ## 인쇄 기본 동작
 - `[완료]` 판매(매출) 창에서 `출력물 편집` 후 데이터 저장
@@ -142,11 +149,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\relea
 
 ## 관련 문서
 - 통합 진행 문서: `D:\거래플랜\기획.md`
-- NAS 운영 런북: `D:\거래플랜\infra\NAS-운영-런북.md`
-- NAS 실운영 최소 체크리스트: `D:\거래플랜\infra\NAS-실운영-최소체크리스트_2026-03-19.md`
-- NAS 실행 명령 요약: `D:\거래플랜\infra\NAS-실행-명령요약_2026-03-19.md`
-- NAS 보안 체크리스트: `D:\거래플랜\infra\NAS-보안-체크리스트_2026-03-19.md`
-- NAS 포트/폴더/도메인 배치안: `D:\거래플랜\tasks\NAS_포트_폴더_도메인_배치안_2026-03-19.md`
+- Linux PC 운영 런북: `D:\거래플랜\infra\LinuxPC-운영-런북.md`
+- Linux PC 설정 예시: `D:\거래플랜\infra\linux\.env.example`
+- Linux PC compose 예시: `D:\거래플랜\infra\linux\docker-compose.yml`
+- legacy NAS 운영 런북: `D:\거래플랜\infra\NAS-운영-런북.md`
 - 안드로이드 MVP 기능명세: `D:\거래플랜\tasks\안드로이드_MVP_기능명세_2026-03-19.md`
 - 안드로이드 MAUI 스캐폴드: `D:\거래플랜\Mobile\GeoraePlan.Mobile.App\README.md`
 - 안드로이드 빌드/서명/직접설치 가이드: `D:\거래플랜\Mobile\안드로이드_빌드_서명_설치_가이드_2026-03-19.md`
@@ -167,5 +173,3 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\relea
   - `D:\거래플랜\배포\관리자용\거래플랜-PC-설치패키지.zip`
 - 수정/업데이트 가이드:
   - `D:\거래플랜\수정_업데이트_가이드_2026-03-20.md`
-
-

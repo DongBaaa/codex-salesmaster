@@ -13,11 +13,12 @@ param(
     [switch]$DryRun,
     [switch]$AllowLegacyLiveMirror,
     [switch]$AllowScheduledApplyTrigger,
-    [string]$NasSshHost,
-    [string]$NasSshUser,
-    [int]$NasSshPort = 0,
-    [string]$NasSshKeyPath,
-    [string]$NasRemoteOpsPath,
+    [string]$NasSshHost = '192.168.0.199',
+    [string]$NasSshUser = 'itw',
+    [int]$NasSshPort = 2222,
+    [string]$NasSshKeyPath = (Join-Path $env:USERPROFILE '.ssh\itwserver_codex_ed25519'),
+    [string]$NasRemoteOpsPath = '/srv/georaeplan/ops',
+    [string]$NasStateRoot = '',
     [switch]$SkipPreDeployOperationalGate,
     [string]$PreDeployBaseUrl = '',
     [string]$PreDeploySecretPath = '',
@@ -126,6 +127,7 @@ function Invoke-PreDeployOperationalGate {
         [Parameter(Mandatory = $true)][string]$BaseUrl,
         [Parameter(Mandatory = $true)][string]$OutputDirectory,
         [string]$SecretPath = '',
+        [string]$NasStateRoot = '',
         [string[]]$AllowedIntegrityWarningCodes = @()
     )
 
@@ -136,15 +138,16 @@ function Invoke-PreDeployOperationalGate {
         throw 'live 반영 전 운영 게이트 BaseUrl을 확인할 수 없습니다. -PreDeployBaseUrl 또는 PUBLIC_BASE_URL을 지정하세요.'
     }
 
-    $nasStateRoot = '\\192.168.0.200\docker\georaeplan\ops\state'
     $arguments = @(
         '-ProjectRoot', $ProjectRoot,
         '-BaseUrl', $BaseUrl,
-        '-NasStateRoot', $nasStateRoot,
         '-OutputDirectory', $OutputDirectory,
         '-FailOnIntegrityWarnings',
         '-SkipWriteSafetyChecks'
     )
+    if (-not [string]::IsNullOrWhiteSpace($NasStateRoot)) {
+        $arguments += @('-NasStateRoot', $NasStateRoot)
+    }
     if (-not [string]::IsNullOrWhiteSpace($SecretPath)) {
         $arguments += @('-SecretPath', $SecretPath)
     }
@@ -336,7 +339,7 @@ foreach ($path in @($ChecklistPath, $ChangedFilesPath)) {
 
 $buildInstallerScript = Join-Path $ProjectRoot 'tools\release\Build-GeoraePlanDesktopInstaller.ps1'
 $updateAssetsScript = Join-Path $ProjectRoot 'tools\release\Publish-GeoraePlanUpdateAssets.ps1'
-$nasPublishScript = Join-Path $ProjectRoot 'tools\nas\Publish-GeoraeplanNasRelease.ps1'
+$nasPublishScript = Join-Path $ProjectRoot 'tools\linux\Publish-GeoraeplanLinuxPcRelease.ps1'
 $operationalGateScript = Join-Path $ProjectRoot 'tools\ops\Invoke-GeoraePlanOperationalGate.ps1'
 $liveReadinessScript = Join-Path $scriptRoot 'Invoke-LiveReleaseReadinessCheck.ps1'
 if (-not $SkipNas) {
@@ -348,11 +351,14 @@ if (-not $SkipNas) {
 }
 
 $checklistContent = Get-Content -LiteralPath $ChecklistPath -Raw
-if (Test-ChecklistChecked -Content $checklistContent -Label '이슈 있음 → NAS/Git 반영 보류') {
+if ((Test-ChecklistChecked -Content $checklistContent -Label '이슈 있음 → NAS/Git 반영 보류') -or
+    (Test-ChecklistChecked -Content $checklistContent -Label '이슈 있음 → live/Git 반영 보류')) {
     throw '체크리스트에 이슈 있음 항목이 체크되어 있어 반영을 진행할 수 없습니다.'
 }
-if (-not $SkipNas -and -not (Test-ChecklistChecked -Content $checklistContent -Label '문제 없음 → NAS 반영 가능')) {
-    throw '체크리스트에서 "문제 없음 → NAS 반영 가능" 항목이 체크되지 않았습니다.'
+if (-not $SkipNas -and
+    -not (Test-ChecklistChecked -Content $checklistContent -Label '문제 없음 → NAS 반영 가능') -and
+    -not (Test-ChecklistChecked -Content $checklistContent -Label '문제 없음 → live 반영 가능')) {
+    throw '체크리스트에서 "문제 없음 → live 반영 가능" 항목이 체크되지 않았습니다.'
 }
 if (-not $SkipGit -and -not (Test-ChecklistChecked -Content $checklistContent -Label '문제 없음 → Git 반영 가능')) {
     throw '체크리스트에서 "문제 없음 → Git 반영 가능" 항목이 체크되지 않았습니다.'
@@ -436,13 +442,14 @@ if (-not $SkipNas) {
             [string][Environment]::GetEnvironmentVariable('PUBLIC_BASE_URL'),
             'https://trade.2884.kr'
         )
-        Write-Info 'live 반영 전 운영 게이트를 실행합니다. 실패 시 Git/NAS 반영을 시작하지 않습니다.'
+        Write-Info 'live 반영 전 운영 게이트를 실행합니다. 실패 시 Git/live 반영을 시작하지 않습니다.'
         Invoke-PreDeployOperationalGate `
             -ProjectRoot $ProjectRoot `
             -OperationalGateScript $operationalGateScript `
             -BaseUrl $resolvedPreDeployBaseUrl `
             -OutputDirectory $preDeployOperationalGateDirectory `
             -SecretPath $PreDeploySecretPath `
+            -NasStateRoot $NasStateRoot `
             -AllowedIntegrityWarningCodes $PreDeployAllowedIntegrityWarningCodes
     }
     else {
@@ -458,7 +465,7 @@ if ($DryRun) {
         "- 브랜치: $branch",
         "- 반영 전 커밋: $beforeCommit",
         '- 실행 결과: DryRun 완료',
-        "- NAS 메인(live/stable) 반영 예정: $([bool](-not $SkipNas))",
+        "- Linux PC 메인(live/stable) 반영 예정: $([bool](-not $SkipNas))",
         "- Git 반영 예정: $([bool](-not $SkipGit))",
         "- Git push 예정: $([bool](-not $SkipGit -and -not $SkipPush))",
         "- live 사전 점검 리포트: $(if ($SkipNas) { '-' } else { $livePreflightReport })",
@@ -466,14 +473,14 @@ if ($DryRun) {
     ) -join [Environment]::NewLine
     Write-Utf8File -Path (Join-Path $sessionRoot '반영 결과.md') -Content $dryRunSummary
 
-    Write-Info 'DryRun 모드입니다. 실제 NAS/Git 반영은 수행하지 않았습니다.'
+    Write-Info 'DryRun 모드입니다. 실제 live/Git 반영은 수행하지 않았습니다.'
     Write-Info "- 브랜치: $branch"
     Write-Info "- 반영 전 커밋: $beforeCommit"
     if (-not $SkipGit) {
         Write-Info "- Git 반영 대상 수: $($trackedEntries.Count + $untrackedResolution.Allowed.Count)"
     }
     if (-not $SkipNas) {
-        Write-Info '- NAS 메인(live/stable) 반영 스크립트가 실행될 준비가 되어 있습니다.'
+        Write-Info '- Linux PC 메인(live/stable) 반영 스크립트가 실행될 준비가 되어 있습니다.'
     }
     Write-Info "- 로그 폴더: $sessionRoot"
     if (-not $SkipNas) {
@@ -530,19 +537,19 @@ if (-not $SkipNas) {
         $nasArgs += '-AllowScheduledApplyTrigger'
     }
     if (-not [string]::IsNullOrWhiteSpace($NasSshHost)) {
-        $nasArgs += @('-NasSshHost', $NasSshHost)
+        $nasArgs += @('-LinuxSshHost', $NasSshHost)
     }
     if (-not [string]::IsNullOrWhiteSpace($NasSshUser)) {
-        $nasArgs += @('-NasSshUser', $NasSshUser)
+        $nasArgs += @('-LinuxSshUser', $NasSshUser)
     }
     if ($NasSshPort -gt 0) {
-        $nasArgs += @('-NasSshPort', $NasSshPort.ToString())
+        $nasArgs += @('-LinuxSshPort', $NasSshPort.ToString())
     }
     if (-not [string]::IsNullOrWhiteSpace($NasSshKeyPath)) {
-        $nasArgs += @('-NasSshKeyPath', $NasSshKeyPath)
+        $nasArgs += @('-LinuxSshKeyPath', $NasSshKeyPath)
     }
     if (-not [string]::IsNullOrWhiteSpace($NasRemoteOpsPath)) {
-        $nasArgs += @('-NasRemoteOpsPath', $NasRemoteOpsPath)
+        $nasArgs += @('-LinuxRemoteOpsPath', $NasRemoteOpsPath)
     }
     if ($SkipPreDeployOperationalGate) {
         $nasArgs += '-SkipPreDeployOperationalGate'
@@ -561,7 +568,7 @@ if (-not $SkipNas) {
         $nasArgs += $PreDeployAllowedIntegrityWarningCodes
     }
 
-    Write-Info '메인(live) stable 배포본의 NAS 반영을 진행합니다.'
+    Write-Info '메인(live) stable 배포본의 Linux PC 반영을 진행합니다.'
     Invoke-PowerShellFile -FilePath $nasPublishScript -Arguments $nasArgs
 
     Write-Info 'live 반영 사후 점검을 실행합니다.'
@@ -580,7 +587,7 @@ $finalSummary = @(
     "- 브랜치: $branch",
     "- 반영 전 커밋: $beforeCommit",
     "- 반영 후 커밋: $afterCommit",
-    "- NAS 메인(live/stable) 반영 수행: $([bool](-not $SkipNas))",
+    "- Linux PC 메인(live/stable) 반영 수행: $([bool](-not $SkipNas))",
     "- Git 반영 수행: $([bool](-not $SkipGit))",
     "- Git push 수행: $([bool](-not $SkipGit -and -not $SkipPush))",
     "- live 사전 점검 리포트: $(if ($SkipNas) { '-' } else { $livePreflightReport })",

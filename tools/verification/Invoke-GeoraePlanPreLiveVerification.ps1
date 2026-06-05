@@ -25,7 +25,7 @@
     [string]$MobileApkPath = '',
     [string]$MobileAndroidSdkDirectory = '',
     [string]$MobileJavaSdkDirectory = '',
-    [string]$NasRoot = '\\192.168.0.200\docker\georaeplan',
+    [string]$NasRoot = '',
     [string]$UpdateChannel = 'stable',
     [string]$UpdateHttpBaseUrl = '',
     [int]$ExpectedNasReleaseCount = 2,

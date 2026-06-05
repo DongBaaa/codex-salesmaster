@@ -4,7 +4,7 @@
     [string]$Username = 'usenet',
     [string]$Password = '1234',
     [string]$EvidenceDirectory = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'output\sync-error-guard'),
-    [string]$NasRoot = '\\192.168.0.200\docker\georaeplan',
+    [string]$NasRoot = '',
     [datetime]$SinceUtc = [DateTime]::UtcNow,
     [switch]$ScanNasDockerLogs,
     [switch]$SkipRepeatedSaveSmoke,

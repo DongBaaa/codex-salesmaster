@@ -1,11 +1,11 @@
 ﻿[CmdletBinding()]
 param(
     [string]$ProjectRoot = "",
-    [string]$BaseUrl = "https://api.example.invalid",
+    [string]$BaseUrl = "https://trade.2884.kr",
     [string]$Channel = "stable",
     [string]$SecretPath = "D:\거래플랜-운영검증-secrets.json",
     [string]$ApprovedTargetsPath = "",
-    [string]$NasStateRoot = "\\192.0.2.10\docker\georaeplan\ops\state",
+    [string]$NasStateRoot = "",
     [string]$OutputDirectory = "",
     [switch]$FailOnIntegrityWarnings,
     [string[]]$AllowedIntegrityWarningCodes = @(),
@@ -334,7 +334,7 @@ else {
     Add-Check -Checks $checks -Name 'live observation' -Status 'WARN' -Detail 'script not found'
 }
 
-if (Test-Path -LiteralPath $NasStateRoot) {
+if (-not [string]::IsNullOrWhiteSpace($NasStateRoot) -and (Test-Path -LiteralPath $NasStateRoot)) {
     $dailyPath = Join-Path $NasStateRoot 'daily-check-status.txt'
     $backupPath = Join-Path $NasStateRoot 'backup-status.txt'
     $replicaPath = Join-Path $NasStateRoot 'external-replica-status.txt'
@@ -345,7 +345,7 @@ if (Test-Path -LiteralPath $NasStateRoot) {
     $replica = if (Test-Path -LiteralPath $replicaPath) { Get-Content -LiteralPath $replicaPath -Raw } else { '' }
     $cert = if (Test-Path -LiteralPath $certPath) { Get-Content -LiteralPath $certPath -Raw } else { '' }
 
-    Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "`n## NAS state"
+    Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "`n## platform state"
     Get-ChildItem -LiteralPath $NasStateRoot -File | Sort-Object Name | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize | Out-String -Width 4096 | Add-Content -LiteralPath $logPath -Encoding UTF8
     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "daily=$daily"
     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "backup=$backup"
@@ -355,14 +355,14 @@ if (Test-Path -LiteralPath $NasStateRoot) {
     $dailyEndpointOk = ($daily -match 'healthz=ok') -or ($daily -match 'readyz=ok')
     $nasOk = $dailyEndpointOk -and ($daily -match 'manifest=ok') -and ($daily -match 'backup=ok') -and ($daily -match 'replica=ok') -and ($backup -match 'backup=ok') -and ($replica -match 'replica=ok') -and ($cert -match 'cert=ok')
     if ($nasOk) {
-        Add-Check -Checks $checks -Name 'NAS status files' -Status 'PASS' -Detail 'daily endpoint/manifest/backup/replica/cert ok'
+        Add-Check -Checks $checks -Name 'platform status files' -Status 'PASS' -Detail 'daily endpoint/manifest/backup/replica/cert ok'
     }
     else {
-        Add-Check -Checks $checks -Name 'NAS status files' -Status 'WARN' -Detail 'NAS files readable but one or more ok markers missing'
+        Add-Check -Checks $checks -Name 'platform status files' -Status 'WARN' -Detail 'state files readable but one or more ok markers missing'
     }
 }
 else {
-    Add-Check -Checks $checks -Name 'NAS status files' -Status 'WARN' -Detail ("NAS state root not accessible: {0}" -f $NasStateRoot)
+    Add-Check -Checks $checks -Name 'platform status files' -Status 'WARN' -Detail ("state root not configured or not accessible: {0}" -f $NasStateRoot)
 }
 
 $secrets = Read-SecretFile -Path $SecretPath

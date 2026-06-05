@@ -4,6 +4,7 @@ param(
     [string]$SigningConfigPath,
     [string]$Channel = 'stable',
     [switch]$DeployToNas,
+    [switch]$DeployToLinuxPc,
     [switch]$NoRestore,
     [string]$DesktopMinimumSupportedVersion,
     [string]$AndroidMinimumSupportedVersion,
@@ -16,6 +17,11 @@ param(
     [int]$NasSshPort = 0,
     [string]$NasSshKeyPath,
     [string]$NasRemoteOpsPath,
+    [string]$LinuxSshHost = '192.168.0.199',
+    [string]$LinuxSshUser = 'itw',
+    [int]$LinuxSshPort = 2222,
+    [string]$LinuxSshKeyPath = (Join-Path $env:USERPROFILE '.ssh\itwserver_codex_ed25519'),
+    [string]$LinuxRemoteOpsPath = '/srv/georaeplan/ops',
     [switch]$SkipPreDeployOperationalGate,
     [switch]$SkipPostDeployOperationalGate,
     [string]$PreDeployBaseUrl = "",
@@ -96,6 +102,10 @@ function Resolve-ProjectFile {
 }
 
 $ErrorActionPreference = 'Stop'
+
+if ($DeployToNas -and $DeployToLinuxPc) {
+    throw 'DeployToNas와 DeployToLinuxPc는 동시에 사용할 수 없습니다. 현재 운영 기준은 DeployToLinuxPc입니다.'
+}
 
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = Resolve-ProjectRoot -ScriptPath $MyInvocation.MyCommand.Path
@@ -240,6 +250,62 @@ if ($DeployToNas) {
     & powershell @nasArgs
     if ($LASTEXITCODE -ne 0) {
         throw 'NAS deployment failed.'
+    }
+}
+
+if ($DeployToLinuxPc) {
+    $linuxScript = Join-Path $ProjectRoot 'tools\linux\Publish-GeoraeplanLinuxPcRelease.ps1'
+    $linuxArgs = @(
+        '-NoProfile'
+        '-ExecutionPolicy', 'Bypass'
+        '-File', $linuxScript
+        '-ProjectRoot', $ProjectRoot
+        '-MirrorToLive'
+        '-LinuxSshHost', $LinuxSshHost
+        '-LinuxSshUser', $LinuxSshUser
+        '-LinuxSshPort', $LinuxSshPort.ToString()
+        '-LinuxRemoteOpsPath', $LinuxRemoteOpsPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($LinuxSshKeyPath)) {
+        $linuxArgs += @('-LinuxSshKeyPath', $LinuxSshKeyPath)
+    }
+    if ($SkipPreDeployOperationalGate) {
+        $linuxArgs += '-SkipPreDeployOperationalGate'
+    }
+    if ($SkipPostDeployOperationalGate) {
+        $linuxArgs += '-SkipPostDeployOperationalGate'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) {
+        $linuxArgs += @('-PreDeployBaseUrl', $PreDeployBaseUrl)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PreDeploySecretPath)) {
+        $linuxArgs += @('-PreDeploySecretPath', $PreDeploySecretPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PreDeployOutputDirectory)) {
+        $linuxArgs += @('-PreDeployOutputDirectory', $PreDeployOutputDirectory)
+    }
+    if ($PreDeployAllowedIntegrityWarningCodes.Count -gt 0) {
+        $linuxArgs += '-PreDeployAllowedIntegrityWarningCodes'
+        $linuxArgs += $PreDeployAllowedIntegrityWarningCodes
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PostDeployBaseUrl)) {
+        $linuxArgs += @('-PostDeployBaseUrl', $PostDeployBaseUrl)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PostDeploySecretPath)) {
+        $linuxArgs += @('-PostDeploySecretPath', $PostDeploySecretPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PostDeployOutputDirectory)) {
+        $linuxArgs += @('-PostDeployOutputDirectory', $PostDeployOutputDirectory)
+    }
+    if ($PostDeployAllowedIntegrityWarningCodes.Count -gt 0) {
+        $linuxArgs += '-PostDeployAllowedIntegrityWarningCodes'
+        $linuxArgs += $PostDeployAllowedIntegrityWarningCodes
+    }
+
+    & powershell @linuxArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Linux PC deployment failed.'
     }
 }
 
