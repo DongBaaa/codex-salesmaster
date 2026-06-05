@@ -5634,6 +5634,11 @@ public sealed class SyncService : IDisposable
 
             if (!existing.IsDirty)
             {
+                var incomingIsNewer = local.Revision > existing.Revision ||
+                                      (local.Revision == existing.Revision && local.UpdatedAtUtc >= existing.UpdatedAtUtc);
+                if (!incomingIsNewer)
+                    continue;
+
                 _db.Entry(existing).CurrentValues.SetValues(local);
                 existing.OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(existing.OfficeCode, existing.OfficeCode);
                 existing.IsDirty = false;

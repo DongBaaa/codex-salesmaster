@@ -61,8 +61,15 @@ internal static class LocalEntityConcurrencyGuard
             existing.Revision > 0 &&
             candidate.Revision != existing.Revision)
         {
-            conflictMessage = BuildConflictMessage(entityDisplayName, candidate.Revision, existing.Revision);
-            return false;
+            if (candidate.Revision > existing.Revision && !existing.IsDirty)
+            {
+                candidate.Revision = existing.Revision;
+            }
+            else
+            {
+                conflictMessage = BuildConflictMessage(entityDisplayName, candidate.Revision, existing.Revision);
+                return false;
+            }
         }
 
         candidate.CreatedAtUtc = existing?.CreatedAtUtc ?? (candidate.CreatedAtUtc == default ? now : candidate.CreatedAtUtc);
