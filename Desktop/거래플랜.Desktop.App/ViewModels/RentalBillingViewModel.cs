@@ -143,6 +143,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                                : HasPersistedSelectedProfile);
     public bool CanHoldSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
     public bool CanRegisterSettlementSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
+    public bool CanDeleteSelectedBillingHistory => SelectedRow is not null &&
+                                                   SelectedBillingHistory is not null &&
+                                                   HasPersistedSelectedProfile &&
+                                                   CanEditCurrentSelection &&
+                                                   !SelectedRow.IsAggregateRow &&
+                                                   SelectedBillingHistory.BillingProfileId == SelectedRow.Source.Id &&
+                                                   SelectedBillingHistory.CanDelete;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
     public bool CanMarkCompletedSelected => SelectedRow is not null &&
                                             HasPersistedSelectedProfile &&
@@ -280,7 +287,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         OnPropertyChanged(nameof(PastUnresolvedSummaryText));
     }
     partial void OnSelectedBillingHistoryChanged(RentalBillingHistoryRow? value)
-        => OnPropertyChanged(nameof(CanRegisterSettlementSelected));
+    {
+        OnPropertyChanged(nameof(CanRegisterSettlementSelected));
+        OnPropertyChanged(nameof(CanDeleteSelectedBillingHistory));
+        DeleteSelectedBillingHistoryCommand.NotifyCanExecuteChanged();
+    }
     partial void OnShowIndividualProfilesChanged(bool value)
     {
         NotifySelectionActionState();
@@ -843,6 +854,87 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         await ReloadAsync();
         SelectRow(targetId);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanDeleteSelectedBillingHistory))]
+    private async Task DeleteSelectedBillingHistoryAsync()
+    {
+        if (SelectedRow is null || SelectedBillingHistory is null)
+        {
+            StatusMessage = "삭제할 청구/입금 내역을 먼저 선택하세요.";
+            return;
+        }
+
+        if (TryRejectAggregateSelection("청구/입금 내역 삭제"))
+            return;
+
+        if (!SelectedRow.HasPersistedProfile)
+        {
+            StatusMessage = "청구설정이 필요한 장비입니다. 먼저 저장해 청구 프로필을 만든 뒤 청구/입금 내역을 삭제하세요.";
+            return;
+        }
+
+        var targetId = SelectedRow.Source.Id;
+        var history = SelectedBillingHistory;
+        if (history.BillingProfileId != targetId)
+        {
+            StatusMessage = "거래처 그룹에 포함된 다른 청구건입니다. 개별 청구건 보기에서 해당 거래처를 선택한 뒤 삭제하세요.";
+            return;
+        }
+
+        if (!history.CanDelete)
+        {
+            StatusMessage = "연결된 판매전표 또는 입금 내역이 없는 예정 청구월은 삭제할 내역이 없습니다.";
+            return;
+        }
+
+        var invoiceDeleteText = history.HasInvoice
+            ? "연결된 판매전표도 함께 삭제됩니다."
+            : "연결된 판매전표가 없으면 전표 삭제는 건너뜁니다.";
+        var settlementDeleteText = history.HasSettlement
+            ? $"입금 {history.SettledAmount:N0}원 내역도 함께 삭제됩니다."
+            : "입금 내역이 없으면 입금 삭제는 건너뜁니다.";
+        var confirmation = MessageBox.Show(
+            GetActiveWindow(),
+            $"{SelectedRow.CustomerDisplayName} / {history.PeriodLabel} 청구·입금 내역을 삭제하시겠습니까?{Environment.NewLine}{invoiceDeleteText}{Environment.NewLine}{settlementDeleteText}",
+            "청구/입금 내역 삭제",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+        if (confirmation != MessageBoxResult.OK)
+            return;
+
+        IsBusy = true;
+        try
+        {
+            var result = await _rental.DeleteBillingHistoryAsync(
+                targetId,
+                history.BillingRunId,
+                _session,
+                SelectedRow.Source.Revision);
+            StatusMessage = result.Message;
+            if (!result.Success)
+            {
+                if (result.ConcurrencyConflict)
+                {
+                    await ReloadAsync();
+                    SelectRow(targetId);
+                    MessageBox.Show(
+                        result.Message,
+                        "동시 수정 충돌",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+
+                return;
+            }
+
+            await ReloadAsync();
+            SelectRow(targetId);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     [RelayCommand]
@@ -1472,6 +1564,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         OnPropertyChanged(nameof(CanStartBillingSelected));
         OnPropertyChanged(nameof(CanHoldSelected));
         OnPropertyChanged(nameof(CanRegisterSettlementSelected));
+        OnPropertyChanged(nameof(CanDeleteSelectedBillingHistory));
         OnPropertyChanged(nameof(CanDeleteSelected));
         OnPropertyChanged(nameof(CanMarkCompletedSelected));
         NotifyTemplateItemMoveState();
@@ -1482,6 +1575,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         RemoveIncludedAssetCommand.NotifyCanExecuteChanged();
         SetRepresentativeAssetCommand.NotifyCanExecuteChanged();
         ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
+        DeleteSelectedBillingHistoryCommand.NotifyCanExecuteChanged();
         NotifyIncludedAssetAssignmentHistoryCommandState();
     }
 

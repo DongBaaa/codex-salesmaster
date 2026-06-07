@@ -157,6 +157,19 @@ public partial class RentalBillingWindow : Window
         }, "UI", "렌탈 청구 월별 입금 등록", "렌탈 청구 월별 입금 등록 중 오류가 발생했습니다.");
     }
 
+    private void BillingHistoryDataGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not DataGrid dataGrid || e.OriginalSource is not DependencyObject source)
+            return;
+
+        var dataGridRow = FindAncestor<DataGridRow>(source);
+        if (dataGridRow?.Item is not RentalBillingHistoryRow historyRow)
+            return;
+
+        dataGridRow.IsSelected = true;
+        dataGrid.SelectedItem = historyRow;
+    }
+
     private async Task OpenRentalSettlementWindowAsync(RentalBillingViewModel viewModel, RentalBillingHistoryRow? history)
     {
         if (viewModel.SelectedRow is null)

@@ -533,9 +533,17 @@
                         <TextBlock Text="청구/입금 내역" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,6"/>
                         <DataGrid ItemsSource="{Binding BillingHistoryRows}"
                                   SelectedItem="{Binding SelectedBillingHistory}"
+                                  PreviewMouseRightButtonDown="BillingHistoryDataGrid_PreviewMouseRightButtonDown"
                                   Height="155"
                                   Margin="0,0,0,10"
                                   IsReadOnly="True">
+                            <DataGrid.ContextMenu>
+                                <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                    <MenuItem Header="선택 내역 삭제"
+                                              Command="{Binding DeleteSelectedBillingHistoryCommand}"
+                                              IsEnabled="{Binding CanDeleteSelectedBillingHistory}"/>
+                                </ContextMenu>
+                            </DataGrid.ContextMenu>
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="청구기간" Binding="{Binding PeriodLabel}" Width="120"/>
                                 <DataGridTextColumn Header="청구일" Binding="{Binding ScheduledDate, StringFormat={}{0:yyyy-MM-dd}}" Width="96"/>

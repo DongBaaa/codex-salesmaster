@@ -2367,6 +2367,296 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return LocalMutationResult.Ok(billingProfileId, "수금을 등록했습니다.");
     }
 
+    public async Task<LocalMutationResult> DeleteBillingHistoryAsync(
+        Guid billingProfileId,
+        Guid billingRunId,
+        SessionState session,
+        long? expectedRevision = null,
+        CancellationToken ct = default)
+    {
+        if (billingProfileId == Guid.Empty || billingRunId == Guid.Empty)
+            return LocalMutationResult.Missing("삭제할 청구/입금 내역을 찾을 수 없습니다.");
+
+        var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+        if (profile is null)
+            return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
+        if (!CanEditRental(
+                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
+                    ? profile.ManagementCompanyCode
+                    : profile.ResponsibleOfficeCode,
+                session))
+            return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구/입금 내역을 삭제할 수 없습니다.");
+        if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
+            return LocalMutationResult.Conflict(conflictMessage);
+
+        var run = FindBillingRunById(profile, billingRunId);
+        if (run is null)
+            return LocalMutationResult.Missing("선택한 청구월 정보를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
+
+        var linkedInvoices = await _db.Invoices.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice =>
+                !invoice.IsDeleted &&
+                invoice.VoucherType == VoucherType.Sales &&
+                invoice.LinkedRentalBillingProfileId == billingProfileId &&
+                invoice.LinkedRentalBillingRunId == billingRunId)
+            .Select(invoice => new
+            {
+                invoice.Id,
+                invoice.VersionGroupId,
+                invoice.IsLatestVersion,
+                invoice.UpdatedAtUtc
+            })
+            .ToListAsync(ct);
+        var linkedInvoiceIds = linkedInvoices
+            .Select(invoice => invoice.Id)
+            .Distinct()
+            .ToList();
+        var invoiceDeleteTargetIds = linkedInvoices
+            .GroupBy(invoice => invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId)
+            .Select(group => group
+                .OrderByDescending(invoice => invoice.IsLatestVersion)
+                .ThenByDescending(invoice => invoice.UpdatedAtUtc)
+                .First()
+                .Id)
+            .ToList();
+
+        var linkedTransactionsQuery = _db.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(transaction =>
+                !transaction.IsDeleted &&
+                transaction.LinkedRentalBillingProfileId == billingProfileId &&
+                transaction.LinkedRentalBillingRunId == billingRunId);
+        if (linkedInvoiceIds.Count > 0)
+        {
+            linkedTransactionsQuery = _db.Transactions.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(transaction =>
+                    !transaction.IsDeleted &&
+                    ((transaction.LinkedRentalBillingProfileId == billingProfileId &&
+                      transaction.LinkedRentalBillingRunId == billingRunId) ||
+                     (transaction.LinkedInvoiceId.HasValue &&
+                      linkedInvoiceIds.Contains(transaction.LinkedInvoiceId.Value))));
+        }
+
+        var linkedTransactions = await linkedTransactionsQuery
+            .OrderBy(transaction => transaction.TransactionDate)
+            .ThenBy(transaction => transaction.Id)
+            .Select(transaction => new
+            {
+                transaction.Id,
+                transaction.Revision
+            })
+            .ToListAsync(ct);
+
+        if ((linkedTransactions.Count > 0 || invoiceDeleteTargetIds.Count > 0) && _local is null)
+            return LocalMutationResult.Denied("연결된 판매전표/입금 내역 삭제 서비스를 사용할 수 없습니다.");
+        if (linkedTransactions.Count > 0 && !CanDeleteRentalBillingTransactions(session))
+            return LocalMutationResult.Denied("권한이 없어 연결된 입금 내역을 삭제할 수 없습니다. 수금/지급 편집 권한이 필요합니다.");
+        if (linkedTransactions.Count > 0 && !session.HasAdministrativePrivileges)
+        {
+            var transactionIds = linkedTransactions.Select(transaction => transaction.Id).ToList();
+            var attachmentStatuses = await _db.TransactionAttachments.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(attachment => !attachment.IsDeleted && transactionIds.Contains(attachment.TransactionId))
+                .Select(attachment => attachment.VerificationStatus)
+                .ToListAsync(ct);
+            if (attachmentStatuses.Any(status => string.Equals(status, "확인완료", StringComparison.OrdinalIgnoreCase)))
+                return LocalMutationResult.Denied("확인완료된 증빙이 있는 입금 내역은 관리자만 삭제할 수 있습니다.");
+        }
+
+        foreach (var transaction in linkedTransactions)
+        {
+            var deleteTransactionResult = await _local!.DeleteTransactionAsync(transaction.Id, session, transaction.Revision, ct);
+            if (!deleteTransactionResult.Success)
+                return ConvertOfficeMutationResult(deleteTransactionResult, "연결된 입금 내역을 삭제할 수 없습니다.");
+        }
+
+        foreach (var invoiceId in invoiceDeleteTargetIds)
+            await _local!.DeleteInvoiceAsync(invoiceId, ct);
+
+        profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+        if (profile is null)
+            return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
+
+        var now = DateTime.UtcNow;
+        var runs = GetBillingRuns(profile);
+        var removedRunCount = runs.RemoveAll(current => current.RunId == billingRunId);
+        await RefreshBillingProfileAfterHistoryDeleteAsync(profile, runs, ct);
+
+        var billingYearMonth = $"{run.ScheduledDate.Year:0000}-{run.ScheduledDate.Month:00}";
+        var logs = await _db.RentalBillingLogs.IgnoreQueryFilters()
+            .Where(log => log.BillingProfileId == billingProfileId && log.BillingYearMonth == billingYearMonth)
+            .ToListAsync(ct);
+        var deletedLogCount = 0;
+        foreach (var log in logs)
+        {
+            if (!log.IsDeleted)
+                deletedLogCount++;
+
+            log.IsDeleted = true;
+            log.IsDirty = true;
+            log.UpdatedAtUtc = now;
+        }
+
+        profile.IsDirty = true;
+        profile.UpdatedAtUtc = now;
+        await _db.SaveChangesAsync(ct);
+
+        if (removedRunCount == 0 &&
+            linkedTransactions.Count == 0 &&
+            invoiceDeleteTargetIds.Count == 0 &&
+            deletedLogCount == 0)
+            return LocalMutationResult.Missing("삭제할 청구/입금 내역을 찾을 수 없습니다.");
+
+        var deletedParts = new List<string>();
+        if (invoiceDeleteTargetIds.Count > 0)
+            deletedParts.Add($"판매전표 {invoiceDeleteTargetIds.Count:N0}건");
+        if (linkedTransactions.Count > 0)
+            deletedParts.Add($"입금 내역 {linkedTransactions.Count:N0}건");
+        if (removedRunCount > 0 || deletedLogCount > 0)
+            deletedParts.Add("청구월 기록");
+        var deletedSummary = deletedParts.Count == 0 ? "선택 내역" : string.Join(", ", deletedParts);
+        return LocalMutationResult.Ok(billingProfileId, $"{deletedSummary}을 삭제했습니다.");
+    }
+
+    private static bool CanDeleteRentalBillingTransactions(SessionState? session)
+        => session is not null &&
+           (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.PaymentEdit));
+
+    private static LocalMutationResult ConvertOfficeMutationResult(OfficeMutationResult result, string fallbackMessage)
+    {
+        var message = string.IsNullOrWhiteSpace(result.Message) ? fallbackMessage : result.Message;
+        if (result.ConcurrencyConflict)
+            return LocalMutationResult.Conflict(message);
+        if (result.NotFound)
+            return LocalMutationResult.Missing(message);
+        return LocalMutationResult.Denied(message);
+    }
+
+    private async Task RefreshBillingProfileAfterHistoryDeleteAsync(
+        LocalRentalBillingProfile profile,
+        List<RentalBillingRunModel> remainingRuns,
+        CancellationToken ct)
+    {
+        var activeRuns = remainingRuns
+            .Where(run => run.RunId != Guid.Empty)
+            .OrderByDescending(run => run.ScheduledDate)
+            .ThenByDescending(run => run.PeriodEndDate)
+            .ToList();
+        if (activeRuns.Count == 0)
+        {
+            profile.BillingRunsJson = JsonSerializer.Serialize(activeRuns, RentalJsonOptions);
+            profile.BillingStatus = PaymentFlowConstants.BillingStatusPlanned;
+            profile.SettlementStatus = PaymentFlowConstants.SettlementStatusUnpaid;
+            profile.CompletionStatus = PaymentFlowConstants.CompletionPending;
+            profile.SettledAmount = 0m;
+            profile.OutstandingAmount = 0m;
+            profile.LastBilledDate = null;
+            profile.LastSettledDate = null;
+            profile.RequiresFollowUp = false;
+            return;
+        }
+
+        var runIds = activeRuns.Select(run => run.RunId).Distinct().ToList();
+        var settlementRows = await _db.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(transaction =>
+                !transaction.IsDeleted &&
+                transaction.LinkedRentalBillingProfileId == profile.Id &&
+                transaction.LinkedRentalBillingRunId.HasValue &&
+                runIds.Contains(transaction.LinkedRentalBillingRunId.Value))
+            .Select(transaction => new
+            {
+                RunId = transaction.LinkedRentalBillingRunId!.Value,
+                transaction.SettlementAmount,
+                transaction.TransactionDate
+            })
+            .ToListAsync(ct);
+        var settlementByRun = settlementRows
+            .GroupBy(transaction => transaction.RunId)
+            .ToDictionary(
+                group => group.Key,
+                group => new RentalBillingRunSettlementInfo(
+                    Math.Max(0m, group.Sum(transaction => transaction.SettlementAmount)),
+                    group.OrderByDescending(transaction => transaction.TransactionDate)
+                        .Select(transaction => (DateOnly?)transaction.TransactionDate)
+                        .FirstOrDefault()));
+        var invoiceTotalsByRun = (await _db.Invoices.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(invoice =>
+                    !invoice.IsDeleted &&
+                    invoice.LinkedRentalBillingProfileId == profile.Id &&
+                    invoice.LinkedRentalBillingRunId.HasValue &&
+                    runIds.Contains(invoice.LinkedRentalBillingRunId.Value))
+                .Select(invoice => new
+                {
+                    RunId = invoice.LinkedRentalBillingRunId!.Value,
+                    invoice.TotalAmount,
+                    invoice.UpdatedAtUtc
+                })
+                .ToListAsync(ct))
+            .GroupBy(invoice => invoice.RunId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderByDescending(invoice => invoice.UpdatedAtUtc)
+                    .Select(invoice => Math.Max(0m, invoice.TotalAmount))
+                    .FirstOrDefault());
+
+        var activeRunIds = new HashSet<Guid>(
+            settlementByRun.Where(pair => pair.Value.SettledAmount > 0m).Select(pair => pair.Key)
+                .Concat(invoiceTotalsByRun.Keys));
+        foreach (var run in activeRuns)
+        {
+            var billedAmount = invoiceTotalsByRun.TryGetValue(run.RunId, out var invoiceTotal) && invoiceTotal > 0m
+                ? invoiceTotal
+                : Math.Max(0m, run.BilledAmount);
+            var settlementInfo = settlementByRun.TryGetValue(run.RunId, out var foundSettlement)
+                ? foundSettlement
+                : new RentalBillingRunSettlementInfo(0m, null);
+            var settledAmount = Math.Max(0m, settlementInfo.SettledAmount);
+            var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
+            run.BilledAmount = billedAmount;
+            run.SettledAmount = settledAmount;
+            run.SettledDate = settlementInfo.LastSettledDate;
+            run.SettlementStatus = ResolveBillingHistorySettlementStatus(profile, run, settledAmount, billedAmount, outstandingAmount);
+            run.Status = ResolveBillingHistoryStatus(run, outstandingAmount, settledAmount);
+        }
+
+        var representativeRun = activeRuns.FirstOrDefault(run => activeRunIds.Contains(run.RunId)) ?? activeRuns.First();
+        var representativeBilledAmount = Math.Max(0m, representativeRun.BilledAmount);
+        var representativeSettledAmount = Math.Max(0m, representativeRun.SettledAmount);
+        var representativeOutstandingAmount = Math.Max(0m, representativeBilledAmount - representativeSettledAmount);
+        profile.BillingRunsJson = JsonSerializer.Serialize(activeRuns, RentalJsonOptions);
+        profile.BillingStatus = representativeRun.Status;
+        profile.SettlementStatus = representativeRun.SettlementStatus;
+        profile.CompletionStatus = representativeOutstandingAmount <= 0m && representativeBilledAmount > 0m
+            ? PaymentFlowConstants.CompletionDone
+            : PaymentFlowConstants.CompletionPending;
+        profile.SettledAmount = representativeSettledAmount;
+        profile.OutstandingAmount = representativeOutstandingAmount;
+        profile.LastBilledDate = activeRuns
+            .Where(run => activeRunIds.Contains(run.RunId) || !IsMutableBillingRun(run))
+            .Select(run => (DateOnly?)run.ScheduledDate)
+            .OrderByDescending(date => date)
+            .FirstOrDefault();
+        profile.LastSettledDate = settlementRows
+            .OrderByDescending(transaction => transaction.TransactionDate)
+            .Select(transaction => (DateOnly?)transaction.TransactionDate)
+            .FirstOrDefault();
+        profile.RequiresFollowUp = activeRuns.Any(run =>
+        {
+            var billedAmount = Math.Max(0m, run.BilledAmount);
+            var outstandingAmount = Math.Max(0m, billedAmount - Math.Max(0m, run.SettledAmount));
+            return outstandingAmount > 0m &&
+                   (activeRunIds.Contains(run.RunId) ||
+                    string.Equals(run.Status, PaymentFlowConstants.BillingStatusInProgress, StringComparison.OrdinalIgnoreCase));
+        });
+    }
+
     public async Task<IReadOnlyList<LocalRentalAsset>> GetBillingAssetCandidatesAsync(
         Guid? billingProfileId,
         Guid? customerId,

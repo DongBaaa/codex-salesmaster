@@ -783,7 +783,10 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        foreach (var line in inv.Lines.Where(l => !l.IsDeleted))
+        foreach (var line in inv.Lines
+                     .Where(l => !l.IsDeleted)
+                     .OrderBy(l => l.OrderIndex > 0 ? l.OrderIndex : int.MaxValue)
+                     .ThenBy(l => l.Id))
             PreviewLines.Add(InvoiceLineEditModel.FromLocal(line));
 
         PreviewTotalAmount = inv.TotalAmount;
