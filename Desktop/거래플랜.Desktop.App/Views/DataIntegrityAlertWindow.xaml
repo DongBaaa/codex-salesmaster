@@ -69,10 +69,10 @@
                                 <Border Background="#0E1D31" BorderBrush="#28445F" BorderThickness="1" CornerRadius="5" Padding="12" Margin="0,0,0,8">
                                     <Grid>
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="112"/>
                                             <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="110"/>
-                                            <ColumnDefinition Width="220"/>
+                                            <ColumnDefinition Width="Auto" MinWidth="96"/>
+                                            <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Grid.Column="0">
                                             <TextBlock Text="{Binding SeverityDisplay}" Foreground="#FF8D8D" FontWeight="Bold"/>
@@ -83,10 +83,10 @@
                                             <TextBlock Text="{Binding Description}" TextWrapping="Wrap" Foreground="#B8C7D8" Margin="0,4,0,0"/>
                                             <TextBlock Text="{Binding SuggestedAction}" TextWrapping="Wrap" Foreground="#7FD0FF" Margin="0,6,0,0"/>
                                         </StackPanel>
-                                        <TextBlock Grid.Column="2" Text="{Binding CountText}" FontSize="20" FontWeight="Bold" Foreground="#FFD56B" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-                                        <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                                            <Button Content="자세히 보기" Click="DetailsButton_Click" Background="#1976A8"/>
-                                            <Button Content="선택 항목 자동 수정" Click="FixButton_Click" Background="#00897B"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding CountText}" FontSize="20" FontWeight="Bold" Foreground="#FFD56B" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="10,0,12,0"/>
+                                        <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="4,0,0,0">
+                                            <Button Content="자세히 보기" Click="DetailsButton_Click" Background="#1976A8" MinWidth="96"/>
+                                            <Button Content="선택 항목 자동 수정" Click="FixButton_Click" Background="#00897B" MinWidth="176"/>
                                         </StackPanel>
                                     </Grid>
                                 </Border>

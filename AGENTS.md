@@ -23,6 +23,12 @@
 - Never assume asset scope, billing scope, item scope, and tenant scope are the same. Check each separately before changing queries or permissions.
 - For scope-related changes, verify at minimum: 자산 조회, 품목관리, 청구/전표, 동기화/dirty, 권한 저장 가능 여부.
 
+## Patch completion rule
+
+- When a requested patch is implemented and verification passes, complete the same work item with live deployment, git commit, and git push by default.
+- If tests fail, operational checks fail, deployment impact is unclear, or the change could cause data 꼬임, report the blocker first and do not deploy or push until it is resolved.
+- For desktop app patches, bump the desktop version and regenerate the installer/update package before live deployment so the live manifest and installed client can receive the patch.
+
 # Global UI rules
 
 ## Design system rules
