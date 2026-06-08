@@ -50,6 +50,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
     {
         _local = local;
         _session = session;
+        _selectedOfficeFilter = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
         SortOptions.Add(SortByNameOption);
         SortOptions.Add(SortByOfficeOption);
     }

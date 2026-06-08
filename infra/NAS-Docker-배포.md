@@ -1,5 +1,10 @@
 # 거래플랜 NAS Docker 배포
 
+> [!warning] Legacy NAS 문서
+> 현재 거래플랜 운영 서버 본체는 NAS가 아니라 Linux PC `itw@192.168.0.199:2222`의 `/srv/georaeplan`입니다.
+> 이 문서는 과거 NAS 운영 참고용으로만 보관합니다. 새 운영/배포/재시작 작업은 `D:\거래플랜\infra\LinuxPC-운영-런북.md`와 `D:\거래플랜\tools\linux` 기준을 따르세요.
+
+
 이 구성은 `NAS에서 Docker로 서버 1개를 실행`하고, `다른 PC의 거래플랜 클라이언트가 모두 그 서버에 접속`하는 용도입니다.
 
 ## 권장 구조

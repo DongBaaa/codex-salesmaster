@@ -11,6 +11,7 @@ namespace 거래플랜.Desktop.App.Services;
 public sealed class SessionState
 {
     public string? Token { get; private set; }
+    public DateTime? TokenExpiresAtUtc { get; private set; }
     public UserSessionDto? User { get; private set; }
     public string TenantCode { get; private set; } = TenantScopeCatalog.UsenetGroup;
     public string AuthenticatedTenantCode { get; private set; } = TenantScopeCatalog.UsenetGroup;
@@ -23,6 +24,12 @@ public sealed class SessionState
     public bool IsOfflineMode { get; private set; }
     public Guid SessionId { get; private set; } = Guid.NewGuid();
     public bool IsLoggedIn => User is not null;
+    public bool IsTokenExpired => TokenExpiresAtUtc is not null && DateTime.UtcNow >= TokenExpiresAtUtc.Value;
+    public bool ShouldRefreshToken(TimeSpan leadTime)
+        => !IsOfflineMode
+           && !string.IsNullOrWhiteSpace(Token)
+           && TokenExpiresAtUtc is not null
+           && DateTime.UtcNow >= TokenExpiresAtUtc.Value.Subtract(leadTime);
     public bool IsAdmin => DomainConstants.IsAdminRole(User?.Role);
     public bool IsGodMode => TryReadBooleanTokenClaim("god");
     public bool HasAdministrativePrivileges => IsAdmin || IsGodMode;
@@ -30,10 +37,26 @@ public sealed class SessionState
         HasAdministrativePrivileges && string.Equals(ScopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase);
     public event EventHandler? BusinessDatabaseChanged;
 
-    public void SetSession(string token, UserSessionDto user)
+    public void SetSession(string token, UserSessionDto user, DateTime? expiresAtUtc = null)
     {
         SessionId = Guid.NewGuid();
+        ApplyOnlineSession(token, user, expiresAtUtc, preserveBusinessDatabaseSelection: false);
+    }
+
+    public void RefreshSession(string token, UserSessionDto user, DateTime? expiresAtUtc = null)
+        => ApplyOnlineSession(token, user, expiresAtUtc, preserveBusinessDatabaseSelection: true);
+
+    private void ApplyOnlineSession(
+        string token,
+        UserSessionDto user,
+        DateTime? expiresAtUtc,
+        bool preserveBusinessDatabaseSelection)
+    {
+        var previousBusinessDatabaseName = SelectedBusinessDatabaseName;
+        var previousBusinessDatabaseDisplayName = SelectedBusinessDatabaseDisplayName;
+
         Token = token;
+        TokenExpiresAtUtc = ResolveTokenExpiresAtUtc(token, expiresAtUtc);
         User = user;
         IsOfflineMode = false;
         AuthenticatedTenantCode = ResolveTenantCode(user.TenantCode, user.OfficeCode);
@@ -41,6 +64,13 @@ public sealed class SessionState
         OfficeCode = ResolveOfficeCode(user.OfficeCode, user.Role);
         BusinessOfficeCode = ResolveBusinessOfficeCode(TenantCode);
         ScopeType = ResolveScopeType(user.ScopeType, user.Role, OfficeCode);
+
+        if (preserveBusinessDatabaseSelection && HasAdministrativePrivileges)
+        {
+            SetBusinessDatabase(previousBusinessDatabaseName, previousBusinessDatabaseDisplayName);
+            return;
+        }
+
         ResetBusinessDatabaseSelection();
     }
 
@@ -48,6 +78,7 @@ public sealed class SessionState
     {
         SessionId = Guid.NewGuid();
         Token = null;
+        TokenExpiresAtUtc = null;
         User = user;
         IsOfflineMode = true;
         AuthenticatedTenantCode = ResolveTenantCode(user.TenantCode, user.OfficeCode);
@@ -104,6 +135,7 @@ public sealed class SessionState
     {
         SessionId = Guid.NewGuid();
         Token = null;
+        TokenExpiresAtUtc = null;
         User = null;
         IsOfflineMode = false;
         AuthenticatedTenantCode = TenantScopeCatalog.UsenetGroup;
@@ -158,29 +190,41 @@ public sealed class SessionState
         => TenantScopeCatalog.GetOfficeCodesForTenant(tenantCode).FirstOrDefault()
            ?? DomainConstants.OfficeUsenet;
 
-    private void ResetBusinessDatabaseSelection(bool raiseChanged = true)
+    private static DateTime? ResolveTokenExpiresAtUtc(string token, DateTime? explicitExpiresAtUtc)
     {
-        var normalizedDatabaseName = TenantScopeCatalog.GetDatabaseName(AuthenticatedTenantCode);
-        var normalizedDisplayName = TenantScopeCatalog.GetBusinessDatabaseDisplayName(normalizedDatabaseName);
-        var changed = !string.Equals(TenantCode, AuthenticatedTenantCode, StringComparison.OrdinalIgnoreCase)
-                      || !string.Equals(SelectedBusinessDatabaseName, normalizedDatabaseName, StringComparison.OrdinalIgnoreCase)
-                      || !string.Equals(SelectedBusinessDatabaseDisplayName, normalizedDisplayName, StringComparison.Ordinal);
+        if (explicitExpiresAtUtc is not null)
+            return NormalizeDateTimeUtc(explicitExpiresAtUtc.Value);
 
-        TenantCode = AuthenticatedTenantCode;
-        BusinessOfficeCode = ResolveBusinessOfficeCode(TenantCode);
-        SelectedBusinessDatabaseName = normalizedDatabaseName;
-        SelectedBusinessDatabaseDisplayName = normalizedDisplayName;
+        if (!TryReadTokenPayload(token, out var document))
+            return null;
 
-        if (raiseChanged && changed)
-            BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
+        using (document)
+        {
+            if (document.RootElement.TryGetProperty("exp", out var expProperty) &&
+                expProperty.TryGetInt64(out var expSeconds))
+            {
+                return DateTimeOffset.FromUnixTimeSeconds(expSeconds).UtcDateTime;
+            }
+        }
+
+        return null;
     }
 
-    private bool TryReadBooleanTokenClaim(string claimName)
+    private static DateTime NormalizeDateTimeUtc(DateTime value)
+        => value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
+
+    private static bool TryReadTokenPayload(string? token, out JsonDocument document)
     {
-        if (string.IsNullOrWhiteSpace(Token) || string.IsNullOrWhiteSpace(claimName))
+        document = null!;
+        if (string.IsNullOrWhiteSpace(token))
             return false;
 
-        var segments = Token.Split('.');
+        var segments = token.Split('.');
         if (segments.Length < 2)
             return false;
 
@@ -201,7 +245,43 @@ public sealed class SessionState
             }
 
             var bytes = Convert.FromBase64String(payload);
-            using var document = JsonDocument.Parse(bytes);
+            document = JsonDocument.Parse(bytes);
+            return true;
+        }
+        catch
+        {
+            document = null!;
+            return false;
+        }
+    }
+
+    private void ResetBusinessDatabaseSelection(bool raiseChanged = true)
+    {
+        var normalizedDatabaseName = TenantScopeCatalog.GetDatabaseName(AuthenticatedTenantCode);
+        var normalizedDisplayName = TenantScopeCatalog.GetBusinessDatabaseDisplayName(normalizedDatabaseName);
+        var changed = !string.Equals(TenantCode, AuthenticatedTenantCode, StringComparison.OrdinalIgnoreCase)
+                      || !string.Equals(SelectedBusinessDatabaseName, normalizedDatabaseName, StringComparison.OrdinalIgnoreCase)
+                      || !string.Equals(SelectedBusinessDatabaseDisplayName, normalizedDisplayName, StringComparison.Ordinal);
+
+        TenantCode = AuthenticatedTenantCode;
+        BusinessOfficeCode = ResolveBusinessOfficeCode(TenantCode);
+        SelectedBusinessDatabaseName = normalizedDatabaseName;
+        SelectedBusinessDatabaseDisplayName = normalizedDisplayName;
+
+        if (raiseChanged && changed)
+            BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private bool TryReadBooleanTokenClaim(string claimName)
+    {
+        if (string.IsNullOrWhiteSpace(claimName))
+            return false;
+
+        if (!TryReadTokenPayload(Token, out var document))
+            return false;
+
+        using (document)
+        {
             if (!document.RootElement.TryGetProperty(claimName, out var property))
                 return false;
 
@@ -214,10 +294,5 @@ public sealed class SessionState
                 _ => false
             };
         }
-        catch
-        {
-            return false;
-        }
     }
 }
-

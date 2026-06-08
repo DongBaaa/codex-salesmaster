@@ -66,23 +66,27 @@ public sealed partial class MainViewModel
             });
         }
 
-        var normalizedSelection = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(currentSelection, GetDefaultInvoiceOfficeFilterCode());
+        var defaultOfficeCode = GetDefaultInvoiceOfficeFilterCode();
+        var normalizedSelection = OfficeCodeCatalog.IsSharedOfficeCode(currentSelection)
+            ? defaultOfficeCode
+            : OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(currentSelection, defaultOfficeCode);
         var hasMatchingOption = InvoiceOfficeFilterOptions.Any(option =>
             string.Equals(option.Code, normalizedSelection, StringComparison.OrdinalIgnoreCase));
 
         SelectedInvoiceOfficeFilterCode = hasMatchingOption
             ? normalizedSelection
-            : GetDefaultInvoiceOfficeFilterCode();
+            : defaultOfficeCode;
     }
 
     private string GetDefaultInvoiceOfficeFilterCode()
     {
         var officeCodes = GetReadableInvoiceOfficeCodesForFilter();
-        if (officeCodes.Count > 1)
-            return OfficeCodeCatalog.Shared;
+        var sessionOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, OfficeCodeCatalog.Usenet);
 
-        return officeCodes.FirstOrDefault()
-               ?? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, OfficeCodeCatalog.Usenet);
+        return officeCodes.FirstOrDefault(officeCode =>
+                   string.Equals(officeCode, sessionOfficeCode, StringComparison.OrdinalIgnoreCase))
+               ?? officeCodes.FirstOrDefault()
+               ?? sessionOfficeCode;
     }
 
     private bool MatchesSelectedInvoiceOffice(LocalInvoice invoice)

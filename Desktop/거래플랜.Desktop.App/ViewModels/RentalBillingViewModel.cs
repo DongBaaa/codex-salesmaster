@@ -501,7 +501,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 var rows = await _rental.GetBillingRowsAsync(new RentalBillingFilter
                 {
                     SearchText = SearchText,
-                    OfficeCode = SelectedOfficeFilter?.Value == AllOption ? string.Empty : SelectedOfficeFilter?.Value ?? string.Empty,
+                    OfficeCode = ResolveSelectedOfficeFilterCode(),
                     Status = SelectedStatusFilter == AllOption ? string.Empty : SelectedStatusFilter,
                     DueOnly = DueOnly,
                     PastDueOnly = PastDueOnly,
@@ -1170,8 +1170,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditItemName = string.Empty;
         EditBillingType = "묶음";
         EditBillingAdvanceMode = "후불";
-        EditOfficeCode = EditOfficeOptions.FirstOrDefault()?.Value
-            ?? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
+        EditOfficeCode = ResolveDefaultEditOfficeCode();
         EnsureEditOfficeOption(EditOfficeCode);
         EditBillingMethod = string.Empty;
         EditBillingStatus = "예정";
@@ -1967,9 +1966,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         try
         {
         var offices = await _local.GetOfficesAsync();
-        var currentFilterValue = SelectedOfficeFilter?.Value ?? AllOption;
+        var currentFilterValue = SelectedOfficeFilter?.Value;
         var currentEditOfficeCode = EditOfficeCode;
         var readableOfficeCodes = _local.GetReadableRentalOfficeCodesForSession(_session);
+        var defaultFilterValue = ResolveDefaultOfficeFilterValue(readableOfficeCodes);
+        var desiredFilterValue = string.IsNullOrWhiteSpace(currentFilterValue)
+            ? defaultFilterValue
+            : currentFilterValue;
         var writableOfficeCodes = CanManageAll
             ? OfficeCodeCatalog.All
             : _local.GetWritableRentalOfficeCodesForSession(_session);
@@ -2001,7 +2004,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         SelectedOfficeFilter = OfficeOptions.FirstOrDefault(option =>
-                                   string.Equals(option.Value, currentFilterValue, StringComparison.OrdinalIgnoreCase))
+                                   string.Equals(option.Value, desiredFilterValue, StringComparison.OrdinalIgnoreCase))
+                               ?? OfficeOptions.FirstOrDefault(option =>
+                                   string.Equals(option.Value, defaultFilterValue, StringComparison.OrdinalIgnoreCase))
                                ?? OfficeOptions.FirstOrDefault(option => option.Value == AllOption)
                                ?? OfficeOptions.FirstOrDefault();
 
@@ -2015,9 +2020,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             });
         }
 
-        EditOfficeCode = EditOfficeOptions.FirstOrDefault(option =>
-                           string.Equals(option.Value, currentEditOfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
-                       ?? EditOfficeOptions.First().Value;
+        EditOfficeCode = ResolveDefaultEditOfficeCode(currentEditOfficeCode);
 
     }
     finally
@@ -2043,6 +2046,55 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         return editableOfficeCodes.ToList();
+    }
+
+    private string ResolveSelectedOfficeFilterCode()
+    {
+        if (SelectedOfficeFilter is null ||
+            string.Equals(SelectedOfficeFilter.Value, AllOption, StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        return OfficeCodeCatalog.TryNormalizeOfficeCode(SelectedOfficeFilter.Value, out var normalizedOfficeCode)
+            ? normalizedOfficeCode
+            : string.Empty;
+    }
+
+    private string ResolveDefaultOfficeFilterValue(IEnumerable<string> readableOfficeCodes)
+    {
+        var normalizedOfficeCodes = NormalizeOfficeCodes(readableOfficeCodes)
+            .OrderBy(OfficeCodeCatalog.GetOfficeDisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var sessionOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
+
+        return normalizedOfficeCodes.FirstOrDefault(code =>
+                   string.Equals(code, sessionOfficeCode, StringComparison.OrdinalIgnoreCase))
+               ?? normalizedOfficeCodes.FirstOrDefault()
+               ?? AllOption;
+    }
+
+    private string ResolveDefaultEditOfficeCode(string? preferredOfficeCode = null)
+    {
+        var fallbackOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
+        var candidates = new[]
+        {
+            preferredOfficeCode,
+            ResolveSelectedOfficeFilterCode(),
+            _session.OfficeCode
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (!OfficeCodeCatalog.TryNormalizeOfficeCode(candidate, out var normalizedOfficeCode))
+                continue;
+
+            if (EditOfficeOptions.Any(option => string.Equals(option.Value, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase)))
+                return normalizedOfficeCode;
+        }
+
+        return EditOfficeOptions.FirstOrDefault()?.Value ?? fallbackOfficeCode;
     }
 
     private static HashSet<string> NormalizeOfficeCodes(IEnumerable<string?> officeCodes)
@@ -2133,7 +2185,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     public async Task<IReadOnlyList<LookupRow>> BuildCustomerLookupRowsAsync()
     {
-        var customers = await _local.GetCustomersForRentalScopeAsync(_session);
+        var customers = await _local.GetCustomersForRentalScopeAsync(
+            _session,
+            responsibleOfficeCode: ResolveSelectedOfficeFilterCode());
         return customers
             .OrderBy(customer => customer.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
             .Select(customer => new LookupRow

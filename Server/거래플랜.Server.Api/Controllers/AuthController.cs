@@ -1,6 +1,7 @@
 ﻿using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Security;
 using 거래플랜.Shared.Contracts;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -36,6 +37,28 @@ public sealed class AuthController : ControllerBase
         {
             return Unauthorized();
         }
+
+        var response = _jwtTokenFactory.Create(user);
+        return Ok(response);
+    }
+
+    [HttpPost("refresh")]
+    [Authorize]
+    [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<LoginResponse>> Refresh(CancellationToken cancellationToken)
+    {
+        var userIdValue = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdValue, out var userId))
+            return Unauthorized();
+
+        var user = await _dbContext.Users
+            .IgnoreQueryFilters()
+            .Include(x => x.Permissions)
+            .FirstOrDefaultAsync(x => x.Id == userId && x.IsActive, cancellationToken);
+
+        if (user is null)
+            return Unauthorized();
 
         var response = _jwtTokenFactory.Create(user);
         return Ok(response);

@@ -567,20 +567,22 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var offices = await GetOfficeMapAsync(ct);
         var includeUnlinkedAssets = !filter.DueOnly && ShouldIncludeUnlinkedBillingAssets(filter.Status);
-        var billingAssets = await ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
-            .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue)
-            .ToListAsync(ct);
-        await NormalizeAssetCustomerDisplayNamesAsync(billingAssets, ct);
-        var assetsByProfile = billingAssets
-            .GroupBy(asset => asset.BillingProfileId!.Value)
-            .ToDictionary(group => group.Key, group => group.ToList());
-
         var query = ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session);
         query = ApplyBillingFilter(query, filter, session);
         var profiles = await query
             .OrderBy(profile => profile.CustomerName)
             .ThenBy(profile => profile.ItemName)
             .ToListAsync(ct);
+        var profileIds = profiles.Select(profile => profile.Id).ToList();
+        var billingAssets = profileIds.Count == 0
+            ? new List<LocalRentalAsset>()
+            : await ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+                .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && profileIds.Contains(asset.BillingProfileId.Value))
+                .ToListAsync(ct);
+        await NormalizeAssetCustomerDisplayNamesAsync(billingAssets, ct);
+        var assetsByProfile = billingAssets
+            .GroupBy(asset => asset.BillingProfileId!.Value)
+            .ToDictionary(group => group.Key, group => group.ToList());
         var unlinkedAssets = includeUnlinkedAssets
             ? await ApplyUnlinkedBillingAssetFilter(
                     ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)

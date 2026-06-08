@@ -35,7 +35,7 @@ services:
       Jwt__Issuer: ${JWT_ISSUER:-georaeplan}
       Jwt__Audience: ${JWT_AUDIENCE:-georaeplan-client}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:?set in .env}
-      Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-480}
+      Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-43200}
       Security__EnableRateLimiting: ${SECURITY_ENABLE_RATE_LIMITING:-true}
       Security__LoginPermitLimitPerMinute: ${SECURITY_LOGIN_PERMIT_LIMIT_PER_MINUTE:-10}
       Security__ApiPermitLimitPerMinute: ${SECURITY_API_PERMIT_LIMIT_PER_MINUTE:-300}

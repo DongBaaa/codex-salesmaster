@@ -26,12 +26,12 @@
   - `D:\거래플랜\테스트 시행\최근 수정 파일.md` 확인
   - `D:\거래플랜\테스트 시행\검증 체크리스트.md` 기준 검증
   - `D:\거래플랜\테스트 시행\실행환경\Run-All.cmd` 로 테스트 서버+앱 확인
-- 테스트 확인이 끝나기 전에는 NAS 반영과 Git 반영을 진행하지 않는다.
-- 사용자가 **"문제 없다"**, **"완벽하다"**, **"올려도 된다"** 같은 의미로 확인한 뒤에만 NAS와 Git 반영을 진행한다.
-- NAS에는 테스트 서버/테스트 앱을 올리지 않고, **현재 소스에서 다시 생성한 메인(live) stable 배포본만** 반영한다.
+- 테스트 확인이 끝나기 전에는 Linux PC live 반영과 Git 반영을 진행하지 않는다.
+- 사용자가 **"문제 없다"**, **"완벽하다"**, **"올려도 된다"** 같은 의미로 확인한 뒤에만 Linux PC live 반영과 Git 반영을 진행한다.
+- Linux PC에는 테스트 서버/테스트 앱을 올리지 않고, **현재 소스에서 다시 생성한 메인(live) stable 배포본만** 반영한다.
 - 데스크톱 앱 수정이 포함된 live 반영일 때는 반드시 `D:\거래플랜\Desktop\거래플랜.Desktop.App\거래플랜.Desktop.App.csproj` 의 `Version` / `FileVersion` 을 현재 stable 배포본보다 높게 올린 뒤 빌드/배포해, 기존 설치 PC에 업데이트 알림이 뜨도록 유지한다.
 - 반영 시에는 `D:\거래플랜\테스트 시행\검증완료-반영.cmd` 또는 `D:\거래플랜\테스트 시행\검증완료-반영.ps1` 를 사용한다.
-- 반영 스크립트는 `검증 체크리스트.md` 의 `문제 없음 → NAS 반영 가능`, `문제 없음 → Git 반영 가능` 체크가 없으면 실행되지 않도록 유지한다.
+- 반영 스크립트는 `검증 체크리스트.md` 의 `문제 없음 → Linux PC 반영 가능`, `문제 없음 → Git 반영 가능` 체크가 없으면 실행되지 않도록 유지한다.
 
 ## 모바일 수정/배포 규칙
 - 모바일 기능을 수정하면 먼저 에뮬레이터 또는 실기기 기준으로 아래 핵심 흐름을 점검한다.
@@ -43,17 +43,20 @@
   - `ApplicationDisplayVersion` / `ApplicationVersion` 증가
   - APK 재빌드
   - 업데이트 자산 재생성
-  - NAS 배포
+  - Linux PC 배포
 - 모바일 배포본은 항상 `D:\거래플랜\배포` 경로에 최신 APK를 둔다.
 
-## NAS 운영 안전 규칙
+## Linux PC 운영 안전 규칙
 
 - 앞으로 거래플랜, 워크플랜, itw 홈페이지는 한 번에 하나의 서비스만 작업한다.
 - 거래플랜 작업 중에는 워크플랜/itw 홈페이지 배포, 재시작, 정리 작업을 함께 진행하지 않는다.
+- 현재 거래플랜 서버 본체는 NAS가 아니라 Linux PC `itw@192.168.0.199:2222`의 `/srv/georaeplan` 기준으로 운영한다.
 - Docker 전체 재시작/정리 명령은 금지한다.
-  - 금지: `docker compose down`, `docker system prune`, `docker container prune`, `docker image prune`, `docker volume prune`, `docker stop $(docker ps -q)`, `docker restart $(docker ps -q)`.
-  - 허용: 거래플랜 compose project 안에서 명시 서비스만 대상으로 하는 `compose up -d postgres`, `compose up -d --force-recreate api`.
-- Container Manager 전체 재시작, Web Station 재시작, PHP/MariaDB 재시작, nginx/Reverse Proxy 변경은 다른 서비스까지 영향을 줄 수 있으므로 먼저 보고하고 승인 후 진행한다.
-- live 반영 전에는 `trade.2884.kr`, `work.2884.kr`, `itw.2884.kr` 상태를 확인한다.
-- live 반영 후에도 위 3개 도메인과 NAS 로그에서 502, timeout, Docker daemon 오류 여부를 확인한다.
+  - 금지: `docker compose down`, `docker system prune`, `docker container prune`, `docker image prune`, `docker volume prune`, `docker stop $(docker ps -q)`, `docker restart $(docker ps -q)`, `sudo reboot`, `sudo systemctl restart docker`.
+  - 허용: Linux PC의 `/srv/georaeplan` 거래플랜 compose project 안에서 명시 서비스만 대상으로 하는 `compose up -d postgres`, `compose up -d --force-recreate api`.
+- Linux PC의 Docker daemon, systemd 전체 서비스, nginx/Reverse Proxy 전체 재시작, PostgreSQL 전체 재시작은 다른 서비스까지 영향을 줄 수 있으므로 먼저 보고하고 승인 후 진행한다.
+- live 반영 전에는 `trade.2884.kr` 상태와 Linux PC의 거래플랜 API/DB/로그 상태를 확인한다.
+- 공통 인프라 영향 가능성이 있으면 `work.2884.kr`, `itw.2884.kr` 상태도 함께 확인한다.
+- live 반영 후에도 `trade.2884.kr`와 Linux PC 로그에서 502, timeout, Docker daemon, PostgreSQL 연결 오류 여부를 확인한다.
 - 장애가 발생하면 추가 배포를 중단하고 서비스별 원인 분리 결과를 먼저 보고한다.
+- `tools\nas`와 legacy NAS 런북은 과거 호환/참고용이며, 새 운영 작업은 `tools\linux`와 Linux PC 기준 절차를 우선한다.

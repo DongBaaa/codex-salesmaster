@@ -27,6 +27,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private bool _suppressFilterReload;
     private bool _suppressSelectionAutoSave;
     private bool _pendingFilterReload;
+    private bool _hasInitializedOfficeFilters;
     private string _baselineStateSignature = string.Empty;
     private long _editRevision;
 
@@ -945,6 +946,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         var readableOfficeCodes = _rental.GetReadableAssetOfficeCodes(_session);
         var writableOfficeCodes = _rental.GetWritableAssetOfficeCodes(_session);
         var currentFilterValues = GetSelectedFilterValues(OfficeFilterOptions);
+        var selectedOfficeFilterValues = currentFilterValues.Count == 0 && !_hasInitializedOfficeFilters
+            ? ResolveDefaultOfficeFilterValues(readableOfficeCodes)
+            : currentFilterValues;
         var currentEditOfficeCode = EditOfficeCode;
         var selectedRowOfficeCode = ResolveAssetOfficeCode(SelectedRow?.Source, _session.OfficeCode);
 
@@ -955,7 +959,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             ResetSelectableFilterOptions(
                 OfficeFilterOptions,
                 readableOfficeOptions.Select(office => new SelectableFilterOption(office.Value, office.DisplayName)),
-                currentFilterValues);
+                selectedOfficeFilterValues);
 
             EditOfficeOptions.Clear();
 
@@ -982,13 +986,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                     DisplayName = fallbackDisplayName
                 });
                 if (OfficeFilterOptions.All(option => !string.Equals(option.Value, fallbackOfficeCode, StringComparison.OrdinalIgnoreCase)))
-                    OfficeFilterOptions.Add(CreateFilterOption(fallbackOfficeCode, fallbackDisplayName, currentFilterValues));
+                    OfficeFilterOptions.Add(CreateFilterOption(fallbackOfficeCode, fallbackDisplayName, selectedOfficeFilterValues));
             }
 
-            EditOfficeCode = EditOfficeOptions.FirstOrDefault(option =>
-                               string.Equals(option.Value, currentEditOfficeCode, StringComparison.OrdinalIgnoreCase))?.Value
-                           ?? EditOfficeOptions.First().Value;
+            EditOfficeCode = ResolveDefaultEditOfficeCode(currentEditOfficeCode);
             OnPropertyChanged(nameof(SelectedOfficeFilterSummary));
+            _hasInitializedOfficeFilters = true;
 
         }
         finally
@@ -1014,6 +1017,60 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
 
         return editableOfficeCodes.ToList();
+    }
+
+    private List<string> ResolveDefaultOfficeFilterValues(IEnumerable<string> readableOfficeCodes)
+    {
+        var defaultOfficeCode = ResolveDefaultOfficeCode(readableOfficeCodes);
+        return string.IsNullOrWhiteSpace(defaultOfficeCode)
+            ? new List<string>()
+            : [defaultOfficeCode];
+    }
+
+    private string ResolveDefaultOfficeCode(IEnumerable<string> officeCodes)
+    {
+        var normalizedOfficeCodes = NormalizeOfficeCodes(officeCodes)
+            .OrderBy(OfficeCodeCatalog.GetOfficeDisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var sessionOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
+
+        return normalizedOfficeCodes.FirstOrDefault(code =>
+                   string.Equals(code, sessionOfficeCode, StringComparison.OrdinalIgnoreCase))
+               ?? normalizedOfficeCodes.FirstOrDefault()
+               ?? sessionOfficeCode;
+    }
+
+    private string ResolveDefaultEditOfficeCode(string? preferredOfficeCode = null)
+    {
+        var fallbackOfficeCode = _rental.GetDefaultAssetOfficeCode(_session);
+        var singleSelectedFilterOfficeCode = ResolveSingleSelectedOfficeFilterCode();
+        var candidates = new[]
+        {
+            preferredOfficeCode,
+            singleSelectedFilterOfficeCode,
+            _session.OfficeCode
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (!OfficeCodeCatalog.TryNormalizeOfficeCode(candidate, out var normalizedOfficeCode))
+                continue;
+
+            if (EditOfficeOptions.Any(option => string.Equals(option.Value, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase)))
+                return normalizedOfficeCode;
+        }
+
+        return EditOfficeOptions.FirstOrDefault()?.Value ?? fallbackOfficeCode;
+    }
+
+    private string ResolveSingleSelectedOfficeFilterCode()
+    {
+        var selectedValues = GetSelectedFilterValues(OfficeFilterOptions);
+        return selectedValues.Count == 1 &&
+               OfficeCodeCatalog.TryNormalizeOfficeCode(selectedValues[0], out var normalizedOfficeCode)
+            ? normalizedOfficeCode
+            : string.Empty;
     }
 
     private static HashSet<string> NormalizeOfficeCodes(IEnumerable<string?> officeCodes)
@@ -1551,7 +1608,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditItemId: null,
             EditManagementId: string.Empty,
             EditManagementNumber: string.Empty,
-            EditOfficeCode: EditOfficeOptions.FirstOrDefault()?.Value ?? _rental.GetDefaultAssetOfficeCode(_session),
+            EditOfficeCode: ResolveDefaultEditOfficeCode(),
             EditCurrentLocation: string.Empty,
             EditItemCategoryName: ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty,
             EditManufacturer: string.Empty,

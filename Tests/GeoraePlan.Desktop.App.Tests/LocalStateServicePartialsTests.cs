@@ -6838,6 +6838,198 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
+    [Fact]
+    public async Task MainViewModel_InvoiceOfficeFilter_DefaultsToLoginOffice()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-main-office-filter-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                TenantScopeCatalog.ScopeTenantAll);
+            var officeAccess = new OfficeAccessService();
+            var dispatcher = new SyncRequestDispatcher();
+            var diagnostics = new SyncDiagnosticsService(session);
+            var localState = new LocalStateService(db, officeAccess, dispatcher, session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+            var viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
+
+            InvokePrivateInstance(viewModel, "InitializeInvoiceOfficeFilterOptions");
+
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, viewModel.SelectedInvoiceOfficeFilterCode);
+            Assert.Contains(viewModel.InvoiceOfficeFilterOptions, option => string.Equals(option.Code, OfficeCodeCatalog.Shared, StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(viewModel.InvoiceOfficeFilterOptions, option => string.Equals(option.Code, OfficeCodeCatalog.Yeonsu, StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task CustomerManagementViewModel_Initialize_DefaultsOfficeFilterToLoginOffice()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-customer-office-filter-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.Customers.AddRange(
+                new LocalCustomer
+                {
+                    Id = Guid.Parse("9bbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "USENET 거래처",
+                    NameMatchKey = "USENETCUSTOMER",
+                    IsDirty = false
+                },
+                new LocalCustomer
+                {
+                    Id = Guid.Parse("9ccccccc-cccc-cccc-cccc-cccccccccccc"),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    NameOriginal = "YEONSU 거래처",
+                    NameMatchKey = "YEONSUCUSTOMER",
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                TenantScopeCatalog.ScopeTenantAll);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var viewModel = new CustomerManagementViewModel(local, session);
+
+            await viewModel.InitializeAsync();
+
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, viewModel.SelectedOfficeFilter);
+            var row = Assert.Single(viewModel.Customers);
+            Assert.Equal("YEONSU 거래처", row.NameOriginal);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, row.ResponsibleOfficeCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalAssetViewModel_LoadAsync_DefaultsOfficeFilterToLoginOffice()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-asset-office-filter-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                TenantScopeCatalog.ScopeTenantAll);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var viewModel = new RentalAssetViewModel(rental, local, new RentalDocumentService(), null!, session);
+
+            await viewModel.LoadAsync();
+
+            var selectedOffice = Assert.Single(viewModel.OfficeFilterOptions, option => option.IsSelected);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, selectedOffice.Value);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, viewModel.EditOfficeCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalBillingViewModel_LoadAsync_DefaultsOfficeFilterToLoginOfficeAndScopesCustomerLookup()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-office-filter-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.Customers.AddRange(
+                new LocalCustomer
+                {
+                    Id = Guid.Parse("9ddddddd-dddd-dddd-dddd-dddddddddddd"),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "USENET 렌탈 거래처",
+                    NameMatchKey = "USENETRENTALCUSTOMER",
+                    IsDirty = false
+                },
+                new LocalCustomer
+                {
+                    Id = Guid.Parse("9eeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = "ITWORLD 렌탈 거래처",
+                    NameMatchKey = "ITWORLDRENTALCUSTOMER",
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateUserSession(
+                TenantScopeCatalog.Itworld,
+                OfficeCodeCatalog.Itworld,
+                TenantScopeCatalog.ScopeOfficeOnly);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var viewModel = new RentalBillingViewModel(rental, local, session);
+
+            await viewModel.LoadAsync();
+
+            Assert.Equal(OfficeCodeCatalog.Itworld, viewModel.SelectedOfficeFilter?.Value);
+            Assert.Equal(OfficeCodeCatalog.Itworld, viewModel.EditOfficeCode);
+
+            var lookupRows = await viewModel.BuildCustomerLookupRowsAsync();
+            var row = Assert.Single(lookupRows);
+            var customer = Assert.IsType<LocalCustomer>(row.Tag);
+            Assert.Equal("ITWORLD 렌탈 거래처", customer.NameOriginal);
+            Assert.Equal(OfficeCodeCatalog.Itworld, customer.ResponsibleOfficeCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static SessionState CreateUserSession(params string[] permissions)
     {
         var session = new SessionState();
@@ -6848,6 +7040,21 @@ public sealed class LocalStateServicePartialsTests
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions.ToList()
+        });
+        return session;
+    }
+
+    private static SessionState CreateUserSession(string tenantCode, string officeCode, string scopeType, params string[] permissions)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "user",
+            Role = DomainConstants.RoleUser,
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ScopeType = scopeType,
             Permissions = permissions.ToList()
         });
         return session;

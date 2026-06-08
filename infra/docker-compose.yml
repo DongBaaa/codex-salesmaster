@@ -36,6 +36,6 @@ services:
       Jwt__Issuer: ${JWT_ISSUER:-거래플랜}
       Jwt__Audience: ${JWT_AUDIENCE:-georaeplan-client}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-거래플랜_ChangeThisSigningKeyForProduction_AtLeast32Chars}
-      Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-480}
+      Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-43200}
     ports:
       - "${API_PORT:-18080}:18080"

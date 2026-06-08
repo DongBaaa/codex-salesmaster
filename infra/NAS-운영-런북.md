@@ -1,5 +1,10 @@
 # 거래플랜 NAS 운영 런북
 
+> [!warning] Legacy NAS 문서
+> 현재 거래플랜 운영 서버 본체는 NAS가 아니라 Linux PC `itw@192.168.0.199:2222`의 `/srv/georaeplan`입니다.
+> 이 문서는 과거 NAS 운영 참고용으로만 보관합니다. 새 운영/배포/재시작 작업은 `D:\거래플랜\infra\LinuxPC-운영-런북.md`와 `D:\거래플랜\tools\linux` 기준을 따르세요.
+
+
 - 기준일: 2026-03-19
 - 대상 NAS: 워크플랜이 현재 사용하는 Synology NAS
 - 목표: NAS에 거래플랜 API + PostgreSQL을 두고, Windows PC와 안드로이드 앱이 같은 서버를 사용하도록 준비

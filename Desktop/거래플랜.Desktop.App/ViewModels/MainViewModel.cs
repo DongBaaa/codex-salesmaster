@@ -1002,7 +1002,6 @@ public sealed partial class MainViewModel : ObservableObject
         InitializeInvoiceOfficeFilterOptions();
         var customerNameValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterCustomerSettingKey));
         var voucherTypeValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterVoucherTypeSettingKey));
-        var officeCodeValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterOfficeCodeSettingKey));
         var minAmountValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMinAmountSettingKey));
         var maxAmountValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMaxAmountSettingKey));
         var hadPersistedHiddenTextFilter = HasHiddenInvoiceTextFilter(customerNameValue, minAmountValue, maxAmountValue);
@@ -1014,11 +1013,12 @@ public sealed partial class MainViewModel : ObservableObject
         SelectedVoucherTypeFilter = VoucherTypeFilterOptions.Contains(voucherTypeValue ?? string.Empty)
             ? voucherTypeValue!
             : "전체";
-        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCodeValue, GetDefaultInvoiceOfficeFilterCode());
+        var defaultOfficeFilterCode = GetDefaultInvoiceOfficeFilterCode();
+        var normalizedOfficeCode = defaultOfficeFilterCode;
         SelectedInvoiceOfficeFilterCode = InvoiceOfficeFilterOptions.Any(option =>
             string.Equals(option.Code, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
             ? normalizedOfficeCode
-            : GetDefaultInvoiceOfficeFilterCode();
+            : defaultOfficeFilterCode;
         FilterMinAmountText = hiddenTextFilters.MinAmountText;
         FilterMaxAmountText = hiddenTextFilters.MaxAmountText;
 

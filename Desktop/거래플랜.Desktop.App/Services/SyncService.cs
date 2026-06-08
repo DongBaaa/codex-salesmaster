@@ -261,7 +261,7 @@ public sealed class SyncService : IDisposable
                 }
 
                 var officeSession = new SessionState();
-                officeSession.SetSession(login.Token, login.User);
+                officeSession.SetSession(login.Token, login.User, login.ExpiresAtUtc);
                 using var officeHttpClient = new HttpClient
                 {
                     BaseAddress = _api.GetBaseUri(),
@@ -1014,7 +1014,7 @@ public sealed class SyncService : IDisposable
                 }
 
                 var officeSession = new SessionState();
-                officeSession.SetSession(login.Token, login.User);
+                officeSession.SetSession(login.Token, login.User, login.ExpiresAtUtc);
 
                 var officeDirtyCount = await _local.CountDirtyAsync(officeSession, ct);
                 if (officeDirtyCount == 0)
@@ -1086,7 +1086,7 @@ public sealed class SyncService : IDisposable
                 }
 
                 var officeSession = new SessionState();
-                officeSession.SetSession(login.Token, login.User);
+                officeSession.SetSession(login.Token, login.User, login.ExpiresAtUtc);
                 if (await _local.CountDirtyAsync(officeSession, ct) == 0)
                     continue;
 

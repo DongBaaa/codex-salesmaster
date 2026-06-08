@@ -87,7 +87,7 @@ public sealed partial class LoginViewModel : ObservableObject
                 Password);
             await _local.SaveOfficeSyncCredentialAsync(result.User, Username, Password);
             await SaveRememberOptionsAsync();
-            _session.SetSession(result.Token, result.User);
+            _session.SetSession(result.Token, result.User, result.ExpiresAtUtc);
             try
             {
                 var scopeResult = await _local.RegisterLoginScopeAsync(_session);

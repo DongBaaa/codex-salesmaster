@@ -368,7 +368,16 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public Task<List<LocalCustomer>> GetCustomersForRentalScopeAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		return GetCustomersForRentalScopeAsync(session, responsibleOfficeCode: null, ct);
+	}
+
+	public Task<List<LocalCustomer>> GetCustomersForRentalScopeAsync(SessionState session, string? responsibleOfficeCode, CancellationToken ct = default(CancellationToken))
+	{
 		IQueryable<LocalCustomer> source = ApplyRentalCustomerScope(_db.Customers.AsNoTracking(), session);
+		if (OfficeCodeCatalog.TryNormalizeOfficeCode(responsibleOfficeCode, out string normalizedOfficeCode))
+		{
+			source = source.Where((LocalCustomer customer) => customer.ResponsibleOfficeCode == normalizedOfficeCode || customer.OfficeCode == normalizedOfficeCode);
+		}
 		return source.OrderBy((LocalCustomer c) => c.NameOriginal).ToListAsync(ct);
 	}
 

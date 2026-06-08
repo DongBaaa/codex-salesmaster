@@ -15,11 +15,15 @@ public sealed class ErpApiClient
 {
     private const int MaxRetryCount = 3;
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan TokenRefreshLeadTime = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan TokenRefreshFailureCooldown = TimeSpan.FromMinutes(1);
     private static readonly IReadOnlyDictionary<string, string> EmptyHeaders = new Dictionary<string, string>();
     private static readonly JsonSerializerOptions ConflictPayloadJsonOptions = new() { PropertyNameCaseInsensitive = true };
 
     private readonly HttpClient _http;
     private readonly SessionState _session;
+    private readonly SemaphoreSlim _sessionRefreshLock = new(1, 1);
+    private DateTime _lastSessionRefreshFailureAtUtc = DateTime.MinValue;
 
     public ErpApiClient(HttpClient http, SessionState session)
     {
@@ -112,6 +116,59 @@ public sealed class ErpApiClient
 
         if (lastException is ExpectedRevisionConflictException)
             ExceptionDispatchInfo.Capture(lastException).Throw();
+
+        throw new HttpRequestException(
+            $"{operationName} 실패 (최대 재시도 {MaxRetryCount}회): {lastException?.Message}",
+            lastException);
+    }
+
+    public async Task<LoginResponse?> RefreshSessionAsync(CancellationToken ct = default)
+    {
+        const string operationName = "로그인 세션 갱신(auth/refresh)";
+        if (!_session.IsLoggedIn || _session.IsOfflineMode || string.IsNullOrWhiteSpace(_session.Token))
+            return null;
+
+        Exception? lastException = null;
+        var delay = InitialRetryDelay;
+
+        for (var attempt = 1; attempt <= MaxRetryCount; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                SetAuthHeader();
+                using var timeoutCts = CreateOperationTimeoutTokenSource(operationName, ct);
+                using var response = await _http.PostAsync("auth/refresh", content: null, timeoutCts.Token);
+
+                if (response.IsSuccessStatusCode)
+                    return await response.Content.ReadFromJsonAsync<LoginResponse>(timeoutCts.Token);
+
+                if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                    return null;
+
+                var message = await BuildFailureMessageAsync(response, timeoutCts.Token);
+                var retryable = ShouldRetry(response.StatusCode) && attempt < MaxRetryCount;
+                if (!retryable)
+                    throw await CreateFailureExceptionAsync(operationName, response, timeoutCts.Token);
+
+                AppLogger.Warn("AUTH", $"{operationName} 재시도 {attempt}/{MaxRetryCount}: {message}");
+                await Task.Delay(delay, ct);
+                delay += delay;
+            }
+            catch (Exception ex) when (IsTransient(ex, ct) && attempt < MaxRetryCount)
+            {
+                lastException = ex;
+                AppLogger.Warn("AUTH", $"{operationName} 재시도 {attempt}/{MaxRetryCount}: {ex.Message}");
+                await Task.Delay(delay, ct);
+                delay += delay;
+            }
+            catch (Exception ex)
+            {
+                lastException = ex;
+                break;
+            }
+        }
 
         throw new HttpRequestException(
             $"{operationName} 실패 (최대 재시도 {MaxRetryCount}회): {lastException?.Message}",
@@ -588,6 +645,8 @@ public sealed class ErpApiClient
         var body = await response.Content.ReadAsStringAsync(ct);
         if (body.Length > 200)
             body = body[..200] + "...";
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+            return $"401 Unauthorized 로그인 세션이 만료되었거나 권한이 없습니다. 다시 로그인하세요. {body}".Trim();
         return $"{(int)response.StatusCode} {response.ReasonPhrase} {body}".Trim();
     }
 
@@ -611,12 +670,99 @@ public sealed class ErpApiClient
         return items.Count == 0 ? path : $"{path}?{string.Join("&", items)}";
     }
 
+    private async Task EnsureFreshTokenAsync(CancellationToken ct)
+    {
+        if (!_session.ShouldRefreshToken(TokenRefreshLeadTime) || IsSessionRefreshFailureInCooldown())
+            return;
+
+        await _sessionRefreshLock.WaitAsync(ct);
+        try
+        {
+            if (!_session.ShouldRefreshToken(TokenRefreshLeadTime) || IsSessionRefreshFailureInCooldown())
+                return;
+
+            var refreshed = await RefreshSessionAsync(ct);
+            if (TryApplyRefreshedSession(refreshed))
+            {
+                _lastSessionRefreshFailureAtUtc = DateTime.MinValue;
+                AppLogger.Info("AUTH", $"로그인 세션 자동 갱신 완료: 만료 예정 {FormatTokenExpiryForLog()}");
+                return;
+            }
+
+            MarkSessionRefreshFailure("로그인 세션 자동 갱신 실패: 서버가 갱신 가능한 세션을 반환하지 않았습니다.");
+        }
+        catch (Exception ex)
+        {
+            MarkSessionRefreshFailure($"로그인 세션 자동 갱신 실패: {ex.Message}");
+        }
+        finally
+        {
+            _sessionRefreshLock.Release();
+        }
+    }
+
+    private async Task<bool> TryRefreshSessionAfterUnauthorizedAsync(CancellationToken ct)
+    {
+        if (!_session.IsLoggedIn || _session.IsOfflineMode || string.IsNullOrWhiteSpace(_session.Token))
+            return false;
+
+        await _sessionRefreshLock.WaitAsync(ct);
+        try
+        {
+            var refreshed = await RefreshSessionAsync(ct);
+            if (TryApplyRefreshedSession(refreshed))
+            {
+                _lastSessionRefreshFailureAtUtc = DateTime.MinValue;
+                AppLogger.Info("AUTH", $"401 응답 후 로그인 세션 갱신 완료: 만료 예정 {FormatTokenExpiryForLog()}");
+                return true;
+            }
+
+            MarkSessionRefreshFailure("401 응답 후 로그인 세션 갱신 실패: 다시 로그인이 필요합니다.");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            MarkSessionRefreshFailure($"401 응답 후 로그인 세션 갱신 실패: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            _sessionRefreshLock.Release();
+        }
+    }
+
+    private bool TryApplyRefreshedSession(LoginResponse? response)
+    {
+        if (response is null || string.IsNullOrWhiteSpace(response.Token) || response.User is null)
+            return false;
+
+        _session.RefreshSession(response.Token, response.User, response.ExpiresAtUtc);
+        return true;
+    }
+
+    private bool IsSessionRefreshFailureInCooldown()
+        => _lastSessionRefreshFailureAtUtc != DateTime.MinValue
+           && DateTime.UtcNow - _lastSessionRefreshFailureAtUtc < TokenRefreshFailureCooldown;
+
+    private void MarkSessionRefreshFailure(string message)
+    {
+        _lastSessionRefreshFailureAtUtc = DateTime.UtcNow;
+        AppLogger.Warn("AUTH", message);
+    }
+
+    private string FormatTokenExpiryForLog()
+        => _session.TokenExpiresAtUtc is null
+            ? "알 수 없음"
+            : $"{_session.TokenExpiresAtUtc.Value.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
+
     private async Task<T?> ExecuteWithRetryAsync<T>(
         string operationName,
         Func<CancellationToken, Task<HttpResponseMessage>> sendAsync,
         Func<HttpResponseMessage, CancellationToken, Task<T?>> readAsync,
         CancellationToken ct)
     {
+        await EnsureFreshTokenAsync(ct);
+
         Exception? lastException = null;
         var delay = InitialRetryDelay;
 
@@ -629,6 +775,14 @@ public sealed class ErpApiClient
                 using var response = await sendAsync(timeoutCts.Token);
                 if (response.IsSuccessStatusCode)
                     return await readAsync(response, timeoutCts.Token);
+
+                if (response.StatusCode == HttpStatusCode.Unauthorized &&
+                    attempt < MaxRetryCount &&
+                    await TryRefreshSessionAfterUnauthorizedAsync(ct))
+                {
+                    AppLogger.Info("AUTH", $"{operationName} 401 응답 후 새 로그인 세션으로 재시도합니다.");
+                    continue;
+                }
 
                 var message = await BuildFailureMessageAsync(response, timeoutCts.Token);
                 var retryable = ShouldRetry(response.StatusCode) && attempt < MaxRetryCount;
@@ -784,6 +938,9 @@ public sealed class ErpApiClient
         var trimmedBody = body;
         if (trimmedBody.Length > 200)
             trimmedBody = trimmedBody[..200] + "...";
+
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+            return $"401 Unauthorized 로그인 세션이 만료되었거나 권한이 없습니다. 다시 로그인하세요. {trimmedBody}".Trim();
 
         return $"{(int)response.StatusCode} {response.ReasonPhrase} {trimmedBody}".Trim();
     }

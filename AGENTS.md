@@ -51,12 +51,15 @@
 - When suggesting UI changes, explain the screen goal, the main user actions, the recommended section order, and why the layout fits office work.
 - Preserve workflow efficiency first and visual polish second.
 
-## NAS 운영 작업 안전 규칙
+## Linux PC 운영 작업 안전 규칙
 
 - 거래플랜, 워크플랜, itw 홈페이지 작업은 한 번에 하나의 서비스만 진행합니다. 서로 다른 서비스의 수정/배포/재시작을 같은 작업 흐름에 섞지 않습니다.
-- live 반영 전에는 `trade.2884.kr`, `work.2884.kr`, `itw.2884.kr` 접속 상태와 NAS Docker/Container Manager, Web Station, PHP, MariaDB 상태 영향 여부를 확인합니다.
+- 현재 거래플랜 서버 본체는 NAS가 아니라 Linux PC `itw@192.168.0.199:2222`의 `/srv/georaeplan` 기준으로 운영합니다.
+- live 반영 전에는 `trade.2884.kr` 접속 상태와 Linux PC의 거래플랜 Docker/compose, systemd, nginx/Reverse Proxy, PostgreSQL 상태 영향 여부를 확인합니다.
+- 공통 인프라 영향 가능성이 있으면 `work.2884.kr`, `itw.2884.kr` 접속 상태도 함께 확인합니다.
 - Docker 전체 재시작/정리 명령은 사용하지 않습니다.
-  - 금지 예: `docker compose down`, `docker system prune`, `docker container prune`, `docker image prune`, `docker volume prune`, `docker stop $(docker ps -q)`, `docker restart $(docker ps -q)`.
-  - 허용 방향: 거래플랜 compose project 안에서 필요한 서비스만 명시해 `api`, `postgres` 단위로 작업합니다.
-- Container Manager, Web Station, PHP, MariaDB, nginx/Reverse Proxy 전체 재시작은 NAS의 다른 서비스까지 영향을 줄 수 있으므로 사용자에게 먼저 보고하고 승인받기 전에는 진행하지 않습니다.
-- live 반영 후에는 거래플랜뿐 아니라 워크플랜과 itw 홈페이지 접속 상태도 확인하여 공통 NAS 장애를 조기에 발견합니다.
+  - 금지 예: `docker compose down`, `docker system prune`, `docker container prune`, `docker image prune`, `docker volume prune`, `docker stop $(docker ps -q)`, `docker restart $(docker ps -q)`, `sudo reboot`, `sudo systemctl restart docker`.
+  - 허용 방향: Linux PC의 `/srv/georaeplan` 거래플랜 compose project 안에서 필요한 서비스만 명시해 `api`, `postgres` 단위로 작업합니다.
+- Linux PC의 Docker daemon, systemd 전체 서비스, nginx/Reverse Proxy 전체 재시작, PostgreSQL 전체 재시작은 다른 서비스까지 영향을 줄 수 있으므로 사용자에게 먼저 보고하고 승인받기 전에는 진행하지 않습니다.
+- live 반영 후에는 `trade.2884.kr` 상태를 우선 확인하고, 공통 인프라 영향 가능성이 있으면 `work.2884.kr`, `itw.2884.kr` 상태도 확인하여 Linux PC/네트워크 장애를 조기에 발견합니다.
+- `tools\nas`와 legacy NAS 런북은 과거 호환/참고용입니다. 새 운영 작업에서는 `tools\linux`와 Linux PC 기준 런북을 우선 사용합니다.
