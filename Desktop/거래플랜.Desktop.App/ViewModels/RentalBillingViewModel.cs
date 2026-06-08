@@ -1970,7 +1970,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var currentEditOfficeCode = EditOfficeCode;
         var readableOfficeCodes = _local.GetReadableRentalOfficeCodesForSession(_session);
         var defaultFilterValue = ResolveDefaultOfficeFilterValue(readableOfficeCodes);
-        var desiredFilterValue = string.IsNullOrWhiteSpace(currentFilterValue)
+        var desiredFilterValue = string.IsNullOrWhiteSpace(currentFilterValue) ||
+                                 (!CanUseAllOfficeFilter &&
+                                  string.Equals(currentFilterValue, AllOption, StringComparison.OrdinalIgnoreCase))
             ? defaultFilterValue
             : currentFilterValue;
         var writableOfficeCodes = CanManageAll
@@ -1980,7 +1982,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         OfficeOptions.Clear();
         EditOfficeOptions.Clear();
-        OfficeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
+        if (CanUseAllOfficeFilter)
+            OfficeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
         foreach (var office in BuildOfficeDisplayOptions(offices, readableOfficeCodes))
         {
             OfficeOptions.Add(new DisplayOption
@@ -2053,13 +2056,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (SelectedOfficeFilter is null ||
             string.Equals(SelectedOfficeFilter.Value, AllOption, StringComparison.OrdinalIgnoreCase))
         {
-            return string.Empty;
+            return CanUseAllOfficeFilter
+                ? string.Empty
+                : ResolveDefaultOfficeFilterValue(_local.GetReadableRentalOfficeCodesForSession(_session));
         }
 
         return OfficeCodeCatalog.TryNormalizeOfficeCode(SelectedOfficeFilter.Value, out var normalizedOfficeCode)
             ? normalizedOfficeCode
             : string.Empty;
     }
+
+    private bool CanUseAllOfficeFilter => _session.HasAdministrativePrivileges || _session.HasGlobalDataScope;
 
     private string ResolveDefaultOfficeFilterValue(IEnumerable<string> readableOfficeCodes)
     {

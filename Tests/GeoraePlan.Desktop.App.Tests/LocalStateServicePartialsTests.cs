@@ -7001,6 +7001,16 @@ public sealed class LocalStateServicePartialsTests
                     NameOriginal = "ITWORLD 렌탈 거래처",
                     NameMatchKey = "ITWORLDRENTALCUSTOMER",
                     IsDirty = false
+                },
+                new LocalCustomer
+                {
+                    Id = Guid.Parse("9fffffff-ffff-ffff-ffff-ffffffffffff"),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "다른 담당지점 렌탈 거래처",
+                    NameMatchKey = "OTHERRESPONSIBLERENTALCUSTOMER",
+                    IsDirty = false
                 });
             await db.SaveChangesAsync();
 
@@ -7022,6 +7032,105 @@ public sealed class LocalStateServicePartialsTests
             var customer = Assert.IsType<LocalCustomer>(row.Tag);
             Assert.Equal("ITWORLD 렌탈 거래처", customer.NameOriginal);
             Assert.Equal(OfficeCodeCatalog.Itworld, customer.ResponsibleOfficeCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalBillingViewModel_LoadAsync_FiltersRowsByResponsibleOfficeNotManagementCompany()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-responsible-office-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var ownCustomerId = Guid.Parse("a1000000-0000-0000-0000-000000000001");
+            var otherCustomerId = Guid.Parse("a1000000-0000-0000-0000-000000000002");
+            db.Customers.AddRange(
+                new LocalCustomer
+                {
+                    Id = ownCustomerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "USENET 렌탈 청구 거래처",
+                    NameMatchKey = "USENETBILLINGCUSTOMER",
+                    IsDirty = false
+                },
+                new LocalCustomer
+                {
+                    Id = otherCustomerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    NameOriginal = "YEONSU 렌탈 청구 거래처",
+                    NameMatchKey = "YEONSUBILLINGCUSTOMER",
+                    IsDirty = false
+                });
+            db.RentalBillingProfiles.AddRange(
+                new LocalRentalBillingProfile
+                {
+                    Id = Guid.Parse("a2000000-0000-0000-0000-000000000001"),
+                    CustomerId = ownCustomerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "USENET-BILLING-PROFILE",
+                    CustomerName = "USENET 렌탈 청구 거래처",
+                    ItemName = "USENET 복합기",
+                    MonthlyAmount = 100_000m,
+                    IsActive = true,
+                    IsDirty = false
+                },
+                new LocalRentalBillingProfile
+                {
+                    Id = Guid.Parse("a2000000-0000-0000-0000-000000000002"),
+                    CustomerId = otherCustomerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "YEONSU-BILLING-PROFILE",
+                    CustomerName = "YEONSU 렌탈 청구 거래처",
+                    ItemName = "YEONSU 복합기",
+                    MonthlyAmount = 120_000m,
+                    IsActive = true,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                TenantScopeCatalog.ScopeTenantAll);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var viewModel = new RentalBillingViewModel(rental, local, session);
+
+            await viewModel.LoadAsync();
+
+            Assert.Equal(OfficeCodeCatalog.Usenet, viewModel.SelectedOfficeFilter?.Value);
+            Assert.DoesNotContain(viewModel.OfficeOptions, option => string.Equals(option.Value, "전체", StringComparison.OrdinalIgnoreCase));
+
+            var row = Assert.Single(viewModel.Rows);
+            Assert.Equal("USENET 렌탈 청구 거래처", row.CustomerDisplayName);
+            Assert.Equal(OfficeCodeCatalog.Usenet, row.Source.ResponsibleOfficeCode);
+
+            var lookupRows = await viewModel.BuildCustomerLookupRowsAsync();
+            var lookupRow = Assert.Single(lookupRows);
+            var customer = Assert.IsType<LocalCustomer>(lookupRow.Tag);
+            Assert.Equal("USENET 렌탈 청구 거래처", customer.NameOriginal);
+            Assert.Equal(OfficeCodeCatalog.Usenet, customer.ResponsibleOfficeCode);
         }
         finally
         {

@@ -376,7 +376,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		IQueryable<LocalCustomer> source = ApplyRentalCustomerScope(_db.Customers.AsNoTracking(), session);
 		if (OfficeCodeCatalog.TryNormalizeOfficeCode(responsibleOfficeCode, out string normalizedOfficeCode))
 		{
-			source = source.Where((LocalCustomer customer) => customer.ResponsibleOfficeCode == normalizedOfficeCode || customer.OfficeCode == normalizedOfficeCode);
+			source = source.Where((LocalCustomer customer) =>
+				customer.ResponsibleOfficeCode == normalizedOfficeCode ||
+				((customer.ResponsibleOfficeCode == null ||
+				  customer.ResponsibleOfficeCode == string.Empty ||
+				  customer.ResponsibleOfficeCode == OfficeCodeCatalog.Shared) &&
+				 customer.OfficeCode == normalizedOfficeCode));
 		}
 		return source.OrderBy((LocalCustomer c) => c.NameOriginal).ToListAsync(ct);
 	}
@@ -5432,9 +5437,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return query;
 		}
-		HashSet<string> readableOfficeCodes = GetReadableAssetOfficeCodes(session);
+		HashSet<string> readableOfficeCodes = GetReadableRentalOfficeCodes(session);
+		string currentTenantCode = ResolveCurrentTenantCode(session);
 		List<Guid> temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
-		return query.Where((LocalCustomer customer) => customer.ResponsibleOfficeCode == "ALL" || readableOfficeCodes.Contains(customer.ResponsibleOfficeCode) || temporaryCustomerIds.Contains(customer.Id));
+		return query.Where((LocalCustomer customer) =>
+			customer.TenantCode == currentTenantCode &&
+			(customer.ResponsibleOfficeCode == "ALL" ||
+			 readableOfficeCodes.Contains(customer.ResponsibleOfficeCode) ||
+			 temporaryCustomerIds.Contains(customer.Id)));
 	}
 
 	private static string ResolveCurrentTenantCode(SessionState? session)

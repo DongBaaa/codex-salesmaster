@@ -956,7 +956,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         {
             query = query.Where(asset =>
                 asset.ResponsibleOfficeCode == filter.OfficeCode ||
-                asset.ManagementCompanyCode == filter.OfficeCode);
+                ((asset.ResponsibleOfficeCode == null ||
+                  asset.ResponsibleOfficeCode == string.Empty ||
+                  asset.ResponsibleOfficeCode == OfficeCodeCatalog.Shared) &&
+                 asset.ManagementCompanyCode == filter.OfficeCode));
         }
 
         return query;
@@ -4410,7 +4413,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!string.IsNullOrWhiteSpace(filter.OfficeCode))
             query = query.Where(profile =>
                 profile.ResponsibleOfficeCode == filter.OfficeCode ||
-                profile.ManagementCompanyCode == filter.OfficeCode);
+                ((profile.ResponsibleOfficeCode == null ||
+                  profile.ResponsibleOfficeCode == string.Empty ||
+                  profile.ResponsibleOfficeCode == OfficeCodeCatalog.Shared) &&
+                 profile.ManagementCompanyCode == filter.OfficeCode));
 
         if (!string.IsNullOrWhiteSpace(filter.Status))
         {
