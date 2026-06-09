@@ -1174,6 +1174,34 @@ public sealed class SyncService : IDisposable
                     ct);
             }
 
+            if (await _db.SyncOutboxEntries.AsNoTracking().AnyAsync(entry => entry.Status != "Acknowledged", ct))
+            {
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerMaster>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomer>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerContract>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItem>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTransaction>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTransactionAttachment>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalInventoryTransfer>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalBillingProfile>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalAsset>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalAssetAssignmentHistory>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalBillingLog>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalInvoice>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalPayment>(ct);
+
+                if (includeSharedDirty && session.HasAdministrativePrivileges)
+                {
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCompanyProfile>(ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalUnit>(ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerCategory>(ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalPriceGradeOption>(ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTradeTypeOption>(ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItemCategoryOption>(ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalManagementCompany>(ct);
+                }
+            }
+
             if (clearedCount > 0)
             {
                 AppLogger.Info("SYNC", $"stale dirty 자동정리: office={session.OfficeCode}, cleaned={clearedCount}");
@@ -1226,6 +1254,52 @@ public sealed class SyncService : IDisposable
             entity.UpdatedAtUtc = serverEntity.UpdatedAtUtc;
             entity.IsDeleted = serverEntity.IsDeleted;
             entity.IsDirty = false;
+            changed++;
+        }
+
+        if (changed > 0)
+            await _db.SaveChangesAsync(ct);
+
+        return changed;
+    }
+
+    private async Task<int> MarkOutboxAcknowledgedForCleanEntitiesAsync<TLocal>(CancellationToken ct)
+        where TLocal : class, ILocalSyncEntity
+    {
+        var entityName = typeof(TLocal).Name;
+        var rows = await _db.SyncOutboxEntries
+            .Where(entry => entry.EntityName == entityName && entry.Status != "Acknowledged")
+            .ToListAsync(ct);
+        if (rows.Count == 0)
+            return 0;
+
+        var entityIds = rows
+            .Select(entry => entry.EntityId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (entityIds.Count == 0)
+            return 0;
+
+        var cleanEntityIds = await _db.Set<TLocal>()
+            .IgnoreQueryFilters()
+            .Where(entity => entityIds.Contains(entity.Id) && !entity.IsDirty)
+            .Select(entity => entity.Id)
+            .ToListAsync(ct);
+        if (cleanEntityIds.Count == 0)
+            return 0;
+
+        var cleanEntityIdSet = cleanEntityIds.ToHashSet();
+        var now = DateTime.UtcNow;
+        var changed = 0;
+        foreach (var row in rows)
+        {
+            if (!cleanEntityIdSet.Contains(row.EntityId))
+                continue;
+
+            row.Status = "Acknowledged";
+            row.AcknowledgedAtUtc = now;
+            row.ErrorMessage = string.Empty;
             changed++;
         }
 

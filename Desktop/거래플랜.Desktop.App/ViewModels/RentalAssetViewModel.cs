@@ -24,10 +24,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private readonly SessionState _session;
     private readonly UiDebouncer _searchDebouncer = new();
     private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
+    private CancellationTokenSource? _filterReloadCts;
     private bool _suppressFilterReload;
     private bool _suppressSelectionAutoSave;
     private bool _pendingFilterReload;
     private bool _hasInitializedOfficeFilters;
+    private int _filterReloadVersion;
     private string _baselineStateSignature = string.Empty;
     private long _editRevision;
 
@@ -85,8 +87,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public ObservableCollection<string> EditableAssetStatusOptions { get; } = new();
     public ObservableCollection<string> BillingEligibilityStatusOptions { get; } = new();
     public ObservableCollection<LocalItemCategoryOption> ItemCategoryOptions { get; } = new();
-    public ObservableCollection<RentalAssetViewRow> Rows { get; } = new();
-    public ObservableCollection<RentalAssetAssignmentHistoryViewItem> AssignmentHistories { get; } = new();
+    public ObservableCollection<RentalAssetViewRow> Rows { get; } = new ResettableObservableCollection<RentalAssetViewRow>();
+    public ObservableCollection<RentalAssetAssignmentHistoryViewItem> AssignmentHistories { get; } = new ResettableObservableCollection<RentalAssetAssignmentHistoryViewItem>();
 
     public bool CanViewAll => _rental.CanViewAllAssetScope(_session);
     public bool CanManageAll => _rental.CanManageAllAssetScope(_session);
@@ -168,7 +170,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     public async Task LoadAndSelectAssetAsync(Guid assetId)
     {
-        await LoadAsync();
+        await ReloadFiltersAsync();
+        await ReloadItemCategoryOptionsAsync();
+        await LoadSingleAssetRowAsync(assetId);
         SelectRowWithoutAutoSave(assetId);
         StatusMessage = SelectedRow is null
             ? "점검 항목의 렌탈 자산을 목록에서 찾지 못했습니다. 필터, 권한, 삭제 상태를 확인하세요."
@@ -232,6 +236,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [RelayCommand]
     private async Task ReloadAsync()
     {
+        CancelPendingFilterReload();
+        await ReloadCoreAsync(CancellationToken.None);
+    }
+
+    private async Task ReloadCoreAsync(CancellationToken ct)
+    {
         if (IsBusy)
         {
             _pendingFilterReload = true;
@@ -241,9 +251,11 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         do
         {
             _pendingFilterReload = false;
+            var requestVersion = Interlocked.Increment(ref _filterReloadVersion);
             IsBusy = true;
             try
             {
+                ct.ThrowIfCancellationRequested();
                 var selectedRowId = SelectedRow?.Source.Id;
                 var rows = await _rental.GetAssetRowsAsync(new RentalAssetFilter
                 {
@@ -251,11 +263,13 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                     ItemCategoryNames = GetSelectedFilterValues(ItemCategoryFilterOptions),
                     OfficeCodes = GetSelectedFilterValues(OfficeFilterOptions),
                     AssetStatuses = GetSelectedFilterValues(StatusFilterOptions)
-                }, _session);
+                }, _session, ct);
 
-                Rows.Clear();
-                foreach (var row in rows)
-                    Rows.Add(row);
+                ct.ThrowIfCancellationRequested();
+                if (requestVersion != Volatile.Read(ref _filterReloadVersion))
+                    return;
+
+                Rows.ReplaceWith(rows);
 
                 if (selectedRowId.HasValue)
                 {
@@ -268,12 +282,32 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                     ? "조건에 맞는 렌탈 자산이 없습니다."
                     : $"렌탈 자산 {rows.Count:N0}건을 조회했습니다.";
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                StatusMessage = "검색 조건이 변경되어 이전 조회를 중단했습니다.";
+                return;
+            }
             finally
             {
                 IsBusy = false;
             }
         }
-        while (_pendingFilterReload);
+        while (_pendingFilterReload && !ct.IsCancellationRequested);
+    }
+
+    private async Task LoadSingleAssetRowAsync(Guid assetId)
+    {
+        CancelPendingFilterReload();
+        IsBusy = true;
+        try
+        {
+            var row = await _rental.GetAssetRowAsync(assetId, _session);
+            Rows.ReplaceWith(row is null ? Array.Empty<RentalAssetViewRow>() : new[] { row });
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     [RelayCommand]
@@ -660,7 +694,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         if (assetId == Guid.Empty)
         {
             SelectedAssignmentHistory = null;
-            AssignmentHistories.Clear();
+            AssignmentHistories.ReplaceWith(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
             return;
         }
 
@@ -669,9 +703,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             return;
 
         SelectedAssignmentHistory = null;
-        AssignmentHistories.Clear();
-        foreach (var history in histories)
-            AssignmentHistories.Add(history);
+        AssignmentHistories.ReplaceWith(histories);
     }
 
     private void ApplyAssetStatusUiRules()
@@ -1341,10 +1373,21 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         if (_suppressFilterReload)
             return;
 
+        CancelPendingFilterReload();
+        var cts = new CancellationTokenSource();
+        _filterReloadCts = cts;
         _searchDebouncer.DebounceAsync(
             TimeSpan.FromMilliseconds(350),
-            () => ReloadAsync(),
+            () => ReloadCoreAsync(cts.Token),
             ex => StatusMessage = $"렌탈 자산 목록을 다시 불러오지 못했습니다. {ex.Message}");
+    }
+
+    private void CancelPendingFilterReload()
+    {
+        Interlocked.Increment(ref _filterReloadVersion);
+        _filterReloadCts?.Cancel();
+        _filterReloadCts?.Dispose();
+        _filterReloadCts = null;
     }
 
     private static DateOnly? ToDateOnly(DateTime? value)

@@ -573,16 +573,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .OrderBy(profile => profile.CustomerName)
             .ThenBy(profile => profile.ItemName)
             .ToListAsync(ct);
-        var profileIds = profiles.Select(profile => profile.Id).ToList();
-        var billingAssets = profileIds.Count == 0
-            ? new List<LocalRentalAsset>()
-            : await ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
-                .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && profileIds.Contains(asset.BillingProfileId.Value))
-                .ToListAsync(ct);
-        await NormalizeAssetCustomerDisplayNamesAsync(billingAssets, ct);
-        var assetsByProfile = billingAssets
-            .GroupBy(asset => asset.BillingProfileId!.Value)
-            .ToDictionary(group => group.Key, group => group.ToList());
         var unlinkedAssets = includeUnlinkedAssets
             ? await ApplyUnlinkedBillingAssetFilter(
                     ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
@@ -596,12 +586,96 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .ThenBy(asset => asset.ManagementNumber)
                 .ToListAsync(ct)
             : new List<LocalRentalAsset>();
+        var rows = await BuildBillingProfileRowsAsync(profiles, session, offices, filter.ReferenceDate, ct);
+
+        if (includeUnlinkedAssets)
+        {
+            var unlinkedCustomerIds = unlinkedAssets
+                .Where(asset => asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
+                .Select(asset => asset.CustomerId!.Value)
+                .Distinct()
+                .ToList();
+            var unlinkedCustomersById = unlinkedCustomerIds.Count == 0
+                ? new Dictionary<Guid, LocalCustomer>()
+                : await _db.Customers
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(customer => unlinkedCustomerIds.Contains(customer.Id))
+                    .ToDictionaryAsync(customer => customer.Id, customer => customer, ct);
+
+            rows.AddRange(unlinkedAssets.Select(asset => CreateUnlinkedBillingViewRow(
+                asset,
+                unlinkedCustomersById,
+                offices,
+                filter.ReferenceDate)));
+        }
+
+        var alertWindow = (await GetAlertDayValuesAsync(ct)).DefaultIfEmpty(7).Max();
+        if (!filter.ExpandCustomerSummaryRows)
+            rows = GroupBillingRowsByCustomer(rows);
+
+        if (filter.DueOnly)
+        {
+            rows = rows
+                .Where(row => row.DaysRemaining.HasValue && row.DaysRemaining.Value <= alertWindow)
+                .ToList();
+        }
+
+        if (filter.PastDueOnly)
+        {
+            rows = rows
+                .Where(row => row.HasPastUnresolved)
+                .ToList();
+        }
+
+        return rows
+            .OrderBy(row => row.DaysRemaining ?? int.MaxValue)
+            .ThenBy(row => row.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+    }
+
+    public async Task<RentalBillingViewRow?> GetBillingRowAsync(
+        Guid profileId,
+        SessionState session,
+        DateOnly referenceDate,
+        CancellationToken ct = default)
+    {
+        if (profileId == Guid.Empty)
+            return null;
+
+        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+
+        var offices = await GetOfficeMapAsync(ct);
+        var profile = await ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session)
+            .FirstOrDefaultAsync(current => current.Id == profileId, ct);
+        if (profile is null)
+            return null;
+
+        var rows = await BuildBillingProfileRowsAsync([profile], session, offices, referenceDate, ct);
+        return rows.FirstOrDefault();
+    }
+
+    private async Task<List<RentalBillingViewRow>> BuildBillingProfileRowsAsync(
+        IReadOnlyList<LocalRentalBillingProfile> profiles,
+        SessionState session,
+        IReadOnlyDictionary<string, string> offices,
+        DateOnly referenceDate,
+        CancellationToken ct)
+    {
+        if (profiles.Count == 0)
+            return new List<RentalBillingViewRow>();
+
+        var profileIds = profiles.Select(profile => profile.Id).ToList();
+        var billingAssets = await ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+            .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && profileIds.Contains(asset.BillingProfileId.Value))
+            .ToListAsync(ct);
+        await NormalizeAssetCustomerDisplayNamesAsync(billingAssets, ct);
+        var assetsByProfile = billingAssets
+            .GroupBy(asset => asset.BillingProfileId!.Value)
+            .ToDictionary(group => group.Key, group => group.ToList());
         var customerIds = profiles
             .Where(profile => profile.CustomerId.HasValue && profile.CustomerId.Value != Guid.Empty)
             .Select(profile => profile.CustomerId!.Value)
-            .Concat(unlinkedAssets
-                .Where(asset => asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
-                .Select(asset => asset.CustomerId!.Value))
             .Distinct()
             .ToList();
         var customersById = customerIds.Count == 0
@@ -620,7 +694,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Select(profile => new
             {
                 ProfileId = profile.Id,
-                Run = GetOrCreateBillingRun(profile, filter.ReferenceDate, persistChanges: false)
+                Run = GetOrCreateBillingRun(profile, referenceDate, persistChanges: false)
             })
             .Where(item => item.Run is not null)
             .ToDictionary(item => item.ProfileId, item => item.Run!);
@@ -691,154 +765,144 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         return new RentalBillingRunInvoiceInfo(latest.Id, latest.TotalAmount);
                     });
 
-        var alertWindow = (await GetAlertDayValuesAsync(ct)).DefaultIfEmpty(7).Max();
-        var rows = profiles.Select(profile =>
-        {
-            var customerDisplayName = ResolveBillingProfileCustomerDisplayName(profile, customerNameMap);
-            assetsByProfile.TryGetValue(profile.Id, out var profileAssets);
-            profileAssets ??= new List<LocalRentalAsset>();
-            var templateItems = GetBillingTemplateItems(profile, profileAssets);
-            var explicitIncludedAssetCount = templateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count();
-            var includedAssetCount = explicitIncludedAssetCount > 0 ? explicitIncludedAssetCount : profileAssets.Count;
-            var nextBillingDate = GetNextBillingDate(profile, filter.ReferenceDate);
-            var documentIssueDate = nextBillingDate.HasValue
-                ? RentalBillingScheduleRules.CalculateDocumentIssueDate(nextBillingDate, profile.DocumentIssueMode, profile.DocumentLeadDays)
-                : null;
-            var alertDate = nextBillingDate.HasValue
-                ? RentalBillingScheduleRules.ResolveAlertDate(nextBillingDate.Value, documentIssueDate)
-                : (DateOnly?)null;
-            var daysRemaining = alertDate.HasValue
-                ? alertDate.Value.DayNumber - filter.ReferenceDate.DayNumber
-                : nextBillingDate.HasValue
-                    ? nextBillingDate.Value.DayNumber - filter.ReferenceDate.DayNumber
-                    : (int?)null;
-            var currentRun = previewRunsByProfile.TryGetValue(profile.Id, out var previewRun) ? previewRun : null;
-            var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
-            var settledAmount = currentRun is not null
-                ? settlementByRun.TryGetValue(currentRun.RunId, out var runSettlementInfo)
-                    ? runSettlementInfo.SettledAmount
-                    : Math.Max(0m, currentRun.SettledAmount)
-                : Math.Max(0m, profile.SettledAmount);
-            var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
-            var currentRunStatus = currentRun?.Status ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(currentRunStatus) || string.Equals(currentRunStatus, PaymentFlowConstants.BillingStatusPlanned, StringComparison.OrdinalIgnoreCase))
-            {
-                currentRunStatus = outstandingAmount <= 0m && billedAmount > 0m
-                    ? PaymentFlowConstants.BillingStatusCompleted
-                    : settledAmount > 0m
-                        ? PaymentFlowConstants.BillingStatusInProgress
-                        : PaymentFlowConstants.BillingStatusPlanned;
-            }
-            var dataIssues = BuildBillingDataIssues(profile, profileAssets, templateItems);
-            var historyRows = billingRunsByProfile.TryGetValue(profile.Id, out var profileRuns)
-                ? BuildBillingHistoryRows(
-                    profile,
-                    customerDisplayName,
-                    profileRuns,
-                    settlementByRun,
-                    invoiceByRun,
-                    filter.ReferenceDate)
-                : new List<RentalBillingHistoryRow>();
-            var pastUnresolvedRows = historyRows
-                .Where(history => history.IsPastUnresolved)
-                .ToList();
-            return new RentalBillingViewRow
-            {
-                SelectionId = profile.Id,
-                HasPersistedProfile = true,
-                Source = profile,
-                GroupedSourceCount = 1,
-                GroupedPersistedProfileCount = 1,
-                GroupedUnlinkedAssetCount = 0,
-                GroupedSelectionIds = new List<Guid> { profile.Id },
-                GroupedPersistedProfileIds = new List<Guid> { profile.Id },
-                GroupedProfileRevisions = new Dictionary<Guid, long> { [profile.Id] = profile.Revision },
-                CustomerDisplayName = customerDisplayName,
-                BillingCycleDisplay = profile.BillingCycleMonths > 0 ? $"{profile.BillingCycleMonths}개월" : string.Empty,
-                ResponsibleOfficeName = ResolveOfficeDisplayName(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode, offices),
-                NextBillingDate = nextBillingDate,
-                DaysRemaining = daysRemaining,
-                DisplayStatus = BuildBillingDisplayStatus(profile, alertDate ?? nextBillingDate, daysRemaining),
-                SettlementStatus = currentRun is not null
-                    ? DetermineBillingSettlementStatus(profile, settledAmount, billedAmount)
-                    : PaymentFlowConstants.NormalizeSettlementStatus(profile.SettlementStatus),
-                CompletionStatus = outstandingAmount <= 0m
-                    ? PaymentFlowConstants.CompletionDone
-                    : PaymentFlowConstants.NormalizeCompletionStatus(profile.CompletionStatus),
-                SettledAmount = settledAmount,
-                OutstandingAmount = outstandingAmount,
-                RequiresFollowUp = profile.RequiresFollowUp || outstandingAmount > 0m,
-                LastSettledDate = profile.LastSettledDate,
-                AssetCount = profileAssets.Count,
-                TemplateItemCount = templateItems.Count,
-                IncludedAssetCount = includedAssetCount,
-                BillingType = string.IsNullOrWhiteSpace(profile.BillingType) ? "묶음" : profile.BillingType,
-                InstallSiteName = profile.InstallSiteName ?? string.Empty,
-                InstallLocationDisplay = ResolveBillingProfileInstallLocationDisplay(profile, profileAssets),
-                BillingAdvanceMode = string.IsNullOrWhiteSpace(profile.BillingAdvanceMode) ? "후불" : profile.BillingAdvanceMode,
-                BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(profile.BillingDayMode),
-                BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
-                    profile.BillingCycleMonths,
-                    profile.BillingAnchorMonth,
-                    profile.BillingAnchorDate,
-                    profile.BillingStartDate,
-                    profile.ContractStartDate,
-                    profile.ContractDate,
-                    profile.LastBilledDate,
-                    filter.ReferenceDate),
-                DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(profile.DocumentIssueMode),
-                DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(profile.DocumentLeadDays),
-                DocumentIssueDate = documentIssueDate,
-                AlertDate = alertDate,
-                AlertReason = nextBillingDate.HasValue
-                    ? RentalBillingScheduleRules.ResolveAlertReason(nextBillingDate.Value, documentIssueDate)
-                    : string.Empty,
-                CurrentBillingRunId = currentRun?.RunId,
-                CurrentBillingPeriodLabel = currentRun?.PeriodLabel ?? string.Empty,
-                CurrentBillingRunStatus = currentRunStatus,
-                CurrentBilledAmount = billedAmount,
-                BillingHistoryRows = historyRows,
-                PastUnresolvedCount = pastUnresolvedRows.Count,
-                PastUnresolvedAmount = pastUnresolvedRows.Sum(history => history.OutstandingAmount),
-                OldestPastUnresolvedPeriodLabel = pastUnresolvedRows
-                    .OrderBy(history => history.ScheduledDate)
-                    .Select(history => history.PeriodLabel)
-                    .FirstOrDefault() ?? string.Empty,
-                HasDataIssue = dataIssues.Count > 0,
-                DataIssueSummary = dataIssues.Count == 0 ? string.Empty : string.Join(" / ", dataIssues)
-            };
-        }).ToList();
-
-        if (includeUnlinkedAssets)
-        {
-            rows.AddRange(unlinkedAssets.Select(asset => CreateUnlinkedBillingViewRow(
-                asset,
-                customersById,
+        return profiles.Select(profile => CreateBillingViewRow(
+                profile,
+                customerNameMap,
+                assetsByProfile,
+                previewRunsByProfile,
+                billingRunsByProfile,
+                settlementByRun,
+                invoiceByRun,
                 offices,
-                filter.ReferenceDate)));
-        }
-
-        if (!filter.ExpandCustomerSummaryRows)
-            rows = GroupBillingRowsByCustomer(rows);
-
-        if (filter.DueOnly)
-        {
-            rows = rows
-                .Where(row => row.DaysRemaining.HasValue && row.DaysRemaining.Value <= alertWindow)
-                .ToList();
-        }
-
-        if (filter.PastDueOnly)
-        {
-            rows = rows
-                .Where(row => row.HasPastUnresolved)
-                .ToList();
-        }
-
-        return rows
-            .OrderBy(row => row.DaysRemaining ?? int.MaxValue)
-            .ThenBy(row => row.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
+                referenceDate))
             .ToList();
+    }
+
+    private RentalBillingViewRow CreateBillingViewRow(
+        LocalRentalBillingProfile profile,
+        IReadOnlyDictionary<Guid, string> customerNameMap,
+        IReadOnlyDictionary<Guid, List<LocalRentalAsset>> assetsByProfile,
+        IReadOnlyDictionary<Guid, RentalBillingRunModel> previewRunsByProfile,
+        IReadOnlyDictionary<Guid, List<RentalBillingRunModel>> billingRunsByProfile,
+        IReadOnlyDictionary<Guid, RentalBillingRunSettlementInfo> settlementByRun,
+        IReadOnlyDictionary<Guid, RentalBillingRunInvoiceInfo> invoiceByRun,
+        IReadOnlyDictionary<string, string> offices,
+        DateOnly referenceDate)
+    {
+        var customerDisplayName = ResolveBillingProfileCustomerDisplayName(profile, customerNameMap);
+        assetsByProfile.TryGetValue(profile.Id, out var profileAssets);
+        profileAssets ??= new List<LocalRentalAsset>();
+        var templateItems = GetBillingTemplateItems(profile, profileAssets);
+        var explicitIncludedAssetCount = templateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count();
+        var includedAssetCount = explicitIncludedAssetCount > 0 ? explicitIncludedAssetCount : profileAssets.Count;
+        var nextBillingDate = GetNextBillingDate(profile, referenceDate);
+        var documentIssueDate = nextBillingDate.HasValue
+            ? RentalBillingScheduleRules.CalculateDocumentIssueDate(nextBillingDate, profile.DocumentIssueMode, profile.DocumentLeadDays)
+            : null;
+        var alertDate = nextBillingDate.HasValue
+            ? RentalBillingScheduleRules.ResolveAlertDate(nextBillingDate.Value, documentIssueDate)
+            : (DateOnly?)null;
+        var daysRemaining = alertDate.HasValue
+            ? alertDate.Value.DayNumber - referenceDate.DayNumber
+            : nextBillingDate.HasValue
+                ? nextBillingDate.Value.DayNumber - referenceDate.DayNumber
+                : (int?)null;
+        var currentRun = previewRunsByProfile.TryGetValue(profile.Id, out var previewRun) ? previewRun : null;
+        var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
+        var settledAmount = currentRun is not null
+            ? settlementByRun.TryGetValue(currentRun.RunId, out var runSettlementInfo)
+                ? runSettlementInfo.SettledAmount
+                : Math.Max(0m, currentRun.SettledAmount)
+            : Math.Max(0m, profile.SettledAmount);
+        var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
+        var currentRunStatus = currentRun?.Status ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(currentRunStatus) || string.Equals(currentRunStatus, PaymentFlowConstants.BillingStatusPlanned, StringComparison.OrdinalIgnoreCase))
+        {
+            currentRunStatus = outstandingAmount <= 0m && billedAmount > 0m
+                ? PaymentFlowConstants.BillingStatusCompleted
+                : settledAmount > 0m
+                    ? PaymentFlowConstants.BillingStatusInProgress
+                    : PaymentFlowConstants.BillingStatusPlanned;
+        }
+
+        var dataIssues = BuildBillingDataIssues(profile, profileAssets, templateItems);
+        var historyRows = billingRunsByProfile.TryGetValue(profile.Id, out var profileRuns)
+            ? BuildBillingHistoryRows(
+                profile,
+                customerDisplayName,
+                profileRuns,
+                settlementByRun,
+                invoiceByRun,
+                referenceDate)
+            : new List<RentalBillingHistoryRow>();
+        var pastUnresolvedRows = historyRows
+            .Where(history => history.IsPastUnresolved)
+            .ToList();
+        return new RentalBillingViewRow
+        {
+            SelectionId = profile.Id,
+            HasPersistedProfile = true,
+            Source = profile,
+            GroupedSourceCount = 1,
+            GroupedPersistedProfileCount = 1,
+            GroupedUnlinkedAssetCount = 0,
+            GroupedSelectionIds = new List<Guid> { profile.Id },
+            GroupedPersistedProfileIds = new List<Guid> { profile.Id },
+            GroupedProfileRevisions = new Dictionary<Guid, long> { [profile.Id] = profile.Revision },
+            CustomerDisplayName = customerDisplayName,
+            BillingCycleDisplay = profile.BillingCycleMonths > 0 ? $"{profile.BillingCycleMonths}개월" : string.Empty,
+            ResponsibleOfficeName = ResolveOfficeDisplayName(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode, offices),
+            NextBillingDate = nextBillingDate,
+            DaysRemaining = daysRemaining,
+            DisplayStatus = BuildBillingDisplayStatus(profile, alertDate ?? nextBillingDate, daysRemaining),
+            SettlementStatus = currentRun is not null
+                ? DetermineBillingSettlementStatus(profile, settledAmount, billedAmount)
+                : PaymentFlowConstants.NormalizeSettlementStatus(profile.SettlementStatus),
+            CompletionStatus = outstandingAmount <= 0m
+                ? PaymentFlowConstants.CompletionDone
+                : PaymentFlowConstants.NormalizeCompletionStatus(profile.CompletionStatus),
+            SettledAmount = settledAmount,
+            OutstandingAmount = outstandingAmount,
+            RequiresFollowUp = profile.RequiresFollowUp || outstandingAmount > 0m,
+            LastSettledDate = profile.LastSettledDate,
+            AssetCount = profileAssets.Count,
+            TemplateItemCount = templateItems.Count,
+            IncludedAssetCount = includedAssetCount,
+            BillingType = string.IsNullOrWhiteSpace(profile.BillingType) ? "묶음" : profile.BillingType,
+            InstallSiteName = profile.InstallSiteName ?? string.Empty,
+            InstallLocationDisplay = ResolveBillingProfileInstallLocationDisplay(profile, profileAssets),
+            BillingAdvanceMode = string.IsNullOrWhiteSpace(profile.BillingAdvanceMode) ? "후불" : profile.BillingAdvanceMode,
+            BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(profile.BillingDayMode),
+            BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+                profile.BillingCycleMonths,
+                profile.BillingAnchorMonth,
+                profile.BillingAnchorDate,
+                profile.BillingStartDate,
+                profile.ContractStartDate,
+                profile.ContractDate,
+                profile.LastBilledDate,
+                referenceDate),
+            DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(profile.DocumentIssueMode),
+            DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(profile.DocumentLeadDays),
+            DocumentIssueDate = documentIssueDate,
+            AlertDate = alertDate,
+            AlertReason = nextBillingDate.HasValue
+                ? RentalBillingScheduleRules.ResolveAlertReason(nextBillingDate.Value, documentIssueDate)
+                : string.Empty,
+            CurrentBillingRunId = currentRun?.RunId,
+            CurrentBillingPeriodLabel = currentRun?.PeriodLabel ?? string.Empty,
+            CurrentBillingRunStatus = currentRunStatus,
+            CurrentBilledAmount = billedAmount,
+            BillingHistoryRows = historyRows,
+            PastUnresolvedCount = pastUnresolvedRows.Count,
+            PastUnresolvedAmount = pastUnresolvedRows.Sum(history => history.OutstandingAmount),
+            OldestPastUnresolvedPeriodLabel = pastUnresolvedRows
+                .OrderBy(history => history.ScheduledDate)
+                .Select(history => history.PeriodLabel)
+                .FirstOrDefault() ?? string.Empty,
+            HasDataIssue = dataIssues.Count > 0,
+            DataIssueSummary = dataIssues.Count == 0 ? string.Empty : string.Join(" / ", dataIssues)
+        };
     }
 
     private readonly record struct RentalBillingRunSettlementInfo(decimal SettledAmount, DateOnly? LastSettledDate);
@@ -1559,25 +1623,51 @@ WHERE ""AssignedUsername"" <> '';", ct);
         await NormalizeAssetCustomerDisplayNamesAsync(assets, ct);
 
         return assets
-            .Select(asset =>
-            {
-                var issues = BuildAssetDataIssues(asset);
-                return new RentalAssetViewRow
-                {
-                    Source = asset,
-                    ResponsibleOfficeName = ResolveOfficeDisplayName(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, offices),
-                    DaysRemaining = asset.RentalEndDate.HasValue
-                        ? asset.RentalEndDate.Value.DayNumber - referenceDate.DayNumber
-                        : null,
-                    CurrentCustomerName = ResolvePrimaryAssetCustomerName(asset),
-                    InstallLocationDisplay = string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
-                    BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? GetDefaultBillingEligibilityStatus(asset) : asset.BillingEligibilityStatus,
-                    HasDataIssue = issues.Count > 0
-                };
-            })
+            .Select(asset => CreateAssetViewRow(asset, offices, referenceDate))
             .OrderBy(row => row.CurrentCustomerName, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(row => row.Source.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+    }
+
+    public async Task<RentalAssetViewRow?> GetAssetRowAsync(
+        Guid assetId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (assetId == Guid.Empty)
+            return null;
+
+        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+
+        var offices = await GetOfficeMapAsync(ct);
+        var referenceDate = DateOnly.FromDateTime(DateTime.Today);
+        var asset = await ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
+            .FirstOrDefaultAsync(current => current.Id == assetId, ct);
+        if (asset is null)
+            return null;
+
+        await NormalizeAssetCustomerDisplayNamesAsync([asset], ct);
+        return CreateAssetViewRow(asset, offices, referenceDate);
+    }
+
+    private RentalAssetViewRow CreateAssetViewRow(
+        LocalRentalAsset asset,
+        IReadOnlyDictionary<string, string> offices,
+        DateOnly referenceDate)
+    {
+        var issues = BuildAssetDataIssues(asset);
+        return new RentalAssetViewRow
+        {
+            Source = asset,
+            ResponsibleOfficeName = ResolveOfficeDisplayName(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, offices),
+            DaysRemaining = asset.RentalEndDate.HasValue
+                ? asset.RentalEndDate.Value.DayNumber - referenceDate.DayNumber
+                : null,
+            CurrentCustomerName = ResolvePrimaryAssetCustomerName(asset),
+            InstallLocationDisplay = string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
+            BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? GetDefaultBillingEligibilityStatus(asset) : asset.BillingEligibilityStatus,
+            HasDataIssue = issues.Count > 0
+        };
     }
 
     public async Task<IReadOnlyList<LocalRentalAsset>> GetAssetsForEquipmentDetailAsync(
