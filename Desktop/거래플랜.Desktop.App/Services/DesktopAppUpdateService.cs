@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -62,6 +63,7 @@ public sealed class DesktopAppUpdateService
     private const string CanonicalExecutableName = "거래플랜.exe";
     private static readonly TimeSpan UpdateArtifactRetention = TimeSpan.FromDays(3);
     private static readonly TimeSpan InstallResidueRetention = TimeSpan.FromDays(14);
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> PreparedPackageLocks = new(StringComparer.OrdinalIgnoreCase);
     private static readonly string[] StartupRequiredRelativePaths =
     [
         "appsettings.json"
@@ -263,90 +265,90 @@ public sealed class DesktopAppUpdateService
         if (!targetPath.StartsWith(safeDirectory, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("업데이트 패키지 저장 경로가 안전하지 않습니다.");
 
-        if (File.Exists(targetPath) && await TryVerifySha256Async(targetPath, package.Sha256, ct))
-        {
-            var existingInfo = new FileInfo(targetPath);
-            progress?.Report(new DesktopUpdateDownloadProgress(existingInfo.Length, existingInfo.Length));
-            return new DesktopPreparedUpdatePackage
-            {
-                PackagePath = targetPath,
-                FileSize = existingInfo.Length
-            };
-        }
-
-        var temporaryPath = targetPath + ".download";
+        var packageLock = GetPreparedPackageLock(targetPath);
+        await packageLock.WaitAsync(ct);
         try
         {
-            if (File.Exists(temporaryPath))
-                File.Delete(temporaryPath);
-
-            using var http = new HttpClient
+            if (File.Exists(targetPath) && await TryVerifySha256Async(targetPath, package.Sha256, ct))
             {
-                Timeout = TimeSpan.FromMinutes(10)
-            };
-            using var request = new HttpRequestMessage(HttpMethod.Get, packageUri);
-            foreach (var header in _api.GetUpdateDownloadHeaders(packageUri))
-            {
-                if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value))
-                    request.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value);
-            }
-
-            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-            response.EnsureSuccessStatusCode();
-
-            var totalBytes = response.Content.Headers.ContentLength;
-            await using var source = await response.Content.ReadAsStreamAsync(ct);
-            await using var destination = new FileStream(
-                temporaryPath,
-                FileMode.Create,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 81920,
-                useAsync: true);
-
-            var buffer = new byte[81920];
-            long downloadedBytes = 0;
-            var lastReportUtc = DateTime.UtcNow;
-
-            while (true)
-            {
-                var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
-                if (read <= 0)
-                    break;
-
-                await destination.WriteAsync(buffer.AsMemory(0, read), ct);
-                downloadedBytes += read;
-
-                var nowUtc = DateTime.UtcNow;
-                if ((nowUtc - lastReportUtc).TotalMilliseconds >= 250)
+                var existingInfo = new FileInfo(targetPath);
+                TryCleanupPackageTemporaryFiles(packageDirectory, safePackageFileName);
+                progress?.Report(new DesktopUpdateDownloadProgress(existingInfo.Length, existingInfo.Length));
+                return new DesktopPreparedUpdatePackage
                 {
-                    progress?.Report(new DesktopUpdateDownloadProgress(downloadedBytes, totalBytes));
-                    lastReportUtc = nowUtc;
-                }
+                    PackagePath = targetPath,
+                    FileSize = existingInfo.Length
+                };
             }
 
-            await destination.FlushAsync(ct);
-            progress?.Report(new DesktopUpdateDownloadProgress(downloadedBytes, totalBytes));
-            await VerifySha256Async(temporaryPath, package.Sha256, ct);
-
-            File.Move(temporaryPath, targetPath, overwrite: true);
-            return new DesktopPreparedUpdatePackage
+            var temporaryPath = CreateUniquePackageDownloadPath(targetPath);
+            try
             {
-                PackagePath = targetPath,
-                FileSize = downloadedBytes
-            };
+                using var http = new HttpClient
+                {
+                    Timeout = TimeSpan.FromMinutes(10)
+                };
+                using var request = new HttpRequestMessage(HttpMethod.Get, packageUri);
+                foreach (var header in _api.GetUpdateDownloadHeaders(packageUri))
+                {
+                    if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value))
+                        request.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
+
+                using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+                response.EnsureSuccessStatusCode();
+
+                var totalBytes = response.Content.Headers.ContentLength;
+                await using var source = await response.Content.ReadAsStreamAsync(ct);
+                await using var destination = new FileStream(
+                    temporaryPath,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 81920,
+                    useAsync: true);
+
+                var buffer = new byte[81920];
+                long downloadedBytes = 0;
+                var lastReportUtc = DateTime.UtcNow;
+
+                while (true)
+                {
+                    var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+                    if (read <= 0)
+                        break;
+
+                    await destination.WriteAsync(buffer.AsMemory(0, read), ct);
+                    downloadedBytes += read;
+
+                    var nowUtc = DateTime.UtcNow;
+                    if ((nowUtc - lastReportUtc).TotalMilliseconds >= 250)
+                    {
+                        progress?.Report(new DesktopUpdateDownloadProgress(downloadedBytes, totalBytes));
+                        lastReportUtc = nowUtc;
+                    }
+                }
+
+                await destination.FlushAsync(ct);
+                progress?.Report(new DesktopUpdateDownloadProgress(downloadedBytes, totalBytes));
+                await VerifySha256Async(temporaryPath, package.Sha256, ct);
+
+                File.Move(temporaryPath, targetPath, overwrite: true);
+                TryCleanupPackageTemporaryFiles(packageDirectory, safePackageFileName);
+                return new DesktopPreparedUpdatePackage
+                {
+                    PackagePath = targetPath,
+                    FileSize = downloadedBytes
+                };
+            }
+            finally
+            {
+                TryDeleteFile(temporaryPath);
+            }
         }
         finally
         {
-            try
-            {
-                if (File.Exists(temporaryPath))
-                    File.Delete(temporaryPath);
-            }
-            catch
-            {
-                // 다음 정리 단계에서 다시 삭제
-            }
+            packageLock.Release();
         }
     }
 
@@ -450,6 +452,47 @@ public sealed class DesktopAppUpdateService
             fileName = $"desktop-{NormalizeVersionText(package.Version)}.zip";
 
         return fileName;
+    }
+
+    private static SemaphoreSlim GetPreparedPackageLock(string targetPath)
+        => PreparedPackageLocks.GetOrAdd(
+            Path.GetFullPath(targetPath),
+            static _ => new SemaphoreSlim(1, 1));
+
+    private static string CreateUniquePackageDownloadPath(string targetPath)
+    {
+        var directoryPath = Path.GetDirectoryName(targetPath);
+        if (string.IsNullOrWhiteSpace(directoryPath))
+            directoryPath = Path.GetTempPath();
+
+        return Path.Combine(
+            directoryPath,
+            $"{Path.GetFileName(targetPath)}.{Environment.ProcessId}.{Guid.NewGuid():N}.download");
+    }
+
+    private static void TryCleanupPackageTemporaryFiles(string packageDirectory, string packageFileName)
+    {
+        if (!Directory.Exists(packageDirectory))
+            return;
+
+        foreach (var filePath in Directory.EnumerateFiles(packageDirectory, $"{packageFileName}*.download", SearchOption.TopDirectoryOnly))
+            TryDeleteFile(filePath);
+    }
+
+    private static void TryDeleteFile(string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+            return;
+
+        try
+        {
+            if (File.Exists(filePath))
+                File.Delete(filePath);
+        }
+        catch
+        {
+            // 다른 업데이트 준비 작업이 파일을 잡고 있으면 다음 정리 단계에서 다시 삭제
+        }
     }
 
     private static string GetPreparedPackageDirectory(AppUpdatePackageDto package)
