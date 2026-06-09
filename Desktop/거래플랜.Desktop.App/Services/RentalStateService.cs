@@ -3377,6 +3377,354 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
     }
 
+    public async Task<IReadOnlyList<LocalRentalAsset>> GetRentalEquipmentReplacementCandidatesAsync(
+        Guid currentAssetId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (currentAssetId == Guid.Empty)
+            return Array.Empty<LocalRentalAsset>();
+
+        var candidates = await ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
+            .Where(asset => asset.Id != currentAssetId && !asset.IsDeleted)
+            .ToListAsync(ct);
+
+        return candidates
+            .Where(IsRentalEquipmentReplacementCandidate)
+            .Where(asset => CanEditAssetScope(ResolveAssetResponsibleOfficeCodeForPermission(asset, session), session))
+            .OrderBy(asset => asset.ItemName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.MachineNumber, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.Id)
+            .ToList();
+    }
+
+    public async Task<LocalMutationResult> ReplaceRentalEquipmentAsync(
+        RentalEquipmentReplacementRequest request,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.OriginalAssetId == Guid.Empty || request.ReplacementAssetId == Guid.Empty)
+            return LocalMutationResult.Missing("렌탈 장비 교체 대상 장비를 선택하세요.");
+        if (request.OriginalAssetId == request.ReplacementAssetId)
+            return LocalMutationResult.Denied("기존 장비와 새 장비가 같습니다. 다른 장비를 선택하세요.");
+
+        await AssetSaveLock.WaitAsync(ct);
+        try
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            var original = await _db.RentalAssets
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(asset => asset.Id == request.OriginalAssetId && !asset.IsDeleted, ct);
+            if (original is null)
+                return LocalMutationResult.Missing("기존 렌탈 장비를 찾을 수 없습니다.");
+
+            var replacement = await _db.RentalAssets
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(asset => asset.Id == request.ReplacementAssetId && !asset.IsDeleted, ct);
+            if (replacement is null)
+                return LocalMutationResult.Missing("새로 연결할 렌탈 장비를 찾을 수 없습니다.");
+
+            var originalOfficeCode = ResolveAssetResponsibleOfficeCodeForPermission(original, session);
+            var replacementOfficeCode = ResolveAssetResponsibleOfficeCodeForPermission(replacement, session);
+            if (!CanEditAssetScope(originalOfficeCode, session) || !CanEditAssetScope(replacementOfficeCode, session))
+                return LocalMutationResult.Denied("기존 장비와 새 장비를 모두 수정할 권한이 있어야 렌탈 장비 교체를 진행할 수 있습니다.");
+
+            if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(original, request.OriginalAssetRevision, "렌탈 자산", out var originalConflictMessage))
+                return LocalMutationResult.Conflict(originalConflictMessage);
+            if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(replacement, request.ReplacementAssetRevision, "렌탈 자산", out var replacementConflictMessage))
+                return LocalMutationResult.Conflict(replacementConflictMessage);
+
+            if (!HasActiveRentalEquipmentAssignment(original))
+                return LocalMutationResult.Denied("기존 장비에 거래처/청구 연결이 없어 렌탈 장비 교체를 진행할 수 없습니다.");
+            if (!IsRentalEquipmentReplacementCandidate(replacement))
+                return LocalMutationResult.Denied("새 장비는 거래처/청구 연결이 없는 대기·회수·창고·점검중 장비만 선택할 수 있습니다.");
+
+            var replacementDate = request.ReplacementDate == default
+                ? DateOnly.FromDateTime(DateTime.Today)
+                : request.ReplacementDate;
+            var replacementUtc = CreateUtcDate(replacementDate);
+            var now = DateTime.UtcNow;
+            var changeReason = RentalCatalogValueNormalizer.NormalizeDisplayText(request.ChangeReason);
+            if (string.IsNullOrWhiteSpace(changeReason))
+                changeReason = "렌탈 장비 교체";
+
+            var originalNextStatus = ResolveAssetStatus(
+                string.IsNullOrWhiteSpace(request.OriginalAssetNextStatus)
+                    ? "회수"
+                    : request.OriginalAssetNextStatus,
+                "회수",
+                null);
+
+            var previousBillingProfileId = original.BillingProfileId;
+            LocalRentalBillingProfile? profile = null;
+            if (previousBillingProfileId.HasValue && previousBillingProfileId.Value != Guid.Empty)
+            {
+                profile = await _db.RentalBillingProfiles
+                    .IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(current => current.Id == previousBillingProfileId.Value && !current.IsDeleted, ct);
+                if (profile is null)
+                    return LocalMutationResult.Missing("기존 장비의 청구 프로필을 찾을 수 없습니다. 청구 연결을 먼저 정리한 뒤 렌탈 장비 교체를 다시 시도하세요.");
+
+                var profileOfficeCode = NormalizeOfficeCode(
+                    string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
+                        ? profile.ManagementCompanyCode
+                        : profile.ResponsibleOfficeCode,
+                    originalOfficeCode);
+                if (!CanEditRental(profileOfficeCode, session))
+                    return LocalMutationResult.Denied("연결된 렌탈 청구 프로필을 수정할 권한이 없어 렌탈 장비 교체를 진행할 수 없습니다.");
+            }
+
+            var carriedCustomerId = original.CustomerId ?? profile?.CustomerId;
+            var carriedCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
+                original.CurrentCustomerName,
+                original.CustomerName,
+                profile?.CustomerName));
+            var carriedInstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
+                original.InstallLocation,
+                original.InstallSiteName,
+                profile?.InstallSiteName));
+            var carriedInstallSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
+                original.InstallSiteName,
+                profile?.InstallSiteName,
+                carriedInstallLocation,
+                carriedCustomerName));
+            var carriedBillingProfileId = original.BillingProfileId;
+            var carriedMonthlyFee = Math.Max(0m, original.MonthlyFee);
+            var carriedDepositText = (original.DepositText ?? string.Empty).Trim();
+            var carriedContractMonths = original.ContractMonths;
+            var carriedContractDate = original.ContractDate ?? profile?.ContractDate;
+            var carriedRentalEndDate = original.RentalEndDate ?? profile?.ContractEndDate;
+            var carriedFreeSupplyItems = original.FreeSupplyItems;
+            var carriedPaidSupplyItems = original.PaidSupplyItems;
+            var originalLabel = BuildRentalEquipmentReplacementAssetLabel(original);
+            var replacementLabel = BuildRentalEquipmentReplacementAssetLabel(replacement);
+
+            await ApplyAssignmentClearedSnapshotAsync(original, previousBillingProfileId, replacementUtc, ct);
+            original.CustomerName = string.Empty;
+            original.CurrentCustomerName = string.Empty;
+            original.InstallLocation = string.Empty;
+            original.InstallSiteName = string.Empty;
+            original.AssetStatus = originalNextStatus;
+            original.CurrentLocation = originalNextStatus;
+            original.RentalEndDate = replacementDate;
+            if (string.Equals(originalNextStatus, "폐기", StringComparison.OrdinalIgnoreCase))
+                original.DisposalDate ??= replacementDate;
+            original.BillingEligibilityStatus = BillingEligibilityExcluded;
+            original.BillingExclusionReason = RentalAssetStatusRules.BuildAutoExclusionReason(originalNextStatus);
+            original.AssetKey = BuildAssetKey(
+                original.ManagementCompanyCode,
+                original.ManagementNumber,
+                original.ManagementId,
+                original.MachineNumber,
+                original.CustomerName,
+                original.ItemName);
+            await EnsureUniqueRentalAssetKeyAsync(original, ct);
+            original.Notes = AppendRentalEquipmentReplacementNote(
+                original.Notes,
+                $"{replacementDate:yyyy-MM-dd} 렌탈 장비 교체로 {replacementLabel} 장비에 임대 연결을 승계했습니다.");
+            original.IsDirty = true;
+            original.UpdatedAtUtc = now;
+
+            var targetResponsibleOfficeCode = NormalizeOfficeCode(FirstNonEmpty(
+                profile?.ResponsibleOfficeCode,
+                original.ResponsibleOfficeCode,
+                replacement.ResponsibleOfficeCode),
+                session.OfficeCode);
+            replacement.ResponsibleOfficeCode = targetResponsibleOfficeCode;
+            replacement.ManagementCompanyCode = ResolveLinkedAssetManagementCompanyCode(replacement, targetResponsibleOfficeCode);
+            replacement.OfficeCode = replacement.ManagementCompanyCode;
+            replacement.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                profile?.TenantCode ?? replacement.TenantCode,
+                replacement.OfficeCode,
+                original.TenantCode,
+                targetResponsibleOfficeCode);
+            replacement.BillingProfileId = carriedBillingProfileId;
+            replacement.CustomerId = carriedCustomerId;
+            replacement.CustomerName = carriedCustomerName;
+            replacement.CurrentCustomerName = carriedCustomerName;
+            replacement.InstallLocation = carriedInstallLocation;
+            replacement.InstallSiteName = carriedInstallSiteName;
+            replacement.DepositText = carriedDepositText;
+            replacement.MonthlyFee = carriedMonthlyFee;
+            replacement.ContractMonths = carriedContractMonths;
+            replacement.ContractDate = carriedContractDate;
+            replacement.InstallDate = replacementDate;
+            replacement.ContractStartDate = replacementDate;
+            replacement.RentalEndDate = carriedRentalEndDate;
+            replacement.FreeSupplyItems = carriedFreeSupplyItems;
+            replacement.PaidSupplyItems = carriedPaidSupplyItems;
+            replacement.AssetStatus = "임대진행중";
+            replacement.CurrentLocation = string.IsNullOrWhiteSpace(original.CurrentLocation) || string.Equals(original.CurrentLocation, originalNextStatus, StringComparison.OrdinalIgnoreCase)
+                ? "렌탈"
+                : original.CurrentLocation;
+            replacement.BillingEligibilityStatus = BillingEligibilityTarget;
+            replacement.BillingExclusionReason = string.Empty;
+            replacement.AssetKey = BuildAssetKey(
+                replacement.ManagementCompanyCode,
+                replacement.ManagementNumber,
+                replacement.ManagementId,
+                replacement.MachineNumber,
+                replacement.CustomerName,
+                replacement.ItemName);
+            await EnsureUniqueRentalAssetKeyAsync(replacement, ct);
+            replacement.Notes = AppendRentalEquipmentReplacementNote(
+                replacement.Notes,
+                $"{replacementDate:yyyy-MM-dd} 렌탈 장비 교체: {originalLabel} 장비의 거래처/청구 연결을 승계했습니다.");
+            replacement.IsDirty = true;
+            replacement.UpdatedAtUtc = now;
+
+            if (profile is not null && ReplaceBillingProfileTemplateAsset(profile, original.Id, replacement.Id))
+            {
+                profile.IsDirty = true;
+                profile.UpdatedAtUtc = now;
+            }
+
+            await _db.SaveChangesAsync(ct);
+            if (profile is not null)
+                await SyncLinkedBillingProfileMonthlyFeeFromAssetAsync(replacement.Id, ct);
+            await RefreshLocalRentalAssetAssignmentHistoriesAsync([original.Id, replacement.Id], replacementUtc, changeReason, ct);
+            await tx.CommitAsync(ct);
+
+            return LocalMutationResult.Ok(
+                original.Id,
+                $"렌탈 장비 교체를 완료했습니다. {originalLabel} → {replacementLabel}",
+                replacement.Id);
+        }
+        finally
+        {
+            AssetSaveLock.Release();
+        }
+    }
+
+    private static string ResolveAssetResponsibleOfficeCodeForPermission(LocalRentalAsset asset, SessionState session)
+        => RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+            asset.TenantCode,
+            asset.OfficeCode,
+            asset.ManagementCompanyCode,
+            asset.ResponsibleOfficeCode,
+            session.OfficeCode);
+
+    private static bool HasActiveRentalEquipmentAssignment(LocalRentalAsset asset)
+    {
+        if (asset.BillingProfileId.HasValue || asset.CustomerId.HasValue)
+            return true;
+
+        return !string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ||
+               !string.IsNullOrWhiteSpace(asset.CustomerName) ||
+               !string.IsNullOrWhiteSpace(asset.InstallLocation) ||
+               !string.IsNullOrWhiteSpace(asset.InstallSiteName);
+    }
+
+    private static bool IsRentalEquipmentReplacementCandidate(LocalRentalAsset asset)
+    {
+        if (asset.IsDeleted ||
+            asset.BillingProfileId.HasValue ||
+            asset.CustomerId.HasValue ||
+            !string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ||
+            !string.IsNullOrWhiteSpace(asset.CustomerName) ||
+            !string.IsNullOrWhiteSpace(asset.InstallLocation) ||
+            !string.IsNullOrWhiteSpace(asset.InstallSiteName))
+        {
+            return false;
+        }
+
+        var status = (asset.AssetStatus ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(status) ||
+               string.Equals(status, "대기", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(status, "회수", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(status, "창고", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(status, "점검중", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(status, "미배정", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(status, "설치처 불명", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task EnsureUniqueRentalAssetKeyAsync(LocalRentalAsset asset, CancellationToken ct)
+    {
+        var candidate = string.IsNullOrWhiteSpace(asset.AssetKey)
+            ? BuildAssetKey(
+                asset.ManagementCompanyCode,
+                asset.ManagementNumber,
+                asset.ManagementId,
+                asset.MachineNumber,
+                asset.CustomerName,
+                asset.ItemName)
+            : asset.AssetKey;
+
+        var duplicate = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(current => current.Id != asset.Id && current.AssetKey == candidate, ct);
+        if (duplicate)
+            candidate = BuildLegacyCollisionAssetKey(candidate, asset.Id);
+
+        asset.AssetKey = candidate;
+    }
+
+    private bool ReplaceBillingProfileTemplateAsset(
+        LocalRentalBillingProfile profile,
+        Guid originalAssetId,
+        Guid replacementAssetId)
+    {
+        var templateItems = GetBillingTemplateItems(profile, Array.Empty<LocalRentalAsset>());
+        var changed = false;
+        foreach (var item in templateItems)
+        {
+            var includedAssetIds = (item.IncludedAssetIds ?? new List<Guid>())
+                .Where(id => id != Guid.Empty)
+                .ToList();
+            if (!includedAssetIds.Contains(originalAssetId))
+                continue;
+
+            var replacedIds = includedAssetIds
+                .Select(id => id == originalAssetId ? replacementAssetId : id)
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+            if (!replacedIds.SequenceEqual(item.IncludedAssetIds ?? new List<Guid>()))
+            {
+                item.IncludedAssetIds = replacedIds;
+                changed = true;
+            }
+
+            if (item.RepresentativeAssetId == originalAssetId)
+            {
+                item.RepresentativeAssetId = replacementAssetId;
+                changed = true;
+            }
+        }
+
+        if (!changed)
+            return false;
+
+        profile.BillingTemplateJson = SerializeBillingTemplateItems(templateItems);
+        profile.MonthlyAmount = templateItems.Sum(ResolveTemplateMonthlyAmount);
+        profile.ItemName = BuildProfileItemName(profile, templateItems);
+        return true;
+    }
+
+    private static string BuildRentalEquipmentReplacementAssetLabel(LocalRentalAsset asset)
+    {
+        var identifier = FirstNonEmpty(asset.ManagementNumber, asset.ManagementId, asset.MachineNumber);
+        var itemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName);
+        if (!string.IsNullOrWhiteSpace(identifier) && !string.IsNullOrWhiteSpace(itemName))
+            return $"{identifier} / {itemName}";
+        return FirstNonEmpty(identifier, itemName, asset.Id.ToString("D"));
+    }
+
+    private static string AppendRentalEquipmentReplacementNote(string? existingNotes, string note)
+    {
+        var current = (existingNotes ?? string.Empty).Trim();
+        var normalizedNote = RentalCatalogValueNormalizer.NormalizeDisplayText(note);
+        if (string.IsNullOrWhiteSpace(normalizedNote))
+            return current;
+        if (string.IsNullOrWhiteSpace(current))
+            return normalizedNote;
+        return $"{current}{Environment.NewLine}{normalizedNote}";
+    }
+
     private static void ApplyAssetOfficeScope(LocalRentalAsset asset, string officeCode)
     {
         var normalizedResponsibleOfficeCode = NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet);

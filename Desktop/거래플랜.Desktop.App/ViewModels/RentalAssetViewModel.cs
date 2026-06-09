@@ -39,7 +39,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private bool _isStatusFilterPopupOpen;
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _statusMessage = "렌탈 자산을 불러오는 중입니다.";
-    [ObservableProperty] private RentalAssetViewRow? _selectedRow;
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ReplaceRentalEquipmentCommand))]
+    private RentalAssetViewRow? _selectedRow;
     [ObservableProperty] private RentalAssetAssignmentHistoryViewItem? _selectedAssignmentHistory;
 
     [ObservableProperty] private Guid _editId = Guid.NewGuid();
@@ -95,6 +97,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public bool CanEditOfficeSelection => CanManageAll;
     public bool CanSave => SelectedRow is null || CanEditCurrentSelection;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;
+    public bool CanReplaceSelected => SelectedRow is not null &&
+                                      CanEditCurrentSelection &&
+                                      HasReplaceableRentalAssignment(SelectedRow.Source);
     public bool IsNewAsset => SelectedRow is null;
     public bool IsNonOperatingAssetStatus => RentalAssetStatusRules.IsNonOperating(EditAssetStatus);
     public bool CanEditAssignmentFields => !IsNonOperatingAssetStatus;
@@ -418,6 +423,96 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         ResetForNewAsset("신규 렌탈 자산 정보를 입력하세요.");
     }
 
+    [RelayCommand(CanExecute = nameof(CanReplaceSelected))]
+    private async Task ReplaceRentalEquipmentAsync()
+    {
+        if (SelectedRow is null)
+        {
+            StatusMessage = "렌탈 장비 교체할 기존 장비를 먼저 선택하세요.";
+            return;
+        }
+
+        if (!await TryAutoSaveCurrentEditAsync(refreshAfterSave: true))
+            return;
+
+        var original = SelectedRow?.Source;
+        if (original is null)
+        {
+            StatusMessage = "렌탈 장비 교체할 기존 장비를 다시 선택하세요.";
+            return;
+        }
+
+        var candidates = await _rental.GetRentalEquipmentReplacementCandidatesAsync(original.Id, _session);
+        if (candidates.Count == 0)
+        {
+            StatusMessage = "교체할 수 있는 미연결 렌탈 장비가 없습니다. 새 장비가 거래처/청구 연결이 없는 대기·회수·창고·점검중 상태인지 확인하세요.";
+            MessageBox.Show(StatusMessage, "렌탈 장비 교체", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var lookup = new LookupWindow(
+            "렌탈 장비 교체 - 새 장비 선택",
+            BuildRentalEquipmentReplacementLookupRows(candidates))
+        {
+            Owner = GetActiveWindow()
+        };
+        if (lookup.ShowDialog() != true || lookup.SelectedRow?.Tag is not LocalRentalAsset replacement)
+        {
+            StatusMessage = "렌탈 장비 교체를 취소했습니다.";
+            return;
+        }
+
+        var request = new RentalEquipmentReplacementRequest
+        {
+            OriginalAssetId = original.Id,
+            OriginalAssetRevision = original.Revision,
+            ReplacementAssetId = replacement.Id,
+            ReplacementAssetRevision = replacement.Revision,
+            ReplacementDate = DateOnly.FromDateTime(DateTime.Today),
+            OriginalAssetNextStatus = "회수",
+            ChangeReason = "렌탈 장비 교체"
+        };
+
+        var confirmWindow = new RentalEquipmentReplacementWindow(original, replacement, request)
+        {
+            Owner = GetActiveWindow()
+        };
+        if (confirmWindow.ShowDialog() != true)
+        {
+            StatusMessage = "렌탈 장비 교체를 취소했습니다.";
+            return;
+        }
+
+        LocalMutationResult result;
+        IsBusy = true;
+        try
+        {
+            result = await _rental.ReplaceRentalEquipmentAsync(request, _session);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+
+        StatusMessage = result.Message;
+        if (!result.Success)
+        {
+            if (result.ConcurrencyConflict)
+            {
+                await ReloadAsync();
+                SelectRowWithoutAutoSave(original.Id);
+            }
+
+            MessageBox.Show(result.Message, "렌탈 장비 교체", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        await ReloadAsync();
+        var selectedId = result.RelatedEntityId == Guid.Empty ? result.EntityId : result.RelatedEntityId;
+        SelectRowWithoutAutoSave(selectedId);
+        StatusMessage = result.Message;
+    }
+
     [RelayCommand]
     private async Task OpenReturnReportAsync()
     {
@@ -629,6 +724,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             OnPropertyChanged(nameof(IsNewAsset));
             OnPropertyChanged(nameof(CanSave));
             OnPropertyChanged(nameof(CanDeleteSelected));
+            OnPropertyChanged(nameof(CanReplaceSelected));
             return;
         }
 
@@ -681,6 +777,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         OnPropertyChanged(nameof(IsNewAsset));
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanDeleteSelected));
+        OnPropertyChanged(nameof(CanReplaceSelected));
         ResetEditBaseline();
         UiTaskHelper.Forget(
             LoadAssignmentHistoriesAsync(source.Id),
@@ -931,6 +1028,30 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             })
             .ToList();
     }
+
+    private static IReadOnlyList<LookupRow> BuildRentalEquipmentReplacementLookupRows(
+        IReadOnlyList<LocalRentalAsset> candidates)
+        => candidates
+            .OrderBy(asset => asset.ItemName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.MachineNumber, StringComparer.CurrentCultureIgnoreCase)
+            .Select(asset => new LookupRow
+            {
+                Id = asset.Id,
+                PrimaryText = string.Join(" / ", new[]
+                {
+                    Coalesce(asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, "관리번호 없음"),
+                    Coalesce(asset.ItemName, "품명 미입력")
+                }),
+                SecondaryText = string.Join(" | ", new[]
+                {
+                    $"상태 {Coalesce(asset.AssetStatus, "미입력")}",
+                    $"기계번호 {Coalesce(asset.MachineNumber, "미입력")}",
+                    $"담당지점 {OfficeCodeCatalog.GetOfficeDisplayName(ResolveAssetOfficeCode(asset, DomainConstants.OfficeUsenet))}"
+                }),
+                Tag = asset
+            })
+            .ToList();
 
     public void ApplySelectedCustomer(LocalCustomer customer)
     {
@@ -1187,6 +1308,14 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 : asset.ResponsibleOfficeCode,
             fallbackOfficeCode);
     }
+
+    private static bool HasReplaceableRentalAssignment(LocalRentalAsset asset)
+        => asset.BillingProfileId.HasValue ||
+           asset.CustomerId.HasValue ||
+           !string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ||
+           !string.IsNullOrWhiteSpace(asset.CustomerName) ||
+           !string.IsNullOrWhiteSpace(asset.InstallLocation) ||
+           !string.IsNullOrWhiteSpace(asset.InstallSiteName);
 
     private void HandleInventoryStateChanged(object? sender, EventArgs e)
         => UiTaskHelper.Forget(ReloadItemCategoryOptionsAsync(), "UI", "렌탈 자산 품목분류 목록 새로고침");

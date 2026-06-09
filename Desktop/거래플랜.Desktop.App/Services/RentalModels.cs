@@ -93,6 +93,17 @@ public sealed class RentalAssetAssignmentHistoryEditRequest
     public string ChangeReason { get; set; } = string.Empty;
 }
 
+public sealed class RentalEquipmentReplacementRequest
+{
+    public Guid OriginalAssetId { get; set; }
+    public long OriginalAssetRevision { get; set; }
+    public Guid ReplacementAssetId { get; set; }
+    public long ReplacementAssetRevision { get; set; }
+    public DateOnly ReplacementDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    public string OriginalAssetNextStatus { get; set; } = "회수";
+    public string ChangeReason { get; set; } = "렌탈 장비 교체";
+}
+
 public sealed class RentalLinkReviewItem
 {
     public string QueueType { get; set; } = string.Empty;
