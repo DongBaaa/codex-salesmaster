@@ -195,6 +195,49 @@
             </Grid>
         </Border>
 
+        <Border DockPanel.Dock="Top"
+                Background="#17324F"
+                BorderBrush="#2E5C82"
+                BorderThickness="0,0,0,1"
+                Padding="14,8"
+                Visibility="{Binding IsDesktopUpdateBannerVisible, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0"
+                           Text="업데이트"
+                           Foreground="#4FC3F7"
+                           FontWeight="Bold"
+                           VerticalAlignment="Center"
+                           Margin="0,0,12,0"/>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding DesktopUpdateVersionText}"
+                               Foreground="#EAF2FF"
+                               FontWeight="Bold"
+                               FontSize="13"/>
+                    <TextBlock Text="{Binding DesktopUpdateStatusText}"
+                               Foreground="#B7C8DA"
+                               FontSize="12"
+                               TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+                <Button Grid.Column="2"
+                        Content="{Binding DesktopUpdateActionText}"
+                        Command="{Binding StartPreparedDesktopUpdateCommand}"
+                        Background="#00897B"
+                        Margin="14,0,6,0"
+                        MinWidth="116"/>
+                <Button Grid.Column="3"
+                        Content="나중에"
+                        Command="{Binding DismissDesktopUpdateBannerCommand}"
+                        Background="#546E7A"
+                        MinWidth="76"/>
+            </Grid>
+        </Border>
+
         <Border DockPanel.Dock="Top" Background="#122038" Padding="12,10" BorderBrush="#2E4060" BorderThickness="0,0,0,1">
             <UniformGrid Columns="9">
                 <Border Background="Transparent" Margin="0,0,8,0" CornerRadius="6" Padding="10"/>

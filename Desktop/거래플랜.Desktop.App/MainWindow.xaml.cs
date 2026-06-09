@@ -254,6 +254,7 @@ public partial class MainWindow : Window
             _isInitialized = true;
             StartRuntimeServicesAfterInitialDashboardLoad();
             QueueDeferredStartupSafetyChecks();
+            _vm.QueueBackgroundDesktopUpdateCheck();
         }
     }
 

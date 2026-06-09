@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
@@ -43,6 +44,14 @@ public sealed class DesktopAppRuntimeSelfCheckResult
 
         return string.Join(" | ", parts.Where(part => !string.IsNullOrWhiteSpace(part)));
     }
+}
+
+public readonly record struct DesktopUpdateDownloadProgress(long DownloadedBytes, long? TotalBytes);
+
+public sealed class DesktopPreparedUpdatePackage
+{
+    public required string PackagePath { get; init; }
+    public long FileSize { get; init; }
 }
 
 public sealed class DesktopAppUpdateService
@@ -223,7 +232,10 @@ public sealed class DesktopAppUpdateService
         }
     }
 
-    public void StartUpdate(AppUpdatePackageDto package)
+    public async Task<DesktopPreparedUpdatePackage> PrepareUpdatePackageAsync(
+        AppUpdatePackageDto package,
+        IProgress<DesktopUpdateDownloadProgress>? progress = null,
+        CancellationToken ct = default)
     {
         if (package is null)
             throw new ArgumentNullException(nameof(package));
@@ -237,6 +249,122 @@ public sealed class DesktopAppUpdateService
             throw new InvalidOperationException("업데이트 패키지 주소를 절대 경로로 해석하지 못했습니다.");
 
         var packageUri = ValidatePackageUri(packageUrl, _api.GetBaseUri());
+        EnsureSufficientDiskSpace(package.FileSize, GetCanonicalInstallRoot());
+        TryCleanupStaleUpdateArtifacts();
+
+        var packageDirectory = GetPreparedPackageDirectory(package);
+        Directory.CreateDirectory(packageDirectory);
+
+        var safePackageFileName = ResolvePackageFileName(package);
+        var targetPath = Path.GetFullPath(Path.Combine(packageDirectory, safePackageFileName));
+        var safeDirectory = Path.GetFullPath(packageDirectory);
+        if (!safeDirectory.EndsWith(Path.DirectorySeparatorChar))
+            safeDirectory += Path.DirectorySeparatorChar;
+        if (!targetPath.StartsWith(safeDirectory, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("업데이트 패키지 저장 경로가 안전하지 않습니다.");
+
+        if (File.Exists(targetPath) && await TryVerifySha256Async(targetPath, package.Sha256, ct))
+        {
+            var existingInfo = new FileInfo(targetPath);
+            progress?.Report(new DesktopUpdateDownloadProgress(existingInfo.Length, existingInfo.Length));
+            return new DesktopPreparedUpdatePackage
+            {
+                PackagePath = targetPath,
+                FileSize = existingInfo.Length
+            };
+        }
+
+        var temporaryPath = targetPath + ".download";
+        try
+        {
+            if (File.Exists(temporaryPath))
+                File.Delete(temporaryPath);
+
+            using var http = new HttpClient
+            {
+                Timeout = TimeSpan.FromMinutes(10)
+            };
+            using var request = new HttpRequestMessage(HttpMethod.Get, packageUri);
+            foreach (var header in _api.GetUpdateDownloadHeaders(packageUri))
+            {
+                if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value))
+                    request.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            response.EnsureSuccessStatusCode();
+
+            var totalBytes = response.Content.Headers.ContentLength;
+            await using var source = await response.Content.ReadAsStreamAsync(ct);
+            await using var destination = new FileStream(
+                temporaryPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 81920,
+                useAsync: true);
+
+            var buffer = new byte[81920];
+            long downloadedBytes = 0;
+            var lastReportUtc = DateTime.UtcNow;
+
+            while (true)
+            {
+                var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+                if (read <= 0)
+                    break;
+
+                await destination.WriteAsync(buffer.AsMemory(0, read), ct);
+                downloadedBytes += read;
+
+                var nowUtc = DateTime.UtcNow;
+                if ((nowUtc - lastReportUtc).TotalMilliseconds >= 250)
+                {
+                    progress?.Report(new DesktopUpdateDownloadProgress(downloadedBytes, totalBytes));
+                    lastReportUtc = nowUtc;
+                }
+            }
+
+            await destination.FlushAsync(ct);
+            progress?.Report(new DesktopUpdateDownloadProgress(downloadedBytes, totalBytes));
+            await VerifySha256Async(temporaryPath, package.Sha256, ct);
+
+            File.Move(temporaryPath, targetPath, overwrite: true);
+            return new DesktopPreparedUpdatePackage
+            {
+                PackagePath = targetPath,
+                FileSize = downloadedBytes
+            };
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(temporaryPath))
+                    File.Delete(temporaryPath);
+            }
+            catch
+            {
+                // 다음 정리 단계에서 다시 삭제
+            }
+        }
+    }
+
+    public void StartUpdate(AppUpdatePackageDto package, string? preparedPackagePath = null)
+    {
+        if (package is null)
+            throw new ArgumentNullException(nameof(package));
+        if (string.IsNullOrWhiteSpace(package.PackageUrl))
+            throw new InvalidOperationException("업데이트 패키지 주소가 비어 있습니다.");
+        if (string.IsNullOrWhiteSpace(package.Sha256))
+            throw new InvalidOperationException("업데이트 SHA256 정보가 비어 있습니다.");
+
+        var packageUrl = _api.ResolveAbsoluteUrl(package.PackageUrl);
+        if (string.IsNullOrWhiteSpace(packageUrl))
+            throw new InvalidOperationException("업데이트 패키지 주소를 절대 경로로 해석하지 못했습니다.");
+
+        var packageUri = ValidatePackageUri(packageUrl, _api.GetBaseUri());
+        var preparedPackageFullPath = ValidatePreparedPackagePath(preparedPackagePath, package);
 
         var updaterPath = ResolveUpdaterPath();
         if (string.IsNullOrWhiteSpace(updaterPath))
@@ -271,10 +399,16 @@ public sealed class DesktopAppUpdateService
             "--file-size",
             package.FileSize.ToString(),
             "--file-name",
-            QuoteArgument(Path.GetFileName(package.FileName ?? string.Empty) ?? string.Empty),
+            QuoteArgument(ResolvePackageFileName(package)),
             "--notes",
             QuoteArgument(package.Notes ?? string.Empty)
         };
+
+        if (!string.IsNullOrWhiteSpace(preparedPackageFullPath))
+        {
+            argumentParts.Add("--package-path");
+            argumentParts.Add(QuoteArgument(preparedPackageFullPath));
+        }
 
         if (!string.IsNullOrWhiteSpace(requestMetadataPath))
         {
@@ -291,6 +425,85 @@ public sealed class DesktopAppUpdateService
             UseShellExecute = true,
             WorkingDirectory = Path.GetDirectoryName(stagedUpdaterPath) ?? AppContext.BaseDirectory
         });
+    }
+
+    private static string? ValidatePreparedPackagePath(string? preparedPackagePath, AppUpdatePackageDto package)
+    {
+        if (string.IsNullOrWhiteSpace(preparedPackagePath))
+            return null;
+
+        var fullPath = Path.GetFullPath(preparedPackagePath);
+        if (!File.Exists(fullPath))
+            throw new FileNotFoundException("미리 다운로드한 업데이트 패키지를 찾지 못했습니다.", fullPath);
+
+        if (!string.Equals(Path.GetExtension(fullPath), ".zip", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("미리 다운로드한 업데이트 패키지 형식이 올바르지 않습니다.");
+
+        VerifySha256Async(fullPath, package.Sha256, CancellationToken.None).GetAwaiter().GetResult();
+        return fullPath;
+    }
+
+    private static string ResolvePackageFileName(AppUpdatePackageDto package)
+    {
+        var fileName = Path.GetFileName(package.FileName ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(fileName))
+            fileName = $"desktop-{NormalizeVersionText(package.Version)}.zip";
+
+        return fileName;
+    }
+
+    private static string GetPreparedPackageDirectory(AppUpdatePackageDto package)
+    {
+        var version = SanitizePathSegment(NormalizeVersionText(package.Version));
+        var sha = (package.Sha256 ?? string.Empty).Trim();
+        var shaPrefix = sha.Length > 12 ? sha[..12] : sha;
+        if (string.IsNullOrWhiteSpace(shaPrefix))
+            shaPrefix = "unknown";
+
+        return Path.Combine(
+            Path.GetTempPath(),
+            "GeoraePlan",
+            "prepared-updates",
+            $"{version}-{SanitizePathSegment(shaPrefix)}");
+    }
+
+    private static string SanitizePathSegment(string value)
+    {
+        var sanitized = new string((value ?? string.Empty)
+            .Select(static ch => char.IsLetterOrDigit(ch) || ch is '.' or '-' or '_' ? ch : '_')
+            .ToArray());
+
+        return string.IsNullOrWhiteSpace(sanitized) ? "unknown" : sanitized;
+    }
+
+    private static async Task<bool> TryVerifySha256Async(string filePath, string sha256, CancellationToken ct)
+    {
+        try
+        {
+            await VerifySha256Async(filePath, sha256, ct);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static async Task VerifySha256Async(string filePath, string sha256, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(sha256))
+            return;
+
+        await using var stream = File.OpenRead(filePath);
+        using var algorithm = SHA256.Create();
+        var hash = await algorithm.ComputeHashAsync(stream, ct);
+        var actual = Convert.ToHexString(hash);
+        if (!string.Equals(actual, sha256.Trim(), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("업데이트 패키지 SHA256 검증에 실패했습니다.");
     }
 
     private static string? ResolveUpdaterPath()
@@ -521,6 +734,7 @@ public sealed class DesktopAppUpdateService
     public static void TryCleanupStaleUpdateArtifacts()
     {
         var georaePlanTempRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan");
+        TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "prepared-updates"));
         TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "updates"));
         TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "updater-run"));
     }

@@ -68,7 +68,7 @@ internal static class Program
         var workRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan", "updates", DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         Directory.CreateDirectory(workRoot);
         _sessionLogPath = Path.Combine(workRoot, "update.log");
-        TryLog($"START version={options.Version} package={options.PackageUrl}");
+        TryLog($"START version={options.Version} package={options.PackageUrl} preparedPackage={options.PackagePath}");
 
         SetStage(window, "업데이트 준비 중", "임시 작업 폴더와 설치 공간을 확인하고 있습니다.");
         EnsureWorkDriveFreeSpace(workRoot, options.FileSize);
@@ -86,14 +86,22 @@ internal static class Program
             throw new InvalidOperationException("업데이트 패키지 저장 경로가 안전하지 않습니다.");
         var requestMetadata = UpdateRequestMetadata.LoadAndDelete(options.RequestMetadataPath);
 
-        SetStage(window, "업데이트 다운로드 중", "새 버전 파일을 가져오고 있습니다.");
-        await DownloadAsync(options.PackageUrl, packagePath, requestMetadata, progress =>
+        if (!string.IsNullOrWhiteSpace(options.PackagePath))
         {
-            var detail = progress.TotalBytes.HasValue
-                ? $"다운로드 {FormatBytes(progress.DownloadedBytes)} / {FormatBytes(progress.TotalBytes.Value)}"
-                : $"다운로드 {FormatBytes(progress.DownloadedBytes)}";
-            SetStage(window, "업데이트 다운로드 중", detail);
-        });
+            SetStage(window, "업데이트 파일 확인 중", "미리 받아둔 새 버전 파일을 확인하고 있습니다.");
+            CopyPreparedPackage(options.PackagePath, packagePath);
+        }
+        else
+        {
+            SetStage(window, "업데이트 다운로드 중", "새 버전 파일을 가져오고 있습니다.");
+            await DownloadAsync(options.PackageUrl, packagePath, requestMetadata, progress =>
+            {
+                var detail = progress.TotalBytes.HasValue
+                    ? $"다운로드 {FormatBytes(progress.DownloadedBytes)} / {FormatBytes(progress.TotalBytes.Value)}"
+                    : $"다운로드 {FormatBytes(progress.DownloadedBytes)}";
+                SetStage(window, "업데이트 다운로드 중", detail);
+            });
+        }
 
         SetStage(window, "무결성 확인 중", "다운로드한 파일의 SHA256을 검증하고 있습니다.");
         await VerifySha256Async(packagePath, options.Sha256);
@@ -236,6 +244,23 @@ internal static class Program
 
             TryLog($"{prefix} {line}");
         }
+    }
+
+    private static void CopyPreparedPackage(string preparedPackagePath, string targetPath)
+    {
+        var sourcePath = Path.GetFullPath(preparedPackagePath);
+        if (!File.Exists(sourcePath))
+            throw new FileNotFoundException("미리 다운로드한 업데이트 패키지를 찾지 못했습니다.", sourcePath);
+
+        if (!string.Equals(Path.GetExtension(sourcePath), ".zip", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("미리 다운로드한 업데이트 패키지 형식이 올바르지 않습니다.");
+
+        var sourceInfo = new FileInfo(sourcePath);
+        if (sourceInfo.Length <= 0)
+            throw new InvalidOperationException("미리 다운로드한 업데이트 패키지가 비어 있습니다.");
+
+        File.Copy(sourcePath, targetPath, overwrite: true);
+        TryLog($"DOWNLOAD reused prepared package bytes={sourceInfo.Length} path={sourcePath}");
     }
 
     private static async Task DownloadAsync(
@@ -463,6 +488,7 @@ internal static class Program
     private static void TryCleanupStaleUpdateArtifacts()
     {
         var georaePlanTempRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan");
+        TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "prepared-updates"));
         TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "updates"));
         TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "updater-run"));
     }
@@ -590,6 +616,7 @@ internal static class Program
 internal sealed class UpdateArguments
 {
     public string PackageUrl { get; init; } = string.Empty;
+    public string PackagePath { get; init; } = string.Empty;
     public string Sha256 { get; init; } = string.Empty;
     public string InstallRoot { get; init; } = string.Empty;
     public string LaunchExe { get; init; } = string.Empty;
@@ -613,18 +640,30 @@ internal sealed class UpdateArguments
             i++;
         }
 
-        var packageUrl = Require(values, "--package-url");
+        var packageUrl = values.GetValueOrDefault("--package-url", string.Empty).Trim();
+        var packagePath = values.GetValueOrDefault("--package-path", string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(packageUrl) && string.IsNullOrWhiteSpace(packagePath))
+            throw new InvalidOperationException("필수 인자가 없습니다: --package-url 또는 --package-path");
+
         var installRoot = Require(values, "--install-root");
         var launchExe = Require(values, "--launch-exe");
+        var fileName = values.GetValueOrDefault("--file-name", string.Empty);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = !string.IsNullOrWhiteSpace(packagePath)
+                ? Path.GetFileName(packagePath)
+                : Path.GetFileName(new Uri(packageUrl).AbsolutePath);
+        }
 
         return new UpdateArguments
         {
             PackageUrl = packageUrl,
+            PackagePath = packagePath,
             Sha256 = Require(values, "--sha256"),
             InstallRoot = installRoot,
             LaunchExe = launchExe,
             Version = values.GetValueOrDefault("--version", string.Empty),
-            FileName = values.GetValueOrDefault("--file-name", Path.GetFileName(new Uri(packageUrl).AbsolutePath)),
+            FileName = fileName,
             RequestMetadataPath = values.GetValueOrDefault("--request-metadata-path", string.Empty),
             FileSize = long.TryParse(values.GetValueOrDefault("--file-size", "0"), out var fileSize) ? fileSize : 0,
             ProcessId = int.TryParse(values.GetValueOrDefault("--process-id", "0"), out var pid) ? pid : 0
