@@ -760,7 +760,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         stepStopwatch.Restart();
         var customerIds = profiles
-            .Where(profile => profile.CustomerId.HasValue && profile.CustomerId.Value != Guid.Empty)
+            .Where(profile =>
+                profile.CustomerId.HasValue &&
+                profile.CustomerId.Value != Guid.Empty &&
+                NeedsBillingProfileCustomerNameLookup(profile))
             .Select(profile => profile.CustomerId!.Value)
             .Distinct()
             .ToList();
@@ -874,6 +877,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
         LogRentalLoadStep("Rental billing row projection", stepStopwatch, $"rows={rows.Count:N0}");
         return rows;
+    }
+
+    private static bool NeedsBillingProfileCustomerNameLookup(LocalRentalBillingProfile profile)
+    {
+        if (!profile.CustomerId.HasValue || profile.CustomerId.Value == Guid.Empty)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(profile.CustomerName))
+            return true;
+
+        return !string.IsNullOrWhiteSpace(profile.ProfileKey);
     }
 
     private RentalBillingViewRow CreateBillingViewRow(
