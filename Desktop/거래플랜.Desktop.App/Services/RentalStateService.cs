@@ -2070,7 +2070,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var maxResults = ResolveAssetQueryResultLimit(filter);
         var pinnedAssetId = filter.PinnedAssetId.GetValueOrDefault();
         var hasPinnedAssetId = filter.PinnedAssetId.HasValue && pinnedAssetId != Guid.Empty;
-        var assets = await query
+        var assets = await SelectAssetListProjection(query)
             .OrderByDescending(asset => hasPinnedAssetId && asset.Id == pinnedAssetId)
             .ThenBy(asset => asset.CustomerName)
             .ThenBy(asset => asset.ManagementNumber)
@@ -2084,7 +2084,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         stepStopwatch.Restart();
         var result = assets
-            .Select(asset => CreateAssetViewRow(asset, offices, referenceDate))
+            .Select(asset => CreateAssetViewRow(asset, offices, referenceDate, hasFullDetail: false))
             .OrderBy(row => row.CurrentCustomerName, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(row => row.Source.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
@@ -2120,15 +2120,49 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return CreateAssetViewRow(asset, offices, referenceDate);
     }
 
+    private static IQueryable<LocalRentalAsset> SelectAssetListProjection(IQueryable<LocalRentalAsset> query)
+        => query.Select(asset => new LocalRentalAsset
+        {
+            Id = asset.Id,
+            IsDeleted = asset.IsDeleted,
+            CreatedAtUtc = asset.CreatedAtUtc,
+            UpdatedAtUtc = asset.UpdatedAtUtc,
+            Revision = asset.Revision,
+            IsDirty = asset.IsDirty,
+            TenantCode = asset.TenantCode,
+            OfficeCode = asset.OfficeCode,
+            AssetKey = asset.AssetKey,
+            CustomerId = asset.CustomerId,
+            ItemId = asset.ItemId,
+            BillingProfileId = asset.BillingProfileId,
+            ManagementId = asset.ManagementId,
+            ManagementNumber = asset.ManagementNumber,
+            ManagementCompanyCode = asset.ManagementCompanyCode,
+            CurrentCustomerName = asset.CurrentCustomerName,
+            InstallSiteName = asset.InstallSiteName,
+            BillingEligibilityStatus = asset.BillingEligibilityStatus,
+            ItemCategoryName = asset.ItemCategoryName,
+            ItemName = asset.ItemName,
+            MachineNumber = asset.MachineNumber,
+            CustomerName = asset.CustomerName,
+            InstallLocation = asset.InstallLocation,
+            MonthlyFee = asset.MonthlyFee,
+            RentalEndDate = asset.RentalEndDate,
+            ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+            AssetStatus = asset.AssetStatus
+        });
+
     private RentalAssetViewRow CreateAssetViewRow(
         LocalRentalAsset asset,
         IReadOnlyDictionary<string, string> offices,
-        DateOnly referenceDate)
+        DateOnly referenceDate,
+        bool hasFullDetail = true)
     {
         var issues = BuildAssetDataIssues(asset);
         return new RentalAssetViewRow
         {
             Source = asset,
+            HasFullDetail = hasFullDetail,
             ResponsibleOfficeName = ResolveOfficeDisplayName(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, offices),
             DaysRemaining = asset.RentalEndDate.HasValue
                 ? asset.RentalEndDate.Value.DayNumber - referenceDate.DayNumber

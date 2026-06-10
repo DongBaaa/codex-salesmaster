@@ -27,6 +27,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
     private CancellationTokenSource? _filterReloadCts;
     private CancellationTokenSource? _assignmentHistoryLoadCts;
+    private CancellationTokenSource? _selectedAssetDetailLoadCts;
     private bool _suppressFilterReload;
     private bool _suppressSelectionAutoSave;
     private bool _pendingFilterReload;
@@ -100,9 +101,10 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public bool CanViewAll => _rental.CanViewAllAssetScope(_session);
     public bool CanManageAll => _rental.CanManageAllAssetScope(_session);
     public bool CanEditOfficeSelection => CanManageAll;
-    public bool CanSave => SelectedRow is null || CanEditCurrentSelection;
+    public bool CanSave => SelectedRow is null || (SelectedRow.HasFullDetail && CanEditCurrentSelection);
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;
     public bool CanReplaceSelected => SelectedRow is not null &&
+                                      SelectedRow.HasFullDetail &&
                                       CanEditCurrentSelection &&
                                       HasReplaceableRentalAssignment(SelectedRow.Source);
     public bool IsNewAsset => SelectedRow is null;
@@ -200,6 +202,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         CancelPendingFilterReload();
         CancelAssignmentHistoryLoad();
+        CancelSelectedAssetDetailLoad();
         _searchDebouncer.Dispose();
     }
 
@@ -840,6 +843,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     partial void OnSelectedRowChanged(RentalAssetViewRow? value)
     {
+        CancelSelectedAssetDetailLoad();
+
         if (value is null)
         {
             CancelAssignmentHistoryLoad();
@@ -909,11 +914,84 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         OnPropertyChanged(nameof(CanDeleteSelected));
         OnPropertyChanged(nameof(CanReplaceSelected));
         ResetEditBaseline();
+        if (!value.HasFullDetail)
+        {
+            CancelAssignmentHistoryLoad();
+            SelectedAssignmentHistory = null;
+            AssignmentHistories.ReplaceWith(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
+            StatusMessage = "선택한 렌탈 자산 상세 정보를 불러오는 중입니다.";
+            UiTaskHelper.Forget(
+                LoadSelectedAssetDetailAsync(source.Id),
+                "RENTAL",
+                "렌탈 자산 상세 정보 조회",
+                ex => StatusMessage = $"렌탈 자산 상세 정보를 불러오지 못했습니다. {ex.Message}");
+            return;
+        }
+
         UiTaskHelper.Forget(
             LoadAssignmentHistoriesAsync(source.Id),
             "RENTAL",
             "렌탈 자산 임대 이력 조회",
             ex => StatusMessage = $"임대 이력을 불러오지 못했습니다. {ex.Message}");
+    }
+
+    private async Task LoadSelectedAssetDetailAsync(Guid assetId)
+    {
+        CancelSelectedAssetDetailLoad();
+        var cts = new CancellationTokenSource();
+        _selectedAssetDetailLoadCts = cts;
+        var ct = cts.Token;
+        try
+        {
+            if (assetId == Guid.Empty)
+                return;
+
+            var fullRow = await _rental.GetAssetRowAsync(assetId, _session, ct);
+            ct.ThrowIfCancellationRequested();
+            if (fullRow is null || SelectedRow?.Source.Id != assetId)
+                return;
+
+            var current = SelectedRow;
+            var index = current is null ? -1 : Rows.IndexOf(current);
+            if (index < 0)
+            {
+                for (var i = 0; i < Rows.Count; i++)
+                {
+                    if (Rows[i].Source.Id == assetId)
+                    {
+                        index = i;
+                        break;
+                    }
+                }
+            }
+
+            if (index >= 0)
+                Rows[index] = fullRow;
+
+            if (ReferenceEquals(_selectedAssetDetailLoadCts, cts))
+                _selectedAssetDetailLoadCts = null;
+
+            _suppressSelectionAutoSave = true;
+            try
+            {
+                SelectedRow = fullRow;
+            }
+            finally
+            {
+                _suppressSelectionAutoSave = false;
+            }
+
+            StatusMessage = "선택한 렌탈 자산 상세 정보를 불러왔습니다.";
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(_selectedAssetDetailLoadCts, cts))
+                _selectedAssetDetailLoadCts = null;
+            cts.Dispose();
+        }
     }
 
     private async Task LoadAssignmentHistoriesAsync(Guid assetId)
@@ -957,6 +1035,13 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         _assignmentHistoryLoadCts = null;
     }
 
+    private void CancelSelectedAssetDetailLoad()
+    {
+        _selectedAssetDetailLoadCts?.Cancel();
+        _selectedAssetDetailLoadCts?.Dispose();
+        _selectedAssetDetailLoadCts = null;
+    }
+
     private void ApplyAssetStatusUiRules()
     {
         if (RentalAssetStatusRules.IsNonOperating(EditAssetStatus))
@@ -979,6 +1064,13 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private bool TryBuildDocumentAsset(out LocalRentalAsset asset)
     {
+        if (SelectedRow is not null && !SelectedRow.HasFullDetail)
+        {
+            StatusMessage = "선택한 렌탈 자산 상세 정보를 불러오는 중입니다. 잠시 후 다시 시도하세요.";
+            asset = new LocalRentalAsset();
+            return false;
+        }
+
         if (string.IsNullOrWhiteSpace(EditCustomerName))
         {
             StatusMessage = "거래처명을 입력하거나 렌탈 자산을 선택하세요.";
@@ -1809,6 +1901,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         await _autoSaveGate.WaitAsync();
         try
         {
+            if (SelectedRow is not null && !SelectedRow.HasFullDetail)
+            {
+                StatusMessage = "선택한 렌탈 자산 상세 정보를 불러오는 중입니다. 잠시 후 다시 저장하세요.";
+                return false;
+            }
+
             if (!CanSave)
             {
                 StatusMessage = permissionDeniedMessage;
@@ -1971,6 +2069,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         OnPropertyChanged(nameof(IsNewAsset));
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanDeleteSelected));
+        OnPropertyChanged(nameof(CanReplaceSelected));
         OnPropertyChanged(nameof(HasLastAssignmentHistory));
         OnPropertyChanged(nameof(ShowLastAssignmentHistory));
         OnPropertyChanged(nameof(IsNonOperatingAssetStatus));

@@ -518,6 +518,7 @@ public sealed class RentalBillingViewRow
 public sealed class RentalAssetViewRow
 {
     public LocalRentalAsset Source { get; init; } = new();
+    public bool HasFullDetail { get; init; } = true;
     public string ResponsibleOfficeName { get; init; } = string.Empty;
     public int? DaysRemaining { get; init; }
     public string CurrentCustomerName { get; init; } = string.Empty;
