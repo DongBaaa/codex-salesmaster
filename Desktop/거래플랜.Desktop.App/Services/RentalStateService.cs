@@ -23,6 +23,7 @@ public sealed partial class RentalStateService
     public const int BillingProfileSearchResultLimit = AssetSearchResultLimit;
     public const int BillingUnlinkedDefaultResultLimit = 300;
     public const int BillingUnlinkedFocusedResultLimit = AssetListResultLimit;
+    public const int EquipmentDetailAssetLimit = 300;
     private const int BillingAssetCandidateResultLimit = 300;
     private const int LocalQueryContainsBatchSize = 500;
     private const int BillingRunReferenceBatchSize = 500;
@@ -2881,9 +2882,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
             query = query.Where(asset => asset.CustomerName == customerName);
         }
 
+        var anchorAssetId = anchorAsset.Id;
         return await query
-            .OrderBy(asset => asset.ManagementNumber)
+            .OrderByDescending(asset => asset.Id == anchorAssetId)
+            .ThenBy(asset => asset.ManagementNumber)
             .ThenBy(asset => asset.ItemName)
+            .Take(EquipmentDetailAssetLimit)
             .ToListAsync(ct);
     }
 
