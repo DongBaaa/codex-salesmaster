@@ -941,10 +941,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.ItemName.Contains(keyword) ||
             profile.Notes.Contains(keyword));
 
+    public Task<IReadOnlyList<RentalBillingHistoryRow>> GetBillingHistoryRowsAsync(
+        IReadOnlyCollection<Guid> profileIds,
+        SessionState session,
+        DateOnly referenceDate,
+        CancellationToken ct = default)
+        => GetBillingHistoryRowsAsync(profileIds, session, referenceDate, maxDisplayRows: 0, ct);
+
     public async Task<IReadOnlyList<RentalBillingHistoryRow>> GetBillingHistoryRowsAsync(
         IReadOnlyCollection<Guid> profileIds,
         SessionState session,
         DateOnly referenceDate,
+        int maxDisplayRows,
         CancellationToken ct = default)
     {
         var ids = profileIds
@@ -968,7 +976,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var billingRunsByProfile = profiles.ToDictionary(
             profile => profile.Id,
             profile => DeduplicateBillingRuns(GetBillingRuns(profile)));
-        var allRunIds = billingRunsByProfile.Values
+        var displayBillingRunsByProfile = maxDisplayRows > 0
+            ? LimitBillingRunsForHistoryDisplay(billingRunsByProfile, maxDisplayRows)
+            : billingRunsByProfile;
+        var allRunIds = displayBillingRunsByProfile.Values
             .SelectMany(runs => runs)
             .Select(run => run.RunId)
             .Where(id => id != Guid.Empty)
@@ -981,7 +992,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         {
             ct.ThrowIfCancellationRequested();
             var customerDisplayName = ResolveBillingProfileCustomerDisplayName(profile, customerNameMap);
-            billingRunsByProfile.TryGetValue(profile.Id, out var profileRuns);
+            displayBillingRunsByProfile.TryGetValue(profile.Id, out var profileRuns);
             profileRuns ??= new List<RentalBillingRunModel>();
             rows.AddRange(BuildBillingHistoryRows(
                 profile,
@@ -995,6 +1006,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return rows
             .OrderByDescending(history => history.ScheduledDate)
             .ThenBy(history => history.CustomerName, StringComparer.CurrentCultureIgnoreCase)
+            .Take(maxDisplayRows > 0 ? maxDisplayRows : int.MaxValue)
             .ToList();
     }
 
@@ -1523,6 +1535,32 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         return result;
+    }
+
+    private static Dictionary<Guid, List<RentalBillingRunModel>> LimitBillingRunsForHistoryDisplay(
+        IReadOnlyDictionary<Guid, List<RentalBillingRunModel>> billingRunsByProfile,
+        int maxDisplayRows)
+    {
+        if (maxDisplayRows <= 0)
+            return billingRunsByProfile.ToDictionary(pair => pair.Key, pair => pair.Value);
+
+        var normalizedDisplayLimit = Math.Clamp(maxDisplayRows, 1, 5_000);
+        return billingRunsByProfile
+            .SelectMany(pair => pair.Value
+                .Where(run => run.RunId != Guid.Empty)
+                .Select(run => new
+                {
+                    ProfileId = pair.Key,
+                    Run = run
+                }))
+            .OrderByDescending(entry => entry.Run.ScheduledDate)
+            .ThenByDescending(entry => entry.Run.PeriodEndDate)
+            .ThenBy(entry => entry.ProfileId)
+            .Take(normalizedDisplayLimit)
+            .GroupBy(entry => entry.ProfileId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(entry => entry.Run).ToList());
     }
 
     private static RentalBillingHistorySummary BuildGroupedBillingHistorySummary(

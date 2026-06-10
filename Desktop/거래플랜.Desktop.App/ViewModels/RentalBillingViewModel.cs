@@ -2085,7 +2085,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         try
         {
-            var histories = await _rental.GetBillingHistoryRowsAsync(profileIds, _session, ReferenceDate, ct);
+            var histories = await _rental.GetBillingHistoryRowsAsync(profileIds, _session, ReferenceDate, BillingHistoryDisplayLimit, ct);
             ct.ThrowIfCancellationRequested();
             if (!ReferenceEquals(SelectedRow, row))
                 return;
