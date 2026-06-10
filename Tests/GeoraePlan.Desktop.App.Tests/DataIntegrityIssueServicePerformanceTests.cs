@@ -79,6 +79,38 @@ public sealed class DataIntegrityIssueServicePerformanceTests
         }
     }
 
+    [Fact]
+    public async Task ScanAsync_PrefiltersInvoiceSourceLoadByOperationalScope()
+    {
+        PrepareAppRoot("georaeplan-integrity-invoice-scope-prefilter");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            const int outsideOfficeInvoiceCount = 650;
+            for (var index = 0; index < outsideOfficeInvoiceCount; index++)
+                db.Invoices.Add(CreateMismatchedInvoice(index, OfficeCodeCatalog.Usenet));
+            db.Invoices.Add(CreateMismatchedInvoice(outsideOfficeInvoiceCount + 1, OfficeCodeCatalog.Yeonsu));
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateYeonsuAdminSession());
+            var invoiceIssues = result.Issues
+                .Where(issue => issue.Code == DataIntegrityIssueCodes.InvoiceAmountMismatch)
+                .ToList();
+
+            var issue = Assert.Single(invoiceIssues);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, issue.OfficeCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalRentalBillingProfile CreateProfile(Guid profileId, int index)
         => new()
         {
@@ -169,6 +201,44 @@ public sealed class DataIntegrityIssueServicePerformanceTests
             CreatedAtUtc = DateTime.UtcNow
         };
 
+    private static LocalInvoice CreateMismatchedInvoice(int index, string officeCode)
+    {
+        var invoiceId = Guid.NewGuid();
+        return new LocalInvoice
+        {
+            Id = invoiceId,
+            TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            CustomerId = Guid.NewGuid(),
+            InvoiceNumber = $"INV-SCOPE-{officeCode}-{index:D4}",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = DateOnly.FromDateTime(DateTime.Today),
+            SupplyAmount = 200m,
+            VatAmount = 0m,
+            TotalAmount = 200m,
+            VatMode = InvoiceVatModes.Included,
+            SourceWarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(officeCode),
+            IsLatestVersion = true,
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            Lines =
+            [
+                new LocalInvoiceLine
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoiceId,
+                    ItemNameOriginal = $"Scope Item {index:D4}",
+                    Quantity = 1m,
+                    UnitPrice = 100m,
+                    LineAmount = 100m,
+                    IsDeleted = false
+                }
+            ]
+        };
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -185,6 +255,20 @@ public sealed class DataIntegrityIssueServicePerformanceTests
             Role = DomainConstants.RoleAdmin,
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+    private static SessionState CreateYeonsuAdminSession()
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "yeonsu-admin",
+            Role = DomainConstants.RoleAdmin,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
             ScopeType = TenantScopeCatalog.ScopeAdmin
         });
         return session;

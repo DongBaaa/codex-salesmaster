@@ -353,12 +353,14 @@ public sealed class DataIntegrityIssueService
             .AsNoTracking()
             .Where(warehouse => !warehouse.IsDeleted && warehouse.IsActive)
             .ToListAsync(ct);
-        var activeInvoices = await _db.Invoices
-            .AsNoTracking()
-            .AsSplitQuery()
+        var activeInvoices = await ApplyOperationalAlertInvoiceScopePrefilter(
+                _db.Invoices
+                    .AsNoTracking()
+                    .AsSplitQuery()
+                    .Where(invoice => !invoice.IsDeleted && invoice.IsLatestVersion),
+                session)
             .Include(invoice => invoice.Lines.Where(line => !line.IsDeleted))
             .Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
-            .Where(invoice => !invoice.IsDeleted && invoice.IsLatestVersion)
             .ToListAsync(ct);
         var itemWarehouseStocks = await _db.ItemWarehouseStocks
             .AsNoTracking()
@@ -1165,6 +1167,47 @@ public sealed class DataIntegrityIssueService
         catch
         {
             return new ParsedTemplateItems(false, []);
+        }
+    }
+
+    private static IQueryable<LocalInvoice> ApplyOperationalAlertInvoiceScopePrefilter(
+        IQueryable<LocalInvoice> query,
+        SessionState session)
+    {
+        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
+        var officeCodes = ResolveOperationalAlertOfficeCodes(session, sessionTenant)
+            .SelectMany(BuildOfficeCodeQueryAliases)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return query.Where(invoice =>
+            officeCodes.Contains(invoice.ResponsibleOfficeCode) ||
+            invoice.ResponsibleOfficeCode == null ||
+            invoice.ResponsibleOfficeCode == string.Empty ||
+            invoice.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
+            invoice.ResponsibleOfficeCode == "공용" ||
+            invoice.ResponsibleOfficeCode == "전체" ||
+            invoice.ResponsibleOfficeCode == "shared");
+    }
+
+    private static IEnumerable<string> BuildOfficeCodeQueryAliases(string officeCode)
+    {
+        var normalized = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode);
+        yield return normalized;
+
+        if (string.Equals(normalized, OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return "UZNET";
+            yield return "유즈넷";
+        }
+        else if (string.Equals(normalized, OfficeCodeCatalog.Itworld, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return "아이티월드";
+        }
+        else if (string.Equals(normalized, OfficeCodeCatalog.Yeonsu, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return "연수구";
+            yield return "연수구 사무실";
         }
     }
 
