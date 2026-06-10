@@ -834,7 +834,7 @@ public partial class MainWindow : Window
         win.NonClosingActionRequested += (_, args) =>
         {
             UiTaskHelper.Forget(
-                HandleDataIntegrityAlertActionAsync(args.Action, args.Summary, win),
+                HandleDataIntegrityAlertActionAsync(args.Action, args.Summary, win, result),
                 "INTEGRITY",
                 "운영 점검 바로수정",
                 ex => MessageBox.Show(
@@ -849,7 +849,7 @@ public partial class MainWindow : Window
             return;
 
         UiTaskHelper.Forget(
-            HandleDataIntegrityAlertActionAsync(win.RequestedAction, win.RequestedSummary, this),
+            HandleDataIntegrityAlertActionAsync(win.RequestedAction, win.RequestedSummary, this, result),
             "INTEGRITY",
             "운영 점검 바로가기",
             ex => MessageBox.Show(
@@ -863,14 +863,15 @@ public partial class MainWindow : Window
     private async Task HandleDataIntegrityAlertActionAsync(
         DataIntegrityAlertAction action,
         DataIntegrityIssueSummary? summary,
-        Window? ownerOverride = null)
+        Window? ownerOverride = null,
+        DataIntegrityScanResult? existingScanResult = null)
     {
         if (action == DataIntegrityAlertAction.None)
             return;
 
         if (action == DataIntegrityAlertAction.Details)
         {
-            await OpenDataIntegrityIssueWindowAsync(summary?.Code, ownerOverride);
+            await OpenDataIntegrityIssueWindowAsync(summary?.Code, ownerOverride, existingScanResult);
             return;
         }
 
@@ -879,11 +880,11 @@ public partial class MainWindow : Window
 
         if (summary is null)
         {
-            await OpenDataIntegrityIssueWindowAsync(null, ownerOverride);
+            await OpenDataIntegrityIssueWindowAsync(null, ownerOverride, existingScanResult);
             return;
         }
 
-        var scan = await _dataIntegrity.ScanAsync(_session);
+        var scan = existingScanResult ?? await _dataIntegrity.ScanAsync(_session);
         var issues = scan.Issues
             .Where(issue => string.Equals(issue.Code, summary.Code, StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -893,12 +894,15 @@ public partial class MainWindow : Window
             return;
         }
 
-        await OpenDataIntegrityIssueWindowAsync(summary.Code, ownerOverride);
+        await OpenDataIntegrityIssueWindowAsync(summary.Code, ownerOverride, scan);
     }
 
-    private async Task OpenDataIntegrityIssueWindowAsync(string? initialCode, Window? ownerOverride = null)
+    private async Task OpenDataIntegrityIssueWindowAsync(
+        string? initialCode,
+        Window? ownerOverride = null,
+        DataIntegrityScanResult? initialScanResult = null)
     {
-        var vm = new DataIntegrityIssueViewModel(_dataIntegrity, _session, initialCode);
+        var vm = new DataIntegrityIssueViewModel(_dataIntegrity, _session, initialCode, initialScanResult);
         await OperationTiming.MeasureAsync(
             "UI",
             "운영 점검 상세 창 초기화",

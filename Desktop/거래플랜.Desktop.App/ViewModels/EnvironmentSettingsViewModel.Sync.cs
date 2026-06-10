@@ -553,7 +553,7 @@ public sealed partial class EnvironmentSettingsViewModel
         {
             try
             {
-                await HandleDataIntegrityAlertActionAsync(args.Action, args.Summary, window);
+                await HandleDataIntegrityAlertActionAsync(args.Action, args.Summary, window, result);
             }
             catch (Exception ex)
             {
@@ -567,7 +567,7 @@ public sealed partial class EnvironmentSettingsViewModel
         };
 
         if (window.ShowDialog() == true)
-            await HandleDataIntegrityAlertActionAsync(window.RequestedAction, window.RequestedSummary, owner);
+            await HandleDataIntegrityAlertActionAsync(window.RequestedAction, window.RequestedSummary, owner, result);
         else
             StatusMessage = $"운영 점검 알림 {result.TotalIssueCount:N0}건을 확인했습니다.";
 
@@ -577,14 +577,15 @@ public sealed partial class EnvironmentSettingsViewModel
     private async Task HandleDataIntegrityAlertActionAsync(
         DataIntegrityAlertAction action,
         DataIntegrityIssueSummary? summary,
-        Window? ownerOverride = null)
+        Window? ownerOverride = null,
+        DataIntegrityScanResult? existingScanResult = null)
     {
         if (action == DataIntegrityAlertAction.None)
             return;
 
         if (action == DataIntegrityAlertAction.Details)
         {
-            await OpenDataIntegrityIssueWindowAsync(summary?.Code, ownerOverride);
+            await OpenDataIntegrityIssueWindowAsync(summary?.Code, ownerOverride, existingScanResult);
             return;
         }
 
@@ -593,11 +594,11 @@ public sealed partial class EnvironmentSettingsViewModel
 
         if (summary is null)
         {
-            await OpenDataIntegrityIssueWindowAsync(null, ownerOverride);
+            await OpenDataIntegrityIssueWindowAsync(null, ownerOverride, existingScanResult);
             return;
         }
 
-        var scan = await _dataIntegrity.ScanAsync(_session);
+        var scan = existingScanResult ?? await _dataIntegrity.ScanAsync(_session);
         var issues = scan.Issues
             .Where(issue => string.Equals(issue.Code, summary.Code, StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -607,12 +608,15 @@ public sealed partial class EnvironmentSettingsViewModel
             return;
         }
 
-        await OpenDataIntegrityIssueWindowAsync(summary.Code, ownerOverride);
+        await OpenDataIntegrityIssueWindowAsync(summary.Code, ownerOverride, scan);
     }
 
-    private async Task OpenDataIntegrityIssueWindowAsync(string? initialCode, Window? ownerOverride = null)
+    private async Task OpenDataIntegrityIssueWindowAsync(
+        string? initialCode,
+        Window? ownerOverride = null,
+        DataIntegrityScanResult? initialScanResult = null)
     {
-        var viewModel = new DataIntegrityIssueViewModel(_dataIntegrity, _session, initialCode);
+        var viewModel = new DataIntegrityIssueViewModel(_dataIntegrity, _session, initialCode, initialScanResult);
         await viewModel.LoadAsync();
 
         var owner = ownerOverride ?? ResolveActiveWindow();

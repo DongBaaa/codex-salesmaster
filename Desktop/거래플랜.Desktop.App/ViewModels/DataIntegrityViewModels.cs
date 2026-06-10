@@ -28,18 +28,27 @@ public sealed partial class DataIntegrityAlertViewModel : ObservableObject
 
 public sealed partial class DataIntegrityIssueViewModel : ObservableObject
 {
+    private const int DisplayIssueLimit = 500;
+
     private readonly DataIntegrityIssueService _service;
     private readonly SessionState _session;
     private readonly UiDebouncer _filterDebouncer = new();
     private readonly string? _initialCode;
+    private readonly DataIntegrityScanResult? _initialScanResult;
     private DataIntegrityScanResult? _lastScanResult;
     private List<DataIntegrityIssueDetail> _allIssues = new();
+    private List<DataIntegrityIssueDetail> _filteredIssues = new();
 
-    public DataIntegrityIssueViewModel(DataIntegrityIssueService service, SessionState session, string? initialCode = null)
+    public DataIntegrityIssueViewModel(
+        DataIntegrityIssueService service,
+        SessionState session,
+        string? initialCode = null,
+        DataIntegrityScanResult? initialScanResult = null)
     {
         _service = service;
         _session = session;
         _initialCode = initialCode;
+        _initialScanResult = initialScanResult;
     }
 
     public ObservableCollection<DataIntegrityIssueSummary> Summaries { get; } = new();
@@ -57,12 +66,19 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
-        await RefreshAsync();
+        if (_initialScanResult is null)
+            await RefreshAsync();
+        else
+            ApplyScanResult(_initialScanResult);
+
         if (!string.IsNullOrWhiteSpace(_initialCode))
         {
             var option = IssueTypeOptions.FirstOrDefault(option => string.Equals(option.Code, _initialCode, StringComparison.OrdinalIgnoreCase));
             if (option is not null)
+            {
                 SelectedIssueType = option;
+                ApplyFilter();
+            }
         }
     }
 
@@ -75,32 +91,7 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            _lastScanResult = await _service.ScanAsync(_session);
-            _allIssues = _lastScanResult.Issues.ToList();
-            var previousCode = SelectedIssueType?.Code ?? string.Empty;
-
-            Summaries.Clear();
-            IssueTypeOptions.Clear();
-            IssueTypeOptions.Add(new DataIntegrityIssueFilterOption { Code = string.Empty, DisplayName = "전체 유형" });
-            foreach (var summary in _lastScanResult.Summaries)
-            {
-                Summaries.Add(summary);
-                IssueTypeOptions.Add(new DataIntegrityIssueFilterOption
-                {
-                    Code = summary.Code,
-                    DisplayName = $"{summary.Title} ({summary.Count:N0})"
-                });
-            }
-
-            SelectedIssueType = IssueTypeOptions.FirstOrDefault(option => string.Equals(option.Code, previousCode, StringComparison.OrdinalIgnoreCase))
-                                ?? IssueTypeOptions.FirstOrDefault();
-            ScanSummaryText = _lastScanResult.HasIssues
-                ? $"총 {_lastScanResult.TotalIssueCount:N0}건 / {_lastScanResult.Summaries.Count:N0}개 유형 / 점검 {_lastScanResult.ScannedAtText}"
-                : $"확인된 운영 위험 신호가 없습니다. 점검 {_lastScanResult.ScannedAtText}";
-            ApplyFilter();
-            StatusMessage = _lastScanResult.HasIssues
-                ? "항목을 선택한 뒤 바로가기 버튼으로 원본 화면에서 수정하세요."
-                : "현재 확인된 위험 신호가 없습니다.";
+            ApplyScanResult(await _service.ScanAsync(_session));
         }
         finally
         {
@@ -114,7 +105,8 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
         if (IsBusy)
             return;
 
-        if (Issues.Count == 0)
+        var issuesToExport = _filteredIssues.ToList();
+        if (issuesToExport.Count == 0)
         {
             StatusMessage = "엑셀로 저장할 점검 항목이 없습니다.";
             return;
@@ -136,7 +128,7 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
         summarySheet.Cell(1, 1).Value = "점검 시각";
         summarySheet.Cell(1, 2).Value = _lastScanResult?.ScannedAtText ?? DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         summarySheet.Cell(2, 1).Value = "필터 결과";
-        summarySheet.Cell(2, 2).Value = Issues.Count;
+        summarySheet.Cell(2, 2).Value = issuesToExport.Count;
         summarySheet.Cell(4, 1).Value = "유형코드";
         summarySheet.Cell(4, 2).Value = "유형";
         summarySheet.Cell(4, 3).Value = "등급";
@@ -181,7 +173,7 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
             detailSheet.Cell(1, i + 1).Value = headers[i];
 
         var detailRow = 2;
-        foreach (var issue in Issues)
+        foreach (var issue in issuesToExport)
         {
             detailSheet.Cell(detailRow, 1).Value = issue.SeverityDisplay;
             detailSheet.Cell(detailRow, 2).Value = issue.Code;
@@ -210,7 +202,7 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
         try
         {
             workbook.SaveAs(dialog.FileName);
-            StatusMessage = $"운영 점검 내역 {Issues.Count:N0}건을 엑셀로 저장했습니다.";
+            StatusMessage = $"운영 점검 내역 {issuesToExport.Count:N0}건을 엑셀로 저장했습니다.";
         }
         catch (Exception ex)
         {
@@ -261,12 +253,48 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
             .ThenBy(issue => issue.CustomerName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
 
-        Issues.ReplaceWith(list);
+        _filteredIssues = list;
+        var displayed = list.Count > DisplayIssueLimit
+            ? list.Take(DisplayIssueLimit).ToList()
+            : list;
+
+        Issues.ReplaceWith(displayed);
 
         SelectedIssue = Issues.FirstOrDefault(issue => issue.Id == previousId) ?? Issues.FirstOrDefault();
-        StatusMessage = Issues.Count == 0
+        StatusMessage = list.Count == 0
             ? "필터 조건에 맞는 점검 항목이 없습니다."
-            : $"필터 결과 {Issues.Count:N0}건을 표시합니다.";
+            : list.Count > Issues.Count
+                ? $"필터 결과 {list.Count:N0}건 중 {Issues.Count:N0}건만 먼저 표시합니다. 전체 내역은 엑셀 저장으로 확인하세요."
+                : $"필터 결과 {Issues.Count:N0}건을 표시합니다.";
+    }
+
+    private void ApplyScanResult(DataIntegrityScanResult scanResult)
+    {
+        _lastScanResult = scanResult;
+        _allIssues = scanResult.Issues.ToList();
+        var previousCode = SelectedIssueType?.Code ?? string.Empty;
+
+        Summaries.Clear();
+        IssueTypeOptions.Clear();
+        IssueTypeOptions.Add(new DataIntegrityIssueFilterOption { Code = string.Empty, DisplayName = "전체 유형" });
+        foreach (var summary in scanResult.Summaries)
+        {
+            Summaries.Add(summary);
+            IssueTypeOptions.Add(new DataIntegrityIssueFilterOption
+            {
+                Code = summary.Code,
+                DisplayName = $"{summary.Title} ({summary.Count:N0})"
+            });
+        }
+
+        SelectedIssueType = IssueTypeOptions.FirstOrDefault(option => string.Equals(option.Code, previousCode, StringComparison.OrdinalIgnoreCase))
+                            ?? IssueTypeOptions.FirstOrDefault();
+        ScanSummaryText = scanResult.HasIssues
+            ? $"총 {scanResult.TotalIssueCount:N0}건 / {scanResult.Summaries.Count:N0}개 유형 / 점검 {scanResult.ScannedAtText}"
+            : $"확인된 운영 위험 신호가 없습니다. 점검 {scanResult.ScannedAtText}";
+        ApplyFilter();
+        if (!scanResult.HasIssues)
+            StatusMessage = "현재 확인된 위험 신호가 없습니다.";
     }
 
     private static bool Contains(string? value, string query)
