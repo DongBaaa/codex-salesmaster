@@ -7081,7 +7081,7 @@ public sealed class LocalStateServicePartialsTests
             var service = new RentalStateService(db);
             var filtered = await InvokePrivateInstanceAsync<List<LocalRentalBillingProfile>>(
                 service,
-                "ApplyPastDueOnlyIndividualProfilePrefilterAsync",
+                "ApplyPastDueOnlyProfilePrefilterAsync",
                 profiles,
                 new RentalBillingFilter
                 {
@@ -7103,11 +7103,86 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
+    [Fact]
+    public async Task RentalBillingPastDueGroupedProfilePrefilter_KeepsWholePastDueCustomerGroup()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-pastdue-group-prefilter-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var referenceDate = new DateOnly(2026, 5, 12);
+            var groupedCustomerId = Guid.Parse("94444444-4444-4444-4444-444444444444");
+            var unresolvedProfileId = Guid.Parse("95555555-5555-5555-5555-555555555555");
+            var companionProfileId = Guid.Parse("96666666-6666-6666-6666-666666666666");
+            var unrelatedProfileId = Guid.Parse("97777777-7777-7777-7777-777777777777");
+
+            var profiles = new List<LocalRentalBillingProfile>
+            {
+                BuildPastDuePrefilterProfile(
+                    unresolvedProfileId,
+                    "묶음 과거 미처리 거래처",
+                    BuildPastDuePrefilterRun(
+                        Guid.Parse("9ddddddd-4444-4444-4444-444444444444"),
+                        new DateOnly(2026, 4, 25),
+                        100_000m,
+                        0m),
+                    groupedCustomerId),
+                BuildPastDuePrefilterProfile(
+                    companionProfileId,
+                    "묶음 과거 미처리 거래처",
+                    BuildPastDuePrefilterRun(
+                        Guid.Parse("9eeeeeee-5555-5555-5555-555555555555"),
+                        new DateOnly(2026, 5, 25),
+                        100_000m,
+                        0m),
+                    groupedCustomerId),
+                BuildPastDuePrefilterProfile(
+                    unrelatedProfileId,
+                    "미처리 없는 거래처",
+                    BuildPastDuePrefilterRun(
+                        Guid.Parse("9fffffff-6666-6666-6666-666666666666"),
+                        new DateOnly(2026, 4, 25),
+                        100_000m,
+                        100_000m))
+            };
+
+            var service = new RentalStateService(db);
+            var filtered = await InvokePrivateInstanceAsync<List<LocalRentalBillingProfile>>(
+                service,
+                "ApplyPastDueOnlyProfilePrefilterAsync",
+                profiles,
+                new RentalBillingFilter
+                {
+                    PastDueOnly = true,
+                    ExpandCustomerSummaryRows = false,
+                    ReferenceDate = referenceDate
+                },
+                referenceDate,
+                CancellationToken.None);
+
+            Assert.NotNull(filtered);
+            Assert.Equal(
+                new[] { unresolvedProfileId, companionProfileId },
+                filtered.Select(profile => profile.Id).OrderBy(id => id).ToArray());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     [Theory]
     [InlineData(true, true, true)]
-    [InlineData(true, false, false)]
+    [InlineData(true, false, true)]
     [InlineData(false, true, false)]
-    public void RentalBillingPastDueProfilePrefilter_RunsOnlyForIndividualPastDue(
+    public void RentalBillingPastDueProfilePrefilter_RunsForAnyPastDueMode(
         bool pastDueOnly,
         bool expandCustomerSummaryRows,
         bool expected)
@@ -7127,10 +7202,12 @@ public sealed class LocalStateServicePartialsTests
     private static LocalRentalBillingProfile BuildPastDuePrefilterProfile(
         Guid profileId,
         string customerName,
-        RentalBillingRunModel run)
+        RentalBillingRunModel run,
+        Guid? customerId = null)
         => new()
         {
             Id = profileId,
+            CustomerId = customerId,
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
             ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,

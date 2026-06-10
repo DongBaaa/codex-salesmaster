@@ -719,7 +719,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         stepStopwatch.Restart();
         var profileCountBeforePastDuePrefilter = profiles.Count;
-        profiles = await ApplyPastDueOnlyIndividualProfilePrefilterAsync(profiles, filter, filter.ReferenceDate, ct);
+        profiles = await ApplyPastDueOnlyProfilePrefilterAsync(profiles, filter, filter.ReferenceDate, ct);
         if (ShouldPrefilterPastDueOnlyBillingProfiles(filter))
         {
             LogRentalLoadStep(
@@ -1566,7 +1566,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.LastBilledDate);
     }
 
-    private async Task<List<LocalRentalBillingProfile>> ApplyPastDueOnlyIndividualProfilePrefilterAsync(
+    private async Task<List<LocalRentalBillingProfile>> ApplyPastDueOnlyProfilePrefilterAsync(
         List<LocalRentalBillingProfile> profiles,
         RentalBillingFilter filter,
         DateOnly referenceDate,
@@ -1592,7 +1592,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(pastRunIds, ct);
         ct.ThrowIfCancellationRequested();
 
-        return profiles
+        var pastDueProfileIds = profiles
             .Where(profile =>
             {
                 if (!runsByProfile.TryGetValue(profile.Id, out var runs) || runs.Count == 0)
@@ -1606,11 +1606,27 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     referenceDate);
                 return summary.PastUnresolvedCount > 0 || summary.PastUnresolvedAmount > 0m;
             })
+            .Select(profile => profile.Id)
+            .ToHashSet();
+        if (pastDueProfileIds.Count == 0)
+            return new List<LocalRentalBillingProfile>();
+
+        if (filter.ExpandCustomerSummaryRows)
+            return profiles
+                .Where(profile => pastDueProfileIds.Contains(profile.Id))
+                .ToList();
+
+        var pastDueGroupKeys = profiles
+            .Where(profile => pastDueProfileIds.Contains(profile.Id))
+            .Select(BuildBillingProfileGroupKey)
+            .ToHashSet(StringComparer.Ordinal);
+        return profiles
+            .Where(profile => pastDueGroupKeys.Contains(BuildBillingProfileGroupKey(profile)))
             .ToList();
     }
 
     private static bool ShouldPrefilterPastDueOnlyBillingProfiles(RentalBillingFilter filter)
-        => filter.PastDueOnly && filter.ExpandCustomerSummaryRows;
+        => filter.PastDueOnly;
 
     private static int ResolveUnlinkedBillingAssetResultLimit(RentalBillingFilter filter)
     {
@@ -1796,20 +1812,29 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return groupedRows;
     }
 
-    private string BuildBillingCustomerGroupKey(RentalBillingViewRow row)
+    private static string BuildBillingProfileGroupKey(LocalRentalBillingProfile profile)
+        => BuildBillingProfileGroupKey(
+            profile,
+            ResolveBillingProfileCustomerDisplayName(profile, new Dictionary<Guid, string>()),
+            profile.Id);
+
+    private static string BuildBillingProfileGroupKey(
+        LocalRentalBillingProfile profile,
+        string? customerDisplayName,
+        Guid fallbackSelectionId)
     {
-        var officeCode = NormalizeOfficeCode(row.Source.ResponsibleOfficeCode, row.Source.ManagementCompanyCode);
+        var officeCode = NormalizeOfficeCode(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode);
         if (string.IsNullOrWhiteSpace(officeCode))
             officeCode = DomainConstants.OfficeUsenet;
 
         string customerKey;
-        if (row.Source.CustomerId.HasValue && row.Source.CustomerId.Value != Guid.Empty)
+        if (profile.CustomerId.HasValue && profile.CustomerId.Value != Guid.Empty)
         {
-            customerKey = $"ID:{row.Source.CustomerId.Value:D}";
+            customerKey = $"ID:{profile.CustomerId.Value:D}";
         }
         else
         {
-            var businessNumber = NormalizeDigitsOnly(row.Source.BusinessNumber);
+            var businessNumber = NormalizeDigitsOnly(profile.BusinessNumber);
             if (!string.IsNullOrWhiteSpace(businessNumber))
             {
                 customerKey = $"BIZ:{businessNumber}";
@@ -1817,17 +1842,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
             else
             {
                 var displayName = RentalCatalogValueNormalizer.NormalizeLooseKey(
-                    string.IsNullOrWhiteSpace(row.CustomerDisplayName)
-                        ? row.Source.CustomerName
-                        : row.CustomerDisplayName);
+                    string.IsNullOrWhiteSpace(customerDisplayName)
+                        ? profile.CustomerName
+                        : customerDisplayName);
                 customerKey = string.IsNullOrWhiteSpace(displayName)
-                    ? $"ROW:{row.SelectionId:D}"
+                    ? $"ROW:{fallbackSelectionId:D}"
                     : $"NAME:{displayName}";
             }
         }
 
         return $"{NormalizeProfileKeyPart(officeCode)}|{customerKey}";
     }
+
+    private string BuildBillingCustomerGroupKey(RentalBillingViewRow row)
+        => BuildBillingProfileGroupKey(row.Source, row.CustomerDisplayName, row.SelectionId);
 
     private RentalBillingViewRow CreateGroupedBillingViewRow(IReadOnlyList<RentalBillingViewRow> rows)
     {
