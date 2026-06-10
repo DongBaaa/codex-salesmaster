@@ -33,10 +33,18 @@ public sealed partial class RentalStateService
     private static readonly IReadOnlyDictionary<string, string> ImportLocationStatusMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["렌탈"] = "임대진행중",
-        ["창고"] = "회수",
+        ["창고"] = "창고",
         ["판매"] = "판매",
         ["폐기"] = "폐기"
     };
+    private static readonly string[] NonOperatingAssetStatusQueryValues =
+    [
+        "미배정",
+        "대기",
+        "회수",
+        "창고",
+        "폐기"
+    ];
     private static readonly IReadOnlyDictionary<string, string> ImportManagementOfficeMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["아이티월드"] = DomainConstants.OfficeItworld,
@@ -323,9 +331,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ToList();
         var assetBillingUnlinked = assets
             .Where(asset => (!asset.BillingProfileId.HasValue || asset.BillingProfileId.Value == Guid.Empty) &&
-                            !string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase) &&
-                            !string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase) &&
-                            !string.Equals(asset.AssetStatus, "대기", StringComparison.OrdinalIgnoreCase))
+                            !RentalAssetStatusRules.IsNonOperating(asset.AssetStatus))
             .ToList();
         var assetlessProfiles = profiles
             .Where(profile => !assetsByProfile.TryGetValue(profile.Id, out var linkedAssets) || linkedAssets.Count == 0)
@@ -492,7 +498,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
             ct);
 
         foreach (var asset in assets)
+        {
+            asset.AssetStatus = RentalAssetStatusRules.Normalize(asset.AssetStatus);
             ApplyResolvedAssetCustomerDisplayName(asset, customerNameMap);
+        }
     }
 
     private static string BuildBillingProfileDisplayName(
@@ -579,7 +588,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         .Where(asset => !asset.IsDeleted)
                         .Where(asset => !asset.BillingProfileId.HasValue || asset.BillingProfileId == Guid.Empty)
                         .Where(asset => asset.BillingEligibilityStatus == null || asset.BillingEligibilityStatus != BillingEligibilityExcluded)
-                        .Where(asset => asset.AssetStatus != "회수" && asset.AssetStatus != "폐기" && asset.AssetStatus != "대기"),
+                        .Where(asset => !NonOperatingAssetStatusQueryValues.Contains(asset.AssetStatus)),
                     filter)
                 .OrderBy(asset => asset.CustomerName)
                 .ThenBy(asset => asset.CurrentCustomerName)
@@ -2785,7 +2794,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var query = ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
             .Where(asset => !asset.IsDeleted)
             .Where(asset => asset.TenantCode == normalizedTenantCode)
-            .Where(asset => asset.AssetStatus != "회수" && asset.AssetStatus != "폐기" && asset.AssetStatus != "대기")
+            .Where(asset => !NonOperatingAssetStatusQueryValues.Contains(asset.AssetStatus))
             .Where(asset => !asset.BillingProfileId.HasValue || asset.BillingProfileId == Guid.Empty);
 
         if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
@@ -3440,7 +3449,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             if (!HasActiveRentalEquipmentAssignment(original))
                 return LocalMutationResult.Denied("기존 장비에 거래처/청구 연결이 없어 렌탈 장비 교체를 진행할 수 없습니다.");
             if (!IsRentalEquipmentReplacementCandidate(replacement))
-                return LocalMutationResult.Denied("새 장비는 거래처/청구 연결이 없는 대기·회수·창고·점검중 장비만 선택할 수 있습니다.");
+                return LocalMutationResult.Denied("새 장비는 거래처/청구 연결이 없는 창고·점검중 장비만 선택할 수 있습니다.");
 
             var replacementDate = request.ReplacementDate == default
                 ? DateOnly.FromDateTime(DateTime.Today)
@@ -3453,9 +3462,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             var originalNextStatus = ResolveAssetStatus(
                 string.IsNullOrWhiteSpace(request.OriginalAssetNextStatus)
-                    ? "회수"
+                    ? "창고"
                     : request.OriginalAssetNextStatus,
-                "회수",
+                "창고",
                 null);
 
             var previousBillingProfileId = original.BillingProfileId;
@@ -3632,12 +3641,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         var status = (asset.AssetStatus ?? string.Empty).Trim();
-        return string.IsNullOrWhiteSpace(status) ||
-               string.Equals(status, "대기", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(status, "회수", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(status, "창고", StringComparison.OrdinalIgnoreCase) ||
+        var normalizedStatus = RentalAssetStatusRules.Normalize(status);
+        return string.IsNullOrWhiteSpace(normalizedStatus) ||
+               string.Equals(normalizedStatus, "창고", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(status, "점검중", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(status, "미배정", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(status, "설치처 불명", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -4907,9 +4914,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (itemCategoryNames.Count > 0)
             query = query.Where(asset => itemCategoryNames.Contains(asset.ItemCategoryName));
 
-        var assetStatuses = NormalizeFilterValues(filter.AssetStatuses);
+        var assetStatuses = NormalizeAssetStatusFilterValues(filter.AssetStatuses);
         if (assetStatuses.Count > 0)
-            query = query.Where(asset => assetStatuses.Contains(asset.AssetStatus));
+        {
+            var expandedAssetStatuses = ExpandAssetStatusFilterValues(assetStatuses);
+            query = query.Where(asset => expandedAssetStatuses.Contains(asset.AssetStatus));
+        }
 
         return query;
     }
@@ -4918,6 +4928,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
         => (values ?? Array.Empty<string>())
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static List<string> NormalizeAssetStatusFilterValues(IEnumerable<string>? values)
+        => (values ?? Array.Empty<string>())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(RentalAssetStatusRules.Normalize)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static List<string> ExpandAssetStatusFilterValues(IEnumerable<string> normalizedValues)
+        => normalizedValues
+            .SelectMany(RentalAssetStatusNormalizer.ExpandForFilter)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -6222,9 +6247,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     : asset.BillingEligibilityStatus.Trim();
 
                 if (string.Equals(eligibilityStatus, BillingEligibilityExcluded, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(asset.AssetStatus, "대기", StringComparison.OrdinalIgnoreCase))
+                    RentalAssetStatusRules.IsNonOperating(asset.AssetStatus))
                 {
                     return (false,
                         $"장비 '{asset.ItemName}'는 청구제외 상태라 판매전표를 만들 수 없습니다.",
@@ -8858,7 +8881,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var status = (requestedStatus ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(status))
-            return status;
+            return RentalAssetStatusRules.Normalize(status);
 
         if (disposalDate.HasValue)
             return "폐기";
@@ -8868,10 +8891,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return "판매";
         if (location.Contains("폐기", StringComparison.OrdinalIgnoreCase))
             return "폐기";
+        if (location.Contains("창고", StringComparison.OrdinalIgnoreCase))
+            return "창고";
         if (location.Contains("회수", StringComparison.OrdinalIgnoreCase))
-            return "회수";
+            return "창고";
         if (location.Contains("대기", StringComparison.OrdinalIgnoreCase))
-            return "대기";
+            return "창고";
         return "임대진행중";
     }
 

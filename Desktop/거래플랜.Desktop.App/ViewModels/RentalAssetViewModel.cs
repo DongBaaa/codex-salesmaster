@@ -142,13 +142,10 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
         AssetStatusOptions.Add(AllOption);
         AssetStatusOptions.Add("임대진행중");
-        AssetStatusOptions.Add("대기");
         AssetStatusOptions.Add("창고");
-        AssetStatusOptions.Add("회수");
         AssetStatusOptions.Add("점검중");
         AssetStatusOptions.Add("판매");
         AssetStatusOptions.Add("폐기");
-        AssetStatusOptions.Add("미배정");
         AssetStatusOptions.Add("설치처 불명");
 
         foreach (var status in AssetStatusOptions.Where(status => status != AllOption))
@@ -445,7 +442,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         var candidates = await _rental.GetRentalEquipmentReplacementCandidatesAsync(original.Id, _session);
         if (candidates.Count == 0)
         {
-            StatusMessage = "교체할 수 있는 미연결 렌탈 장비가 없습니다. 새 장비가 거래처/청구 연결이 없는 대기·회수·창고·점검중 상태인지 확인하세요.";
+            StatusMessage = "교체할 수 있는 미연결 렌탈 장비가 없습니다. 새 장비가 거래처/청구 연결이 없는 창고·점검중 상태인지 확인하세요.";
             MessageBox.Show(StatusMessage, "렌탈 장비 교체", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
@@ -469,7 +466,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             ReplacementAssetId = replacement.Id,
             ReplacementAssetRevision = replacement.Revision,
             ReplacementDate = DateOnly.FromDateTime(DateTime.Today),
-            OriginalAssetNextStatus = "회수",
+            OriginalAssetNextStatus = "창고",
             ChangeReason = "렌탈 장비 교체"
         };
 
@@ -938,10 +935,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         if (string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase))
             return "폐기 예정";
-        if (string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase))
-            return "계약 종료 또는 회수 처리";
-        if (string.Equals(asset.AssetStatus, "대기", StringComparison.OrdinalIgnoreCase))
-            return "재배치 또는 보류";
+        if (RentalAssetStatusRules.IsWarehouse(asset.AssetStatus))
+            return "계약 종료 또는 창고 보관";
         return string.Empty;
     }
 

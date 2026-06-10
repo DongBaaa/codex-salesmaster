@@ -44,7 +44,7 @@ public sealed class RentalEquipmentReplacementTests
                     OriginalAssetId = originalAssetId,
                     ReplacementAssetId = replacementAssetId,
                     ReplacementDate = replacementDate,
-                    OriginalAssetNextStatus = "회수",
+                    OriginalAssetNextStatus = "창고",
                     ChangeReason = "렌탈 장비 교체"
                 },
                 session);
@@ -60,9 +60,9 @@ public sealed class RentalEquipmentReplacementTests
             Assert.Null(original.CustomerId);
             Assert.Equal(string.Empty, original.CustomerName);
             Assert.Equal(string.Empty, original.InstallLocation);
-            Assert.Equal("회수", original.AssetStatus);
+            Assert.Equal("창고", original.AssetStatus);
             Assert.Equal("청구제외", original.BillingEligibilityStatus);
-            Assert.Equal("자산상태: 회수", original.BillingExclusionReason);
+            Assert.Equal("자산상태: 창고", original.BillingExclusionReason);
             Assert.Equal(profileId, original.LastBillingProfileId);
             Assert.Equal("교체테스트거래처", original.LastCustomerName);
             Assert.Equal(replacementDate, original.RentalEndDate);
@@ -185,7 +185,7 @@ public sealed class RentalEquipmentReplacementTests
             AssetKey = $"AK-{assetId:N}",
             ItemName = "복합기",
             MachineNumber = "SN-NEW",
-            AssetStatus = "대기",
+            AssetStatus = "창고",
             CurrentLocation = "창고",
             BillingEligibilityStatus = "청구제외",
             CreatedAtUtc = DateTime.UtcNow.AddDays(-5),

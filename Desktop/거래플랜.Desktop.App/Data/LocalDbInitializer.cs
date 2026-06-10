@@ -1624,10 +1624,36 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 changed = true;
             }
 
-            if (string.Equals((asset.AssetStatus ?? string.Empty).Trim(), "설치중", StringComparison.OrdinalIgnoreCase))
+            var normalizedAssetStatus = RentalAssetStatusNormalizer.Normalize(asset.AssetStatus);
+            if (string.Equals(normalizedAssetStatus, "설치중", StringComparison.OrdinalIgnoreCase))
             {
-                asset.AssetStatus = "임대진행중";
+                normalizedAssetStatus = RentalAssetStatusNormalizer.Active;
+            }
+
+            if (!string.Equals(asset.AssetStatus, normalizedAssetStatus, StringComparison.Ordinal))
+            {
+                asset.AssetStatus = normalizedAssetStatus;
                 changed = true;
+            }
+
+            if (RentalAssetStatusNormalizer.IsNonOperating(normalizedAssetStatus))
+            {
+                if (!string.Equals(asset.BillingEligibilityStatus, "청구제외", StringComparison.OrdinalIgnoreCase))
+                {
+                    asset.BillingEligibilityStatus = "청구제외";
+                    changed = true;
+                }
+
+                if (string.IsNullOrWhiteSpace(asset.BillingExclusionReason) ||
+                    asset.BillingExclusionReason.Trim().StartsWith("자산상태:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var normalizedExclusionReason = $"자산상태: {normalizedAssetStatus}";
+                    if (!string.Equals(asset.BillingExclusionReason, normalizedExclusionReason, StringComparison.Ordinal))
+                    {
+                        asset.BillingExclusionReason = normalizedExclusionReason;
+                        changed = true;
+                    }
+                }
             }
 
             if (changed)

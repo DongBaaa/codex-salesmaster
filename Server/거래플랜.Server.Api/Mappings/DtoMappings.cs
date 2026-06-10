@@ -842,7 +842,7 @@ public static class DtoMappings
             RentalEndDate = entity.RentalEndDate,
             FreeSupplyItems = entity.FreeSupplyItems,
             PaidSupplyItems = entity.PaidSupplyItems,
-            AssetStatus = entity.AssetStatus,
+            AssetStatus = RentalAssetStatusNormalizer.Normalize(entity.AssetStatus),
             Notes = entity.Notes
         };
 
@@ -885,7 +885,7 @@ public static class DtoMappings
         entity.RentalEndDate = dto.RentalEndDate;
         entity.FreeSupplyItems = dto.FreeSupplyItems?.Trim() ?? string.Empty;
         entity.PaidSupplyItems = dto.PaidSupplyItems?.Trim() ?? string.Empty;
-        entity.AssetStatus = dto.AssetStatus?.Trim() ?? string.Empty;
+        entity.AssetStatus = RentalAssetStatusNormalizer.Normalize(dto.AssetStatus);
         entity.Notes = dto.Notes?.Trim() ?? string.Empty;
         entity.IsDeleted = dto.IsDeleted;
         entity.ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(

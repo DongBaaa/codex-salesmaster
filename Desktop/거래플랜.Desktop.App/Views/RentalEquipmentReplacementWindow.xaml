@@ -66,7 +66,7 @@
         <Border Grid.Row="0" Background="#20345A" BorderBrush="#33517C" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,0,14">
             <StackPanel>
                 <TextBlock Text="렌탈 장비 교체" FontSize="20" FontWeight="Bold" Foreground="#66D9FF"/>
-                <TextBlock Text="기존 임대 장비의 거래처·설치 위치·청구 프로필을 새 장비로 승계하고, 기존 장비는 회수 상태로 정리합니다."
+                <TextBlock Text="기존 임대 장비의 거래처·설치 위치·청구 프로필을 새 장비로 승계하고, 기존 장비는 창고 상태로 정리합니다."
                            Margin="0,6,0,0"
                            Foreground="#B8C6D8"/>
             </StackPanel>

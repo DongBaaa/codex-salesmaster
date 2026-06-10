@@ -152,7 +152,7 @@ public sealed class RentalDocumentService
         inspectionGrid.Children.Add(CreateBorderedBlock("점검상황", "미처리   /   처리중   /   완료", 0));
         inspectionGrid.Children.Add(CreateBorderedBlock("판매/임대 가능", BuildSaleableState(asset), 1));
         inspectionGrid.Children.Add(CreateBorderedBlock("폐기", string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase) ? "예정" : "-", 2));
-        inspectionGrid.Children.Add(CreateBorderedBlock("보류[이유]", string.Equals(asset.AssetStatus, "대기", StringComparison.OrdinalIgnoreCase) ? asset.Notes : string.Empty, 3));
+        inspectionGrid.Children.Add(CreateBorderedBlock("보류[이유]", RentalAssetStatusRules.IsWarehouse(asset.AssetStatus) ? asset.Notes : string.Empty, 3));
         AddToGrid(root, inspectionGrid, 3);
 
         AddToGrid(root, CreateCounterTable(), 4);
@@ -1551,10 +1551,8 @@ public sealed class RentalDocumentService
     {
         if (string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase))
             return "폐기 예정";
-        if (string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase))
-            return "계약 종료 또는 회수 처리";
-        if (string.Equals(asset.AssetStatus, "대기", StringComparison.OrdinalIgnoreCase))
-            return "재배치 또는 보류";
+        if (RentalAssetStatusRules.IsWarehouse(asset.AssetStatus))
+            return "계약 종료 또는 창고 보관";
         return string.Empty;
     }
 
@@ -1562,7 +1560,7 @@ public sealed class RentalDocumentService
     {
         if (string.Equals(asset.AssetStatus, "폐기", StringComparison.OrdinalIgnoreCase))
             return "불가";
-        if (string.Equals(asset.AssetStatus, "회수", StringComparison.OrdinalIgnoreCase))
+        if (RentalAssetStatusRules.IsWarehouse(asset.AssetStatus))
             return "점검 후 판단";
         return "가능";
     }

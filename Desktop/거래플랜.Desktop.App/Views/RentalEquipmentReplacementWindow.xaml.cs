@@ -8,9 +8,8 @@ public partial class RentalEquipmentReplacementWindow : Window
 {
     private static readonly string[] OriginalStatusOptions =
     [
-        "회수",
+        "창고",
         "점검중",
-        "대기",
         "폐기"
     ];
 
@@ -36,8 +35,8 @@ public partial class RentalEquipmentReplacementWindow : Window
             : ReplacementRequest.ReplacementDate.ToDateTime(TimeOnly.MinValue);
         OriginalStatusBox.ItemsSource = OriginalStatusOptions;
         OriginalStatusBox.SelectedItem = string.IsNullOrWhiteSpace(ReplacementRequest.OriginalAssetNextStatus)
-            ? "회수"
-            : ReplacementRequest.OriginalAssetNextStatus.Trim();
+            ? "창고"
+            : RentalAssetStatusRules.Normalize(ReplacementRequest.OriginalAssetNextStatus);
         ReasonBox.Text = string.IsNullOrWhiteSpace(ReplacementRequest.ChangeReason)
             ? "렌탈 장비 교체"
             : ReplacementRequest.ChangeReason.Trim();

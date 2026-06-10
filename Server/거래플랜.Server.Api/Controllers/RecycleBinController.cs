@@ -1865,8 +1865,7 @@ public sealed class RecycleBinController : ControllerBase
 
     private static string GetBillingEligibilityStatusAfterProfilePurge(string? assetStatus)
     {
-        if (string.Equals(assetStatus, "회수", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(assetStatus, "폐기", StringComparison.OrdinalIgnoreCase))
+        if (RentalAssetStatusNormalizer.IsNonOperating(assetStatus))
             return "청구제외";
 
         return "미확인";
