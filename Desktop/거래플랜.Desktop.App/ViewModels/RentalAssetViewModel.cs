@@ -33,6 +33,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private bool _hasInitializedOfficeFilters;
     private int _filterReloadVersion;
     private string _baselineStateSignature = string.Empty;
+    private string _pendingFilterReloadSignature = string.Empty;
     private long _editRevision;
 
     [ObservableProperty] private string _searchText = string.Empty;
@@ -1634,22 +1635,59 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         if (_suppressFilterReload)
             return;
 
+        var signature = BuildCurrentFilterReloadSignature();
+        if (!string.IsNullOrWhiteSpace(_pendingFilterReloadSignature) &&
+            string.Equals(_pendingFilterReloadSignature, signature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         CancelPendingFilterReload();
         var cts = new CancellationTokenSource();
         _filterReloadCts = cts;
+        _pendingFilterReloadSignature = signature;
         _searchDebouncer.DebounceAsync(
-            TimeSpan.FromMilliseconds(350),
-            () => ReloadCoreAsync(cts.Token),
+            ResolveFilterReloadDebounceDelay(),
+            async () =>
+            {
+                _pendingFilterReloadSignature = string.Empty;
+                await ReloadCoreAsync(cts.Token);
+            },
             ex => StatusMessage = $"렌탈 자산 목록을 다시 불러오지 못했습니다. {ex.Message}");
     }
 
     private void CancelPendingFilterReload()
     {
         Interlocked.Increment(ref _filterReloadVersion);
+        _pendingFilterReloadSignature = string.Empty;
         _filterReloadCts?.Cancel();
         _filterReloadCts?.Dispose();
         _filterReloadCts = null;
     }
+
+    private TimeSpan ResolveFilterReloadDebounceDelay()
+        => string.IsNullOrWhiteSpace(SearchText)
+            ? TimeSpan.FromMilliseconds(350)
+            : TimeSpan.FromMilliseconds(650);
+
+    private string BuildCurrentFilterReloadSignature()
+        => string.Join(
+            "|",
+            NormalizeFilterSignaturePart(SearchText),
+            BuildFilterValuesSignature(OfficeFilterOptions),
+            BuildFilterValuesSignature(ItemCategoryFilterOptions),
+            BuildFilterValuesSignature(StatusFilterOptions));
+
+    private static string BuildFilterValuesSignature(IEnumerable<SelectableFilterOption> options)
+        => string.Join(
+            ",",
+            options
+                .Where(option => option.IsSelected)
+                .Select(option => NormalizeFilterSignaturePart(option.Value))
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+
+    private static string NormalizeFilterSignaturePart(string? value)
+        => (value ?? string.Empty).Trim().ToUpperInvariant();
 
     private static DateOnly? ToDateOnly(DateTime? value)
         => value.HasValue ? DateOnly.FromDateTime(value.Value) : null;
