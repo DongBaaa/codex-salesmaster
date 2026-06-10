@@ -28,7 +28,11 @@ public partial class RentalBillingWindow : Window
         DataContext = viewModel;
         Closing += HandleClosing;
         Loaded += (_, _) => _editSessionMonitor?.Start();
-        Closed += (_, _) => _editSessionMonitor?.Dispose();
+        Closed += (_, _) =>
+        {
+            viewModel.CancelPendingBackgroundWork();
+            _editSessionMonitor?.Dispose();
+        };
 
         _editSessionMonitor = EntityEditSessionMonitor.TryCreate(
             this,

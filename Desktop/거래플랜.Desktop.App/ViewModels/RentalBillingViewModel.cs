@@ -465,9 +465,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         StatusMessage = "렌탈 청구 필터 기준을 불러오는 중입니다.";
         await ReloadFiltersAsync();
 
-        StatusMessage = "렌탈 청구 목록을 조회하는 중입니다.";
-        await ReloadAsync();
-
         BeginAutoSaveSuppression();
         try
         {
@@ -476,19 +473,39 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             if (!restoredDraft)
                 NewProfile();
 
-            var unlinkedCount = Rows.Sum(row => row.GroupedUnlinkedAssetCount);
             StatusMessage = restoredDraft
-                ? "이전 작성 중인 청구 설정을 복원했습니다. 내용을 확인한 뒤 저장하세요."
-                : Rows.Count == 0
-                    ? "조건에 맞는 렌탈 청구 대상이 없습니다. 새 청구 프로필을 입력할 수 있습니다."
-                    : unlinkedCount > 0
-                        ? $"렌탈 청구 {Rows.Count:N0}건을 불러왔습니다. 청구 설정이 필요한 장비 {unlinkedCount:N0}대가 포함되어 있습니다."
-                        : $"렌탈 청구 {Rows.Count:N0}건을 불러왔습니다. 목록을 선택하거나 새 청구 프로필을 입력하세요.";
+                ? "이전 작성 중인 청구 설정을 복원했습니다. 청구 목록은 백그라운드에서 조회 중입니다."
+                : "렌탈 청구관리 화면을 먼저 표시했습니다. 청구 목록은 백그라운드에서 조회 중입니다.";
         }
         finally
         {
             EndAutoSaveSuppression();
         }
+
+        StartInitialRowsLoad();
+    }
+
+    public void CancelPendingBackgroundWork()
+    {
+        CancelPendingFilterReload();
+        CancelBillingHistoryLoad();
+        CancelIncludedAssetHistoryLoad();
+        _candidateAssetsLoadCts?.Cancel();
+        _candidateAssetsLoadCts?.Dispose();
+        _candidateAssetsLoadCts = null;
+        _contractDateRefreshCts?.Cancel();
+        _contractDateRefreshCts?.Dispose();
+        _contractDateRefreshCts = null;
+        _searchDebouncer.Dispose();
+    }
+
+    private void StartInitialRowsLoad()
+    {
+        UiTaskHelper.Forget(
+            ReloadAsync(),
+            "RENTAL",
+            "렌탈 청구 초기 목록 백그라운드 조회",
+            ex => StatusMessage = $"렌탈 청구 목록을 불러오지 못했습니다. {ex.Message}");
     }
 
     public async Task LoadAndSelectProfileAsync(Guid profileId)
