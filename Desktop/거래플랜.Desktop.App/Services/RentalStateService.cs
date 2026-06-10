@@ -3650,26 +3650,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
             normalizedOfficeCode,
             session.TenantCode,
             session.OfficeCode);
-        var profileId = billingProfileId.GetValueOrDefault();
-        var query = ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
-            .Where(asset => !asset.IsDeleted)
-            .Where(asset =>
-                assetIds.Contains(asset.Id) ||
-                (
-                    billingProfileId.HasValue &&
-                    billingProfileId.Value != Guid.Empty &&
-                    asset.BillingProfileId == profileId &&
-                    asset.TenantCode == normalizedTenantCode &&
-                    (
-                        asset.ResponsibleOfficeCode == normalizedOfficeCode ||
-                        asset.ManagementCompanyCode == normalizedOfficeCode
-                    )
-                ));
+        var query = BuildIncludedBillingAssetsQuery(
+            ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
+                .Where(asset => !asset.IsDeleted),
+            assetIds,
+            billingProfileId,
+            normalizedTenantCode,
+            normalizedOfficeCode);
 
-        var includedAssets = await query
-            .OrderBy(asset => asset.CustomerName)
-            .ThenBy(asset => asset.ManagementNumber)
-            .Take(300)
+        var includedAssetLimit = 300 + assetIds.Count;
+        var includedAssets = await ApplyIncludedBillingAssetOrdering(query, assetIds)
+            .Take(includedAssetLimit)
             .ToListAsync(ct);
 
         await NormalizeAssetCustomerDisplayNamesAsync(includedAssets, ct);
@@ -3677,6 +3668,58 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .OrderBy(asset => ResolvePrimaryAssetCustomerName(asset), StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+    }
+
+    private static IQueryable<LocalRentalAsset> BuildIncludedBillingAssetsQuery(
+        IQueryable<LocalRentalAsset> query,
+        IReadOnlyCollection<Guid> assetIds,
+        Guid? billingProfileId,
+        string normalizedTenantCode,
+        string normalizedOfficeCode)
+    {
+        var hasExplicitAssetIds = assetIds.Count > 0;
+        var profileId = billingProfileId.GetValueOrDefault();
+        var hasProfileId = billingProfileId.HasValue && profileId != Guid.Empty;
+
+        if (!hasProfileId)
+            return query.Where(asset => assetIds.Contains(asset.Id));
+
+        if (!hasExplicitAssetIds)
+            return query.Where(asset =>
+                asset.BillingProfileId == profileId &&
+                asset.TenantCode == normalizedTenantCode &&
+                (
+                    asset.ResponsibleOfficeCode == normalizedOfficeCode ||
+                    asset.ManagementCompanyCode == normalizedOfficeCode
+                ));
+
+        return query.Where(asset =>
+            assetIds.Contains(asset.Id) ||
+            (
+                asset.BillingProfileId == profileId &&
+                asset.TenantCode == normalizedTenantCode &&
+                (
+                    asset.ResponsibleOfficeCode == normalizedOfficeCode ||
+                    asset.ManagementCompanyCode == normalizedOfficeCode
+                )
+            ));
+    }
+
+    private static IOrderedQueryable<LocalRentalAsset> ApplyIncludedBillingAssetOrdering(
+        IQueryable<LocalRentalAsset> query,
+        IReadOnlyCollection<Guid> assetIds)
+    {
+        if (assetIds.Count > 0)
+        {
+            return query
+                .OrderByDescending(asset => assetIds.Contains(asset.Id))
+                .ThenBy(asset => asset.CustomerName)
+                .ThenBy(asset => asset.ManagementNumber);
+        }
+
+        return query
+            .OrderBy(asset => asset.CustomerName)
+            .ThenBy(asset => asset.ManagementNumber);
     }
 
     public async Task<IReadOnlyList<RentalAssetLinkCandidate>> GetAssetLinkCandidatesAsync(
