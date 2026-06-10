@@ -37,6 +37,13 @@ public sealed partial class RentalStateService
     };
     private sealed record RentalBillingCustomerLookup(Guid Id, string? NameOriginal, string? BusinessNumber);
 
+    private sealed record RentalBillingProfileDisplayLookup(
+        Guid Id,
+        Guid? CustomerId,
+        string? CustomerName,
+        string? ProfileKey,
+        string? InstallSiteName);
+
     private static readonly IReadOnlyDictionary<string, string> ImportLocationStatusMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["렌탈"] = "임대진행중",
@@ -546,9 +553,36 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private static string BuildBillingProfileDisplayName(
         LocalRentalBillingProfile profile,
         IReadOnlyDictionary<Guid, string> customerNameMap)
+        => BuildBillingProfileDisplayName(
+            profile.CustomerId,
+            profile.CustomerName,
+            profile.ProfileKey,
+            profile.InstallSiteName,
+            customerNameMap);
+
+    private static string BuildBillingProfileDisplayName(
+        RentalBillingProfileDisplayLookup profile,
+        IReadOnlyDictionary<Guid, string> customerNameMap)
+        => BuildBillingProfileDisplayName(
+            profile.CustomerId,
+            profile.CustomerName,
+            profile.ProfileKey,
+            profile.InstallSiteName,
+            customerNameMap);
+
+    private static string BuildBillingProfileDisplayName(
+        Guid? customerId,
+        string? customerNameValue,
+        string? profileKey,
+        string? installSiteNameValue,
+        IReadOnlyDictionary<Guid, string> customerNameMap)
     {
-        var customerName = ResolveBillingProfileCustomerDisplayName(profile, customerNameMap);
-        var installSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.InstallSiteName);
+        var customerName = ResolveBillingProfileCustomerDisplayName(
+            customerId,
+            customerNameValue,
+            profileKey,
+            customerNameMap);
+        var installSiteName = RentalCatalogValueNormalizer.NormalizeDisplayText(installSiteNameValue);
         return string.IsNullOrWhiteSpace(installSiteName)
             ? customerName
             : $"{customerName} / {installSiteName}";
@@ -1594,17 +1628,28 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private static string ResolveBillingProfileCustomerDisplayName(
         LocalRentalBillingProfile profile,
         IReadOnlyDictionary<Guid, string> customerNameMap)
+        => ResolveBillingProfileCustomerDisplayName(
+            profile.CustomerId,
+            profile.CustomerName,
+            profile.ProfileKey,
+            customerNameMap);
+
+    private static string ResolveBillingProfileCustomerDisplayName(
+        Guid? customerId,
+        string? customerNameValue,
+        string? profileKey,
+        IReadOnlyDictionary<Guid, string> customerNameMap)
     {
         var linkedCustomerName = string.Empty;
-        if (profile.CustomerId.HasValue &&
-            profile.CustomerId.Value != Guid.Empty &&
-            customerNameMap.TryGetValue(profile.CustomerId.Value, out var customerName) &&
+        if (customerId.HasValue &&
+            customerId.Value != Guid.Empty &&
+            customerNameMap.TryGetValue(customerId.Value, out var customerName) &&
             !string.IsNullOrWhiteSpace(customerName))
         {
             linkedCustomerName = customerName.Trim();
         }
 
-        var profileCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.CustomerName);
+        var profileCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerNameValue);
         if (!string.IsNullOrWhiteSpace(profileCustomerName))
         {
             if (!string.IsNullOrWhiteSpace(linkedCustomerName) &&
@@ -1613,7 +1658,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     RentalCatalogValueNormalizer.NormalizeLooseKey(linkedCustomerName),
                     StringComparison.OrdinalIgnoreCase))
             {
-                var legacyAlias = TryResolveBillingProfileAliasFromProfileKey(profile.ProfileKey, linkedCustomerName);
+                var legacyAlias = TryResolveBillingProfileAliasFromProfileKey(profileKey, linkedCustomerName);
                 if (!string.IsNullOrWhiteSpace(legacyAlias))
                     return legacyAlias;
             }
@@ -3158,12 +3203,28 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Distinct()
             .ToList();
         var profilesById = linkedProfileIds.Count == 0
-            ? new Dictionary<Guid, LocalRentalBillingProfile>()
-            : await _db.RentalBillingProfiles
+            ? new Dictionary<Guid, RentalBillingProfileDisplayLookup>()
+            : (await _db.RentalBillingProfiles
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(profile => linkedProfileIds.Contains(profile.Id) && !profile.IsDeleted)
-                .ToDictionaryAsync(profile => profile.Id, profile => profile, ct);
+                .Select(profile => new
+                {
+                    profile.Id,
+                    profile.CustomerId,
+                    profile.CustomerName,
+                    profile.ProfileKey,
+                    profile.InstallSiteName
+                })
+                .ToListAsync(ct))
+            .ToDictionary(
+                profile => profile.Id,
+                profile => new RentalBillingProfileDisplayLookup(
+                    profile.Id,
+                    profile.CustomerId,
+                    profile.CustomerName,
+                    profile.ProfileKey,
+                    profile.InstallSiteName));
         var customerNameMap = await GetCustomerNameMapAsync(
             assets
                 .Where(asset => asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
