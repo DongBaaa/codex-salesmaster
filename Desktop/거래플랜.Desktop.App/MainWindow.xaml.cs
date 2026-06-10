@@ -104,6 +104,7 @@ public partial class MainWindow : Window
             return;
 
         _isClosingOrClosed = true;
+        _vm.CancelPendingBackgroundWorkForShutdown();
         StopRealtimeRevisionMonitor();
         StopRuntimeSyncService();
         _centralRevisionPollTimer?.Stop();

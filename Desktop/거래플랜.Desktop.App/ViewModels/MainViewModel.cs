@@ -39,6 +39,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly UiDebouncer _invoiceFilterDebouncer = new();
     private readonly UiDebouncer _customerFilterDebouncer = new();
     private readonly SemaphoreSlim _invoiceListLoadGate = new(1, 1);
+    private CancellationTokenSource? _invoiceFilterApplyCts;
     private CancellationTokenSource? _invoiceListLoadCts;
     private const string LegacySourceDbPathSettingKey = "LegacyMigration.SourceDbPath";
     private const string LegacyCustomerExcelPathSettingKey = "LegacyMigration.CustomerExcelPath";
@@ -260,6 +261,30 @@ public sealed partial class MainViewModel : ObservableObject
         _sync.SyncStatusChanged += HandleSyncStatusChanged;
         _session.BusinessDatabaseChanged += HandleBusinessDatabaseChanged;
         RefreshCurrentUserDisplay();
+    }
+
+    public void CancelPendingBackgroundWorkForShutdown()
+    {
+        Interlocked.Increment(ref _customerAutoSaveVersion);
+        Interlocked.Increment(ref _customerFinancialPreviewVersion);
+        Interlocked.Increment(ref _invoicePreviewVersion);
+        Interlocked.Increment(ref _invoiceFilterApplyVersion);
+
+        _customerFilterDebouncer.Dispose();
+        _invoiceFilterDebouncer.Dispose();
+
+        _customerAutoSaveCts?.Cancel();
+        _customerAutoSaveCts?.Dispose();
+        _customerAutoSaveCts = null;
+
+        _invoiceFilterApplyCts?.Cancel();
+        _invoiceFilterApplyCts?.Dispose();
+        _invoiceFilterApplyCts = null;
+
+        _invoiceListLoadCts?.Cancel();
+        _invoiceListLoadCts = null;
+
+        _backgroundDesktopUpdateCts?.Cancel();
     }
 
     private void HandleSyncStatusChanged(string status)
@@ -1027,8 +1052,12 @@ public sealed partial class MainViewModel : ObservableObject
         _invoiceFilterDebouncer.Debounce(TimeSpan.FromMilliseconds(180), () =>
         {
             var version = Interlocked.Increment(ref _invoiceFilterApplyVersion);
+            _invoiceFilterApplyCts?.Cancel();
+            _invoiceFilterApplyCts?.Dispose();
+            _invoiceFilterApplyCts = new CancellationTokenSource();
+            var token = _invoiceFilterApplyCts.Token;
             UiTaskHelper.Forget(
-                ApplyInvoiceFiltersAsync(version),
+                ApplyInvoiceFiltersAsync(version, token),
                 "MAIN",
                 "전표 필터 적용",
                 ex =>
@@ -1039,9 +1068,14 @@ public sealed partial class MainViewModel : ObservableObject
         });
     }
 
-    private async Task ApplyInvoiceFiltersAsync(int version)
+    private async Task ApplyInvoiceFiltersAsync(int version, CancellationToken ct)
     {
-        await PersistInvoiceFiltersAsync();
+        ct.ThrowIfCancellationRequested();
+        if (!IsCurrentInvoiceFilterApply(version))
+            return;
+
+        await PersistInvoiceFiltersAsync(ct);
+        ct.ThrowIfCancellationRequested();
         if (!IsCurrentInvoiceFilterApply(version))
             return;
 
@@ -1051,13 +1085,16 @@ public sealed partial class MainViewModel : ObservableObject
     private bool IsCurrentInvoiceFilterApply(int version)
         => version == Volatile.Read(ref _invoiceFilterApplyVersion);
 
-    private async Task PersistInvoiceFiltersAsync()
+    private Task PersistInvoiceFiltersAsync()
+        => PersistInvoiceFiltersAsync(CancellationToken.None);
+
+    private async Task PersistInvoiceFiltersAsync(CancellationToken ct)
     {
-        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterCustomerSettingKey), FilterCustomerName ?? string.Empty);
-        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterVoucherTypeSettingKey), SelectedVoucherTypeFilter ?? "전체");
-        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterOfficeCodeSettingKey), SelectedInvoiceOfficeFilterCode ?? GetDefaultInvoiceOfficeFilterCode());
-        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMinAmountSettingKey), FilterMinAmountText ?? string.Empty);
-        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMaxAmountSettingKey), FilterMaxAmountText ?? string.Empty);
+        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterCustomerSettingKey), FilterCustomerName ?? string.Empty, ct);
+        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterVoucherTypeSettingKey), SelectedVoucherTypeFilter ?? "전체", ct);
+        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterOfficeCodeSettingKey), SelectedInvoiceOfficeFilterCode ?? GetDefaultInvoiceOfficeFilterCode(), ct);
+        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMinAmountSettingKey), FilterMinAmountText ?? string.Empty, ct);
+        await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMaxAmountSettingKey), FilterMaxAmountText ?? string.Empty, ct);
     }
 
     private async Task LoadInvoiceFilterSettingsAsync()
