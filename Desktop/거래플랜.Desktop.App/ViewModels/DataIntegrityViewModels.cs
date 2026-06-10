@@ -30,6 +30,7 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
 {
     private readonly DataIntegrityIssueService _service;
     private readonly SessionState _session;
+    private readonly UiDebouncer _filterDebouncer = new();
     private readonly string? _initialCode;
     private DataIntegrityScanResult? _lastScanResult;
     private List<DataIntegrityIssueDetail> _allIssues = new();
@@ -43,7 +44,7 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
 
     public ObservableCollection<DataIntegrityIssueSummary> Summaries { get; } = new();
     public ObservableCollection<DataIntegrityIssueFilterOption> IssueTypeOptions { get; } = new();
-    public ObservableCollection<DataIntegrityIssueDetail> Issues { get; } = new();
+    public ObservableCollection<DataIntegrityIssueDetail> Issues { get; } = new ResettableObservableCollection<DataIntegrityIssueDetail>();
     public IReadOnlyList<string> SeverityOptions { get; } = ["전체", "오류", "주의"];
 
     [ObservableProperty] private bool _isBusy;
@@ -216,9 +217,17 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
             StatusMessage = $"엑셀 저장에 실패했습니다. 파일이 열려 있거나 저장 권한이 없는지 확인하세요. {ex.Message}";
         }
     }
-    partial void OnSearchTextChanged(string value) => ApplyFilter();
-    partial void OnSelectedIssueTypeChanged(DataIntegrityIssueFilterOption? value) => ApplyFilter();
-    partial void OnSelectedSeverityChanged(string value) => ApplyFilter();
+    partial void OnSearchTextChanged(string value) => RequestFilterApply();
+    partial void OnSelectedIssueTypeChanged(DataIntegrityIssueFilterOption? value) => RequestFilterApply();
+    partial void OnSelectedSeverityChanged(string value) => RequestFilterApply();
+
+    private void RequestFilterApply()
+    {
+        if (IsBusy)
+            return;
+
+        _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(180), ApplyFilter);
+    }
 
     private void ApplyFilter()
     {
@@ -252,9 +261,7 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
             .ThenBy(issue => issue.CustomerName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
 
-        Issues.Clear();
-        foreach (var issue in list)
-            Issues.Add(issue);
+        Issues.ReplaceWith(list);
 
         SelectedIssue = Issues.FirstOrDefault(issue => issue.Id == previousId) ?? Issues.FirstOrDefault();
         StatusMessage = Issues.Count == 0

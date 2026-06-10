@@ -1,6 +1,8 @@
-﻿using System.Text.Json;
+﻿using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -325,6 +327,8 @@ public sealed class DataIntegrityIssueService
 
     public async Task<DataIntegrityScanResult> ScanAsync(SessionState session, CancellationToken ct = default)
     {
+        var totalStopwatch = Stopwatch.StartNew();
+        var stepStopwatch = Stopwatch.StartNew();
         var activeProfiles = await _db.RentalBillingProfiles
             .AsNoTracking()
             .Where(profile => !profile.IsDeleted && profile.IsActive)
@@ -351,8 +355,9 @@ public sealed class DataIntegrityIssueService
             .ToListAsync(ct);
         var activeInvoices = await _db.Invoices
             .AsNoTracking()
-            .Include(invoice => invoice.Lines)
-            .Include(invoice => invoice.Payments)
+            .AsSplitQuery()
+            .Include(invoice => invoice.Lines.Where(line => !line.IsDeleted))
+            .Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
             .Where(invoice => !invoice.IsDeleted && invoice.IsLatestVersion)
             .ToListAsync(ct);
         var itemWarehouseStocks = await _db.ItemWarehouseStocks
@@ -362,7 +367,12 @@ public sealed class DataIntegrityIssueService
             .AsNoTracking()
             .Where(movement => movement.IsActive)
             .ToListAsync(ct);
+        LogIntegrityScanStep(
+            "Integrity scan source load",
+            stepStopwatch,
+            $"profiles={activeProfiles.Count:N0}, assets={activeAssets.Count:N0}, histories={activeAssignmentHistories.Count:N0}, customers={activeCustomers.Count:N0}, items={activeItems.Count:N0}, invoices={activeInvoices.Count:N0}");
 
+        stepStopwatch.Restart();
         var scopedProfiles = activeProfiles
             .Where(profile =>
             {
@@ -414,7 +424,12 @@ public sealed class DataIntegrityIssueService
         var scopedInvoices = activeInvoices
             .Where(invoice => IsInSessionScope(invoice.TenantCode, invoice.ResponsibleOfficeCode, session))
             .ToList();
+        LogIntegrityScanStep(
+            "Integrity scan scope filter",
+            stepStopwatch,
+            $"profiles={scopedProfiles.Count:N0}, assets={scopedAssets.Count:N0}, histories={scopedAssignmentHistories.Count:N0}, customers={scopedCustomers.Count:N0}, items={scopedItems.Count:N0}, invoices={scopedInvoices.Count:N0}");
 
+        stepStopwatch.Restart();
         AddMasterDataAndLedgerIssues(
             details,
             scopedCustomers,
@@ -424,7 +439,9 @@ public sealed class DataIntegrityIssueService
             itemWarehouseStocks,
             inventoryMovements,
             session);
+        LogIntegrityScanStep("Integrity scan master/ledger issues", stepStopwatch, $"issues={details.Count:N0}");
 
+        stepStopwatch.Restart();
         foreach (var history in scopedAssignmentHistories)
         {
             allAssetsById.TryGetValue(history.AssetId, out var historyAsset);
@@ -708,6 +725,8 @@ public sealed class DataIntegrityIssueService
             }
         }
 
+        LogIntegrityScanStep("Integrity scan rental issues", stepStopwatch, $"issues={details.Count:N0}");
+
         var summaries = details
             .GroupBy(issue => issue.Code, StringComparer.OrdinalIgnoreCase)
             .Select(group =>
@@ -730,7 +749,27 @@ public sealed class DataIntegrityIssueService
             .ThenBy(summary => summary.Title, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
 
-        return new DataIntegrityScanResult(DateTime.Now, summaries, details);
+        var result = new DataIntegrityScanResult(DateTime.Now, summaries, details);
+        OperationTiming.LogIfSlow(
+            "INTEGRITY",
+            "Integrity scan total",
+            totalStopwatch.Elapsed,
+            $"issues={result.TotalIssueCount:N0}, types={result.Summaries.Count:N0}",
+            infoThreshold: TimeSpan.FromMilliseconds(700),
+            warningThreshold: TimeSpan.FromSeconds(3));
+        return result;
+    }
+
+    private static void LogIntegrityScanStep(string operation, Stopwatch stopwatch, string? detail = null)
+    {
+        stopwatch.Stop();
+        OperationTiming.LogIfSlow(
+            "INTEGRITY",
+            operation,
+            stopwatch.Elapsed,
+            detail,
+            infoThreshold: TimeSpan.FromMilliseconds(300),
+            warningThreshold: TimeSpan.FromSeconds(2));
     }
 
     public static DataIntegrityIssueDefinition GetDefinition(string code)
