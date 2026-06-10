@@ -924,15 +924,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LogRentalLoadStep("Rental billing template/run preparation", stepStopwatch, $"profiles={profiles.Count:N0}, runs={billingRunsByProfile.Values.Sum(runs => runs.Count):N0}");
 
         stepStopwatch.Restart();
-        var allRunIds = billingRunsByProfile.Values
-            .SelectMany(runs => runs)
-            .Select(run => run.RunId)
-            .Where(id => id != Guid.Empty)
-            .Distinct()
-            .ToList();
-        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(allRunIds, ct);
+        var referenceRunIds = ResolveBillingRunReferenceIds(
+            billingRunsByProfile,
+            previewRunsByProfile,
+            referenceDate,
+            includeHistoryRows);
+        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(referenceRunIds, ct);
         ct.ThrowIfCancellationRequested();
-        LogRentalLoadStep("Rental billing run reference query", stepStopwatch, $"runs={allRunIds.Count:N0}, settlements={settlementByRun.Count:N0}, invoices={invoiceByRun.Count:N0}");
+        LogRentalLoadStep("Rental billing run reference query", stepStopwatch, $"runs={referenceRunIds.Count:N0}, settlements={settlementByRun.Count:N0}, invoices={invoiceByRun.Count:N0}, history={includeHistoryRows}");
 
         stepStopwatch.Restart();
         var rows = new List<RentalBillingViewRow>(profiles.Count);
@@ -1013,6 +1012,42 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 customer.NameOriginal
             })
             .ToDictionaryAsync(customer => customer.Id, customer => customer.NameOriginal, ct);
+    }
+
+    private static IReadOnlyList<Guid> ResolveBillingRunReferenceIds(
+        IReadOnlyDictionary<Guid, List<RentalBillingRunModel>> billingRunsByProfile,
+        IReadOnlyDictionary<Guid, RentalBillingRunModel> previewRunsByProfile,
+        DateOnly referenceDate,
+        bool includeHistoryRows)
+    {
+        var ids = new HashSet<Guid>();
+        var referenceMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1);
+
+        foreach (var run in billingRunsByProfile.Values.SelectMany(runs => runs))
+        {
+            if (run.RunId == Guid.Empty)
+                continue;
+
+            if (includeHistoryRows || IsPastBillingRun(run, referenceMonth))
+                ids.Add(run.RunId);
+        }
+
+        if (!includeHistoryRows)
+        {
+            foreach (var previewRun in previewRunsByProfile.Values)
+            {
+                if (previewRun.RunId != Guid.Empty)
+                    ids.Add(previewRun.RunId);
+            }
+        }
+
+        return ids.ToList();
+    }
+
+    private static bool IsPastBillingRun(RentalBillingRunModel run, DateOnly referenceMonth)
+    {
+        var runMonth = new DateOnly(run.ScheduledDate.Year, run.ScheduledDate.Month, 1);
+        return runMonth.DayNumber < referenceMonth.DayNumber;
     }
 
     private static bool NeedsBillingProfileCustomerNameLookup(LocalRentalBillingProfile profile)
