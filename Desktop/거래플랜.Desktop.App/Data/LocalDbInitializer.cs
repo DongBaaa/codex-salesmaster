@@ -538,6 +538,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_PurchaseReceivingStatus\" ON \"Invoices\" (\"PurchaseReceivingStatus\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Customers_OfficeCode\" ON \"Customers\" (\"OfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Customers_ResponsibleOfficeCode\" ON \"Customers\" (\"ResponsibleOfficeCode\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Customers_NameOriginal\" ON \"Customers\" (\"NameOriginal\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Customers_NameMatchKey\" ON \"Customers\" (\"NameMatchKey\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_OfficeCode\" ON \"Invoices\" (\"OfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_ResponsibleOfficeCode\" ON \"Invoices\" (\"ResponsibleOfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_TenantOfficeLatestDate\" ON \"Invoices\" (\"TenantCode\", \"ResponsibleOfficeCode\", \"IsLatestVersion\", \"InvoiceDate\");");

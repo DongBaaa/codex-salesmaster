@@ -49,6 +49,37 @@ public sealed class RentalAssetSearchLimitTests
         }
     }
 
+    [Fact]
+    public async Task GetAssetRowsAsync_UsesBoundedLinkedCustomerPrefixMatches()
+    {
+        PrepareAppRoot("georaeplan-rental-asset-linked-customer-search");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Linked Alpha Customer"));
+            db.RentalAssets.Add(CreateLinkedCustomerAsset(assetId, customerId));
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var rows = await service.GetAssetRowsAsync(
+                new RentalAssetFilter { SearchText = "Linked Alpha" },
+                CreateAdminSession());
+
+            var row = Assert.Single(rows, current => current.Source.Id == assetId);
+            Assert.Equal("Linked Alpha Customer", row.CurrentCustomerName);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -84,6 +115,48 @@ public sealed class RentalAssetSearchLimitTests
             UpdatedAtUtc = DateTime.UtcNow
         };
     }
+
+    private static LocalCustomer CreateCustomer(Guid customerId, string customerName)
+        => new()
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = customerName,
+            NameMatchKey = customerName.Replace(" ", string.Empty, StringComparison.Ordinal).ToUpperInvariant(),
+            TradeType = CustomerTradeTypes.Sales,
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+
+    private static LocalRentalAsset CreateLinkedCustomerAsset(Guid assetId, Guid customerId)
+        => new()
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ManagementId = $"M-{assetId:N}",
+            ManagementNumber = "MN-LINKED-001",
+            AssetKey = $"AK-{assetId:N}",
+            CustomerId = customerId,
+            CustomerName = string.Empty,
+            CurrentCustomerName = string.Empty,
+            ItemCategoryName = "Copier",
+            ItemName = "Rental Copier",
+            MachineNumber = "SN-LINKED-001",
+            InstallSiteName = "HQ",
+            InstallLocation = "HQ",
+            AssetStatus = "렌탈중",
+            BillingEligibilityStatus = "청구대상",
+            MonthlyFee = 100_000m,
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
 
     private static SessionState CreateAdminSession()
     {

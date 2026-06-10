@@ -167,6 +167,10 @@ public sealed class LocalDbContext : DbContext
             .HasIndex(customer => customer.OfficeCode);
         model.Entity<LocalCustomer>()
             .HasIndex(customer => customer.ResponsibleOfficeCode);
+        model.Entity<LocalCustomer>()
+            .HasIndex(customer => customer.NameOriginal);
+        model.Entity<LocalCustomer>()
+            .HasIndex(customer => customer.NameMatchKey);
         model.Entity<LocalItem>()
             .HasIndex(item => new { item.TenantCode, item.OfficeCode });
 
