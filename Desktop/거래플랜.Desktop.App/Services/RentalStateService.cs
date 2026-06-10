@@ -24,6 +24,7 @@ public sealed partial class RentalStateService
     public const int BillingUnlinkedDefaultResultLimit = 300;
     public const int BillingUnlinkedFocusedResultLimit = AssetListResultLimit;
     private const int BillingAssetCandidateResultLimit = 300;
+    private const int LocalQueryContainsBatchSize = 500;
     private const int BillingRunReferenceBatchSize = 500;
     private const int AssetSearchCustomerMatchLimit = 600;
     private const string AlertDaysSettingKey = "Rental.AlertDaysBefore";
@@ -486,19 +487,27 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (ids.Count == 0)
             return new Dictionary<Guid, string>();
 
-        return await _db.Customers
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(customer => ids.Contains(customer.Id) && !customer.IsDeleted)
-            .Select(customer => new
-            {
-                customer.Id,
-                customer.NameOriginal
-            })
-            .ToDictionaryAsync(
-                customer => customer.Id,
-                customer => customer.NameOriginal,
-                ct);
+        var result = new Dictionary<Guid, string>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            var customers = await _db.Customers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(customer => scopedBatchIds.Contains(customer.Id) && !customer.IsDeleted)
+                .Select(customer => new
+                {
+                    customer.Id,
+                    customer.NameOriginal
+                })
+                .ToListAsync(ct);
+
+            foreach (var customer in customers)
+                result[customer.Id] = customer.NameOriginal;
+        }
+
+        return result;
     }
 
     private async Task<List<Guid>> GetBoundedAssetSearchCustomerIdsAsync(
@@ -1024,9 +1033,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var stepStopwatch = Stopwatch.StartNew();
         var profileIds = profiles.Select(profile => profile.Id).ToList();
-        var billingAssets = await SelectBillingAssetListProjection(ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
-                .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && profileIds.Contains(asset.BillingProfileId.Value)))
-            .ToListAsync(ct);
+        var billingAssets = await LoadBillingAssetsForProfilesAsync(profileIds, session, ct);
         ct.ThrowIfCancellationRequested();
         LogRentalLoadStep("Rental billing linked asset query", stepStopwatch, $"assets={billingAssets.Count:N0}, profiles={profiles.Count:N0}");
 
@@ -1093,6 +1100,34 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
         LogRentalLoadStep("Rental billing row projection", stepStopwatch, $"rows={rows.Count:N0}");
         return rows;
+    }
+
+    private async Task<List<LocalRentalAsset>> LoadBillingAssetsForProfilesAsync(
+        IReadOnlyCollection<Guid> profileIds,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var ids = profileIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return new List<LocalRentalAsset>();
+
+        var assets = new List<LocalRentalAsset>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            var batchAssets = await SelectBillingAssetListProjection(ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+                    .Where(asset => !asset.IsDeleted &&
+                                    asset.BillingProfileId.HasValue &&
+                                    scopedBatchIds.Contains(asset.BillingProfileId.Value)))
+                .ToListAsync(ct);
+            assets.AddRange(batchAssets);
+        }
+
+        return assets;
     }
 
     private static IQueryable<LocalRentalAsset> SelectBillingAssetListProjection(IQueryable<LocalRentalAsset> query)
