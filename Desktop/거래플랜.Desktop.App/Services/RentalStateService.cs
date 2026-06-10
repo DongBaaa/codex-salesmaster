@@ -141,6 +141,7 @@ public sealed partial class RentalStateService
     private readonly LocalStateService? _local;
     private readonly IServiceProvider? _serviceProvider;
     private bool _legacyAssignedUsernameCleanupCompleted;
+    private IReadOnlyDictionary<string, string>? _officeMapCache;
 
     public RentalStateService(LocalDbContext db)
         : this(db, null, null)
@@ -6178,8 +6179,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return $"{prefix}.{officeCode}.{username}".ToUpperInvariant();
     }
 
-    private async Task<Dictionary<string, string>> GetOfficeMapAsync(CancellationToken ct)
+    private async Task<IReadOnlyDictionary<string, string>> GetOfficeMapAsync(CancellationToken ct)
     {
+        if (_officeMapCache is not null)
+            return _officeMapCache;
+
         var offices = await _db.Offices.AsNoTracking().ToListAsync(ct);
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var office in offices)
@@ -6193,7 +6197,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 : office.Name.Trim();
         }
 
-        return map;
+        _officeMapCache = map;
+        return _officeMapCache;
     }
 
     private string ResolveOfficeDisplayName(
