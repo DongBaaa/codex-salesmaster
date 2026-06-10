@@ -2226,31 +2226,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var query = ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session);
         LogRentalLoadStep("Rental asset reference data", stepStopwatch, $"offices={offices.Count:N0}");
 
-        if (!string.IsNullOrWhiteSpace(filter.SearchText))
+        var searchKeyword = (filter.SearchText ?? string.Empty).Trim();
+        var linkedCustomerIds = new List<Guid>();
+        if (!string.IsNullOrWhiteSpace(searchKeyword))
         {
             stepStopwatch.Restart();
-            var keyword = filter.SearchText.Trim();
-            var normalizedKeyword = RentalCatalogValueNormalizer.NormalizeLooseKey(keyword);
-            var linkedCustomerIds = await GetBoundedAssetSearchCustomerIdsAsync(keyword, normalizedKeyword, ct);
-
-            query = linkedCustomerIds.Count == 0
-                ? query.Where(asset =>
-                    asset.ManagementNumber.Contains(keyword) ||
-                    asset.CustomerName.Contains(keyword) ||
-                    asset.CurrentCustomerName.Contains(keyword) ||
-                    asset.ItemCategoryName.Contains(keyword) ||
-                    asset.ItemName.Contains(keyword) ||
-                    asset.MachineNumber.Contains(keyword) ||
-                    asset.InstallLocation.Contains(keyword))
-                : query.Where(asset =>
-                    asset.ManagementNumber.Contains(keyword) ||
-                    asset.CustomerName.Contains(keyword) ||
-                    asset.CurrentCustomerName.Contains(keyword) ||
-                    asset.ItemCategoryName.Contains(keyword) ||
-                    asset.ItemName.Contains(keyword) ||
-                    asset.MachineNumber.Contains(keyword) ||
-                    asset.InstallLocation.Contains(keyword) ||
-                    (asset.CustomerId.HasValue && linkedCustomerIds.Contains(asset.CustomerId.Value)));
+            var normalizedKeyword = RentalCatalogValueNormalizer.NormalizeLooseKey(searchKeyword);
+            linkedCustomerIds = await GetBoundedAssetSearchCustomerIdsAsync(searchKeyword, normalizedKeyword, ct);
             LogRentalLoadStep(
                 "Rental asset customer search match",
                 stepStopwatch,
@@ -2269,12 +2251,19 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         stepStopwatch.Restart();
         var maxResults = ResolveAssetQueryResultLimit(filter);
-        var orderedAssetQuery = ApplyAssetListOrdering(
-            SelectAssetListProjection(query),
-            filter.PinnedAssetId);
-        var assets = await orderedAssetQuery
-            .Take(maxResults)
-            .ToListAsync(ct);
+        var assets = string.IsNullOrWhiteSpace(searchKeyword)
+            ? await ApplyAssetListOrdering(
+                    SelectAssetListProjection(query),
+                    filter.PinnedAssetId)
+                .Take(maxResults)
+                .ToListAsync(ct)
+            : await LoadAssetSearchResultAssetsAsync(
+                query,
+                searchKeyword,
+                linkedCustomerIds,
+                maxResults,
+                filter.PinnedAssetId,
+                ct);
         LogRentalLoadStep("Rental asset DB query", stepStopwatch, $"assets={assets.Count:N0}, {BuildAssetFilterTimingDetail(filter, maxResults)}");
 
         stepStopwatch.Restart();
@@ -2350,6 +2339,133 @@ WHERE ""AssignedUsername"" <> '';", ct);
             ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
             AssetStatus = asset.AssetStatus
         });
+
+    private async Task<List<LocalRentalAsset>> LoadAssetSearchResultAssetsAsync(
+        IQueryable<LocalRentalAsset> baseQuery,
+        string keyword,
+        IReadOnlyCollection<Guid> linkedCustomerIds,
+        int maxResults,
+        Guid? pinnedAssetId,
+        CancellationToken ct)
+    {
+        var assets = new List<LocalRentalAsset>(maxResults);
+        if (pinnedAssetId.HasValue && pinnedAssetId.Value != Guid.Empty)
+        {
+            var pinnedId = pinnedAssetId.Value;
+            var pinnedAsset = await SelectAssetListProjection(ApplyAssetSearchContainsFilter(
+                    baseQuery.Where(asset => asset.Id == pinnedId),
+                    keyword,
+                    linkedCustomerIds))
+                .FirstOrDefaultAsync(ct);
+            if (pinnedAsset is not null)
+                assets.Add(pinnedAsset);
+        }
+
+        if (assets.Count < maxResults)
+        {
+            var prefixQuery = ApplyAssetSearchPrefixFilter(baseQuery, keyword, linkedCustomerIds);
+            await AddDistinctAssetSearchResultsAsync(
+                assets,
+                prefixQuery,
+                maxResults,
+                orderByListColumns: true,
+                ct);
+        }
+
+        if (assets.Count < maxResults)
+        {
+            var containsQuery = ApplyAssetSearchContainsFilter(baseQuery, keyword, linkedCustomerIds);
+            await AddDistinctAssetSearchResultsAsync(
+                assets,
+                containsQuery,
+                maxResults,
+                orderByListColumns: false,
+                ct);
+        }
+
+        return assets;
+    }
+
+    private static async Task AddDistinctAssetSearchResultsAsync(
+        List<LocalRentalAsset> assets,
+        IQueryable<LocalRentalAsset> query,
+        int maxResults,
+        bool orderByListColumns,
+        CancellationToken ct)
+    {
+        var remaining = maxResults - assets.Count;
+        if (remaining <= 0)
+            return;
+
+        var existingIds = assets.Select(asset => asset.Id).ToList();
+        if (existingIds.Count > 0)
+            query = query.Where(asset => !existingIds.Contains(asset.Id));
+
+        IQueryable<LocalRentalAsset> projectedQuery = SelectAssetListProjection(query);
+        if (orderByListColumns)
+            projectedQuery = ApplyAssetListOrdering(projectedQuery, pinnedAssetId: null);
+
+        var nextAssets = await projectedQuery
+            .Take(remaining)
+            .ToListAsync(ct);
+        assets.AddRange(nextAssets);
+    }
+
+    private static IQueryable<LocalRentalAsset> ApplyAssetSearchPrefixFilter(
+        IQueryable<LocalRentalAsset> query,
+        string keyword,
+        IReadOnlyCollection<Guid> linkedCustomerIds)
+    {
+        if (linkedCustomerIds.Count == 0)
+        {
+            return query.Where(asset =>
+                asset.ManagementNumber.StartsWith(keyword) ||
+                asset.CustomerName.StartsWith(keyword) ||
+                asset.CurrentCustomerName.StartsWith(keyword) ||
+                asset.ItemCategoryName.StartsWith(keyword) ||
+                asset.ItemName.StartsWith(keyword) ||
+                asset.MachineNumber.StartsWith(keyword) ||
+                asset.InstallLocation.StartsWith(keyword));
+        }
+
+        return query.Where(asset =>
+            asset.ManagementNumber.StartsWith(keyword) ||
+            asset.CustomerName.StartsWith(keyword) ||
+            asset.CurrentCustomerName.StartsWith(keyword) ||
+            asset.ItemCategoryName.StartsWith(keyword) ||
+            asset.ItemName.StartsWith(keyword) ||
+            asset.MachineNumber.StartsWith(keyword) ||
+            asset.InstallLocation.StartsWith(keyword) ||
+            (asset.CustomerId.HasValue && linkedCustomerIds.Contains(asset.CustomerId.Value)));
+    }
+
+    private static IQueryable<LocalRentalAsset> ApplyAssetSearchContainsFilter(
+        IQueryable<LocalRentalAsset> query,
+        string keyword,
+        IReadOnlyCollection<Guid> linkedCustomerIds)
+    {
+        if (linkedCustomerIds.Count == 0)
+        {
+            return query.Where(asset =>
+                asset.ManagementNumber.Contains(keyword) ||
+                asset.CustomerName.Contains(keyword) ||
+                asset.CurrentCustomerName.Contains(keyword) ||
+                asset.ItemCategoryName.Contains(keyword) ||
+                asset.ItemName.Contains(keyword) ||
+                asset.MachineNumber.Contains(keyword) ||
+                asset.InstallLocation.Contains(keyword));
+        }
+
+        return query.Where(asset =>
+            asset.ManagementNumber.Contains(keyword) ||
+            asset.CustomerName.Contains(keyword) ||
+            asset.CurrentCustomerName.Contains(keyword) ||
+            asset.ItemCategoryName.Contains(keyword) ||
+            asset.ItemName.Contains(keyword) ||
+            asset.MachineNumber.Contains(keyword) ||
+            asset.InstallLocation.Contains(keyword) ||
+            (asset.CustomerId.HasValue && linkedCustomerIds.Contains(asset.CustomerId.Value)));
+    }
 
     private static IOrderedQueryable<LocalRentalAsset> ApplyAssetListOrdering(
         IQueryable<LocalRentalAsset> query,

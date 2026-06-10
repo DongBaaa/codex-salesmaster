@@ -123,6 +123,78 @@ public sealed class RentalAssetSearchLimitTests
         }
     }
 
+    [Fact]
+    public async Task GetAssetRowsAsync_SearchContainsFallbackFindsMiddleMatch()
+    {
+        PrepareAppRoot("georaeplan-rental-asset-search-contains-fallback");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var asset = CreateRentalAsset(1, "Alpha Customer");
+            asset.ItemName = "Rental Special Copier";
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var rows = await service.GetAssetRowsAsync(
+                new RentalAssetFilter
+                {
+                    SearchText = "Special",
+                    MaxResults = RentalStateService.AssetSearchResultLimit
+                },
+                CreateAdminSession());
+
+            var row = Assert.Single(rows);
+            Assert.Equal(asset.Id, row.Source.Id);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetAssetRowsAsync_SearchKeepsPinnedAssetOutsideSearchWindow()
+    {
+        PrepareAppRoot("georaeplan-rental-asset-search-pinned-window");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var limit = RentalStateService.AssetSearchResultLimit;
+            for (var index = 0; index < limit; index++)
+                db.RentalAssets.Add(CreateRentalAsset(index, $"Search Customer {index:D4}"));
+
+            var pinnedAsset = CreateRentalAsset(limit + 1, "Search Customer ZZZ");
+            db.RentalAssets.Add(pinnedAsset);
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var rows = await service.GetAssetRowsAsync(
+                new RentalAssetFilter
+                {
+                    SearchText = "Search",
+                    MaxResults = limit,
+                    PinnedAssetId = pinnedAsset.Id
+                },
+                CreateAdminSession());
+
+            Assert.Equal(limit, rows.Count);
+            Assert.Contains(rows, row => row.Source.Id == pinnedAsset.Id);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -133,6 +205,7 @@ public sealed class RentalAssetSearchLimitTests
     private static LocalRentalAsset CreateRentalAsset(int index, string? customerName = null)
     {
         var assetId = Guid.NewGuid();
+        var resolvedCustomerName = customerName ?? $"검색고객 {index:D4}";
         return new LocalRentalAsset
         {
             Id = assetId,
@@ -143,8 +216,8 @@ public sealed class RentalAssetSearchLimitTests
             ManagementId = $"M-{index:D4}",
             ManagementNumber = $"MN-{index:D4}",
             AssetKey = $"AK-{assetId:N}",
-            CustomerName = $"검색고객 {index:D4}",
-            CurrentCustomerName = $"검색고객 {index:D4}",
+            CustomerName = resolvedCustomerName,
+            CurrentCustomerName = resolvedCustomerName,
             ItemCategoryName = "복합기",
             ItemName = $"렌탈 복합기 {index:D4}",
             MachineNumber = $"SN-{index:D4}",
