@@ -6386,15 +6386,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         IQueryable<LocalRentalAsset> query,
         SessionState session)
     {
-        if (CanAdministrativelyViewAllRental(session))
+        if (CanViewAllAssetScope(session))
             return query;
 
-        var readableOfficeAliases = BuildReadableAssetOfficeQueryAliases(session);
-        return query.Where(asset =>
-            readableOfficeAliases.Contains(asset.ResponsibleOfficeCode) ||
-            readableOfficeAliases.Contains(asset.ManagementCompanyCode) ||
-            readableOfficeAliases.Contains(((asset.ResponsibleOfficeCode ?? string.Empty).Trim().ToUpper())) ||
-            readableOfficeAliases.Contains(((asset.ManagementCompanyCode ?? string.Empty).Trim().ToUpper())));
+        return query.Where(_ => false);
     }
 
     private bool CanAccessRental(string? officeCode, SessionState session)

@@ -81,6 +81,44 @@ public sealed class RentalAssetSearchLimitTests
     }
 
     [Fact]
+    public async Task GetAssetRowsAsync_OfficeUserKeepsSharedAssetViewAcrossOffices()
+    {
+        PrepareAppRoot("georaeplan-rental-asset-shared-office-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetAsset = CreateRentalAsset(1, "USENET Customer");
+            usenetAsset.OfficeCode = OfficeCodeCatalog.Usenet;
+            usenetAsset.ResponsibleOfficeCode = OfficeCodeCatalog.Usenet;
+            usenetAsset.ManagementCompanyCode = OfficeCodeCatalog.Usenet;
+
+            var itworldAsset = CreateRentalAsset(2, "ITWORLD Customer");
+            itworldAsset.OfficeCode = OfficeCodeCatalog.Itworld;
+            itworldAsset.ResponsibleOfficeCode = OfficeCodeCatalog.Itworld;
+            itworldAsset.ManagementCompanyCode = OfficeCodeCatalog.Itworld;
+
+            db.RentalAssets.AddRange(usenetAsset, itworldAsset);
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var rows = await service.GetAssetRowsAsync(
+                new RentalAssetFilter { MaxResults = 100 },
+                CreateOfficeOnlySession(OfficeCodeCatalog.Usenet));
+
+            Assert.Contains(rows, row => row.Source.Id == usenetAsset.Id);
+            Assert.Contains(rows, row => row.Source.Id == itworldAsset.Id);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task GetAssetRowsAsync_PinnedAssetOutsideDefaultSortWindowIsStillIncluded()
     {
         PrepareAppRoot("georaeplan-rental-asset-pinned-window");
@@ -284,6 +322,20 @@ public sealed class RentalAssetSearchLimitTests
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+    private static SessionState CreateOfficeOnlySession(string officeCode)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = $"user-{officeCode}",
+            Role = DomainConstants.RoleUser,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(TenantScopeCatalog.UsenetGroup, officeCode),
+            OfficeCode = officeCode,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
         });
         return session;
     }
