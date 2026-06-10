@@ -3581,10 +3581,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     asset.CurrentCustomerName == normalizedCustomerName);
             }
 
-            var customerScopedAssets = await query
+            var customerScopedAssets = await SelectAssetLinkCandidateProjection(query
                 .OrderBy(asset => asset.CustomerName)
                 .ThenBy(asset => asset.ManagementNumber)
-                .Take(200)
+                .Take(200))
                 .ToListAsync(ct);
             await NormalizeAssetCustomerDisplayNamesAsync(customerScopedAssets, ct);
             return customerScopedAssets
@@ -3597,10 +3597,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var matchedQuery = BuildBillingCandidateCustomerMatchQuery(query, resolvedCustomerId, normalizedCustomerName);
         if (matchedQuery is not null)
         {
-            candidateAssets.AddRange(await matchedQuery
+            candidateAssets.AddRange(await SelectAssetLinkCandidateProjection(matchedQuery
                 .OrderBy(asset => asset.CustomerName)
                 .ThenBy(asset => asset.ManagementNumber)
-                .Take(BillingAssetCandidateResultLimit)
+                .Take(BillingAssetCandidateResultLimit))
                 .ToListAsync(ct));
         }
 
@@ -3611,10 +3611,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
             if (selectedIds.Count > 0)
                 remainingQuery = remainingQuery.Where(asset => !selectedIds.Contains(asset.Id));
 
-            candidateAssets.AddRange(await remainingQuery
+            candidateAssets.AddRange(await SelectAssetLinkCandidateProjection(remainingQuery
                 .OrderBy(asset => asset.CustomerName)
                 .ThenBy(asset => asset.ManagementNumber)
-                .Take(BillingAssetCandidateResultLimit - candidateAssets.Count)
+                .Take(BillingAssetCandidateResultLimit - candidateAssets.Count))
                 .ToListAsync(ct));
         }
 
@@ -3659,8 +3659,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             normalizedOfficeCode);
 
         var includedAssetLimit = 300 + assetIds.Count;
-        var includedAssets = await ApplyIncludedBillingAssetOrdering(query, assetIds)
-            .Take(includedAssetLimit)
+        var includedAssets = await SelectAssetLinkCandidateProjection(ApplyIncludedBillingAssetOrdering(query, assetIds)
+            .Take(includedAssetLimit))
             .ToListAsync(ct);
 
         await NormalizeAssetCustomerDisplayNamesAsync(includedAssets, ct);
