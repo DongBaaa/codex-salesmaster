@@ -101,8 +101,7 @@ public partial class CustomerEditWindow : Window
             mainWindow.InvoicePrintService,
             mainWindow.SessionState);
 
-        await rentalAssetViewModel.LoadAsync();
-        await rentalAssetViewModel.ApplyInitialCustomerFilterAsync(customer);
+        await rentalAssetViewModel.LoadWithInitialCustomerFilterAsync(customer);
 
         var rentalAssetWindow = new RentalAssetWindow(rentalAssetViewModel)
         {

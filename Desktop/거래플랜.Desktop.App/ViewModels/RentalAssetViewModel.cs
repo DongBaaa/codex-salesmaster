@@ -226,6 +226,39 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             warningThreshold: TimeSpan.FromSeconds(2));
     }
 
+    public async Task LoadWithInitialCustomerFilterAsync(LocalCustomer customer)
+    {
+        ArgumentNullException.ThrowIfNull(customer);
+
+        var totalStopwatch = Stopwatch.StartNew();
+        var stepStopwatch = Stopwatch.StartNew();
+
+        await ReloadFiltersAsync();
+        LogRentalAssetViewModelLoadStep("Rental asset filters load", stepStopwatch);
+
+        stepStopwatch.Restart();
+        await ReloadItemCategoryOptionsAsync();
+        LogRentalAssetViewModelLoadStep("Rental asset item category options load", stepStopwatch);
+
+        ApplyInitialCustomerFilter(customer);
+
+        stepStopwatch.Restart();
+        await ReloadAsync();
+        LogRentalAssetViewModelLoadStep("Rental asset initial customer rows load", stepStopwatch);
+
+        stepStopwatch.Restart();
+        ResetForNewAsset();
+        LogRentalAssetViewModelLoadStep("Rental asset edit reset", stepStopwatch);
+
+        OperationTiming.LogIfSlow(
+            "UI",
+            "Rental asset view model initial customer load",
+            totalStopwatch.Elapsed,
+            $"rows={Rows.Count:N0}, customer='{SearchText}', categories={ItemCategoryOptions.Count:N0}, offices={OfficeFilterOptions.Count:N0}",
+            infoThreshold: TimeSpan.FromMilliseconds(600),
+            warningThreshold: TimeSpan.FromSeconds(2));
+    }
+
     private static void LogRentalAssetViewModelLoadStep(string operation, Stopwatch stopwatch)
     {
         stopwatch.Stop();
@@ -241,6 +274,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         ArgumentNullException.ThrowIfNull(customer);
 
+        ApplyInitialCustomerFilter(customer);
+        await ReloadAsync();
+    }
+
+    private void ApplyInitialCustomerFilter(LocalCustomer customer)
+    {
         var normalizedCustomerName = (customer.NameOriginal ?? string.Empty).Trim();
         var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(customer.ResponsibleOfficeCode, _session.OfficeCode);
 
@@ -255,8 +294,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         {
             _suppressFilterReload = false;
         }
-
-        await ReloadAsync();
     }
 
     partial void OnSearchTextChanged(string value) => RequestFilterReload();
