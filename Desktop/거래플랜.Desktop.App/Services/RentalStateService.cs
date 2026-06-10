@@ -696,16 +696,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var offices = await GetOfficeMapAsync(ct);
         var includeUnlinkedAssets = ShouldLoadUnlinkedBillingAssets(filter);
         var unlinkedAssetLimit = includeUnlinkedAssets ? ResolveUnlinkedBillingAssetResultLimit(filter) : 0;
+        var searchKeyword = (filter.SearchText ?? string.Empty).Trim();
+        var baseFilter = string.IsNullOrWhiteSpace(searchKeyword)
+            ? filter
+            : CreateBillingFilterWithoutSearch(filter);
         var query = ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session);
-        query = ApplyBillingFilter(query, filter, session);
+        query = ApplyBillingFilter(query, baseFilter, session);
         var profileResultLimit = ResolveBillingProfileResultLimit(filter);
-        IQueryable<LocalRentalBillingProfile> profileQuery = query
-            .OrderBy(profile => profile.CustomerName)
-            .ThenBy(profile => profile.ItemName);
-        if (profileResultLimit.HasValue)
-            profileQuery = profileQuery.Take(profileResultLimit.Value);
-
-        var profiles = await profileQuery.ToListAsync(ct);
+        var profiles = string.IsNullOrWhiteSpace(searchKeyword)
+            ? await LoadBillingProfilesAsync(query, profileResultLimit, ct)
+            : await LoadBillingProfileSearchResultsAsync(query, searchKeyword, profileResultLimit, ct);
         LogRentalLoadStep("Rental billing profile query", stepStopwatch, $"profiles={profiles.Count:N0}, limit={profileResultLimit?.ToString("N0", CultureInfo.CurrentCulture) ?? "none"}, {BuildBillingFilterTimingDetail(filter)}");
 
         stepStopwatch.Restart();
@@ -732,19 +732,24 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         stepStopwatch.Restart();
+        var unlinkedAssetBaseQuery = includeUnlinkedAssets
+            ? ApplyUnlinkedBillingAssetFilter(
+                ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+                    .Where(asset => !asset.IsDeleted)
+                    .Where(asset => !asset.BillingProfileId.HasValue || asset.BillingProfileId == Guid.Empty)
+                    .Where(asset => asset.BillingEligibilityStatus == null || asset.BillingEligibilityStatus != BillingEligibilityExcluded)
+                    .Where(asset => !NonOperatingAssetStatusQueryValues.Contains(asset.AssetStatus)),
+                baseFilter)
+            : null;
         var unlinkedAssets = includeUnlinkedAssets
-            ? await SelectBillingAssetListProjection(ApplyUnlinkedBillingAssetFilter(
-                    ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
-                        .Where(asset => !asset.IsDeleted)
-                        .Where(asset => !asset.BillingProfileId.HasValue || asset.BillingProfileId == Guid.Empty)
-                        .Where(asset => asset.BillingEligibilityStatus == null || asset.BillingEligibilityStatus != BillingEligibilityExcluded)
-                        .Where(asset => !NonOperatingAssetStatusQueryValues.Contains(asset.AssetStatus)),
-                    filter))
-                .OrderBy(asset => asset.CustomerName)
-                .ThenBy(asset => asset.CurrentCustomerName)
-                .ThenBy(asset => asset.ManagementNumber)
-                .Take(unlinkedAssetLimit)
-                .ToListAsync(ct)
+            ? string.IsNullOrWhiteSpace(searchKeyword)
+                ? await SelectBillingAssetListProjection(unlinkedAssetBaseQuery!)
+                    .OrderBy(asset => asset.CustomerName)
+                    .ThenBy(asset => asset.CurrentCustomerName)
+                    .ThenBy(asset => asset.ManagementNumber)
+                    .Take(unlinkedAssetLimit)
+                    .ToListAsync(ct)
+                : await LoadUnlinkedBillingAssetSearchResultsAsync(unlinkedAssetBaseQuery!, searchKeyword, unlinkedAssetLimit, ct)
             : new List<LocalRentalAsset>();
         LogRentalLoadStep("Rental billing unlinked asset query", stepStopwatch, $"assets={unlinkedAssets.Count:N0}, include={includeUnlinkedAssets}, limit={unlinkedAssetLimit:N0}");
 
@@ -836,6 +841,105 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var rows = await BuildBillingProfileRowsAsync([profile], session, offices, referenceDate, includeHistoryRows: true, ct);
         return rows.FirstOrDefault();
     }
+
+    private static RentalBillingFilter CreateBillingFilterWithoutSearch(RentalBillingFilter filter)
+        => new()
+        {
+            SearchText = string.Empty,
+            OfficeCode = filter.OfficeCode,
+            Status = filter.Status,
+            DueOnly = filter.DueOnly,
+            PastDueOnly = filter.PastDueOnly,
+            ExpandCustomerSummaryRows = filter.ExpandCustomerSummaryRows,
+            IncludeHistoryRows = filter.IncludeHistoryRows,
+            ReferenceDate = filter.ReferenceDate
+        };
+
+    private static async Task<List<LocalRentalBillingProfile>> LoadBillingProfilesAsync(
+        IQueryable<LocalRentalBillingProfile> query,
+        int? profileResultLimit,
+        CancellationToken ct)
+    {
+        IQueryable<LocalRentalBillingProfile> profileQuery = query
+            .OrderBy(profile => profile.CustomerName)
+            .ThenBy(profile => profile.ItemName);
+        if (profileResultLimit.HasValue)
+            profileQuery = profileQuery.Take(profileResultLimit.Value);
+
+        return await profileQuery.ToListAsync(ct);
+    }
+
+    private static async Task<List<LocalRentalBillingProfile>> LoadBillingProfileSearchResultsAsync(
+        IQueryable<LocalRentalBillingProfile> baseQuery,
+        string keyword,
+        int? profileResultLimit,
+        CancellationToken ct)
+    {
+        if (!profileResultLimit.HasValue)
+            return await ApplyBillingProfileSearchContainsFilter(baseQuery, keyword).ToListAsync(ct);
+
+        var profiles = new List<LocalRentalBillingProfile>(profileResultLimit.Value);
+        await AddDistinctBillingProfileSearchResultsAsync(
+            profiles,
+            ApplyBillingProfileSearchPrefixFilter(baseQuery, keyword),
+            profileResultLimit.Value,
+            orderByListColumns: true,
+            ct);
+
+        if (profiles.Count < profileResultLimit.Value)
+        {
+            await AddDistinctBillingProfileSearchResultsAsync(
+                profiles,
+                ApplyBillingProfileSearchContainsFilter(baseQuery, keyword),
+                profileResultLimit.Value,
+                orderByListColumns: false,
+                ct);
+        }
+
+        return profiles;
+    }
+
+    private static async Task AddDistinctBillingProfileSearchResultsAsync(
+        List<LocalRentalBillingProfile> profiles,
+        IQueryable<LocalRentalBillingProfile> query,
+        int maxResults,
+        bool orderByListColumns,
+        CancellationToken ct)
+    {
+        var remaining = maxResults - profiles.Count;
+        if (remaining <= 0)
+            return;
+
+        var existingIds = profiles.Select(profile => profile.Id).ToList();
+        if (existingIds.Count > 0)
+            query = query.Where(profile => !existingIds.Contains(profile.Id));
+
+        if (orderByListColumns)
+            query = query.OrderBy(profile => profile.CustomerName).ThenBy(profile => profile.ItemName);
+
+        var nextProfiles = await query
+            .Take(remaining)
+            .ToListAsync(ct);
+        profiles.AddRange(nextProfiles);
+    }
+
+    private static IQueryable<LocalRentalBillingProfile> ApplyBillingProfileSearchPrefixFilter(
+        IQueryable<LocalRentalBillingProfile> query,
+        string keyword)
+        => query.Where(profile =>
+            profile.CustomerName.StartsWith(keyword) ||
+            profile.BusinessNumber.StartsWith(keyword) ||
+            profile.ItemName.StartsWith(keyword) ||
+            profile.Notes.StartsWith(keyword));
+
+    private static IQueryable<LocalRentalBillingProfile> ApplyBillingProfileSearchContainsFilter(
+        IQueryable<LocalRentalBillingProfile> query,
+        string keyword)
+        => query.Where(profile =>
+            profile.CustomerName.Contains(keyword) ||
+            profile.BusinessNumber.Contains(keyword) ||
+            profile.ItemName.Contains(keyword) ||
+            profile.Notes.Contains(keyword));
 
     public async Task<IReadOnlyList<RentalBillingHistoryRow>> GetBillingHistoryRowsAsync(
         IReadOnlyCollection<Guid> profileIds,
@@ -1499,6 +1603,87 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         return query;
     }
+
+    private static async Task<List<LocalRentalAsset>> LoadUnlinkedBillingAssetSearchResultsAsync(
+        IQueryable<LocalRentalAsset> baseQuery,
+        string keyword,
+        int maxResults,
+        CancellationToken ct)
+    {
+        var assets = new List<LocalRentalAsset>(maxResults);
+        await AddDistinctUnlinkedBillingAssetSearchResultsAsync(
+            assets,
+            ApplyUnlinkedBillingAssetSearchPrefixFilter(baseQuery, keyword),
+            maxResults,
+            orderByListColumns: true,
+            ct);
+
+        if (assets.Count < maxResults)
+        {
+            await AddDistinctUnlinkedBillingAssetSearchResultsAsync(
+                assets,
+                ApplyUnlinkedBillingAssetSearchContainsFilter(baseQuery, keyword),
+                maxResults,
+                orderByListColumns: false,
+                ct);
+        }
+
+        return assets;
+    }
+
+    private static async Task AddDistinctUnlinkedBillingAssetSearchResultsAsync(
+        List<LocalRentalAsset> assets,
+        IQueryable<LocalRentalAsset> query,
+        int maxResults,
+        bool orderByListColumns,
+        CancellationToken ct)
+    {
+        var remaining = maxResults - assets.Count;
+        if (remaining <= 0)
+            return;
+
+        var existingIds = assets.Select(asset => asset.Id).ToList();
+        if (existingIds.Count > 0)
+            query = query.Where(asset => !existingIds.Contains(asset.Id));
+
+        IQueryable<LocalRentalAsset> projectedQuery = SelectBillingAssetListProjection(query);
+        if (orderByListColumns)
+        {
+            projectedQuery = projectedQuery
+                .OrderBy(asset => asset.CustomerName)
+                .ThenBy(asset => asset.CurrentCustomerName)
+                .ThenBy(asset => asset.ManagementNumber);
+        }
+
+        var nextAssets = await projectedQuery
+            .Take(remaining)
+            .ToListAsync(ct);
+        assets.AddRange(nextAssets);
+    }
+
+    private static IQueryable<LocalRentalAsset> ApplyUnlinkedBillingAssetSearchPrefixFilter(
+        IQueryable<LocalRentalAsset> query,
+        string keyword)
+        => query.Where(asset =>
+            asset.CustomerName.StartsWith(keyword) ||
+            asset.CurrentCustomerName.StartsWith(keyword) ||
+            asset.ItemName.StartsWith(keyword) ||
+            asset.InstallLocation.StartsWith(keyword) ||
+            asset.InstallSiteName.StartsWith(keyword) ||
+            asset.ManagementNumber.StartsWith(keyword) ||
+            asset.MachineNumber.StartsWith(keyword));
+
+    private static IQueryable<LocalRentalAsset> ApplyUnlinkedBillingAssetSearchContainsFilter(
+        IQueryable<LocalRentalAsset> query,
+        string keyword)
+        => query.Where(asset =>
+            asset.CustomerName.Contains(keyword) ||
+            asset.CurrentCustomerName.Contains(keyword) ||
+            asset.ItemName.Contains(keyword) ||
+            asset.InstallLocation.Contains(keyword) ||
+            asset.InstallSiteName.Contains(keyword) ||
+            asset.ManagementNumber.Contains(keyword) ||
+            asset.MachineNumber.Contains(keyword));
 
     private static bool ShouldIncludeUnlinkedBillingAssets(string? status)
         => string.IsNullOrWhiteSpace(status) ||
