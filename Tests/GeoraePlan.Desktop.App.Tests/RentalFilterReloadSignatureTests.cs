@@ -36,6 +36,28 @@ public sealed class RentalFilterReloadSignatureTests
     }
 
     [Fact]
+    public void RentalBillingViewModel_RequestFilterReloadSkipsSingleCharacterSearch()
+    {
+        var vm = new RentalBillingViewModel(null!, null!, CreateAdminSession())
+        {
+            SearchText = "가"
+        };
+
+        try
+        {
+            InvokePrivateInstance(vm, "RequestFilterReload");
+
+            Assert.Null(GetPrivateFieldValue(vm, "_filterReloadCts"));
+            Assert.Equal(string.Empty, GetPrivateField<string>(vm, "_pendingFilterReloadSignature"));
+            Assert.Contains("2글자 이상", vm.StatusMessage);
+        }
+        finally
+        {
+            vm.CancelPendingBackgroundWork();
+        }
+    }
+
+    [Fact]
     public void RentalBillingViewModel_StartCandidateAssetsLoadSkipsSameActiveSignature()
     {
         var profileId = Guid.Parse("11111111-1111-1111-1111-111111111111");
@@ -127,6 +149,41 @@ public sealed class RentalFilterReloadSignatureTests
         }
     }
 
+    [Fact]
+    public void RentalAssetViewModel_RequestFilterReloadSkipsSingleCharacterSearch()
+    {
+        PrepareAppRoot("georaeplan-rental-asset-single-char-search");
+
+        try
+        {
+            using var db = new LocalDbContext();
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var vm = new RentalAssetViewModel(rental, local, documents: null!, printService: null!, session)
+            {
+                SearchText = "가"
+            };
+
+            try
+            {
+                InvokePrivateInstance(vm, "RequestFilterReload");
+
+                Assert.Null(GetPrivateFieldValue(vm, "_filterReloadCts"));
+                Assert.Equal(string.Empty, GetPrivateField<string>(vm, "_pendingFilterReloadSignature"));
+                Assert.Contains("2글자 이상", vm.StatusMessage);
+            }
+            finally
+            {
+                vm.CancelPendingBackgroundWork();
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static SessionState CreateAdminSession()
     {
         var session = new SessionState();
@@ -153,6 +210,13 @@ public sealed class RentalFilterReloadSignatureTests
         var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(field);
         return Assert.IsType<T>(field!.GetValue(target));
+    }
+
+    private static object? GetPrivateFieldValue(object target, string fieldName)
+    {
+        var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return field!.GetValue(target);
     }
 
     private static void SetPrivateField(object target, string fieldName, object? value)

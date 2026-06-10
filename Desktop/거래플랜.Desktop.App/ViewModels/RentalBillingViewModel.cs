@@ -4094,6 +4094,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (_suppressFilterReload)
             return;
 
+        if (!CanReloadForSearchText())
+        {
+            CancelPendingFilterReload();
+            StatusMessage = "검색어는 2글자 이상 입력하면 조회합니다. 1글자는 결과가 너무 많아 조회를 보류했습니다.";
+            return;
+        }
+
         var signature = BuildCurrentFilterReloadSignature();
         if (!string.IsNullOrWhiteSpace(_pendingFilterReloadSignature) &&
             string.Equals(_pendingFilterReloadSignature, signature, StringComparison.Ordinal))
@@ -4136,6 +4143,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         => string.IsNullOrWhiteSpace(SearchText)
             ? TimeSpan.FromMilliseconds(350)
             : TimeSpan.FromMilliseconds(650);
+
+    private bool CanReloadForSearchText()
+    {
+        var keyword = (SearchText ?? string.Empty).Trim();
+        return keyword.Length == 0 || keyword.Length >= 2;
+    }
 
     private string BuildCurrentFilterReloadSignature()
         => string.Join(
