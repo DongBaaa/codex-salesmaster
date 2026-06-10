@@ -44,6 +44,11 @@
             <Setter Property="MinHeight" Value="28"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
+        <Style x:Key="GeoraePlanDatePickerCalendarStyle" TargetType="{x:Type Calendar}">
+            <Setter Property="FontFamily" Value="Malgun Gothic"/>
+            <Setter Property="MinWidth" Value="320"/>
+            <Setter Property="MinHeight" Value="280"/>
+        </Style>
         <Style TargetType="DatePicker">
             <Setter Property="Foreground" Value="Black"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
@@ -56,6 +61,7 @@
             <Setter Property="Height" Value="30"/>
             <Setter Property="Width" Value="150"/>
             <Setter Property="MaxWidth" Value="150"/>
+            <Setter Property="CalendarStyle" Value="{StaticResource GeoraePlanDatePickerCalendarStyle}"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Foreground" Value="Black"/>
@@ -65,11 +71,7 @@
             <Setter Property="Padding" Value="8,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
-        <Style TargetType="{x:Type Calendar}">
-            <Setter Property="FontFamily" Value="Malgun Gothic"/>
-            <Setter Property="MinWidth" Value="320"/>
-            <Setter Property="MinHeight" Value="280"/>
-        </Style>
+        <Style TargetType="{x:Type Calendar}" BasedOn="{StaticResource GeoraePlanDatePickerCalendarStyle}"/>
         <Style TargetType="{x:Type CalendarItem}">
             <Setter Property="MinWidth" Value="320"/>
             <Setter Property="MinHeight" Value="260"/>

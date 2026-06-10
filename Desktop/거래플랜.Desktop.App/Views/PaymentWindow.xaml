@@ -83,6 +83,7 @@
             <Setter Property="MinHeight" Value="30"/>
             <Setter Property="Width" Value="150"/>
             <Setter Property="MaxWidth" Value="150"/>
+            <Setter Property="CalendarStyle" Value="{StaticResource GeoraePlanDatePickerCalendarStyle}"/>
         </Style>
         <Style TargetType="{x:Type DatePickerTextBox}">
             <Setter Property="Background" Value="#D9E6F5"/>
