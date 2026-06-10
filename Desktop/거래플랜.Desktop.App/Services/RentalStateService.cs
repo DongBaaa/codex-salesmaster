@@ -459,6 +459,31 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 ct);
     }
 
+    private IQueryable<Guid>? BuildAssetSearchCustomerIdQuery(string keyword, string normalizedKeyword)
+    {
+        if (keyword.Trim().Length < 2 && normalizedKeyword.Trim().Length < 2)
+            return null;
+
+        var customers = _db.Customers
+            .AsNoTracking()
+            .Where(customer => !customer.IsDeleted);
+
+        if (string.IsNullOrWhiteSpace(normalizedKeyword))
+        {
+            return customers
+                .Where(customer => customer.NameOriginal.Contains(keyword))
+                .Select(customer => customer.Id)
+                .Distinct();
+        }
+
+        return customers
+            .Where(customer =>
+                customer.NameOriginal.Contains(keyword) ||
+                (customer.NameMatchKey ?? string.Empty).Contains(normalizedKeyword))
+            .Select(customer => customer.Id)
+            .Distinct();
+    }
+
     private static string ResolveAssetCustomerDisplayName(
         LocalRentalAsset asset,
         IReadOnlyDictionary<Guid, string> customerNameMap)
@@ -1656,27 +1681,30 @@ WHERE ""AssignedUsername"" <> '';", ct);
             stepStopwatch.Restart();
             var keyword = filter.SearchText.Trim();
             var normalizedKeyword = RentalCatalogValueNormalizer.NormalizeLooseKey(keyword);
-            var matchingCustomerIds = await _db.Customers
-                .AsNoTracking()
-                .Where(customer => !customer.IsDeleted)
-                .Where(customer =>
-                    customer.NameOriginal.Contains(keyword) ||
-                    (!string.IsNullOrWhiteSpace(normalizedKeyword) &&
-                     (customer.NameMatchKey ?? string.Empty).Contains(normalizedKeyword)))
-                .Select(customer => customer.Id)
-                .Distinct()
-                .ToListAsync(ct);
+            var linkedCustomerNameSearch = BuildAssetSearchCustomerIdQuery(keyword, normalizedKeyword);
 
-            query = query.Where(asset =>
-                asset.ManagementNumber.Contains(keyword) ||
-                asset.CustomerName.Contains(keyword) ||
-                asset.CurrentCustomerName.Contains(keyword) ||
-                asset.ItemCategoryName.Contains(keyword) ||
-                asset.ItemName.Contains(keyword) ||
-                asset.MachineNumber.Contains(keyword) ||
-                asset.InstallLocation.Contains(keyword) ||
-                (asset.CustomerId.HasValue && matchingCustomerIds.Contains(asset.CustomerId.Value)));
-            LogRentalLoadStep("Rental asset customer search match", stepStopwatch, $"matchedCustomers={matchingCustomerIds.Count:N0}");
+            query = linkedCustomerNameSearch is null
+                ? query.Where(asset =>
+                    asset.ManagementNumber.Contains(keyword) ||
+                    asset.CustomerName.Contains(keyword) ||
+                    asset.CurrentCustomerName.Contains(keyword) ||
+                    asset.ItemCategoryName.Contains(keyword) ||
+                    asset.ItemName.Contains(keyword) ||
+                    asset.MachineNumber.Contains(keyword) ||
+                    asset.InstallLocation.Contains(keyword))
+                : query.Where(asset =>
+                    asset.ManagementNumber.Contains(keyword) ||
+                    asset.CustomerName.Contains(keyword) ||
+                    asset.CurrentCustomerName.Contains(keyword) ||
+                    asset.ItemCategoryName.Contains(keyword) ||
+                    asset.ItemName.Contains(keyword) ||
+                    asset.MachineNumber.Contains(keyword) ||
+                    asset.InstallLocation.Contains(keyword) ||
+                    (asset.CustomerId.HasValue && linkedCustomerNameSearch.Contains(asset.CustomerId.Value)));
+            LogRentalLoadStep(
+                "Rental asset customer search match",
+                stepStopwatch,
+                linkedCustomerNameSearch is null ? "linkedCustomerSearch=skip-short-keyword" : "linkedCustomerSearch=subquery");
         }
 
         query = ApplyAssetFilter(query, new RentalAssetFilter
