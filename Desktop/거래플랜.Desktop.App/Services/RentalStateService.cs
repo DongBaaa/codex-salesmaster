@@ -828,13 +828,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var customerNameMap = await GetBillingProfileCustomerNameMapAsync(profiles, ct);
         var billingRunsByProfile = profiles.ToDictionary(
             profile => profile.Id,
-            profile => GetBillingRuns(profile)
-                .Where(run => run.RunId != Guid.Empty)
-                .GroupBy(run => run.RunId)
-                .Select(group => group.First())
-                .OrderByDescending(run => run.ScheduledDate)
-                .ThenByDescending(run => run.PeriodEndDate)
-                .ToList());
+            profile => DeduplicateBillingRuns(GetBillingRuns(profile)));
         var allRunIds = billingRunsByProfile.Values
             .SelectMany(runs => runs)
             .Select(run => run.RunId)
@@ -913,13 +907,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 previewRunsByProfile[profile.Id] = previewRun;
 
             templateItemsByProfile[profile.Id] = templateItems;
-            billingRunsByProfile[profile.Id] = runs
-                .Where(run => run.RunId != Guid.Empty)
-                .GroupBy(run => run.RunId)
-                .Select(group => group.First())
-                .OrderByDescending(run => run.ScheduledDate)
-                .ThenByDescending(run => run.PeriodEndDate)
-                .ToList();
+            billingRunsByProfile[profile.Id] = DeduplicateBillingRuns(runs);
         }
         LogRentalLoadStep("Rental billing template/run preparation", stepStopwatch, $"profiles={profiles.Count:N0}, runs={billingRunsByProfile.Values.Sum(runs => runs.Count):N0}");
 
@@ -1346,11 +1334,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         DateOnly? oldestScheduledDate = null;
         var oldestPeriodLabel = string.Empty;
 
-        foreach (var run in runs
-                     .Where(run => run.RunId != Guid.Empty)
-                     .GroupBy(run => run.RunId)
-                     .Select(group => group.First()))
+        var seenRunIds = new HashSet<Guid>();
+        foreach (var run in runs)
         {
+            if (run.RunId == Guid.Empty || !seenRunIds.Add(run.RunId))
+                continue;
+
             var billedAmount = Math.Max(0m, run.BilledAmount);
             if (invoiceByRun.TryGetValue(run.RunId, out var invoiceInfo) && invoiceInfo.TotalAmount > 0m)
                 billedAmount = invoiceInfo.TotalAmount;
@@ -1380,6 +1369,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
             pastUnresolvedAmount,
             oldestScheduledDate,
             oldestPeriodLabel);
+    }
+
+    private static List<RentalBillingRunModel> DeduplicateBillingRuns(IEnumerable<RentalBillingRunModel> runs)
+    {
+        var result = new List<RentalBillingRunModel>();
+        var seenRunIds = new HashSet<Guid>();
+        foreach (var run in runs)
+        {
+            if (run.RunId == Guid.Empty || !seenRunIds.Add(run.RunId))
+                continue;
+
+            result.Add(run);
+        }
+
+        return result;
     }
 
     private static RentalBillingHistorySummary BuildGroupedBillingHistorySummary(
