@@ -432,7 +432,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 return;
             }
 
-            var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId, ct);
+            var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId, AssignmentHistoryDisplayLimit, ct);
             ct.ThrowIfCancellationRequested();
             if (SelectedIncludedAsset?.AssetId != assetId)
                 return;

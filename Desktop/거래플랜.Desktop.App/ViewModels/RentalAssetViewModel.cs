@@ -1013,7 +1013,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 return;
             }
 
-            var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId, ct);
+            var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId, AssignmentHistoryDisplayLimit, ct);
             ct.ThrowIfCancellationRequested();
             if (SelectedRow?.Source.Id != assetId)
                 return;

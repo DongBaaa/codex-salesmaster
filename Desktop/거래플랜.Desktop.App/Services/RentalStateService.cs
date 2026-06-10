@@ -4224,18 +4224,30 @@ WHERE ""AssignedUsername"" <> '';", ct);
             PurchaseDate = asset.PurchaseDate
         });
 
+    public Task<IReadOnlyList<RentalAssetAssignmentHistoryViewItem>> GetAssetAssignmentHistoriesAsync(
+        Guid assetId,
+        CancellationToken ct = default)
+        => GetAssetAssignmentHistoriesAsync(assetId, maxDisplayRows: 0, ct);
+
     public async Task<IReadOnlyList<RentalAssetAssignmentHistoryViewItem>> GetAssetAssignmentHistoriesAsync(
         Guid assetId,
+        int maxDisplayRows,
         CancellationToken ct = default)
     {
         if (assetId == Guid.Empty)
             return [];
 
-        var histories = await _db.RentalAssetAssignmentHistories
+        IQueryable<LocalRentalAssetAssignmentHistory> query = _db.RentalAssetAssignmentHistories
             .AsNoTracking()
             .Where(history => history.AssetId == assetId)
             .OrderByDescending(history => history.IsCurrent)
-            .ThenByDescending(history => history.LinkedAtUtc)
+            .ThenByDescending(history => history.LinkedAtUtc);
+
+        var rawFetchLimit = ResolveAssignmentHistoryRawFetchLimit(maxDisplayRows);
+        if (rawFetchLimit.HasValue)
+            query = query.Take(rawFetchLimit.Value);
+
+        var histories = await query
             .ToListAsync(ct);
         if (histories.Count == 0)
             return [];
@@ -4266,7 +4278,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .AsNoTracking()
             .FirstOrDefaultAsync(current => current.Id == assetId, ct);
 
-        return histories
+        IEnumerable<LocalRentalAssetAssignmentHistory> displayHistories = histories
             .GroupBy(BuildAssignmentHistoryLogicalKey)
             .Select(group => group
                 .OrderByDescending(history => history.IsCurrent)
@@ -4274,9 +4286,23 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .ThenByDescending(history => history.UpdatedAtUtc)
                 .First())
             .OrderByDescending(history => history.IsCurrent)
-            .ThenByDescending(history => history.LinkedAtUtc)
+            .ThenByDescending(history => history.LinkedAtUtc);
+
+        if (maxDisplayRows > 0)
+            displayHistories = displayHistories.Take(maxDisplayRows);
+
+        return displayHistories
             .Select(history => BuildAssignmentHistoryViewItem(history, asset, profileDisplayLookup))
             .ToList();
+    }
+
+    private static int? ResolveAssignmentHistoryRawFetchLimit(int maxDisplayRows)
+    {
+        if (maxDisplayRows <= 0)
+            return null;
+
+        var normalizedDisplayLimit = Math.Clamp(maxDisplayRows, 1, 5_000);
+        return Math.Min(normalizedDisplayLimit * 3, normalizedDisplayLimit + 600);
     }
 
     public async Task<RentalAssetAssignmentHistoryEditRequest?> CreateAssetAssignmentHistoryEditRequestAsync(
