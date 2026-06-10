@@ -756,18 +756,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Select(profile => profile.CustomerId!.Value)
             .Distinct()
             .ToList();
-        var customersById = customerIds.Count == 0
-            ? new Dictionary<Guid, LocalCustomer>()
+        var customerNameMap = customerIds.Count == 0
+            ? new Dictionary<Guid, string>()
             : await _db.Customers
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(customer => customerIds.Contains(customer.Id))
-                .ToDictionaryAsync(customer => customer.Id, customer => customer, ct);
+                .ToDictionaryAsync(customer => customer.Id, customer => customer.NameOriginal, ct);
         ct.ThrowIfCancellationRequested();
-        var customerNameMap = customersById.ToDictionary(
-            pair => pair.Key,
-            pair => pair.Value.NameOriginal,
-            EqualityComparer<Guid>.Default);
         LogRentalLoadStep("Rental billing customer lookup", stepStopwatch, $"customers={customerNameMap.Count:N0}");
 
         stepStopwatch.Restart();
