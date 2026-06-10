@@ -2269,12 +2269,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         stepStopwatch.Restart();
         var maxResults = ResolveAssetQueryResultLimit(filter);
-        var pinnedAssetId = filter.PinnedAssetId.GetValueOrDefault();
-        var hasPinnedAssetId = filter.PinnedAssetId.HasValue && pinnedAssetId != Guid.Empty;
-        var assets = await SelectAssetListProjection(query)
-            .OrderByDescending(asset => hasPinnedAssetId && asset.Id == pinnedAssetId)
-            .ThenBy(asset => asset.CustomerName)
-            .ThenBy(asset => asset.ManagementNumber)
+        var orderedAssetQuery = ApplyAssetListOrdering(
+            SelectAssetListProjection(query),
+            filter.PinnedAssetId);
+        var assets = await orderedAssetQuery
             .Take(maxResults)
             .ToListAsync(ct);
         LogRentalLoadStep("Rental asset DB query", stepStopwatch, $"assets={assets.Count:N0}, {BuildAssetFilterTimingDetail(filter, maxResults)}");
@@ -2352,6 +2350,24 @@ WHERE ""AssignedUsername"" <> '';", ct);
             ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
             AssetStatus = asset.AssetStatus
         });
+
+    private static IOrderedQueryable<LocalRentalAsset> ApplyAssetListOrdering(
+        IQueryable<LocalRentalAsset> query,
+        Guid? pinnedAssetId)
+    {
+        if (pinnedAssetId.HasValue && pinnedAssetId.Value != Guid.Empty)
+        {
+            var pinnedId = pinnedAssetId.Value;
+            return query
+                .OrderByDescending(asset => asset.Id == pinnedId)
+                .ThenBy(asset => asset.CustomerName)
+                .ThenBy(asset => asset.ManagementNumber);
+        }
+
+        return query
+            .OrderBy(asset => asset.CustomerName)
+            .ThenBy(asset => asset.ManagementNumber);
+    }
 
     private RentalAssetViewRow CreateAssetViewRow(
         LocalRentalAsset asset,

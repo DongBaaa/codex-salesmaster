@@ -80,6 +80,49 @@ public sealed class RentalAssetSearchLimitTests
         }
     }
 
+    [Fact]
+    public async Task GetAssetRowsAsync_PinnedAssetOutsideDefaultSortWindowIsStillIncluded()
+    {
+        PrepareAppRoot("georaeplan-rental-asset-pinned-window");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var limit = RentalStateService.AssetListResultLimit;
+            for (var index = 0; index < limit; index++)
+                db.RentalAssets.Add(CreateRentalAsset(index, $"A Customer {index:D4}"));
+
+            var pinnedAsset = CreateRentalAsset(limit + 1, "ZZZ Pinned Customer");
+            db.RentalAssets.Add(pinnedAsset);
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var session = CreateAdminSession();
+
+            var defaultRows = await service.GetAssetRowsAsync(
+                new RentalAssetFilter { MaxResults = limit },
+                session);
+            Assert.DoesNotContain(defaultRows, row => row.Source.Id == pinnedAsset.Id);
+
+            var pinnedRows = await service.GetAssetRowsAsync(
+                new RentalAssetFilter
+                {
+                    MaxResults = limit,
+                    PinnedAssetId = pinnedAsset.Id
+                },
+                session);
+            Assert.Contains(pinnedRows, row => row.Source.Id == pinnedAsset.Id);
+            Assert.Equal(limit, pinnedRows.Count);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -87,7 +130,7 @@ public sealed class RentalAssetSearchLimitTests
         Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
     }
 
-    private static LocalRentalAsset CreateRentalAsset(int index)
+    private static LocalRentalAsset CreateRentalAsset(int index, string? customerName = null)
     {
         var assetId = Guid.NewGuid();
         return new LocalRentalAsset
