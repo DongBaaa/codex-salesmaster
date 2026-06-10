@@ -153,6 +153,52 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_LoadsInvoiceLineAndPaymentTotalsInBatches()
+    {
+        PrepareAppRoot("georaeplan-integrity-invoice-aggregate-batch-load");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            const int balancedInvoiceCount = 1_100;
+            for (var index = 0; index < balancedInvoiceCount; index++)
+                db.Invoices.Add(CreateInvoiceWithAggregates(index, OfficeCodeCatalog.Yeonsu, lineAmount: 100m, invoiceTotal: 100m, paymentAmount: 100m));
+
+            var problemInvoice = CreateInvoiceWithAggregates(
+                balancedInvoiceCount + 1,
+                OfficeCodeCatalog.Yeonsu,
+                lineAmount: 120m,
+                invoiceTotal: 100m,
+                paymentAmount: 150m);
+            db.Invoices.Add(problemInvoice);
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateYeonsuAdminSession());
+            var invoiceIssues = result.Issues
+                .Where(issue =>
+                    issue.Code == DataIntegrityIssueCodes.InvoiceAmountMismatch ||
+                    issue.Code == DataIntegrityIssueCodes.InvoiceOverSettled)
+                .ToList();
+
+            Assert.Equal(2, invoiceIssues.Count);
+            Assert.Contains(invoiceIssues, issue =>
+                issue.Code == DataIntegrityIssueCodes.InvoiceAmountMismatch &&
+                issue.EntityId == problemInvoice.Id);
+            Assert.Contains(invoiceIssues, issue =>
+                issue.Code == DataIntegrityIssueCodes.InvoiceOverSettled &&
+                issue.EntityId == problemInvoice.Id);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_PrefiltersMasterDataSourceLoadByOperationalScope()
     {
         PrepareAppRoot("georaeplan-integrity-master-scope-prefilter");
@@ -595,6 +641,57 @@ public sealed class DataIntegrityIssueServicePerformanceTests
                     UnitPrice = 100m,
                     LineAmount = 100m,
                     IsDeleted = false
+                }
+            ]
+        };
+    }
+
+    private static LocalInvoice CreateInvoiceWithAggregates(int index, string officeCode, decimal lineAmount, decimal invoiceTotal, decimal paymentAmount)
+    {
+        var invoiceId = Guid.NewGuid();
+        return new LocalInvoice
+        {
+            Id = invoiceId,
+            TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            CustomerId = Guid.NewGuid(),
+            InvoiceNumber = $"INV-AGG-{officeCode}-{index:D4}",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = DateOnly.FromDateTime(DateTime.Today),
+            SupplyAmount = invoiceTotal,
+            VatAmount = 0m,
+            TotalAmount = invoiceTotal,
+            VatMode = InvoiceVatModes.None,
+            SourceWarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(officeCode),
+            IsLatestVersion = true,
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            Lines =
+            [
+                new LocalInvoiceLine
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoiceId,
+                    ItemNameOriginal = $"Aggregate Item {index:D4}",
+                    Quantity = 1m,
+                    UnitPrice = lineAmount,
+                    LineAmount = lineAmount,
+                    IsDeleted = false
+                }
+            ],
+            Payments =
+            [
+                new LocalPayment
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoiceId,
+                    PaymentDate = DateOnly.FromDateTime(DateTime.Today),
+                    Amount = paymentAmount,
+                    IsDeleted = false,
+                    CreatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DateTime.UtcNow
                 }
             ]
         };

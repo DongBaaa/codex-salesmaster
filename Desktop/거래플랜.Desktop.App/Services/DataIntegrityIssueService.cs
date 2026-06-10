@@ -370,11 +370,21 @@ public sealed class DataIntegrityIssueService
         var activeInvoices = await ApplyOperationalAlertInvoiceScopePrefilter(
                 _db.Invoices
                     .AsNoTracking()
-                    .AsSplitQuery()
                     .Where(invoice => !invoice.IsDeleted && invoice.IsLatestVersion),
                 session)
-            .Include(invoice => invoice.Lines.Where(line => !line.IsDeleted))
-            .Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
+            .Select(invoice => new IntegrityInvoiceSnapshot
+            {
+                Id = invoice.Id,
+                TenantCode = invoice.TenantCode,
+                ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
+                InvoiceNumber = invoice.InvoiceNumber,
+                VoucherType = invoice.VoucherType,
+                InvoiceDate = invoice.InvoiceDate,
+                TotalAmount = invoice.TotalAmount,
+                SupplyAmount = invoice.SupplyAmount,
+                VatAmount = invoice.VatAmount,
+                VatMode = invoice.VatMode
+            })
             .ToListAsync(ct);
         LogIntegrityScanStep(
             "Integrity scan source load",
@@ -449,12 +459,26 @@ public sealed class DataIntegrityIssueService
             $"stocks={itemWarehouseStocks.Count:N0}, movements={inventoryMovements.Count:N0}, scopedItems={scopedItemIds.Count:N0}");
 
         stepStopwatch.Restart();
+        var scopedInvoiceIds = scopedInvoices
+            .Select(invoice => invoice.Id)
+            .Distinct()
+            .ToList();
+        var invoiceLineTotalsByInvoiceId = await LoadInvoiceLineTotalsForInvoicesAsync(scopedInvoiceIds, ct);
+        var invoicePaymentTotalsByInvoiceId = await LoadInvoicePaymentTotalsForInvoicesAsync(scopedInvoiceIds, ct);
+        LogIntegrityScanStep(
+            "Integrity scan invoice aggregate load",
+            stepStopwatch,
+            $"lineTotals={invoiceLineTotalsByInvoiceId.Count:N0}, paymentTotals={invoicePaymentTotalsByInvoiceId.Count:N0}, scopedInvoices={scopedInvoiceIds.Count:N0}");
+
+        stepStopwatch.Restart();
         AddMasterDataAndLedgerIssues(
             details,
             scopedCustomers,
             scopedItems,
             scopedWarehouses,
             scopedInvoices,
+            invoiceLineTotalsByInvoiceId,
+            invoicePaymentTotalsByInvoiceId,
             itemWarehouseStocks,
             inventoryMovements,
             session);
@@ -871,6 +895,72 @@ public sealed class DataIntegrityIssueService
         return rows;
     }
 
+    private async Task<Dictionary<Guid, decimal>> LoadInvoiceLineTotalsForInvoicesAsync(
+        IReadOnlyCollection<Guid> invoiceIds,
+        CancellationToken ct)
+    {
+        var ids = invoiceIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var rows = new Dictionary<Guid, decimal>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds.ToList();
+            var batchRows = await _db.InvoiceLines
+                .AsNoTracking()
+                .Where(line => scopedBatchIds.Contains(line.InvoiceId) && !line.IsDeleted)
+                .Select(line => new
+                {
+                    line.InvoiceId,
+                    line.LineAmount
+                })
+                .ToListAsync(ct);
+
+            foreach (var group in batchRows.GroupBy(row => row.InvoiceId))
+                rows[group.Key] = group.Sum(row => row.LineAmount);
+        }
+
+        return rows;
+    }
+
+    private async Task<Dictionary<Guid, decimal>> LoadInvoicePaymentTotalsForInvoicesAsync(
+        IReadOnlyCollection<Guid> invoiceIds,
+        CancellationToken ct)
+    {
+        var ids = invoiceIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var rows = new Dictionary<Guid, decimal>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds.ToList();
+            var batchRows = await _db.Payments
+                .AsNoTracking()
+                .Where(payment => scopedBatchIds.Contains(payment.InvoiceId) && !payment.IsDeleted)
+                .Select(payment => new
+                {
+                    payment.InvoiceId,
+                    payment.Amount
+                })
+                .ToListAsync(ct);
+
+            foreach (var group in batchRows.GroupBy(row => row.InvoiceId))
+                rows[group.Key] = group.Sum(row => row.Amount);
+        }
+
+        return rows;
+    }
+
     public static DataIntegrityIssueDefinition GetDefinition(string code)
         => Definitions.TryGetValue(code, out var definition)
             ? definition
@@ -881,7 +971,9 @@ public sealed class DataIntegrityIssueService
         IReadOnlyCollection<LocalCustomer> customers,
         IReadOnlyCollection<LocalItem> items,
         IReadOnlyCollection<LocalWarehouse> warehouses,
-        IReadOnlyCollection<LocalInvoice> invoices,
+        IReadOnlyCollection<IntegrityInvoiceSnapshot> invoices,
+        IReadOnlyDictionary<Guid, decimal> invoiceLineTotalsByInvoiceId,
+        IReadOnlyDictionary<Guid, decimal> invoicePaymentTotalsByInvoiceId,
         IReadOnlyCollection<LocalItemWarehouseStock> itemWarehouseStocks,
         IReadOnlyCollection<LocalInventoryMovement> inventoryMovements,
         SessionState session)
@@ -989,8 +1081,8 @@ public sealed class DataIntegrityIssueService
 
         foreach (var invoice in invoices)
         {
-            var activeLines = invoice.Lines.Where(line => !line.IsDeleted).ToList();
-            var totals = InvoiceVatModes.CalculateTotals(activeLines.Select(line => line.LineAmount), invoice.VatMode);
+            invoiceLineTotalsByInvoiceId.TryGetValue(invoice.Id, out var lineTotal);
+            var totals = InvoiceVatModes.CalculateTotals([lineTotal], invoice.VatMode);
             if (AmountDiffers(invoice.TotalAmount, totals.TotalAmount) ||
                 AmountDiffers(invoice.SupplyAmount, totals.SupplyAmount) ||
                 AmountDiffers(invoice.VatAmount, totals.VatAmount))
@@ -1005,7 +1097,7 @@ public sealed class DataIntegrityIssueService
                     directActionKind: DataIntegrityDirectActionKind.OpenInvoice);
             }
 
-            var settlementTotal = invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount);
+            invoicePaymentTotalsByInvoiceId.TryGetValue(invoice.Id, out var settlementTotal);
             if (settlementTotal - invoice.TotalAmount >= 1m)
             {
                 AddGeneralIssue(issues, DataIntegrityIssueCodes.InvoiceOverSettled,
@@ -1653,4 +1745,18 @@ public sealed class DataIntegrityIssueService
     private sealed record ParsedTemplateItems(bool Success, List<RentalBillingTemplateItemModel> Items);
 
     private sealed record AssetTemplateReference(Guid ProfileId, string ProfileDisplayName, string ItemName);
+
+    private sealed class IntegrityInvoiceSnapshot
+    {
+        public Guid Id { get; init; }
+        public string TenantCode { get; init; } = TenantScopeCatalog.UsenetGroup;
+        public string ResponsibleOfficeCode { get; init; } = DomainConstants.OfficeUsenet;
+        public string InvoiceNumber { get; init; } = string.Empty;
+        public VoucherType VoucherType { get; init; }
+        public DateOnly InvoiceDate { get; init; }
+        public decimal TotalAmount { get; init; }
+        public decimal SupplyAmount { get; init; }
+        public decimal VatAmount { get; init; }
+        public string VatMode { get; init; } = InvoiceVatModes.Included;
+    }
 }
