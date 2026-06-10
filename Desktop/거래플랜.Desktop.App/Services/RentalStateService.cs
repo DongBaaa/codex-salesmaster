@@ -699,14 +699,23 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (profiles.Count == 0)
             return new List<RentalBillingViewRow>();
 
+        var stepStopwatch = Stopwatch.StartNew();
         var profileIds = profiles.Select(profile => profile.Id).ToList();
         var billingAssets = await ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
             .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && profileIds.Contains(asset.BillingProfileId.Value))
             .ToListAsync(ct);
+        ct.ThrowIfCancellationRequested();
+        LogRentalLoadStep("Rental billing linked asset query", stepStopwatch, $"assets={billingAssets.Count:N0}, profiles={profiles.Count:N0}");
+
+        stepStopwatch.Restart();
         await NormalizeAssetCustomerDisplayNamesAsync(billingAssets, ct);
+        ct.ThrowIfCancellationRequested();
         var assetsByProfile = billingAssets
             .GroupBy(asset => asset.BillingProfileId!.Value)
             .ToDictionary(group => group.Key, group => group.ToList());
+        LogRentalLoadStep("Rental billing linked asset normalize", stepStopwatch, $"assetGroups={assetsByProfile.Count:N0}");
+
+        stepStopwatch.Restart();
         var customerIds = profiles
             .Where(profile => profile.CustomerId.HasValue && profile.CustomerId.Value != Guid.Empty)
             .Select(profile => profile.CustomerId!.Value)
@@ -719,38 +728,40 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .AsNoTracking()
                 .Where(customer => customerIds.Contains(customer.Id))
                 .ToDictionaryAsync(customer => customer.Id, customer => customer, ct);
+        ct.ThrowIfCancellationRequested();
         var customerNameMap = customersById.ToDictionary(
             pair => pair.Key,
             pair => pair.Value.NameOriginal,
             EqualityComparer<Guid>.Default);
+        LogRentalLoadStep("Rental billing customer lookup", stepStopwatch, $"customers={customerNameMap.Count:N0}");
 
-        var previewRunsByProfile = profiles
-            .Select(profile => new
-            {
-                ProfileId = profile.Id,
-                Run = GetOrCreateBillingRun(profile, referenceDate, persistChanges: false)
-            })
-            .Where(item => item.Run is not null)
-            .ToDictionary(item => item.ProfileId, item => item.Run!);
-        var billingRunsByProfile = profiles.ToDictionary(
-            profile => profile.Id,
-            profile =>
-            {
-                var runs = GetBillingRuns(profile)
-                    .Where(run => run.RunId != Guid.Empty)
-                    .ToList();
-                if (previewRunsByProfile.TryGetValue(profile.Id, out var previewRun) &&
-                    previewRun.RunId != Guid.Empty &&
-                    runs.All(run => run.RunId != previewRun.RunId))
-                {
-                    runs.Add(previewRun);
-                }
+        stepStopwatch.Restart();
+        var templateItemsByProfile = new Dictionary<Guid, List<RentalBillingTemplateItemModel>>();
+        var previewRunsByProfile = new Dictionary<Guid, RentalBillingRunModel>();
+        var billingRunsByProfile = new Dictionary<Guid, List<RentalBillingRunModel>>();
+        foreach (var profile in profiles)
+        {
+            ct.ThrowIfCancellationRequested();
+            assetsByProfile.TryGetValue(profile.Id, out var profileAssets);
+            profileAssets ??= new List<LocalRentalAsset>();
+            var templateItems = GetBillingTemplateItems(profile, profileAssets);
+            var runs = GetBillingRuns(profile);
+            var previewRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: false, templateItems, runs);
+            if (previewRun is not null)
+                previewRunsByProfile[profile.Id] = previewRun;
 
-                return runs
-                    .OrderByDescending(run => run.ScheduledDate)
-                    .ThenByDescending(run => run.PeriodEndDate)
-                    .ToList();
-            });
+            templateItemsByProfile[profile.Id] = templateItems;
+            billingRunsByProfile[profile.Id] = runs
+                .Where(run => run.RunId != Guid.Empty)
+                .GroupBy(run => run.RunId)
+                .Select(group => group.First())
+                .OrderByDescending(run => run.ScheduledDate)
+                .ThenByDescending(run => run.PeriodEndDate)
+                .ToList();
+        }
+        LogRentalLoadStep("Rental billing template/run preparation", stepStopwatch, $"profiles={profiles.Count:N0}, runs={billingRunsByProfile.Values.Sum(runs => runs.Count):N0}");
+
+        stepStopwatch.Restart();
         var allRunIds = billingRunsByProfile.Values
             .SelectMany(runs => runs)
             .Select(run => run.RunId)
@@ -776,6 +787,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         group.OrderByDescending(transaction => transaction.TransactionDate)
                             .Select(transaction => (DateOnly?)transaction.TransactionDate)
                             .FirstOrDefault()));
+        ct.ThrowIfCancellationRequested();
+        LogRentalLoadStep("Rental billing settlement query", stepStopwatch, $"runs={allRunIds.Count:N0}, settlements={settlementByRun.Count:N0}");
+
+        stepStopwatch.Restart();
         var invoiceByRun = allRunIds.Count == 0
             ? new Dictionary<Guid, RentalBillingRunInvoiceInfo>()
             : (await _db.Invoices.AsNoTracking()
@@ -798,24 +813,35 @@ WHERE ""AssignedUsername"" <> '';", ct);
                             .First();
                         return new RentalBillingRunInvoiceInfo(latest.Id, latest.TotalAmount);
                     });
+        ct.ThrowIfCancellationRequested();
+        LogRentalLoadStep("Rental billing invoice query", stepStopwatch, $"runs={allRunIds.Count:N0}, invoices={invoiceByRun.Count:N0}");
 
-        return profiles.Select(profile => CreateBillingViewRow(
+        stepStopwatch.Restart();
+        var rows = new List<RentalBillingViewRow>(profiles.Count);
+        foreach (var profile in profiles)
+        {
+            ct.ThrowIfCancellationRequested();
+            rows.Add(CreateBillingViewRow(
                 profile,
                 customerNameMap,
                 assetsByProfile,
+                templateItemsByProfile,
                 previewRunsByProfile,
                 billingRunsByProfile,
                 settlementByRun,
                 invoiceByRun,
                 offices,
-                referenceDate))
-            .ToList();
+                referenceDate));
+        }
+        LogRentalLoadStep("Rental billing row projection", stepStopwatch, $"rows={rows.Count:N0}");
+        return rows;
     }
 
     private RentalBillingViewRow CreateBillingViewRow(
         LocalRentalBillingProfile profile,
         IReadOnlyDictionary<Guid, string> customerNameMap,
         IReadOnlyDictionary<Guid, List<LocalRentalAsset>> assetsByProfile,
+        IReadOnlyDictionary<Guid, List<RentalBillingTemplateItemModel>> templateItemsByProfile,
         IReadOnlyDictionary<Guid, RentalBillingRunModel> previewRunsByProfile,
         IReadOnlyDictionary<Guid, List<RentalBillingRunModel>> billingRunsByProfile,
         IReadOnlyDictionary<Guid, RentalBillingRunSettlementInfo> settlementByRun,
@@ -826,7 +852,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var customerDisplayName = ResolveBillingProfileCustomerDisplayName(profile, customerNameMap);
         assetsByProfile.TryGetValue(profile.Id, out var profileAssets);
         profileAssets ??= new List<LocalRentalAsset>();
-        var templateItems = GetBillingTemplateItems(profile, profileAssets);
+        var templateItems = templateItemsByProfile.TryGetValue(profile.Id, out var cachedTemplateItems)
+            ? cachedTemplateItems
+            : GetBillingTemplateItems(profile, profileAssets);
         var explicitIncludedAssetCount = templateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count();
         var includedAssetCount = explicitIncludedAssetCount > 0 ? explicitIncludedAssetCount : profileAssets.Count;
         var nextBillingDate = GetNextBillingDate(profile, referenceDate);
@@ -5994,6 +6022,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LocalRentalBillingProfile profile,
         DateOnly referenceDate,
         bool persistChanges)
+        => GetOrCreateBillingRun(profile, referenceDate, persistChanges, null, null);
+
+    private RentalBillingRunModel? GetOrCreateBillingRun(
+        LocalRentalBillingProfile profile,
+        DateOnly referenceDate,
+        bool persistChanges,
+        IReadOnlyList<RentalBillingTemplateItemModel>? templateItemsOverride,
+        List<RentalBillingRunModel>? runsOverride)
     {
         ArgumentNullException.ThrowIfNull(profile);
         NormalizeBillingSchedule(profile, referenceDate);
@@ -6001,11 +6037,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!scheduledDate.HasValue)
             return null;
 
-        var templateItems = GetBillingTemplateItems(profile);
+        var templateItems = templateItemsOverride?.ToList() ?? GetBillingTemplateItems(profile);
         var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
         var period = ResolveBillingPeriod(profile, scheduledDate.Value, cycleMonths);
         var runKey = $"{period.StartDate:yyyyMMdd}-{period.EndDate:yyyyMMdd}";
-        var runs = GetBillingRuns(profile);
+        var runs = runsOverride ?? GetBillingRuns(profile);
         var existing = runs.FirstOrDefault(run => string.Equals(run.RunKey, runKey, StringComparison.OrdinalIgnoreCase));
         var billedAmount = templateItems.Sum(item => ResolveTemplateMonthlyAmount(item)) * cycleMonths;
         var deterministicRunId = SyncIdentityGenerator.CreateRentalBillingRunId(profile.Id, runKey);

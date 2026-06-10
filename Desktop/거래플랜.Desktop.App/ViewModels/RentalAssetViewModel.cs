@@ -239,7 +239,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private async Task ReloadAsync()
     {
         CancelPendingFilterReload();
-        await ReloadCoreAsync(CancellationToken.None);
+        using var cts = new CancellationTokenSource();
+        _filterReloadCts = cts;
+        try
+        {
+            await ReloadCoreAsync(cts.Token);
+        }
+        finally
+        {
+            if (ReferenceEquals(_filterReloadCts, cts))
+                _filterReloadCts = null;
+        }
     }
 
     private async Task ReloadCoreAsync(CancellationToken ct)
