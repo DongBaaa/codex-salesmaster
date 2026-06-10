@@ -527,8 +527,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 asset.CustomerId.Value != Guid.Empty &&
                 string.IsNullOrWhiteSpace(asset.CurrentCustomerName) &&
                 string.IsNullOrWhiteSpace(asset.CustomerName))
-            .Select(asset => asset.CustomerId!.Value);
-        var customerNameMap = await GetCustomerNameMapAsync(customerIdsNeedingLookup, ct);
+            .Select(asset => asset.CustomerId!.Value)
+            .Distinct()
+            .ToList();
+        var customerNameMap = customerIdsNeedingLookup.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await GetCustomerNameMapAsync(customerIdsNeedingLookup, ct);
 
         foreach (var asset in assets)
         {
