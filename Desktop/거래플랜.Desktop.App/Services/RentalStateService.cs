@@ -3228,13 +3228,22 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Select(history => history.BillingProfileId!.Value)
             .Distinct()
             .ToList();
-        var profileLookup = profileIds.Count == 0
-            ? new Dictionary<Guid, LocalRentalBillingProfile>()
-            : await _db.RentalBillingProfiles
+        var profileDisplayLookup = profileIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : (await _db.RentalBillingProfiles
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(profile => profileIds.Contains(profile.Id))
-                .ToDictionaryAsync(profile => profile.Id, ct);
+                .Select(profile => new
+                {
+                    profile.Id,
+                    profile.CustomerName,
+                    profile.ItemName
+                })
+                .ToListAsync(ct))
+            .ToDictionary(
+                profile => profile.Id,
+                profile => BuildBillingProfileDisplay(profile.CustomerName, profile.ItemName));
         var asset = await _db.RentalAssets
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -3249,7 +3258,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .First())
             .OrderByDescending(history => history.IsCurrent)
             .ThenByDescending(history => history.LinkedAtUtc)
-            .Select(history => BuildAssignmentHistoryViewItem(history, asset, profileLookup))
+            .Select(history => BuildAssignmentHistoryViewItem(history, asset, profileDisplayLookup))
             .ToList();
     }
 
@@ -4382,15 +4391,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private static RentalAssetAssignmentHistoryViewItem BuildAssignmentHistoryViewItem(
         LocalRentalAssetAssignmentHistory history,
         LocalRentalAsset? asset,
-        IReadOnlyDictionary<Guid, LocalRentalBillingProfile> profileLookup)
+        IReadOnlyDictionary<Guid, string> profileDisplayLookup)
     {
-        LocalRentalBillingProfile? profile = null;
+        var profileDisplay = string.Empty;
         if (history.BillingProfileId.HasValue)
-            profileLookup.TryGetValue(history.BillingProfileId.Value, out profile);
+            profileDisplayLookup.TryGetValue(history.BillingProfileId.Value, out profileDisplay);
 
         var billingProfileDisplay = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
             history.BillingProfileDisplay,
-            BuildBillingProfileDisplay(profile),
+            profileDisplay,
             history.BillingProfileId?.ToString("D")));
         var linkedAtUtc = NormalizeHistoryUtc(history.LinkedAtUtc);
         var unlinkedAtUtc = history.UnlinkedAtUtc.HasValue ? NormalizeHistoryUtc(history.UnlinkedAtUtc.Value) : (DateTime?)null;
@@ -4452,11 +4461,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
     }
 
     private static string BuildBillingProfileDisplay(LocalRentalBillingProfile? profile)
+        => profile is null
+            ? string.Empty
+            : BuildBillingProfileDisplay(profile.CustomerName, profile.ItemName);
+
+    private static string BuildBillingProfileDisplay(string? customerNameValue, string? itemNameValue)
     {
-        if (profile is null)
-            return string.Empty;
-        var customerName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.CustomerName);
-        var itemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(profile.ItemName);
+        var customerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerNameValue);
+        var itemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(itemNameValue);
         if (!string.IsNullOrWhiteSpace(customerName) && !string.IsNullOrWhiteSpace(itemName))
             return $"{customerName} · {itemName}";
         return FirstNonEmpty(customerName, itemName);
