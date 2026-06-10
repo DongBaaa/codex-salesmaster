@@ -248,6 +248,12 @@ public sealed class LocalDbContext : DbContext
             .HasIndex(profile => new { profile.CustomerId, profile.IsDeleted });
         model.Entity<LocalRentalBillingProfile>()
             .HasIndex(profile => new { profile.BillingStatus, profile.IsDeleted });
+        model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => new { profile.TenantCode, profile.ResponsibleOfficeCode, profile.IsDeleted, profile.CustomerName, profile.ItemName })
+            .HasDatabaseName("IX_RentalBillingProfiles_TenantOfficeListSort");
+        model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => new { profile.TenantCode, profile.ManagementCompanyCode, profile.IsDeleted, profile.CustomerName, profile.ItemName })
+            .HasDatabaseName("IX_RentalBillingProfiles_TenantManagementListSort");
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.TenantCode, asset.AssetKey })
             .HasDatabaseName("IX_RentalAssets_AssetKey")

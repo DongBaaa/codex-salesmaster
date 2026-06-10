@@ -7001,6 +7001,39 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task LocalDbContext_CreatesRentalBillingProfileListSortIndexes()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-profile-list-index-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var connection = db.Database.GetDbConnection();
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'RentalBillingProfiles';";
+
+            var indexNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                indexNames.Add(reader.GetString(0));
+
+            Assert.Contains("IX_RentalBillingProfiles_TenantOfficeListSort", indexNames);
+            Assert.Contains("IX_RentalBillingProfiles_TenantManagementListSort", indexNames);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task MainViewModel_InvoiceOfficeFilter_DefaultsToLoginOffice()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-main-office-filter-{Guid.NewGuid():N}");

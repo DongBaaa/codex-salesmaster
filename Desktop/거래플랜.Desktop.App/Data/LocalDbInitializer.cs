@@ -556,6 +556,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_TenantManagementCompanyActive\" ON \"RentalBillingProfiles\" (\"TenantCode\", \"ManagementCompanyCode\", \"IsDeleted\", \"IsActive\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_CustomerActive\" ON \"RentalBillingProfiles\" (\"CustomerId\", \"IsDeleted\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_StatusActive\" ON \"RentalBillingProfiles\" (\"BillingStatus\", \"IsDeleted\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_TenantOfficeListSort\" ON \"RentalBillingProfiles\" (\"TenantCode\", \"ResponsibleOfficeCode\", \"IsDeleted\", \"CustomerName\", \"ItemName\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_TenantManagementListSort\" ON \"RentalBillingProfiles\" (\"TenantCode\", \"ManagementCompanyCode\", \"IsDeleted\", \"CustomerName\", \"ItemName\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_OfficeCode\" ON \"RentalAssets\" (\"OfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_ResponsibleOfficeCode\" ON \"RentalAssets\" (\"ResponsibleOfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_TenantOfficeStatus\" ON \"RentalAssets\" (\"TenantCode\", \"ResponsibleOfficeCode\", \"IsDeleted\", \"AssetStatus\");");
