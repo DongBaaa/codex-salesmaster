@@ -383,6 +383,25 @@ public sealed class RentalBillingDeletionFlowTests
             Assert.Equal(40_000m, pastHistory.SettledAmount);
             Assert.Equal(60_000m, pastHistory.OutstandingAmount);
 
+            var summaryOnlyRows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter { ReferenceDate = new DateOnly(2026, 6, 25), ExpandCustomerSummaryRows = true, IncludeHistoryRows = false },
+                session);
+            var summaryOnlyRow = Assert.Single(summaryOnlyRows, current => current.Source.Id == profileId);
+            Assert.True(summaryOnlyRow.HasPastUnresolved);
+            Assert.Equal(1, summaryOnlyRow.PastUnresolvedCount);
+            Assert.Equal(60_000m, summaryOnlyRow.PastUnresolvedAmount);
+            Assert.Empty(summaryOnlyRow.BillingHistoryRows);
+
+            var selectedHistories = await service.GetBillingHistoryRowsAsync(
+                new[] { profileId },
+                session,
+                new DateOnly(2026, 6, 25));
+            var selectedHistory = Assert.Single(selectedHistories, history => history.BillingRunId == runId);
+            Assert.True(selectedHistory.IsPastUnresolved);
+            Assert.Equal(100_000m, selectedHistory.BilledAmount);
+            Assert.Equal(40_000m, selectedHistory.SettledAmount);
+            Assert.Equal(60_000m, selectedHistory.OutstandingAmount);
+
             var filteredRows = await service.GetBillingRowsAsync(
                 new RentalBillingFilter { ReferenceDate = new DateOnly(2026, 6, 25), ExpandCustomerSummaryRows = true, PastDueOnly = true },
                 session);

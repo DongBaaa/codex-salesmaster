@@ -22,6 +22,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private CancellationTokenSource? _filterReloadCts;
     private CancellationTokenSource? _candidateAssetsLoadCts;
     private CancellationTokenSource? _includedAssetHistoryLoadCts;
+    private CancellationTokenSource? _billingHistoryLoadCts;
     private CancellationTokenSource? _contractDateRefreshCts;
     private Task? _candidateAssetsLoadTask;
     private bool _suppressFilterReload;
@@ -553,6 +554,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                     DueOnly = DueOnly,
                     PastDueOnly = PastDueOnly,
                     ExpandCustomerSummaryRows = ShowIndividualProfiles,
+                    IncludeHistoryRows = false,
                     ReferenceDate = ReferenceDate
                 }, _session, ct);
 
@@ -1892,6 +1894,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (value is null)
         {
             _contractDateRefreshCts?.Cancel();
+            CancelBillingHistoryLoad();
             RefreshBillingHistoryRows(null);
             OnPropertyChanged(nameof(IsContractDateMissing));
             OnPropertyChanged(nameof(ShouldShowContractDateWarning));
@@ -1910,6 +1913,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var source = value.Source;
         RefreshBillingHistoryRows(value);
+        StartBillingHistoryRowsLoad(value);
         _editRevision = source.Revision;
         EditId = source.Id;
         EditCustomerId = source.CustomerId;
@@ -2008,6 +2012,74 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         OnPropertyChanged(nameof(SelectedRowHasPastUnresolved));
         OnPropertyChanged(nameof(SelectedPastUnresolvedSummaryText));
+    }
+
+    private void StartBillingHistoryRowsLoad(RentalBillingViewRow row)
+    {
+        CancelBillingHistoryLoad();
+
+        var profileIds = ResolveBillingHistoryProfileIds(row);
+        if (profileIds.Count == 0)
+            return;
+
+        var cts = new CancellationTokenSource();
+        var token = cts.Token;
+        _billingHistoryLoadCts = cts;
+        UiTaskHelper.Forget(
+            LoadBillingHistoryRowsAsync(row, profileIds, cts, token),
+            "RENTAL",
+            "청구/입금 내역 선택 조회",
+            ex => StatusMessage = $"청구/입금 내역을 불러오지 못했습니다. {ex.Message}");
+    }
+
+    private async Task LoadBillingHistoryRowsAsync(
+        RentalBillingViewRow row,
+        IReadOnlyList<Guid> profileIds,
+        CancellationTokenSource cts,
+        CancellationToken ct)
+    {
+        try
+        {
+            var histories = await _rental.GetBillingHistoryRowsAsync(profileIds, _session, ReferenceDate, ct);
+            ct.ThrowIfCancellationRequested();
+            if (!ReferenceEquals(SelectedRow, row))
+                return;
+
+            BillingHistoryRows.ReplaceWith(histories);
+            SelectedBillingHistory = null;
+            OnPropertyChanged(nameof(SelectedRowHasPastUnresolved));
+            OnPropertyChanged(nameof(SelectedPastUnresolvedSummaryText));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(_billingHistoryLoadCts, cts))
+                _billingHistoryLoadCts = null;
+            cts.Dispose();
+        }
+    }
+
+    private void CancelBillingHistoryLoad()
+    {
+        _billingHistoryLoadCts?.Cancel();
+        _billingHistoryLoadCts?.Dispose();
+        _billingHistoryLoadCts = null;
+    }
+
+    private static IReadOnlyList<Guid> ResolveBillingHistoryProfileIds(RentalBillingViewRow row)
+    {
+        var ids = row.GroupedPersistedProfileIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count > 0)
+            return ids;
+
+        return row.HasPersistedProfile && row.Source.Id != Guid.Empty
+            ? new List<Guid> { row.Source.Id }
+            : Array.Empty<Guid>();
     }
 
     private async Task ReloadFiltersAsync()

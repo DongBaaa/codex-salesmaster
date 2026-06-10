@@ -13,6 +13,7 @@ public sealed class RentalBillingFilter
     public bool DueOnly { get; set; }
     public bool PastDueOnly { get; set; }
     public bool ExpandCustomerSummaryRows { get; set; }
+    public bool IncludeHistoryRows { get; set; } = true;
     public DateOnly ReferenceDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
 }
 
@@ -470,6 +471,7 @@ public sealed class RentalBillingViewRow
     public List<RentalBillingHistoryRow> BillingHistoryRows { get; init; } = new();
     public int PastUnresolvedCount { get; init; }
     public decimal PastUnresolvedAmount { get; init; }
+    public DateOnly? OldestPastUnresolvedScheduledDate { get; init; }
     public string OldestPastUnresolvedPeriodLabel { get; init; } = string.Empty;
     public bool HasPastUnresolved => PastUnresolvedCount > 0 || PastUnresolvedAmount > 0m;
     public string PastUnresolvedSummary => HasPastUnresolved
