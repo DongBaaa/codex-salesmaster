@@ -155,6 +155,8 @@ public sealed class DataIntegrityScanResult
 
 public sealed class DataIntegrityIssueService
 {
+    private const int LocalQueryContainsBatchSize = 500;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -362,13 +364,6 @@ public sealed class DataIntegrityIssueService
             .Include(invoice => invoice.Lines.Where(line => !line.IsDeleted))
             .Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
             .ToListAsync(ct);
-        var itemWarehouseStocks = await _db.ItemWarehouseStocks
-            .AsNoTracking()
-            .ToListAsync(ct);
-        var inventoryMovements = await _db.InventoryMovements
-            .AsNoTracking()
-            .Where(movement => movement.IsActive)
-            .ToListAsync(ct);
         LogIntegrityScanStep(
             "Integrity scan source load",
             stepStopwatch,
@@ -434,6 +429,18 @@ public sealed class DataIntegrityIssueService
             "Integrity scan scope filter",
             stepStopwatch,
             $"profiles={scopedProfiles.Count:N0}, assets={scopedAssets.Count:N0}, histories={scopedAssignmentHistories.Count:N0}, customers={scopedCustomers.Count:N0}, items={scopedItems.Count:N0}, invoices={scopedInvoices.Count:N0}");
+
+        stepStopwatch.Restart();
+        var scopedItemIds = scopedItems
+            .Select(item => item.Id)
+            .Distinct()
+            .ToList();
+        var itemWarehouseStocks = await LoadItemWarehouseStocksForItemsAsync(scopedItemIds, ct);
+        var inventoryMovements = await LoadInventoryMovementsForItemsAsync(scopedItemIds, ct);
+        LogIntegrityScanStep(
+            "Integrity scan inventory source load",
+            stepStopwatch,
+            $"stocks={itemWarehouseStocks.Count:N0}, movements={inventoryMovements.Count:N0}, scopedItems={scopedItemIds.Count:N0}");
 
         stepStopwatch.Restart();
         AddMasterDataAndLedgerIssues(
@@ -774,6 +781,59 @@ public sealed class DataIntegrityIssueService
             detail,
             infoThreshold: TimeSpan.FromMilliseconds(300),
             warningThreshold: TimeSpan.FromSeconds(2));
+    }
+
+    private async Task<List<LocalItemWarehouseStock>> LoadItemWarehouseStocksForItemsAsync(
+        IReadOnlyCollection<Guid> itemIds,
+        CancellationToken ct)
+    {
+        var ids = itemIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var rows = new List<LocalItemWarehouseStock>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds.ToList();
+            rows.AddRange(await _db.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock => scopedBatchIds.Contains(stock.ItemId))
+                .ToListAsync(ct));
+        }
+
+        return rows;
+    }
+
+    private async Task<List<LocalInventoryMovement>> LoadInventoryMovementsForItemsAsync(
+        IReadOnlyCollection<Guid> itemIds,
+        CancellationToken ct)
+    {
+        var ids = itemIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var rows = new List<LocalInventoryMovement>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds.ToList();
+            rows.AddRange(await _db.InventoryMovements
+                .AsNoTracking()
+                .Where(movement =>
+                    movement.IsActive &&
+                    movement.ItemId.HasValue &&
+                    scopedBatchIds.Contains(movement.ItemId.Value))
+                .ToListAsync(ct));
+        }
+
+        return rows;
     }
 
     public static DataIntegrityIssueDefinition GetDefinition(string code)

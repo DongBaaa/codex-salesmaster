@@ -80,6 +80,47 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_LoadsInventorySourcesOnlyForScopedItems()
+    {
+        PrepareAppRoot("georaeplan-integrity-inventory-source-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            const int outsideOfficeItemCount = 650;
+            for (var index = 0; index < outsideOfficeItemCount; index++)
+            {
+                var item = CreateInventoryItem(index, OfficeCodeCatalog.Usenet);
+                db.Items.Add(item);
+                db.ItemWarehouseStocks.Add(CreateStockWithMissingWarehouse(item.Id));
+                db.InventoryMovements.Add(CreateMovementWithMissingWarehouse(item.Id));
+            }
+
+            var scopedItem = CreateInventoryItem(outsideOfficeItemCount + 1, OfficeCodeCatalog.Yeonsu);
+            db.Items.Add(scopedItem);
+            db.ItemWarehouseStocks.Add(CreateStockWithMissingWarehouse(scopedItem.Id));
+            db.InventoryMovements.Add(CreateMovementWithMissingWarehouse(scopedItem.Id));
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateYeonsuAdminSession());
+            var missingWarehouseIssues = result.Issues
+                .Where(issue => issue.Code == DataIntegrityIssueCodes.InventoryWarehouseReferenceMissing)
+                .ToList();
+
+            Assert.Equal(2, missingWarehouseIssues.Count);
+            Assert.All(missingWarehouseIssues, issue => Assert.Equal(scopedItem.NameOriginal, issue.ItemName));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_PrefiltersInvoiceSourceLoadByOperationalScope()
     {
         PrepareAppRoot("georaeplan-integrity-invoice-scope-prefilter");
@@ -159,12 +200,12 @@ public sealed class DataIntegrityIssueServicePerformanceTests
             UpdatedAtUtc = DateTime.UtcNow
         };
 
-    private static LocalItem CreateInventoryItem(int index)
+    private static LocalItem CreateInventoryItem(int index, string officeCode = OfficeCodeCatalog.Usenet)
         => new()
         {
             Id = Guid.NewGuid(),
-            TenantCode = TenantScopeCatalog.UsenetGroup,
-            OfficeCode = OfficeCodeCatalog.Usenet,
+            TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
+            OfficeCode = officeCode,
             NameOriginal = $"Inventory Item {index:D4}",
             NameMatchKey = $"INVENTORYITEM{index:D4}",
             SpecificationOriginal = $"Spec {index:D4}",
