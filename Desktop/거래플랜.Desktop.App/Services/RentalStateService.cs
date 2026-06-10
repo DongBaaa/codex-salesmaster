@@ -35,6 +35,8 @@ public sealed partial class RentalStateService
     {
         PropertyNameCaseInsensitive = true
     };
+    private sealed record RentalBillingCustomerLookup(Guid Id, string? NameOriginal, string? BusinessNumber);
+
     private static readonly IReadOnlyDictionary<string, string> ImportLocationStatusMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["렌탈"] = "임대진행중",
@@ -654,12 +656,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Distinct()
                 .ToList();
             var unlinkedCustomersById = unlinkedCustomerIds.Count == 0
-                ? new Dictionary<Guid, LocalCustomer>()
+                ? new Dictionary<Guid, RentalBillingCustomerLookup>()
                 : await _db.Customers
                     .IgnoreQueryFilters()
                     .AsNoTracking()
                     .Where(customer => unlinkedCustomerIds.Contains(customer.Id))
-                    .ToDictionaryAsync(customer => customer.Id, customer => customer, ct);
+                    .ToDictionaryAsync(
+                        customer => customer.Id,
+                        customer => new RentalBillingCustomerLookup(
+                            customer.Id,
+                            customer.NameOriginal,
+                            customer.BusinessNumber),
+                        ct);
 
             rows.AddRange(unlinkedAssets.Select(asset => CreateUnlinkedBillingViewRow(
                 asset,
@@ -1139,7 +1147,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private RentalBillingViewRow CreateUnlinkedBillingViewRow(
         LocalRentalAsset asset,
-        IReadOnlyDictionary<Guid, LocalCustomer> customersById,
+        IReadOnlyDictionary<Guid, RentalBillingCustomerLookup> customersById,
         IReadOnlyDictionary<string, string> offices,
         DateOnly referenceDate)
     {
