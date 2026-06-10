@@ -14,6 +14,7 @@ namespace 거래플랜.Desktop.App.ViewModels;
 public sealed partial class RentalBillingViewModel : ObservableObject
 {
     private const string AllOption = "전체";
+    private const int BillingHistoryDisplayLimit = 600;
 
     private readonly RentalStateService _rental;
     private readonly LocalStateService _local;
@@ -2032,7 +2033,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private void RefreshBillingHistoryRows(RentalBillingViewRow? row)
     {
-        BillingHistoryRows.ReplaceWith(row is null
+        ApplyBillingHistoryRowsForDisplay(row is null
             ? Array.Empty<RentalBillingHistoryRow>()
             : row.BillingHistoryRows);
         SelectedBillingHistory = null;
@@ -2072,7 +2073,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             if (!ReferenceEquals(SelectedRow, row))
                 return;
 
-            BillingHistoryRows.ReplaceWith(histories);
+            ApplyBillingHistoryRowsForDisplay(histories);
             SelectedBillingHistory = null;
             OnPropertyChanged(nameof(SelectedRowHasPastUnresolved));
             OnPropertyChanged(nameof(SelectedPastUnresolvedSummaryText));
@@ -2087,6 +2088,22 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             cts.Dispose();
         }
     }
+
+    private void ApplyBillingHistoryRowsForDisplay(IReadOnlyList<RentalBillingHistoryRow> histories)
+    {
+        var displayRows = LimitBillingHistoryRowsForDisplay(histories);
+        BillingHistoryRows.ReplaceWith(displayRows);
+
+        if (histories.Count > displayRows.Count)
+        {
+            StatusMessage = $"청구/입금 내역 {histories.Count:N0}건 중 최근 {displayRows.Count:N0}건만 먼저 표시합니다. 과거 내역이 필요하면 개별 프로필 보기 또는 거래처/상태 조건을 좁혀 조회하세요.";
+        }
+    }
+
+    private static IReadOnlyList<RentalBillingHistoryRow> LimitBillingHistoryRowsForDisplay(IReadOnlyList<RentalBillingHistoryRow> histories)
+        => histories.Count > BillingHistoryDisplayLimit
+            ? histories.Take(BillingHistoryDisplayLimit).ToList()
+            : histories;
 
     private void CancelBillingHistoryLoad()
     {
