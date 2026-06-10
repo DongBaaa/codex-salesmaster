@@ -3515,7 +3515,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var hasResolvedCustomerId = resolvedCustomerId.HasValue && resolvedCustomerKey != Guid.Empty;
         var cappedMaxResults = Math.Clamp(maxResults, 50, AssetLinkCandidateResultLimit);
 
-        var assets = await query
+        var assets = await SelectAssetLinkCandidateProjection(query
             .OrderByDescending(asset => hasCurrentProfileId && asset.BillingProfileId == currentProfileId)
             .ThenByDescending(asset => hasResolvedCustomerId && asset.CustomerId == resolvedCustomerKey)
             .ThenByDescending(asset => !string.IsNullOrWhiteSpace(normalizedCustomerName) &&
@@ -3523,7 +3523,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                                         asset.CurrentCustomerName == normalizedCustomerName))
             .ThenBy(asset => asset.CustomerName)
             .ThenBy(asset => asset.ManagementNumber)
-            .Take(cappedMaxResults)
+            .Take(cappedMaxResults))
             .ToListAsync(ct);
 
         var offices = await GetOfficeMapAsync(ct);
@@ -3597,6 +3597,35 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ThenBy(candidate => candidate.Source.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
     }
+
+    private static IQueryable<LocalRentalAsset> SelectAssetLinkCandidateProjection(IQueryable<LocalRentalAsset> query)
+        => query.Select(asset => new LocalRentalAsset
+        {
+            Id = asset.Id,
+            TenantCode = asset.TenantCode,
+            OfficeCode = asset.OfficeCode,
+            CustomerId = asset.CustomerId,
+            BillingProfileId = asset.BillingProfileId,
+            ManagementNumber = asset.ManagementNumber,
+            ManagementCompanyCode = asset.ManagementCompanyCode,
+            ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+            CurrentCustomerName = asset.CurrentCustomerName,
+            CustomerName = asset.CustomerName,
+            InstallSiteName = asset.InstallSiteName,
+            InstallLocation = asset.InstallLocation,
+            BillingEligibilityStatus = asset.BillingEligibilityStatus,
+            ItemCategoryName = asset.ItemCategoryName,
+            ItemName = asset.ItemName,
+            Manufacturer = asset.Manufacturer,
+            MachineNumber = asset.MachineNumber,
+            AssetStatus = asset.AssetStatus,
+            Notes = asset.Notes,
+            MonthlyFee = asset.MonthlyFee,
+            ContractDate = asset.ContractDate,
+            ContractStartDate = asset.ContractStartDate,
+            InstallDate = asset.InstallDate,
+            PurchaseDate = asset.PurchaseDate
+        });
 
     public async Task<IReadOnlyList<RentalAssetAssignmentHistoryViewItem>> GetAssetAssignmentHistoriesAsync(
         Guid assetId,
