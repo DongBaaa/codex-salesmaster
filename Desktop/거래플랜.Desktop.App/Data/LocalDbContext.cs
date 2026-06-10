@@ -285,6 +285,12 @@ public sealed class LocalDbContext : DbContext
             .HasIndex(asset => new { asset.ItemCategoryName, asset.IsDeleted });
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.BillingEligibilityStatus, asset.IsDeleted });
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.TenantCode, asset.ResponsibleOfficeCode, asset.IsDeleted, asset.BillingProfileId, asset.CustomerName, asset.CurrentCustomerName, asset.ManagementNumber })
+            .HasDatabaseName("IX_RentalAssets_TenantOfficeBillingProfileSort");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.TenantCode, asset.ManagementCompanyCode, asset.IsDeleted, asset.BillingProfileId, asset.CustomerName, asset.CurrentCustomerName, asset.ManagementNumber })
+            .HasDatabaseName("IX_RentalAssets_TenantManagementBillingProfileSort");
         model.Entity<LocalRentalAssetAssignmentHistory>()
             .HasIndex(history => new { history.AssetId, history.IsCurrent });
         model.Entity<LocalRentalAssetAssignmentHistory>()

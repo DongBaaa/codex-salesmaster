@@ -567,6 +567,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_CustomerActive\" ON \"RentalAssets\" (\"CustomerId\", \"IsDeleted\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_ItemCategoryActive\" ON \"RentalAssets\" (\"ItemCategoryName\", \"IsDeleted\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_BillingEligibilityActive\" ON \"RentalAssets\" (\"BillingEligibilityStatus\", \"IsDeleted\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_TenantOfficeBillingProfileSort\" ON \"RentalAssets\" (\"TenantCode\", \"ResponsibleOfficeCode\", \"IsDeleted\", \"BillingProfileId\", \"CustomerName\", \"CurrentCustomerName\", \"ManagementNumber\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssets_TenantManagementBillingProfileSort\" ON \"RentalAssets\" (\"TenantCode\", \"ManagementCompanyCode\", \"IsDeleted\", \"BillingProfileId\", \"CustomerName\", \"CurrentCustomerName\", \"ManagementNumber\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_Revision\" ON \"RentalAssetAssignmentHistories\" (\"Revision\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingLogs_OfficeCode\" ON \"RentalBillingLogs\" (\"OfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingLogs_ResponsibleOfficeCode\" ON \"RentalBillingLogs\" (\"ResponsibleOfficeCode\");");
