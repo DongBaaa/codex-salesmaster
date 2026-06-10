@@ -6909,6 +6909,65 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task RentalBillingProfiles_DefaultAllCapsProfileRows()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-profile-cap-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var totalProfiles = RentalStateService.BillingProfileListResultLimit + 2;
+            for (var index = 0; index < totalProfiles; index++)
+            {
+                db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"PROFILE-CAP-{index:D4}",
+                    CustomerName = $"청구 거래처 {index:D4}",
+                    ItemName = $"렌탈 품목 {index:D4}",
+                    BillingType = "묶음",
+                    BillingStatus = PaymentFlowConstants.BillingStatusPlanned,
+                    BillingDay = 25,
+                    BillingDayMode = RentalBillingScheduleRules.BillingDayModeFixedDay,
+                    BillingCycleMonths = 1,
+                    BillingAnchorMonth = 1,
+                    MonthlyAmount = 100_000m + index,
+                    IsActive = true,
+                    IsDirty = false
+                });
+            }
+
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var rows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    ExpandCustomerSummaryRows = true,
+                    ReferenceDate = new DateOnly(2026, 5, 12)
+                },
+                CreateAdminSession());
+
+            Assert.Equal(RentalStateService.BillingProfileListResultLimit, rows.Count);
+            Assert.Equal(RentalStateService.BillingProfileListResultLimit, rows.Sum(row => row.GroupedPersistedProfileCount));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task LocalDbContext_CreatesRentalBillingUnlinkedSortIndexes()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-unlinked-index-{Guid.NewGuid():N}");

@@ -599,14 +599,15 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 TotalOutstandingAmount = rows.Sum(row => row.OutstandingAmount);
                 var unlinkedCount = rows.Sum(row => row.GroupedUnlinkedAssetCount);
                 var unlinkedLimitNotice = BuildUnlinkedAssetLimitNotice(unlinkedCount);
+                var profileLimitNotice = BuildBillingProfileLimitNotice(rows);
 
                 StatusMessage = rows.Count == 0
                     ? "조건에 맞는 렌탈 청구 대상이 없습니다."
                     : unlinkedCount > 0
-                        ? $"렌탈 청구 {rows.Count:N0}건을 조회했습니다. 청구 설정이 필요한 장비 {unlinkedCount:N0}대가 포함되어 있습니다.{unlinkedLimitNotice}"
+                        ? $"렌탈 청구 {rows.Count:N0}건을 조회했습니다. 청구 설정이 필요한 장비 {unlinkedCount:N0}대가 포함되어 있습니다.{unlinkedLimitNotice}{profileLimitNotice}"
                         : ShowIndividualProfiles
-                            ? $"렌탈 청구 프로필 {rows.Count:N0}건을 개별 조회했습니다."
-                            : $"렌탈 청구 {rows.Count:N0}건을 조회했습니다.";
+                            ? $"렌탈 청구 프로필 {rows.Count:N0}건을 개별 조회했습니다.{profileLimitNotice}"
+                            : $"렌탈 청구 {rows.Count:N0}건을 조회했습니다.{profileLimitNotice}";
 
                 if (selectedId.HasValue)
                 {
@@ -4170,6 +4171,44 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         return $" 기본 조회에서는 청구설정 필요 장비를 최대 {RentalStateService.BillingUnlinkedDefaultResultLimit:N0}대까지만 표시합니다. 전체 확인은 상태 필터를 '청구설정 필요'로 선택하세요.";
+    }
+
+    private string BuildBillingProfileLimitNotice(IReadOnlyCollection<RentalBillingViewRow> rows)
+    {
+        var profileLimit = ResolveInteractiveBillingProfileLimit();
+        if (!profileLimit.HasValue)
+            return string.Empty;
+
+        var persistedProfileCount = rows.Sum(row => row.GroupedPersistedProfileCount);
+        if (persistedProfileCount < profileLimit.Value)
+            return string.Empty;
+
+        return $" 청구 프로필은 최대 {profileLimit.Value:N0}건까지 표시 중입니다. 결과가 많으면 검색어 또는 담당지점/상태 필터를 좁혀주세요.";
+    }
+
+    private int? ResolveInteractiveBillingProfileLimit()
+    {
+        if (DueOnly || PastDueOnly)
+            return null;
+
+        var selectedStatus = SelectedStatusFilter == AllOption ? string.Empty : SelectedStatusFilter;
+        if (IsUnlinkedBillingStatusFilterText(selectedStatus))
+            return null;
+
+        return string.IsNullOrWhiteSpace(SearchText)
+            ? RentalStateService.BillingProfileListResultLimit
+            : RentalStateService.BillingProfileSearchResultLimit;
+    }
+
+    private static bool IsUnlinkedBillingStatusFilterText(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status))
+            return false;
+
+        var normalized = status.Trim().Replace(" ", string.Empty, StringComparison.Ordinal);
+        return string.Equals(normalized, "미연결", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(normalized, "생성필요", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(normalized, "청구설정필요", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeFilterSignaturePart(string? value)
