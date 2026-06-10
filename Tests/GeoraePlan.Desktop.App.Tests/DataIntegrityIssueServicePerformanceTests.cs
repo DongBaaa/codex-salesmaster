@@ -269,7 +269,53 @@ public sealed class DataIntegrityIssueServicePerformanceTests
         }
     }
 
-    private static LocalRentalBillingProfile CreateProfile(Guid profileId, int index, string officeCode = OfficeCodeCatalog.Usenet)
+    [Fact]
+    public async Task ScanAsync_LoadsLinkedCustomersInBatchesForRentalReferences()
+    {
+        PrepareAppRoot("georaeplan-integrity-linked-customer-batch-load");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            const int linkedReferenceCount = 1_100;
+            for (var index = 0; index < linkedReferenceCount; index++)
+            {
+                var customerId = Guid.NewGuid();
+                var profileId = Guid.NewGuid();
+                var assetId = Guid.NewGuid();
+                var customerName = $"Scoped Linked Customer {index:D4}";
+
+                db.Customers.Add(CreateCustomer(customerId, OfficeCodeCatalog.Yeonsu, customerName));
+                db.RentalBillingProfiles.Add(CreateProfile(profileId, index, OfficeCodeCatalog.Yeonsu, customerId, customerName));
+                db.RentalAssets.Add(CreateLinkedAsset(profileId, index, OfficeCodeCatalog.Yeonsu, customerId, customerName, assetId));
+                db.RentalAssetAssignmentHistories.Add(CreateCurrentHistory(index, OfficeCodeCatalog.Yeonsu, assetId, profileId, customerId, customerName));
+            }
+
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateYeonsuAdminSession());
+
+            Assert.DoesNotContain(result.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.RentalAssignmentMissingReference);
+            Assert.DoesNotContain(result.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.RentalCustomerNameMismatch);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    private static LocalRentalBillingProfile CreateProfile(
+        Guid profileId,
+        int index,
+        string officeCode = OfficeCodeCatalog.Usenet,
+        Guid? customerId = null,
+        string? customerName = null)
         => new()
         {
             Id = profileId,
@@ -277,8 +323,9 @@ public sealed class DataIntegrityIssueServicePerformanceTests
             OfficeCode = officeCode,
             ResponsibleOfficeCode = officeCode,
             ManagementCompanyCode = officeCode,
+            CustomerId = customerId,
             ProfileKey = $"INTEGRITY-PROFILE-{index:D4}",
-            CustomerName = $"{ResolveTestScopeLabel(officeCode)} Integrity Customer {index:D4}",
+            CustomerName = customerName ?? $"{ResolveTestScopeLabel(officeCode)} Integrity Customer {index:D4}",
             ItemName = $"{ResolveTestScopeLabel(officeCode)} Integrity Copier {index:D4}",
             InstallSiteName = "Main Office",
             MonthlyAmount = 100_000m,
@@ -290,20 +337,27 @@ public sealed class DataIntegrityIssueServicePerformanceTests
             UpdatedAtUtc = DateTime.UtcNow
         };
 
-    private static LocalRentalAsset CreateLinkedAsset(Guid profileId, int index, string officeCode = OfficeCodeCatalog.Usenet)
+    private static LocalRentalAsset CreateLinkedAsset(
+        Guid profileId,
+        int index,
+        string officeCode = OfficeCodeCatalog.Usenet,
+        Guid? customerId = null,
+        string? customerName = null,
+        Guid? assetId = null)
         => new()
         {
-            Id = Guid.NewGuid(),
+            Id = assetId ?? Guid.NewGuid(),
             TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
             OfficeCode = officeCode,
             ResponsibleOfficeCode = officeCode,
             ManagementCompanyCode = officeCode,
+            CustomerId = customerId,
             BillingProfileId = profileId,
             ManagementId = $"INTEGRITY-ASSET-{index:D4}",
             ManagementNumber = $"INT-{index:D4}",
             AssetKey = $"INTEGRITY-ASSET-{Guid.NewGuid():N}",
-            CustomerName = $"{ResolveTestScopeLabel(officeCode)} Integrity Customer {index:D4}",
-            CurrentCustomerName = $"{ResolveTestScopeLabel(officeCode)} Integrity Customer {index:D4}",
+            CustomerName = customerName ?? $"{ResolveTestScopeLabel(officeCode)} Integrity Customer {index:D4}",
+            CurrentCustomerName = customerName ?? $"{ResolveTestScopeLabel(officeCode)} Integrity Customer {index:D4}",
             ItemCategoryName = "Copier",
             ItemName = $"{ResolveTestScopeLabel(officeCode)} Integrity Copier {index:D4}",
             MachineNumber = $"INT-SN-{index:D4}",
@@ -312,6 +366,51 @@ public sealed class DataIntegrityIssueServicePerformanceTests
             AssetStatus = "Rental",
             BillingEligibilityStatus = "Billable",
             MonthlyFee = 100_000m,
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+
+    private static LocalCustomer CreateCustomer(Guid customerId, string officeCode, string name)
+        => new()
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            NameOriginal = name,
+            NameMatchKey = name.ToUpperInvariant().Replace(" ", string.Empty, StringComparison.Ordinal),
+            TradeType = CustomerTradeTypes.Sales,
+            BusinessNumber = string.Empty,
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+
+    private static LocalRentalAssetAssignmentHistory CreateCurrentHistory(
+        int index,
+        string officeCode,
+        Guid assetId,
+        Guid profileId,
+        Guid customerId,
+        string customerName)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            AssetId = assetId,
+            BillingProfileId = profileId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
+            ResponsibleOfficeCode = officeCode,
+            CustomerName = customerName,
+            InstallLocation = "Main Office",
+            BillingProfileDisplay = $"{customerName} Profile",
+            ItemName = $"{ResolveTestScopeLabel(officeCode)} Linked Copier {index:D4}",
+            MachineNumber = $"LINKED-SN-{index:D4}",
+            ManagementNumber = $"LINKED-{officeCode}-{index:D4}",
+            MonthlyFee = 100_000m,
+            IsCurrent = true,
+            LinkedAtUtc = DateTime.UtcNow,
             IsDeleted = false,
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow

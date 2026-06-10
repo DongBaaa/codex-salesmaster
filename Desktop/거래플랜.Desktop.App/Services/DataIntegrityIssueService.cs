@@ -414,13 +414,7 @@ public sealed class DataIntegrityIssueService
                 .Select(history => history.CustomerId!.Value))
             .Distinct()
             .ToList();
-        var activeCustomersById = linkedCustomerIds.Count == 0
-            ? new Dictionary<Guid, LocalCustomer>()
-            : await _db.Customers
-                .IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(customer => linkedCustomerIds.Contains(customer.Id) && !customer.IsDeleted)
-                .ToDictionaryAsync(customer => customer.Id, ct);
+        var activeCustomersById = await LoadCustomersByIdsAsync(linkedCustomerIds, ct);
         var details = new List<DataIntegrityIssueDetail>();
         var scopedAssignmentHistories = activeAssignmentHistories
             .Where(history => IsInSessionScope(history.TenantCode, history.ResponsibleOfficeCode, session))
@@ -793,6 +787,35 @@ public sealed class DataIntegrityIssueService
             detail,
             infoThreshold: TimeSpan.FromMilliseconds(300),
             warningThreshold: TimeSpan.FromSeconds(2));
+    }
+
+    private async Task<Dictionary<Guid, LocalCustomer>> LoadCustomersByIdsAsync(
+        IReadOnlyCollection<Guid> customerIds,
+        CancellationToken ct)
+    {
+        var ids = customerIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var rows = new Dictionary<Guid, LocalCustomer>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds.ToList();
+            var batchRows = await _db.Customers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(customer => scopedBatchIds.Contains(customer.Id) && !customer.IsDeleted)
+                .ToListAsync(ct);
+
+            foreach (var customer in batchRows)
+                rows.TryAdd(customer.Id, customer);
+        }
+
+        return rows;
     }
 
     private async Task<List<LocalItemWarehouseStock>> LoadItemWarehouseStocksForItemsAsync(
