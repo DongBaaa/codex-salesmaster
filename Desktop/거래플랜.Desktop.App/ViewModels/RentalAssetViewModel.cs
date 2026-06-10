@@ -32,6 +32,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private bool _pendingFilterReload;
     private bool _hasInitializedOfficeFilters;
     private int _filterReloadVersion;
+    private IReadOnlyList<LocalOffice>? _officeFilterSourceCache;
+    private IReadOnlyList<LocalItemCategoryOption>? _itemCategoryOptionsCache;
     private string _baselineStateSignature = string.Empty;
     private string _pendingFilterReloadSignature = string.Empty;
     private long _editRevision;
@@ -1229,7 +1231,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private async Task ReloadFiltersAsync()
     {
-        var offices = await _local.GetOfficesAsync();
+        var offices = await GetOfficeFilterSourceAsync();
         var readableOfficeCodes = _rental.GetReadableAssetOfficeCodes(_session);
         var writableOfficeCodes = _rental.GetWritableAssetOfficeCodes(_session);
         var currentFilterValues = GetSelectedFilterValues(OfficeFilterOptions);
@@ -1284,6 +1286,15 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         {
             _suppressFilterReload = false;
         }
+    }
+
+    private async Task<IReadOnlyList<LocalOffice>> GetOfficeFilterSourceAsync()
+    {
+        if (_officeFilterSourceCache is not null)
+            return _officeFilterSourceCache;
+
+        _officeFilterSourceCache = await _local.GetOfficesAsync();
+        return _officeFilterSourceCache;
     }
 
     private static IReadOnlyList<string> BuildEditableAssetOfficeCodes(
@@ -1451,7 +1462,10 @@ public sealed partial class RentalAssetViewModel : ObservableObject
            !string.IsNullOrWhiteSpace(asset.InstallSiteName);
 
     private void HandleInventoryStateChanged(object? sender, EventArgs e)
-        => UiTaskHelper.Forget(ReloadItemCategoryOptionsAsync(), "UI", "렌탈 자산 품목분류 목록 새로고침");
+    {
+        _itemCategoryOptionsCache = null;
+        UiTaskHelper.Forget(ReloadItemCategoryOptionsAsync(), "UI", "렌탈 자산 품목분류 목록 새로고침");
+    }
 
     private async Task ReloadItemCategoryOptionsAsync()
     {
@@ -1460,7 +1474,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         _suppressFilterReload = true;
         try
         {
-            var categoryOptions = await _local.GetItemCategoryOptionsAsync();
+            var categoryOptions = await GetItemCategoryOptionsSourceAsync();
             ItemCategoryOptions.ReplaceWith(categoryOptions);
             var seenCategoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var filterOptions = new List<SelectableFilterOption>();
@@ -1491,6 +1505,15 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         {
             _suppressFilterReload = false;
         }
+    }
+
+    private async Task<IReadOnlyList<LocalItemCategoryOption>> GetItemCategoryOptionsSourceAsync()
+    {
+        if (_itemCategoryOptionsCache is not null)
+            return _itemCategoryOptionsCache;
+
+        _itemCategoryOptionsCache = await _local.GetItemCategoryOptionsAsync();
+        return _itemCategoryOptionsCache;
     }
 
     private void SelectRow(Guid entityId)

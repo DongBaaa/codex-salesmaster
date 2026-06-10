@@ -34,6 +34,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private bool _suppressTemplateItemChangeHandling;
     private bool _updatingTemplateDerivedValues;
     private int _filterReloadVersion;
+    private IReadOnlyList<LocalOffice>? _officeFilterSourceCache;
     private readonly List<RentalBillingAssetOption> _includedAssetPool = new();
     private readonly List<RentalBillingAssetOption> _candidateAssetPool = new();
     private readonly Dictionary<Guid, RentalBillingAssetLinkEdit> _pendingAssetLinkEdits = new();
@@ -2087,68 +2088,77 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         _suppressFilterReload = true;
         try
         {
-        var offices = await _local.GetOfficesAsync();
-        var currentFilterValue = SelectedOfficeFilter?.Value;
-        var currentEditOfficeCode = EditOfficeCode;
-        var readableOfficeCodes = _local.GetReadableRentalOfficeCodesForSession(_session);
-        var defaultFilterValue = ResolveDefaultOfficeFilterValue(readableOfficeCodes);
-        var desiredFilterValue = string.IsNullOrWhiteSpace(currentFilterValue) ||
-                                 (!CanUseAllOfficeFilter &&
-                                  string.Equals(currentFilterValue, AllOption, StringComparison.OrdinalIgnoreCase))
-            ? defaultFilterValue
-            : currentFilterValue;
-        var writableOfficeCodes = CanManageAll
-            ? OfficeCodeCatalog.All
-            : _local.GetWritableRentalOfficeCodesForSession(_session);
-        var selectedRowOfficeCode = ResolveProfileOfficeCode(SelectedRow?.Source, _session.OfficeCode);
+            var offices = await GetOfficeFilterSourceAsync();
+            var currentFilterValue = SelectedOfficeFilter?.Value;
+            var currentEditOfficeCode = EditOfficeCode;
+            var readableOfficeCodes = _local.GetReadableRentalOfficeCodesForSession(_session);
+            var defaultFilterValue = ResolveDefaultOfficeFilterValue(readableOfficeCodes);
+            var desiredFilterValue = string.IsNullOrWhiteSpace(currentFilterValue) ||
+                                     (!CanUseAllOfficeFilter &&
+                                      string.Equals(currentFilterValue, AllOption, StringComparison.OrdinalIgnoreCase))
+                ? defaultFilterValue
+                : currentFilterValue;
+            var writableOfficeCodes = CanManageAll
+                ? OfficeCodeCatalog.All
+                : _local.GetWritableRentalOfficeCodesForSession(_session);
+            var selectedRowOfficeCode = ResolveProfileOfficeCode(SelectedRow?.Source, _session.OfficeCode);
 
-        var officeOptions = new List<DisplayOption>();
-        if (CanUseAllOfficeFilter)
-            officeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
-        officeOptions.AddRange(BuildOfficeDisplayOptions(offices, readableOfficeCodes)
-            .Select(office => new DisplayOption
-            {
-                Value = office.Value,
-                DisplayName = office.DisplayName
-            }));
-        OfficeOptions.ReplaceWith(officeOptions);
+            var officeOptions = new List<DisplayOption>();
+            if (CanUseAllOfficeFilter)
+                officeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
+            officeOptions.AddRange(BuildOfficeDisplayOptions(offices, readableOfficeCodes)
+                .Select(office => new DisplayOption
+                {
+                    Value = office.Value,
+                    DisplayName = office.DisplayName
+                }));
+            OfficeOptions.ReplaceWith(officeOptions);
 
-        var editableOfficeCodes = BuildEditableBillingOfficeCodes(
-            writableOfficeCodes,
-            readableOfficeCodes,
-            [currentEditOfficeCode, selectedRowOfficeCode]);
-        var editableOfficeOptions = BuildOfficeDisplayOptions(offices, editableOfficeCodes)
-            .Select(office => new DisplayOption
+            var editableOfficeCodes = BuildEditableBillingOfficeCodes(
+                writableOfficeCodes,
+                readableOfficeCodes,
+                [currentEditOfficeCode, selectedRowOfficeCode]);
+            var editableOfficeOptions = BuildOfficeDisplayOptions(offices, editableOfficeCodes)
+                .Select(office => new DisplayOption
+                {
+                    Value = office.Value,
+                    DisplayName = office.DisplayName
+                })
+                .ToList();
+            if (editableOfficeOptions.Count == 0)
             {
-                Value = office.Value,
-                DisplayName = office.DisplayName
-            })
-            .ToList();
-        if (editableOfficeOptions.Count == 0)
-        {
-            var fallbackOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
-            editableOfficeOptions.Add(new DisplayOption
-            {
-                Value = fallbackOfficeCode,
-                DisplayName = OfficeCodeCatalog.GetOfficeDisplayName(fallbackOfficeCode)
-            });
+                var fallbackOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
+                editableOfficeOptions.Add(new DisplayOption
+                {
+                    Value = fallbackOfficeCode,
+                    DisplayName = OfficeCodeCatalog.GetOfficeDisplayName(fallbackOfficeCode)
+                });
+            }
+            EditOfficeOptions.ReplaceWith(editableOfficeOptions);
+
+            SelectedOfficeFilter = OfficeOptions.FirstOrDefault(option =>
+                                       string.Equals(option.Value, desiredFilterValue, StringComparison.OrdinalIgnoreCase))
+                                   ?? OfficeOptions.FirstOrDefault(option =>
+                                       string.Equals(option.Value, defaultFilterValue, StringComparison.OrdinalIgnoreCase))
+                                   ?? OfficeOptions.FirstOrDefault(option => option.Value == AllOption)
+                                   ?? OfficeOptions.FirstOrDefault();
+
+            EditOfficeCode = ResolveDefaultEditOfficeCode(currentEditOfficeCode);
+
         }
-        EditOfficeOptions.ReplaceWith(editableOfficeOptions);
-
-        SelectedOfficeFilter = OfficeOptions.FirstOrDefault(option =>
-                                   string.Equals(option.Value, desiredFilterValue, StringComparison.OrdinalIgnoreCase))
-                               ?? OfficeOptions.FirstOrDefault(option =>
-                                   string.Equals(option.Value, defaultFilterValue, StringComparison.OrdinalIgnoreCase))
-                               ?? OfficeOptions.FirstOrDefault(option => option.Value == AllOption)
-                               ?? OfficeOptions.FirstOrDefault();
-
-        EditOfficeCode = ResolveDefaultEditOfficeCode(currentEditOfficeCode);
-
-    }
-    finally
+        finally
         {
             _suppressFilterReload = false;
         }
+    }
+
+    private async Task<IReadOnlyList<LocalOffice>> GetOfficeFilterSourceAsync()
+    {
+        if (_officeFilterSourceCache is not null)
+            return _officeFilterSourceCache;
+
+        _officeFilterSourceCache = await _local.GetOfficesAsync();
+        return _officeFilterSourceCache;
     }
 
     private static IReadOnlyList<string> BuildEditableBillingOfficeCodes(
