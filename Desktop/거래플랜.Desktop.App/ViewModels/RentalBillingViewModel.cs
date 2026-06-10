@@ -37,6 +37,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private IReadOnlyList<LocalOffice>? _officeFilterSourceCache;
     private string _pendingFilterReloadSignature = string.Empty;
     private string _activeFilterReloadSignature = string.Empty;
+    private string _activeCandidateAssetsLoadSignature = string.Empty;
     private readonly List<RentalBillingAssetOption> _includedAssetPool = new();
     private readonly List<RentalBillingAssetOption> _candidateAssetPool = new();
     private readonly Dictionary<Guid, RentalBillingAssetLinkEdit> _pendingAssetLinkEdits = new();
@@ -495,6 +496,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         _candidateAssetsLoadCts?.Cancel();
         _candidateAssetsLoadCts?.Dispose();
         _candidateAssetsLoadCts = null;
+        _candidateAssetsLoadTask = null;
+        _activeCandidateAssetsLoadSignature = string.Empty;
         _contractDateRefreshCts?.Cancel();
         _contractDateRefreshCts?.Dispose();
         _contractDateRefreshCts = null;
@@ -2583,11 +2586,26 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         bool preserveSelection,
         bool autoIncludeAllCandidates = false)
     {
+        var signature = BuildCandidateAssetsLoadSignature(
+            billingProfileId,
+            customerId,
+            customerName,
+            officeCode,
+            preserveSelection,
+            autoIncludeAllCandidates);
+        if (_candidateAssetsLoadTask is { IsCompleted: false } &&
+            _candidateAssetsLoadCts is { IsCancellationRequested: false } &&
+            string.Equals(_activeCandidateAssetsLoadSignature, signature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         _candidateAssetsLoadCts?.Cancel();
         _candidateAssetsLoadCts?.Dispose();
 
         var cts = new CancellationTokenSource();
         _candidateAssetsLoadCts = cts;
+        _activeCandidateAssetsLoadSignature = signature;
         _candidateAssetsLoadTask = LoadCandidateAssetsAsync(
             billingProfileId,
             customerId,
@@ -2595,6 +2613,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             officeCode,
             preserveSelection,
             autoIncludeAllCandidates,
+            signature,
+            cts,
             cts.Token);
 
         UiTaskHelper.Forget(
@@ -2610,6 +2630,42 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             });
     }
 
+    private string BuildCandidateAssetsLoadSignature(
+        Guid? billingProfileId,
+        Guid? customerId,
+        string customerName,
+        string officeCode,
+        bool preserveSelection,
+        bool autoIncludeAllCandidates)
+        => string.Join(
+            "|",
+            billingProfileId?.ToString("N") ?? string.Empty,
+            customerId?.ToString("N") ?? string.Empty,
+            NormalizeFilterSignaturePart(customerName),
+            NormalizeFilterSignaturePart(OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOfficeCode)
+                ? normalizedOfficeCode
+                : officeCode),
+            preserveSelection ? "PRESERVE" : "RESET",
+            autoIncludeAllCandidates ? "AUTO" : "MANUAL",
+            LinkAssetsLater ? "LATER" : "NOW",
+            SelectedTemplateItem?.ItemId.ToString("N") ?? string.Empty,
+            string.Join(
+                ";",
+                TemplateItems
+                    .Select(item => string.Join(
+                        ":",
+                        item.ItemId.ToString("N"),
+                        NormalizeFilterSignaturePart(item.BillingLineMode),
+                        item.RepresentativeAssetId?.ToString("N") ?? string.Empty,
+                        string.Join(
+                            ",",
+                            item.IncludedAssetIds
+                                .Where(assetId => assetId != Guid.Empty)
+                                .Distinct()
+                                .OrderBy(assetId => assetId)
+                                .Select(assetId => assetId.ToString("N")))))
+                    .OrderBy(value => value, StringComparer.Ordinal)));
+
     private async Task LoadCandidateAssetsAsync(
         Guid? billingProfileId,
         Guid? customerId,
@@ -2617,60 +2673,77 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         string officeCode,
         bool preserveSelection,
         bool autoIncludeAllCandidates,
+        string activeSignature = "",
+        CancellationTokenSource? cts = null,
         CancellationToken ct = default)
     {
-        var previousSelections = preserveSelection
-            ? CandidateAssets.Where(asset => asset.IsSelected).Select(asset => asset.AssetId).ToHashSet()
-            : new HashSet<Guid>();
-
-        var explicitIncludedAssetIds = TemplateItems
-            .SelectMany(item => item.IncludedAssetIds)
-            .Where(id => id != Guid.Empty)
-            .Distinct()
-            .ToList();
-
-        var includedAssets = await _rental.GetIncludedBillingAssetsAsync(
-            billingProfileId,
-            explicitIncludedAssetIds,
-            customerId,
-            officeCode,
-            _session,
-            ct);
-
-        var hasExplicitIncludedAssets = TemplateItems
-            .SelectMany(item => item.IncludedAssetIds)
-            .Any(id => id != Guid.Empty);
-
-        if (SelectedTemplateItem is not null &&
-            !LinkAssetsLater &&
-            !hasExplicitIncludedAssets &&
-            includedAssets.Count > 0 &&
-            TemplateItems.Count == 1)
+        try
         {
-            foreach (var assetId in includedAssets.Select(asset => asset.Id).Distinct())
+            var previousSelections = preserveSelection
+                ? CandidateAssets.Where(asset => asset.IsSelected).Select(asset => asset.AssetId).ToHashSet()
+                : new HashSet<Guid>();
+
+            var explicitIncludedAssetIds = TemplateItems
+                .SelectMany(item => item.IncludedAssetIds)
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+
+            var includedAssets = await _rental.GetIncludedBillingAssetsAsync(
+                billingProfileId,
+                explicitIncludedAssetIds,
+                customerId,
+                officeCode,
+                _session,
+                ct);
+
+            var hasExplicitIncludedAssets = TemplateItems
+                .SelectMany(item => item.IncludedAssetIds)
+                .Any(id => id != Guid.Empty);
+
+            if (SelectedTemplateItem is not null &&
+                !LinkAssetsLater &&
+                !hasExplicitIncludedAssets &&
+                includedAssets.Count > 0 &&
+                TemplateItems.Count == 1)
             {
-                if (!SelectedTemplateItem.IncludedAssetIds.Contains(assetId))
-                    SelectedTemplateItem.IncludedAssetIds.Add(assetId);
+                foreach (var assetId in includedAssets.Select(asset => asset.Id).Distinct())
+                {
+                    if (!SelectedTemplateItem.IncludedAssetIds.Contains(assetId))
+                        SelectedTemplateItem.IncludedAssetIds.Add(assetId);
+                }
+            }
+
+            ct.ThrowIfCancellationRequested();
+
+            _includedAssetPool.Clear();
+            _includedAssetPool.AddRange(includedAssets
+                .Select(asset =>
+                {
+                    var option = CreateBillingAssetOption(asset, isSelected: true);
+                    ApplyPendingAssetLinkEdit(option);
+                    return option;
+                }));
+
+            _candidateAssetPool.Clear();
+            RefreshBillingAssetCollections(previousSelections);
+            SyncIndividualTemplateItemsFromIncludedAssets();
+            NormalizeTemplateRepresentativeAssets();
+            RefreshBillingAssetCollections(previousSelections);
+            UpdateTemplateDerivedValues();
+        }
+        finally
+        {
+            if (cts is not null &&
+                ReferenceEquals(_candidateAssetsLoadCts, cts) &&
+                string.Equals(_activeCandidateAssetsLoadSignature, activeSignature, StringComparison.Ordinal))
+            {
+                _candidateAssetsLoadCts = null;
+                _candidateAssetsLoadTask = null;
+                _activeCandidateAssetsLoadSignature = string.Empty;
+                cts.Dispose();
             }
         }
-
-        ct.ThrowIfCancellationRequested();
-
-        _includedAssetPool.Clear();
-        _includedAssetPool.AddRange(includedAssets
-            .Select(asset =>
-            {
-                var option = CreateBillingAssetOption(asset, isSelected: true);
-                ApplyPendingAssetLinkEdit(option);
-                return option;
-            }));
-
-        _candidateAssetPool.Clear();
-        RefreshBillingAssetCollections(previousSelections);
-        SyncIndividualTemplateItemsFromIncludedAssets();
-        NormalizeTemplateRepresentativeAssets();
-        RefreshBillingAssetCollections(previousSelections);
-        UpdateTemplateDerivedValues();
     }
 
     private void LoadTemplateItemsFromProfile(LocalRentalBillingProfile profile)

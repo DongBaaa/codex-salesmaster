@@ -36,6 +36,60 @@ public sealed class RentalFilterReloadSignatureTests
     }
 
     [Fact]
+    public void RentalBillingViewModel_StartCandidateAssetsLoadSkipsSameActiveSignature()
+    {
+        var profileId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var customerId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var vm = new RentalBillingViewModel(null!, null!, CreateAdminSession())
+        {
+            LinkAssetsLater = true,
+            SelectedTemplateItem = new RentalBillingTemplateEditorItem
+            {
+                ItemId = Guid.Parse("33333333-3333-3333-3333-333333333333"),
+                BillingLineMode = "묶음"
+            }
+        };
+        vm.TemplateItems.Add(vm.SelectedTemplateItem);
+        var activeSignature = InvokePrivateInstance<string>(
+            vm,
+            "BuildCandidateAssetsLoadSignature",
+            profileId,
+            customerId,
+            "테스트 거래처",
+            OfficeCodeCatalog.Usenet,
+            false,
+            false);
+        var activeCts = new CancellationTokenSource();
+        var activeTask = new TaskCompletionSource();
+
+        SetPrivateField(vm, "_activeCandidateAssetsLoadSignature", activeSignature);
+        SetPrivateField(vm, "_candidateAssetsLoadCts", activeCts);
+        SetPrivateField(vm, "_candidateAssetsLoadTask", activeTask.Task);
+
+        try
+        {
+            InvokePrivateInstance(
+                vm,
+                "StartCandidateAssetsLoad",
+                profileId,
+                customerId,
+                "테스트 거래처",
+                OfficeCodeCatalog.Usenet,
+                false,
+                false);
+
+            Assert.False(activeCts.IsCancellationRequested);
+            Assert.Same(activeCts, GetPrivateField<CancellationTokenSource>(vm, "_candidateAssetsLoadCts"));
+            Assert.Same(activeTask.Task, GetPrivateField<Task>(vm, "_candidateAssetsLoadTask"));
+        }
+        finally
+        {
+            vm.CancelPendingBackgroundWork();
+            activeTask.SetCanceled();
+        }
+    }
+
+    [Fact]
     public void RentalAssetViewModel_RequestFilterReloadSkipsSameActiveSignature()
     {
         PrepareAppRoot("georaeplan-rental-asset-active-filter-signature");
