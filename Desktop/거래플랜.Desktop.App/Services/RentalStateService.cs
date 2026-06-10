@@ -138,6 +138,7 @@ public sealed partial class RentalStateService
     private readonly LocalDbContext _db;
     private readonly LocalStateService? _local;
     private readonly IServiceProvider? _serviceProvider;
+    private bool _legacyAssignedUsernameCleanupCompleted;
 
     public RentalStateService(LocalDbContext db)
         : this(db, null, null)
@@ -165,11 +166,17 @@ public sealed partial class RentalStateService
 
     public async Task<int> CleanupLegacyAssignedUsernamesAsync(CancellationToken ct = default)
     {
+        if (_legacyAssignedUsernameCleanupCompleted)
+            return 0;
+
         var hasProfileColumn = await HasLegacyAssignedUsernameColumnAsync("RentalBillingProfiles", ct);
         var hasAssetColumn = await HasLegacyAssignedUsernameColumnAsync("RentalAssets", ct);
         var hasLogColumn = await HasLegacyAssignedUsernameColumnAsync("RentalBillingLogs", ct);
         if (!hasProfileColumn && !hasAssetColumn && !hasLogColumn)
+        {
+            _legacyAssignedUsernameCleanupCompleted = true;
             return 0;
+        }
 
         var now = DateTime.UtcNow;
         var changed = 0;
@@ -194,6 +201,7 @@ SET ""AssignedUsername"" = '', ""UpdatedAtUtc"" = {now}, ""IsDirty"" = 1
 WHERE ""AssignedUsername"" <> '';", ct);
         }
 
+        _legacyAssignedUsernameCleanupCompleted = true;
         return changed;
     }
 
