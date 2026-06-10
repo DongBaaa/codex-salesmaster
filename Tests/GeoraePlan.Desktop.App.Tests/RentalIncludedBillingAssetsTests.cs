@@ -54,6 +54,60 @@ public sealed class RentalIncludedBillingAssetsTests
         }
     }
 
+    [Fact]
+    public async Task GetIncludedBillingAssetsAsync_BatchesManyExplicitIncludedAssetIds()
+    {
+        PrepareAppRoot("georaeplan-rental-included-assets-explicit-batch");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("f2200000-1111-4444-8888-000000000001");
+            for (var index = 0; index < 350; index++)
+            {
+                db.RentalAssets.Add(CreateRentalAsset(
+                    $"A Profile Customer {index:D4}",
+                    $"P-{index:D4}",
+                    profileId));
+            }
+
+            var explicitAssetIds = new List<Guid>();
+            for (var index = 0; index < 650; index++)
+            {
+                var explicitAsset = CreateRentalAsset(
+                    $"Z Explicit Customer {index:D4}",
+                    $"E-{index:D4}",
+                    billingProfileId: null);
+                explicitAssetIds.Add(explicitAsset.Id);
+                db.RentalAssets.Add(explicitAsset);
+            }
+
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var rows = await service.GetIncludedBillingAssetsAsync(
+                profileId,
+                explicitAssetIds,
+                customerId: null,
+                officeCode: OfficeCodeCatalog.Usenet,
+                CreateAdminSession());
+
+            Assert.Equal(950, rows.Count);
+            Assert.Contains(rows, asset => asset.Id == explicitAssetIds.First());
+            Assert.Contains(rows, asset => asset.Id == explicitAssetIds.Last());
+            Assert.Equal(650, rows.Count(asset => explicitAssetIds.Contains(asset.Id)));
+            Assert.Equal(300, rows.Count(asset => asset.BillingProfileId == profileId));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");

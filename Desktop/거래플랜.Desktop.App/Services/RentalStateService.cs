@@ -4100,18 +4100,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
             normalizedOfficeCode,
             session.TenantCode,
             session.OfficeCode);
-        var query = BuildIncludedBillingAssetsQuery(
-            ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
-                .Where(asset => !asset.IsDeleted),
+        var query = ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
+            .Where(asset => !asset.IsDeleted);
+
+        var includedAssets = await LoadIncludedBillingAssetsAsync(
+            query,
             assetIds,
             billingProfileId,
             normalizedTenantCode,
-            normalizedOfficeCode);
-
-        var includedAssetLimit = 300 + assetIds.Count;
-        var includedAssets = await SelectAssetLinkCandidateProjection(ApplyIncludedBillingAssetOrdering(query, assetIds)
-            .Take(includedAssetLimit))
-            .ToListAsync(ct);
+            normalizedOfficeCode,
+            ct);
 
         await NormalizeAssetCustomerDisplayNamesAsync(includedAssets, ct);
         return includedAssets
@@ -4120,56 +4118,52 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ToList();
     }
 
-    private static IQueryable<LocalRentalAsset> BuildIncludedBillingAssetsQuery(
+    private static async Task<List<LocalRentalAsset>> LoadIncludedBillingAssetsAsync(
         IQueryable<LocalRentalAsset> query,
         IReadOnlyCollection<Guid> assetIds,
         Guid? billingProfileId,
         string normalizedTenantCode,
-        string normalizedOfficeCode)
+        string normalizedOfficeCode,
+        CancellationToken ct)
     {
-        var hasExplicitAssetIds = assetIds.Count > 0;
-        var profileId = billingProfileId.GetValueOrDefault();
-        var hasProfileId = billingProfileId.HasValue && profileId != Guid.Empty;
-
-        if (!hasProfileId)
-            return query.Where(asset => assetIds.Contains(asset.Id));
-
-        if (!hasExplicitAssetIds)
-            return query.Where(asset =>
-                asset.BillingProfileId == profileId &&
-                asset.TenantCode == normalizedTenantCode &&
-                (
-                    asset.ResponsibleOfficeCode == normalizedOfficeCode ||
-                    asset.ManagementCompanyCode == normalizedOfficeCode
-                ));
-
-        return query.Where(asset =>
-            assetIds.Contains(asset.Id) ||
-            (
-                asset.BillingProfileId == profileId &&
-                asset.TenantCode == normalizedTenantCode &&
-                (
-                    asset.ResponsibleOfficeCode == normalizedOfficeCode ||
-                    asset.ManagementCompanyCode == normalizedOfficeCode
-                )
-            ));
-    }
-
-    private static IOrderedQueryable<LocalRentalAsset> ApplyIncludedBillingAssetOrdering(
-        IQueryable<LocalRentalAsset> query,
-        IReadOnlyCollection<Guid> assetIds)
-    {
+        var assetsById = new Dictionary<Guid, LocalRentalAsset>();
         if (assetIds.Count > 0)
         {
-            return query
-                .OrderByDescending(asset => assetIds.Contains(asset.Id))
-                .ThenBy(asset => asset.CustomerName)
-                .ThenBy(asset => asset.ManagementNumber);
+            foreach (var batchIds in assetIds.Chunk(LocalQueryContainsBatchSize))
+            {
+                ct.ThrowIfCancellationRequested();
+                var scopedBatchIds = batchIds;
+                var explicitAssets = await SelectAssetLinkCandidateProjection(query
+                        .Where(asset => scopedBatchIds.Contains(asset.Id)))
+                    .ToListAsync(ct);
+
+                foreach (var asset in explicitAssets)
+                    assetsById[asset.Id] = asset;
+            }
         }
 
-        return query
-            .OrderBy(asset => asset.CustomerName)
-            .ThenBy(asset => asset.ManagementNumber);
+        var profileId = billingProfileId.GetValueOrDefault();
+        var hasProfileId = billingProfileId.HasValue && profileId != Guid.Empty;
+        if (hasProfileId)
+        {
+            var linkedAssets = await SelectAssetLinkCandidateProjection(query
+                    .Where(asset =>
+                        asset.BillingProfileId == profileId &&
+                        asset.TenantCode == normalizedTenantCode &&
+                        (
+                            asset.ResponsibleOfficeCode == normalizedOfficeCode ||
+                            asset.ManagementCompanyCode == normalizedOfficeCode
+                        ))
+                    .OrderBy(asset => asset.CustomerName)
+                    .ThenBy(asset => asset.ManagementNumber)
+                    .Take(300))
+                .ToListAsync(ct);
+
+            foreach (var asset in linkedAssets)
+                assetsById[asset.Id] = asset;
+        }
+
+        return assetsById.Values.ToList();
     }
 
     public async Task<IReadOnlyList<RentalAssetLinkCandidate>> GetAssetLinkCandidatesAsync(
