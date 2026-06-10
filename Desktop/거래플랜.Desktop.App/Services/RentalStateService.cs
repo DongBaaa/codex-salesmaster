@@ -4232,29 +4232,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Select(asset => asset.BillingProfileId!.Value)
             .Distinct()
             .ToList();
-        var profilesById = linkedProfileIds.Count == 0
-            ? new Dictionary<Guid, RentalBillingProfileDisplayLookup>()
-            : (await _db.RentalBillingProfiles
-                .IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(profile => linkedProfileIds.Contains(profile.Id) && !profile.IsDeleted)
-                .Select(profile => new
-                {
-                    profile.Id,
-                    profile.CustomerId,
-                    profile.CustomerName,
-                    profile.ProfileKey,
-                    profile.InstallSiteName
-                })
-                .ToListAsync(ct))
-            .ToDictionary(
-                profile => profile.Id,
-                profile => new RentalBillingProfileDisplayLookup(
-                    profile.Id,
-                    profile.CustomerId,
-                    profile.CustomerName,
-                    profile.ProfileKey,
-                    profile.InstallSiteName));
+        var profilesById = await GetBillingProfileDisplayLookupMapAsync(linkedProfileIds, ct);
         var customerNameMap = await GetCustomerNameMapAsync(
             assets
                 .Where(asset => asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
@@ -4296,6 +4274,50 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ThenBy(candidate => candidate.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(candidate => candidate.Source.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+    }
+
+    private async Task<Dictionary<Guid, RentalBillingProfileDisplayLookup>> GetBillingProfileDisplayLookupMapAsync(
+        IEnumerable<Guid> profileIds,
+        CancellationToken ct)
+    {
+        var ids = profileIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return new Dictionary<Guid, RentalBillingProfileDisplayLookup>();
+
+        var result = new Dictionary<Guid, RentalBillingProfileDisplayLookup>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            var profiles = await _db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(profile => scopedBatchIds.Contains(profile.Id) && !profile.IsDeleted)
+                .Select(profile => new
+                {
+                    profile.Id,
+                    profile.CustomerId,
+                    profile.CustomerName,
+                    profile.ProfileKey,
+                    profile.InstallSiteName
+                })
+                .ToListAsync(ct);
+
+            foreach (var profile in profiles)
+            {
+                result[profile.Id] = new RentalBillingProfileDisplayLookup(
+                    profile.Id,
+                    profile.CustomerId,
+                    profile.CustomerName,
+                    profile.ProfileKey,
+                    profile.InstallSiteName);
+            }
+        }
+
+        return result;
     }
 
     private static IOrderedQueryable<LocalRentalAsset> ApplyAssetLinkCandidateOrdering(
@@ -4400,22 +4422,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Select(history => history.BillingProfileId!.Value)
             .Distinct()
             .ToList();
-        var profileDisplayLookup = profileIds.Count == 0
-            ? new Dictionary<Guid, string>()
-            : (await _db.RentalBillingProfiles
-                .IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(profile => profileIds.Contains(profile.Id))
-                .Select(profile => new
-                {
-                    profile.Id,
-                    profile.CustomerName,
-                    profile.ItemName
-                })
-                .ToListAsync(ct))
-            .ToDictionary(
-                profile => profile.Id,
-                profile => BuildBillingProfileDisplay(profile.CustomerName, profile.ItemName));
+        var profileDisplayLookup = await GetBillingProfileDisplayTextMapAsync(profileIds, ct);
         var asset = await _db.RentalAssets
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -4437,6 +4444,41 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return displayHistories
             .Select(history => BuildAssignmentHistoryViewItem(history, asset, profileDisplayLookup))
             .ToList();
+    }
+
+    private async Task<Dictionary<Guid, string>> GetBillingProfileDisplayTextMapAsync(
+        IEnumerable<Guid> profileIds,
+        CancellationToken ct)
+    {
+        var ids = profileIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return new Dictionary<Guid, string>();
+
+        var result = new Dictionary<Guid, string>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            var profiles = await _db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(profile => scopedBatchIds.Contains(profile.Id))
+                .Select(profile => new
+                {
+                    profile.Id,
+                    profile.CustomerName,
+                    profile.ItemName
+                })
+                .ToListAsync(ct);
+
+            foreach (var profile in profiles)
+                result[profile.Id] = BuildBillingProfileDisplay(profile.CustomerName, profile.ItemName);
+        }
+
+        return result;
     }
 
     private static int? ResolveAssignmentHistoryRawFetchLimit(int maxDisplayRows)

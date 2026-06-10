@@ -98,6 +98,90 @@ public sealed class RentalAssignmentHistoryDisplayLimitTests
         }
     }
 
+    [Fact]
+    public async Task RentalStateService_GetAssetAssignmentHistoriesAsync_BatchesProfileDisplayLookupsBeyondBatchWindow()
+    {
+        PrepareAppRoot("georaeplan-rental-assignment-history-profile-display-batch");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var assetId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "TEST:ASSIGNMENT-HISTORY-PROFILE-BATCH",
+                ManagementNumber = "AH-BATCH-001",
+                ItemName = "Printer",
+                MachineNumber = "AH-BATCH-SN-001",
+                CustomerName = "Customer 000",
+                CurrentCustomerName = "Customer 000",
+                InstallLocation = "Office 000",
+                AssetStatus = "Rental",
+                BillingEligibilityStatus = "Billable"
+            });
+
+            var now = new DateTime(2026, 6, 11, 0, 0, 0, DateTimeKind.Utc);
+            foreach (var index in Enumerable.Range(0, 650))
+            {
+                var profileId = Guid.Parse($"b1000000-0000-0000-0000-{index + 1:000000000000}");
+                db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"HISTORY-PROFILE-{index:D4}",
+                    CustomerName = $"Profile Customer {index:D4}",
+                    ItemName = $"Plan {index:D4}",
+                    MonthlyAmount = 100_000m,
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                });
+
+                db.RentalAssetAssignmentHistories.Add(new LocalRentalAssetAssignmentHistory
+                {
+                    Id = Guid.Parse($"b2000000-0000-0000-0000-{index + 1:000000000000}"),
+                    AssetId = assetId,
+                    BillingProfileId = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    IsCurrent = index == 0,
+                    LinkedAtUtc = now.AddDays(-index),
+                    CustomerName = $"Customer {index:D3}",
+                    InstallLocation = $"Office {index:D3}",
+                    ItemName = "Printer",
+                    MachineNumber = "AH-BATCH-SN-001",
+                    ManagementNumber = "AH-BATCH-001",
+                    ChangeReason = $"history-profile-{index:D3}",
+                    UpdatedAtUtc = now.AddDays(-index)
+                });
+            }
+            await db.SaveChangesAsync();
+
+            var rows = await new RentalStateService(db).GetAssetAssignmentHistoriesAsync(assetId, 300);
+
+            Assert.Equal(300, rows.Count);
+            Assert.Equal("Profile Customer 0000 · Plan 0000", rows[0].BillingProfileDisplay);
+            Assert.Equal("Profile Customer 0299 · Plan 0299", rows[^1].BillingProfileDisplay);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static List<RentalAssetAssignmentHistoryViewItem> CreateRows(int count)
         => Enumerable.Range(0, count)
             .Select(index => new RentalAssetAssignmentHistoryViewItem

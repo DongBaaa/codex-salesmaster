@@ -59,6 +59,51 @@ public sealed class RentalAssetLinkCandidateOrderingTests
         }
     }
 
+    [Fact]
+    public async Task GetAssetLinkCandidatesAsync_BatchesLinkedProfileDisplayLookupsBeyondBatchWindow()
+    {
+        PrepareAppRoot("georaeplan-rental-link-candidate-profile-display-batch");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            const int candidateCount = 600;
+            for (var index = 0; index < candidateCount; index++)
+            {
+                var profileId = Guid.Parse($"a1000000-0000-0000-0000-{index + 1:000000000000}");
+                db.RentalBillingProfiles.Add(CreateBillingProfile(profileId, $"Profile Customer {index:D4}", $"Plan {index:D4}"));
+                db.RentalAssets.Add(CreateRentalAsset(
+                    $"Candidate Customer {index:D4}",
+                    $"C-{index:D4}",
+                    profileId));
+            }
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var candidates = await service.GetAssetLinkCandidatesAsync(
+                currentBillingProfileId: null,
+                customerId: null,
+                customerName: null,
+                officeCode: OfficeCodeCatalog.Usenet,
+                CreateAdminSession(),
+                includeOtherOfficeAssets: false,
+                maxResults: candidateCount);
+
+            Assert.Equal(candidateCount, candidates.Count);
+            Assert.Contains(candidates, candidate => candidate.CurrentBillingProfileDisplay == "Profile Customer 0000");
+            Assert.Contains(candidates, candidate => candidate.CurrentBillingProfileDisplay == "Profile Customer 0599");
+            Assert.All(candidates, candidate => Assert.StartsWith("Profile Customer ", candidate.CurrentBillingProfileDisplay));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -98,6 +143,24 @@ public sealed class RentalAssetLinkCandidateOrderingTests
             UpdatedAtUtc = DateTime.UtcNow
         };
     }
+
+    private static LocalRentalBillingProfile CreateBillingProfile(Guid profileId, string customerName, string itemName)
+        => new()
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"PROFILE-{profileId:N}",
+            CustomerName = customerName,
+            ItemName = itemName,
+            MonthlyAmount = 100_000m,
+            IsActive = true,
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
 
     private static SessionState CreateAdminSession()
     {
