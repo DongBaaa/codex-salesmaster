@@ -35,6 +35,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private bool _updatingTemplateDerivedValues;
     private int _filterReloadVersion;
     private IReadOnlyList<LocalOffice>? _officeFilterSourceCache;
+    private string _pendingFilterReloadSignature = string.Empty;
     private readonly List<RentalBillingAssetOption> _includedAssetPool = new();
     private readonly List<RentalBillingAssetOption> _candidateAssetPool = new();
     private readonly Dictionary<Guid, RentalBillingAssetLinkEdit> _pendingAssetLinkEdits = new();
@@ -4016,22 +4017,54 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (_suppressFilterReload)
             return;
 
+        var signature = BuildCurrentFilterReloadSignature();
+        if (!string.IsNullOrWhiteSpace(_pendingFilterReloadSignature) &&
+            string.Equals(_pendingFilterReloadSignature, signature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         CancelPendingFilterReload();
         var cts = new CancellationTokenSource();
         _filterReloadCts = cts;
+        _pendingFilterReloadSignature = signature;
         _searchDebouncer.DebounceAsync(
-            TimeSpan.FromMilliseconds(350),
-            () => ReloadCoreAsync(cts.Token),
+            ResolveFilterReloadDebounceDelay(),
+            async () =>
+            {
+                _pendingFilterReloadSignature = string.Empty;
+                await ReloadCoreAsync(cts.Token);
+            },
             ex => StatusMessage = $"렌탈 청구 목록을 다시 불러오지 못했습니다. {ex.Message}");
     }
 
     private void CancelPendingFilterReload()
     {
         Interlocked.Increment(ref _filterReloadVersion);
+        _pendingFilterReloadSignature = string.Empty;
         _filterReloadCts?.Cancel();
         _filterReloadCts?.Dispose();
         _filterReloadCts = null;
     }
+
+    private TimeSpan ResolveFilterReloadDebounceDelay()
+        => string.IsNullOrWhiteSpace(SearchText)
+            ? TimeSpan.FromMilliseconds(350)
+            : TimeSpan.FromMilliseconds(650);
+
+    private string BuildCurrentFilterReloadSignature()
+        => string.Join(
+            "|",
+            NormalizeFilterSignaturePart(SearchText),
+            NormalizeFilterSignaturePart(ResolveSelectedOfficeFilterCode()),
+            NormalizeFilterSignaturePart(SelectedStatusFilter == AllOption ? string.Empty : SelectedStatusFilter),
+            DueOnly ? "DUE" : string.Empty,
+            PastDueOnly ? "PAST" : string.Empty,
+            ShowIndividualProfiles ? "INDIVIDUAL" : "GROUPED",
+            ReferenceDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+
+    private static string NormalizeFilterSignaturePart(string? value)
+        => (value ?? string.Empty).Trim().ToUpperInvariant();
 
     private static DateOnly? ToDateOnly(DateTime? value)
         => value.HasValue ? DateOnly.FromDateTime(value.Value) : null;
