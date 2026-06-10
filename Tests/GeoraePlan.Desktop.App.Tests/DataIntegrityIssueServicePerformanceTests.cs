@@ -42,6 +42,43 @@ public sealed class DataIntegrityIssueServicePerformanceTests
         }
     }
 
+    [Fact]
+    public async Task ScanAsync_UsesItemNameLookupForManyInventoryReferenceIssues()
+    {
+        PrepareAppRoot("georaeplan-integrity-inventory-item-lookup");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            const int itemCount = 650;
+            for (var index = 0; index < itemCount; index++)
+            {
+                var item = CreateInventoryItem(index);
+                db.Items.Add(item);
+                db.ItemWarehouseStocks.Add(CreateStockWithMissingWarehouse(item.Id));
+                db.InventoryMovements.Add(CreateMovementWithMissingWarehouse(item.Id));
+            }
+
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            var missingWarehouseIssues = result.Issues
+                .Where(issue => issue.Code == DataIntegrityIssueCodes.InventoryWarehouseReferenceMissing)
+                .ToList();
+
+            Assert.Equal(itemCount * 2, missingWarehouseIssues.Count);
+            Assert.All(missingWarehouseIssues, issue => Assert.StartsWith("Inventory Item ", issue.ItemName));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalRentalBillingProfile CreateProfile(Guid profileId, int index)
         => new()
         {
@@ -88,6 +125,48 @@ public sealed class DataIntegrityIssueServicePerformanceTests
             IsDeleted = false,
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow
+        };
+
+    private static LocalItem CreateInventoryItem(int index)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = $"Inventory Item {index:D4}",
+            NameMatchKey = $"INVENTORYITEM{index:D4}",
+            SpecificationOriginal = $"Spec {index:D4}",
+            SpecificationMatchKey = $"SPEC{index:D4}",
+            CategoryName = "Inventory",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA",
+            CurrentStock = 1m,
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+
+    private static LocalItemWarehouseStock CreateStockWithMissingWarehouse(Guid itemId)
+        => new()
+        {
+            ItemId = itemId,
+            WarehouseCode = "MISSING-WAREHOUSE",
+            Quantity = 1m,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+
+    private static LocalInventoryMovement CreateMovementWithMissingWarehouse(Guid itemId)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            ItemId = itemId,
+            WarehouseCode = "MISSING-WAREHOUSE",
+            MovementType = "조정",
+            QuantityDelta = 1m,
+            OccurredDate = DateOnly.FromDateTime(DateTime.Today),
+            IsActive = true,
+            CreatedAtUtc = DateTime.UtcNow
         };
 
     private static void PrepareAppRoot(string prefix)

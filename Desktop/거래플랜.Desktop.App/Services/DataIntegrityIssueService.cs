@@ -923,6 +923,7 @@ public sealed class DataIntegrityIssueService
         }
 
         var scopedItemIds = items.Select(item => item.Id).ToHashSet();
+        var itemNameById = items.ToDictionary(item => item.Id, item => item.NameOriginal);
         var stockByItem = itemWarehouseStocks
             .Where(stock => scopedItemIds.Contains(stock.ItemId))
             .GroupBy(stock => stock.ItemId)
@@ -957,7 +958,7 @@ public sealed class DataIntegrityIssueService
             AddGeneralIssue(issues, DataIntegrityIssueCodes.InventoryWarehouseReferenceMissing,
                 entityType: "재고",
                 entityId: stock.ItemId,
-                itemName: items.FirstOrDefault(item => item.Id == stock.ItemId)?.NameOriginal ?? string.Empty,
+                itemName: itemNameById.GetValueOrDefault(stock.ItemId) ?? string.Empty,
                 officeCode: ResolveOfficeCodeFromWarehouseCode(warehouseCode, session.OfficeCode),
                 currentValue: warehouseCode,
                 expectedValue: "활성 창고 코드",
@@ -974,7 +975,7 @@ public sealed class DataIntegrityIssueService
             AddGeneralIssue(issues, DataIntegrityIssueCodes.InventoryWarehouseReferenceMissing,
                 entityType: "재고 이동",
                 entityId: movement.ItemId,
-                itemName: movement.ItemId.HasValue ? items.FirstOrDefault(item => item.Id == movement.ItemId.Value)?.NameOriginal ?? string.Empty : string.Empty,
+                itemName: movement.ItemId.HasValue ? itemNameById.GetValueOrDefault(movement.ItemId.Value) ?? string.Empty : string.Empty,
                 officeCode: ResolveOfficeCodeFromWarehouseCode(warehouseCode, session.OfficeCode),
                 currentValue: warehouseCode,
                 expectedValue: "활성 창고 코드",
