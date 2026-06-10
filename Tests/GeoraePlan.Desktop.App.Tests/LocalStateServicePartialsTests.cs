@@ -6976,7 +6976,7 @@ public sealed class LocalStateServicePartialsTests
 
         var filtered = InvokePrivateStatic<List<LocalRentalBillingProfile>>(
             typeof(RentalStateService),
-            "ApplyDueOnlyIndividualProfilePrefilter",
+            "ApplyDueOnlyProfilePrefilter",
             profiles,
             new RentalBillingFilter
             {
@@ -6992,14 +6992,22 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public void RentalBillingDueOnlyProfilePrefilter_DoesNotChangeGroupedScope()
+    public void RentalBillingDueOnlyProfilePrefilter_GroupedScopeKeepsDueCustomerGroupOnly()
     {
         var referenceDate = new DateOnly(2026, 5, 12);
+        var dueSameGroupId = Guid.Parse("9aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var notDueSameGroupId = Guid.Parse("9bbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var notDueOtherGroupId = Guid.Parse("9ccccccc-cccc-cccc-cccc-cccccccccccc");
         var profiles = new List<LocalRentalBillingProfile>
         {
             new()
             {
-                Id = Guid.NewGuid(),
+                Id = dueSameGroupId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "그룹 유지 거래처",
+                ItemName = "복합기 A",
                 BillingDay = 12,
                 BillingCycleMonths = 1,
                 BillingAnchorMonth = 5,
@@ -7007,7 +7015,25 @@ public sealed class LocalStateServicePartialsTests
             },
             new()
             {
-                Id = Guid.NewGuid(),
+                Id = notDueSameGroupId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "그룹 유지 거래처",
+                ItemName = "복합기 B",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingAnchorMonth = 5,
+                IsActive = true
+            },
+            new()
+            {
+                Id = notDueOtherGroupId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "아직 여유있는 거래처",
+                ItemName = "복합기 C",
                 BillingDay = 25,
                 BillingCycleMonths = 1,
                 BillingAnchorMonth = 5,
@@ -7017,7 +7043,7 @@ public sealed class LocalStateServicePartialsTests
 
         var filtered = InvokePrivateStatic<List<LocalRentalBillingProfile>>(
             typeof(RentalStateService),
-            "ApplyDueOnlyIndividualProfilePrefilter",
+            "ApplyDueOnlyProfilePrefilter",
             profiles,
             new RentalBillingFilter
             {
@@ -7028,8 +7054,10 @@ public sealed class LocalStateServicePartialsTests
             7,
             referenceDate);
 
-        Assert.Same(profiles, filtered);
         Assert.Equal(2, filtered.Count);
+        Assert.Contains(filtered, profile => profile.Id == dueSameGroupId);
+        Assert.Contains(filtered, profile => profile.Id == notDueSameGroupId);
+        Assert.DoesNotContain(filtered, profile => profile.Id == notDueOtherGroupId);
     }
 
     [Fact]

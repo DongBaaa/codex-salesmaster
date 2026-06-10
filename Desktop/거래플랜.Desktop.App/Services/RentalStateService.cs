@@ -721,7 +721,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         stepStopwatch.Restart();
         var alertWindow = (await GetAlertDayValuesAsync(ct)).DefaultIfEmpty(7).Max();
         var profileCountBeforeDuePrefilter = profiles.Count;
-        profiles = ApplyDueOnlyIndividualProfilePrefilter(profiles, filter, alertWindow, filter.ReferenceDate);
+        profiles = ApplyDueOnlyProfilePrefilter(profiles, filter, alertWindow, filter.ReferenceDate);
         if (ShouldPrefilterDueOnlyBillingProfiles(filter))
         {
             LogRentalLoadStep(
@@ -1788,7 +1788,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return ShouldIncludeUnlinkedBillingAssets(filter.Status);
     }
 
-    private static List<LocalRentalBillingProfile> ApplyDueOnlyIndividualProfilePrefilter(
+    private static List<LocalRentalBillingProfile> ApplyDueOnlyProfilePrefilter(
         List<LocalRentalBillingProfile> profiles,
         RentalBillingFilter filter,
         int alertWindow,
@@ -1797,13 +1797,29 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!ShouldPrefilterDueOnlyBillingProfiles(filter) || profiles.Count == 0)
             return profiles;
 
-        return profiles
+        var dueProfileIds = profiles
             .Where(profile => IsBillingProfileDueWithinAlertWindow(profile, alertWindow, referenceDate))
+            .Select(profile => profile.Id)
+            .ToHashSet();
+        if (dueProfileIds.Count == 0)
+            return new List<LocalRentalBillingProfile>();
+
+        if (filter.ExpandCustomerSummaryRows)
+            return profiles
+                .Where(profile => dueProfileIds.Contains(profile.Id))
+                .ToList();
+
+        var dueGroupKeys = profiles
+            .Where(profile => dueProfileIds.Contains(profile.Id))
+            .Select(BuildBillingProfileGroupKey)
+            .ToHashSet(StringComparer.Ordinal);
+        return profiles
+            .Where(profile => dueGroupKeys.Contains(BuildBillingProfileGroupKey(profile)))
             .ToList();
     }
 
     private static bool ShouldPrefilterDueOnlyBillingProfiles(RentalBillingFilter filter)
-        => filter.DueOnly && filter.ExpandCustomerSummaryRows;
+        => filter.DueOnly;
 
     private static bool IsBillingProfileDueWithinAlertWindow(
         LocalRentalBillingProfile profile,
