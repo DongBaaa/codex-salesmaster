@@ -362,6 +362,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             {
                 ct.ThrowIfCancellationRequested();
                 var selectedRowId = SelectedRow?.Source.Id;
+                var resultLimit = ResolveAssetListResultLimit(SearchText);
                 var rows = await _rental.GetAssetRowsAsync(new RentalAssetFilter
                 {
                     SearchText = SearchText,
@@ -369,7 +370,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                     OfficeCodes = GetSelectedFilterValues(OfficeFilterOptions),
                     AssetStatuses = GetSelectedFilterValues(StatusFilterOptions),
                     PinnedAssetId = selectedRowId,
-                    MaxResults = RentalStateService.AssetListResultLimit
+                    MaxResults = resultLimit
                 }, _session, ct);
 
                 ct.ThrowIfCancellationRequested();
@@ -387,8 +388,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
                 StatusMessage = rows.Count == 0
                     ? "조건에 맞는 렌탈 자산이 없습니다."
-                    : rows.Count >= RentalStateService.AssetListResultLimit
-                        ? $"렌탈 자산을 최대 {RentalStateService.AssetListResultLimit:N0}건까지 표시했습니다. 결과가 많아 일부만 표시될 수 있으니 검색어 또는 필터를 좁혀주세요."
+                    : rows.Count >= resultLimit
+                        ? $"렌탈 자산을 최대 {resultLimit:N0}건까지 표시했습니다. 결과가 많아 일부만 표시될 수 있으니 검색어 또는 필터를 좁혀주세요."
                         : $"렌탈 자산 {rows.Count:N0}건을 조회했습니다.";
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -403,6 +404,11 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
         while (_pendingFilterReload && !ct.IsCancellationRequested);
     }
+
+    private static int ResolveAssetListResultLimit(string? searchText)
+        => string.IsNullOrWhiteSpace(searchText)
+            ? RentalStateService.AssetListResultLimit
+            : RentalStateService.AssetSearchResultLimit;
 
     private async Task LoadSingleAssetRowAsync(Guid assetId)
     {
