@@ -3669,8 +3669,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (currentAssetId == Guid.Empty)
             return Array.Empty<LocalRentalAsset>();
 
+        var candidateStatusValues = ExpandAssetStatusFilterValues(["창고"])
+            .Concat(["", "점검중", "설치처 불명"])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         var candidates = await ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
             .Where(asset => asset.Id != currentAssetId && !asset.IsDeleted)
+            .Where(asset => !asset.BillingProfileId.HasValue && !asset.CustomerId.HasValue)
+            .Where(asset =>
+                asset.CurrentCustomerName == string.Empty &&
+                asset.CustomerName == string.Empty &&
+                asset.InstallLocation == string.Empty &&
+                asset.InstallSiteName == string.Empty)
+            .Where(asset =>
+                candidateStatusValues.Contains(asset.AssetStatus) ||
+                ((asset.AssetStatus ?? string.Empty).Trim() == string.Empty))
             .ToListAsync(ct);
 
         return candidates
