@@ -24,6 +24,7 @@ public sealed partial class RentalStateService
     public const int BillingUnlinkedDefaultResultLimit = 300;
     public const int BillingUnlinkedFocusedResultLimit = AssetListResultLimit;
     private const int BillingAssetCandidateResultLimit = 300;
+    private const int BillingRunReferenceBatchSize = 500;
     private const int AssetSearchCustomerMatchLimit = 600;
     private const string AlertDaysSettingKey = "Rental.AlertDaysBefore";
     private const string BillingWorkbookPathSettingKey = "Rental.ImportBillingWorkbookPath";
@@ -1342,44 +1343,55 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (ids.Count == 0)
             return (new Dictionary<Guid, RentalBillingRunSettlementInfo>(), new Dictionary<Guid, RentalBillingRunInvoiceInfo>());
 
-        var settlementByRun = (await _db.Transactions.AsNoTracking()
-                .Where(transaction => !transaction.IsDeleted && transaction.LinkedRentalBillingRunId.HasValue && ids.Contains(transaction.LinkedRentalBillingRunId.Value))
+        var settlementByRun = new Dictionary<Guid, RentalBillingRunSettlementInfo>();
+        var invoiceCandidatesByRun = new Dictionary<Guid, RentalBillingRunInvoiceLookup>();
+        foreach (var batchIds in ids.Chunk(BillingRunReferenceBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            var settlementRows = await _db.Transactions.AsNoTracking()
+                .Where(transaction => !transaction.IsDeleted &&
+                                      transaction.LinkedRentalBillingRunId.HasValue &&
+                                      scopedBatchIds.Contains(transaction.LinkedRentalBillingRunId.Value))
                 .Select(transaction => new
                 {
                     RunId = transaction.LinkedRentalBillingRunId!.Value,
                     transaction.SettlementAmount,
                     transaction.TransactionDate
                 })
-                .ToListAsync(ct))
-            .GroupBy(transaction => transaction.RunId)
-            .ToDictionary(
-                group => group.Key,
-                group => new RentalBillingRunSettlementInfo(
-                    group.Sum(transaction => transaction.SettlementAmount),
-                    group.OrderByDescending(transaction => transaction.TransactionDate)
-                        .Select(transaction => (DateOnly?)transaction.TransactionDate)
-                        .FirstOrDefault()));
+                .ToListAsync(ct);
+            foreach (var group in settlementRows.GroupBy(row => row.RunId))
+            {
+                settlementByRun[group.Key] = new RentalBillingRunSettlementInfo(
+                    group.Sum(row => row.SettlementAmount),
+                    group.OrderByDescending(row => row.TransactionDate)
+                        .Select(row => (DateOnly?)row.TransactionDate)
+                        .FirstOrDefault());
+            }
 
-        var invoiceByRun = (await _db.Invoices.AsNoTracking()
-                .Where(invoice => !invoice.IsDeleted && invoice.LinkedRentalBillingRunId.HasValue && ids.Contains(invoice.LinkedRentalBillingRunId.Value))
-                .Select(invoice => new
-                {
-                    RunId = invoice.LinkedRentalBillingRunId!.Value,
+            var invoiceRows = await _db.Invoices.AsNoTracking()
+                .Where(invoice => !invoice.IsDeleted &&
+                                  invoice.LinkedRentalBillingRunId.HasValue &&
+                                  scopedBatchIds.Contains(invoice.LinkedRentalBillingRunId.Value))
+                .Select(invoice => new RentalBillingRunInvoiceLookup(
+                    invoice.LinkedRentalBillingRunId!.Value,
                     invoice.Id,
                     invoice.TotalAmount,
-                    invoice.UpdatedAtUtc
-                })
-                .ToListAsync(ct))
-            .GroupBy(invoice => invoice.RunId)
-            .ToDictionary(
-                group => group.Key,
-                group =>
+                    invoice.UpdatedAtUtc))
+                .ToListAsync(ct);
+            foreach (var row in invoiceRows)
+            {
+                if (!invoiceCandidatesByRun.TryGetValue(row.RunId, out var existing) ||
+                    row.UpdatedAtUtc > existing.UpdatedAtUtc)
                 {
-                    var latest = group
-                        .OrderByDescending(invoice => invoice.UpdatedAtUtc)
-                        .First();
-                    return new RentalBillingRunInvoiceInfo(latest.Id, latest.TotalAmount);
-                });
+                    invoiceCandidatesByRun[row.RunId] = row;
+                }
+            }
+        }
+
+        var invoiceByRun = invoiceCandidatesByRun.ToDictionary(
+            pair => pair.Key,
+            pair => new RentalBillingRunInvoiceInfo(pair.Value.InvoiceId, pair.Value.TotalAmount));
 
         return (settlementByRun, invoiceByRun);
     }
@@ -1387,6 +1399,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private readonly record struct RentalBillingRunSettlementInfo(decimal SettledAmount, DateOnly? LastSettledDate);
 
     private readonly record struct RentalBillingRunInvoiceInfo(Guid InvoiceId, decimal TotalAmount);
+
+    private readonly record struct RentalBillingRunInvoiceLookup(
+        Guid RunId,
+        Guid InvoiceId,
+        decimal TotalAmount,
+        DateTime UpdatedAtUtc);
 
     private readonly record struct RentalBillingHistorySummary(
         int PastUnresolvedCount,

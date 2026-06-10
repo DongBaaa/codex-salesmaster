@@ -78,6 +78,21 @@ public sealed class RentalBillingHistoryDisplayLimitTests
                 BillingRunsJson = JsonSerializer.Serialize(runs),
                 IsActive = true
             });
+            db.Transactions.AddRange(runs.Select((run, index) => new LocalTransaction
+            {
+                Id = Guid.Parse($"10000000-0000-0000-0000-{index + 1:000000000000}"),
+                CustomerId = Guid.Parse("33333333-3333-3333-3333-333333333333"),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = run.ScheduledDate,
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = run.RunId,
+                SettlementAmount = 10m,
+                ReceiptTotal = 10m,
+                BankReceipt = 10m
+            }));
             await db.SaveChangesAsync();
 
             var rows = await new RentalStateService(db).GetBillingHistoryRowsAsync(
@@ -89,6 +104,8 @@ public sealed class RentalBillingHistoryDisplayLimitTests
             Assert.Equal(600, rows.Count);
             Assert.Equal("period-000", rows[0].PeriodLabel);
             Assert.Equal("period-599", rows[^1].PeriodLabel);
+            Assert.Equal(10m, rows[0].SettledAmount);
+            Assert.Equal(10m, rows[^1].SettledAmount);
         }
         finally
         {
