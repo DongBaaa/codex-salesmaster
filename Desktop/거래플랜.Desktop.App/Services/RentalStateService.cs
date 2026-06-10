@@ -684,6 +684,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SessionState session,
         CancellationToken ct = default)
     {
+        if (IsRentalSearchTextTooShort(filter.SearchText))
+            return Array.Empty<RentalBillingViewRow>();
+
         var totalStopwatch = Stopwatch.StartNew();
         var stepStopwatch = Stopwatch.StartNew();
         await EnsureAdministrativeBusinessCachesAsync(session, ct);
@@ -2209,6 +2212,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SessionState session,
         CancellationToken ct = default)
     {
+        if (IsRentalSearchTextTooShort(filter.SearchText))
+            return Array.Empty<RentalAssetViewRow>();
+
         var totalStopwatch = Stopwatch.StartNew();
         var stepStopwatch = Stopwatch.StartNew();
         await EnsureAdministrativeBusinessCachesAsync(session, ct);
@@ -2409,6 +2415,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private static string HasSearchText(string? searchText)
         => string.IsNullOrWhiteSpace(searchText) ? "N" : "Y";
+
+    private static bool IsRentalSearchTextTooShort(string? searchText)
+    {
+        var keyword = (searchText ?? string.Empty).Trim();
+        return keyword.Length > 0 && keyword.Length < 2;
+    }
 
     public async Task<IReadOnlyList<LocalRentalAsset>> GetAssetsForEquipmentDetailAsync(
         LocalRentalAsset anchorAsset,
