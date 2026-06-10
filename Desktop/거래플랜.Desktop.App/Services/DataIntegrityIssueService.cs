@@ -331,17 +331,23 @@ public sealed class DataIntegrityIssueService
     {
         var totalStopwatch = Stopwatch.StartNew();
         var stepStopwatch = Stopwatch.StartNew();
-        var activeProfiles = await _db.RentalBillingProfiles
-            .AsNoTracking()
-            .Where(profile => !profile.IsDeleted && profile.IsActive)
+        var activeProfiles = await ApplyOperationalAlertRentalProfileScopePrefilter(
+                _db.RentalBillingProfiles
+                    .AsNoTracking()
+                    .Where(profile => !profile.IsDeleted && profile.IsActive),
+                session)
             .ToListAsync(ct);
-        var activeAssets = await _db.RentalAssets
-            .AsNoTracking()
-            .Where(asset => !asset.IsDeleted)
+        var activeAssets = await ApplyOperationalAlertRentalAssetScopePrefilter(
+                _db.RentalAssets
+                    .AsNoTracking()
+                    .Where(asset => !asset.IsDeleted),
+                session)
             .ToListAsync(ct);
-        var activeAssignmentHistories = await _db.RentalAssetAssignmentHistories
-            .AsNoTracking()
-            .Where(history => !history.IsDeleted)
+        var activeAssignmentHistories = await ApplyOperationalAlertRentalAssignmentHistoryScopePrefilter(
+                _db.RentalAssetAssignmentHistories
+                    .AsNoTracking()
+                    .Where(history => !history.IsDeleted),
+                session)
             .ToListAsync(ct);
         var activeCustomers = await ApplyOperationalAlertCustomerScopePrefilter(
                 _db.Customers
@@ -1248,6 +1254,64 @@ public sealed class DataIntegrityIssueService
             invoice.ResponsibleOfficeCode == null ||
             invoice.ResponsibleOfficeCode == string.Empty ||
             sharedOfficeCodes.Contains(invoice.ResponsibleOfficeCode));
+    }
+
+    private static IQueryable<LocalRentalBillingProfile> ApplyOperationalAlertRentalProfileScopePrefilter(
+        IQueryable<LocalRentalBillingProfile> query,
+        SessionState session)
+    {
+        var officeCodes = BuildOperationalAlertOfficeCodeQueryAliases(session);
+        var sharedOfficeCodes = BuildSharedOfficeCodeQueryAliases();
+
+        return query.Where(profile =>
+            officeCodes.Contains(profile.ResponsibleOfficeCode) ||
+            officeCodes.Contains(profile.OfficeCode) ||
+            officeCodes.Contains(profile.ManagementCompanyCode) ||
+            profile.ResponsibleOfficeCode == null ||
+            profile.ResponsibleOfficeCode == string.Empty ||
+            sharedOfficeCodes.Contains(profile.ResponsibleOfficeCode) ||
+            profile.OfficeCode == null ||
+            profile.OfficeCode == string.Empty ||
+            sharedOfficeCodes.Contains(profile.OfficeCode) ||
+            profile.ManagementCompanyCode == null ||
+            profile.ManagementCompanyCode == string.Empty ||
+            sharedOfficeCodes.Contains(profile.ManagementCompanyCode));
+    }
+
+    private static IQueryable<LocalRentalAsset> ApplyOperationalAlertRentalAssetScopePrefilter(
+        IQueryable<LocalRentalAsset> query,
+        SessionState session)
+    {
+        var officeCodes = BuildOperationalAlertOfficeCodeQueryAliases(session);
+        var sharedOfficeCodes = BuildSharedOfficeCodeQueryAliases();
+
+        return query.Where(asset =>
+            officeCodes.Contains(asset.ResponsibleOfficeCode) ||
+            officeCodes.Contains(asset.OfficeCode) ||
+            officeCodes.Contains(asset.ManagementCompanyCode) ||
+            asset.ResponsibleOfficeCode == null ||
+            asset.ResponsibleOfficeCode == string.Empty ||
+            sharedOfficeCodes.Contains(asset.ResponsibleOfficeCode) ||
+            asset.OfficeCode == null ||
+            asset.OfficeCode == string.Empty ||
+            sharedOfficeCodes.Contains(asset.OfficeCode) ||
+            asset.ManagementCompanyCode == null ||
+            asset.ManagementCompanyCode == string.Empty ||
+            sharedOfficeCodes.Contains(asset.ManagementCompanyCode));
+    }
+
+    private static IQueryable<LocalRentalAssetAssignmentHistory> ApplyOperationalAlertRentalAssignmentHistoryScopePrefilter(
+        IQueryable<LocalRentalAssetAssignmentHistory> query,
+        SessionState session)
+    {
+        var officeCodes = BuildOperationalAlertOfficeCodeQueryAliases(session);
+        var sharedOfficeCodes = BuildSharedOfficeCodeQueryAliases();
+
+        return query.Where(history =>
+            officeCodes.Contains(history.ResponsibleOfficeCode) ||
+            history.ResponsibleOfficeCode == null ||
+            history.ResponsibleOfficeCode == string.Empty ||
+            sharedOfficeCodes.Contains(history.ResponsibleOfficeCode));
     }
 
     private static IQueryable<LocalCustomer> ApplyOperationalAlertCustomerScopePrefilter(
