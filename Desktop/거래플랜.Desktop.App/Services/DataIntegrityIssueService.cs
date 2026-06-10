@@ -387,6 +387,10 @@ public sealed class DataIntegrityIssueService
                 return IsInSessionScope(assetScope.TenantCode, assetScope.ResponsibleOfficeCode, session);
             })
             .ToList();
+        var scopedAssetsByBillingProfileId = scopedAssets
+            .Where(asset => asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
+            .GroupBy(asset => asset.BillingProfileId!.Value)
+            .ToDictionary(group => group.Key, group => group.ToList());
 
         var allAssetsById = activeAssets.ToDictionary(asset => asset.Id);
         var activeProfilesById = activeProfiles.ToDictionary(profile => profile.Id);
@@ -536,9 +540,7 @@ public sealed class DataIntegrityIssueService
 
             var templateItems = parsed.Items;
             var profileAssetIds = new HashSet<Guid>();
-            var linkedAssets = scopedAssets
-                .Where(asset => asset.BillingProfileId == profile.Id)
-                .ToList();
+            var linkedAssets = scopedAssetsByBillingProfileId.GetValueOrDefault(profile.Id) ?? [];
 
             if (templateItems.Count == 0)
             {
