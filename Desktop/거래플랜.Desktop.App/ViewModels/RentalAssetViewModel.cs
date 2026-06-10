@@ -180,12 +180,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         LogRentalAssetViewModelLoadStep("Rental asset item category options load", stepStopwatch);
 
         stepStopwatch.Restart();
-        await ReloadAsync();
-        LogRentalAssetViewModelLoadStep("Rental asset rows initial load", stepStopwatch);
+        ResetForNewAsset("렌탈 자산 화면을 먼저 표시했습니다. 자산 목록은 백그라운드에서 조회 중입니다.");
+        LogRentalAssetViewModelLoadStep("Rental asset edit reset", stepStopwatch);
 
         stepStopwatch.Restart();
-        ResetForNewAsset();
-        LogRentalAssetViewModelLoadStep("Rental asset edit reset", stepStopwatch);
+        StartInitialRowsLoad();
+        LogRentalAssetViewModelLoadStep("Rental asset rows initial load queued", stepStopwatch);
 
         OperationTiming.LogIfSlow(
             "UI",
@@ -194,6 +194,22 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             $"rows={Rows.Count:N0}, categories={ItemCategoryOptions.Count:N0}, offices={OfficeFilterOptions.Count:N0}",
             infoThreshold: TimeSpan.FromMilliseconds(600),
             warningThreshold: TimeSpan.FromSeconds(2));
+    }
+
+    public void CancelPendingBackgroundWork()
+    {
+        CancelPendingFilterReload();
+        CancelAssignmentHistoryLoad();
+        _searchDebouncer.Dispose();
+    }
+
+    private void StartInitialRowsLoad()
+    {
+        UiTaskHelper.Forget(
+            ReloadAsync(),
+            "RENTAL",
+            "렌탈 자산 초기 목록 백그라운드 조회",
+            ex => StatusMessage = $"렌탈 자산 목록을 불러오지 못했습니다. {ex.Message}");
     }
 
     public async Task LoadAndSelectAssetAsync(Guid assetId)

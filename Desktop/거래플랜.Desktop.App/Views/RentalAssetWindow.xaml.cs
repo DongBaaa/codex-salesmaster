@@ -23,6 +23,7 @@ public partial class RentalAssetWindow : Window
         _viewModel = viewModel;
         DataContext = viewModel;
         Closing += Window_Closing;
+        Closed += (_, _) => _viewModel.CancelPendingBackgroundWork();
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
