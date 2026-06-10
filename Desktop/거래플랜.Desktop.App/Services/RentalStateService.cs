@@ -3415,8 +3415,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SessionState session,
         CancellationToken ct = default)
     {
-        await EnsureAdministrativeBusinessCachesAsync(session, ct);
-
         var assetIds = (includedAssetIds ?? Enumerable.Empty<Guid>())
             .Where(id => id != Guid.Empty)
             .Distinct()
@@ -3424,6 +3422,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         if ((!billingProfileId.HasValue || billingProfileId.Value == Guid.Empty) && assetIds.Count == 0)
             return Array.Empty<LocalRentalAsset>();
+
+        await EnsureAdministrativeBusinessCachesAsync(session, ct);
 
         var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, session.OfficeCode);
         var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
