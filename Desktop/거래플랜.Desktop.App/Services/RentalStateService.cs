@@ -521,11 +521,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (assets.Count == 0)
             return;
 
-        var customerNameMap = await GetCustomerNameMapAsync(
-            assets
-                .Where(asset => asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
-                .Select(asset => asset.CustomerId!.Value),
-            ct);
+        var customerIdsNeedingLookup = assets
+            .Where(asset =>
+                asset.CustomerId.HasValue &&
+                asset.CustomerId.Value != Guid.Empty &&
+                string.IsNullOrWhiteSpace(asset.CurrentCustomerName) &&
+                string.IsNullOrWhiteSpace(asset.CustomerName))
+            .Select(asset => asset.CustomerId!.Value);
+        var customerNameMap = await GetCustomerNameMapAsync(customerIdsNeedingLookup, ct);
 
         foreach (var asset in assets)
         {
