@@ -6908,6 +6908,33 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
+    [Theory]
+    [InlineData(false, false, null, true)]
+    [InlineData(false, false, "", true)]
+    [InlineData(false, false, "청구설정 필요", true)]
+    [InlineData(false, false, "청구중", false)]
+    [InlineData(true, false, null, false)]
+    [InlineData(false, true, null, false)]
+    [InlineData(false, true, "청구설정 필요", false)]
+    public void RentalBillingUnlinkedAssets_SkipsUnlinkedQueryForPeriodAlertFilters(
+        bool dueOnly,
+        bool pastDueOnly,
+        string? status,
+        bool expected)
+    {
+        var actual = InvokePrivateStatic<bool>(
+            typeof(RentalStateService),
+            "ShouldLoadUnlinkedBillingAssets",
+            new RentalBillingFilter
+            {
+                DueOnly = dueOnly,
+                PastDueOnly = pastDueOnly,
+                Status = status ?? string.Empty
+            });
+
+        Assert.Equal(expected, actual);
+    }
+
     [Fact]
     public async Task RentalBillingProfiles_DefaultAllCapsProfileRows()
     {

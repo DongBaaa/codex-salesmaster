@@ -691,7 +691,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         stepStopwatch.Restart();
         var offices = await GetOfficeMapAsync(ct);
-        var includeUnlinkedAssets = !filter.DueOnly && ShouldIncludeUnlinkedBillingAssets(filter.Status);
+        var includeUnlinkedAssets = ShouldLoadUnlinkedBillingAssets(filter);
         var unlinkedAssetLimit = includeUnlinkedAssets ? ResolveUnlinkedBillingAssetResultLimit(filter) : 0;
         var query = ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session);
         query = ApplyBillingFilter(query, filter, session);
@@ -1478,6 +1478,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private static bool ShouldIncludeUnlinkedBillingAssets(string? status)
         => string.IsNullOrWhiteSpace(status) ||
            IsUnlinkedBillingStatusFilter(status);
+
+    private static bool ShouldLoadUnlinkedBillingAssets(RentalBillingFilter filter)
+    {
+        if (filter.DueOnly || filter.PastDueOnly)
+            return false;
+
+        return ShouldIncludeUnlinkedBillingAssets(filter.Status);
+    }
 
     private static int ResolveUnlinkedBillingAssetResultLimit(RentalBillingFilter filter)
     {
