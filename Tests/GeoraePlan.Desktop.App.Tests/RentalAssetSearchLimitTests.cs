@@ -81,6 +81,37 @@ public sealed class RentalAssetSearchLimitTests
     }
 
     [Fact]
+    public async Task GetAssetRowsAsync_UsesBoundedLinkedCustomerContainsMatches()
+    {
+        PrepareAppRoot("georaeplan-rental-asset-linked-customer-contains-search");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Linked Alpha Customer"));
+            db.RentalAssets.Add(CreateLinkedCustomerAsset(assetId, customerId));
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var rows = await service.GetAssetRowsAsync(
+                new RentalAssetFilter { SearchText = "Alpha Customer" },
+                CreateAdminSession());
+
+            var row = Assert.Single(rows, current => current.Source.Id == assetId);
+            Assert.Equal("Linked Alpha Customer", row.CurrentCustomerName);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task GetAssetRowsAsync_OfficeUserKeepsSharedAssetViewAcrossOffices()
     {
         PrepareAppRoot("georaeplan-rental-asset-shared-office-scope");

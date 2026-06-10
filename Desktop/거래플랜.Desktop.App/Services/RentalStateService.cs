@@ -523,24 +523,51 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .AsNoTracking()
             .Where(customer => !customer.IsDeleted);
 
-        IQueryable<LocalCustomer> matchedCustomers;
+        IQueryable<LocalCustomer> prefixMatchedCustomers;
         if (string.IsNullOrWhiteSpace(normalizedKeyword))
         {
-            matchedCustomers = customers.Where(customer => customer.NameOriginal.StartsWith(keyword));
+            prefixMatchedCustomers = customers.Where(customer => customer.NameOriginal.StartsWith(keyword));
         }
         else
         {
-            matchedCustomers = customers.Where(customer =>
+            prefixMatchedCustomers = customers.Where(customer =>
                 customer.NameOriginal.StartsWith(keyword) ||
                 (customer.NameMatchKey ?? string.Empty).StartsWith(normalizedKeyword));
         }
 
-        return await matchedCustomers
+        var customerIds = await prefixMatchedCustomers
             .OrderBy(customer => customer.NameOriginal)
             .Select(customer => customer.Id)
             .Distinct()
             .Take(AssetSearchCustomerMatchLimit)
             .ToListAsync(ct);
+        if (customerIds.Count >= AssetSearchCustomerMatchLimit)
+            return customerIds;
+
+        IQueryable<LocalCustomer> containsMatchedCustomers;
+        if (string.IsNullOrWhiteSpace(normalizedKeyword))
+        {
+            containsMatchedCustomers = customers.Where(customer => customer.NameOriginal.Contains(keyword));
+        }
+        else
+        {
+            containsMatchedCustomers = customers.Where(customer =>
+                customer.NameOriginal.Contains(keyword) ||
+                (customer.NameMatchKey ?? string.Empty).Contains(normalizedKeyword));
+        }
+
+        if (customerIds.Count > 0)
+            containsMatchedCustomers = containsMatchedCustomers.Where(customer => !customerIds.Contains(customer.Id));
+
+        var remainingLimit = AssetSearchCustomerMatchLimit - customerIds.Count;
+        var containsCustomerIds = await containsMatchedCustomers
+            .OrderBy(customer => customer.NameOriginal)
+            .Select(customer => customer.Id)
+            .Distinct()
+            .Take(remainingLimit)
+            .ToListAsync(ct);
+        customerIds.AddRange(containsCustomerIds);
+        return customerIds;
     }
 
     private static string ResolveAssetCustomerDisplayName(
