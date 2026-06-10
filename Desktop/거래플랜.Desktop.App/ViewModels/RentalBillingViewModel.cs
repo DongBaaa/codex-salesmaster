@@ -15,6 +15,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 {
     private const string AllOption = "전체";
     private const int BillingHistoryDisplayLimit = 600;
+    private const int AssignmentHistoryDisplayLimit = 300;
 
     private readonly RentalStateService _rental;
     private readonly LocalStateService _local;
@@ -425,7 +426,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         {
             if (assetId == Guid.Empty)
             {
-                IncludedAssetAssignmentHistories.ReplaceWith(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
+                ApplyIncludedAssetAssignmentHistoriesForDisplay(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
                 SelectedIncludedAssetAssignmentHistory = null;
                 NotifyIncludedAssetAssignmentHistoryCommandState();
                 return;
@@ -437,7 +438,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 return;
 
             var selectedHistoryId = SelectedIncludedAssetAssignmentHistory?.HistoryId;
-            IncludedAssetAssignmentHistories.ReplaceWith(histories);
+            ApplyIncludedAssetAssignmentHistoriesForDisplay(histories);
             SelectedIncludedAssetAssignmentHistory = selectedHistoryId.HasValue
                 ? IncludedAssetAssignmentHistories.FirstOrDefault(history => history.HistoryId == selectedHistoryId.Value)
                 : IncludedAssetAssignmentHistories.FirstOrDefault();
@@ -460,6 +461,22 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         _includedAssetHistoryLoadCts?.Dispose();
         _includedAssetHistoryLoadCts = null;
     }
+
+    private void ApplyIncludedAssetAssignmentHistoriesForDisplay(IReadOnlyList<RentalAssetAssignmentHistoryViewItem> histories)
+    {
+        var displayRows = LimitAssignmentHistoriesForDisplay(histories);
+        IncludedAssetAssignmentHistories.ReplaceWith(displayRows);
+
+        if (histories.Count > displayRows.Count)
+        {
+            StatusMessage = $"포함 장비 임대이력 {histories.Count:N0}건 중 최근 {displayRows.Count:N0}건만 먼저 표시합니다. 오래된 이력이 필요하면 자산관리에서 해당 장비를 직접 확인하세요.";
+        }
+    }
+
+    private static IReadOnlyList<RentalAssetAssignmentHistoryViewItem> LimitAssignmentHistoriesForDisplay(IReadOnlyList<RentalAssetAssignmentHistoryViewItem> histories)
+        => histories.Count > AssignmentHistoryDisplayLimit
+            ? histories.Take(AssignmentHistoryDisplayLimit).ToList()
+            : histories;
 
     public async Task LoadAsync()
     {

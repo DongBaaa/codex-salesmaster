@@ -17,6 +17,7 @@ namespace 거래플랜.Desktop.App.ViewModels;
 public sealed partial class RentalAssetViewModel : ObservableObject
 {
     private const string AllOption = "전체";
+    private const int AssignmentHistoryDisplayLimit = 300;
 
     private readonly RentalStateService _rental;
     private readonly LocalStateService _local;
@@ -1008,7 +1009,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             if (assetId == Guid.Empty)
             {
                 SelectedAssignmentHistory = null;
-                AssignmentHistories.ReplaceWith(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
+                ApplyAssignmentHistoriesForDisplay(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
                 return;
             }
 
@@ -1018,7 +1019,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 return;
 
             SelectedAssignmentHistory = null;
-            AssignmentHistories.ReplaceWith(histories);
+            ApplyAssignmentHistoriesForDisplay(histories);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -1037,6 +1038,22 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         _assignmentHistoryLoadCts?.Dispose();
         _assignmentHistoryLoadCts = null;
     }
+
+    private void ApplyAssignmentHistoriesForDisplay(IReadOnlyList<RentalAssetAssignmentHistoryViewItem> histories)
+    {
+        var displayRows = LimitAssignmentHistoriesForDisplay(histories);
+        AssignmentHistories.ReplaceWith(displayRows);
+
+        if (histories.Count > displayRows.Count)
+        {
+            StatusMessage = $"임대이력 {histories.Count:N0}건 중 최근 {displayRows.Count:N0}건만 먼저 표시합니다. 오래된 이력이 필요하면 자산 조건을 좁히거나 별도 이력 정리를 검토하세요.";
+        }
+    }
+
+    private static IReadOnlyList<RentalAssetAssignmentHistoryViewItem> LimitAssignmentHistoriesForDisplay(IReadOnlyList<RentalAssetAssignmentHistoryViewItem> histories)
+        => histories.Count > AssignmentHistoryDisplayLimit
+            ? histories.Take(AssignmentHistoryDisplayLimit).ToList()
+            : histories;
 
     private void CancelSelectedAssetDetailLoad()
     {
