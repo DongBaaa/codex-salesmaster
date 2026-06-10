@@ -776,20 +776,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Select(asset => asset.CustomerId!.Value)
                 .Distinct()
                 .ToList();
-            var unlinkedCustomersById = unlinkedCustomerIds.Count == 0
-                ? new Dictionary<Guid, RentalBillingCustomerLookup>()
-                : await _db.Customers
-                    .IgnoreQueryFilters()
-                    .AsNoTracking()
-                    .Where(customer => unlinkedCustomerIds.Contains(customer.Id))
-                    .Select(customer => new RentalBillingCustomerLookup(
-                        customer.Id,
-                        customer.NameOriginal,
-                        customer.BusinessNumber))
-                    .ToDictionaryAsync(
-                        customer => customer.Id,
-                        customer => customer,
-                        ct);
+            var unlinkedCustomersById = await GetRentalBillingCustomerLookupMapAsync(unlinkedCustomerIds, ct);
 
             rows.AddRange(unlinkedAssets.Select(asset => CreateUnlinkedBillingViewRow(
                 asset,
@@ -1178,16 +1165,40 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (customerIds.Count == 0)
             return new Dictionary<Guid, string>();
 
-        return await _db.Customers
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(customer => customerIds.Contains(customer.Id))
-            .Select(customer => new
-            {
-                customer.Id,
-                customer.NameOriginal
-            })
-            .ToDictionaryAsync(customer => customer.Id, customer => customer.NameOriginal, ct);
+        return await GetCustomerNameMapAsync(customerIds, ct);
+    }
+
+    private async Task<Dictionary<Guid, RentalBillingCustomerLookup>> GetRentalBillingCustomerLookupMapAsync(
+        IEnumerable<Guid> customerIds,
+        CancellationToken ct)
+    {
+        var ids = customerIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return new Dictionary<Guid, RentalBillingCustomerLookup>();
+
+        var result = new Dictionary<Guid, RentalBillingCustomerLookup>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            var customers = await _db.Customers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(customer => scopedBatchIds.Contains(customer.Id) && !customer.IsDeleted)
+                .Select(customer => new RentalBillingCustomerLookup(
+                    customer.Id,
+                    customer.NameOriginal,
+                    customer.BusinessNumber))
+                .ToListAsync(ct);
+
+            foreach (var customer in customers)
+                result[customer.Id] = customer;
+        }
+
+        return result;
     }
 
     private static IReadOnlyList<Guid> ResolveBillingRunReferenceIds(
