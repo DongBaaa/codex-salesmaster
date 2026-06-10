@@ -6936,6 +6936,103 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public void RentalBillingDueOnlyIndividualProfilePrefilter_UsesAlertDateBeforeRowBuild()
+    {
+        var referenceDate = new DateOnly(2026, 5, 12);
+        var dueByDocumentLeadId = Guid.Parse("9ddddddd-dddd-dddd-dddd-dddddddddddd");
+        var notDueId = Guid.Parse("9eeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+        var profiles = new List<LocalRentalBillingProfile>
+        {
+            new()
+            {
+                Id = dueByDocumentLeadId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "서류발송 임박 거래처",
+                ItemName = "복합기 A",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingAnchorMonth = 5,
+                DocumentIssueMode = RentalBillingScheduleRules.DocumentIssueModeDaysBeforeDueDate,
+                DocumentLeadDays = 20,
+                IsActive = true
+            },
+            new()
+            {
+                Id = notDueId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "아직 여유있는 거래처",
+                ItemName = "복합기 B",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingAnchorMonth = 5,
+                DocumentIssueMode = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate,
+                IsActive = true
+            }
+        };
+
+        var filtered = InvokePrivateStatic<List<LocalRentalBillingProfile>>(
+            typeof(RentalStateService),
+            "ApplyDueOnlyIndividualProfilePrefilter",
+            profiles,
+            new RentalBillingFilter
+            {
+                DueOnly = true,
+                ExpandCustomerSummaryRows = true,
+                ReferenceDate = referenceDate
+            },
+            7,
+            referenceDate);
+
+        var row = Assert.Single(filtered);
+        Assert.Equal(dueByDocumentLeadId, row.Id);
+    }
+
+    [Fact]
+    public void RentalBillingDueOnlyProfilePrefilter_DoesNotChangeGroupedScope()
+    {
+        var referenceDate = new DateOnly(2026, 5, 12);
+        var profiles = new List<LocalRentalBillingProfile>
+        {
+            new()
+            {
+                Id = Guid.NewGuid(),
+                BillingDay = 12,
+                BillingCycleMonths = 1,
+                BillingAnchorMonth = 5,
+                IsActive = true
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingAnchorMonth = 5,
+                IsActive = true
+            }
+        };
+
+        var filtered = InvokePrivateStatic<List<LocalRentalBillingProfile>>(
+            typeof(RentalStateService),
+            "ApplyDueOnlyIndividualProfilePrefilter",
+            profiles,
+            new RentalBillingFilter
+            {
+                DueOnly = true,
+                ExpandCustomerSummaryRows = false,
+                ReferenceDate = referenceDate
+            },
+            7,
+            referenceDate);
+
+        Assert.Same(profiles, filtered);
+        Assert.Equal(2, filtered.Count);
+    }
+
+    [Fact]
     public async Task RentalBillingProfiles_DefaultAllCapsProfileRows()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-profile-cap-{Guid.NewGuid():N}");

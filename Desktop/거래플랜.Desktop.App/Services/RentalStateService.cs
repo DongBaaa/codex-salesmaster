@@ -706,6 +706,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LogRentalLoadStep("Rental billing profile query", stepStopwatch, $"profiles={profiles.Count:N0}, limit={profileResultLimit?.ToString("N0", CultureInfo.CurrentCulture) ?? "none"}, {BuildBillingFilterTimingDetail(filter)}");
 
         stepStopwatch.Restart();
+        var alertWindow = (await GetAlertDayValuesAsync(ct)).DefaultIfEmpty(7).Max();
+        var profileCountBeforeDuePrefilter = profiles.Count;
+        profiles = ApplyDueOnlyIndividualProfilePrefilter(profiles, filter, alertWindow, filter.ReferenceDate);
+        if (ShouldPrefilterDueOnlyBillingProfiles(filter))
+        {
+            LogRentalLoadStep(
+                "Rental billing due profile prefilter",
+                stepStopwatch,
+                $"profiles={profiles.Count:N0}/{profileCountBeforeDuePrefilter:N0}, alertWindow={alertWindow:N0}, {BuildBillingFilterTimingDetail(filter)}");
+        }
+
+        stepStopwatch.Restart();
         var unlinkedAssets = includeUnlinkedAssets
             ? await SelectBillingAssetListProjection(ApplyUnlinkedBillingAssetFilter(
                     ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
@@ -758,7 +770,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         stepStopwatch.Restart();
-        var alertWindow = (await GetAlertDayValuesAsync(ct)).DefaultIfEmpty(7).Max();
         if (!filter.ExpandCustomerSummaryRows)
             rows = GroupBillingRowsByCustomer(rows);
 
@@ -1485,6 +1496,63 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return false;
 
         return ShouldIncludeUnlinkedBillingAssets(filter.Status);
+    }
+
+    private static List<LocalRentalBillingProfile> ApplyDueOnlyIndividualProfilePrefilter(
+        List<LocalRentalBillingProfile> profiles,
+        RentalBillingFilter filter,
+        int alertWindow,
+        DateOnly referenceDate)
+    {
+        if (!ShouldPrefilterDueOnlyBillingProfiles(filter) || profiles.Count == 0)
+            return profiles;
+
+        return profiles
+            .Where(profile => IsBillingProfileDueWithinAlertWindow(profile, alertWindow, referenceDate))
+            .ToList();
+    }
+
+    private static bool ShouldPrefilterDueOnlyBillingProfiles(RentalBillingFilter filter)
+        => filter.DueOnly && filter.ExpandCustomerSummaryRows;
+
+    private static bool IsBillingProfileDueWithinAlertWindow(
+        LocalRentalBillingProfile profile,
+        int alertWindow,
+        DateOnly referenceDate)
+    {
+        var daysRemaining = ResolveBillingAlertDaysRemaining(profile, referenceDate);
+        return daysRemaining.HasValue && daysRemaining.Value <= alertWindow;
+    }
+
+    private static int? ResolveBillingAlertDaysRemaining(LocalRentalBillingProfile profile, DateOnly referenceDate)
+    {
+        var nextBillingDate = ResolveNextBillingDateForAlertFilter(profile, referenceDate);
+        if (!nextBillingDate.HasValue)
+            return null;
+
+        var documentIssueDate = RentalBillingScheduleRules.CalculateDocumentIssueDate(
+            nextBillingDate,
+            profile.DocumentIssueMode,
+            profile.DocumentLeadDays);
+        var alertDate = RentalBillingScheduleRules.ResolveAlertDate(nextBillingDate.Value, documentIssueDate);
+        return alertDate.DayNumber - NormalizeReferenceDate(referenceDate).DayNumber;
+    }
+
+    private static DateOnly? ResolveNextBillingDateForAlertFilter(
+        LocalRentalBillingProfile profile,
+        DateOnly referenceDate)
+    {
+        if (profile is null || !profile.IsActive)
+            return null;
+
+        NormalizeBillingSchedule(profile, referenceDate);
+        return RentalBillingScheduleRules.ResolveApplicableBillingDate(
+            profile.BillingDay,
+            profile.BillingDayMode,
+            profile.BillingCycleMonths,
+            profile.BillingAnchorMonth,
+            NormalizeReferenceDate(referenceDate),
+            profile.LastBilledDate);
     }
 
     private static int ResolveUnlinkedBillingAssetResultLimit(RentalBillingFilter filter)
