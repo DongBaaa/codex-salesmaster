@@ -16,6 +16,7 @@ namespace 거래플랜.Desktop.App.Services;
 public sealed partial class RentalStateService
 {
     public const string AutoCreatedRentalItemMemo = "렌탈 자산/설치현황 자동 동기화 생성";
+    public const int AssetListResultLimit = 1200;
     public const int AssetLinkCandidateResultLimit = 600;
     private const int BillingAssetCandidateResultLimit = 300;
     private const string AlertDaysSettingKey = "Rental.AlertDaysBefore";
@@ -1687,9 +1688,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }, session);
 
         stepStopwatch.Restart();
+        var requestedMaxResults = filter.MaxResults <= 0 ? AssetListResultLimit : filter.MaxResults;
+        var maxResults = Math.Clamp(requestedMaxResults, 100, AssetListResultLimit);
+        var pinnedAssetId = filter.PinnedAssetId.GetValueOrDefault();
+        var hasPinnedAssetId = filter.PinnedAssetId.HasValue && pinnedAssetId != Guid.Empty;
         var assets = await query
-            .OrderBy(asset => asset.CustomerName)
+            .OrderByDescending(asset => hasPinnedAssetId && asset.Id == pinnedAssetId)
+            .ThenBy(asset => asset.CustomerName)
             .ThenBy(asset => asset.ManagementNumber)
+            .Take(maxResults)
             .ToListAsync(ct);
         LogRentalLoadStep("Rental asset DB query", stepStopwatch, $"assets={assets.Count:N0}, {BuildAssetFilterTimingDetail(filter)}");
 
@@ -1775,7 +1782,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     }
 
     private static string BuildAssetFilterTimingDetail(RentalAssetFilter filter)
-        => $"officeFilters={CountFilterValues(filter.OfficeCodes)}, categoryFilters={CountFilterValues(filter.ItemCategoryNames)}, statusFilters={CountFilterValues(filter.AssetStatuses)}, search={HasSearchText(filter.SearchText)}";
+        => $"officeFilters={CountFilterValues(filter.OfficeCodes)}, categoryFilters={CountFilterValues(filter.ItemCategoryNames)}, statusFilters={CountFilterValues(filter.AssetStatuses)}, search={HasSearchText(filter.SearchText)}, max={filter.MaxResults}, pinned={(filter.PinnedAssetId.HasValue && filter.PinnedAssetId.Value != Guid.Empty ? "Y" : "N")}";
 
     private static int CountFilterValues(IEnumerable<string>? values)
         => (values ?? Array.Empty<string>())

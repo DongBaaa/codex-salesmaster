@@ -275,7 +275,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                     SearchText = SearchText,
                     ItemCategoryNames = GetSelectedFilterValues(ItemCategoryFilterOptions),
                     OfficeCodes = GetSelectedFilterValues(OfficeFilterOptions),
-                    AssetStatuses = GetSelectedFilterValues(StatusFilterOptions)
+                    AssetStatuses = GetSelectedFilterValues(StatusFilterOptions),
+                    PinnedAssetId = selectedRowId,
+                    MaxResults = RentalStateService.AssetListResultLimit
                 }, _session, ct);
 
                 ct.ThrowIfCancellationRequested();
@@ -293,7 +295,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
                 StatusMessage = rows.Count == 0
                     ? "조건에 맞는 렌탈 자산이 없습니다."
-                    : $"렌탈 자산 {rows.Count:N0}건을 조회했습니다.";
+                    : rows.Count >= RentalStateService.AssetListResultLimit
+                        ? $"렌탈 자산을 최대 {RentalStateService.AssetListResultLimit:N0}건까지 표시했습니다. 결과가 많아 일부만 표시될 수 있으니 검색어 또는 필터를 좁혀주세요."
+                        : $"렌탈 자산 {rows.Count:N0}건을 조회했습니다.";
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {

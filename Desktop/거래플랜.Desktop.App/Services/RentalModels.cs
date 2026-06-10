@@ -22,6 +22,8 @@ public sealed class RentalAssetFilter
     public List<string> ItemCategoryNames { get; set; } = new();
     public List<string> OfficeCodes { get; set; } = new();
     public List<string> AssetStatuses { get; set; } = new();
+    public Guid? PinnedAssetId { get; set; }
+    public int MaxResults { get; set; }
 }
 
 public sealed class RentalAlertItem
