@@ -3677,13 +3677,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Where(asset => asset.Id != currentAssetId && !asset.IsDeleted)
             .Where(asset => !asset.BillingProfileId.HasValue && !asset.CustomerId.HasValue)
             .Where(asset =>
-                asset.CurrentCustomerName == string.Empty &&
-                asset.CustomerName == string.Empty &&
-                asset.InstallLocation == string.Empty &&
-                asset.InstallSiteName == string.Empty)
-            .Where(asset =>
-                candidateStatusValues.Contains(asset.AssetStatus) ||
-                ((asset.AssetStatus ?? string.Empty).Trim() == string.Empty))
+                (asset.CurrentCustomerName ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim() == string.Empty &&
+                (asset.CustomerName ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim() == string.Empty &&
+                (asset.InstallLocation ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim() == string.Empty &&
+                (asset.InstallSiteName ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim() == string.Empty)
+            .Where(asset => candidateStatusValues.Contains(
+                (asset.AssetStatus ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim()))
             .ToListAsync(ct);
 
         return candidates

@@ -119,6 +119,45 @@ public sealed class RentalEquipmentReplacementTests
         }
     }
 
+    [Fact]
+    public async Task GetRentalEquipmentReplacementCandidates_IncludesWhitespaceOnlyUnassignedCandidate()
+    {
+        PrepareAppRoot("georaeplan-rental-equipment-replacement-whitespace-candidate");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var profileId = Guid.NewGuid();
+            var originalAssetId = Guid.NewGuid();
+            var replacementAssetId = Guid.NewGuid();
+
+            db.Customers.Add(CreateCustomer(customerId, "replacement-test-customer"));
+            db.RentalBillingProfiles.Add(CreateBillingProfile(profileId, customerId, originalAssetId));
+            db.RentalAssets.Add(CreateAssignedAsset(originalAssetId, customerId, profileId));
+            var replacement = CreateReplacementCandidate(replacementAssetId);
+            replacement.CurrentCustomerName = " ";
+            replacement.CustomerName = "\t";
+            replacement.InstallLocation = "  ";
+            replacement.InstallSiteName = "\r\n";
+            replacement.AssetStatus = " \uC810\uAC80\uC911 ";
+            db.RentalAssets.Add(replacement);
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var candidates = await service.GetRentalEquipmentReplacementCandidatesAsync(originalAssetId, CreateAdminSession());
+
+            Assert.Contains(candidates, asset => asset.Id == replacementAssetId);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
