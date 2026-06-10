@@ -3728,20 +3728,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!string.IsNullOrWhiteSpace(normalizedSearchText))
             query = ApplyAssetLinkSearchFilter(query, normalizedSearchText);
 
-        var currentProfileId = currentBillingProfileId.GetValueOrDefault();
-        var hasCurrentProfileId = currentBillingProfileId.HasValue && currentProfileId != Guid.Empty;
-        var resolvedCustomerKey = resolvedCustomerId.GetValueOrDefault();
-        var hasResolvedCustomerId = resolvedCustomerId.HasValue && resolvedCustomerKey != Guid.Empty;
         var cappedMaxResults = Math.Clamp(maxResults, 50, AssetLinkCandidateResultLimit);
 
-        var assets = await SelectAssetLinkCandidateProjection(query
-            .OrderByDescending(asset => hasCurrentProfileId && asset.BillingProfileId == currentProfileId)
-            .ThenByDescending(asset => hasResolvedCustomerId && asset.CustomerId == resolvedCustomerKey)
-            .ThenByDescending(asset => !string.IsNullOrWhiteSpace(normalizedCustomerName) &&
-                                       (asset.CustomerName == normalizedCustomerName ||
-                                        asset.CurrentCustomerName == normalizedCustomerName))
-            .ThenBy(asset => asset.CustomerName)
-            .ThenBy(asset => asset.ManagementNumber)
+        var orderedCandidateQuery = ApplyAssetLinkCandidateOrdering(
+            query,
+            currentBillingProfileId,
+            resolvedCustomerId,
+            normalizedCustomerName);
+        var assets = await SelectAssetLinkCandidateProjection(orderedCandidateQuery
             .Take(cappedMaxResults))
             .ToListAsync(ct);
 
@@ -3815,6 +3809,46 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ThenBy(candidate => candidate.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(candidate => candidate.Source.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+    }
+
+    private static IOrderedQueryable<LocalRentalAsset> ApplyAssetLinkCandidateOrdering(
+        IQueryable<LocalRentalAsset> query,
+        Guid? currentBillingProfileId,
+        Guid? resolvedCustomerId,
+        string? normalizedCustomerName)
+    {
+        IOrderedQueryable<LocalRentalAsset>? ordered = null;
+
+        if (currentBillingProfileId.HasValue && currentBillingProfileId.Value != Guid.Empty)
+        {
+            var currentProfileId = currentBillingProfileId.Value;
+            ordered = query.OrderByDescending(asset => asset.BillingProfileId == currentProfileId);
+        }
+
+        if (resolvedCustomerId.HasValue && resolvedCustomerId.Value != Guid.Empty)
+        {
+            var customerId = resolvedCustomerId.Value;
+            ordered = ordered is null
+                ? query.OrderByDescending(asset => asset.CustomerId == customerId)
+                : ordered.ThenByDescending(asset => asset.CustomerId == customerId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedCustomerName))
+        {
+            var customerName = normalizedCustomerName.Trim();
+            ordered = ordered is null
+                ? query.OrderByDescending(asset =>
+                    asset.CustomerName == customerName ||
+                    asset.CurrentCustomerName == customerName)
+                : ordered.ThenByDescending(asset =>
+                    asset.CustomerName == customerName ||
+                    asset.CurrentCustomerName == customerName);
+        }
+
+        return (ordered is null
+                ? query.OrderBy(asset => asset.CustomerName)
+                : ordered.ThenBy(asset => asset.CustomerName))
+            .ThenBy(asset => asset.ManagementNumber);
     }
 
     private static IQueryable<LocalRentalAsset> SelectAssetLinkCandidateProjection(IQueryable<LocalRentalAsset> query)
