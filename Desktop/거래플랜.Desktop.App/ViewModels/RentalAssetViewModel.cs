@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -37,6 +37,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private IReadOnlyList<LocalItemCategoryOption>? _itemCategoryOptionsCache;
     private string _baselineStateSignature = string.Empty;
     private string _pendingFilterReloadSignature = string.Empty;
+    private string _activeFilterReloadSignature = string.Empty;
     private long _editRevision;
 
     [ObservableProperty] private string _searchText = string.Empty;
@@ -378,6 +379,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         do
         {
             _pendingFilterReload = false;
+            _activeFilterReloadSignature = BuildCurrentFilterReloadSignature();
             var requestVersion = Interlocked.Increment(ref _filterReloadVersion);
             IsBusy = true;
             try
@@ -422,6 +424,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             finally
             {
                 IsBusy = false;
+                _activeFilterReloadSignature = string.Empty;
             }
         }
         while (_pendingFilterReload && !ct.IsCancellationRequested);
@@ -1773,6 +1776,13 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             return;
         }
 
+        if (IsBusy &&
+            !string.IsNullOrWhiteSpace(_activeFilterReloadSignature) &&
+            string.Equals(_activeFilterReloadSignature, signature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         CancelPendingFilterReload();
         var cts = new CancellationTokenSource();
         _filterReloadCts = cts;
@@ -1791,6 +1801,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         Interlocked.Increment(ref _filterReloadVersion);
         _pendingFilterReloadSignature = string.Empty;
+        _activeFilterReloadSignature = string.Empty;
         _filterReloadCts?.Cancel();
         _filterReloadCts?.Dispose();
         _filterReloadCts = null;

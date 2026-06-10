@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -36,6 +36,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private int _filterReloadVersion;
     private IReadOnlyList<LocalOffice>? _officeFilterSourceCache;
     private string _pendingFilterReloadSignature = string.Empty;
+    private string _activeFilterReloadSignature = string.Empty;
     private readonly List<RentalBillingAssetOption> _includedAssetPool = new();
     private readonly List<RentalBillingAssetOption> _candidateAssetPool = new();
     private readonly Dictionary<Guid, RentalBillingAssetLinkEdit> _pendingAssetLinkEdits = new();
@@ -558,6 +559,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         do
         {
             _pendingFilterReload = false;
+            _activeFilterReloadSignature = BuildCurrentFilterReloadSignature();
             var requestVersion = Interlocked.Increment(ref _filterReloadVersion);
             var selectedId = SelectedRow?.SelectionId;
             IsBusy = true;
@@ -617,6 +619,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             finally
             {
                 IsBusy = false;
+                _activeFilterReloadSignature = string.Empty;
             }
         }
         while (_pendingFilterReload && !ct.IsCancellationRequested);
@@ -4024,6 +4027,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
+        if (IsBusy &&
+            !string.IsNullOrWhiteSpace(_activeFilterReloadSignature) &&
+            string.Equals(_activeFilterReloadSignature, signature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         CancelPendingFilterReload();
         var cts = new CancellationTokenSource();
         _filterReloadCts = cts;
@@ -4042,6 +4052,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         Interlocked.Increment(ref _filterReloadVersion);
         _pendingFilterReloadSignature = string.Empty;
+        _activeFilterReloadSignature = string.Empty;
         _filterReloadCts?.Cancel();
         _filterReloadCts?.Dispose();
         _filterReloadCts = null;
