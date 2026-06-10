@@ -44,6 +44,8 @@ public sealed partial class RentalStateService
         string? ProfileKey,
         string? InstallSiteName);
 
+    private sealed record RentalCustomerCandidateLookup(Guid Id, string? NameOriginal, string? BusinessNumber);
+
     private static readonly IReadOnlyDictionary<string, string> ImportLocationStatusMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["렌탈"] = "임대진행중",
@@ -316,7 +318,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 readableOfficeCodes.Contains(customer.ResponsibleOfficeCode));
         }
 
-        var customers = await customerQuery.ToListAsync(ct);
+        var customers = await customerQuery
+            .Select(customer => new RentalCustomerCandidateLookup(
+                customer.Id,
+                customer.NameOriginal,
+                customer.BusinessNumber))
+            .ToListAsync(ct);
         var assetsByProfile = assets
             .Where(asset => asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
             .GroupBy(asset => asset.BillingProfileId!.Value)
@@ -594,7 +601,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     }
 
     private static int CountCustomerCandidates(
-        IReadOnlyCollection<LocalCustomer> customers,
+        IReadOnlyCollection<RentalCustomerCandidateLookup> customers,
         string? businessNumber,
         params string?[] names)
     {
