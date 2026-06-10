@@ -6839,6 +6839,76 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task RentalBillingUnlinkedAssets_DefaultAllCapsButFocusedStatusShowsMore()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-unlinked-cap-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var totalAssets = RentalStateService.BillingUnlinkedDefaultResultLimit + 2;
+            for (var index = 0; index < totalAssets; index++)
+            {
+                db.RentalAssets.Add(new LocalRentalAsset
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = $"청구설정 필요 거래처 {index:D3}",
+                    CurrentCustomerName = $"청구설정 필요 거래처 {index:D3}",
+                    ItemName = $"복합기 {index:D3}",
+                    MachineNumber = $"UNLINKED-CAP-{index:D3}",
+                    InstallLocation = $"{index:D3}호",
+                    ManagementNumber = $"CAP-{index:D3}",
+                    MonthlyFee = 100_000m + index,
+                    AssetStatus = "임대",
+                    IsDirty = false
+                });
+            }
+
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var session = CreateAdminSession();
+            var defaultRows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    ExpandCustomerSummaryRows = true,
+                    ReferenceDate = new DateOnly(2026, 5, 12)
+                },
+                session);
+
+            Assert.Equal(RentalStateService.BillingUnlinkedDefaultResultLimit, defaultRows.Count);
+            Assert.Equal(RentalStateService.BillingUnlinkedDefaultResultLimit, defaultRows.Sum(row => row.GroupedUnlinkedAssetCount));
+
+            var focusedRows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    Status = "청구설정 필요",
+                    ExpandCustomerSummaryRows = true,
+                    ReferenceDate = new DateOnly(2026, 5, 12)
+                },
+                session);
+
+            Assert.Equal(totalAssets, focusedRows.Count);
+            Assert.Equal(totalAssets, focusedRows.Sum(row => row.GroupedUnlinkedAssetCount));
+            Assert.All(focusedRows, row => Assert.True(row.RequiresBillingProfileCreation));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task MainViewModel_InvoiceOfficeFilter_DefaultsToLoginOffice()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-main-office-filter-{Guid.NewGuid():N}");

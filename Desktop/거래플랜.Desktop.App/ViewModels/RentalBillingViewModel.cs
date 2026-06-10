@@ -598,11 +598,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 PastUnresolvedAmount = rows.Sum(row => row.PastUnresolvedAmount);
                 TotalOutstandingAmount = rows.Sum(row => row.OutstandingAmount);
                 var unlinkedCount = rows.Sum(row => row.GroupedUnlinkedAssetCount);
+                var unlinkedLimitNotice = BuildUnlinkedAssetLimitNotice(unlinkedCount);
 
                 StatusMessage = rows.Count == 0
                     ? "조건에 맞는 렌탈 청구 대상이 없습니다."
                     : unlinkedCount > 0
-                        ? $"렌탈 청구 {rows.Count:N0}건을 조회했습니다. 청구 설정이 필요한 장비 {unlinkedCount:N0}대가 포함되어 있습니다."
+                        ? $"렌탈 청구 {rows.Count:N0}건을 조회했습니다. 청구 설정이 필요한 장비 {unlinkedCount:N0}대가 포함되어 있습니다.{unlinkedLimitNotice}"
                         : ShowIndividualProfiles
                             ? $"렌탈 청구 프로필 {rows.Count:N0}건을 개별 조회했습니다."
                             : $"렌탈 청구 {rows.Count:N0}건을 조회했습니다.";
@@ -4146,6 +4147,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             PastDueOnly ? "PAST" : string.Empty,
             ShowIndividualProfiles ? "INDIVIDUAL" : "GROUPED",
             ReferenceDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+
+    private string BuildUnlinkedAssetLimitNotice(int unlinkedCount)
+    {
+        if (!string.Equals(SelectedStatusFilter, AllOption, StringComparison.Ordinal) ||
+            unlinkedCount < RentalStateService.BillingUnlinkedDefaultResultLimit)
+        {
+            return string.Empty;
+        }
+
+        return $" 기본 조회에서는 청구설정 필요 장비를 최대 {RentalStateService.BillingUnlinkedDefaultResultLimit:N0}대까지만 표시합니다. 전체 확인은 상태 필터를 '청구설정 필요'로 선택하세요.";
+    }
 
     private static string NormalizeFilterSignaturePart(string? value)
         => (value ?? string.Empty).Trim().ToUpperInvariant();

@@ -19,6 +19,8 @@ public sealed partial class RentalStateService
     public const int AssetListResultLimit = 1200;
     public const int AssetSearchResultLimit = 300;
     public const int AssetLinkCandidateResultLimit = 600;
+    public const int BillingUnlinkedDefaultResultLimit = 300;
+    public const int BillingUnlinkedFocusedResultLimit = AssetListResultLimit;
     private const int BillingAssetCandidateResultLimit = 300;
     private const int AssetSearchCustomerMatchLimit = 600;
     private const string AlertDaysSettingKey = "Rental.AlertDaysBefore";
@@ -688,6 +690,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         stepStopwatch.Restart();
         var offices = await GetOfficeMapAsync(ct);
         var includeUnlinkedAssets = !filter.DueOnly && ShouldIncludeUnlinkedBillingAssets(filter.Status);
+        var unlinkedAssetLimit = includeUnlinkedAssets ? ResolveUnlinkedBillingAssetResultLimit(filter) : 0;
         var query = ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session);
         query = ApplyBillingFilter(query, filter, session);
         var profiles = await query
@@ -708,9 +711,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .OrderBy(asset => asset.CustomerName)
                 .ThenBy(asset => asset.CurrentCustomerName)
                 .ThenBy(asset => asset.ManagementNumber)
+                .Take(unlinkedAssetLimit)
                 .ToListAsync(ct)
             : new List<LocalRentalAsset>();
-        LogRentalLoadStep("Rental billing unlinked asset query", stepStopwatch, $"assets={unlinkedAssets.Count:N0}, include={includeUnlinkedAssets}");
+        LogRentalLoadStep("Rental billing unlinked asset query", stepStopwatch, $"assets={unlinkedAssets.Count:N0}, include={includeUnlinkedAssets}, limit={unlinkedAssetLimit:N0}");
 
         stepStopwatch.Restart();
         var rows = await BuildBillingProfileRowsAsync(profiles, session, offices, filter.ReferenceDate, filter.IncludeHistoryRows, ct);
@@ -1468,6 +1472,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private static bool ShouldIncludeUnlinkedBillingAssets(string? status)
         => string.IsNullOrWhiteSpace(status) ||
            IsUnlinkedBillingStatusFilter(status);
+
+    private static int ResolveUnlinkedBillingAssetResultLimit(RentalBillingFilter filter)
+    {
+        if (IsUnlinkedBillingStatusFilter(filter.Status))
+            return BillingUnlinkedFocusedResultLimit;
+
+        return string.IsNullOrWhiteSpace(filter.SearchText)
+            ? BillingUnlinkedDefaultResultLimit
+            : AssetSearchResultLimit;
+    }
 
     private static bool IsUnlinkedBillingStatusFilter(string? status)
     {
