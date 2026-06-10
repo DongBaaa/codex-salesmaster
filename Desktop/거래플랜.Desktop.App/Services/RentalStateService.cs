@@ -718,6 +718,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         stepStopwatch.Restart();
+        var profileCountBeforePastDuePrefilter = profiles.Count;
+        profiles = await ApplyPastDueOnlyIndividualProfilePrefilterAsync(profiles, filter, filter.ReferenceDate, ct);
+        if (ShouldPrefilterPastDueOnlyBillingProfiles(filter))
+        {
+            LogRentalLoadStep(
+                "Rental billing past due profile prefilter",
+                stepStopwatch,
+                $"profiles={profiles.Count:N0}/{profileCountBeforePastDuePrefilter:N0}, {BuildBillingFilterTimingDetail(filter)}");
+        }
+
+        stepStopwatch.Restart();
         var unlinkedAssets = includeUnlinkedAssets
             ? await SelectBillingAssetListProjection(ApplyUnlinkedBillingAssetFilter(
                     ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
@@ -1554,6 +1565,52 @@ WHERE ""AssignedUsername"" <> '';", ct);
             NormalizeReferenceDate(referenceDate),
             profile.LastBilledDate);
     }
+
+    private async Task<List<LocalRentalBillingProfile>> ApplyPastDueOnlyIndividualProfilePrefilterAsync(
+        List<LocalRentalBillingProfile> profiles,
+        RentalBillingFilter filter,
+        DateOnly referenceDate,
+        CancellationToken ct)
+    {
+        if (!ShouldPrefilterPastDueOnlyBillingProfiles(filter) || profiles.Count == 0)
+            return profiles;
+
+        var runsByProfile = profiles.ToDictionary(
+            profile => profile.Id,
+            profile => DeduplicateBillingRuns(GetBillingRuns(profile)));
+        var referenceMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1);
+        var pastRunIds = runsByProfile.Values
+            .SelectMany(runs => runs)
+            .Where(run => run.RunId != Guid.Empty)
+            .Where(run => IsPastBillingRun(run, referenceMonth))
+            .Select(run => run.RunId)
+            .Distinct()
+            .ToList();
+        if (pastRunIds.Count == 0)
+            return new List<LocalRentalBillingProfile>();
+
+        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(pastRunIds, ct);
+        ct.ThrowIfCancellationRequested();
+
+        return profiles
+            .Where(profile =>
+            {
+                if (!runsByProfile.TryGetValue(profile.Id, out var runs) || runs.Count == 0)
+                    return false;
+
+                var summary = BuildBillingHistorySummary(
+                    profile,
+                    runs,
+                    settlementByRun,
+                    invoiceByRun,
+                    referenceDate);
+                return summary.PastUnresolvedCount > 0 || summary.PastUnresolvedAmount > 0m;
+            })
+            .ToList();
+    }
+
+    private static bool ShouldPrefilterPastDueOnlyBillingProfiles(RentalBillingFilter filter)
+        => filter.PastDueOnly && filter.ExpandCustomerSummaryRows;
 
     private static int ResolveUnlinkedBillingAssetResultLimit(RentalBillingFilter filter)
     {

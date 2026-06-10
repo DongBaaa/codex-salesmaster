@@ -7033,6 +7033,143 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task RentalBillingPastDueIndividualProfilePrefilter_KeepsOnlyPastUnresolvedProfiles()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-pastdue-prefilter-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var referenceDate = new DateOnly(2026, 5, 12);
+            var unresolvedProfileId = Guid.Parse("91111111-1111-1111-1111-111111111111");
+            var settledProfileId = Guid.Parse("92222222-2222-2222-2222-222222222222");
+            var futureProfileId = Guid.Parse("93333333-3333-3333-3333-333333333333");
+
+            var profiles = new List<LocalRentalBillingProfile>
+            {
+                BuildPastDuePrefilterProfile(
+                    unresolvedProfileId,
+                    "과거 미처리 거래처",
+                    BuildPastDuePrefilterRun(
+                        Guid.Parse("9aaaaaaa-1111-1111-1111-111111111111"),
+                        new DateOnly(2026, 4, 25),
+                        100_000m,
+                        0m)),
+                BuildPastDuePrefilterProfile(
+                    settledProfileId,
+                    "완납 거래처",
+                    BuildPastDuePrefilterRun(
+                        Guid.Parse("9bbbbbbb-2222-2222-2222-222222222222"),
+                        new DateOnly(2026, 4, 25),
+                        100_000m,
+                        100_000m)),
+                BuildPastDuePrefilterProfile(
+                    futureProfileId,
+                    "현재월 거래처",
+                    BuildPastDuePrefilterRun(
+                        Guid.Parse("9ccccccc-3333-3333-3333-333333333333"),
+                        new DateOnly(2026, 5, 25),
+                        100_000m,
+                        0m))
+            };
+
+            var service = new RentalStateService(db);
+            var filtered = await InvokePrivateInstanceAsync<List<LocalRentalBillingProfile>>(
+                service,
+                "ApplyPastDueOnlyIndividualProfilePrefilterAsync",
+                profiles,
+                new RentalBillingFilter
+                {
+                    PastDueOnly = true,
+                    ExpandCustomerSummaryRows = true,
+                    ReferenceDate = referenceDate
+                },
+                referenceDate,
+                CancellationToken.None);
+
+            Assert.NotNull(filtered);
+            var row = Assert.Single(filtered);
+            Assert.Equal(unresolvedProfileId, row.Id);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Theory]
+    [InlineData(true, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    public void RentalBillingPastDueProfilePrefilter_RunsOnlyForIndividualPastDue(
+        bool pastDueOnly,
+        bool expandCustomerSummaryRows,
+        bool expected)
+    {
+        var actual = InvokePrivateStatic<bool>(
+            typeof(RentalStateService),
+            "ShouldPrefilterPastDueOnlyBillingProfiles",
+            new RentalBillingFilter
+            {
+                PastDueOnly = pastDueOnly,
+                ExpandCustomerSummaryRows = expandCustomerSummaryRows
+            });
+
+        Assert.Equal(expected, actual);
+    }
+
+    private static LocalRentalBillingProfile BuildPastDuePrefilterProfile(
+        Guid profileId,
+        string customerName,
+        RentalBillingRunModel run)
+        => new()
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"PASTDUE-PREFILTER-{profileId:N}",
+            CustomerName = customerName,
+            ItemName = "복합기",
+            BillingDay = 25,
+            BillingCycleMonths = 1,
+            BillingAnchorMonth = 5,
+            BillingRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel> { run }),
+            IsActive = true,
+            IsDeleted = false
+        };
+
+    private static RentalBillingRunModel BuildPastDuePrefilterRun(
+        Guid runId,
+        DateOnly scheduledDate,
+        decimal billedAmount,
+        decimal settledAmount)
+    {
+        var monthStart = new DateOnly(scheduledDate.Year, scheduledDate.Month, 1);
+        var monthEnd = new DateOnly(scheduledDate.Year, scheduledDate.Month, DateTime.DaysInMonth(scheduledDate.Year, scheduledDate.Month));
+        return new RentalBillingRunModel
+        {
+            RunId = runId,
+            RunKey = $"{monthStart:yyyyMMdd}-{monthEnd:yyyyMMdd}",
+            ScheduledDate = scheduledDate,
+            PeriodStartDate = monthStart,
+            PeriodEndDate = monthEnd,
+            CycleMonths = 1,
+            PeriodLabel = $"{scheduledDate:yyyy-MM}",
+            BilledAmount = billedAmount,
+            SettledAmount = settledAmount,
+            SettledDate = settledAmount > 0m ? scheduledDate : null
+        };
+    }
+
+    [Fact]
     public async Task RentalBillingProfiles_DefaultAllCapsProfileRows()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-profile-cap-{Guid.NewGuid():N}");
