@@ -268,6 +268,12 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.TenantCode, asset.ManagementCompanyCode, asset.IsDeleted, asset.AssetStatus });
         model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.TenantCode, asset.ResponsibleOfficeCode, asset.IsDeleted, asset.CustomerName, asset.ManagementNumber });
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.TenantCode, asset.ManagementCompanyCode, asset.IsDeleted, asset.CustomerName, asset.ManagementNumber });
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.CustomerName, asset.ManagementNumber });
+        model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.BillingProfileId, asset.IsDeleted });
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.CustomerId, asset.IsDeleted });
