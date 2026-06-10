@@ -474,6 +474,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(customer => ids.Contains(customer.Id) && !customer.IsDeleted)
+            .Select(customer => new
+            {
+                customer.Id,
+                customer.NameOriginal
+            })
             .ToDictionaryAsync(
                 customer => customer.Id,
                 customer => customer.NameOriginal,
@@ -707,12 +712,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     .IgnoreQueryFilters()
                     .AsNoTracking()
                     .Where(customer => unlinkedCustomerIds.Contains(customer.Id))
+                    .Select(customer => new RentalBillingCustomerLookup(
+                        customer.Id,
+                        customer.NameOriginal,
+                        customer.BusinessNumber))
                     .ToDictionaryAsync(
                         customer => customer.Id,
-                        customer => new RentalBillingCustomerLookup(
-                            customer.Id,
-                            customer.NameOriginal,
-                            customer.BusinessNumber),
+                        customer => customer,
                         ct);
 
             rows.AddRange(unlinkedAssets.Select(asset => CreateUnlinkedBillingViewRow(
@@ -819,6 +825,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(customer => customerIds.Contains(customer.Id))
+                .Select(customer => new
+                {
+                    customer.Id,
+                    customer.NameOriginal
+                })
                 .ToDictionaryAsync(customer => customer.Id, customer => customer.NameOriginal, ct);
         ct.ThrowIfCancellationRequested();
         LogRentalLoadStep("Rental billing customer lookup", stepStopwatch, $"customers={customerNameMap.Count:N0}");

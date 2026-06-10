@@ -1,4 +1,5 @@
 ﻿using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Documents;
@@ -165,21 +166,75 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
+        var totalStopwatch = Stopwatch.StartNew();
+        var stepStopwatch = Stopwatch.StartNew();
+
         await ReloadFiltersAsync();
+        LogRentalAssetViewModelLoadStep("Rental asset filters load", stepStopwatch);
+
+        stepStopwatch.Restart();
         await ReloadItemCategoryOptionsAsync();
+        LogRentalAssetViewModelLoadStep("Rental asset item category options load", stepStopwatch);
+
+        stepStopwatch.Restart();
         await ReloadAsync();
+        LogRentalAssetViewModelLoadStep("Rental asset rows initial load", stepStopwatch);
+
+        stepStopwatch.Restart();
         ResetForNewAsset();
+        LogRentalAssetViewModelLoadStep("Rental asset edit reset", stepStopwatch);
+
+        OperationTiming.LogIfSlow(
+            "UI",
+            "Rental asset view model initial load",
+            totalStopwatch.Elapsed,
+            $"rows={Rows.Count:N0}, categories={ItemCategoryOptions.Count:N0}, offices={OfficeFilterOptions.Count:N0}",
+            infoThreshold: TimeSpan.FromMilliseconds(600),
+            warningThreshold: TimeSpan.FromSeconds(2));
     }
 
     public async Task LoadAndSelectAssetAsync(Guid assetId)
     {
+        var totalStopwatch = Stopwatch.StartNew();
+        var stepStopwatch = Stopwatch.StartNew();
+
         await ReloadFiltersAsync();
+        LogRentalAssetViewModelLoadStep("Rental asset filters load", stepStopwatch);
+
+        stepStopwatch.Restart();
         await ReloadItemCategoryOptionsAsync();
+        LogRentalAssetViewModelLoadStep("Rental asset item category options load", stepStopwatch);
+
+        stepStopwatch.Restart();
         await LoadSingleAssetRowAsync(assetId);
+        LogRentalAssetViewModelLoadStep("Rental asset single row load", stepStopwatch);
+
+        stepStopwatch.Restart();
         SelectRowWithoutAutoSave(assetId);
+        LogRentalAssetViewModelLoadStep("Rental asset selected row restore", stepStopwatch);
+
         StatusMessage = SelectedRow is null
             ? "점검 항목의 렌탈 자산을 목록에서 찾지 못했습니다. 필터, 권한, 삭제 상태를 확인하세요."
             : "운영 점검 항목의 렌탈 자산을 선택했습니다. 월요금, 청구대상 여부, 청구 프로필 연결을 확인한 뒤 저장하세요.";
+
+        OperationTiming.LogIfSlow(
+            "UI",
+            "Rental asset view model target load",
+            totalStopwatch.Elapsed,
+            $"assetId={assetId:D}, selected={SelectedRow is not null}, categories={ItemCategoryOptions.Count:N0}, offices={OfficeFilterOptions.Count:N0}",
+            infoThreshold: TimeSpan.FromMilliseconds(600),
+            warningThreshold: TimeSpan.FromSeconds(2));
+    }
+
+    private static void LogRentalAssetViewModelLoadStep(string operation, Stopwatch stopwatch)
+    {
+        stopwatch.Stop();
+        OperationTiming.LogIfSlow(
+            "UI",
+            operation,
+            stopwatch.Elapsed,
+            infoThreshold: TimeSpan.FromMilliseconds(300),
+            warningThreshold: TimeSpan.FromSeconds(2));
     }
 
     public async Task ApplyInitialCustomerFilterAsync(LocalCustomer customer)
