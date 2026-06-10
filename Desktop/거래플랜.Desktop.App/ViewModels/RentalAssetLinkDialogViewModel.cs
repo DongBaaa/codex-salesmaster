@@ -9,6 +9,8 @@ namespace 거래플랜.Desktop.App.ViewModels;
 
 public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
 {
+    private const int SearchReloadDebounceMilliseconds = 250;
+
     private readonly RentalStateService _rental;
     private readonly SessionState _session;
     private readonly Guid? _currentBillingProfileId;
@@ -17,6 +19,9 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
     private readonly string _currentOfficeCode;
     private readonly string _defaultInstallLocation;
     private readonly List<RentalBillingAssetOption> _assetPool = new();
+    private CancellationTokenSource? _loadCts;
+    private CancellationTokenSource? _searchDebounceCts;
+    private string _loadedSearchText = string.Empty;
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private bool _includeRelinkTargets = true;
@@ -25,7 +30,7 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
     [ObservableProperty] private string _statusMessage = "설치현황 장비를 불러오는 중입니다.";
     [ObservableProperty] private RentalBillingAssetOption? _selectedAsset;
 
-    public ObservableCollection<RentalBillingAssetOption> Assets { get; } = new();
+    public ObservableCollection<RentalBillingAssetOption> Assets { get; } = new ResettableObservableCollection<RentalBillingAssetOption>();
 
     public string CurrentCustomerName => string.IsNullOrWhiteSpace(_currentCustomerName) ? "(거래처 미지정)" : _currentCustomerName;
     public string CurrentOfficeName => OfficeCodeCatalog.GetOfficeDisplayName(_currentOfficeCode);
@@ -50,20 +55,25 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
         _defaultInstallLocation = (defaultInstallLocation ?? string.Empty).Trim();
     }
 
-    partial void OnSearchTextChanged(string value) => ApplyFilter();
+    partial void OnSearchTextChanged(string value) => ScheduleSearchRefresh(value);
 
     partial void OnIncludeRelinkTargetsChanged(bool value) => ApplyFilter();
 
-    partial void OnIncludeOtherOfficeAssetsChanged(bool value)
-    {
-        UiTaskHelper.Forget(
-            LoadAsync(),
-            "RENTAL",
-            "렌탈 자산 연결 후보 다시 불러오기");
-    }
+    partial void OnIncludeOtherOfficeAssetsChanged(bool value) => ScheduleLoad(TimeSpan.Zero);
 
     public async Task LoadAsync(CancellationToken ct = default)
     {
+        _searchDebounceCts?.Cancel();
+        _searchDebounceCts?.Dispose();
+        _searchDebounceCts = null;
+
+        _loadCts?.Cancel();
+        _loadCts?.Dispose();
+
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _loadCts = cts;
+        var searchKeyword = NormalizeSearchText(SearchText);
+
         IsBusy = true;
         try
         {
@@ -74,8 +84,11 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
                 _currentOfficeCode,
                 _session,
                 IncludeOtherOfficeAssets,
-                ct);
+                searchKeyword,
+                ct: cts.Token);
 
+            cts.Token.ThrowIfCancellationRequested();
+            _loadedSearchText = searchKeyword;
             _assetPool.Clear();
             foreach (var candidate in candidates)
             {
@@ -130,18 +143,88 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
             ApplyFilter();
             SelectedAsset = Assets.FirstOrDefault(asset => asset.IsSelected) ?? Assets.FirstOrDefault();
             StatusMessage = _assetPool.Count == 0
-                ? "연결 가능한 설치현황 장비가 없습니다."
-                : $"설치현황 자산 {_assetPool.Count:N0}대를 불러왔습니다. {BuildScopeStatusSuffix()} 시리얼번호/관리번호/거래처명으로 바로 검색할 수 있습니다.";
+                ? BuildEmptyStatusMessage()
+                : BuildLoadedStatusMessage();
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
         }
         finally
         {
-            IsBusy = false;
+            if (ReferenceEquals(_loadCts, cts))
+            {
+                IsBusy = false;
+                _loadCts = null;
+            }
+
+            cts.Dispose();
         }
     }
 
     [RelayCommand]
     private Task ReloadAsync()
         => LoadAsync();
+
+    private void ScheduleSearchRefresh(string value)
+    {
+        var keyword = NormalizeSearchText(value);
+        if (!ShouldReloadForSearch(keyword))
+        {
+            ApplyFilter();
+            return;
+        }
+
+        ScheduleLoad(TimeSpan.FromMilliseconds(SearchReloadDebounceMilliseconds));
+    }
+
+    private bool ShouldReloadForSearch(string keyword)
+    {
+        if (string.Equals(keyword, _loadedSearchText, StringComparison.CurrentCultureIgnoreCase))
+            return false;
+
+        return keyword.Length == 0 || keyword.Length >= 2;
+    }
+
+    private void ScheduleLoad(TimeSpan delay)
+    {
+        _searchDebounceCts?.Cancel();
+        _searchDebounceCts?.Dispose();
+
+        var cts = new CancellationTokenSource();
+        _searchDebounceCts = cts;
+        UiTaskHelper.Forget(
+            LoadAfterDelayAsync(delay, cts),
+            "RENTAL",
+            "렌탈 자산 연결 후보 다시 불러오기",
+            ex =>
+            {
+                if (ex is OperationCanceledException)
+                    return;
+
+                StatusMessage = $"설치현황 장비 후보를 불러오지 못했습니다. {ex.Message}";
+            });
+    }
+
+    private async Task LoadAfterDelayAsync(TimeSpan delay, CancellationTokenSource cts)
+    {
+        try
+        {
+            if (delay > TimeSpan.Zero)
+                await Task.Delay(delay, cts.Token);
+
+            if (ReferenceEquals(_searchDebounceCts, cts))
+                _searchDebounceCts = null;
+
+            await LoadAsync(cts.Token);
+        }
+        finally
+        {
+            if (ReferenceEquals(_searchDebounceCts, cts))
+                _searchDebounceCts = null;
+
+            cts.Dispose();
+        }
+    }
 
     public IReadOnlyList<RentalBillingAssetOption> GetSelectedAssets()
         => _assetPool
@@ -156,9 +239,10 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
     {
         var keyword = (SearchText ?? string.Empty).Trim();
 
-        Assets.Clear();
-        foreach (var asset in _assetPool.Where(asset => MatchesFilter(asset, keyword)))
-            Assets.Add(asset);
+        var filteredAssets = _assetPool
+            .Where(asset => MatchesFilter(asset, keyword))
+            .ToList();
+        Assets.ReplaceWith(filteredAssets);
 
         if (SelectedAsset is null || !Assets.Contains(SelectedAsset))
             SelectedAsset = Assets.FirstOrDefault();
@@ -244,6 +328,23 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
             IsSelected = asset.IsSelected
         };
 
+    private string BuildLoadedStatusMessage()
+    {
+        var searchPrefix = string.IsNullOrWhiteSpace(_loadedSearchText)
+            ? string.Empty
+            : $"검색어 '{_loadedSearchText}' 기준 ";
+        var limitSuffix = _assetPool.Count >= RentalStateService.AssetLinkCandidateResultLimit
+            ? $" 최대 {RentalStateService.AssetLinkCandidateResultLimit:N0}대까지 표시 중입니다. 결과가 많으면 검색어를 더 구체적으로 입력하세요."
+            : string.Empty;
+
+        return $"{searchPrefix}설치현황 자산 {_assetPool.Count:N0}대를 불러왔습니다. {BuildScopeStatusSuffix()} 시리얼번호/관리번호/거래처명으로 검색할 수 있습니다.{limitSuffix}";
+    }
+
+    private string BuildEmptyStatusMessage()
+        => string.IsNullOrWhiteSpace(_loadedSearchText)
+            ? "연결 가능한 설치현황 장비가 없습니다."
+            : $"검색어 '{_loadedSearchText}'에 맞는 설치현황 장비가 없습니다.";
+
     private string BuildScopeStatusSuffix()
     {
         if (!IncludeOtherOfficeAssets)
@@ -254,6 +355,9 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
             ? $"다른 담당지점 자산 {outsideCount:N0}대 포함 중입니다."
             : "다른 담당지점 자산까지 확인 중입니다.";
     }
+
+    private static string NormalizeSearchText(string? value)
+        => (value ?? string.Empty).Trim();
 
     private static DateTime? ToDateTime(DateOnly? value)
         => value?.ToDateTime(TimeOnly.MinValue);
