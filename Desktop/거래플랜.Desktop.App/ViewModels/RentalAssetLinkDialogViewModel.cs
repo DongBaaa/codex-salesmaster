@@ -25,7 +25,7 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private bool _includeRelinkTargets = true;
-    [ObservableProperty] private bool _includeOtherOfficeAssets = true;
+    [ObservableProperty] private bool _includeOtherOfficeAssets;
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _statusMessage = "설치현황 장비를 불러오는 중입니다.";
     [ObservableProperty] private RentalBillingAssetOption? _selectedAsset;
