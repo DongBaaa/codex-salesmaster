@@ -343,17 +343,23 @@ public sealed class DataIntegrityIssueService
             .AsNoTracking()
             .Where(history => !history.IsDeleted)
             .ToListAsync(ct);
-        var activeCustomers = await _db.Customers
-            .AsNoTracking()
-            .Where(customer => !customer.IsDeleted)
+        var activeCustomers = await ApplyOperationalAlertCustomerScopePrefilter(
+                _db.Customers
+                    .AsNoTracking()
+                    .Where(customer => !customer.IsDeleted),
+                session)
             .ToListAsync(ct);
-        var activeItems = await _db.Items
-            .AsNoTracking()
-            .Where(item => !item.IsDeleted)
+        var activeItems = await ApplyOperationalAlertItemScopePrefilter(
+                _db.Items
+                    .AsNoTracking()
+                    .Where(item => !item.IsDeleted),
+                session)
             .ToListAsync(ct);
-        var activeWarehouses = await _db.Warehouses
-            .AsNoTracking()
-            .Where(warehouse => !warehouse.IsDeleted && warehouse.IsActive)
+        var activeWarehouses = await ApplyOperationalAlertWarehouseScopePrefilter(
+                _db.Warehouses
+                    .AsNoTracking()
+                    .Where(warehouse => !warehouse.IsDeleted && warehouse.IsActive),
+                session)
             .ToListAsync(ct);
         var activeInvoices = await ApplyOperationalAlertInvoiceScopePrefilter(
                 _db.Invoices
@@ -1234,21 +1240,79 @@ public sealed class DataIntegrityIssueService
         IQueryable<LocalInvoice> query,
         SessionState session)
     {
-        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
-        var officeCodes = ResolveOperationalAlertOfficeCodes(session, sessionTenant)
-            .SelectMany(BuildOfficeCodeQueryAliases)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var officeCodes = BuildOperationalAlertOfficeCodeQueryAliases(session);
+        var sharedOfficeCodes = BuildSharedOfficeCodeQueryAliases();
 
         return query.Where(invoice =>
             officeCodes.Contains(invoice.ResponsibleOfficeCode) ||
             invoice.ResponsibleOfficeCode == null ||
             invoice.ResponsibleOfficeCode == string.Empty ||
-            invoice.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
-            invoice.ResponsibleOfficeCode == "공용" ||
-            invoice.ResponsibleOfficeCode == "전체" ||
-            invoice.ResponsibleOfficeCode == "shared");
+            sharedOfficeCodes.Contains(invoice.ResponsibleOfficeCode));
     }
+
+    private static IQueryable<LocalCustomer> ApplyOperationalAlertCustomerScopePrefilter(
+        IQueryable<LocalCustomer> query,
+        SessionState session)
+    {
+        var officeCodes = BuildOperationalAlertOfficeCodeQueryAliases(session);
+        var sharedOfficeCodes = BuildSharedOfficeCodeQueryAliases();
+
+        return query.Where(customer =>
+            officeCodes.Contains(customer.ResponsibleOfficeCode) ||
+            officeCodes.Contains(customer.OfficeCode) ||
+            customer.ResponsibleOfficeCode == null ||
+            customer.ResponsibleOfficeCode == string.Empty ||
+            sharedOfficeCodes.Contains(customer.ResponsibleOfficeCode) ||
+            customer.OfficeCode == null ||
+            customer.OfficeCode == string.Empty ||
+            sharedOfficeCodes.Contains(customer.OfficeCode));
+    }
+
+    private static IQueryable<LocalItem> ApplyOperationalAlertItemScopePrefilter(
+        IQueryable<LocalItem> query,
+        SessionState session)
+    {
+        var officeCodes = BuildOperationalAlertOfficeCodeQueryAliases(session);
+        var sharedOfficeCodes = BuildSharedOfficeCodeQueryAliases();
+
+        return query.Where(item =>
+            officeCodes.Contains(item.OfficeCode) ||
+            item.OfficeCode == null ||
+            item.OfficeCode == string.Empty ||
+            sharedOfficeCodes.Contains(item.OfficeCode));
+    }
+
+    private static IQueryable<LocalWarehouse> ApplyOperationalAlertWarehouseScopePrefilter(
+        IQueryable<LocalWarehouse> query,
+        SessionState session)
+    {
+        var officeCodes = BuildOperationalAlertOfficeCodeQueryAliases(session);
+        var sharedOfficeCodes = BuildSharedOfficeCodeQueryAliases();
+
+        return query.Where(warehouse =>
+            officeCodes.Contains(warehouse.OfficeCode) ||
+            warehouse.OfficeCode == null ||
+            warehouse.OfficeCode == string.Empty ||
+            sharedOfficeCodes.Contains(warehouse.OfficeCode));
+    }
+
+    private static List<string> BuildOperationalAlertOfficeCodeQueryAliases(SessionState session)
+    {
+        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
+        return ResolveOperationalAlertOfficeCodes(session, sessionTenant)
+            .SelectMany(BuildOfficeCodeQueryAliases)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static List<string> BuildSharedOfficeCodeQueryAliases()
+        =>
+        [
+            OfficeCodeCatalog.Shared,
+            "공용",
+            "전체",
+            "shared"
+        ];
 
     private static IEnumerable<string> BuildOfficeCodeQueryAliases(string officeCode)
     {

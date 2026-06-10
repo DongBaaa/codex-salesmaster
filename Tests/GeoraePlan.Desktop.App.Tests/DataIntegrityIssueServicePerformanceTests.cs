@@ -152,6 +152,66 @@ public sealed class DataIntegrityIssueServicePerformanceTests
         }
     }
 
+    [Fact]
+    public async Task ScanAsync_PrefiltersMasterDataSourceLoadByOperationalScope()
+    {
+        PrepareAppRoot("georaeplan-integrity-master-scope-prefilter");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            const int outsideOfficeCount = 650;
+            for (var index = 0; index < outsideOfficeCount; index++)
+            {
+                db.Customers.Add(CreateDuplicateCustomer(index, OfficeCodeCatalog.Usenet, "Outside Duplicate Customer"));
+                db.Items.Add(CreateDuplicateItem(index, OfficeCodeCatalog.Usenet, "Outside Duplicate Item", "Outside Duplicate Spec"));
+                db.Warehouses.Add(CreateDuplicateWarehouse(index, OfficeCodeCatalog.Usenet, $"OUTSIDE-DUPLICATE-{index:D4}", "Outside Duplicate Warehouse"));
+            }
+
+            db.Customers.Add(CreateDuplicateCustomer(outsideOfficeCount + 1, OfficeCodeCatalog.Yeonsu, "Scoped Duplicate Customer"));
+            db.Customers.Add(CreateDuplicateCustomer(outsideOfficeCount + 2, OfficeCodeCatalog.Yeonsu, "Scoped Duplicate Customer"));
+            db.Items.Add(CreateDuplicateItem(outsideOfficeCount + 1, OfficeCodeCatalog.Yeonsu, "Scoped Duplicate Item", "Scoped Duplicate Spec"));
+            db.Items.Add(CreateDuplicateItem(outsideOfficeCount + 2, OfficeCodeCatalog.Yeonsu, "Scoped Duplicate Item", "Scoped Duplicate Spec"));
+            db.Warehouses.Add(CreateDuplicateWarehouse(outsideOfficeCount + 1, OfficeCodeCatalog.Yeonsu, "SCOPED-DUPLICATE-0001", "Scoped Duplicate Warehouse"));
+            db.Warehouses.Add(CreateDuplicateWarehouse(outsideOfficeCount + 2, OfficeCodeCatalog.Yeonsu, "SCOPED-DUPLICATE-0002", "Scoped Duplicate Warehouse"));
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateYeonsuAdminSession());
+            var masterIssues = result.Issues
+                .Where(issue =>
+                    issue.Code == DataIntegrityIssueCodes.CustomerDuplicateCandidate ||
+                    issue.Code == DataIntegrityIssueCodes.ItemDuplicateCandidate ||
+                    issue.Code == DataIntegrityIssueCodes.WarehouseDuplicateCandidate)
+                .ToList();
+
+            Assert.Contains(masterIssues, issue =>
+                issue.Code == DataIntegrityIssueCodes.CustomerDuplicateCandidate &&
+                issue.OfficeCode == OfficeCodeCatalog.Yeonsu &&
+                issue.CustomerName == "Scoped Duplicate Customer");
+            Assert.Contains(masterIssues, issue =>
+                issue.Code == DataIntegrityIssueCodes.ItemDuplicateCandidate &&
+                issue.OfficeCode == OfficeCodeCatalog.Yeonsu &&
+                issue.ItemName == "Scoped Duplicate Item");
+            Assert.Contains(masterIssues, issue =>
+                issue.Code == DataIntegrityIssueCodes.WarehouseDuplicateCandidate &&
+                issue.OfficeCode == OfficeCodeCatalog.Yeonsu &&
+                issue.CurrentValue.Contains("Scoped Duplicate Warehouse", StringComparison.Ordinal));
+            Assert.DoesNotContain(masterIssues, issue =>
+                string.Equals(issue.OfficeCode, OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase) ||
+                issue.CustomerName.Contains("Outside", StringComparison.Ordinal) ||
+                issue.ItemName.Contains("Outside", StringComparison.Ordinal) ||
+                issue.CurrentValue.Contains("Outside", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalRentalBillingProfile CreateProfile(Guid profileId, int index)
         => new()
         {
@@ -215,6 +275,56 @@ public sealed class DataIntegrityIssueServicePerformanceTests
             TrackingType = ItemTrackingTypes.Stock,
             Unit = "EA",
             CurrentStock = 1m,
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+
+    private static LocalCustomer CreateDuplicateCustomer(int index, string officeCode, string name)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            NameOriginal = name,
+            NameMatchKey = name.ToUpperInvariant().Replace(" ", string.Empty, StringComparison.Ordinal),
+            TradeType = CustomerTradeTypes.Sales,
+            BusinessNumber = string.Empty,
+            Phone = $"010-{index / 10000:D4}-{index % 10000:D4}",
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+
+    private static LocalItem CreateDuplicateItem(int index, string officeCode, string name, string specification)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
+            OfficeCode = officeCode,
+            NameOriginal = name,
+            NameMatchKey = name.ToUpperInvariant().Replace(" ", string.Empty, StringComparison.Ordinal),
+            SpecificationOriginal = specification,
+            SpecificationMatchKey = specification.ToUpperInvariant().Replace(" ", string.Empty, StringComparison.Ordinal),
+            CategoryName = "Inventory",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA",
+            CurrentStock = 1m,
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+
+    private static LocalWarehouse CreateDuplicateWarehouse(int index, string officeCode, string code, string name)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            OfficeCode = officeCode,
+            Code = code,
+            Name = name,
+            IsActive = true,
             IsDeleted = false,
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow
