@@ -59,6 +59,11 @@ public sealed partial class RentalStateService
         "창고",
         "폐기"
     ];
+    private static readonly IReadOnlyList<string> RentalEquipmentReplacementCandidateStatusValues =
+        ExpandAssetStatusFilterValues(["창고"])
+            .Concat(["", "점검중", "설치처 불명"])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     private static readonly IReadOnlyDictionary<string, string> ImportManagementOfficeMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["아이티월드"] = DomainConstants.OfficeItworld,
@@ -3669,10 +3674,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (currentAssetId == Guid.Empty)
             return Array.Empty<LocalRentalAsset>();
 
-        var candidateStatusValues = ExpandAssetStatusFilterValues(["창고"])
-            .Concat(["", "점검중", "설치처 불명"])
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
         var candidates = await ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
             .Where(asset => asset.Id != currentAssetId && !asset.IsDeleted)
             .Where(asset => !asset.BillingProfileId.HasValue && !asset.CustomerId.HasValue)
@@ -3681,7 +3682,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 (asset.CustomerName ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim() == string.Empty &&
                 (asset.InstallLocation ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim() == string.Empty &&
                 (asset.InstallSiteName ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim() == string.Empty)
-            .Where(asset => candidateStatusValues.Contains(
+            .Where(asset => RentalEquipmentReplacementCandidateStatusValues.Contains(
                 (asset.AssetStatus ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim()))
             .ToListAsync(ct);
 
