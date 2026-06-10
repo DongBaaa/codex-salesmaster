@@ -25,6 +25,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private readonly UiDebouncer _searchDebouncer = new();
     private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
     private CancellationTokenSource? _filterReloadCts;
+    private CancellationTokenSource? _assignmentHistoryLoadCts;
     private bool _suppressFilterReload;
     private bool _suppressSelectionAutoSave;
     private bool _pendingFilterReload;
@@ -81,14 +82,14 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private DateTime? _editContractStartDate;
     [ObservableProperty] private DateTime? _editRentalEndDate;
 
-    public ObservableCollection<SelectableFilterOption> OfficeFilterOptions { get; } = new();
-    public ObservableCollection<DisplayOption> EditOfficeOptions { get; } = new();
-    public ObservableCollection<SelectableFilterOption> ItemCategoryFilterOptions { get; } = new();
-    public ObservableCollection<SelectableFilterOption> StatusFilterOptions { get; } = new();
+    public ObservableCollection<SelectableFilterOption> OfficeFilterOptions { get; } = new ResettableObservableCollection<SelectableFilterOption>();
+    public ObservableCollection<DisplayOption> EditOfficeOptions { get; } = new ResettableObservableCollection<DisplayOption>();
+    public ObservableCollection<SelectableFilterOption> ItemCategoryFilterOptions { get; } = new ResettableObservableCollection<SelectableFilterOption>();
+    public ObservableCollection<SelectableFilterOption> StatusFilterOptions { get; } = new ResettableObservableCollection<SelectableFilterOption>();
     public ObservableCollection<string> AssetStatusOptions { get; } = new();
     public ObservableCollection<string> EditableAssetStatusOptions { get; } = new();
     public ObservableCollection<string> BillingEligibilityStatusOptions { get; } = new();
-    public ObservableCollection<LocalItemCategoryOption> ItemCategoryOptions { get; } = new();
+    public ObservableCollection<LocalItemCategoryOption> ItemCategoryOptions { get; } = new ResettableObservableCollection<LocalItemCategoryOption>();
     public ObservableCollection<RentalAssetViewRow> Rows { get; } = new ResettableObservableCollection<RentalAssetViewRow>();
     public ObservableCollection<RentalAssetAssignmentHistoryViewItem> AssignmentHistories { get; } = new ResettableObservableCollection<RentalAssetAssignmentHistoryViewItem>();
 
@@ -720,8 +721,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         if (value is null)
         {
+            CancelAssignmentHistoryLoad();
             SelectedAssignmentHistory = null;
-            AssignmentHistories.Clear();
+            AssignmentHistories.ReplaceWith(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
             EditLastCustomerName = string.Empty;
             EditLastInstallLocation = string.Empty;
             EditLastBillingProfileDisplay = string.Empty;
@@ -795,19 +797,43 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private async Task LoadAssignmentHistoriesAsync(Guid assetId)
     {
-        if (assetId == Guid.Empty)
+        CancelAssignmentHistoryLoad();
+        var cts = new CancellationTokenSource();
+        _assignmentHistoryLoadCts = cts;
+        var ct = cts.Token;
+        try
         {
+            if (assetId == Guid.Empty)
+            {
+                SelectedAssignmentHistory = null;
+                AssignmentHistories.ReplaceWith(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
+                return;
+            }
+
+            var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId, ct);
+            ct.ThrowIfCancellationRequested();
+            if (SelectedRow?.Source.Id != assetId)
+                return;
+
             SelectedAssignmentHistory = null;
-            AssignmentHistories.ReplaceWith(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
-            return;
+            AssignmentHistories.ReplaceWith(histories);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(_assignmentHistoryLoadCts, cts))
+                _assignmentHistoryLoadCts = null;
+            cts.Dispose();
+        }
+    }
 
-        var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId);
-        if (SelectedRow?.Source.Id != assetId)
-            return;
-
-        SelectedAssignmentHistory = null;
-        AssignmentHistories.ReplaceWith(histories);
+    private void CancelAssignmentHistoryLoad()
+    {
+        _assignmentHistoryLoadCts?.Cancel();
+        _assignmentHistoryLoadCts?.Dispose();
+        _assignmentHistoryLoadCts = null;
     }
 
     private void ApplyAssetStatusUiRules()
@@ -1119,26 +1145,23 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 readableOfficeOptions.Select(office => new SelectableFilterOption(office.Value, office.DisplayName)),
                 selectedOfficeFilterValues);
 
-            EditOfficeOptions.Clear();
-
             var editableOfficeCodes = BuildEditableAssetOfficeCodes(
                 writableOfficeCodes,
                 readableOfficeCodes,
                 [currentEditOfficeCode, selectedRowOfficeCode]);
-            foreach (var office in BuildOfficeDisplayOptions(offices, editableOfficeCodes))
-            {
-                EditOfficeOptions.Add(new DisplayOption
+            var editableOfficeOptions = BuildOfficeDisplayOptions(offices, editableOfficeCodes)
+                .Select(office => new DisplayOption
                 {
                     Value = office.Value,
                     DisplayName = office.DisplayName
-                });
-            }
+                })
+                .ToList();
 
-            if (EditOfficeOptions.Count == 0)
+            if (editableOfficeOptions.Count == 0)
             {
                 var fallbackOfficeCode = _rental.GetDefaultAssetOfficeCode(_session);
                 var fallbackDisplayName = OfficeCodeCatalog.GetOfficeDisplayName(fallbackOfficeCode);
-                EditOfficeOptions.Add(new DisplayOption
+                editableOfficeOptions.Add(new DisplayOption
                 {
                     Value = fallbackOfficeCode,
                     DisplayName = fallbackDisplayName
@@ -1146,6 +1169,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 if (OfficeFilterOptions.All(option => !string.Equals(option.Value, fallbackOfficeCode, StringComparison.OrdinalIgnoreCase)))
                     OfficeFilterOptions.Add(CreateFilterOption(fallbackOfficeCode, fallbackDisplayName, selectedOfficeFilterValues));
             }
+
+            EditOfficeOptions.ReplaceWith(editableOfficeOptions);
 
             EditOfficeCode = ResolveDefaultEditOfficeCode(currentEditOfficeCode);
             OnPropertyChanged(nameof(SelectedOfficeFilterSummary));
@@ -1332,16 +1357,14 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         _suppressFilterReload = true;
         try
         {
-            ItemCategoryOptions.Clear();
+            var categoryOptions = await _local.GetItemCategoryOptionsAsync();
+            ItemCategoryOptions.ReplaceWith(categoryOptions);
+            var seenCategoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var filterOptions = new List<SelectableFilterOption>();
-            foreach (var option in await _local.GetItemCategoryOptionsAsync())
+            foreach (var option in categoryOptions)
             {
-                ItemCategoryOptions.Add(option);
-                if (!string.IsNullOrWhiteSpace(option.Name) &&
-                    filterOptions.All(current => !string.Equals(current.Value, option.Name, StringComparison.OrdinalIgnoreCase)))
-                {
+                if (!string.IsNullOrWhiteSpace(option.Name) && seenCategoryNames.Add(option.Name.Trim()))
                     filterOptions.Add(new SelectableFilterOption(option.Name, option.Name));
-                }
             }
 
             ResetSelectableFilterOptions(ItemCategoryFilterOptions, filterOptions, currentFilterValues);
@@ -1414,16 +1437,18 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             .Select(value => value.Trim())
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        target.Clear();
-        foreach (var option in source)
-        {
-            var next = new SelectableFilterOption(
-                option.Value,
-                option.DisplayName,
-                normalizedSelectedValues.Count == 0 || normalizedSelectedValues.Contains(option.Value));
-            next.PropertyChanged += HandleFilterOptionPropertyChanged;
-            target.Add(next);
-        }
+        var nextOptions = source
+            .Select(option =>
+            {
+                var next = new SelectableFilterOption(
+                    option.Value,
+                    option.DisplayName,
+                    normalizedSelectedValues.Count == 0 || normalizedSelectedValues.Contains(option.Value));
+                next.PropertyChanged += HandleFilterOptionPropertyChanged;
+                return next;
+            })
+            .ToList();
+        target.ReplaceWith(nextOptions);
     }
 
     private static SelectableFilterOption CreateFilterOption(

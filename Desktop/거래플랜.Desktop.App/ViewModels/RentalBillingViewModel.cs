@@ -21,6 +21,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private readonly UiDebouncer _searchDebouncer = new();
     private CancellationTokenSource? _filterReloadCts;
     private CancellationTokenSource? _candidateAssetsLoadCts;
+    private CancellationTokenSource? _includedAssetHistoryLoadCts;
     private CancellationTokenSource? _contractDateRefreshCts;
     private Task? _candidateAssetsLoadTask;
     private bool _suppressFilterReload;
@@ -104,8 +105,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private decimal _pastUnresolvedAmount;
     [ObservableProperty] private decimal _totalOutstandingAmount;
 
-    public ObservableCollection<DisplayOption> OfficeOptions { get; } = new();
-    public ObservableCollection<DisplayOption> EditOfficeOptions { get; } = new();
+    public ObservableCollection<DisplayOption> OfficeOptions { get; } = new ResettableObservableCollection<DisplayOption>();
+    public ObservableCollection<DisplayOption> EditOfficeOptions { get; } = new ResettableObservableCollection<DisplayOption>();
     public ObservableCollection<string> StatusOptions { get; } = new();
     public ObservableCollection<string> SettlementStatusOptions { get; } = new();
     public ObservableCollection<string> CompletionStatusOptions { get; } = new();
@@ -410,24 +411,48 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private async Task LoadIncludedAssetAssignmentHistoriesAsync(Guid assetId)
     {
-        if (assetId == Guid.Empty)
+        CancelIncludedAssetHistoryLoad();
+        var cts = new CancellationTokenSource();
+        _includedAssetHistoryLoadCts = cts;
+        var ct = cts.Token;
+        try
         {
-            IncludedAssetAssignmentHistories.ReplaceWith(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
-            SelectedIncludedAssetAssignmentHistory = null;
+            if (assetId == Guid.Empty)
+            {
+                IncludedAssetAssignmentHistories.ReplaceWith(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
+                SelectedIncludedAssetAssignmentHistory = null;
+                NotifyIncludedAssetAssignmentHistoryCommandState();
+                return;
+            }
+
+            var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId, ct);
+            ct.ThrowIfCancellationRequested();
+            if (SelectedIncludedAsset?.AssetId != assetId)
+                return;
+
+            var selectedHistoryId = SelectedIncludedAssetAssignmentHistory?.HistoryId;
+            IncludedAssetAssignmentHistories.ReplaceWith(histories);
+            SelectedIncludedAssetAssignmentHistory = selectedHistoryId.HasValue
+                ? IncludedAssetAssignmentHistories.FirstOrDefault(history => history.HistoryId == selectedHistoryId.Value)
+                : IncludedAssetAssignmentHistories.FirstOrDefault();
             NotifyIncludedAssetAssignmentHistoryCommandState();
-            return;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(_includedAssetHistoryLoadCts, cts))
+                _includedAssetHistoryLoadCts = null;
+            cts.Dispose();
+        }
+    }
 
-        var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId);
-        if (SelectedIncludedAsset?.AssetId != assetId)
-            return;
-
-        var selectedHistoryId = SelectedIncludedAssetAssignmentHistory?.HistoryId;
-        IncludedAssetAssignmentHistories.ReplaceWith(histories);
-        SelectedIncludedAssetAssignmentHistory = selectedHistoryId.HasValue
-            ? IncludedAssetAssignmentHistories.FirstOrDefault(history => history.HistoryId == selectedHistoryId.Value)
-            : IncludedAssetAssignmentHistories.FirstOrDefault();
-        NotifyIncludedAssetAssignmentHistoryCommandState();
+    private void CancelIncludedAssetHistoryLoad()
+    {
+        _includedAssetHistoryLoadCts?.Cancel();
+        _includedAssetHistoryLoadCts?.Dispose();
+        _includedAssetHistoryLoadCts = null;
     }
 
     public async Task LoadAsync()
@@ -2005,31 +2030,38 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             : _local.GetWritableRentalOfficeCodesForSession(_session);
         var selectedRowOfficeCode = ResolveProfileOfficeCode(SelectedRow?.Source, _session.OfficeCode);
 
-        OfficeOptions.Clear();
-        EditOfficeOptions.Clear();
+        var officeOptions = new List<DisplayOption>();
         if (CanUseAllOfficeFilter)
-            OfficeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
-        foreach (var office in BuildOfficeDisplayOptions(offices, readableOfficeCodes))
-        {
-            OfficeOptions.Add(new DisplayOption
+            officeOptions.Add(new DisplayOption { Value = AllOption, DisplayName = AllOption });
+        officeOptions.AddRange(BuildOfficeDisplayOptions(offices, readableOfficeCodes)
+            .Select(office => new DisplayOption
             {
                 Value = office.Value,
                 DisplayName = office.DisplayName
-            });
-        }
+            }));
+        OfficeOptions.ReplaceWith(officeOptions);
 
         var editableOfficeCodes = BuildEditableBillingOfficeCodes(
             writableOfficeCodes,
             readableOfficeCodes,
             [currentEditOfficeCode, selectedRowOfficeCode]);
-        foreach (var office in BuildOfficeDisplayOptions(offices, editableOfficeCodes))
-        {
-            EditOfficeOptions.Add(new DisplayOption
+        var editableOfficeOptions = BuildOfficeDisplayOptions(offices, editableOfficeCodes)
+            .Select(office => new DisplayOption
             {
                 Value = office.Value,
                 DisplayName = office.DisplayName
+            })
+            .ToList();
+        if (editableOfficeOptions.Count == 0)
+        {
+            var fallbackOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
+            editableOfficeOptions.Add(new DisplayOption
+            {
+                Value = fallbackOfficeCode,
+                DisplayName = OfficeCodeCatalog.GetOfficeDisplayName(fallbackOfficeCode)
             });
         }
+        EditOfficeOptions.ReplaceWith(editableOfficeOptions);
 
         SelectedOfficeFilter = OfficeOptions.FirstOrDefault(option =>
                                    string.Equals(option.Value, desiredFilterValue, StringComparison.OrdinalIgnoreCase))
@@ -2037,16 +2069,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                    string.Equals(option.Value, defaultFilterValue, StringComparison.OrdinalIgnoreCase))
                                ?? OfficeOptions.FirstOrDefault(option => option.Value == AllOption)
                                ?? OfficeOptions.FirstOrDefault();
-
-        if (EditOfficeOptions.Count == 0)
-        {
-            var fallbackOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
-            EditOfficeOptions.Add(new DisplayOption
-            {
-                Value = fallbackOfficeCode,
-                DisplayName = OfficeCodeCatalog.GetOfficeDisplayName(fallbackOfficeCode)
-            });
-        }
 
         EditOfficeCode = ResolveDefaultEditOfficeCode(currentEditOfficeCode);
 
