@@ -698,13 +698,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         stepStopwatch.Restart();
         var unlinkedAssets = includeUnlinkedAssets
-            ? await ApplyUnlinkedBillingAssetFilter(
+            ? await SelectBillingAssetListProjection(ApplyUnlinkedBillingAssetFilter(
                     ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
                         .Where(asset => !asset.IsDeleted)
                         .Where(asset => !asset.BillingProfileId.HasValue || asset.BillingProfileId == Guid.Empty)
                         .Where(asset => asset.BillingEligibilityStatus == null || asset.BillingEligibilityStatus != BillingEligibilityExcluded)
                         .Where(asset => !NonOperatingAssetStatusQueryValues.Contains(asset.AssetStatus)),
-                    filter)
+                    filter))
                 .OrderBy(asset => asset.CustomerName)
                 .ThenBy(asset => asset.CurrentCustomerName)
                 .ThenBy(asset => asset.ManagementNumber)
@@ -878,8 +878,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var stepStopwatch = Stopwatch.StartNew();
         var profileIds = profiles.Select(profile => profile.Id).ToList();
-        var billingAssets = await ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
-            .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && profileIds.Contains(asset.BillingProfileId.Value))
+        var billingAssets = await SelectBillingAssetListProjection(ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+                .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && profileIds.Contains(asset.BillingProfileId.Value)))
             .ToListAsync(ct);
         ct.ThrowIfCancellationRequested();
         LogRentalLoadStep("Rental billing linked asset query", stepStopwatch, $"assets={billingAssets.Count:N0}, profiles={profiles.Count:N0}");
@@ -955,6 +955,38 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LogRentalLoadStep("Rental billing row projection", stepStopwatch, $"rows={rows.Count:N0}");
         return rows;
     }
+
+    private static IQueryable<LocalRentalAsset> SelectBillingAssetListProjection(IQueryable<LocalRentalAsset> query)
+        => query.Select(asset => new LocalRentalAsset
+        {
+            Id = asset.Id,
+            IsDeleted = asset.IsDeleted,
+            CreatedAtUtc = asset.CreatedAtUtc,
+            UpdatedAtUtc = asset.UpdatedAtUtc,
+            Revision = asset.Revision,
+            IsDirty = asset.IsDirty,
+            TenantCode = asset.TenantCode,
+            OfficeCode = asset.OfficeCode,
+            CustomerId = asset.CustomerId,
+            BillingProfileId = asset.BillingProfileId,
+            ManagementNumber = asset.ManagementNumber,
+            ManagementCompanyCode = asset.ManagementCompanyCode,
+            CurrentCustomerName = asset.CurrentCustomerName,
+            InstallSiteName = asset.InstallSiteName,
+            BillingEligibilityStatus = asset.BillingEligibilityStatus,
+            ItemName = asset.ItemName,
+            MachineNumber = asset.MachineNumber,
+            CustomerName = asset.CustomerName,
+            InstallLocation = asset.InstallLocation,
+            MonthlyFee = asset.MonthlyFee,
+            ContractDate = asset.ContractDate,
+            InstallDate = asset.InstallDate,
+            ContractStartDate = asset.ContractStartDate,
+            RentalEndDate = asset.RentalEndDate,
+            ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+            AssetStatus = asset.AssetStatus,
+            Notes = asset.Notes
+        });
 
     private async Task<Dictionary<Guid, string>> GetBillingProfileCustomerNameMapAsync(
         IReadOnlyList<LocalRentalBillingProfile> profiles,
