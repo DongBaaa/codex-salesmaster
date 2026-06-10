@@ -37,6 +37,7 @@ public sealed partial class MainViewModel : ObservableObject
     private int _invoicePreviewVersion;
     private int _invoiceFilterApplyVersion;
     private readonly UiDebouncer _invoiceFilterDebouncer = new();
+    private readonly UiDebouncer _customerFilterDebouncer = new();
     private readonly SemaphoreSlim _invoiceListLoadGate = new(1, 1);
     private CancellationTokenSource? _invoiceListLoadCts;
     private const string LegacySourceDbPathSettingKey = "LegacyMigration.SourceDbPath";
@@ -66,7 +67,8 @@ public sealed partial class MainViewModel : ObservableObject
 
     // 전표 목록 - Left panel (거래처 필터)
     private List<LocalCustomer> _allCustomers = new();
-    public ObservableCollection<LocalCustomer> FilteredCustomers { get; } = new();
+    private Dictionary<Guid, string> _customerNameById = new();
+    public ObservableCollection<LocalCustomer> FilteredCustomers { get; } = new ResettableObservableCollection<LocalCustomer>();
     [ObservableProperty] private string _customerFilterText = string.Empty;
 
     [ObservableProperty]
@@ -558,6 +560,10 @@ public sealed partial class MainViewModel : ObservableObject
     {
         var selectedCustomerId = SelectedCustomerFilter?.Id;
         _allCustomers = await _local.GetCustomersAsync(_session);
+        _customerNameById = _allCustomers
+            .Where(customer => customer.Id != Guid.Empty)
+            .GroupBy(customer => customer.Id)
+            .ToDictionary(group => group.Key, group => group.First().NameOriginal);
         DashboardCustomerCount = _allCustomers.Count;
         ApplyCustomerFilter();
 
@@ -571,12 +577,10 @@ public sealed partial class MainViewModel : ObservableObject
     private void ApplyCustomerFilter()
     {
         var text = CustomerFilterText.Trim();
-        FilteredCustomers.Clear();
         var filtered = string.IsNullOrEmpty(text)
             ? _allCustomers
             : _allCustomers.Where(c => MatchesCustomerQuickFilter(c, text));
-        foreach (var c in filtered)
-            FilteredCustomers.Add(c);
+        FilteredCustomers.ReplaceWith(filtered);
     }
 
     private static bool MatchesCustomerQuickFilter(LocalCustomer customer, string rawText)
@@ -607,7 +611,8 @@ public sealed partial class MainViewModel : ObservableObject
         => !string.IsNullOrWhiteSpace(value)
            && value.Contains(token, StringComparison.OrdinalIgnoreCase);
 
-    partial void OnCustomerFilterTextChanged(string value) => ApplyCustomerFilter();
+    partial void OnCustomerFilterTextChanged(string value)
+        => _customerFilterDebouncer.Debounce(TimeSpan.FromMilliseconds(150), ApplyCustomerFilter);
     partial void OnSelectedCustomerFilterChanged(LocalCustomer? value)
     {
         _suppressCustomerSave = true;
@@ -934,10 +939,13 @@ public sealed partial class MainViewModel : ObservableObject
             .Where(id => id != Guid.Empty)
             .Distinct()
             .ToList();
-        var customerMap = _allCustomers
-            .Where(customer => customerIds.Contains(customer.Id))
-            .GroupBy(customer => customer.Id)
-            .ToDictionary(group => group.Key, group => group.First().NameOriginal);
+        var customerMap = new Dictionary<Guid, string>(customerIds.Count);
+        foreach (var customerId in customerIds)
+        {
+            if (_customerNameById.TryGetValue(customerId, out var customerName))
+                customerMap[customerId] = customerName;
+        }
+
         var missingCustomerIds = customerIds
             .Where(id => !customerMap.ContainsKey(id))
             .ToList();
@@ -946,7 +954,10 @@ public sealed partial class MainViewModel : ObservableObject
 
         var missingCustomerMap = await _local.GetCustomerNameMapAsync(missingCustomerIds, ct);
         foreach (var pair in missingCustomerMap)
+        {
             customerMap[pair.Key] = pair.Value;
+            _customerNameById[pair.Key] = pair.Value;
+        }
         return customerMap;
     }
 

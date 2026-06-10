@@ -1,4 +1,6 @@
 using System.Windows;
+using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
@@ -43,9 +45,10 @@ public sealed partial class MainViewModel
     private void ClearBusinessDatabaseScopedUiState()
     {
         _allCustomers.Clear();
-        FilteredCustomers.Clear();
-        InvoiceRows.Clear();
-        FavoriteInvoices.Clear();
+        _customerNameById.Clear();
+        FilteredCustomers.ReplaceWith(Array.Empty<LocalCustomer>());
+        InvoiceRows.ReplaceWith(Array.Empty<InvoiceListRow>());
+        FavoriteInvoices.ReplaceWith(Array.Empty<FavoriteInvoiceQuickItem>());
         PreviewLines.Clear();
         PaymentRows.Clear();
 
