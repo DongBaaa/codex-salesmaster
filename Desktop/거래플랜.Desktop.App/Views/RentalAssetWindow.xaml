@@ -103,6 +103,11 @@
             <Setter Property="RowBackground" Value="#1E2D40"/>
             <Setter Property="RowHeight" Value="34"/>
             <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="EnableRowVirtualization" Value="True"/>
+            <Setter Property="EnableColumnVirtualization" Value="True"/>
+            <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
+            <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/>
+            <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
         </Style>
         <Style TargetType="DataGridColumnHeader">
             <Setter Property="Background" Value="#1A2B4A"/>

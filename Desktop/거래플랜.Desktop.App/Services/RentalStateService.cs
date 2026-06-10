@@ -1,4 +1,5 @@
 ﻿using System.Data;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -7,6 +8,7 @@ using ExcelDataReader;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -572,8 +574,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SessionState session,
         CancellationToken ct = default)
     {
+        var totalStopwatch = Stopwatch.StartNew();
+        var stepStopwatch = Stopwatch.StartNew();
         await EnsureAdministrativeBusinessCachesAsync(session, ct);
+        LogRentalLoadStep("Rental billing admin cache", stepStopwatch, BuildBillingFilterTimingDetail(filter));
 
+        stepStopwatch.Restart();
         var offices = await GetOfficeMapAsync(ct);
         var includeUnlinkedAssets = !filter.DueOnly && ShouldIncludeUnlinkedBillingAssets(filter.Status);
         var query = ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session);
@@ -582,6 +588,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .OrderBy(profile => profile.CustomerName)
             .ThenBy(profile => profile.ItemName)
             .ToListAsync(ct);
+        LogRentalLoadStep("Rental billing profile query", stepStopwatch, $"profiles={profiles.Count:N0}, {BuildBillingFilterTimingDetail(filter)}");
+
+        stepStopwatch.Restart();
         var unlinkedAssets = includeUnlinkedAssets
             ? await ApplyUnlinkedBillingAssetFilter(
                     ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
@@ -595,10 +604,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .ThenBy(asset => asset.ManagementNumber)
                 .ToListAsync(ct)
             : new List<LocalRentalAsset>();
+        LogRentalLoadStep("Rental billing unlinked asset query", stepStopwatch, $"assets={unlinkedAssets.Count:N0}, include={includeUnlinkedAssets}");
+
+        stepStopwatch.Restart();
         var rows = await BuildBillingProfileRowsAsync(profiles, session, offices, filter.ReferenceDate, ct);
+        LogRentalLoadStep("Rental billing row build", stepStopwatch, $"rows={rows.Count:N0}, profiles={profiles.Count:N0}");
 
         if (includeUnlinkedAssets)
         {
+            stepStopwatch.Restart();
             var unlinkedCustomerIds = unlinkedAssets
                 .Where(asset => asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
                 .Select(asset => asset.CustomerId!.Value)
@@ -617,8 +631,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 unlinkedCustomersById,
                 offices,
                 filter.ReferenceDate)));
+            LogRentalLoadStep("Rental billing unlinked row build", stepStopwatch, $"rows={rows.Count:N0}, customers={unlinkedCustomersById.Count:N0}");
         }
 
+        stepStopwatch.Restart();
         var alertWindow = (await GetAlertDayValuesAsync(ct)).DefaultIfEmpty(7).Max();
         if (!filter.ExpandCustomerSummaryRows)
             rows = GroupBillingRowsByCustomer(rows);
@@ -637,10 +653,19 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .ToList();
         }
 
-        return rows
+        var result = rows
             .OrderBy(row => row.DaysRemaining ?? int.MaxValue)
             .ThenBy(row => row.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+        LogRentalLoadStep("Rental billing final filter/sort", stepStopwatch, $"rows={result.Count:N0}");
+        OperationTiming.LogIfSlow(
+            "DATA",
+            "Rental billing total load",
+            totalStopwatch.Elapsed,
+            $"rows={result.Count:N0}, profiles={profiles.Count:N0}, unlinkedAssets={unlinkedAssets.Count:N0}",
+            infoThreshold: TimeSpan.FromMilliseconds(600),
+            warningThreshold: TimeSpan.FromSeconds(2));
+        return result;
     }
 
     public async Task<RentalBillingViewRow?> GetBillingRowAsync(
@@ -1584,14 +1609,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SessionState session,
         CancellationToken ct = default)
     {
+        var totalStopwatch = Stopwatch.StartNew();
+        var stepStopwatch = Stopwatch.StartNew();
         await EnsureAdministrativeBusinessCachesAsync(session, ct);
+        LogRentalLoadStep("Rental asset admin cache", stepStopwatch, BuildAssetFilterTimingDetail(filter));
 
+        stepStopwatch.Restart();
         var offices = await GetOfficeMapAsync(ct);
         var referenceDate = DateOnly.FromDateTime(DateTime.Today);
         var query = ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session);
+        LogRentalLoadStep("Rental asset reference data", stepStopwatch, $"offices={offices.Count:N0}");
 
         if (!string.IsNullOrWhiteSpace(filter.SearchText))
         {
+            stepStopwatch.Restart();
             var keyword = filter.SearchText.Trim();
             var normalizedKeyword = RentalCatalogValueNormalizer.NormalizeLooseKey(keyword);
             var matchingCustomerIds = await _db.Customers
@@ -1614,6 +1645,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 asset.MachineNumber.Contains(keyword) ||
                 asset.InstallLocation.Contains(keyword) ||
                 (asset.CustomerId.HasValue && matchingCustomerIds.Contains(asset.CustomerId.Value)));
+            LogRentalLoadStep("Rental asset customer search match", stepStopwatch, $"matchedCustomers={matchingCustomerIds.Count:N0}");
         }
 
         query = ApplyAssetFilter(query, new RentalAssetFilter
@@ -1624,18 +1656,32 @@ WHERE ""AssignedUsername"" <> '';", ct);
             AssetStatuses = filter.AssetStatuses
         }, session);
 
+        stepStopwatch.Restart();
         var assets = await query
             .OrderBy(asset => asset.CustomerName)
             .ThenBy(asset => asset.ManagementNumber)
             .ToListAsync(ct);
+        LogRentalLoadStep("Rental asset DB query", stepStopwatch, $"assets={assets.Count:N0}, {BuildAssetFilterTimingDetail(filter)}");
 
+        stepStopwatch.Restart();
         await NormalizeAssetCustomerDisplayNamesAsync(assets, ct);
+        LogRentalLoadStep("Rental asset customer display normalize", stepStopwatch, $"assets={assets.Count:N0}");
 
-        return assets
+        stepStopwatch.Restart();
+        var result = assets
             .Select(asset => CreateAssetViewRow(asset, offices, referenceDate))
             .OrderBy(row => row.CurrentCustomerName, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(row => row.Source.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+        LogRentalLoadStep("Rental asset row build/sort", stepStopwatch, $"rows={result.Count:N0}");
+        OperationTiming.LogIfSlow(
+            "DATA",
+            "Rental asset total load",
+            totalStopwatch.Elapsed,
+            $"rows={result.Count:N0}, {BuildAssetFilterTimingDetail(filter)}",
+            infoThreshold: TimeSpan.FromMilliseconds(600),
+            warningThreshold: TimeSpan.FromSeconds(2));
+        return result;
     }
 
     public async Task<RentalAssetViewRow?> GetAssetRowAsync(
@@ -1678,6 +1724,35 @@ WHERE ""AssignedUsername"" <> '';", ct);
             HasDataIssue = issues.Count > 0
         };
     }
+
+    private static void LogRentalLoadStep(string operation, Stopwatch stopwatch, string? detail = null)
+    {
+        stopwatch.Stop();
+        OperationTiming.LogIfSlow(
+            "DATA",
+            operation,
+            stopwatch.Elapsed,
+            detail,
+            infoThreshold: TimeSpan.FromMilliseconds(300),
+            warningThreshold: TimeSpan.FromSeconds(2));
+    }
+
+    private static string BuildBillingFilterTimingDetail(RentalBillingFilter filter)
+    {
+        var office = string.IsNullOrWhiteSpace(filter.OfficeCode) ? "all" : filter.OfficeCode.Trim();
+        var status = string.IsNullOrWhiteSpace(filter.Status) ? "all" : filter.Status.Trim();
+        return $"office={office}, status={status}, dueOnly={filter.DueOnly}, pastDueOnly={filter.PastDueOnly}, expand={filter.ExpandCustomerSummaryRows}, search={HasSearchText(filter.SearchText)}";
+    }
+
+    private static string BuildAssetFilterTimingDetail(RentalAssetFilter filter)
+        => $"officeFilters={CountFilterValues(filter.OfficeCodes)}, categoryFilters={CountFilterValues(filter.ItemCategoryNames)}, statusFilters={CountFilterValues(filter.AssetStatuses)}, search={HasSearchText(filter.SearchText)}";
+
+    private static int CountFilterValues(IEnumerable<string>? values)
+        => (values ?? Array.Empty<string>())
+            .Count(value => !string.IsNullOrWhiteSpace(value));
+
+    private static string HasSearchText(string? searchText)
+        => string.IsNullOrWhiteSpace(searchText) ? "N" : "Y";
 
     public async Task<IReadOnlyList<LocalRentalAsset>> GetAssetsForEquipmentDetailAsync(
         LocalRentalAsset anchorAsset,
@@ -4903,6 +4978,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ToList();
         if (officeCodes.Count > 0)
             query = query.Where(asset =>
+                officeCodes.Contains(asset.ResponsibleOfficeCode) ||
+                officeCodes.Contains(asset.ManagementCompanyCode) ||
                 officeCodes.Contains(
                     ((asset.ResponsibleOfficeCode ?? string.Empty).Trim() == string.Empty
                         ? (asset.ManagementCompanyCode ?? string.Empty)
@@ -4961,6 +5038,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return query.Where(profile =>
             profile.TenantCode == currentTenantCode &&
             (
+                readableOfficeAliases.Contains(profile.ResponsibleOfficeCode) ||
+                readableOfficeAliases.Contains(profile.ManagementCompanyCode) ||
                 readableOfficeAliases.Contains(((profile.ResponsibleOfficeCode ?? string.Empty).Trim().ToUpper())) ||
                 readableOfficeAliases.Contains(((profile.ManagementCompanyCode ?? string.Empty).Trim().ToUpper()))
             ));
@@ -4981,6 +5060,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return query.Where(asset =>
             asset.TenantCode == currentTenantCode &&
             (
+                readableOfficeAliases.Contains(asset.ResponsibleOfficeCode) ||
+                readableOfficeAliases.Contains(asset.ManagementCompanyCode) ||
                 readableOfficeAliases.Contains(((asset.ResponsibleOfficeCode ?? string.Empty).Trim().ToUpper())) ||
                 readableOfficeAliases.Contains(((asset.ManagementCompanyCode ?? string.Empty).Trim().ToUpper()))
             ));
@@ -4995,6 +5076,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var readableOfficeAliases = BuildReadableAssetOfficeQueryAliases(session);
         return query.Where(asset =>
+            readableOfficeAliases.Contains(asset.ResponsibleOfficeCode) ||
+            readableOfficeAliases.Contains(asset.ManagementCompanyCode) ||
             readableOfficeAliases.Contains(((asset.ResponsibleOfficeCode ?? string.Empty).Trim().ToUpper())) ||
             readableOfficeAliases.Contains(((asset.ManagementCompanyCode ?? string.Empty).Trim().ToUpper())));
     }

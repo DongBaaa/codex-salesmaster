@@ -157,6 +157,11 @@
             <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
             <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Auto"/>
             <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto"/>
+            <Setter Property="EnableRowVirtualization" Value="True"/>
+            <Setter Property="EnableColumnVirtualization" Value="True"/>
+            <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
+            <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/>
+            <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
         </Style>
         <Style x:Key="LedgerGridTextStyle" TargetType="{x:Type TextBlock}">
             <Setter Property="Foreground" Value="Black"/>

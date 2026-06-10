@@ -114,6 +114,11 @@
             <Setter Property="CanUserAddRows" Value="False"/>
             <Setter Property="AlternatingRowBackground" Value="#D1E1F2"/>
             <Setter Property="RowBackground" Value="#DCE9F8"/>
+            <Setter Property="EnableRowVirtualization" Value="True"/>
+            <Setter Property="EnableColumnVirtualization" Value="True"/>
+            <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
+            <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/>
+            <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
         </Style>
         <Style TargetType="DataGridCell">
             <Setter Property="Foreground" Value="Black"/>

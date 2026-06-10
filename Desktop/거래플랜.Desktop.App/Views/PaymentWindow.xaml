@@ -148,6 +148,11 @@
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="FontSize" Value="11"/>
             <Setter Property="RowHeight" Value="24"/>
+            <Setter Property="EnableRowVirtualization" Value="True"/>
+            <Setter Property="EnableColumnVirtualization" Value="True"/>
+            <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
+            <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/>
+            <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
         </Style>
         <Style TargetType="DataGridColumnHeader">
             <Setter Property="Background" Value="#23395A"/>
