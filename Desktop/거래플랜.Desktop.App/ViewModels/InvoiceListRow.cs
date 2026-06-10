@@ -1,4 +1,5 @@
 ﻿using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
@@ -9,12 +10,14 @@ namespace 거래플랜.Desktop.App.ViewModels;
 public sealed class InvoiceListRow
 {
     public Guid Id { get; init; }
+    public Guid CustomerId { get; init; }
     public string InvoiceNumber { get; init; } = string.Empty;
     public string LocalTempNumber { get; init; } = string.Empty;
     public DateOnly InvoiceDate { get; init; }
     public string CustomerName { get; init; } = string.Empty;
     public string FirstItemSummary { get; init; } = string.Empty;
     public string PrimaryColumnText { get; init; } = string.Empty;
+    public string ResponsibleOfficeCode { get; init; } = string.Empty;
     public VoucherType VoucherType { get; init; }
     public decimal TotalAmount { get; init; }
     public decimal SupplyAmount { get; init; }
@@ -53,12 +56,14 @@ public sealed class InvoiceListRow
         return new InvoiceListRow
         {
             Id = inv.Id,
+            CustomerId = inv.CustomerId,
             InvoiceNumber = inv.InvoiceNumber,
             LocalTempNumber = inv.LocalTempNumber,
             InvoiceDate = inv.InvoiceDate,
             CustomerName = customerName,
             FirstItemSummary = firstItemSummary,
             PrimaryColumnText = showCustomerName ? customerName : firstItemSummary,
+            ResponsibleOfficeCode = inv.ResponsibleOfficeCode,
             VoucherType = inv.VoucherType,
             TotalAmount = inv.TotalAmount,
             SupplyAmount = inv.SupplyAmount,
@@ -80,6 +85,46 @@ public sealed class InvoiceListRow
                   string.IsNullOrWhiteSpace(inv.PurchaseReceivingStatus)))),
             IsDirty = inv.IsDirty,
             Revision = inv.Revision
+        };
+    }
+
+    public static InvoiceListRow From(LocalInvoiceListSummary summary, string customerName, bool showCustomerName)
+    {
+        var firstItemSummary = string.IsNullOrWhiteSpace(summary.FirstItemSummary)
+            ? "(품목 없음)"
+            : summary.FirstItemSummary;
+        return new InvoiceListRow
+        {
+            Id = summary.Id,
+            CustomerId = summary.CustomerId,
+            InvoiceNumber = summary.InvoiceNumber,
+            LocalTempNumber = summary.LocalTempNumber,
+            InvoiceDate = summary.InvoiceDate,
+            CustomerName = customerName,
+            FirstItemSummary = firstItemSummary,
+            PrimaryColumnText = showCustomerName ? customerName : firstItemSummary,
+            ResponsibleOfficeCode = summary.ResponsibleOfficeCode,
+            VoucherType = summary.VoucherType,
+            TotalAmount = summary.TotalAmount,
+            SupplyAmount = summary.SupplyAmount,
+            VatAmount = summary.VatAmount,
+            VatMode = InvoiceVatModes.Normalize(summary.VatMode),
+            ReceiptAmount = summary.VoucherType == VoucherType.Sales ? summary.SettledAmount : 0m,
+            PaymentAmount = summary.VoucherType == VoucherType.Purchase ? summary.SettledAmount : 0m,
+            TaxInvoiceIssued = summary.TaxInvoiceIssued,
+            PurchaseReceivingRequired = summary.PurchaseReceivingRequired ||
+                                        (summary.VoucherType == VoucherType.Purchase &&
+                                         (InvoiceReceivingStatuses.IsConfirmed(summary.PurchaseReceivingStatus) ||
+                                          string.IsNullOrWhiteSpace(summary.PurchaseReceivingStatus))),
+            PurchaseReceivingStatus = InvoiceReceivingStatuses.Normalize(
+                summary.PurchaseReceivingStatus,
+                summary.VoucherType == VoucherType.Purchase,
+                summary.PurchaseReceivingRequired ||
+                (summary.VoucherType == VoucherType.Purchase &&
+                 (InvoiceReceivingStatuses.IsConfirmed(summary.PurchaseReceivingStatus) ||
+                  string.IsNullOrWhiteSpace(summary.PurchaseReceivingStatus)))),
+            IsDirty = summary.IsDirty,
+            Revision = summary.Revision
         };
     }
 

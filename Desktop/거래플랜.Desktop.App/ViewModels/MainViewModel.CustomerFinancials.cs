@@ -41,10 +41,8 @@ public sealed partial class MainViewModel
 
         if (SelectedInvoiceRow is not null)
         {
-            var invoice = await _local.GetInvoiceAsync(SelectedInvoiceRow.Id, _session);
-            var customer = invoice is null
-                ? null
-                : await _local.GetCustomerAsync(invoice.CustomerId, _session);
+            var customer = _allCustomers.FirstOrDefault(current => current.Id == SelectedInvoiceRow.CustomerId)
+                ?? await _local.GetCustomerAsync(SelectedInvoiceRow.CustomerId, _session);
             await RefreshCustomerFinancialPreviewAsync(customer);
             return;
         }
@@ -82,7 +80,7 @@ public sealed partial class MainViewModel
         }
 
         var summary = await _local.GetCustomerFinancialSummaryAsync(customer.Id, _session);
-        var invoices = await _local.GetInvoicesAsync(from: null, to: null, customerId: customer.Id, session: _session);
+        var invoices = await _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: customer.Id, session: _session);
         if (!IsCurrentCustomerFinancialPreview(version))
             return;
 
@@ -104,7 +102,7 @@ public sealed partial class MainViewModel
         PreviewRentalOutstandingAmount = 0m;
     }
 
-    private void ApplyRentalInvoicePreviewSummary(IReadOnlyCollection<LocalInvoice> invoices)
+    private void ApplyRentalInvoicePreviewSummary(IReadOnlyCollection<LocalInvoiceListSummary> invoices)
     {
         var rentalInvoices = invoices
             .Where(invoice => invoice.LinkedRentalBillingProfileId.HasValue && invoice.VoucherType == VoucherType.Sales)
@@ -119,11 +117,11 @@ public sealed partial class MainViewModel
 
         var latestInvoice = rentalInvoices[0];
         PreviewLatestRentalInvoiceDateText = latestInvoice.InvoiceDate.ToString("yyyy/MM/dd");
-        PreviewLatestRentalItemSummary = InvoiceListRow.BuildFirstItemSummary(latestInvoice);
+        PreviewLatestRentalItemSummary = latestInvoice.FirstItemSummary;
         PreviewLatestRentalInvoiceAmount = latestInvoice.TotalAmount;
         PreviewRentalOutstandingAmount = rentalInvoices.Sum(invoice =>
             Math.Max(
                 0m,
-                invoice.TotalAmount - invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount)));
+                invoice.TotalAmount - invoice.SettledAmount));
     }
 }

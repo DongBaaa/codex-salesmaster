@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -266,10 +267,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		string text2 = result switch
 		{
-			ServerWriteAwaitResult.Synced => "중앙 서버까지 반영되었습니다.", 
-			ServerWriteAwaitResult.Pending => "서버 동기화는 백그라운드에서 계속됩니다.", 
-			ServerWriteAwaitResult.Failed => "중앙 서버 동기화는 자동 재시도합니다.", 
-			_ => string.Empty, 
+			ServerWriteAwaitResult.Synced => "중앙 서버까지 반영되었습니다.",
+			ServerWriteAwaitResult.Pending => "서버 동기화는 백그라운드에서 계속됩니다.",
+			ServerWriteAwaitResult.Failed => "중앙 서버 동기화는 자동 재시도합니다.",
+			_ => string.Empty,
 		};
 		if (1 == 0)
 		{
@@ -2122,6 +2123,143 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	public Task<List<LocalInvoice>> GetInvoicesAsync(DateOnly? from, DateOnly? to, Guid? customerId, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
 		return GetInvoicesWithOptionsAsync(from, to, customerId, latestOnly: true, session, ct);
+	}
+
+	public async Task<List<LocalInvoiceListSummary>> GetInvoiceListSummariesAsync(DateOnly? from, DateOnly? to, Guid? customerId, SessionState session, CancellationToken ct = default(CancellationToken))
+	{
+		var stopwatch = Stopwatch.StartNew();
+		IQueryable<LocalInvoice> query = ApplyInvoiceScope(_db.Invoices.AsNoTracking(), session)
+			.Where((LocalInvoice invoice) => invoice.IsLatestVersion);
+		if (from.HasValue)
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.InvoiceDate >= ((DateOnly?)from).Value);
+		}
+		if (to.HasValue)
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.InvoiceDate <= ((DateOnly?)to).Value);
+		}
+		if (customerId.HasValue)
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.CustomerId == ((Guid?)customerId).Value);
+		}
+
+		var invoiceRows = await (from invoice in query
+			orderby invoice.InvoiceDate descending, invoice.UpdatedAtUtc descending, invoice.VersionNumber descending
+			select new LocalInvoiceListSummary
+			{
+				Id = invoice.Id,
+				CustomerId = invoice.CustomerId,
+				ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
+				LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId,
+				LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId,
+				InvoiceNumber = invoice.InvoiceNumber,
+				LocalTempNumber = invoice.LocalTempNumber,
+				InvoiceDate = invoice.InvoiceDate,
+				VoucherType = invoice.VoucherType,
+				TotalAmount = invoice.TotalAmount,
+				SupplyAmount = invoice.SupplyAmount,
+				VatAmount = invoice.VatAmount,
+				VatMode = invoice.VatMode,
+				TaxInvoiceIssued = invoice.TaxInvoiceIssued,
+				PurchaseReceivingRequired = invoice.PurchaseReceivingRequired,
+				PurchaseReceivingStatus = invoice.PurchaseReceivingStatus,
+				IsDirty = invoice.IsDirty,
+				Revision = invoice.Revision,
+				UpdatedAtUtc = invoice.UpdatedAtUtc,
+				LastSavedAtUtc = invoice.LastSavedAtUtc,
+				VersionNumber = invoice.VersionNumber
+			}).ToListAsync(ct);
+
+		if (invoiceRows.Count == 0)
+		{
+			OperationTiming.LogIfSlow(
+				"DATA",
+				"Invoice list summary load",
+				stopwatch.Elapsed,
+				"invoices=0",
+				infoThreshold: TimeSpan.FromMilliseconds(300),
+				warningThreshold: TimeSpan.FromSeconds(2));
+			return invoiceRows;
+		}
+
+		var invoiceIdQuery = query.Select((LocalInvoice invoice) => new { invoice.Id });
+		var paymentRows = await (from payment in _db.Payments.AsNoTracking()
+			join invoice in invoiceIdQuery on payment.InvoiceId equals invoice.Id
+			select new
+			{
+				payment.InvoiceId,
+				payment.Amount
+			}).ToListAsync(ct);
+		var settledAmounts = paymentRows
+			.GroupBy(payment => payment.InvoiceId)
+			.ToDictionary(group => group.Key, group => group.Sum(payment => payment.Amount));
+
+		var lineRows = await (from line in _db.InvoiceLines.AsNoTracking()
+			join invoice in invoiceIdQuery on line.InvoiceId equals invoice.Id
+			orderby line.InvoiceId, line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue, line.Id
+			select new
+			{
+				line.InvoiceId,
+				line.ItemNameOriginal,
+				line.Remark
+			}).ToListAsync(ct);
+		var firstItemSummaries = lineRows
+			.GroupBy(line => line.InvoiceId)
+			.ToDictionary(
+				group => group.Key,
+				group => BuildInvoiceListFirstItemSummary(group.Select(line => (line.ItemNameOriginal, line.Remark))));
+
+		foreach (var invoice in invoiceRows)
+		{
+			if (settledAmounts.TryGetValue(invoice.Id, out var settledAmount))
+				invoice.SettledAmount = settledAmount;
+			if (firstItemSummaries.TryGetValue(invoice.Id, out var firstItemSummary))
+				invoice.FirstItemSummary = firstItemSummary;
+		}
+
+		OperationTiming.LogIfSlow(
+			"DATA",
+			"Invoice list summary load",
+			stopwatch.Elapsed,
+			$"invoices={invoiceRows.Count:N0}, lines={lineRows.Count:N0}, payments={paymentRows.Count:N0}",
+			infoThreshold: TimeSpan.FromMilliseconds(300),
+			warningThreshold: TimeSpan.FromSeconds(2));
+		return invoiceRows;
+	}
+
+	public async Task<(DateOnly? FirstDate, DateOnly? LastDate)> GetInvoiceDateRangeAsync(SessionState session, CancellationToken ct = default(CancellationToken))
+	{
+		IQueryable<LocalInvoice> query = ApplyInvoiceScope(_db.Invoices.AsNoTracking(), session)
+			.Where((LocalInvoice invoice) => invoice.IsLatestVersion);
+		var firstDate = await query
+			.OrderBy((LocalInvoice invoice) => invoice.InvoiceDate)
+			.Select((LocalInvoice invoice) => (DateOnly?)invoice.InvoiceDate)
+			.FirstOrDefaultAsync(ct);
+		if (!firstDate.HasValue)
+			return (null, null);
+		var lastDate = await query
+			.OrderByDescending((LocalInvoice invoice) => invoice.InvoiceDate)
+			.Select((LocalInvoice invoice) => (DateOnly?)invoice.InvoiceDate)
+			.FirstOrDefaultAsync(ct);
+		return (firstDate, lastDate);
+	}
+
+	private static string BuildInvoiceListFirstItemSummary(IEnumerable<(string ItemNameOriginal, string Remark)> lines)
+	{
+		var activeLines = lines.ToList();
+		if (activeLines.Count == 0)
+			return "(품목 없음)";
+
+		var firstLabel = activeLines
+			.Select(line => string.IsNullOrWhiteSpace(line.ItemNameOriginal) ? line.Remark : line.ItemNameOriginal)
+			.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+			?.Trim();
+		if (string.IsNullOrWhiteSpace(firstLabel))
+			firstLabel = "(품목 없음)";
+
+		return activeLines.Count == 1
+			? firstLabel
+			: $"{firstLabel} 외 {activeLines.Count - 1}건";
 	}
 
 	public Task<List<LocalInvoice>> GetInvoicesWithOptionsAsync(DateOnly? from, DateOnly? to, Guid? customerId, bool latestOnly, CancellationToken ct = default(CancellationToken))
@@ -4394,10 +4532,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			}
 			result = text switch
 			{
-				"일반수금" => "일반지급", 
-				"전표수금" => "전표지급", 
-				"선수금차감" => "일반지급", 
-				_ => text, 
+				"일반수금" => "일반지급",
+				"전표수금" => "전표지급",
+				"선수금차감" => "일반지급",
+				_ => text,
 			};
 			if (1 == 0)
 			{
@@ -6082,12 +6220,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		string result = text switch
 		{
-			"입금확인증" => "입금확인증", 
-			"영수증" => "영수증", 
-			"세금계산서" => "세금계산서", 
-			"계좌이체" => "계좌이체", 
-			"카드전표" => "카드전표", 
-			_ => "기타", 
+			"입금확인증" => "입금확인증",
+			"영수증" => "영수증",
+			"세금계산서" => "세금계산서",
+			"계좌이체" => "계좌이체",
+			"카드전표" => "카드전표",
+			_ => "기타",
 		};
 		if (1 == 0)
 		{
@@ -6103,11 +6241,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		string result = text switch
 		{
-			"거래계약서" => "거래계약서", 
-			"렌탈계약서" => "렌탈계약서", 
-			"유지보수계약서" => "유지보수계약서", 
-			"특약서" => "특약서", 
-			_ => "기타", 
+			"거래계약서" => "거래계약서",
+			"렌탈계약서" => "렌탈계약서",
+			"유지보수계약서" => "유지보수계약서",
+			"특약서" => "특약서",
+			_ => "기타",
 		};
 		if (1 == 0)
 		{

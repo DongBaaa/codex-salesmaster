@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
@@ -90,6 +91,12 @@ public sealed partial class MainViewModel
     }
 
     private bool MatchesSelectedInvoiceOffice(LocalInvoice invoice)
+        => MatchesSelectedInvoiceOfficeCode(invoice.ResponsibleOfficeCode);
+
+    private bool MatchesSelectedInvoiceOffice(LocalInvoiceListSummary invoice)
+        => MatchesSelectedInvoiceOfficeCode(invoice.ResponsibleOfficeCode);
+
+    private bool MatchesSelectedInvoiceOfficeCode(string? responsibleOfficeCode)
     {
         var selectedOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
             SelectedInvoiceOfficeFilterCode,
@@ -99,7 +106,7 @@ public sealed partial class MainViewModel
             return true;
 
         var invoiceOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
-            invoice.ResponsibleOfficeCode,
+            responsibleOfficeCode,
             _session.OfficeCode);
 
         return string.Equals(invoiceOfficeCode, selectedOfficeCode, StringComparison.OrdinalIgnoreCase);

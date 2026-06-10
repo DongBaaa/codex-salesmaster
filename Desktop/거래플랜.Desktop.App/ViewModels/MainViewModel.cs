@@ -36,6 +36,9 @@ public sealed partial class MainViewModel : ObservableObject
     private int _customerFinancialPreviewVersion;
     private int _invoicePreviewVersion;
     private int _invoiceFilterApplyVersion;
+    private readonly UiDebouncer _invoiceFilterDebouncer = new();
+    private readonly SemaphoreSlim _invoiceListLoadGate = new(1, 1);
+    private CancellationTokenSource? _invoiceListLoadCts;
     private const string LegacySourceDbPathSettingKey = "LegacyMigration.SourceDbPath";
     private const string LegacyCustomerExcelPathSettingKey = "LegacyMigration.CustomerExcelPath";
     private const string LegacyItemExcelPathSettingKey = "LegacyMigration.ItemExcelPath";
@@ -167,8 +170,8 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _previewCustomerContactPerson = string.Empty;
 
     // Invoice List (전표 목록)
-    public ObservableCollection<InvoiceListRow> InvoiceRows { get; } = new();
-    public ObservableCollection<FavoriteInvoiceQuickItem> FavoriteInvoices { get; } = new();
+    public ObservableCollection<InvoiceListRow> InvoiceRows { get; } = new ResettableObservableCollection<InvoiceListRow>();
+    public ObservableCollection<FavoriteInvoiceQuickItem> FavoriteInvoices { get; } = new ResettableObservableCollection<FavoriteInvoiceQuickItem>();
     [ObservableProperty] private InvoiceListRow? _selectedInvoiceRow;
     [ObservableProperty] private FavoriteInvoiceQuickItem? _selectedFavoriteInvoice;
     [ObservableProperty] private DateOnly _filterFrom = new(DateTime.Today.Year, DateTime.Today.Month, 1);
@@ -834,75 +837,123 @@ public sealed partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task LoadInvoiceListAsync()
     {
-        Guid? customerId = SelectedCustomerFilter?.Id;
-        var queryDateRange = ResolveMainInvoiceQueryDateRange(FilterFrom, FilterTo);
-        var invoices = await _local.GetInvoicesAsync(queryDateRange.From, queryDateRange.To, customerId, _session);
-        var invoiceList = invoices.ToList();
-        var canReuseAsAllInvoiceSet = customerId is null && queryDateRange.From is null && queryDateRange.To is null;
-        var customerMap = await _local.GetCustomerNameMapAsync(invoiceList.Select(invoice => invoice.CustomerId));
-        var showCustomerName = customerId is null;
-        IEnumerable<LocalInvoice> filteredInvoices = invoiceList;
-        var hiddenTextFilters = NormalizeHiddenInvoiceTextFilters(
-            FilterCustomerName,
-            FilterMinAmountText,
-            FilterMaxAmountText);
+        _invoiceListLoadCts?.Cancel();
+        var loadCts = new CancellationTokenSource();
+        _invoiceListLoadCts = loadCts;
+        var ct = loadCts.Token;
+        var gateEntered = false;
 
-        filteredInvoices = filteredInvoices.Where(MatchesSelectedInvoiceOffice);
-
-        if (!string.IsNullOrWhiteSpace(hiddenTextFilters.CustomerName))
+        try
         {
-            var needle = hiddenTextFilters.CustomerName.Trim();
-            filteredInvoices = filteredInvoices.Where(inv =>
+            await _invoiceListLoadGate.WaitAsync(ct);
+            gateEntered = true;
+            if (!ReferenceEquals(_invoiceListLoadCts, loadCts))
+                return;
+
+            Guid? customerId = SelectedCustomerFilter?.Id;
+            var queryDateRange = ResolveMainInvoiceQueryDateRange(FilterFrom, FilterTo);
+            var invoiceList = await _local.GetInvoiceListSummariesAsync(queryDateRange.From, queryDateRange.To, customerId, _session, ct);
+            var canReuseAsAllInvoiceSet = customerId is null && queryDateRange.From is null && queryDateRange.To is null;
+            var customerMap = await BuildInvoiceCustomerNameMapAsync(invoiceList, ct);
+            var showCustomerName = customerId is null;
+            IEnumerable<LocalInvoiceListSummary> filteredInvoices = invoiceList;
+            var hiddenTextFilters = NormalizeHiddenInvoiceTextFilters(
+                FilterCustomerName,
+                FilterMinAmountText,
+                FilterMaxAmountText);
+
+            filteredInvoices = filteredInvoices.Where(MatchesSelectedInvoiceOffice);
+
+            if (!string.IsNullOrWhiteSpace(hiddenTextFilters.CustomerName))
             {
-                var name = customerMap.TryGetValue(inv.CustomerId, out var n) ? n : string.Empty;
-                return name.Contains(needle, StringComparison.OrdinalIgnoreCase);
-            });
-        }
+                var needle = hiddenTextFilters.CustomerName.Trim();
+                filteredInvoices = filteredInvoices.Where(inv =>
+                {
+                    var name = customerMap.TryGetValue(inv.CustomerId, out var n) ? n : string.Empty;
+                    return name.Contains(needle, StringComparison.OrdinalIgnoreCase);
+                });
+            }
 
-        if (!string.Equals(SelectedVoucherTypeFilter, "전체", StringComparison.OrdinalIgnoreCase))
-        {
-            var selectedType = SelectedVoucherTypeFilter switch
+            if (!string.Equals(SelectedVoucherTypeFilter, "전체", StringComparison.OrdinalIgnoreCase))
             {
-                "매출" => VoucherType.Sales,
-                "매입" => VoucherType.Purchase,
-                "발주" => VoucherType.Procurement,
-                "경비" => VoucherType.Expense,
-                "수금" => VoucherType.Collection,
-                _ => (VoucherType?)null
-            };
+                var selectedType = SelectedVoucherTypeFilter switch
+                {
+                    "매출" => VoucherType.Sales,
+                    "매입" => VoucherType.Purchase,
+                    "발주" => VoucherType.Procurement,
+                    "경비" => VoucherType.Expense,
+                    "수금" => VoucherType.Collection,
+                    _ => (VoucherType?)null
+                };
 
-            if (selectedType is { } type)
-                filteredInvoices = filteredInvoices.Where(inv => inv.VoucherType == type);
+                if (selectedType is { } type)
+                    filteredInvoices = filteredInvoices.Where(inv => inv.VoucherType == type);
+            }
+
+            var minAmount = ParseAmountFilter(hiddenTextFilters.MinAmountText);
+            var maxAmount = ParseAmountFilter(hiddenTextFilters.MaxAmountText);
+            if (minAmount.HasValue)
+                filteredInvoices = filteredInvoices.Where(inv => inv.TotalAmount >= minAmount.Value);
+            if (maxAmount.HasValue)
+                filteredInvoices = filteredInvoices.Where(inv => inv.TotalAmount <= maxAmount.Value);
+
+            var finalInvoices = filteredInvoices
+                .OrderByDescending(i => i.InvoiceDate)
+                .ThenByDescending(i => i.InvoiceNumber)
+                .ToList();
+
+            var rows = finalInvoices.Select(inv =>
+            {
+                var custName = customerMap.TryGetValue(inv.CustomerId, out var n) ? n : "(미지정)";
+                return InvoiceListRow.From(inv, custName, showCustomerName);
+            }).ToList();
+            InvoiceRows.ReplaceWith(rows);
+
+            await RefreshDashboardMetricsAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct);
+            await LoadInvoiceFavoritesAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct);
+            ct.ThrowIfCancellationRequested();
+            await RefreshSelectedCustomerFinancialPreviewAsync();
         }
-
-        var minAmount = ParseAmountFilter(hiddenTextFilters.MinAmountText);
-        var maxAmount = ParseAmountFilter(hiddenTextFilters.MaxAmountText);
-        if (minAmount.HasValue)
-            filteredInvoices = filteredInvoices.Where(inv => inv.TotalAmount >= minAmount.Value);
-        if (maxAmount.HasValue)
-            filteredInvoices = filteredInvoices.Where(inv => inv.TotalAmount <= maxAmount.Value);
-
-        var finalInvoices = filteredInvoices
-            .OrderByDescending(i => i.InvoiceDate)
-            .ThenByDescending(i => i.InvoiceNumber)
-            .ToList();
-
-        InvoiceRows.Clear();
-        foreach (var inv in finalInvoices)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            var custName = customerMap.TryGetValue(inv.CustomerId, out var n) ? n : "(미지정)";
-            InvoiceRows.Add(InvoiceListRow.From(inv, custName, showCustomerName));
         }
-
-        await RefreshDashboardMetricsAsync(canReuseAsAllInvoiceSet ? invoiceList : null);
-        await LoadInvoiceFavoritesAsync(canReuseAsAllInvoiceSet ? invoiceList : null);
-        await RefreshSelectedCustomerFinancialPreviewAsync();
+        finally
+        {
+            if (gateEntered)
+                _invoiceListLoadGate.Release();
+            if (ReferenceEquals(_invoiceListLoadCts, loadCts))
+                _invoiceListLoadCts = null;
+            loadCts.Dispose();
+        }
     }
 
-    private async Task RefreshDashboardMetricsAsync(IEnumerable<LocalInvoice>? invoices = null)
+    private async Task<Dictionary<Guid, string>> BuildInvoiceCustomerNameMapAsync(IEnumerable<LocalInvoiceListSummary> invoices, CancellationToken ct)
+    {
+        var customerIds = invoices
+            .Select(invoice => invoice.CustomerId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        var customerMap = _allCustomers
+            .Where(customer => customerIds.Contains(customer.Id))
+            .GroupBy(customer => customer.Id)
+            .ToDictionary(group => group.Key, group => group.First().NameOriginal);
+        var missingCustomerIds = customerIds
+            .Where(id => !customerMap.ContainsKey(id))
+            .ToList();
+        if (missingCustomerIds.Count == 0)
+            return customerMap;
+
+        var missingCustomerMap = await _local.GetCustomerNameMapAsync(missingCustomerIds, ct);
+        foreach (var pair in missingCustomerMap)
+            customerMap[pair.Key] = pair.Value;
+        return customerMap;
+    }
+
+    private async Task RefreshDashboardMetricsAsync(IEnumerable<LocalInvoiceListSummary>? invoices = null, CancellationToken ct = default)
     {
         var sourceInvoices = invoices?.ToList()
-            ?? await _local.GetInvoicesAsync(from: null, to: null, customerId: null, session: _session);
+            ?? await _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: null, session: _session, ct);
         var now = DateOnly.FromDateTime(DateTime.Today);
         var prevMonthDate = now.AddMonths(-1);
 
@@ -932,17 +983,17 @@ public sealed partial class MainViewModel : ObservableObject
 
         DashboardReceivable = sourceInvoices
             .Where(invoice => invoice.VoucherType == VoucherType.Sales)
-            .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount)));
+            .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount));
         DashboardPayable = sourceInvoices
             .Where(invoice => invoice.VoucherType == VoucherType.Purchase)
-            .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount)));
+            .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount));
 
-        var items = await _local.GetItemsAsync(_session);
+        var items = await _local.GetItemsAsync(_session, ct);
         DashboardSafetyStockAlerts = items.Count(i =>
             i.SafetyStock > 0 && i.CurrentStock <= i.SafetyStock);
         DashboardCustomerCount = _allCustomers.Count;
 
-        var rentalSummary = await _rental.GetDashboardSummaryAsync(_session, now);
+        var rentalSummary = await _rental.GetDashboardSummaryAsync(_session, now, ct);
         DashboardRentalDueTodayCount = rentalSummary.DueTodayCount;
         DashboardRentalUpcomingCount = rentalSummary.UpcomingCount;
         DashboardRentalOverdueCount = rentalSummary.OverdueCount;
@@ -962,16 +1013,19 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void RequestApplyInvoiceFilters()
     {
-        var version = Interlocked.Increment(ref _invoiceFilterApplyVersion);
-        UiTaskHelper.Forget(
-            ApplyInvoiceFiltersAsync(version),
-            "MAIN",
-            "전표 필터 적용",
-            ex =>
-            {
-                if (IsCurrentInvoiceFilterApply(version))
-                    AppLogger.Warn("MAIN", $"전표 필터 적용 실패: {ex.Message}");
-            });
+        _invoiceFilterDebouncer.Debounce(TimeSpan.FromMilliseconds(180), () =>
+        {
+            var version = Interlocked.Increment(ref _invoiceFilterApplyVersion);
+            UiTaskHelper.Forget(
+                ApplyInvoiceFiltersAsync(version),
+                "MAIN",
+                "전표 필터 적용",
+                ex =>
+                {
+                    if (IsCurrentInvoiceFilterApply(version))
+                        AppLogger.Warn("MAIN", $"전표 필터 적용 실패: {ex.Message}");
+                });
+        });
     }
 
     private async Task ApplyInvoiceFiltersAsync(int version)
@@ -1050,20 +1104,15 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task RefreshInvoiceDefaultDateRangeFromDataAsync()
     {
-        var allInvoices = await _local.GetInvoicesAsync(from: null, to: null, customerId: null, session: _session);
-        var activeInvoices = allInvoices
-            .Where(invoice => !invoice.IsDeleted)
-            .ToList();
-        if (activeInvoices.Count == 0)
+        var (firstDate, lastDate) = await _local.GetInvoiceDateRangeAsync(_session);
+        if (!firstDate.HasValue || !lastDate.HasValue)
             return;
 
-        var firstDate = activeInvoices.Min(invoice => invoice.InvoiceDate);
-        var lastDate = activeInvoices.Max(invoice => invoice.InvoiceDate);
-        var defaultTo = lastDate > _invoiceLegacyMonthDefaultTo
-            ? lastDate
+        var defaultTo = lastDate.Value > _invoiceLegacyMonthDefaultTo
+            ? lastDate.Value
             : _invoiceLegacyMonthDefaultTo;
 
-        _invoiceDefaultFrom = firstDate;
+        _invoiceDefaultFrom = firstDate.Value;
         _invoiceDefaultTo = defaultTo;
     }
 
@@ -1105,16 +1154,16 @@ public sealed partial class MainViewModel : ObservableObject
         return _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(FavoriteInvoiceIdsSettingKey), payload);
     }
 
-    private async Task LoadInvoiceFavoritesAsync(IEnumerable<LocalInvoice>? sourceInvoices = null)
+    private async Task LoadInvoiceFavoritesAsync(IEnumerable<LocalInvoiceListSummary>? sourceInvoices = null, CancellationToken ct = default)
     {
         var selectedId = SelectedFavoriteInvoice?.InvoiceId;
         var ids = await GetFavoriteInvoiceIdsAsync();
         var allInvoices = sourceInvoices?.ToList()
-            ?? await _local.GetInvoicesAsync(from: null, to: null, customerId: null, session: _session);
+            ?? await _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: null, session: _session, ct);
         var invoiceMap = allInvoices.ToDictionary(i => i.Id);
-        var customerMap = await _local.GetCustomerNameMapAsync(allInvoices.Select(invoice => invoice.CustomerId));
+        var customerMap = await BuildInvoiceCustomerNameMapAsync(allInvoices, ct);
 
-        FavoriteInvoices.Clear();
+        var favoriteItems = new List<FavoriteInvoiceQuickItem>();
         foreach (var id in ids)
         {
             if (!invoiceMap.TryGetValue(id, out var invoice))
@@ -1123,12 +1172,14 @@ public sealed partial class MainViewModel : ObservableObject
             var customerName = customerMap.TryGetValue(invoice.CustomerId, out var n) ? n : "(미지정)";
             var display = $"{invoice.InvoiceDate:yyyy/MM/dd}  {customerName}  {invoice.TotalAmount:N0}원";
 
-            FavoriteInvoices.Add(new FavoriteInvoiceQuickItem
+            favoriteItems.Add(new FavoriteInvoiceQuickItem
             {
                 InvoiceId = id,
                 DisplayText = display
             });
         }
+
+        FavoriteInvoices.ReplaceWith(favoriteItems);
 
         if (FavoriteInvoices.Count != ids.Count)
             await SaveFavoriteInvoiceIdsAsync(FavoriteInvoices.Select(f => f.InvoiceId));
