@@ -4152,6 +4152,68 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return assetsById.Values.ToList();
     }
 
+    private async Task<List<LocalRentalAsset>> LoadRentalAssetsByIdsAsync(
+        IReadOnlyCollection<Guid> assetIds,
+        bool ignoreQueryFilters,
+        bool asNoTracking,
+        bool excludeDeleted,
+        CancellationToken ct)
+    {
+        var ids = assetIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var assetsById = new Dictionary<Guid, LocalRentalAsset>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            IQueryable<LocalRentalAsset> query = _db.RentalAssets;
+            if (ignoreQueryFilters)
+                query = query.IgnoreQueryFilters();
+            if (asNoTracking)
+                query = query.AsNoTracking();
+
+            query = query.Where(asset => scopedBatchIds.Contains(asset.Id));
+            if (excludeDeleted)
+                query = query.Where(asset => !asset.IsDeleted);
+
+            var assets = await query.ToListAsync(ct);
+            foreach (var asset in assets)
+                assetsById[asset.Id] = asset;
+        }
+
+        return assetsById.Values.ToList();
+    }
+
+    private async Task<List<LocalRentalAssetAssignmentHistory>> LoadRentalAssignmentHistoriesByAssetIdsAsync(
+        IReadOnlyCollection<Guid> assetIds,
+        CancellationToken ct)
+    {
+        var ids = assetIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var histories = new List<LocalRentalAssetAssignmentHistory>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            var batchHistories = await _db.RentalAssetAssignmentHistories
+                .Where(history => scopedBatchIds.Contains(history.AssetId))
+                .ToListAsync(ct);
+            histories.AddRange(batchHistories);
+        }
+
+        return histories;
+    }
+
     public async Task<IReadOnlyList<RentalAssetLinkCandidate>> GetAssetLinkCandidatesAsync(
         Guid? currentBillingProfileId,
         Guid? customerId,
@@ -5195,16 +5257,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return;
 
         nowUtc = NormalizeHistoryUtc(nowUtc);
-        var assets = await _db.RentalAssets
-            .IgnoreQueryFilters()
-            .Where(asset => targetAssetIds.Contains(asset.Id))
-            .ToListAsync(ct);
+        var assets = await LoadRentalAssetsByIdsAsync(
+            targetAssetIds,
+            ignoreQueryFilters: true,
+            asNoTracking: false,
+            excludeDeleted: false,
+            ct);
         if (assets.Count == 0)
             return;
 
-        var histories = await _db.RentalAssetAssignmentHistories
-            .Where(history => targetAssetIds.Contains(history.AssetId))
-            .ToListAsync(ct);
+        var histories = await LoadRentalAssignmentHistoriesByAssetIdsAsync(targetAssetIds, ct);
         var currentByAssetId = histories
             .Where(history => history.IsCurrent)
             .GroupBy(history => history.AssetId)
@@ -7576,12 +7638,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Distinct()
             .ToList();
 
-        var assetsById = includedAssetIds.Count == 0
-            ? new Dictionary<Guid, LocalRentalAsset>()
-            : await _db.RentalAssets
-                .AsNoTracking()
-                .Where(asset => !asset.IsDeleted && includedAssetIds.Contains(asset.Id))
-                .ToDictionaryAsync(asset => asset.Id, ct);
+        var includedAssets = await LoadRentalAssetsByIdsAsync(
+            includedAssetIds,
+            ignoreQueryFilters: false,
+            asNoTracking: true,
+            excludeDeleted: true,
+            ct);
+        var assetsById = includedAssets.ToDictionary(asset => asset.Id);
 
         var lines = new List<LocalInvoiceLine>();
         var profileBillingType = NormalizeBillingType(profile.BillingType);
@@ -8464,13 +8527,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ToHashSet();
         templateAssetIds.Add(asset.Id);
 
-        var profileAssets = await _db.RentalAssets
+        var profileAssetsById = new Dictionary<Guid, LocalRentalAsset>();
+        var linkedProfileAssets = await _db.RentalAssets
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(current =>
-                !current.IsDeleted &&
-                (current.BillingProfileId == profile.Id || templateAssetIds.Contains(current.Id)))
+            .Where(current => !current.IsDeleted && current.BillingProfileId == profile.Id)
             .ToListAsync(ct);
+        foreach (var profileAsset in linkedProfileAssets)
+            profileAssetsById[profileAsset.Id] = profileAsset;
+
+        var templateAssets = await LoadRentalAssetsByIdsAsync(
+            templateAssetIds,
+            ignoreQueryFilters: true,
+            asNoTracking: true,
+            excludeDeleted: true,
+            ct);
+        foreach (var templateAsset in templateAssets)
+            profileAssetsById[templateAsset.Id] = templateAsset;
+
+        var profileAssets = profileAssetsById.Values.ToList();
 
         templateItems = GetBillingTemplateItems(profile, profileAssets);
         if (!ApplyAssetMonthlyFeesToBillingTemplate(profile, templateItems, profileAssets))
@@ -8683,17 +8758,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
         foreach (var asset in profileLinkedAssets)
             linkedAssetsById[asset.Id] = asset;
 
-        foreach (var batchIds in includedAssetIds.Chunk(LocalQueryContainsBatchSize))
-        {
-            ct.ThrowIfCancellationRequested();
-            var scopedBatchIds = batchIds;
-            var includedAssets = await _db.RentalAssets
-                .IgnoreQueryFilters()
-                .Where(asset => scopedBatchIds.Contains(asset.Id))
-                .ToListAsync(ct);
-            foreach (var asset in includedAssets)
-                linkedAssetsById[asset.Id] = asset;
-        }
+        var includedAssets = await LoadRentalAssetsByIdsAsync(
+            includedAssetIds,
+            ignoreQueryFilters: true,
+            asNoTracking: false,
+            excludeDeleted: false,
+            ct);
+        foreach (var asset in includedAssets)
+            linkedAssetsById[asset.Id] = asset;
 
         var linkedAssets = linkedAssetsById.Values.ToList();
 

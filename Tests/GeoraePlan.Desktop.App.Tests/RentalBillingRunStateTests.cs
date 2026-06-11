@@ -55,6 +55,62 @@ public sealed class RentalBillingRunStateTests
     }
 
     [Fact]
+    public async Task StartBilling_BatchesManyIncludedAssetReferencesForInvoiceLineBuild()
+    {
+        PrepareAppRoot("georaeplan-rental-start-included-assets-batch");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Batch invoice line customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+
+            var assetIds = new List<Guid>();
+            for (var index = 0; index < 650; index++)
+            {
+                var assetId = Guid.NewGuid();
+                assetIds.Add(assetId);
+                db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            }
+
+            db.RentalBillingProfiles.Add(CreateBillingProfile(profileId, assetIds, customerName, customerId));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var result = await service.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+
+            Assert.True(result.Success, result.Message);
+
+            var invoice = await db.Invoices
+                .Include(current => current.Lines)
+                .AsNoTracking()
+                .SingleAsync(current => current.LinkedRentalBillingProfileId == profileId);
+            var line = Assert.Single(invoice.Lines);
+            Assert.Equal(100_000m, line.LineAmount);
+
+            var persistedProfile = await db.RentalBillingProfiles
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            var run = Assert.Single(DeserializeRuns(persistedProfile.BillingRunsJson));
+            var runItem = Assert.Single(run.Items);
+            Assert.Equal(assetIds.Count, runItem.IncludedAssetIds.Count);
+            Assert.Equal(assetIds.OrderBy(id => id), runItem.IncludedAssetIds.OrderBy(id => id));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task StartBilling_DoesNotCarryPreviousRunSettlementIntoNextRun()
     {
         PrepareAppRoot("georaeplan-rental-start-no-settlement-carryover");
@@ -212,7 +268,12 @@ public sealed class RentalBillingRunStateTests
         };
 
     private static LocalRentalBillingProfile CreateBillingProfile(Guid profileId, Guid assetId, string customerName, Guid customerId)
-        => new()
+        => CreateBillingProfile(profileId, [assetId], customerName, customerId);
+
+    private static LocalRentalBillingProfile CreateBillingProfile(Guid profileId, IReadOnlyList<Guid> assetIds, string customerName, Guid customerId)
+    {
+        var representativeAssetId = assetIds.First();
+        return new()
         {
             Id = profileId,
             CustomerId = customerId,
@@ -235,11 +296,11 @@ public sealed class RentalBillingRunStateTests
                 {
                     DisplayItemName = "Rental Copier Fee",
                     BillingLineMode = "묶음",
-                    RepresentativeAssetId = assetId,
+                    RepresentativeAssetId = representativeAssetId,
                     Quantity = 1m,
                     UnitPrice = 100_000m,
                     Amount = 100_000m,
-                    IncludedAssetIds = [assetId]
+                    IncludedAssetIds = assetIds.ToList()
                 }
             }),
             IsActive = true,
@@ -247,6 +308,7 @@ public sealed class RentalBillingRunStateTests
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow
         };
+    }
 
     private static List<RentalBillingRunModel> DeserializeRuns(string? json)
         => string.IsNullOrWhiteSpace(json)
