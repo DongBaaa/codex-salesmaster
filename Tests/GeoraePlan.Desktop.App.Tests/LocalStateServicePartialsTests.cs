@@ -725,6 +725,87 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task RentalStateService_RepairRentalCatalogLinks_BatchesExplicitAssetIds()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-catalog-repair-batch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var assetIds = new List<Guid>();
+            for (var index = 0; index < 650; index++)
+            {
+                var itemId = Guid.NewGuid();
+                var assetId = Guid.NewGuid();
+                var itemName = $"Batch Repair Copier {index:D4}";
+                var managementNumber = $"BR-{index:D4}";
+                var serialNumber = $"BRSN-{index:D4}";
+                assetIds.Add(assetId);
+
+                db.Items.Add(new LocalItem
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = itemName,
+                    NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(itemName),
+                    CategoryName = "A3컬러복합기",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = managementNumber,
+                    SerialNumber = serialNumber,
+                    IsRental = true,
+                    IsDirty = false,
+                    IsDeleted = false
+                });
+
+                db.RentalAssets.Add(new LocalRentalAsset
+                {
+                    Id = assetId,
+                    ItemId = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementNumber = managementNumber,
+                    MachineNumber = serialNumber,
+                    ItemCategoryName = "A3컬러복합기",
+                    ItemName = itemName,
+                    CustomerName = $"Batch Customer {index:D4}",
+                    CurrentCustomerName = $"Batch Customer {index:D4}",
+                    AssetStatus = "임대진행중",
+                    IsDirty = false,
+                    IsDeleted = false
+                });
+            }
+
+            await db.SaveChangesAsync();
+
+            var result = await new RentalStateService(db).RepairRentalCatalogLinksAsync(assetIds);
+
+            Assert.Equal(assetIds.Count, result.ScannedAssetCount);
+            Assert.Equal(assetIds.Count, result.UpdatedAssetCount);
+            Assert.Equal(assetIds.Count, await db.RentalAssets.CountAsync(asset => asset.ItemId.HasValue));
+            Assert.Equal(
+                assetIds.OrderBy(id => id),
+                await db.RentalAssets
+                    .OrderBy(asset => asset.Id)
+                    .Select(asset => asset.Id)
+                    .ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RentalStateService_RepairRentalCatalogLinks_DoesNotReuseSameNameItemWhenAssetIdentifiersDiffer()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-item-identifier-repair-{Guid.NewGuid():N}");

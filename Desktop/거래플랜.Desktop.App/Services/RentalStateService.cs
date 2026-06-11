@@ -5830,9 +5830,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         {
             var result = new RentalCatalogRepairResult();
             var activeItems = await GetActiveItemsAsync(ct);
-            var assetQuery = _db.RentalAssets.IgnoreQueryFilters()
-                .Where(asset => !asset.IsDeleted);
-
+            List<LocalRentalAsset> assets;
             if (assetIds is { Count: > 0 })
             {
                 var candidateIds = assetIds
@@ -5843,13 +5841,26 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 if (candidateIds.Count == 0)
                     return result;
 
-                assetQuery = assetQuery.Where(asset => candidateIds.Contains(asset.Id));
+                assets = await LoadRentalAssetsByIdsAsync(
+                    candidateIds,
+                    ignoreQueryFilters: true,
+                    asNoTracking: false,
+                    excludeDeleted: true,
+                    ct);
+            }
+            else
+            {
+                assets = await _db.RentalAssets.IgnoreQueryFilters()
+                    .Where(asset => !asset.IsDeleted)
+                    .OrderBy(asset => asset.CustomerName)
+                    .ThenBy(asset => asset.ManagementNumber)
+                    .ToListAsync(ct);
             }
 
-            var assets = await assetQuery
+            assets = assets
                 .OrderBy(asset => asset.CustomerName)
                 .ThenBy(asset => asset.ManagementNumber)
-                .ToListAsync(ct);
+                .ToList();
 
             result.ScannedAssetCount = assets.Count;
 
