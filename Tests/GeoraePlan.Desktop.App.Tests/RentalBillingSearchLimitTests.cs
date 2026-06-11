@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using \uAC70\uB798\uD50C\uB79C.Desktop.App.Data;
 using \uAC70\uB798\uD50C\uB79C.Desktop.App.Services;
@@ -93,6 +94,39 @@ public sealed class RentalBillingSearchLimitTests
         }
     }
 
+
+    [Fact]
+    public void ResolveBillingRunsForRowBuild_ListModeKeepsOnlyPastRunsButHistoryModeKeepsAllRuns()
+    {
+        var duplicatePastRunId = Guid.NewGuid();
+        var pastRun = CreateBillingRun(duplicatePastRunId, new DateOnly(2026, 5, 25));
+        var duplicatePastRun = CreateBillingRun(duplicatePastRunId, new DateOnly(2026, 5, 30));
+        var currentRun = CreateBillingRun(Guid.NewGuid(), new DateOnly(2026, 6, 25));
+        var futureRun = CreateBillingRun(Guid.NewGuid(), new DateOnly(2026, 7, 25));
+        var emptyIdRun = CreateBillingRun(Guid.Empty, new DateOnly(2026, 4, 25));
+        var runs = new[] { pastRun, duplicatePastRun, currentRun, futureRun, emptyIdRun };
+
+        var listModeRuns = InvokeResolveBillingRunsForRowBuild(
+            runs,
+            new DateOnly(2026, 6, 11),
+            includeHistoryRows: false);
+
+        var keptPastRun = Assert.Single(listModeRuns);
+        Assert.Equal(duplicatePastRunId, keptPastRun.RunId);
+        Assert.Equal(new DateOnly(2026, 5, 25), keptPastRun.ScheduledDate);
+
+        var historyModeRuns = InvokeResolveBillingRunsForRowBuild(
+            runs,
+            new DateOnly(2026, 6, 11),
+            includeHistoryRows: true);
+
+        Assert.Equal(3, historyModeRuns.Count);
+        Assert.Contains(historyModeRuns, run => run.RunId == duplicatePastRunId);
+        Assert.Contains(historyModeRuns, run => run.RunId == currentRun.RunId);
+        Assert.Contains(historyModeRuns, run => run.RunId == futureRun.RunId);
+        Assert.DoesNotContain(historyModeRuns, run => run.RunId == Guid.Empty);
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -146,6 +180,35 @@ public sealed class RentalBillingSearchLimitTests
             IsDeleted = false,
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow
+        };
+
+
+    private static List<RentalBillingRunModel> InvokeResolveBillingRunsForRowBuild(
+        IEnumerable<RentalBillingRunModel> runs,
+        DateOnly referenceDate,
+        bool includeHistoryRows)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "ResolveBillingRunsForRowBuild",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object?[] { runs, referenceDate, includeHistoryRows });
+        Assert.NotNull(result);
+        return Assert.IsType<List<RentalBillingRunModel>>(result);
+    }
+
+    private static RentalBillingRunModel CreateBillingRun(Guid runId, DateOnly scheduledDate)
+        => new()
+        {
+            RunId = runId,
+            ScheduledDate = scheduledDate,
+            PeriodStartDate = new DateOnly(scheduledDate.Year, scheduledDate.Month, 1),
+            PeriodEndDate = new DateOnly(scheduledDate.Year, scheduledDate.Month, DateTime.DaysInMonth(scheduledDate.Year, scheduledDate.Month)),
+            PeriodLabel = $"{scheduledDate:yyyy-MM}",
+            BilledAmount = 100_000m,
+            SettledAmount = 0m,
+            Status = PaymentFlowConstants.BillingStatusPlanned
         };
 
     private static SessionState CreateAdminSession()

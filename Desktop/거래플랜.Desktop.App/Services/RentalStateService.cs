@@ -1092,7 +1092,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 previewRunsByProfile[profile.Id] = previewRun;
 
             templateItemsByProfile[profile.Id] = templateItems;
-            billingRunsByProfile[profile.Id] = DeduplicateBillingRuns(runs);
+            billingRunsByProfile[profile.Id] = ResolveBillingRunsForRowBuild(
+                runs,
+                referenceDate,
+                includeHistoryRows);
         }
         LogRentalLoadStep("Rental billing template/run preparation", stepStopwatch, $"profiles={profiles.Count:N0}, runs={billingRunsByProfile.Values.Sum(runs => runs.Count):N0}");
 
@@ -1273,6 +1276,29 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var runMonth = new DateOnly(run.ScheduledDate.Year, run.ScheduledDate.Month, 1);
         return runMonth.DayNumber < referenceMonth.DayNumber;
+    }
+
+    private static List<RentalBillingRunModel> ResolveBillingRunsForRowBuild(
+        IEnumerable<RentalBillingRunModel> runs,
+        DateOnly referenceDate,
+        bool includeHistoryRows)
+    {
+        if (includeHistoryRows)
+            return DeduplicateBillingRuns(runs);
+
+        var referenceMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1);
+        var result = new List<RentalBillingRunModel>();
+        var seenRunIds = new HashSet<Guid>();
+        foreach (var run in runs)
+        {
+            if (run.RunId == Guid.Empty || !seenRunIds.Add(run.RunId))
+                continue;
+
+            if (IsPastBillingRun(run, referenceMonth))
+                result.Add(run);
+        }
+
+        return result;
     }
 
     private static bool NeedsBillingProfileCustomerNameLookup(LocalRentalBillingProfile profile)
