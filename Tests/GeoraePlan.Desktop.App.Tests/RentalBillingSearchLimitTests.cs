@@ -498,9 +498,9 @@ public sealed class RentalBillingSearchLimitTests
     }
 
     [Fact]
-    public void BuildGroupedBillingTextMetrics_DeduplicatesInstallLocationsInFirstSeenOrder()
+    public void BuildGroupedBillingAccumulatorMetrics_DeduplicatesInstallLocationsInFirstSeenOrder()
     {
-        var metrics = InvokeBuildGroupedBillingTextMetrics(new List<RentalBillingViewRow>
+        var metrics = InvokeBuildGroupedBillingAccumulatorMetrics(new List<RentalBillingViewRow>
         {
             new() { InstallLocationDisplay = " 1\uCE35 ", InstallSiteName = "\uBBF8\uC0AC\uC6A9 A" },
             new() { InstallLocationDisplay = "1\uCE35", InstallSiteName = "\uBBF8\uC0AC\uC6A9 B" },
@@ -694,11 +694,11 @@ public sealed class RentalBillingSearchLimitTests
         return Assert.IsType<List<RentalBillingHistoryRow>>(result);
     }
 
-    private static object InvokeBuildGroupedBillingTextMetrics(
+    private static object InvokeBuildGroupedBillingAccumulatorMetrics(
         IReadOnlyList<RentalBillingViewRow> rows)
     {
         var method = typeof(RentalStateService).GetMethod(
-            "BuildGroupedBillingTextMetrics",
+            "BuildGroupedBillingAccumulatorMetrics",
             BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
 

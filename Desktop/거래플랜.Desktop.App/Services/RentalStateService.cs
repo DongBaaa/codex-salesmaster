@@ -1546,7 +1546,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         bool HasDataIssue,
         RentalBillingHistorySummary HistorySummary);
 
-    private readonly record struct GroupedBillingTextMetrics(
+    private readonly record struct GroupedBillingAccumulatorMetrics(
         List<string> DistinctCycles,
         List<string> DistinctBillingTypes,
         List<string> DistinctAdvanceModes,
@@ -1555,9 +1555,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         List<string> DistinctSettlementStatuses,
         List<string> DistinctDisplayStatuses,
         List<string> DistinctInstallLocations,
-        List<string> DataIssues);
-
-    private readonly record struct GroupedBillingIdentityMetrics(
+        List<string> DataIssues,
         List<Guid> GroupedSelectionIds,
         List<Guid> GroupedPersistedProfileIds,
         Dictionary<Guid, long> GroupedProfileRevisions);
@@ -1867,7 +1865,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             historySummary);
     }
 
-    private static GroupedBillingTextMetrics BuildGroupedBillingTextMetrics(
+    private static GroupedBillingAccumulatorMetrics BuildGroupedBillingAccumulatorMetrics(
         IReadOnlyList<RentalBillingViewRow> rows)
     {
         var distinctCycles = new List<string>();
@@ -1888,6 +1886,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var distinctInstallLocationKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
         var dataIssues = new List<string>();
         var dataIssueKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var groupedSelectionIds = new List<Guid>();
+        var groupedSelectionIdSet = new HashSet<Guid>();
+        var groupedPersistedProfileIds = new List<Guid>();
+        var groupedPersistedProfileIdSet = new HashSet<Guid>();
+        var groupedProfileRevisions = new Dictionary<Guid, long>();
 
         foreach (var row in rows)
         {
@@ -1906,31 +1909,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     : row.InstallLocationDisplay);
             foreach (var dataIssue in ExtractBillingDataIssueTokens(row))
                 AddDistinctTrimmed(dataIssues, dataIssueKeys, dataIssue);
-        }
 
-        return new GroupedBillingTextMetrics(
-            distinctCycles,
-            distinctBillingTypes,
-            distinctAdvanceModes,
-            distinctRunStatuses,
-            distinctPeriodLabels,
-            distinctSettlementStatuses,
-            distinctDisplayStatuses,
-            distinctInstallLocations,
-            dataIssues);
-    }
-
-    private static GroupedBillingIdentityMetrics BuildGroupedBillingIdentityMetrics(
-        IReadOnlyList<RentalBillingViewRow> rows)
-    {
-        var groupedSelectionIds = new List<Guid>();
-        var groupedSelectionIdSet = new HashSet<Guid>();
-        var groupedPersistedProfileIds = new List<Guid>();
-        var groupedPersistedProfileIdSet = new HashSet<Guid>();
-        var groupedProfileRevisions = new Dictionary<Guid, long>();
-
-        foreach (var row in rows)
-        {
             if (row.GroupedSelectionIds.Count == 0)
             {
                 AddDistinctGuid(groupedSelectionIds, groupedSelectionIdSet, row.SelectionId);
@@ -1955,7 +1934,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
             }
         }
 
-        return new GroupedBillingIdentityMetrics(
+        return new GroupedBillingAccumulatorMetrics(
+            distinctCycles,
+            distinctBillingTypes,
+            distinctAdvanceModes,
+            distinctRunStatuses,
+            distinctPeriodLabels,
+            distinctSettlementStatuses,
+            distinctDisplayStatuses,
+            distinctInstallLocations,
+            dataIssues,
             groupedSelectionIds,
             groupedPersistedProfileIds,
             groupedProfileRevisions);
@@ -2564,19 +2552,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private RentalBillingViewRow CreateGroupedBillingViewRow(IReadOnlyList<RentalBillingViewRow> rows)
     {
         var representative = rows[0];
-        var textMetrics = BuildGroupedBillingTextMetrics(rows);
-        var distinctCycles = textMetrics.DistinctCycles;
-        var distinctBillingTypes = textMetrics.DistinctBillingTypes;
-        var distinctAdvanceModes = textMetrics.DistinctAdvanceModes;
-        var distinctRunStatuses = textMetrics.DistinctRunStatuses;
-        var distinctPeriodLabels = textMetrics.DistinctPeriodLabels;
-        var distinctSettlementStatuses = textMetrics.DistinctSettlementStatuses;
-        var distinctDisplayStatuses = textMetrics.DistinctDisplayStatuses;
-        var distinctInstallLocations = textMetrics.DistinctInstallLocations;
-        var identityMetrics = BuildGroupedBillingIdentityMetrics(rows);
-        var groupedSelectionIds = identityMetrics.GroupedSelectionIds;
-        var groupedPersistedProfileIds = identityMetrics.GroupedPersistedProfileIds;
-        var groupedProfileRevisions = identityMetrics.GroupedProfileRevisions;
+        var accumulatorMetrics = BuildGroupedBillingAccumulatorMetrics(rows);
+        var distinctCycles = accumulatorMetrics.DistinctCycles;
+        var distinctBillingTypes = accumulatorMetrics.DistinctBillingTypes;
+        var distinctAdvanceModes = accumulatorMetrics.DistinctAdvanceModes;
+        var distinctRunStatuses = accumulatorMetrics.DistinctRunStatuses;
+        var distinctPeriodLabels = accumulatorMetrics.DistinctPeriodLabels;
+        var distinctSettlementStatuses = accumulatorMetrics.DistinctSettlementStatuses;
+        var distinctDisplayStatuses = accumulatorMetrics.DistinctDisplayStatuses;
+        var distinctInstallLocations = accumulatorMetrics.DistinctInstallLocations;
+        var groupedSelectionIds = accumulatorMetrics.GroupedSelectionIds;
+        var groupedPersistedProfileIds = accumulatorMetrics.GroupedPersistedProfileIds;
+        var groupedProfileRevisions = accumulatorMetrics.GroupedProfileRevisions;
         var groupedPersistedProfileCount = groupedPersistedProfileIds.Count;
         var groupedMetrics = BuildGroupedBillingRowMetrics(rows);
         var groupedUnlinkedAssetCount = groupedMetrics.GroupedUnlinkedAssetCount;
@@ -2585,7 +2572,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var aggregateSummary = BuildGroupedBillingAggregateSummary(groupedPersistedProfileCount, groupedUnlinkedAssetCount);
         var historyRows = BuildGroupedBillingHistoryRows(rows);
         var historySummary = groupedMetrics.HistorySummary;
-        var dataIssues = textMetrics.DataIssues;
+        var dataIssues = accumulatorMetrics.DataIssues;
         if (groupedPersistedProfileCount > 1)
             AddDistinctTrimmed(dataIssues, $"청구프로필 {groupedPersistedProfileCount:N0}건 묶음 표시");
         if (groupedUnlinkedAssetCount > 0)

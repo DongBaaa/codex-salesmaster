@@ -24,8 +24,8 @@ public sealed class RecycleBinScopeAndSyncTests
             await using var db = new LocalDbContext();
             await db.Database.EnsureCreatedAsync();
 
-            var usenetAssetId = Guid.Parse("11111111-1111-1111-1111-111111111111");
-            var itworldAssetId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            var usenetAssetId = Guid.NewGuid();
+            var itworldAssetId = Guid.NewGuid();
             db.RentalAssets.AddRange(
                 new LocalRentalAsset
                 {
