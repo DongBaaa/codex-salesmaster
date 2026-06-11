@@ -127,6 +127,71 @@ public sealed class RentalBillingSearchLimitTests
         Assert.DoesNotContain(historyModeRuns, run => run.RunId == Guid.Empty);
     }
 
+
+    [Fact]
+    public async Task GetBillingRowsAsync_PreservesAssetSummaryInstallLocationAndDataIssues()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-asset-summary");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var firstAssetId = Guid.NewGuid();
+            var secondAssetId = Guid.NewGuid();
+            var profile = CreateBillingProfile(1, "Asset Summary Customer");
+            profile.Id = profileId;
+            profile.InstallSiteName = string.Empty;
+            profile.BillingTemplateJson = System.Text.Json.JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "\uB80C\uD0C8\uB8CC",
+                    BillingLineMode = "\uBB36\uC74C",
+                    Quantity = 1m,
+                    UnitPrice = 80_000m,
+                    Amount = 80_000m,
+                    IncludedAssetIds = new List<Guid> { firstAssetId }
+                }
+            });
+
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.AddRange(
+                CreateLinkedBillingAsset(firstAssetId, profileId, "Asset Summary Customer", "1\uCE35", 100_000m, "\uCCAD\uAD6C\uB300\uC0C1"),
+                CreateLinkedBillingAsset(secondAssetId, profileId, "Asset Summary Customer", "2\uCE35", 0m, "\uBBF8\uD655\uC778"));
+            await db.SaveChangesAsync();
+
+            var rows = await new RentalStateService(db).GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    SearchText = "Asset Summary",
+                    ExpandCustomerSummaryRows = true,
+                    IncludeHistoryRows = false,
+                    ReferenceDate = new DateOnly(2026, 6, 11)
+                },
+                CreateAdminSession());
+
+            var row = Assert.Single(rows);
+            Assert.Equal(profileId, row.Source.Id);
+            Assert.Equal(2, row.AssetCount);
+            Assert.Equal(1, row.TemplateItemCount);
+            Assert.Equal(1, row.IncludedAssetCount);
+            Assert.Contains(row.InstallLocationDisplay, new[] { "1\uCE35 \uC678 1\uACF3", "2\uCE35 \uC678 1\uACF3" });
+            Assert.True(row.HasDataIssue);
+            Assert.Contains("\uC124\uCE58\uC704\uCE58 \uBBF8\uC124\uC815", row.DataIssueSummary);
+            Assert.Contains("\uC7A5\uBE44 \uC6D4\uC694\uAE08 \uC5C6\uC74C", row.DataIssueSummary);
+            Assert.Contains("\uC790\uC0B0/\uCCAD\uAD6C \uC6D4\uC694\uAE08 \uBD88\uC77C\uCE58", row.DataIssueSummary);
+            Assert.Contains("\uCCAD\uAD6C\uB300\uC0C1 \uAC80\uD1A0 \uD544\uC694", row.DataIssueSummary);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -182,6 +247,39 @@ public sealed class RentalBillingSearchLimitTests
             UpdatedAtUtc = DateTime.UtcNow
         };
 
+
+
+    private static LocalRentalAsset CreateLinkedBillingAsset(
+        Guid assetId,
+        Guid profileId,
+        string customerName,
+        string installLocation,
+        decimal monthlyFee,
+        string billingEligibilityStatus)
+        => new()
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"LINKED-BILLING-SUMMARY-{assetId:N}",
+            ManagementId = $"LBS-{assetId:N}",
+            ManagementNumber = $"LBS-{assetId:N}",
+            CustomerName = customerName,
+            CurrentCustomerName = customerName,
+            ItemName = "\uC694\uC57D \uAC80\uC99D \uBCF5\uD569\uAE30",
+            MachineNumber = $"LBS-SN-{assetId:N}",
+            InstallSiteName = installLocation,
+            InstallLocation = installLocation,
+            MonthlyFee = monthlyFee,
+            AssetStatus = "\uC784\uB300\uC911",
+            BillingEligibilityStatus = billingEligibilityStatus,
+            BillingProfileId = profileId,
+            IsDeleted = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
 
     private static List<RentalBillingRunModel> InvokeResolveBillingRunsForRowBuild(
         IEnumerable<RentalBillingRunModel> runs,

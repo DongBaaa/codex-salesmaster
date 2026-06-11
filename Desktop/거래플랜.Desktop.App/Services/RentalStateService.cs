@@ -1333,6 +1333,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             : GetBillingTemplateItems(profile, profileAssets);
         var explicitIncludedAssetCount = templateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count();
         var includedAssetCount = explicitIncludedAssetCount > 0 ? explicitIncludedAssetCount : profileAssets.Count;
+        var assetSummary = BuildBillingAssetRowSummary(profile, profileAssets);
         var nextBillingDate = GetNextBillingDate(profile, referenceDate);
         var documentIssueDate = nextBillingDate.HasValue
             ? RentalBillingScheduleRules.CalculateDocumentIssueDate(nextBillingDate, profile.DocumentIssueMode, profile.DocumentLeadDays)
@@ -1363,7 +1364,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     : PaymentFlowConstants.BillingStatusPlanned;
         }
 
-        var dataIssues = BuildBillingDataIssues(profile, profileAssets, templateItems);
+        var dataIssues = BuildBillingDataIssues(profile, assetSummary, profileAssets, templateItems);
         billingRunsByProfile.TryGetValue(profile.Id, out var profileRuns);
         profileRuns ??= new List<RentalBillingRunModel>();
         var historyRows = includeHistoryRows
@@ -1405,12 +1406,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
             OutstandingAmount = outstandingAmount,
             RequiresFollowUp = profile.RequiresFollowUp || outstandingAmount > 0m,
             LastSettledDate = profile.LastSettledDate,
-            AssetCount = profileAssets.Count,
+            AssetCount = assetSummary.AssetCount,
             TemplateItemCount = templateItems.Count,
             IncludedAssetCount = includedAssetCount,
             BillingType = string.IsNullOrWhiteSpace(profile.BillingType) ? "묶음" : profile.BillingType,
             InstallSiteName = profile.InstallSiteName ?? string.Empty,
-            InstallLocationDisplay = ResolveBillingProfileInstallLocationDisplay(profile, profileAssets),
+            InstallLocationDisplay = assetSummary.InstallLocationDisplay,
             BillingAdvanceMode = string.IsNullOrWhiteSpace(profile.BillingAdvanceMode) ? "후불" : profile.BillingAdvanceMode,
             BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(profile.BillingDayMode),
             BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
@@ -1522,6 +1523,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         decimal PastUnresolvedAmount,
         DateOnly? OldestPastUnresolvedScheduledDate,
         string OldestPastUnresolvedPeriodLabel);
+
+    private readonly record struct RentalBillingAssetRowSummary(
+        int AssetCount,
+        string InstallLocationDisplay,
+        bool HasMissingMonthlyFee,
+        bool HasEligibilityReviewRequired);
 
     private static List<RentalBillingHistoryRow> BuildBillingHistoryRows(
         LocalRentalBillingProfile profile,
@@ -2572,21 +2579,53 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private static string ResolveBillingProfileInstallLocationDisplay(
         LocalRentalBillingProfile profile,
         IReadOnlyList<LocalRentalAsset> profileAssets)
+        => BuildBillingAssetRowSummary(profile, profileAssets).InstallLocationDisplay;
+
+    private static RentalBillingAssetRowSummary BuildBillingAssetRowSummary(
+        LocalRentalBillingProfile profile,
+        IReadOnlyList<LocalRentalAsset> profileAssets)
     {
-        var assetLocations = profileAssets
-            .Select(asset => string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value.Trim())
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
+        var assetLocations = new List<string>();
+        var hasMissingMonthlyFee = false;
+        var hasEligibilityReviewRequired = false;
+        foreach (var asset in profileAssets)
+        {
+            var location = string.IsNullOrWhiteSpace(asset.InstallLocation)
+                ? asset.InstallSiteName
+                : asset.InstallLocation;
+            location = location?.Trim() ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(location) &&
+                !assetLocations.Contains(location, StringComparer.CurrentCultureIgnoreCase))
+            {
+                assetLocations.Add(location);
+            }
 
+            if (!RentalAssetStatusRules.IsNonOperating(asset.AssetStatus) &&
+                Math.Max(0m, asset.MonthlyFee) <= 0m)
+            {
+                hasMissingMonthlyFee = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ||
+                string.Equals(asset.BillingEligibilityStatus, BillingEligibilityUnconfirmed, StringComparison.OrdinalIgnoreCase))
+            {
+                hasEligibilityReviewRequired = true;
+            }
+        }
+
+        string installLocationDisplay;
         if (assetLocations.Count == 1)
-            return assetLocations[0];
+            installLocationDisplay = assetLocations[0];
+        else if (assetLocations.Count > 1)
+            installLocationDisplay = $"{assetLocations[0]} 외 {assetLocations.Count - 1}곳";
+        else
+            installLocationDisplay = profile.InstallSiteName ?? string.Empty;
 
-        if (assetLocations.Count > 1)
-            return $"{assetLocations[0]} 외 {assetLocations.Count - 1}곳";
-
-        return profile.InstallSiteName ?? string.Empty;
+        return new RentalBillingAssetRowSummary(
+            profileAssets.Count,
+            installLocationDisplay,
+            hasMissingMonthlyFee,
+            hasEligibilityReviewRequired);
     }
 
     public async Task<IReadOnlyList<RentalAssetViewRow>> GetAssetRowsAsync(
@@ -8352,20 +8391,29 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LocalRentalBillingProfile profile,
         IReadOnlyList<LocalRentalAsset> assets,
         IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
+        => BuildBillingDataIssues(
+            profile,
+            BuildBillingAssetRowSummary(profile, assets),
+            assets,
+            templateItems);
+
+    private List<string> BuildBillingDataIssues(
+        LocalRentalBillingProfile profile,
+        RentalBillingAssetRowSummary assetSummary,
+        IReadOnlyList<LocalRentalAsset> assets,
+        IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
     {
         var issues = new List<string>();
         var profileBillingType = NormalizeBillingType(profile.BillingType);
         if (templateItems.Count == 0)
             issues.Add("표시품목 없음");
-        if (assets.Count == 0)
+        if (assetSummary.AssetCount == 0)
             issues.Add("연결장비 없음");
         if (string.IsNullOrWhiteSpace(profile.InstallSiteName))
             issues.Add("설치위치 미설정");
         if (templateItems.Any(item => item.IncludedAssetIds.Count == 0))
             issues.Add("장비 미연결 품목");
-        if (assets.Any(asset =>
-                !RentalAssetStatusRules.IsNonOperating(asset.AssetStatus) &&
-                Math.Max(0m, asset.MonthlyFee) <= 0m))
+        if (assetSummary.HasMissingMonthlyFee)
             issues.Add("장비 월요금 없음");
         if (HasBillingAssetMonthlyFeeMismatch(assets, templateItems))
             issues.Add("자산/청구 월요금 불일치");
@@ -8373,7 +8421,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         {
             issues.Add("청구 유형 미지정");
         }
-        if (assets.Any(asset => string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) || string.Equals(asset.BillingEligibilityStatus, BillingEligibilityUnconfirmed, StringComparison.OrdinalIgnoreCase)))
+        if (assetSummary.HasEligibilityReviewRequired)
             issues.Add("청구대상 검토 필요");
         return issues.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
@@ -8385,13 +8433,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (assets.Count == 0 || templateItems.Count == 0)
             return false;
 
-        var assetsById = assets
-            .Where(asset => asset.Id != Guid.Empty && !RentalAssetStatusRules.IsNonOperating(asset.AssetStatus))
-            .GroupBy(asset => asset.Id)
-            .ToDictionary(group => group.Key, group => group.First());
-        if (assetsById.Count == 0)
-            return false;
-
+        var linkedTemplateItems = new List<(List<Guid> IncludedAssetIds, decimal TemplateMonthlyAmount)>();
         foreach (var templateItem in templateItems)
         {
             var includedAssetIds = (templateItem.IncludedAssetIds ?? new List<Guid>())
@@ -8401,6 +8443,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
             if (includedAssetIds.Count == 0)
                 continue;
 
+            var templateMonthlyAmount = ResolveTemplateMonthlyAmount(templateItem);
+            if (templateMonthlyAmount <= 0m)
+                continue;
+
+            linkedTemplateItems.Add((includedAssetIds, templateMonthlyAmount));
+        }
+
+        if (linkedTemplateItems.Count == 0)
+            return false;
+
+        var assetsById = assets
+            .Where(asset => asset.Id != Guid.Empty && !RentalAssetStatusRules.IsNonOperating(asset.AssetStatus))
+            .GroupBy(asset => asset.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        if (assetsById.Count == 0)
+            return false;
+
+        foreach (var (includedAssetIds, templateMonthlyAmount) in linkedTemplateItems)
+        {
             var linkedAssets = includedAssetIds
                 .Where(assetsById.ContainsKey)
                 .Select(id => assetsById[id])
@@ -8409,10 +8470,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 continue;
 
             var assetMonthlyTotal = linkedAssets.Sum(asset => Math.Max(0m, asset.MonthlyFee));
-            var templateMonthlyTotal = ResolveTemplateMonthlyAmount(templateItem);
             if (assetMonthlyTotal > 0m &&
-                templateMonthlyTotal > 0m &&
-                assetMonthlyTotal != templateMonthlyTotal)
+                assetMonthlyTotal != templateMonthlyAmount)
             {
                 return true;
             }
