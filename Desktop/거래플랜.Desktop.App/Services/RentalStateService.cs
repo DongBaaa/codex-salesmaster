@@ -1337,7 +1337,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var currentRun = preparedProfile.PreviewRun;
         var profileRuns = preparedProfile.BillingRuns;
         var customerDisplayName = ResolveBillingProfileCustomerDisplayName(profile, customerNameMap);
-        var explicitIncludedAssetCount = templateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count();
+        var explicitIncludedAssetCount = CountDistinctTemplateIncludedAssets(templateItems);
         var includedAssetCount = explicitIncludedAssetCount > 0 ? explicitIncludedAssetCount : profileAssets.Count;
         var assetSummary = BuildBillingAssetRowSummary(profile, profileAssets);
         var nextBillingDate = GetNextBillingDate(profile, referenceDate);
@@ -2173,7 +2173,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             LastSettledDate = null,
             AssetCount = 1,
             TemplateItemCount = templateItems.Count,
-            IncludedAssetCount = templateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count(),
+            IncludedAssetCount = CountDistinctTemplateIncludedAssets(templateItems),
             BillingType = syntheticProfile.BillingType,
             InstallSiteName = syntheticProfile.InstallSiteName,
             InstallLocationDisplay = string.IsNullOrWhiteSpace(installLocation) ? syntheticProfile.InstallSiteName : installLocation,
@@ -8475,6 +8475,23 @@ WHERE ""AssignedUsername"" <> '';", ct);
             templateItems.Count,
             hasUnlinkedTemplateItem,
             hasMissingBillingLineMode);
+    }
+
+    private static int CountDistinctTemplateIncludedAssets(
+        IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
+    {
+        HashSet<Guid>? includedAssetIds = null;
+        foreach (var templateItem in templateItems)
+        {
+            if (templateItem.IncludedAssetIds.Count == 0)
+                continue;
+
+            includedAssetIds ??= new HashSet<Guid>();
+            foreach (var assetId in templateItem.IncludedAssetIds)
+                includedAssetIds.Add(assetId);
+        }
+
+        return includedAssetIds?.Count ?? 0;
     }
 
     private static bool HasBillingAssetMonthlyFeeMismatch(

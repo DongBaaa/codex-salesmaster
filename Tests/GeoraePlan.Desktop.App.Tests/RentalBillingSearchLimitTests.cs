@@ -343,6 +343,36 @@ public sealed class RentalBillingSearchLimitTests
         Assert.False(GetSummaryProperty<bool>(summary, "HasMissingBillingLineMode"));
     }
 
+
+    [Fact]
+    public void CountDistinctTemplateIncludedAssets_DeduplicatesAcrossTemplateItems()
+    {
+        var firstAssetId = Guid.NewGuid();
+        var secondAssetId = Guid.NewGuid();
+        var templateItems = new List<RentalBillingTemplateItemModel>
+        {
+            new()
+            {
+                DisplayItemName = "\uCCAB \uBC88\uC9F8 \uD488\uBAA9",
+                IncludedAssetIds = new List<Guid> { firstAssetId, secondAssetId }
+            },
+            new()
+            {
+                DisplayItemName = "\uB450 \uBC88\uC9F8 \uD488\uBAA9",
+                IncludedAssetIds = new List<Guid> { firstAssetId }
+            },
+            new()
+            {
+                DisplayItemName = "\uBE48 \uD488\uBAA9",
+                IncludedAssetIds = new List<Guid>()
+            }
+        };
+
+        var count = InvokeCountDistinctTemplateIncludedAssets(templateItems);
+
+        Assert.Equal(2, count);
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -457,6 +487,19 @@ public sealed class RentalBillingSearchLimitTests
 
         var result = method!.Invoke(null, new object?[] { assets, templateItems });
         return Assert.IsType<bool>(result);
+    }
+
+
+    private static int InvokeCountDistinctTemplateIncludedAssets(
+        IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "CountDistinctTemplateIncludedAssets",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object?[] { templateItems });
+        return Assert.IsType<int>(result);
     }
 
 
