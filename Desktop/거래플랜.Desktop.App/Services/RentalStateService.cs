@@ -2468,23 +2468,42 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return rows.ToList();
 
         var groupedRows = new List<RentalBillingViewRow>(rows.Count);
-        foreach (var group in rows.GroupBy(BuildBillingCustomerGroupKey))
+        var groupsByKey = new Dictionary<string, List<RentalBillingViewRow>>(rows.Count);
+        var groupsInOrder = new List<List<RentalBillingViewRow>>();
+        foreach (var row in rows)
         {
-            var orderedRows = group
-                .OrderByDescending(row => row.HasPersistedProfile)
-                .ThenBy(row => row.SelectionId)
-                .ToList();
-
-            if (orderedRows.Count <= 1)
+            var groupKey = BuildBillingCustomerGroupKey(row);
+            if (!groupsByKey.TryGetValue(groupKey, out var groupRows))
             {
-                groupedRows.AddRange(orderedRows);
+                groupRows = new List<RentalBillingViewRow>();
+                groupsByKey.Add(groupKey, groupRows);
+                groupsInOrder.Add(groupRows);
+            }
+
+            groupRows.Add(row);
+        }
+
+        foreach (var groupRows in groupsInOrder)
+        {
+            if (groupRows.Count <= 1)
+            {
+                groupedRows.Add(groupRows[0]);
                 continue;
             }
 
-            groupedRows.Add(CreateGroupedBillingViewRow(orderedRows));
+            groupRows.Sort(CompareGroupedBillingRows);
+            groupedRows.Add(CreateGroupedBillingViewRow(groupRows));
         }
 
         return groupedRows;
+    }
+
+    private static int CompareGroupedBillingRows(RentalBillingViewRow left, RentalBillingViewRow right)
+    {
+        var persistedComparison = right.HasPersistedProfile.CompareTo(left.HasPersistedProfile);
+        return persistedComparison != 0
+            ? persistedComparison
+            : left.SelectionId.CompareTo(right.SelectionId);
     }
 
     private static string BuildBillingProfileGroupKey(LocalRentalBillingProfile profile)
@@ -2534,10 +2553,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private RentalBillingViewRow CreateGroupedBillingViewRow(IReadOnlyList<RentalBillingViewRow> rows)
     {
-        var representative = rows
-            .OrderByDescending(row => row.HasPersistedProfile)
-            .ThenBy(row => row.SelectionId)
-            .First();
+        var representative = FindGroupedBillingRepresentative(rows);
         var textMetrics = BuildGroupedBillingTextMetrics(rows);
         var distinctCycles = textMetrics.DistinctCycles;
         var distinctBillingTypes = textMetrics.DistinctBillingTypes;
@@ -2630,6 +2646,19 @@ WHERE ""AssignedUsername"" <> '';", ct);
             HasDataIssue = groupedMetrics.HasDataIssue || groupedSourceCount > 1,
             DataIssueSummary = dataIssues.Count == 0 ? aggregateSummary : string.Join(" / ", dataIssues)
         };
+    }
+
+    private static RentalBillingViewRow FindGroupedBillingRepresentative(IReadOnlyList<RentalBillingViewRow> rows)
+    {
+        var representative = rows[0];
+        for (var index = 1; index < rows.Count; index++)
+        {
+            var row = rows[index];
+            if (CompareGroupedBillingRows(row, representative) < 0)
+                representative = row;
+        }
+
+        return representative;
     }
 
     private static string BuildGroupedInstallLocationDisplay(IReadOnlyList<RentalBillingViewRow> rows)
