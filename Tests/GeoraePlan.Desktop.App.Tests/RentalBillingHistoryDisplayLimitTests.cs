@@ -114,6 +114,70 @@ public sealed class RentalBillingHistoryDisplayLimitTests
         }
     }
 
+    [Fact]
+    public async Task RentalStateService_GetBillingHistoryRowsAsync_BatchesLargeProfileIdSets()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-history-batched-profiles");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileIds = new List<Guid>();
+            var profileCount = 525;
+            for (var index = 0; index < profileCount; index++)
+            {
+                var profileId = Guid.Parse($"20000000-0000-0000-0000-{index + 1:000000000000}");
+                var runId = Guid.Parse($"21000000-0000-0000-0000-{index + 1:000000000000}");
+                var scheduledDate = new DateOnly(2026, 6, 1).AddDays(-index);
+                profileIds.Add(profileId);
+                db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"BILLING-HISTORY-BATCH-{index:D3}",
+                    CustomerName = $"Batch Customer {index:D3}",
+                    ItemName = "Printer",
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new RentalBillingRunModel
+                        {
+                            RunId = runId,
+                            RunKey = $"run-{index:D3}",
+                            ScheduledDate = scheduledDate,
+                            PeriodStartDate = scheduledDate.AddMonths(-1),
+                            PeriodEndDate = scheduledDate.AddDays(-1),
+                            PeriodLabel = $"period-{index:D3}",
+                            BilledAmount = 100_000m + index
+                        }
+                    }),
+                    IsActive = true
+                });
+            }
+
+            await db.SaveChangesAsync();
+
+            var rows = await new RentalStateService(db).GetBillingHistoryRowsAsync(
+                profileIds,
+                CreateAdminSession(),
+                new DateOnly(2026, 6, 11));
+
+            Assert.Equal(profileCount, rows.Count);
+            Assert.Contains(rows, row => row.CustomerName == "Batch Customer 000");
+            Assert.Contains(rows, row => row.CustomerName == "Batch Customer 524");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");

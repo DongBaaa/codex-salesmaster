@@ -9,7 +9,7 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
-public sealed partial class InventoryViewModel : ObservableObject
+public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 {
     private readonly LocalStateService _local;
     private readonly SessionState _session;
@@ -28,6 +28,7 @@ public sealed partial class InventoryViewModel : ObservableObject
     private long _editRevision;
     private string _editOfficeCode = DomainConstants.OfficeUsenet;
     private string _editTenantCode = TenantScopeCatalog.UsenetGroup;
+    private bool _isDisposed;
 
     public ObservableCollection<InventoryItemRow> FilteredItems { get; } = new();
     public ObservableCollection<InventoryMovementRow> SelectedItemMovements { get; } = new();
@@ -120,6 +121,16 @@ public sealed partial class InventoryViewModel : ObservableObject
         ResetEditBaseline();
     }
 
+    public void Dispose()
+    {
+        if (_isDisposed)
+            return;
+
+        _isDisposed = true;
+        _local.InventoryStateChanged -= HandleInventoryStateChanged;
+        _filterDebouncer.Dispose();
+    }
+
     public async Task LoadAsync()
     {
         var repairResult = await _local.RepairMissingItemMastersFromOperationalReferencesAsync(_session);
@@ -180,7 +191,7 @@ public sealed partial class InventoryViewModel : ObservableObject
 
     private void HandleInventoryStateChanged(object? sender, EventArgs e)
     {
-        if (_isInventoryRefreshInProgress || Volatile.Read(ref _suppressInventoryStateRefresh) > 0)
+        if (_isDisposed || _isInventoryRefreshInProgress || Volatile.Read(ref _suppressInventoryStateRefresh) > 0)
             return;
 
         UiTaskHelper.Forget(HandleInventoryStateChangedAsync(), "UI", "재고관리 화면 재고 상태 새로고침");
@@ -188,13 +199,14 @@ public sealed partial class InventoryViewModel : ObservableObject
 
     private async Task HandleInventoryStateChangedAsync()
     {
-        if (_isInventoryRefreshInProgress)
+        if (_isDisposed || _isInventoryRefreshInProgress)
             return;
 
         _isInventoryRefreshInProgress = true;
         try
         {
-            await RefreshInventoryScreenAsync(reloadCategories: false);
+            if (!_isDisposed)
+                await RefreshInventoryScreenAsync(reloadCategories: false);
         }
         finally
         {
@@ -229,8 +241,21 @@ public sealed partial class InventoryViewModel : ObservableObject
     private bool CanShowYeonsuOffice()
         => IsAdmin && !string.Equals(SelectedOfficeCode, DomainConstants.OfficeYeonsu, StringComparison.OrdinalIgnoreCase);
 
-    partial void OnSearchTextChanged(string value) => _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(300), ApplyFilter);
-    partial void OnSelectedTrackingTypeFilterChanged(string value) => _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(200), ApplyFilter);
+    partial void OnSearchTextChanged(string value)
+    {
+        if (_isDisposed)
+            return;
+
+        _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(300), ApplyFilter);
+    }
+
+    partial void OnSelectedTrackingTypeFilterChanged(string value)
+    {
+        if (_isDisposed)
+            return;
+
+        _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(200), ApplyFilter);
+    }
 
     partial void OnSelectedItemChanging(InventoryItemRow? oldValue, InventoryItemRow? newValue)
     {
@@ -279,7 +304,8 @@ public sealed partial class InventoryViewModel : ObservableObject
         if (IsNew && SelectedItem is null)
             ApplyDraftScopeForNewItem();
 
-        _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(150), ApplyFilter);
+        if (!_isDisposed)
+            _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(150), ApplyFilter);
     }
 
     partial void OnEditItemKindChanged(string value)

@@ -35,6 +35,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private bool _suppressContractDateSynchronization;
     private bool _suppressTemplateItemChangeHandling;
     private bool _updatingTemplateDerivedValues;
+    private bool _isDisposed;
     private int _filterReloadVersion;
     private IReadOnlyList<LocalOffice>? _officeFilterSourceCache;
     private string _pendingFilterReloadSignature = string.Empty;
@@ -508,6 +509,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     public void CancelPendingBackgroundWork()
     {
+        if (_isDisposed)
+            return;
+
+        _isDisposed = true;
         CancelPendingFilterReload();
         CancelBillingHistoryLoad();
         CancelIncludedAssetHistoryLoad();
@@ -524,6 +529,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private void StartInitialRowsLoad()
     {
+        if (_isDisposed)
+            return;
+
         UiTaskHelper.Forget(
             ReloadAsync(),
             "RENTAL",
@@ -554,6 +562,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [RelayCommand]
     private async Task ReloadAsync()
     {
+        if (_isDisposed)
+            return;
+
         CancelPendingFilterReload();
         using var cts = new CancellationTokenSource();
         _filterReloadCts = cts;
@@ -570,6 +581,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private async Task ReloadCoreAsync(CancellationToken ct)
     {
+        if (_isDisposed)
+            return;
+
         if (IsBusy)
         {
             _pendingFilterReload = true;
@@ -601,6 +615,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 }, _session, ct);
 
                 ct.ThrowIfCancellationRequested();
+                if (_isDisposed)
+                    return;
+
                 if (requestVersion != Volatile.Read(ref _filterReloadVersion))
                     return;
 
@@ -641,7 +658,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             }
             finally
             {
-                IsBusy = false;
+                if (!_isDisposed)
+                    IsBusy = false;
                 _activeFilterReloadSignature = string.Empty;
             }
         }
@@ -2492,6 +2510,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private void ScheduleContractDateRefresh(bool preserveCurrentValue = false, bool updateSelectedRowBaselineIfUnchanged = false)
     {
+        if (_isDisposed)
+            return;
+
         _contractDateRefreshCts?.Cancel();
         _contractDateRefreshCts?.Dispose();
 
@@ -2510,7 +2531,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             "렌탈 계약 체결일 조회",
             ex =>
             {
-                if (ex is OperationCanceledException)
+                if (_isDisposed || ex is OperationCanceledException)
                     return;
 
                 StatusMessage = $"계약 체결일 정보를 불러오지 못했습니다. {ex.Message}";
@@ -2524,11 +2545,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         string? baselineSignature = null,
         CancellationToken ct = default)
     {
+        if (_isDisposed)
+            return;
+
         if (preserveExistingValue && EditContractDate.HasValue)
             return;
 
         var contractDate = await ResolveContractDateFromSourcesAsync(ct);
         ct.ThrowIfCancellationRequested();
+        if (_isDisposed)
+            return;
+
         var shouldRefreshSelectedRowBaseline = updateSelectedRowBaselineIfUnchanged &&
                                               baselineSelectionId.HasValue &&
                                               SelectedRow?.SelectionId == baselineSelectionId.Value &&
@@ -2622,6 +2649,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         bool preserveSelection,
         bool autoIncludeAllCandidates = false)
     {
+        if (_isDisposed)
+            return;
+
         var signature = BuildCandidateAssetsLoadSignature(
             billingProfileId,
             customerId,
@@ -2659,7 +2689,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             "렌탈 청구 연결 장비 조회",
             ex =>
             {
-                if (ex is OperationCanceledException)
+                if (_isDisposed || ex is OperationCanceledException)
                     return;
 
                 StatusMessage = $"연결 장비 정보를 불러오지 못했습니다. {ex.Message}";
@@ -2715,6 +2745,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         try
         {
+            if (_isDisposed)
+                return;
+
             var previousSelections = preserveSelection
                 ? CandidateAssets.Where(asset => asset.IsSelected).Select(asset => asset.AssetId).ToHashSet()
                 : new HashSet<Guid>();
@@ -2751,6 +2784,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             }
 
             ct.ThrowIfCancellationRequested();
+            if (_isDisposed)
+                return;
 
             _includedAssetPool.Clear();
             _includedAssetPool.AddRange(includedAssets
@@ -4126,7 +4161,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private void RequestFilterReload()
     {
-        if (_suppressFilterReload)
+        if (_isDisposed || _suppressFilterReload)
             return;
 
         if (!CanReloadForSearchText())
@@ -4158,10 +4193,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             ResolveFilterReloadDebounceDelay(),
             async () =>
             {
+                if (_isDisposed)
+                    return;
+
                 _pendingFilterReloadSignature = string.Empty;
                 await ReloadCoreAsync(cts.Token);
             },
-            ex => StatusMessage = $"렌탈 청구 목록을 다시 불러오지 못했습니다. {ex.Message}");
+            ex =>
+            {
+                if (!_isDisposed)
+                    StatusMessage = $"렌탈 청구 목록을 다시 불러오지 못했습니다. {ex.Message}";
+            });
     }
 
     private void CancelPendingFilterReload()

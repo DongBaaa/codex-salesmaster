@@ -25,6 +25,7 @@ public partial class CustomerManagementWindow : Window
         _local = local;
         _session = session;
         DataContext = vm;
+        Closed += (_, _) => _vm.Dispose();
     }
 
     private void CreateCustomerButton_Click(object sender, RoutedEventArgs e)

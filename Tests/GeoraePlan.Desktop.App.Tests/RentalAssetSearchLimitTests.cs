@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using System.Reflection;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
@@ -69,6 +70,37 @@ public sealed class RentalAssetSearchLimitTests
             var service = new RentalStateService(db);
             var rows = await service.GetAssetRowsAsync(
                 new RentalAssetFilter { SearchText = "Linked Alpha" },
+                CreateAdminSession());
+
+            var row = Assert.Single(rows, current => current.Source.Id == assetId);
+            Assert.Equal("Linked Alpha Customer", row.CurrentCustomerName);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetAssetRowsAsync_UsesBoundedLinkedCustomerMatchKeyPrefixMatches()
+    {
+        PrepareAppRoot("georaeplan-rental-asset-linked-customer-matchkey-search");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Linked Alpha Customer"));
+            db.RentalAssets.Add(CreateLinkedCustomerAsset(assetId, customerId));
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var rows = await service.GetAssetRowsAsync(
+                new RentalAssetFilter { SearchText = "LinkedAlpha" },
                 CreateAdminSession());
 
             var row = Assert.Single(rows, current => current.Source.Id == assetId);
@@ -227,6 +259,89 @@ public sealed class RentalAssetSearchLimitTests
     }
 
     [Fact]
+    public async Task GetAssetRowsAsync_SearchFindsInstallSiteNamePrefix()
+    {
+        PrepareAppRoot("georaeplan-rental-asset-search-install-site");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var asset = CreateRentalAsset(2001, "Install Site Customer");
+            asset.InstallLocation = string.Empty;
+            asset.InstallSiteName = "Install Site Search Tower";
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var rows = await service.GetAssetRowsAsync(
+                new RentalAssetFilter
+                {
+                    SearchText = "Install Site Search",
+                    MaxResults = RentalStateService.AssetSearchResultLimit
+                },
+                CreateAdminSession());
+
+            var row = Assert.Single(rows);
+            Assert.Equal(asset.Id, row.Source.Id);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetAssetRowsAsync_SearchFindsManagementNumberAndMachinePrefixes()
+    {
+        PrepareAppRoot("georaeplan-rental-asset-search-split-fields");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var managementAsset = CreateRentalAsset(3001, "ZZZ Management Search Customer");
+            managementAsset.ManagementNumber = "ASSET-SPLIT-MN-001";
+            var machineAsset = CreateRentalAsset(3002, "ZZZ Machine Search Customer");
+            machineAsset.MachineNumber = "ASSET-SPLIT-SN-001";
+
+            db.RentalAssets.AddRange(managementAsset, machineAsset);
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var managementRows = await service.GetAssetRowsAsync(
+                new RentalAssetFilter
+                {
+                    SearchText = "ASSET-SPLIT-MN",
+                    MaxResults = RentalStateService.AssetSearchResultLimit
+                },
+                CreateAdminSession());
+
+            var managementRow = Assert.Single(managementRows);
+            Assert.Equal(managementAsset.Id, managementRow.Source.Id);
+
+            var machineRows = await service.GetAssetRowsAsync(
+                new RentalAssetFilter
+                {
+                    SearchText = "ASSET-SPLIT-SN",
+                    MaxResults = RentalStateService.AssetSearchResultLimit
+                },
+                CreateAdminSession());
+
+            var machineRow = Assert.Single(machineRows);
+            Assert.Equal(machineAsset.Id, machineRow.Source.Id);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task GetAssetRowsAsync_SearchKeepsPinnedAssetOutsideSearchWindow()
     {
         PrepareAppRoot("georaeplan-rental-asset-search-pinned-window");
@@ -305,6 +420,29 @@ public sealed class RentalAssetSearchLimitTests
         }
     }
 
+    [Fact]
+    public void SortAssetViewRowsForDisplay_OrdersByCustomerManagementNumberAndId()
+    {
+        var alphaSameLowId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var alphaSecondId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        var alphaSameHighId = Guid.Parse("00000000-0000-0000-0000-000000000003");
+        var betaId = Guid.Parse("00000000-0000-0000-0000-000000000004");
+        var rows = new List<RentalAssetViewRow>
+        {
+            CreateSortableAssetRow(betaId, "Beta", "MN-001"),
+            CreateSortableAssetRow(alphaSameHighId, "Alpha", "MN-001"),
+            CreateSortableAssetRow(alphaSecondId, "Alpha", "MN-002"),
+            CreateSortableAssetRow(alphaSameLowId, "alpha", "MN-001")
+        };
+
+        var sorted = InvokeSortAssetViewRowsForDisplay(rows);
+
+        Assert.Same(rows, sorted);
+        Assert.Equal(
+            new[] { alphaSameLowId, alphaSameHighId, alphaSecondId, betaId },
+            sorted.Select(row => row.Source.Id).ToArray());
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -340,6 +478,31 @@ public sealed class RentalAssetSearchLimitTests
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow
         };
+    }
+
+    private static RentalAssetViewRow CreateSortableAssetRow(
+        Guid assetId,
+        string customerName,
+        string managementNumber)
+        => new()
+        {
+            CurrentCustomerName = customerName,
+            Source = new LocalRentalAsset
+            {
+                Id = assetId,
+                ManagementNumber = managementNumber
+            }
+        };
+
+    private static List<RentalAssetViewRow> InvokeSortAssetViewRowsForDisplay(List<RentalAssetViewRow> rows)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "SortAssetViewRowsForDisplay",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object?[] { rows });
+        return Assert.IsType<List<RentalAssetViewRow>>(result);
     }
 
     private static LocalCustomer CreateCustomer(Guid customerId, string customerName)

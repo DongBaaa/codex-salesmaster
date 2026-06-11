@@ -94,6 +94,114 @@ public sealed class RentalBillingSearchLimitTests
         }
     }
 
+    [Fact]
+    public async Task GetBillingRowsAsync_SearchFindsBusinessNumberAndItemNamePrefixes()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-search-split-fields");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var businessProfile = CreateBillingProfile(1001, "ZZZ Business Prefix Customer");
+            businessProfile.BusinessNumber = "SPLIT-BIZ-001";
+            var itemProfile = CreateBillingProfile(1002, "ZZZ Item Prefix Customer");
+            itemProfile.ItemName = "SPLIT-ITEM Copier";
+
+            db.RentalBillingProfiles.AddRange(businessProfile, itemProfile);
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var businessRows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    SearchText = "SPLIT-BIZ",
+                    ExpandCustomerSummaryRows = true,
+                    IncludeHistoryRows = false,
+                    ReferenceDate = new DateOnly(2026, 6, 11)
+                },
+                CreateAdminSession());
+
+            var businessRow = Assert.Single(businessRows);
+            Assert.Equal(businessProfile.Id, businessRow.Source.Id);
+
+            var itemRows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    SearchText = "SPLIT-ITEM",
+                    ExpandCustomerSummaryRows = true,
+                    IncludeHistoryRows = false,
+                    ReferenceDate = new DateOnly(2026, 6, 11)
+                },
+                CreateAdminSession());
+
+            var itemRow = Assert.Single(itemRows);
+            Assert.Equal(itemProfile.Id, itemRow.Source.Id);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetBillingRowsAsync_UnlinkedAssetSearchFindsManagementNumberAndMachinePrefixes()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-unlinked-search-split-fields");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var managementAsset = CreateUnlinkedBillingAsset(Guid.NewGuid(), "ZZZ Unlinked Management Customer");
+            managementAsset.ManagementNumber = "UNLINKED-SPLIT-MN-001";
+            var machineAsset = CreateUnlinkedBillingAsset(Guid.NewGuid(), "ZZZ Unlinked Machine Customer");
+            machineAsset.MachineNumber = "UNLINKED-SPLIT-SN-001";
+
+            db.RentalAssets.AddRange(managementAsset, machineAsset);
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var managementRows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    SearchText = "UNLINKED-SPLIT-MN",
+                    Status = "\uCCAD\uAD6C\uC124\uC815 \uD544\uC694",
+                    ExpandCustomerSummaryRows = true,
+                    IncludeHistoryRows = false,
+                    ReferenceDate = new DateOnly(2026, 6, 11)
+                },
+                CreateAdminSession());
+
+            var managementRow = Assert.Single(managementRows);
+            Assert.False(managementRow.HasPersistedProfile);
+            Assert.Equal(managementAsset.Id, managementRow.SelectionId);
+
+            var machineRows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    SearchText = "UNLINKED-SPLIT-SN",
+                    Status = "\uCCAD\uAD6C\uC124\uC815 \uD544\uC694",
+                    ExpandCustomerSummaryRows = true,
+                    IncludeHistoryRows = false,
+                    ReferenceDate = new DateOnly(2026, 6, 11)
+                },
+                CreateAdminSession());
+
+            var machineRow = Assert.Single(machineRows);
+            Assert.False(machineRow.HasPersistedProfile);
+            Assert.Equal(machineAsset.Id, machineRow.SelectionId);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
 
     [Fact]
     public void ResolveBillingRunsForRowBuild_ListModeKeepsOnlyPastRunsButHistoryModeKeepsAllRuns()
@@ -125,6 +233,60 @@ public sealed class RentalBillingSearchLimitTests
         Assert.Contains(historyModeRuns, run => run.RunId == currentRun.RunId);
         Assert.Contains(historyModeRuns, run => run.RunId == futureRun.RunId);
         Assert.DoesNotContain(historyModeRuns, run => run.RunId == Guid.Empty);
+    }
+
+    [Fact]
+    public void LimitBillingRunsForHistoryDisplay_KeepsNewestRunsAcrossProfiles()
+    {
+        var firstProfileId = Guid.Parse("00000000-0000-0000-0000-000000000101");
+        var secondProfileId = Guid.Parse("00000000-0000-0000-0000-000000000102");
+        var firstOldRun = CreateBillingRun(Guid.NewGuid(), new DateOnly(2026, 1, 25));
+        var firstNewRun = CreateBillingRun(Guid.NewGuid(), new DateOnly(2026, 5, 25));
+        var secondNewestRun = CreateBillingRun(Guid.NewGuid(), new DateOnly(2026, 6, 25));
+        var secondMiddleRun = CreateBillingRun(Guid.NewGuid(), new DateOnly(2026, 4, 25));
+        var emptyRun = CreateBillingRun(Guid.Empty, new DateOnly(2026, 7, 25));
+
+        var limitedRuns = InvokeLimitBillingRunsForHistoryDisplay(
+            new Dictionary<Guid, List<RentalBillingRunModel>>
+            {
+                [firstProfileId] = new() { firstOldRun, firstNewRun },
+                [secondProfileId] = new() { secondNewestRun, secondMiddleRun, emptyRun }
+            },
+            maxDisplayRows: 3);
+
+        Assert.Equal(new[] { firstProfileId, secondProfileId }.OrderBy(id => id).ToArray(), limitedRuns.Keys.OrderBy(id => id).ToArray());
+        Assert.Equal(new[] { firstNewRun.RunId }, limitedRuns[firstProfileId].Select(run => run.RunId).ToArray());
+        Assert.Equal(
+            new[] { secondNewestRun.RunId, secondMiddleRun.RunId },
+            limitedRuns[secondProfileId].Select(run => run.RunId).ToArray());
+        Assert.DoesNotContain(limitedRuns.SelectMany(pair => pair.Value), run => run.RunId == Guid.Empty);
+    }
+
+    [Fact]
+    public void BuildBillingHistoryRows_DeduplicatesByDisplayOrderAndKeepsStableTies()
+    {
+        var profile = CreateBillingProfile(1, "History Customer");
+        var duplicateRunId = Guid.NewGuid();
+        var sameDateFirst = CreateBillingRun(Guid.NewGuid(), new DateOnly(2026, 6, 25));
+        sameDateFirst.PeriodLabel = "same-first";
+        var olderDuplicate = CreateBillingRun(duplicateRunId, new DateOnly(2026, 5, 25));
+        olderDuplicate.PeriodLabel = "older-duplicate";
+        var sameDateSecond = CreateBillingRun(Guid.NewGuid(), new DateOnly(2026, 6, 25));
+        sameDateSecond.PeriodLabel = "same-second";
+        var newerDuplicate = CreateBillingRun(duplicateRunId, new DateOnly(2026, 5, 30));
+        newerDuplicate.PeriodLabel = "newer-duplicate";
+        var emptyIdRun = CreateBillingRun(Guid.Empty, new DateOnly(2026, 7, 25));
+
+        var rows = InvokeBuildBillingHistoryRows(
+            profile,
+            "History Customer",
+            new[] { sameDateFirst, olderDuplicate, sameDateSecond, newerDuplicate, emptyIdRun },
+            new DateOnly(2026, 6, 11));
+
+        Assert.Equal(
+            new[] { "same-first", "same-second", "newer-duplicate" },
+            rows.Select(row => row.PeriodLabel).ToArray());
+        Assert.DoesNotContain(rows, row => row.BillingRunId == Guid.Empty);
     }
 
 
@@ -498,9 +660,9 @@ public sealed class RentalBillingSearchLimitTests
     }
 
     [Fact]
-    public void BuildGroupedBillingAccumulatorMetrics_DeduplicatesInstallLocationsInFirstSeenOrder()
+    public void BuildGroupedBillingMetrics_DeduplicatesInstallLocationsInFirstSeenOrder()
     {
-        var metrics = InvokeBuildGroupedBillingAccumulatorMetrics(new List<RentalBillingViewRow>
+        var metrics = InvokeBuildGroupedBillingMetrics(new List<RentalBillingViewRow>
         {
             new() { InstallLocationDisplay = " 1\uCE35 ", InstallSiteName = "\uBBF8\uC0AC\uC6A9 A" },
             new() { InstallLocationDisplay = "1\uCE35", InstallSiteName = "\uBBF8\uC0AC\uC6A9 B" },
@@ -694,11 +856,11 @@ public sealed class RentalBillingSearchLimitTests
         return Assert.IsType<List<RentalBillingHistoryRow>>(result);
     }
 
-    private static object InvokeBuildGroupedBillingAccumulatorMetrics(
+    private static object InvokeBuildGroupedBillingMetrics(
         IReadOnlyList<RentalBillingViewRow> rows)
     {
         var method = typeof(RentalStateService).GetMethod(
-            "BuildGroupedBillingAccumulatorMetrics",
+            "BuildGroupedBillingMetrics",
             BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
 
@@ -757,6 +919,49 @@ public sealed class RentalBillingSearchLimitTests
         var result = method!.Invoke(null, new object?[] { runs, referenceDate, includeHistoryRows });
         Assert.NotNull(result);
         return Assert.IsType<List<RentalBillingRunModel>>(result);
+    }
+
+    private static Dictionary<Guid, List<RentalBillingRunModel>> InvokeLimitBillingRunsForHistoryDisplay(
+        IReadOnlyDictionary<Guid, List<RentalBillingRunModel>> billingRunsByProfile,
+        int maxDisplayRows)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "LimitBillingRunsForHistoryDisplay",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object?[] { billingRunsByProfile, maxDisplayRows });
+        Assert.NotNull(result);
+        return Assert.IsType<Dictionary<Guid, List<RentalBillingRunModel>>>(result);
+    }
+
+    private static List<RentalBillingHistoryRow> InvokeBuildBillingHistoryRows(
+        LocalRentalBillingProfile profile,
+        string customerDisplayName,
+        IReadOnlyCollection<RentalBillingRunModel> runs,
+        DateOnly referenceDate)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "BuildBillingHistoryRows",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var parameters = method!.GetParameters();
+        var settlementByRun = CreateEmptyDictionaryForParameter(parameters[3].ParameterType);
+        var invoiceByRun = CreateEmptyDictionaryForParameter(parameters[4].ParameterType);
+        var result = method.Invoke(null, new object?[] { profile, customerDisplayName, runs, settlementByRun, invoiceByRun, referenceDate });
+        Assert.NotNull(result);
+        return Assert.IsType<List<RentalBillingHistoryRow>>(result);
+    }
+
+    private static object CreateEmptyDictionaryForParameter(Type parameterType)
+    {
+        var genericArguments = parameterType.GetGenericArguments();
+        Assert.Equal(2, genericArguments.Length);
+        var dictionaryType = typeof(Dictionary<,>).MakeGenericType(genericArguments[0], genericArguments[1]);
+        var dictionary = Activator.CreateInstance(dictionaryType);
+        Assert.NotNull(dictionary);
+        return dictionary!;
     }
 
     private static RentalBillingRunModel CreateBillingRun(Guid runId, DateOnly scheduledDate)

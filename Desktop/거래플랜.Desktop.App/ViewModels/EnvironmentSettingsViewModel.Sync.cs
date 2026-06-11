@@ -512,8 +512,18 @@ public sealed partial class EnvironmentSettingsViewModel
         if (IsBusy)
             return;
 
-        StatusMessage = "운영 점검 알림을 불러오는 중...";
-        var result = await _dataIntegrity.ScanAsync(_session);
+        IsBusy = true;
+        DataIntegrityScanResult result;
+        try
+        {
+            StatusMessage = "운영 점검 알림을 불러오는 중...";
+            result = await _dataIntegrity.ScanAsync(_session);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+
         if (!result.HasIssues)
         {
             var ownerWindow = ResolveActiveWindow();
@@ -583,32 +593,43 @@ public sealed partial class EnvironmentSettingsViewModel
         if (action == DataIntegrityAlertAction.None)
             return;
 
-        if (action == DataIntegrityAlertAction.Details)
+        if (_isDataIntegrityNavigationBusy)
+            return;
+
+        _isDataIntegrityNavigationBusy = true;
+        try
         {
-            await OpenDataIntegrityIssueWindowAsync(summary?.Code, ownerOverride, existingScanResult);
-            return;
+            if (action == DataIntegrityAlertAction.Details)
+            {
+                await OpenDataIntegrityIssueWindowAsync(summary?.Code, ownerOverride, existingScanResult);
+                return;
+            }
+
+            if (action != DataIntegrityAlertAction.Fix)
+                return;
+
+            if (summary is null)
+            {
+                await OpenDataIntegrityIssueWindowAsync(null, ownerOverride, existingScanResult);
+                return;
+            }
+
+            var scan = existingScanResult ?? await _dataIntegrity.ScanAsync(_session);
+            var issues = scan.Issues
+                .Where(issue => string.Equals(issue.Code, summary.Code, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (issues.Count == 1)
+            {
+                await OpenDataIntegrityFixTargetAsync(issues[0], ownerOverride);
+                return;
+            }
+
+            await OpenDataIntegrityIssueWindowAsync(summary.Code, ownerOverride, scan);
         }
-
-        if (action != DataIntegrityAlertAction.Fix)
-            return;
-
-        if (summary is null)
+        finally
         {
-            await OpenDataIntegrityIssueWindowAsync(null, ownerOverride, existingScanResult);
-            return;
+            _isDataIntegrityNavigationBusy = false;
         }
-
-        var scan = existingScanResult ?? await _dataIntegrity.ScanAsync(_session);
-        var issues = scan.Issues
-            .Where(issue => string.Equals(issue.Code, summary.Code, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        if (issues.Count == 1)
-        {
-            await OpenDataIntegrityFixTargetAsync(issues[0], ownerOverride);
-            return;
-        }
-
-        await OpenDataIntegrityIssueWindowAsync(summary.Code, ownerOverride, scan);
     }
 
     private async Task OpenDataIntegrityIssueWindowAsync(

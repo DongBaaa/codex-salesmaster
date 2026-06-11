@@ -21,7 +21,11 @@ public partial class InventoryWindow : Window
         Activated += InventoryWindow_Activated;
         Closing += Window_Closing;
         Loaded += (_, _) => _editSessionMonitor?.Start();
-        Closed += (_, _) => _editSessionMonitor?.Dispose();
+        Closed += (_, _) =>
+        {
+            _editSessionMonitor?.Dispose();
+            vm.Dispose();
+        };
 
         _editSessionMonitor = EntityEditSessionMonitor.TryCreate(
             this,

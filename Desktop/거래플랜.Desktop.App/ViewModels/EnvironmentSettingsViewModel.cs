@@ -33,6 +33,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
 
     private Guid _companyProfileId = Guid.NewGuid();
     private int _assignedCompanyProfileLoadVersion;
+    private bool _isDataIntegrityNavigationBusy;
 
     [ObservableProperty] private string _statusMessage = "환경설정을 불러왔습니다.";
     [ObservableProperty] private bool _isBusy;

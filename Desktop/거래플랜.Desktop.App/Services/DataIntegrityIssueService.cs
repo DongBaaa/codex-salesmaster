@@ -331,41 +331,41 @@ public sealed class DataIntegrityIssueService
     {
         var totalStopwatch = Stopwatch.StartNew();
         var stepStopwatch = Stopwatch.StartNew();
-        var activeProfiles = await ApplyOperationalAlertRentalProfileScopePrefilter(
+        var activeProfiles = await SelectIntegrityRentalProfileProjection(ApplyOperationalAlertRentalProfileScopePrefilter(
                 _db.RentalBillingProfiles
                     .AsNoTracking()
                     .Where(profile => !profile.IsDeleted && profile.IsActive),
-                session)
+                session))
             .ToListAsync(ct);
-        var activeAssets = await ApplyOperationalAlertRentalAssetScopePrefilter(
+        var activeAssets = await SelectIntegrityRentalAssetProjection(ApplyOperationalAlertRentalAssetScopePrefilter(
                 _db.RentalAssets
                     .AsNoTracking()
                     .Where(asset => !asset.IsDeleted),
-                session)
+                session))
             .ToListAsync(ct);
-        var activeAssignmentHistories = await ApplyOperationalAlertRentalAssignmentHistoryScopePrefilter(
+        var activeAssignmentHistories = await SelectIntegrityAssignmentHistoryProjection(ApplyOperationalAlertRentalAssignmentHistoryScopePrefilter(
                 _db.RentalAssetAssignmentHistories
                     .AsNoTracking()
                     .Where(history => !history.IsDeleted),
-                session)
+                session))
             .ToListAsync(ct);
-        var activeCustomers = await ApplyOperationalAlertCustomerScopePrefilter(
+        var activeCustomers = await SelectIntegrityCustomerProjection(ApplyOperationalAlertCustomerScopePrefilter(
                 _db.Customers
                     .AsNoTracking()
                     .Where(customer => !customer.IsDeleted),
-                session)
+                session))
             .ToListAsync(ct);
-        var activeItems = await ApplyOperationalAlertItemScopePrefilter(
+        var activeItems = await SelectIntegrityItemProjection(ApplyOperationalAlertItemScopePrefilter(
                 _db.Items
                     .AsNoTracking()
                     .Where(item => !item.IsDeleted),
-                session)
+                session))
             .ToListAsync(ct);
-        var activeWarehouses = await ApplyOperationalAlertWarehouseScopePrefilter(
+        var activeWarehouses = await SelectIntegrityWarehouseProjection(ApplyOperationalAlertWarehouseScopePrefilter(
                 _db.Warehouses
                     .AsNoTracking()
                     .Where(warehouse => !warehouse.IsDeleted && warehouse.IsActive),
-                session)
+                session))
             .ToListAsync(ct);
         var activeInvoices = await ApplyOperationalAlertInvoiceScopePrefilter(
                 _db.Invoices
@@ -512,25 +512,30 @@ public sealed class DataIntegrityIssueService
         foreach (var group in scopedAssignmentHistories
                      .Where(history => history.IsCurrent)
                      .GroupBy(history => history.AssetId)
-                     .Where(group => group.Key != Guid.Empty && group.Count() > 1))
+                     .Where(group => group.Key != Guid.Empty))
         {
+            var currentHistories = group
+                .OrderByDescending(history => history.LinkedAtUtc)
+                .ToList();
+            if (currentHistories.Count <= 1)
+                continue;
+
             allAssetsById.TryGetValue(group.Key, out var asset);
-            var profile = group
+            var profile = currentHistories
                 .Select(history => history.BillingProfileId)
                 .Where(id => id.HasValue && id.Value != Guid.Empty)
                 .Select(id => activeProfilesById.TryGetValue(id!.Value, out var found) ? found : null)
                 .FirstOrDefault(found => found is not null);
-            var currentDisplays = group
-                .OrderByDescending(history => history.LinkedAtUtc)
+            var currentDisplays = currentHistories
                 .Take(5)
                 .Select(BuildHistoryDisplay)
                 .ToList();
-            var representativeHistory = group.OrderByDescending(history => history.LinkedAtUtc).First();
+            var representativeHistory = currentHistories[0];
 
             AddHistoryIssue(details, DataIntegrityIssueCodes.RentalAssetMultipleCurrentAssignments, representativeHistory, asset, profile,
-                currentValue: $"{group.Count():N0}건 / {string.Join(" / ", currentDisplays)}",
+                currentValue: $"{currentHistories.Count:N0}건 / {string.Join(" / ", currentDisplays)}",
                 expectedValue: "현재 임대이력 1건",
-                message: $"{FormatNullableGuid(group.Key)} 자산에 현재 임대이력이 {group.Count():N0}건 있습니다.");
+                message: $"{FormatNullableGuid(group.Key)} 자산에 현재 임대이력이 {currentHistories.Count:N0}건 있습니다.");
         }
 
         var assetTemplateRefs = new Dictionary<Guid, List<AssetTemplateReference>>();
@@ -693,7 +698,7 @@ public sealed class DataIntegrityIssueService
             }
         }
 
-        foreach (var group in assetTemplateRefs.Where(pair => pair.Value.Select(reference => reference.ProfileId).Distinct().Count() > 1))
+        foreach (var group in assetTemplateRefs)
         {
             if (!allAssetsById.TryGetValue(group.Key, out var asset))
                 continue;
@@ -701,10 +706,13 @@ public sealed class DataIntegrityIssueService
             if (!IsInSessionScope(assetScope.TenantCode, assetScope.ResponsibleOfficeCode, session))
                 continue;
 
-            var distinctProfiles = group.Value
-                .GroupBy(reference => reference.ProfileId)
-                .Select(grouping => grouping.First().ProfileDisplayName)
-                .ToList();
+            var distinctProfilesById = new Dictionary<Guid, string>();
+            foreach (var reference in group.Value)
+                distinctProfilesById.TryAdd(reference.ProfileId, reference.ProfileDisplayName);
+            if (distinctProfilesById.Count <= 1)
+                continue;
+
+            var distinctProfiles = distinctProfilesById.Values.ToList();
             AddIssue(details, DataIntegrityIssueCodes.RentalAssetInMultipleProfileTemplates, null, asset,
                 entityType: "렌탈 자산",
                 entityId: asset.Id,
@@ -813,6 +821,101 @@ public sealed class DataIntegrityIssueService
             warningThreshold: TimeSpan.FromSeconds(2));
     }
 
+    private static IQueryable<LocalRentalBillingProfile> SelectIntegrityRentalProfileProjection(
+        IQueryable<LocalRentalBillingProfile> query)
+        => query.Select(profile => new LocalRentalBillingProfile
+        {
+            Id = profile.Id,
+            TenantCode = profile.TenantCode,
+            OfficeCode = profile.OfficeCode,
+            CustomerId = profile.CustomerId,
+            CustomerName = profile.CustomerName,
+            ItemName = profile.ItemName,
+            InstallSiteName = profile.InstallSiteName,
+            ManagementCompanyCode = profile.ManagementCompanyCode,
+            MonthlyAmount = profile.MonthlyAmount,
+            ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
+            BillingTemplateJson = profile.BillingTemplateJson,
+            IsActive = profile.IsActive
+        });
+
+    private static IQueryable<LocalRentalAsset> SelectIntegrityRentalAssetProjection(
+        IQueryable<LocalRentalAsset> query)
+        => query.Select(asset => new LocalRentalAsset
+        {
+            Id = asset.Id,
+            TenantCode = asset.TenantCode,
+            OfficeCode = asset.OfficeCode,
+            CustomerId = asset.CustomerId,
+            BillingProfileId = asset.BillingProfileId,
+            ManagementId = asset.ManagementId,
+            ManagementNumber = asset.ManagementNumber,
+            ManagementCompanyCode = asset.ManagementCompanyCode,
+            CurrentCustomerName = asset.CurrentCustomerName,
+            BillingEligibilityStatus = asset.BillingEligibilityStatus,
+            ItemName = asset.ItemName,
+            CustomerName = asset.CustomerName,
+            MonthlyFee = asset.MonthlyFee,
+            ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+            AssetStatus = asset.AssetStatus
+        });
+
+    private static IQueryable<LocalRentalAssetAssignmentHistory> SelectIntegrityAssignmentHistoryProjection(
+        IQueryable<LocalRentalAssetAssignmentHistory> query)
+        => query.Select(history => new LocalRentalAssetAssignmentHistory
+        {
+            Id = history.Id,
+            AssetId = history.AssetId,
+            BillingProfileId = history.BillingProfileId,
+            CustomerId = history.CustomerId,
+            TenantCode = history.TenantCode,
+            ResponsibleOfficeCode = history.ResponsibleOfficeCode,
+            CustomerName = history.CustomerName,
+            ItemName = history.ItemName,
+            MachineNumber = history.MachineNumber,
+            ManagementNumber = history.ManagementNumber,
+            ContractStartDate = history.ContractStartDate,
+            ContractEndDate = history.ContractEndDate,
+            LinkedAtUtc = history.LinkedAtUtc,
+            IsCurrent = history.IsCurrent
+        });
+
+    private static IQueryable<LocalCustomer> SelectIntegrityCustomerProjection(
+        IQueryable<LocalCustomer> query)
+        => query.Select(customer => new LocalCustomer
+        {
+            Id = customer.Id,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            NameOriginal = customer.NameOriginal,
+            BusinessNumber = customer.BusinessNumber,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode
+        });
+
+    private static IQueryable<LocalItem> SelectIntegrityItemProjection(
+        IQueryable<LocalItem> query)
+        => query.Select(item => new LocalItem
+        {
+            Id = item.Id,
+            TenantCode = item.TenantCode,
+            OfficeCode = item.OfficeCode,
+            NameOriginal = item.NameOriginal,
+            SpecificationOriginal = item.SpecificationOriginal,
+            TrackingType = item.TrackingType,
+            CurrentStock = item.CurrentStock
+        });
+
+    private static IQueryable<LocalWarehouse> SelectIntegrityWarehouseProjection(
+        IQueryable<LocalWarehouse> query)
+        => query.Select(warehouse => new LocalWarehouse
+        {
+            Id = warehouse.Id,
+            OfficeCode = warehouse.OfficeCode,
+            Code = warehouse.Code,
+            Name = warehouse.Name,
+            IsActive = warehouse.IsActive
+        });
+
     private async Task<Dictionary<Guid, LocalCustomer>> LoadCustomersByIdsAsync(
         IReadOnlyCollection<Guid> customerIds,
         CancellationToken ct)
@@ -833,6 +936,11 @@ public sealed class DataIntegrityIssueService
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(customer => scopedBatchIds.Contains(customer.Id) && !customer.IsDeleted)
+                .Select(customer => new LocalCustomer
+                {
+                    Id = customer.Id,
+                    NameOriginal = customer.NameOriginal
+                })
                 .ToListAsync(ct);
 
             foreach (var customer in batchRows)
@@ -861,6 +969,12 @@ public sealed class DataIntegrityIssueService
             rows.AddRange(await _db.ItemWarehouseStocks
                 .AsNoTracking()
                 .Where(stock => scopedBatchIds.Contains(stock.ItemId))
+                .Select(stock => new LocalItemWarehouseStock
+                {
+                    ItemId = stock.ItemId,
+                    WarehouseCode = stock.WarehouseCode,
+                    Quantity = stock.Quantity
+                })
                 .ToListAsync(ct));
         }
 
@@ -889,6 +1003,12 @@ public sealed class DataIntegrityIssueService
                     movement.IsActive &&
                     movement.ItemId.HasValue &&
                     scopedBatchIds.Contains(movement.ItemId.Value))
+                .Select(movement => new LocalInventoryMovement
+                {
+                    ItemId = movement.ItemId,
+                    WarehouseCode = movement.WarehouseCode,
+                    IsActive = movement.IsActive
+                })
                 .ToListAsync(ct));
         }
 
@@ -914,15 +1034,16 @@ public sealed class DataIntegrityIssueService
             var batchRows = await _db.InvoiceLines
                 .AsNoTracking()
                 .Where(line => scopedBatchIds.Contains(line.InvoiceId) && !line.IsDeleted)
-                .Select(line => new
+                .GroupBy(line => line.InvoiceId)
+                .Select(group => new
                 {
-                    line.InvoiceId,
-                    line.LineAmount
+                    InvoiceId = group.Key,
+                    TotalAmount = group.Sum(line => (double)line.LineAmount)
                 })
                 .ToListAsync(ct);
 
-            foreach (var group in batchRows.GroupBy(row => row.InvoiceId))
-                rows[group.Key] = group.Sum(row => row.LineAmount);
+            foreach (var row in batchRows)
+                rows[row.InvoiceId] = (decimal)row.TotalAmount;
         }
 
         return rows;
@@ -947,15 +1068,16 @@ public sealed class DataIntegrityIssueService
             var batchRows = await _db.Payments
                 .AsNoTracking()
                 .Where(payment => scopedBatchIds.Contains(payment.InvoiceId) && !payment.IsDeleted)
-                .Select(payment => new
+                .GroupBy(payment => payment.InvoiceId)
+                .Select(group => new
                 {
-                    payment.InvoiceId,
-                    payment.Amount
+                    InvoiceId = group.Key,
+                    TotalAmount = group.Sum(payment => (double)payment.Amount)
                 })
                 .ToListAsync(ct);
 
-            foreach (var group in batchRows.GroupBy(row => row.InvoiceId))
-                rows[group.Key] = group.Sum(row => row.Amount);
+            foreach (var row in batchRows)
+                rows[row.InvoiceId] = (decimal)row.TotalAmount;
         }
 
         return rows;

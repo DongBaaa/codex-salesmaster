@@ -8,7 +8,7 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
-public sealed partial class CustomerManagementViewModel : ObservableObject
+public sealed partial class CustomerManagementViewModel : ObservableObject, IDisposable
 {
     private const string AllCategoriesOption = "전체";
     private const string AllOfficesOption = "전체";
@@ -24,6 +24,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
     private readonly List<EnvironmentCustomerRow> _allRows = new();
     private Dictionary<Guid, string> _categoryNames = new();
     private Dictionary<Guid, CustomerContractSummaryItem> _contractSummaryMap = new();
+    private bool _isDisposed;
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private string _selectedCategoryFilter = AllCategoriesOption;
@@ -55,6 +56,16 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
         SortOptions.Add(SortByOfficeOption);
     }
 
+    public void Dispose()
+    {
+        if (_isDisposed)
+            return;
+
+        _isDisposed = true;
+        _filterDebouncer.Dispose();
+        DetachRowHandlers();
+    }
+
     public async Task InitializeAsync()
     {
         await ReloadAsync();
@@ -63,6 +74,9 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
     [RelayCommand]
     private async Task ReloadAsync()
     {
+        if (_isDisposed)
+            return;
+
         IsBusy = true;
         try
         {
@@ -76,13 +90,17 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
             _contractSummaryMap = await _local.GetCustomerContractSummaryMapAsync(_session, ContractAlertWindowDays);
             var alertItems = await _local.GetCustomerContractAlertsAsync(_session, ContractAlertWindowDays);
 
+            if (_isDisposed)
+                return;
+
             DetachRowHandlers();
             _allRows.Clear();
             _allRows.AddRange(customers.Select(customer => new EnvironmentCustomerRow(
                 customer,
                 ResolveCategoryName(customer.CategoryId, customer.TradeType),
                 ResolveContractSummary(customer.Id))));
-            AttachRowHandlers();
+            if (!_isDisposed)
+                AttachRowHandlers();
             ReloadOfficeFilters();
             RefreshContractAlertState(alertItems);
             ApplyFilter();
@@ -90,7 +108,8 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
         }
         finally
         {
-            IsBusy = false;
+            if (!_isDisposed)
+                IsBusy = false;
         }
     }
 
@@ -321,21 +340,33 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
 
     partial void OnSearchTextChanged(string value)
     {
+        if (_isDisposed)
+            return;
+
         _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(300), ApplyFilter);
     }
 
     partial void OnSelectedCategoryFilterChanged(string value)
     {
+        if (_isDisposed)
+            return;
+
         _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(200), ApplyFilter);
     }
 
     partial void OnSelectedOfficeFilterChanged(string value)
     {
+        if (_isDisposed)
+            return;
+
         _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(200), ApplyFilter);
     }
 
     partial void OnSelectedSortOptionChanged(string value)
     {
+        if (_isDisposed)
+            return;
+
         _filterDebouncer.Debounce(TimeSpan.FromMilliseconds(150), ApplyFilter);
     }
 
@@ -417,6 +448,9 @@ public sealed partial class CustomerManagementViewModel : ObservableObject
 
     private void CustomerRow_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (_isDisposed)
+            return;
+
         if (!string.IsNullOrWhiteSpace(e.PropertyName) &&
             !string.Equals(e.PropertyName, nameof(EnvironmentCustomerRow.ResponsibleOfficeCode), StringComparison.Ordinal))
             return;

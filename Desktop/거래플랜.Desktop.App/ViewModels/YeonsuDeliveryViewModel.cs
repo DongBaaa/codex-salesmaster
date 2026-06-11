@@ -9,7 +9,7 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
-public sealed partial class YeonsuDeliveryViewModel : ObservableObject
+public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposable
 {
     private const string FeeRateSettingKey = "YeonsuDelivery.FeeRatePercent";
     private readonly LocalStateService _local;
@@ -18,6 +18,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
     private readonly List<LedgerSourceRow> _sourceRows = new();
     private bool _isInitializing;
     private bool _suppressFeeRateTextChanged;
+    private bool _isDisposed;
     private decimal _feeRatePercentValue = 20m;
 
     public const string WarehouseOptionAll = "전체";
@@ -81,8 +82,20 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
         _session = session;
     }
 
+    public void Dispose()
+    {
+        if (_isDisposed)
+            return;
+
+        _isDisposed = true;
+        _filterDebouncer.Dispose();
+    }
+
     public async Task InitializeAsync()
     {
+        if (_isDisposed)
+            return;
+
         _isInitializing = true;
         try
         {
@@ -97,7 +110,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     partial void OnCustomerSearchTextChanged(string value)
     {
-        if (_isInitializing || IsBusy)
+        if (_isDisposed || _isInitializing || IsBusy)
             return;
 
         RebuildDeliveries();
@@ -111,7 +124,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     partial void OnSelectedViewTargetChanged(string value)
     {
-        if (_isInitializing || IsBusy)
+        if (_isDisposed || _isInitializing || IsBusy)
             return;
 
         if (NormalizeEntryCategoryForViewTarget())
@@ -125,7 +138,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     partial void OnSelectedEntryCategoryChanged(string value)
     {
-        if (_isInitializing || IsBusy)
+        if (_isDisposed || _isInitializing || IsBusy)
             return;
 
         if (string.Equals(SelectedViewTarget, ViewTargetPurchase, StringComparison.OrdinalIgnoreCase) &&
@@ -141,7 +154,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     partial void OnFeeRatePercentTextChanged(string value)
     {
-        if (_isInitializing || _suppressFeeRateTextChanged)
+        if (_isDisposed || _isInitializing || _suppressFeeRateTextChanged)
             return;
 
         if (!TryParseFeeRate(value, out var normalizedFeeRate))
@@ -156,7 +169,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     private void RequestLedgerReload()
     {
-        if (_isInitializing)
+        if (_isDisposed || _isInitializing)
             return;
 
         _filterDebouncer.DebounceAsync(
@@ -168,6 +181,9 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
     [RelayCommand]
     private async Task LoadDeliveriesAsync()
     {
+        if (_isDisposed)
+            return;
+
         if (FromDate > ToDate)
         {
             StatusMessage = "조회 시작일이 종료일보다 늦습니다.";
@@ -194,6 +210,9 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
             var costAllocationMap = (await _local.GetCostAllocationsForInvoicesAsync(invoices.Select(invoice => invoice.Id)))
                 .GroupBy(allocation => allocation.SalesInvoiceLineId)
                 .ToDictionary(group => group.Key, group => group.ToList());
+
+            if (_isDisposed)
+                return;
 
             _sourceRows.Clear();
             foreach (var invoice in invoices)
@@ -244,13 +263,17 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
         }
         finally
         {
-            IsBusy = false;
+            if (!_isDisposed)
+                IsBusy = false;
         }
     }
 
     [RelayCommand]
     private async Task ResetFiltersAsync()
     {
+        if (_isDisposed)
+            return;
+
         FromDate = new DateOnly(DateTime.Today.Year, DateTime.Today.Month, 1);
         ToDate = DateOnly.FromDateTime(DateTime.Today);
         CustomerSearchText = string.Empty;
@@ -283,6 +306,9 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject
 
     private void RebuildDeliveries()
     {
+        if (_isDisposed)
+            return;
+
         IEnumerable<LedgerSourceRow> filtered = _sourceRows;
         var keyword = (CustomerSearchText ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(keyword))

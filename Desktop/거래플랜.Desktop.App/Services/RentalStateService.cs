@@ -44,6 +44,7 @@ public sealed partial class RentalStateService
     {
         PropertyNameCaseInsensitive = true
     };
+    private static readonly IReadOnlyDictionary<Guid, string> EmptyCustomerNameMap = new Dictionary<Guid, string>();
     private sealed record RentalBillingCustomerLookup(Guid Id, string? NameOriginal, string? BusinessNumber);
 
     private sealed record RentalBillingProfileDisplayLookup(
@@ -54,6 +55,8 @@ public sealed partial class RentalStateService
         string? InstallSiteName);
 
     private sealed record RentalCustomerCandidateLookup(Guid Id, string? NameOriginal, string? BusinessNumber);
+
+    private readonly record struct RentalCustomerSearchCandidate(Guid Id, string? NameOriginal);
 
     private static readonly IReadOnlyDictionary<string, string> ImportLocationStatusMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -312,40 +315,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var alertWindow = alertDays.Count == 0 ? 7 : alertDays.Max();
 
         var offices = await GetOfficeMapAsync(ct);
-        var profiles = await ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session)
+        var profiles = await SelectDashboardBillingProfileProjection(ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session)
             .Where(profile => profile.IsActive)
+        )
             .ToListAsync(ct);
-        var assets = await ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+        var assets = await SelectDashboardAssetProjection(ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
             .Where(asset => asset.AssetStatus != "폐기")
+        )
             .ToListAsync(ct);
-        var customerQuery = _db.Customers.AsNoTracking().Where(customer => !customer.IsDeleted);
-        var currentTenantCode = ResolveCurrentRentalTenantCode(session);
-        if (CanAdministrativelyViewAllRental(session))
-        {
-            // 전체 범위 admin만 로컬 캐시에 남아 있는 타 tenant 데이터까지 조회할 수 있다.
-        }
-        else if (CanViewAllRental(session))
-        {
-            customerQuery = customerQuery.Where(customer => customer.TenantCode == currentTenantCode);
-        }
-        else
-        {
-            var readableOfficeCodes = GetReadableOfficeCodes(session);
-            customerQuery = customerQuery.Where(customer =>
-                customer.TenantCode == currentTenantCode &&
-                readableOfficeCodes.Contains(customer.ResponsibleOfficeCode));
-        }
-
-        var customers = await customerQuery
-            .Select(customer => new RentalCustomerCandidateLookup(
-                customer.Id,
-                customer.NameOriginal,
-                customer.BusinessNumber))
-            .ToListAsync(ct);
-        var assetsByProfile = assets
-            .Where(asset => asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
-            .GroupBy(asset => asset.BillingProfileId!.Value)
-            .ToDictionary(group => group.Key, group => group.ToList());
+        var assetsByProfile = BuildDashboardAssetsByProfile(assets);
 
         var alertItems = profiles
             .Select(profile => ToAlertItem(profile, offices, referenceDate))
@@ -381,10 +359,32 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Where(profile => !assetsByProfile.TryGetValue(profile.Id, out var linkedAssets) || linkedAssets.Count == 0)
             .ToList();
 
-        var unresolvedLinkItems = new List<RentalLinkReviewItem>();
-        unresolvedLinkItems.AddRange(billingCustomerUnlinked
+        var billingCustomerReviewProfiles = billingCustomerUnlinked
             .OrderBy(profile => profile.CustomerName, StringComparer.CurrentCultureIgnoreCase)
             .Take(12)
+            .ToList();
+        var assetCustomerReviewAssets = assetCustomerUnlinked
+            .OrderBy(asset => asset.CustomerName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
+            .Take(12)
+            .ToList();
+        var assetBillingReviewAssets = assetBillingUnlinked
+            .OrderBy(asset => asset.CustomerName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
+            .Take(12)
+            .ToList();
+        var assetlessReviewProfiles = assetlessProfiles
+            .OrderBy(profile => profile.CustomerName, StringComparer.CurrentCultureIgnoreCase)
+            .Take(12)
+            .ToList();
+        var customers = await LoadDashboardReviewCustomerCandidatesAsync(
+            BuildDashboardCustomerCandidateQuery(session),
+            billingCustomerReviewProfiles,
+            assetCustomerReviewAssets,
+            ct);
+
+        var unresolvedLinkItems = new List<RentalLinkReviewItem>();
+        unresolvedLinkItems.AddRange(billingCustomerReviewProfiles
             .Select(profile => new RentalLinkReviewItem
             {
                 QueueType = "프로필 고객 미연결",
@@ -395,10 +395,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 CandidateCount = CountCustomerCandidates(customers, profile.BusinessNumber, profile.CustomerName),
                 ReviewNote = string.Join(" / ", BuildBillingDataIssues(profile, assetsByProfile.GetValueOrDefault(profile.Id, []), GetBillingTemplateItems(profile, assetsByProfile.GetValueOrDefault(profile.Id, []))))
             }));
-        unresolvedLinkItems.AddRange(assetCustomerUnlinked
-            .OrderBy(asset => asset.CustomerName, StringComparer.CurrentCultureIgnoreCase)
-            .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
-            .Take(12)
+        unresolvedLinkItems.AddRange(assetCustomerReviewAssets
             .Select(asset => new RentalLinkReviewItem
             {
                 QueueType = "자산 고객 미연결",
@@ -409,10 +406,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 CandidateCount = CountCustomerCandidates(customers, null, asset.CustomerName, asset.CurrentCustomerName),
                 ReviewNote = string.Join(" / ", BuildAssetDataIssues(asset))
             }));
-        unresolvedLinkItems.AddRange(assetBillingUnlinked
-            .OrderBy(asset => asset.CustomerName, StringComparer.CurrentCultureIgnoreCase)
-            .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
-            .Take(12)
+        unresolvedLinkItems.AddRange(assetBillingReviewAssets
             .Select(asset => new RentalLinkReviewItem
             {
                 QueueType = "자산 청구 미연결",
@@ -423,9 +417,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 CandidateCount = CountBillingProfileCandidates(profiles, asset),
                 ReviewNote = string.Join(" / ", BuildAssetDataIssues(asset).DefaultIfEmpty("자동 연결 후보 확인 필요"))
             }));
-        unresolvedLinkItems.AddRange(assetlessProfiles
-            .OrderBy(profile => profile.CustomerName, StringComparer.CurrentCultureIgnoreCase)
-            .Take(12)
+        unresolvedLinkItems.AddRange(assetlessReviewProfiles
             .Select(profile => new RentalLinkReviewItem
             {
                 QueueType = "자산 없는 청구프로필",
@@ -461,6 +453,180 @@ WHERE ""AssignedUsername"" <> '';", ct);
         };
 
         return summary;
+    }
+
+    private static IQueryable<LocalRentalBillingProfile> SelectDashboardBillingProfileProjection(
+        IQueryable<LocalRentalBillingProfile> query)
+        => query.Select(profile => new LocalRentalBillingProfile
+        {
+            Id = profile.Id,
+            TenantCode = profile.TenantCode,
+            OfficeCode = profile.OfficeCode,
+            CustomerId = profile.CustomerId,
+            CustomerName = profile.CustomerName,
+            BusinessNumber = profile.BusinessNumber,
+            ItemName = profile.ItemName,
+            BillingType = profile.BillingType,
+            InstallSiteName = profile.InstallSiteName,
+            ManagementCompanyCode = profile.ManagementCompanyCode,
+            BillingMethod = profile.BillingMethod,
+            BillingDay = profile.BillingDay,
+            BillingDayMode = profile.BillingDayMode,
+            BillingCycleMonths = profile.BillingCycleMonths,
+            BillingAnchorMonth = profile.BillingAnchorMonth,
+            DocumentIssueMode = profile.DocumentIssueMode,
+            DocumentLeadDays = profile.DocumentLeadDays,
+            MonthlyAmount = profile.MonthlyAmount,
+            BillingAnchorDate = profile.BillingAnchorDate,
+            BillingStartDate = profile.BillingStartDate,
+            ContractDate = profile.ContractDate,
+            ContractStartDate = profile.ContractStartDate,
+            LastBilledDate = profile.LastBilledDate,
+            ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
+            BillingTemplateJson = profile.BillingTemplateJson,
+            IsActive = profile.IsActive
+        });
+
+    private static IQueryable<LocalRentalAsset> SelectDashboardAssetProjection(
+        IQueryable<LocalRentalAsset> query)
+        => query.Select(asset => new LocalRentalAsset
+        {
+            Id = asset.Id,
+            TenantCode = asset.TenantCode,
+            OfficeCode = asset.OfficeCode,
+            CustomerId = asset.CustomerId,
+            BillingProfileId = asset.BillingProfileId,
+            ManagementNumber = asset.ManagementNumber,
+            ManagementCompanyCode = asset.ManagementCompanyCode,
+            CurrentCustomerName = asset.CurrentCustomerName,
+            InstallSiteName = asset.InstallSiteName,
+            BillingEligibilityStatus = asset.BillingEligibilityStatus,
+            ItemName = asset.ItemName,
+            CustomerName = asset.CustomerName,
+            InstallLocation = asset.InstallLocation,
+            MonthlyFee = asset.MonthlyFee,
+            RentalEndDate = asset.RentalEndDate,
+            ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+            AssetStatus = asset.AssetStatus
+        });
+
+    private static Dictionary<Guid, List<LocalRentalAsset>> BuildDashboardAssetsByProfile(
+        IReadOnlyCollection<LocalRentalAsset> assets)
+    {
+        var assetsByProfile = new Dictionary<Guid, List<LocalRentalAsset>>();
+        foreach (var asset in assets)
+        {
+            var profileId = asset.BillingProfileId;
+            if (!profileId.HasValue || profileId.Value == Guid.Empty)
+                continue;
+
+            if (!assetsByProfile.TryGetValue(profileId.Value, out var profileAssets))
+            {
+                profileAssets = new List<LocalRentalAsset>();
+                assetsByProfile[profileId.Value] = profileAssets;
+            }
+
+            profileAssets.Add(asset);
+        }
+
+        return assetsByProfile;
+    }
+
+    private IQueryable<LocalCustomer> BuildDashboardCustomerCandidateQuery(SessionState session)
+    {
+        var customerQuery = _db.Customers.AsNoTracking().Where(customer => !customer.IsDeleted);
+        var currentTenantCode = ResolveCurrentRentalTenantCode(session);
+        if (CanAdministrativelyViewAllRental(session))
+        {
+            // 전체 범위 admin만 로컬 캐시에 남아 있는 타 tenant 데이터까지 조회할 수 있다.
+            return customerQuery;
+        }
+
+        if (CanViewAllRental(session))
+            return customerQuery.Where(customer => customer.TenantCode == currentTenantCode);
+
+        var readableOfficeCodes = GetReadableOfficeCodes(session);
+        return customerQuery.Where(customer =>
+            customer.TenantCode == currentTenantCode &&
+            readableOfficeCodes.Contains(customer.ResponsibleOfficeCode));
+    }
+
+    private static async Task<List<RentalCustomerCandidateLookup>> LoadDashboardReviewCustomerCandidatesAsync(
+        IQueryable<LocalCustomer> customerQuery,
+        IReadOnlyCollection<LocalRentalBillingProfile> billingCustomerReviewProfiles,
+        IReadOnlyCollection<LocalRentalAsset> assetCustomerReviewAssets,
+        CancellationToken ct)
+    {
+        var businessNumbers = new List<string>();
+        var businessNumberKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var candidateNames = new List<string>();
+        var candidateNameKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var candidateNameMatchKeys = new List<string>();
+        var candidateNameMatchKeySet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var profile in billingCustomerReviewProfiles)
+        {
+            AddDashboardCustomerBusinessNumberCandidate(businessNumbers, businessNumberKeys, profile.BusinessNumber);
+            AddDashboardCustomerNameCandidate(candidateNames, candidateNameKeys, candidateNameMatchKeys, candidateNameMatchKeySet, profile.CustomerName);
+        }
+
+        foreach (var asset in assetCustomerReviewAssets)
+        {
+            AddDashboardCustomerNameCandidate(candidateNames, candidateNameKeys, candidateNameMatchKeys, candidateNameMatchKeySet, asset.CustomerName);
+            AddDashboardCustomerNameCandidate(candidateNames, candidateNameKeys, candidateNameMatchKeys, candidateNameMatchKeySet, asset.CurrentCustomerName);
+        }
+
+        if (businessNumbers.Count == 0 && candidateNames.Count == 0 && candidateNameMatchKeys.Count == 0)
+            return new List<RentalCustomerCandidateLookup>();
+
+        var hasBusinessNumbers = businessNumbers.Count > 0;
+        var hasCandidateNames = candidateNames.Count > 0;
+        var hasCandidateNameMatchKeys = candidateNameMatchKeys.Count > 0;
+        return await customerQuery
+            .Where(customer =>
+                (hasBusinessNumbers && businessNumbers.Contains(customer.BusinessNumber.Trim())) ||
+                (hasCandidateNames && candidateNames.Contains(customer.NameOriginal)) ||
+                (hasCandidateNameMatchKeys && candidateNameMatchKeys.Contains(customer.NameMatchKey.Trim())))
+            .Select(customer => new RentalCustomerCandidateLookup(
+                customer.Id,
+                customer.NameOriginal,
+                customer.BusinessNumber))
+            .ToListAsync(ct);
+    }
+
+    private static void AddDashboardCustomerBusinessNumberCandidate(
+        List<string> businessNumbers,
+        HashSet<string> businessNumberKeys,
+        string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+
+        var trimmed = value.Trim();
+        if (trimmed.Length > 0 && businessNumberKeys.Add(trimmed))
+            businessNumbers.Add(trimmed);
+    }
+
+    private static void AddDashboardCustomerNameCandidate(
+        List<string> candidateNames,
+        HashSet<string> candidateNameKeys,
+        List<string> candidateNameMatchKeys,
+        HashSet<string> candidateNameMatchKeySet,
+        string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+
+        var trimmed = value.Trim();
+        if (trimmed.Length == 0)
+            return;
+
+        if (candidateNameKeys.Add(trimmed))
+            candidateNames.Add(trimmed);
+
+        var matchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(trimmed);
+        if (matchKey.Length > 0 && candidateNameMatchKeySet.Add(matchKey))
+            candidateNameMatchKeys.Add(matchKey);
     }
 
     private static string ResolvePrimaryBillingCustomerName(LocalRentalBillingProfile profile)
@@ -523,51 +689,131 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .AsNoTracking()
             .Where(customer => !customer.IsDeleted);
 
-        IQueryable<LocalCustomer> prefixMatchedCustomers;
+        List<Guid> customerIds;
         if (string.IsNullOrWhiteSpace(normalizedKeyword))
         {
-            prefixMatchedCustomers = customers.Where(customer => customer.NameOriginal.StartsWith(keyword));
+            var prefixCandidates = await LoadBoundedCustomerSearchCandidatesAsync(
+                customers.Where(customer => customer.NameOriginal.StartsWith(keyword)),
+                AssetSearchCustomerMatchLimit,
+                ct);
+            customerIds = MergeCustomerSearchCandidateIds(AssetSearchCustomerMatchLimit, prefixCandidates);
         }
         else
         {
-            prefixMatchedCustomers = customers.Where(customer =>
-                customer.NameOriginal.StartsWith(keyword) ||
-                (customer.NameMatchKey ?? string.Empty).StartsWith(normalizedKeyword));
+            var nameOriginalCandidates = await LoadBoundedCustomerSearchCandidatesAsync(
+                customers.Where(customer => customer.NameOriginal.StartsWith(keyword)),
+                AssetSearchCustomerMatchLimit,
+                ct);
+            var nameMatchKeyCandidates = await LoadBoundedCustomerSearchCandidatesAsync(
+                customers.Where(customer =>
+                    customer.NameMatchKey != null &&
+                    customer.NameMatchKey.StartsWith(normalizedKeyword)),
+                AssetSearchCustomerMatchLimit,
+                ct);
+            customerIds = MergeCustomerSearchCandidateIds(
+                AssetSearchCustomerMatchLimit,
+                nameOriginalCandidates,
+                nameMatchKeyCandidates);
         }
-
-        var customerIds = await prefixMatchedCustomers
-            .OrderBy(customer => customer.NameOriginal)
-            .Select(customer => customer.Id)
-            .Distinct()
-            .Take(AssetSearchCustomerMatchLimit)
-            .ToListAsync(ct);
         if (customerIds.Count >= AssetSearchCustomerMatchLimit)
             return customerIds;
 
-        IQueryable<LocalCustomer> containsMatchedCustomers;
+        var remainingLimit = AssetSearchCustomerMatchLimit - customerIds.Count;
+        List<Guid> containsCustomerIds;
         if (string.IsNullOrWhiteSpace(normalizedKeyword))
         {
-            containsMatchedCustomers = customers.Where(customer => customer.NameOriginal.Contains(keyword));
+            var containsQuery = customers.Where(customer => customer.NameOriginal.Contains(keyword));
+            if (customerIds.Count > 0)
+                containsQuery = containsQuery.Where(customer => !customerIds.Contains(customer.Id));
+
+            var containsCandidates = await LoadBoundedCustomerSearchCandidatesAsync(containsQuery, remainingLimit, ct);
+            containsCustomerIds = MergeCustomerSearchCandidateIds(remainingLimit, containsCandidates);
         }
         else
         {
-            containsMatchedCustomers = customers.Where(customer =>
-                customer.NameOriginal.Contains(keyword) ||
-                (customer.NameMatchKey ?? string.Empty).Contains(normalizedKeyword));
+            var containsNameOriginalQuery = customers.Where(customer => customer.NameOriginal.Contains(keyword));
+            var containsNameMatchKeyQuery = customers.Where(customer =>
+                customer.NameMatchKey != null &&
+                customer.NameMatchKey.Contains(normalizedKeyword));
+            if (customerIds.Count > 0)
+            {
+                containsNameOriginalQuery = containsNameOriginalQuery.Where(customer => !customerIds.Contains(customer.Id));
+                containsNameMatchKeyQuery = containsNameMatchKeyQuery.Where(customer => !customerIds.Contains(customer.Id));
+            }
+
+            var containsNameOriginalCandidates = await LoadBoundedCustomerSearchCandidatesAsync(
+                containsNameOriginalQuery,
+                remainingLimit,
+                ct);
+            var containsNameMatchKeyCandidates = await LoadBoundedCustomerSearchCandidatesAsync(
+                containsNameMatchKeyQuery,
+                remainingLimit,
+                ct);
+            containsCustomerIds = MergeCustomerSearchCandidateIds(
+                remainingLimit,
+                containsNameOriginalCandidates,
+                containsNameMatchKeyCandidates);
         }
 
-        if (customerIds.Count > 0)
-            containsMatchedCustomers = containsMatchedCustomers.Where(customer => !customerIds.Contains(customer.Id));
-
-        var remainingLimit = AssetSearchCustomerMatchLimit - customerIds.Count;
-        var containsCustomerIds = await containsMatchedCustomers
-            .OrderBy(customer => customer.NameOriginal)
-            .Select(customer => customer.Id)
-            .Distinct()
-            .Take(remainingLimit)
-            .ToListAsync(ct);
         customerIds.AddRange(containsCustomerIds);
         return customerIds;
+    }
+
+    private static async Task<List<RentalCustomerSearchCandidate>> LoadBoundedCustomerSearchCandidatesAsync(
+        IQueryable<LocalCustomer> query,
+        int maxResults,
+        CancellationToken ct)
+    {
+        if (maxResults <= 0)
+            return new List<RentalCustomerSearchCandidate>();
+
+        return await query
+            .OrderBy(customer => customer.NameOriginal)
+            .Select(customer => new RentalCustomerSearchCandidate(
+                customer.Id,
+                customer.NameOriginal))
+            .Take(maxResults)
+            .ToListAsync(ct);
+    }
+
+    private static List<Guid> MergeCustomerSearchCandidateIds(
+        int maxResults,
+        params IReadOnlyList<RentalCustomerSearchCandidate>[] candidateGroups)
+    {
+        if (maxResults <= 0 || candidateGroups.Length == 0)
+            return new List<Guid>();
+
+        var candidatesById = new Dictionary<Guid, RentalCustomerSearchCandidate>();
+        foreach (var group in candidateGroups)
+        {
+            foreach (var candidate in group)
+            {
+                if (candidate.Id != Guid.Empty)
+                    candidatesById.TryAdd(candidate.Id, candidate);
+            }
+        }
+
+        if (candidatesById.Count == 0)
+            return new List<Guid>();
+
+        var candidates = candidatesById.Values.ToList();
+        candidates.Sort(CompareCustomerSearchCandidates);
+        if (candidates.Count > maxResults)
+            candidates.RemoveRange(maxResults, candidates.Count - maxResults);
+
+        var ids = new List<Guid>(candidates.Count);
+        foreach (var candidate in candidates)
+            ids.Add(candidate.Id);
+
+        return ids;
+    }
+
+    private static int CompareCustomerSearchCandidates(
+        RentalCustomerSearchCandidate left,
+        RentalCustomerSearchCandidate right)
+    {
+        var nameCompare = StringComparer.CurrentCultureIgnoreCase.Compare(left.NameOriginal, right.NameOriginal);
+        return nameCompare != 0 ? nameCompare : left.Id.CompareTo(right.Id);
     }
 
     private static string ResolveAssetCustomerDisplayName(
@@ -607,18 +853,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (assets.Count == 0)
             return;
 
-        var customerIdsNeedingLookup = assets
-            .Where(asset =>
-                asset.CustomerId.HasValue &&
-                asset.CustomerId.Value != Guid.Empty &&
-                string.IsNullOrWhiteSpace(asset.CurrentCustomerName) &&
-                string.IsNullOrWhiteSpace(asset.CustomerName))
-            .Select(asset => asset.CustomerId!.Value)
-            .Distinct()
-            .ToList();
-        var customerNameMap = customerIdsNeedingLookup.Count == 0
-            ? new Dictionary<Guid, string>()
-            : await GetCustomerNameMapAsync(customerIdsNeedingLookup, ct);
+        List<Guid>? customerIdsNeedingLookup = null;
+        HashSet<Guid>? seenCustomerIds = null;
+        foreach (var asset in assets)
+        {
+            if (!NeedsAssetCustomerNameLookup(asset))
+                continue;
+
+            var customerId = asset.CustomerId!.Value;
+            seenCustomerIds ??= new HashSet<Guid>();
+            if (!seenCustomerIds.Add(customerId))
+                continue;
+
+            customerIdsNeedingLookup ??= new List<Guid>();
+            customerIdsNeedingLookup.Add(customerId);
+        }
+
+        var customerNameMap = customerIdsNeedingLookup is { Count: > 0 }
+            ? await GetCustomerNameMapAsync(customerIdsNeedingLookup, ct)
+            : EmptyCustomerNameMap;
 
         foreach (var asset in assets)
         {
@@ -626,6 +879,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
             ApplyResolvedAssetCustomerDisplayName(asset, customerNameMap);
         }
     }
+
+    private static bool NeedsAssetCustomerNameLookup(LocalRentalAsset asset)
+        => asset.CustomerId.HasValue &&
+           asset.CustomerId.Value != Guid.Empty &&
+           string.IsNullOrWhiteSpace(asset.CurrentCustomerName) &&
+           string.IsNullOrWhiteSpace(asset.CustomerName);
 
     private static string BuildBillingProfileDisplayName(
         LocalRentalBillingProfile profile,
@@ -901,11 +1160,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return await ApplyBillingProfileSearchContainsFilter(baseQuery, keyword).ToListAsync(ct);
 
         var profiles = new List<LocalRentalBillingProfile>(profileResultLimit.Value);
-        await AddDistinctBillingProfileSearchResultsAsync(
+        await AddDistinctBillingProfilePrefixSearchResultsAsync(
             profiles,
-            ApplyBillingProfileSearchPrefixFilter(baseQuery, keyword),
+            baseQuery,
+            keyword,
             profileResultLimit.Value,
-            orderByListColumns: true,
             ct);
 
         if (profiles.Count < profileResultLimit.Value)
@@ -932,9 +1191,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (remaining <= 0)
             return;
 
-        var existingIds = profiles.Select(profile => profile.Id).ToList();
-        if (existingIds.Count > 0)
+        if (profiles.Count > 0)
+        {
+            var existingIds = BuildExistingBillingProfileIds(profiles);
             query = query.Where(profile => !existingIds.Contains(profile.Id));
+        }
 
         if (orderByListColumns)
             query = query.OrderBy(profile => profile.CustomerName).ThenBy(profile => profile.ItemName);
@@ -945,14 +1206,112 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profiles.AddRange(nextProfiles);
     }
 
-    private static IQueryable<LocalRentalBillingProfile> ApplyBillingProfileSearchPrefixFilter(
+    private static async Task AddDistinctBillingProfilePrefixSearchResultsAsync(
+        List<LocalRentalBillingProfile> profiles,
+        IQueryable<LocalRentalBillingProfile> baseQuery,
+        string keyword,
+        int maxResults,
+        CancellationToken ct)
+    {
+        var remaining = maxResults - profiles.Count;
+        if (remaining <= 0)
+            return;
+
+        if (profiles.Count > 0)
+        {
+            var existingIds = BuildExistingBillingProfileIds(profiles);
+            baseQuery = baseQuery.Where(profile => !existingIds.Contains(profile.Id));
+        }
+
+        var customerNameCandidates = await LoadBoundedBillingProfileSearchCandidatesAsync(
+            baseQuery.Where(profile => profile.CustomerName.StartsWith(keyword)),
+            remaining,
+            ct);
+        var businessNumberCandidates = await LoadBoundedBillingProfileSearchCandidatesAsync(
+            baseQuery.Where(profile => profile.BusinessNumber.StartsWith(keyword)),
+            remaining,
+            ct);
+        var itemNameCandidates = await LoadBoundedBillingProfileSearchCandidatesAsync(
+            baseQuery.Where(profile => profile.ItemName.StartsWith(keyword)),
+            remaining,
+            ct);
+        var notesCandidates = await LoadBoundedBillingProfileSearchCandidatesAsync(
+            baseQuery.Where(profile => profile.Notes.StartsWith(keyword)),
+            remaining,
+            ct);
+
+        profiles.AddRange(MergeBillingProfileSearchCandidates(
+            remaining,
+            customerNameCandidates,
+            businessNumberCandidates,
+            itemNameCandidates,
+            notesCandidates));
+    }
+
+    private static async Task<List<LocalRentalBillingProfile>> LoadBoundedBillingProfileSearchCandidatesAsync(
         IQueryable<LocalRentalBillingProfile> query,
-        string keyword)
-        => query.Where(profile =>
-            profile.CustomerName.StartsWith(keyword) ||
-            profile.BusinessNumber.StartsWith(keyword) ||
-            profile.ItemName.StartsWith(keyword) ||
-            profile.Notes.StartsWith(keyword));
+        int maxResults,
+        CancellationToken ct)
+    {
+        if (maxResults <= 0)
+            return new List<LocalRentalBillingProfile>();
+
+        return await query
+            .OrderBy(profile => profile.CustomerName)
+            .ThenBy(profile => profile.ItemName)
+            .ThenBy(profile => profile.Id)
+            .Take(maxResults)
+            .ToListAsync(ct);
+    }
+
+    private static List<LocalRentalBillingProfile> MergeBillingProfileSearchCandidates(
+        int maxResults,
+        params IReadOnlyList<LocalRentalBillingProfile>[] candidateGroups)
+    {
+        if (maxResults <= 0 || candidateGroups.Length == 0)
+            return new List<LocalRentalBillingProfile>();
+
+        var candidatesById = new Dictionary<Guid, LocalRentalBillingProfile>();
+        foreach (var group in candidateGroups)
+        {
+            foreach (var candidate in group)
+            {
+                if (candidate.Id != Guid.Empty)
+                    candidatesById.TryAdd(candidate.Id, candidate);
+            }
+        }
+
+        if (candidatesById.Count == 0)
+            return new List<LocalRentalBillingProfile>();
+
+        var candidates = candidatesById.Values.ToList();
+        candidates.Sort(CompareBillingProfilesForListDisplay);
+        if (candidates.Count > maxResults)
+            candidates.RemoveRange(maxResults, candidates.Count - maxResults);
+
+        return candidates;
+    }
+
+    private static int CompareBillingProfilesForListDisplay(
+        LocalRentalBillingProfile left,
+        LocalRentalBillingProfile right)
+    {
+        var customerCompare = StringComparer.CurrentCultureIgnoreCase.Compare(left.CustomerName, right.CustomerName);
+        if (customerCompare != 0)
+            return customerCompare;
+
+        var itemCompare = StringComparer.CurrentCultureIgnoreCase.Compare(left.ItemName, right.ItemName);
+        return itemCompare != 0 ? itemCompare : left.Id.CompareTo(right.Id);
+    }
+
+    private static List<Guid> BuildExistingBillingProfileIds(IReadOnlyList<LocalRentalBillingProfile> profiles)
+    {
+        var ids = new List<Guid>(profiles.Count);
+        foreach (var profile in profiles)
+            ids.Add(profile.Id);
+
+        return ids;
+    }
 
     private static IQueryable<LocalRentalBillingProfile> ApplyBillingProfileSearchContainsFilter(
         IQueryable<LocalRentalBillingProfile> query,
@@ -977,36 +1336,22 @@ WHERE ""AssignedUsername"" <> '';", ct);
         int maxDisplayRows,
         CancellationToken ct = default)
     {
-        var ids = profileIds
-            .Where(id => id != Guid.Empty)
-            .Distinct()
-            .ToList();
+        var ids = BuildDistinctNonEmptyIds(profileIds);
         if (ids.Count == 0)
             return Array.Empty<RentalBillingHistoryRow>();
 
         await EnsureAdministrativeBusinessCachesAsync(session, ct);
 
-        var profiles = await ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session)
-            .Where(profile => ids.Contains(profile.Id))
-            .OrderBy(profile => profile.CustomerName)
-            .ThenBy(profile => profile.ItemName)
-            .ToListAsync(ct);
+        var profiles = await LoadBillingHistoryProfilesAsync(ids, session, ct);
         if (profiles.Count == 0)
             return Array.Empty<RentalBillingHistoryRow>();
 
         var customerNameMap = await GetBillingProfileCustomerNameMapAsync(profiles, ct);
-        var billingRunsByProfile = profiles.ToDictionary(
-            profile => profile.Id,
-            profile => DeduplicateBillingRuns(GetBillingRuns(profile)));
+        var billingRunsByProfile = BuildBillingRunsByProfile(profiles);
         var displayBillingRunsByProfile = maxDisplayRows > 0
             ? LimitBillingRunsForHistoryDisplay(billingRunsByProfile, maxDisplayRows)
             : billingRunsByProfile;
-        var allRunIds = displayBillingRunsByProfile.Values
-            .SelectMany(runs => runs)
-            .Select(run => run.RunId)
-            .Where(id => id != Guid.Empty)
-            .Distinct()
-            .ToList();
+        var allRunIds = CollectBillingRunReferenceIds(displayBillingRunsByProfile);
         var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(allRunIds, ct);
 
         var rows = new List<RentalBillingHistoryRow>();
@@ -1032,6 +1377,32 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ToList();
     }
 
+    private async Task<List<LocalRentalBillingProfile>> LoadBillingHistoryProfilesAsync(
+        IReadOnlyCollection<Guid> profileIds,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var ids = BuildDistinctNonEmptyIds(profileIds);
+        if (ids.Count == 0)
+            return new List<LocalRentalBillingProfile>();
+
+        var profiles = new List<LocalRentalBillingProfile>(ids.Count);
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            var batchProfiles = await ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session)
+                .Where(profile => scopedBatchIds.Contains(profile.Id))
+                .ToListAsync(ct);
+            profiles.AddRange(batchProfiles);
+        }
+
+        if (profiles.Count > 1)
+            profiles.Sort(CompareBillingProfilesForListDisplay);
+
+        return profiles;
+    }
+
     private async Task<List<RentalBillingViewRow>> BuildBillingProfileRowsAsync(
         IReadOnlyList<LocalRentalBillingProfile> profiles,
         SessionState session,
@@ -1044,15 +1415,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return new List<RentalBillingViewRow>();
 
         var stepStopwatch = Stopwatch.StartNew();
-        var profileIds = profiles.Select(profile => profile.Id).ToList();
+        var profileIds = BuildBillingProfileIds(profiles);
         var billingAssets = await LoadBillingAssetsForProfilesAsync(profileIds, session, ct);
         ct.ThrowIfCancellationRequested();
         LogRentalLoadStep("Rental billing linked asset query", stepStopwatch, $"assets={billingAssets.Count:N0}, profiles={profiles.Count:N0}");
 
         stepStopwatch.Restart();
-        var assetsByProfile = billingAssets
-            .GroupBy(asset => asset.BillingProfileId!.Value)
-            .ToDictionary(group => group.Key, group => group.ToList());
+        var assetsByProfile = GroupBillingAssetsByProfileId(billingAssets);
         LogRentalLoadStep("Rental billing linked asset grouping", stepStopwatch, $"assetGroups={assetsByProfile.Count:N0}");
 
         stepStopwatch.Restart();
@@ -1112,15 +1481,59 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return rows;
     }
 
+    private static List<Guid> BuildBillingProfileIds(IReadOnlyList<LocalRentalBillingProfile> profiles)
+    {
+        var ids = new List<Guid>(profiles.Count);
+        foreach (var profile in profiles)
+        {
+            if (profile.Id != Guid.Empty)
+                ids.Add(profile.Id);
+        }
+
+        return ids;
+    }
+
+    private static List<Guid> BuildDistinctNonEmptyIds(IEnumerable<Guid> sourceIds)
+    {
+        var ids = new List<Guid>();
+        var seenIds = new HashSet<Guid>();
+        foreach (var id in sourceIds)
+        {
+            if (id != Guid.Empty && seenIds.Add(id))
+                ids.Add(id);
+        }
+
+        return ids;
+    }
+
+    private static Dictionary<Guid, List<LocalRentalAsset>> GroupBillingAssetsByProfileId(
+        IReadOnlyList<LocalRentalAsset> billingAssets)
+    {
+        var assetsByProfile = new Dictionary<Guid, List<LocalRentalAsset>>();
+        foreach (var asset in billingAssets)
+        {
+            if (!asset.BillingProfileId.HasValue || asset.BillingProfileId.Value == Guid.Empty)
+                continue;
+
+            var profileId = asset.BillingProfileId.Value;
+            if (!assetsByProfile.TryGetValue(profileId, out var profileAssets))
+            {
+                profileAssets = new List<LocalRentalAsset>();
+                assetsByProfile[profileId] = profileAssets;
+            }
+
+            profileAssets.Add(asset);
+        }
+
+        return assetsByProfile;
+    }
+
     private async Task<List<LocalRentalAsset>> LoadBillingAssetsForProfilesAsync(
         IReadOnlyCollection<Guid> profileIds,
         SessionState session,
         CancellationToken ct)
     {
-        var ids = profileIds
-            .Where(id => id != Guid.Empty)
-            .Distinct()
-            .ToList();
+        var ids = BuildDistinctNonEmptyIds(profileIds);
         if (ids.Count == 0)
             return new List<LocalRentalAsset>();
 
@@ -1188,14 +1601,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
         IReadOnlyList<LocalRentalBillingProfile> profiles,
         CancellationToken ct)
     {
-        var customerIds = profiles
-            .Where(profile =>
-                profile.CustomerId.HasValue &&
-                profile.CustomerId.Value != Guid.Empty &&
-                NeedsBillingProfileCustomerNameLookup(profile))
-            .Select(profile => profile.CustomerId!.Value)
-            .Distinct()
-            .ToList();
+        var customerIds = new List<Guid>();
+        var seenCustomerIds = new HashSet<Guid>();
+        foreach (var profile in profiles)
+        {
+            if (!profile.CustomerId.HasValue || profile.CustomerId.Value == Guid.Empty)
+                continue;
+
+            if (NeedsBillingProfileCustomerNameLookup(profile) && seenCustomerIds.Add(profile.CustomerId.Value))
+                customerIds.Add(profile.CustomerId.Value);
+        }
+
         if (customerIds.Count == 0)
             return new Dictionary<Guid, string>();
 
@@ -1527,7 +1943,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         DateOnly? OldestPastUnresolvedScheduledDate,
         string OldestPastUnresolvedPeriodLabel);
 
-    private readonly record struct GroupedBillingRowMetrics(
+    private readonly record struct GroupedBillingMetrics(
         int GroupedUnlinkedAssetCount,
         int GroupedSourceCount,
         DateOnly? NextBillingDate,
@@ -1545,9 +1961,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         decimal CurrentBilledAmount,
         bool HasDataIssue,
         RentalBillingHistorySummary HistorySummary,
-        List<RentalBillingHistoryRow> BillingHistoryRows);
-
-    private readonly record struct GroupedBillingAccumulatorMetrics(
+        List<RentalBillingHistoryRow> BillingHistoryRows,
         List<string> DistinctCycles,
         List<string> DistinctBillingTypes,
         List<string> DistinctAdvanceModes,
@@ -1591,48 +2005,98 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return new List<RentalBillingHistoryRow>();
 
         var referenceMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1);
-        return runs
-            .Where(run => run.RunId != Guid.Empty)
-            .OrderByDescending(run => run.ScheduledDate)
-            .ThenByDescending(run => run.PeriodEndDate)
-            .GroupBy(run => run.RunId)
-            .Select(group => group.First())
-            .Select(run =>
+        var runEntriesById = new Dictionary<Guid, BillingRunHistoryEntry>(runs.Count);
+        var sourceIndex = 0;
+        foreach (var run in runs)
+        {
+            if (run.RunId == Guid.Empty)
             {
-                var billedAmount = Math.Max(0m, run.BilledAmount);
-                if (invoiceByRun.TryGetValue(run.RunId, out var invoiceInfo) && invoiceInfo.TotalAmount > 0m)
-                    billedAmount = invoiceInfo.TotalAmount;
+                sourceIndex++;
+                continue;
+            }
 
-                var settlementInfo = settlementByRun.TryGetValue(run.RunId, out var foundSettlement)
-                    ? foundSettlement
-                    : new RentalBillingRunSettlementInfo(Math.Max(0m, run.SettledAmount), run.SettledDate);
-                var settledAmount = Math.Max(0m, settlementInfo.SettledAmount);
-                var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
-                var runMonth = new DateOnly(run.ScheduledDate.Year, run.ScheduledDate.Month, 1);
-                var isPastUnresolved = runMonth < referenceMonth && billedAmount > 0m && outstandingAmount > 0m;
-                var settlementStatus = ResolveBillingHistorySettlementStatus(profile, run, settledAmount, billedAmount, outstandingAmount);
+            if (!runEntriesById.TryGetValue(run.RunId, out var existing) ||
+                ShouldReplaceBillingHistoryRun(existing.Run, run))
+            {
+                runEntriesById[run.RunId] = new BillingRunHistoryEntry(run, sourceIndex);
+            }
 
-                return new RentalBillingHistoryRow
-                {
-                    BillingProfileId = profile.Id,
-                    BillingRunId = run.RunId,
-                    CustomerName = customerDisplayName,
-                    PeriodLabel = string.IsNullOrWhiteSpace(run.PeriodLabel)
-                        ? BuildBillingPeriodLabel(run.PeriodStartDate, run.PeriodEndDate)
-                        : run.PeriodLabel,
-                    ScheduledDate = run.ScheduledDate,
-                    BilledAmount = billedAmount,
-                    SettledAmount = settledAmount,
-                    OutstandingAmount = outstandingAmount,
-                    SettledDate = settlementInfo.LastSettledDate ?? run.SettledDate,
-                    BillingStatus = ResolveBillingHistoryStatus(run, outstandingAmount, settledAmount),
-                    SettlementStatus = settlementStatus,
-                    HasInvoice = invoiceByRun.ContainsKey(run.RunId),
-                    InvoiceId = invoiceByRun.TryGetValue(run.RunId, out var invoice) ? invoice.InvoiceId : null,
-                    IsPastUnresolved = isPastUnresolved
-                };
-            })
-            .ToList();
+            sourceIndex++;
+        }
+
+        if (runEntriesById.Count == 0)
+            return new List<RentalBillingHistoryRow>();
+
+        var orderedRunEntries = runEntriesById.Values.ToList();
+        orderedRunEntries.Sort(CompareBillingRunHistoryEntries);
+
+        var rows = new List<RentalBillingHistoryRow>(orderedRunEntries.Count);
+        foreach (var entry in orderedRunEntries)
+        {
+            var run = entry.Run;
+            var billedAmount = Math.Max(0m, run.BilledAmount);
+            if (invoiceByRun.TryGetValue(run.RunId, out var invoiceInfo) && invoiceInfo.TotalAmount > 0m)
+                billedAmount = invoiceInfo.TotalAmount;
+
+            var settlementInfo = settlementByRun.TryGetValue(run.RunId, out var foundSettlement)
+                ? foundSettlement
+                : new RentalBillingRunSettlementInfo(Math.Max(0m, run.SettledAmount), run.SettledDate);
+            var settledAmount = Math.Max(0m, settlementInfo.SettledAmount);
+            var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
+            var runMonth = new DateOnly(run.ScheduledDate.Year, run.ScheduledDate.Month, 1);
+            var isPastUnresolved = runMonth < referenceMonth && billedAmount > 0m && outstandingAmount > 0m;
+            var settlementStatus = ResolveBillingHistorySettlementStatus(profile, run, settledAmount, billedAmount, outstandingAmount);
+            var hasInvoice = invoiceByRun.TryGetValue(run.RunId, out var invoice);
+
+            rows.Add(new RentalBillingHistoryRow
+            {
+                BillingProfileId = profile.Id,
+                BillingRunId = run.RunId,
+                CustomerName = customerDisplayName,
+                PeriodLabel = string.IsNullOrWhiteSpace(run.PeriodLabel)
+                    ? BuildBillingPeriodLabel(run.PeriodStartDate, run.PeriodEndDate)
+                    : run.PeriodLabel,
+                ScheduledDate = run.ScheduledDate,
+                BilledAmount = billedAmount,
+                SettledAmount = settledAmount,
+                OutstandingAmount = outstandingAmount,
+                SettledDate = settlementInfo.LastSettledDate ?? run.SettledDate,
+                BillingStatus = ResolveBillingHistoryStatus(run, outstandingAmount, settledAmount),
+                SettlementStatus = settlementStatus,
+                HasInvoice = hasInvoice,
+                InvoiceId = hasInvoice ? invoice.InvoiceId : null,
+                IsPastUnresolved = isPastUnresolved
+            });
+        }
+
+        return rows;
+    }
+
+    private readonly record struct BillingRunHistoryEntry(RentalBillingRunModel Run, int SourceIndex);
+
+    private static bool ShouldReplaceBillingHistoryRun(
+        RentalBillingRunModel existing,
+        RentalBillingRunModel candidate)
+    {
+        if (candidate.ScheduledDate.DayNumber != existing.ScheduledDate.DayNumber)
+            return candidate.ScheduledDate.DayNumber > existing.ScheduledDate.DayNumber;
+
+        return candidate.PeriodEndDate.DayNumber > existing.PeriodEndDate.DayNumber;
+    }
+
+    private static int CompareBillingRunHistoryEntries(
+        BillingRunHistoryEntry left,
+        BillingRunHistoryEntry right)
+    {
+        var scheduledDateCompare = right.Run.ScheduledDate.DayNumber.CompareTo(left.Run.ScheduledDate.DayNumber);
+        if (scheduledDateCompare != 0)
+            return scheduledDateCompare;
+
+        var periodEndDateCompare = right.Run.PeriodEndDate.DayNumber.CompareTo(left.Run.PeriodEndDate.DayNumber);
+        if (periodEndDateCompare != 0)
+            return periodEndDateCompare;
+
+        return left.SourceIndex.CompareTo(right.SourceIndex);
     }
 
     private static RentalBillingHistorySummary BuildBillingHistorySummary(
@@ -1719,6 +2183,33 @@ WHERE ""AssignedUsername"" <> '';", ct);
             oldestPeriodLabel);
     }
 
+    private Dictionary<Guid, List<RentalBillingRunModel>> BuildBillingRunsByProfile(
+        IReadOnlyList<LocalRentalBillingProfile> profiles)
+    {
+        var runsByProfile = new Dictionary<Guid, List<RentalBillingRunModel>>(profiles.Count);
+        foreach (var profile in profiles)
+            runsByProfile[profile.Id] = DeduplicateBillingRuns(GetBillingRuns(profile));
+
+        return runsByProfile;
+    }
+
+    private static List<Guid> CollectBillingRunReferenceIds(
+        IReadOnlyDictionary<Guid, List<RentalBillingRunModel>> billingRunsByProfile)
+    {
+        var ids = new List<Guid>();
+        var seenIds = new HashSet<Guid>();
+        foreach (var pair in billingRunsByProfile)
+        {
+            foreach (var run in pair.Value)
+            {
+                if (run.RunId != Guid.Empty && seenIds.Add(run.RunId))
+                    ids.Add(run.RunId);
+            }
+        }
+
+        return ids;
+    }
+
     private static List<RentalBillingRunModel> DeduplicateBillingRuns(IEnumerable<RentalBillingRunModel> runs)
     {
         var result = new List<RentalBillingRunModel>();
@@ -1739,28 +2230,65 @@ WHERE ""AssignedUsername"" <> '';", ct);
         int maxDisplayRows)
     {
         if (maxDisplayRows <= 0)
-            return billingRunsByProfile.ToDictionary(pair => pair.Key, pair => pair.Value);
+        {
+            var copied = new Dictionary<Guid, List<RentalBillingRunModel>>(billingRunsByProfile.Count);
+            foreach (var pair in billingRunsByProfile)
+                copied[pair.Key] = pair.Value;
+
+            return copied;
+        }
 
         var normalizedDisplayLimit = Math.Clamp(maxDisplayRows, 1, 5_000);
-        return billingRunsByProfile
-            .SelectMany(pair => pair.Value
-                .Where(run => run.RunId != Guid.Empty)
-                .Select(run => new
-                {
-                    ProfileId = pair.Key,
-                    Run = run
-                }))
-            .OrderByDescending(entry => entry.Run.ScheduledDate)
-            .ThenByDescending(entry => entry.Run.PeriodEndDate)
-            .ThenBy(entry => entry.ProfileId)
-            .Take(normalizedDisplayLimit)
-            .GroupBy(entry => entry.ProfileId)
-            .ToDictionary(
-                group => group.Key,
-                group => group.Select(entry => entry.Run).ToList());
+        var entries = new List<BillingRunDisplayEntry>();
+        foreach (var pair in billingRunsByProfile)
+        {
+            foreach (var run in pair.Value)
+            {
+                if (run.RunId != Guid.Empty)
+                    entries.Add(new BillingRunDisplayEntry(pair.Key, run));
+            }
+        }
+
+        if (entries.Count == 0)
+            return new Dictionary<Guid, List<RentalBillingRunModel>>();
+
+        entries.Sort(CompareBillingRunDisplayEntries);
+        if (entries.Count > normalizedDisplayLimit)
+            entries.RemoveRange(normalizedDisplayLimit, entries.Count - normalizedDisplayLimit);
+
+        var result = new Dictionary<Guid, List<RentalBillingRunModel>>();
+        foreach (var entry in entries)
+        {
+            if (!result.TryGetValue(entry.ProfileId, out var profileRuns))
+            {
+                profileRuns = new List<RentalBillingRunModel>();
+                result[entry.ProfileId] = profileRuns;
+            }
+
+            profileRuns.Add(entry.Run);
+        }
+
+        return result;
     }
 
-    private static GroupedBillingRowMetrics BuildGroupedBillingRowMetrics(
+    private readonly record struct BillingRunDisplayEntry(Guid ProfileId, RentalBillingRunModel Run);
+
+    private static int CompareBillingRunDisplayEntries(
+        BillingRunDisplayEntry left,
+        BillingRunDisplayEntry right)
+    {
+        var scheduledDateCompare = right.Run.ScheduledDate.DayNumber.CompareTo(left.Run.ScheduledDate.DayNumber);
+        if (scheduledDateCompare != 0)
+            return scheduledDateCompare;
+
+        var periodEndDateCompare = right.Run.PeriodEndDate.DayNumber.CompareTo(left.Run.PeriodEndDate.DayNumber);
+        if (periodEndDateCompare != 0)
+            return periodEndDateCompare;
+
+        return left.ProfileId.CompareTo(right.ProfileId);
+    }
+
+    private static GroupedBillingMetrics BuildGroupedBillingMetrics(
         IReadOnlyList<RentalBillingViewRow> rows)
     {
         var groupedUnlinkedAssetCount = 0;
@@ -1784,8 +2312,70 @@ WHERE ""AssignedUsername"" <> '';", ct);
         DateOnly? oldestScheduledDate = null;
         string oldestPeriodLabel = string.Empty;
         var historyRows = new List<RentalBillingHistoryRow>();
+        var distinctCycles = new List<string>();
+        var distinctCycleKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctBillingTypes = new List<string>();
+        var distinctBillingTypeKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctAdvanceModes = new List<string>();
+        var distinctAdvanceModeKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctRunStatuses = new List<string>();
+        var distinctRunStatusKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctPeriodLabels = new List<string>();
+        var distinctPeriodLabelKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctSettlementStatuses = new List<string>();
+        var distinctSettlementStatusKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctDisplayStatuses = new List<string>();
+        var distinctDisplayStatusKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctInstallLocations = new List<string>();
+        var distinctInstallLocationKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var dataIssues = new List<string>();
+        var dataIssueKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var groupedSelectionIds = new List<Guid>();
+        var groupedSelectionIdSet = new HashSet<Guid>();
+        var groupedPersistedProfileIds = new List<Guid>();
+        var groupedPersistedProfileIdSet = new HashSet<Guid>();
+        var groupedProfileRevisions = new Dictionary<Guid, long>();
         foreach (var row in rows)
         {
+            AddDistinctTrimmed(distinctCycles, distinctCycleKeys, row.BillingCycleDisplay);
+            AddDistinctTrimmed(distinctBillingTypes, distinctBillingTypeKeys, row.BillingType);
+            AddDistinctTrimmed(distinctAdvanceModes, distinctAdvanceModeKeys, row.BillingAdvanceMode);
+            AddDistinctTrimmed(distinctRunStatuses, distinctRunStatusKeys, row.CurrentBillingRunStatus);
+            AddDistinctTrimmed(distinctPeriodLabels, distinctPeriodLabelKeys, row.CurrentBillingPeriodLabel);
+            AddDistinctTrimmed(distinctSettlementStatuses, distinctSettlementStatusKeys, row.SettlementStatus);
+            AddDistinctTrimmed(distinctDisplayStatuses, distinctDisplayStatusKeys, row.DisplayStatus);
+            AddDistinctTrimmed(
+                distinctInstallLocations,
+                distinctInstallLocationKeys,
+                string.IsNullOrWhiteSpace(row.InstallLocationDisplay)
+                    ? row.InstallSiteName
+                    : row.InstallLocationDisplay);
+            foreach (var dataIssue in ExtractBillingDataIssueTokens(row))
+                AddDistinctTrimmed(dataIssues, dataIssueKeys, dataIssue);
+
+            if (row.GroupedSelectionIds.Count == 0)
+            {
+                AddDistinctGuid(groupedSelectionIds, groupedSelectionIdSet, row.SelectionId);
+            }
+            else
+            {
+                foreach (var id in row.GroupedSelectionIds)
+                    AddDistinctGuid(groupedSelectionIds, groupedSelectionIdSet, id);
+            }
+
+            foreach (var id in row.GroupedPersistedProfileIds)
+                AddDistinctGuid(groupedPersistedProfileIds, groupedPersistedProfileIdSet, id);
+
+            if (row.GroupedProfileRevisions.Count > 0)
+            {
+                foreach (var pair in row.GroupedProfileRevisions)
+                    AddMaxRevision(groupedProfileRevisions, pair.Key, pair.Value);
+            }
+            else if (row.HasPersistedProfile && row.Source.Id != Guid.Empty)
+            {
+                AddMaxRevision(groupedProfileRevisions, row.Source.Id, row.Source.Revision);
+            }
+
             groupedUnlinkedAssetCount += row.GroupedUnlinkedAssetCount;
             groupedSourceCount += Math.Max(1, row.GroupedSourceCount);
             if (row.NextBillingDate.HasValue &&
@@ -1855,7 +2445,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             pastUnresolvedAmount,
             oldestScheduledDate,
             oldestPeriodLabel);
-        return new GroupedBillingRowMetrics(
+        return new GroupedBillingMetrics(
             groupedUnlinkedAssetCount,
             groupedSourceCount,
             nextBillingDate,
@@ -1873,79 +2463,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             currentBilledAmount,
             hasDataIssue,
             historySummary,
-            historyRows);
-    }
-
-    private static GroupedBillingAccumulatorMetrics BuildGroupedBillingAccumulatorMetrics(
-        IReadOnlyList<RentalBillingViewRow> rows)
-    {
-        var distinctCycles = new List<string>();
-        var distinctCycleKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
-        var distinctBillingTypes = new List<string>();
-        var distinctBillingTypeKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
-        var distinctAdvanceModes = new List<string>();
-        var distinctAdvanceModeKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
-        var distinctRunStatuses = new List<string>();
-        var distinctRunStatusKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
-        var distinctPeriodLabels = new List<string>();
-        var distinctPeriodLabelKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
-        var distinctSettlementStatuses = new List<string>();
-        var distinctSettlementStatusKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
-        var distinctDisplayStatuses = new List<string>();
-        var distinctDisplayStatusKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
-        var distinctInstallLocations = new List<string>();
-        var distinctInstallLocationKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
-        var dataIssues = new List<string>();
-        var dataIssueKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
-        var groupedSelectionIds = new List<Guid>();
-        var groupedSelectionIdSet = new HashSet<Guid>();
-        var groupedPersistedProfileIds = new List<Guid>();
-        var groupedPersistedProfileIdSet = new HashSet<Guid>();
-        var groupedProfileRevisions = new Dictionary<Guid, long>();
-
-        foreach (var row in rows)
-        {
-            AddDistinctTrimmed(distinctCycles, distinctCycleKeys, row.BillingCycleDisplay);
-            AddDistinctTrimmed(distinctBillingTypes, distinctBillingTypeKeys, row.BillingType);
-            AddDistinctTrimmed(distinctAdvanceModes, distinctAdvanceModeKeys, row.BillingAdvanceMode);
-            AddDistinctTrimmed(distinctRunStatuses, distinctRunStatusKeys, row.CurrentBillingRunStatus);
-            AddDistinctTrimmed(distinctPeriodLabels, distinctPeriodLabelKeys, row.CurrentBillingPeriodLabel);
-            AddDistinctTrimmed(distinctSettlementStatuses, distinctSettlementStatusKeys, row.SettlementStatus);
-            AddDistinctTrimmed(distinctDisplayStatuses, distinctDisplayStatusKeys, row.DisplayStatus);
-            AddDistinctTrimmed(
-                distinctInstallLocations,
-                distinctInstallLocationKeys,
-                string.IsNullOrWhiteSpace(row.InstallLocationDisplay)
-                    ? row.InstallSiteName
-                    : row.InstallLocationDisplay);
-            foreach (var dataIssue in ExtractBillingDataIssueTokens(row))
-                AddDistinctTrimmed(dataIssues, dataIssueKeys, dataIssue);
-
-            if (row.GroupedSelectionIds.Count == 0)
-            {
-                AddDistinctGuid(groupedSelectionIds, groupedSelectionIdSet, row.SelectionId);
-            }
-            else
-            {
-                foreach (var id in row.GroupedSelectionIds)
-                    AddDistinctGuid(groupedSelectionIds, groupedSelectionIdSet, id);
-            }
-
-            foreach (var id in row.GroupedPersistedProfileIds)
-                AddDistinctGuid(groupedPersistedProfileIds, groupedPersistedProfileIdSet, id);
-
-            if (row.GroupedProfileRevisions.Count > 0)
-            {
-                foreach (var pair in row.GroupedProfileRevisions)
-                    AddMaxRevision(groupedProfileRevisions, pair.Key, pair.Value);
-            }
-            else if (row.HasPersistedProfile && row.Source.Id != Guid.Empty)
-            {
-                AddMaxRevision(groupedProfileRevisions, row.Source.Id, row.Source.Revision);
-            }
-        }
-
-        return new GroupedBillingAccumulatorMetrics(
+            historyRows,
             distinctCycles,
             distinctBillingTypes,
             distinctAdvanceModes,
@@ -2077,11 +2595,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         CancellationToken ct)
     {
         var assets = new List<LocalRentalAsset>(maxResults);
-        await AddDistinctUnlinkedBillingAssetSearchResultsAsync(
+        await AddDistinctUnlinkedBillingAssetPrefixSearchResultsAsync(
             assets,
-            ApplyUnlinkedBillingAssetSearchPrefixFilter(baseQuery, keyword),
+            baseQuery,
+            keyword,
             maxResults,
-            orderByListColumns: true,
             ct);
 
         if (assets.Count < maxResults)
@@ -2108,9 +2626,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (remaining <= 0)
             return;
 
-        var existingIds = assets.Select(asset => asset.Id).ToList();
-        if (existingIds.Count > 0)
+        if (assets.Count > 0)
+        {
+            var existingIds = BuildExistingAssetIds(assets);
             query = query.Where(asset => !existingIds.Contains(asset.Id));
+        }
 
         IQueryable<LocalRentalAsset> projectedQuery = SelectBillingAssetListProjection(query);
         if (orderByListColumns)
@@ -2127,17 +2647,80 @@ WHERE ""AssignedUsername"" <> '';", ct);
         assets.AddRange(nextAssets);
     }
 
-    private static IQueryable<LocalRentalAsset> ApplyUnlinkedBillingAssetSearchPrefixFilter(
+    private static async Task AddDistinctUnlinkedBillingAssetPrefixSearchResultsAsync(
+        List<LocalRentalAsset> assets,
+        IQueryable<LocalRentalAsset> baseQuery,
+        string keyword,
+        int maxResults,
+        CancellationToken ct)
+    {
+        var remaining = maxResults - assets.Count;
+        if (remaining <= 0)
+            return;
+
+        if (assets.Count > 0)
+        {
+            var existingIds = BuildExistingAssetIds(assets);
+            baseQuery = baseQuery.Where(asset => !existingIds.Contains(asset.Id));
+        }
+
+        var customerNameCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.CustomerName.StartsWith(keyword)),
+            remaining,
+            ct);
+        var currentCustomerNameCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.CurrentCustomerName.StartsWith(keyword)),
+            remaining,
+            ct);
+        var itemNameCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.ItemName.StartsWith(keyword)),
+            remaining,
+            ct);
+        var installLocationCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.InstallLocation.StartsWith(keyword)),
+            remaining,
+            ct);
+        var installSiteNameCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.InstallSiteName.StartsWith(keyword)),
+            remaining,
+            ct);
+        var managementNumberCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.ManagementNumber.StartsWith(keyword)),
+            remaining,
+            ct);
+        var machineNumberCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.MachineNumber.StartsWith(keyword)),
+            remaining,
+            ct);
+
+        assets.AddRange(MergeAssetSearchCandidates(
+            remaining,
+            CompareUnlinkedBillingAssetsForListDisplay,
+            customerNameCandidates,
+            currentCustomerNameCandidates,
+            itemNameCandidates,
+            installLocationCandidates,
+            installSiteNameCandidates,
+            managementNumberCandidates,
+            machineNumberCandidates));
+    }
+
+    private static async Task<List<LocalRentalAsset>> LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
         IQueryable<LocalRentalAsset> query,
-        string keyword)
-        => query.Where(asset =>
-            asset.CustomerName.StartsWith(keyword) ||
-            asset.CurrentCustomerName.StartsWith(keyword) ||
-            asset.ItemName.StartsWith(keyword) ||
-            asset.InstallLocation.StartsWith(keyword) ||
-            asset.InstallSiteName.StartsWith(keyword) ||
-            asset.ManagementNumber.StartsWith(keyword) ||
-            asset.MachineNumber.StartsWith(keyword));
+        int maxResults,
+        CancellationToken ct)
+    {
+        if (maxResults <= 0)
+            return new List<LocalRentalAsset>();
+
+        return await SelectBillingAssetListProjection(query)
+            .OrderBy(asset => asset.CustomerName)
+            .ThenBy(asset => asset.CurrentCustomerName)
+            .ThenBy(asset => asset.ManagementNumber)
+            .ThenBy(asset => asset.Id)
+            .Take(maxResults)
+            .ToListAsync(ct);
+    }
 
     private static IQueryable<LocalRentalAsset> ApplyUnlinkedBillingAssetSearchContainsFilter(
         IQueryable<LocalRentalAsset> query,
@@ -2186,25 +2769,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!ShouldPrefilterDueOnlyBillingProfiles(filter) || profiles.Count == 0)
             return profiles;
 
-        var dueProfileIds = profiles
-            .Where(profile => IsBillingProfileDueWithinAlertWindow(profile, alertWindow, referenceDate))
-            .Select(profile => profile.Id)
-            .ToHashSet();
+        var dueProfileIds = new HashSet<Guid>();
+        foreach (var profile in profiles)
+        {
+            if (IsBillingProfileDueWithinAlertWindow(profile, alertWindow, referenceDate))
+                dueProfileIds.Add(profile.Id);
+        }
+
         if (dueProfileIds.Count == 0)
             return new List<LocalRentalBillingProfile>();
 
         if (filter.ExpandCustomerSummaryRows)
-            return profiles
-                .Where(profile => dueProfileIds.Contains(profile.Id))
-                .ToList();
+            return FilterBillingProfilesByIds(profiles, dueProfileIds);
 
-        var dueGroupKeys = profiles
-            .Where(profile => dueProfileIds.Contains(profile.Id))
-            .Select(BuildBillingProfileGroupKey)
-            .ToHashSet(StringComparer.Ordinal);
-        return profiles
-            .Where(profile => dueGroupKeys.Contains(BuildBillingProfileGroupKey(profile)))
-            .ToList();
+        var dueGroupKeys = BuildBillingProfileGroupKeysForIds(profiles, dueProfileIds);
+        return FilterBillingProfilesByGroupKeys(profiles, dueGroupKeys);
     }
 
     private static bool ShouldPrefilterDueOnlyBillingProfiles(RentalBillingFilter filter)
@@ -2250,6 +2829,48 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.LastBilledDate);
     }
 
+    private static List<LocalRentalBillingProfile> FilterBillingProfilesByIds(
+        List<LocalRentalBillingProfile> profiles,
+        IReadOnlySet<Guid> profileIds)
+    {
+        var filtered = new List<LocalRentalBillingProfile>(profiles.Count);
+        foreach (var profile in profiles)
+        {
+            if (profileIds.Contains(profile.Id))
+                filtered.Add(profile);
+        }
+
+        return filtered;
+    }
+
+    private static HashSet<string> BuildBillingProfileGroupKeysForIds(
+        List<LocalRentalBillingProfile> profiles,
+        IReadOnlySet<Guid> profileIds)
+    {
+        var groupKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var profile in profiles)
+        {
+            if (profileIds.Contains(profile.Id))
+                groupKeys.Add(BuildBillingProfileGroupKey(profile));
+        }
+
+        return groupKeys;
+    }
+
+    private static List<LocalRentalBillingProfile> FilterBillingProfilesByGroupKeys(
+        List<LocalRentalBillingProfile> profiles,
+        IReadOnlySet<string> groupKeys)
+    {
+        var filtered = new List<LocalRentalBillingProfile>(profiles.Count);
+        foreach (var profile in profiles)
+        {
+            if (groupKeys.Contains(BuildBillingProfileGroupKey(profile)))
+                filtered.Add(profile);
+        }
+
+        return filtered;
+    }
+
     private async Task<List<LocalRentalBillingProfile>> ApplyPastDueOnlyProfilePrefilterAsync(
         List<LocalRentalBillingProfile> profiles,
         RentalBillingFilter filter,
@@ -2259,54 +2880,72 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!ShouldPrefilterPastDueOnlyBillingProfiles(filter) || profiles.Count == 0)
             return profiles;
 
-        var runsByProfile = profiles.ToDictionary(
-            profile => profile.Id,
-            profile => DeduplicateBillingRuns(GetBillingRuns(profile)));
         var referenceMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1);
-        var pastRunIds = runsByProfile.Values
-            .SelectMany(runs => runs)
-            .Where(run => run.RunId != Guid.Empty)
-            .Where(run => IsPastBillingRun(run, referenceMonth))
-            .Select(run => run.RunId)
-            .Distinct()
-            .ToList();
+        var pastRunsByProfile = BuildPastBillingRunsByProfile(profiles, referenceMonth);
+        var pastRunIds = CollectBillingRunReferenceIds(pastRunsByProfile);
         if (pastRunIds.Count == 0)
             return new List<LocalRentalBillingProfile>();
 
         var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(pastRunIds, ct);
         ct.ThrowIfCancellationRequested();
 
-        var pastDueProfileIds = profiles
-            .Where(profile =>
-            {
-                if (!runsByProfile.TryGetValue(profile.Id, out var runs) || runs.Count == 0)
-                    return false;
+        var pastDueProfileIds = new HashSet<Guid>();
+        foreach (var profile in profiles)
+        {
+            if (!pastRunsByProfile.TryGetValue(profile.Id, out var runs) || runs.Count == 0)
+                continue;
 
-                var summary = BuildBillingHistorySummary(
-                    profile,
-                    runs,
-                    settlementByRun,
-                    invoiceByRun,
-                    referenceDate);
-                return summary.PastUnresolvedCount > 0 || summary.PastUnresolvedAmount > 0m;
-            })
-            .Select(profile => profile.Id)
-            .ToHashSet();
+            var summary = BuildBillingHistorySummary(
+                profile,
+                runs,
+                settlementByRun,
+                invoiceByRun,
+                referenceDate);
+            if (summary.PastUnresolvedCount > 0 || summary.PastUnresolvedAmount > 0m)
+                pastDueProfileIds.Add(profile.Id);
+        }
+
         if (pastDueProfileIds.Count == 0)
             return new List<LocalRentalBillingProfile>();
 
         if (filter.ExpandCustomerSummaryRows)
-            return profiles
-                .Where(profile => pastDueProfileIds.Contains(profile.Id))
-                .ToList();
+            return FilterBillingProfilesByIds(profiles, pastDueProfileIds);
 
-        var pastDueGroupKeys = profiles
-            .Where(profile => pastDueProfileIds.Contains(profile.Id))
-            .Select(BuildBillingProfileGroupKey)
-            .ToHashSet(StringComparer.Ordinal);
-        return profiles
-            .Where(profile => pastDueGroupKeys.Contains(BuildBillingProfileGroupKey(profile)))
-            .ToList();
+        var pastDueGroupKeys = BuildBillingProfileGroupKeysForIds(profiles, pastDueProfileIds);
+        return FilterBillingProfilesByGroupKeys(profiles, pastDueGroupKeys);
+    }
+
+    private Dictionary<Guid, List<RentalBillingRunModel>> BuildPastBillingRunsByProfile(
+        IReadOnlyList<LocalRentalBillingProfile> profiles,
+        DateOnly referenceMonth)
+    {
+        var runsByProfile = new Dictionary<Guid, List<RentalBillingRunModel>>(profiles.Count);
+        foreach (var profile in profiles)
+        {
+            var runs = DeduplicatePastBillingRuns(GetBillingRuns(profile), referenceMonth);
+            if (runs.Count > 0)
+                runsByProfile[profile.Id] = runs;
+        }
+
+        return runsByProfile;
+    }
+
+    private static List<RentalBillingRunModel> DeduplicatePastBillingRuns(
+        IEnumerable<RentalBillingRunModel> runs,
+        DateOnly referenceMonth)
+    {
+        var result = new List<RentalBillingRunModel>();
+        var seenRunIds = new HashSet<Guid>();
+        foreach (var run in runs)
+        {
+            if (run.RunId == Guid.Empty || !seenRunIds.Add(run.RunId))
+                continue;
+
+            if (IsPastBillingRun(run, referenceMonth))
+                result.Add(run);
+        }
+
+        return result;
     }
 
     private static bool ShouldPrefilterPastDueOnlyBillingProfiles(RentalBillingFilter filter)
@@ -2563,27 +3202,26 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private RentalBillingViewRow CreateGroupedBillingViewRow(IReadOnlyList<RentalBillingViewRow> rows)
     {
         var representative = rows[0];
-        var accumulatorMetrics = BuildGroupedBillingAccumulatorMetrics(rows);
-        var distinctCycles = accumulatorMetrics.DistinctCycles;
-        var distinctBillingTypes = accumulatorMetrics.DistinctBillingTypes;
-        var distinctAdvanceModes = accumulatorMetrics.DistinctAdvanceModes;
-        var distinctRunStatuses = accumulatorMetrics.DistinctRunStatuses;
-        var distinctPeriodLabels = accumulatorMetrics.DistinctPeriodLabels;
-        var distinctSettlementStatuses = accumulatorMetrics.DistinctSettlementStatuses;
-        var distinctDisplayStatuses = accumulatorMetrics.DistinctDisplayStatuses;
-        var distinctInstallLocations = accumulatorMetrics.DistinctInstallLocations;
-        var groupedSelectionIds = accumulatorMetrics.GroupedSelectionIds;
-        var groupedPersistedProfileIds = accumulatorMetrics.GroupedPersistedProfileIds;
-        var groupedProfileRevisions = accumulatorMetrics.GroupedProfileRevisions;
+        var groupedMetrics = BuildGroupedBillingMetrics(rows);
+        var distinctCycles = groupedMetrics.DistinctCycles;
+        var distinctBillingTypes = groupedMetrics.DistinctBillingTypes;
+        var distinctAdvanceModes = groupedMetrics.DistinctAdvanceModes;
+        var distinctRunStatuses = groupedMetrics.DistinctRunStatuses;
+        var distinctPeriodLabels = groupedMetrics.DistinctPeriodLabels;
+        var distinctSettlementStatuses = groupedMetrics.DistinctSettlementStatuses;
+        var distinctDisplayStatuses = groupedMetrics.DistinctDisplayStatuses;
+        var distinctInstallLocations = groupedMetrics.DistinctInstallLocations;
+        var groupedSelectionIds = groupedMetrics.GroupedSelectionIds;
+        var groupedPersistedProfileIds = groupedMetrics.GroupedPersistedProfileIds;
+        var groupedProfileRevisions = groupedMetrics.GroupedProfileRevisions;
         var groupedPersistedProfileCount = groupedPersistedProfileIds.Count;
-        var groupedMetrics = BuildGroupedBillingRowMetrics(rows);
         var groupedUnlinkedAssetCount = groupedMetrics.GroupedUnlinkedAssetCount;
         var groupedSourceCount = groupedMetrics.GroupedSourceCount;
         var installLocationDisplay = BuildGroupedInstallLocationDisplay(distinctInstallLocations);
         var aggregateSummary = BuildGroupedBillingAggregateSummary(groupedPersistedProfileCount, groupedUnlinkedAssetCount);
         var historyRows = groupedMetrics.BillingHistoryRows;
         var historySummary = groupedMetrics.HistorySummary;
-        var dataIssues = accumulatorMetrics.DataIssues;
+        var dataIssues = groupedMetrics.DataIssues;
         if (groupedPersistedProfileCount > 1)
             AddDistinctTrimmed(dataIssues, $"청구프로필 {groupedPersistedProfileCount:N0}건 묶음 표시");
         if (groupedUnlinkedAssetCount > 0)
@@ -2976,11 +3614,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LogRentalLoadStep("Rental asset customer display normalize", stepStopwatch, $"assets={assets.Count:N0}");
 
         stepStopwatch.Restart();
-        var result = assets
-            .Select(asset => CreateAssetViewRow(asset, offices, referenceDate, hasFullDetail: false))
-            .OrderBy(row => row.CurrentCustomerName, StringComparer.CurrentCultureIgnoreCase)
-            .ThenBy(row => row.Source.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
+        var result = BuildAssetViewRowsForDisplay(assets, offices, referenceDate, hasFullDetail: false);
         LogRentalLoadStep("Rental asset row build/sort", stepStopwatch, $"rows={result.Count:N0}");
         OperationTiming.LogIfSlow(
             "DATA",
@@ -3011,6 +3645,57 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         await NormalizeAssetCustomerDisplayNamesAsync([asset], ct);
         return CreateAssetViewRow(asset, offices, referenceDate);
+    }
+
+    private List<RentalAssetViewRow> BuildAssetViewRowsForDisplay(
+        IReadOnlyList<LocalRentalAsset> assets,
+        IReadOnlyDictionary<string, string> offices,
+        DateOnly referenceDate,
+        bool hasFullDetail)
+    {
+        var rows = new List<RentalAssetViewRow>(assets.Count);
+        foreach (var asset in assets)
+        {
+            rows.Add(CreateAssetViewRow(
+                asset,
+                offices,
+                referenceDate,
+                hasFullDetail));
+        }
+
+        return SortAssetViewRowsForDisplay(rows);
+    }
+
+    private static List<RentalAssetViewRow> SortAssetViewRowsForDisplay(List<RentalAssetViewRow> rows)
+    {
+        if (rows.Count > 1)
+            rows.Sort(CompareAssetViewRowsForDisplay);
+
+        return rows;
+    }
+
+    private static int CompareAssetViewRowsForDisplay(RentalAssetViewRow? left, RentalAssetViewRow? right)
+    {
+        if (ReferenceEquals(left, right))
+            return 0;
+        if (left is null)
+            return -1;
+        if (right is null)
+            return 1;
+
+        var customerCompare = StringComparer.CurrentCultureIgnoreCase.Compare(
+            left.CurrentCustomerName,
+            right.CurrentCustomerName);
+        if (customerCompare != 0)
+            return customerCompare;
+
+        var managementNumberCompare = StringComparer.CurrentCultureIgnoreCase.Compare(
+            left.Source.ManagementNumber,
+            right.Source.ManagementNumber);
+        if (managementNumberCompare != 0)
+            return managementNumberCompare;
+
+        return left.Source.Id.CompareTo(right.Source.Id);
     }
 
     private static IQueryable<LocalRentalAsset> SelectAssetListProjection(IQueryable<LocalRentalAsset> query)
@@ -3066,12 +3751,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         if (assets.Count < maxResults)
         {
-            var prefixQuery = ApplyAssetSearchPrefixFilter(baseQuery, keyword);
-            await AddDistinctAssetSearchResultsAsync(
+            await AddDistinctAssetPrefixSearchResultsAsync(
                 assets,
-                prefixQuery,
+                baseQuery,
+                keyword,
                 maxResults,
-                orderByListColumns: true,
                 ct);
         }
 
@@ -3135,9 +3819,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (remaining <= 0)
             return;
 
-        var existingIds = assets.Select(asset => asset.Id).ToList();
-        if (existingIds.Count > 0)
+        if (assets.Count > 0)
+        {
+            var existingIds = BuildExistingAssetIds(assets);
             query = query.Where(asset => !existingIds.Contains(asset.Id));
+        }
 
         IQueryable<LocalRentalAsset> projectedQuery = SelectAssetListProjection(query);
         if (orderByListColumns)
@@ -3149,17 +3835,148 @@ WHERE ""AssignedUsername"" <> '';", ct);
         assets.AddRange(nextAssets);
     }
 
-    private static IQueryable<LocalRentalAsset> ApplyAssetSearchPrefixFilter(
+    private static async Task AddDistinctAssetPrefixSearchResultsAsync(
+        List<LocalRentalAsset> assets,
+        IQueryable<LocalRentalAsset> baseQuery,
+        string keyword,
+        int maxResults,
+        CancellationToken ct)
+    {
+        var remaining = maxResults - assets.Count;
+        if (remaining <= 0)
+            return;
+
+        if (assets.Count > 0)
+        {
+            var existingIds = BuildExistingAssetIds(assets);
+            baseQuery = baseQuery.Where(asset => !existingIds.Contains(asset.Id));
+        }
+
+        var managementNumberCandidates = await LoadBoundedAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.ManagementNumber.StartsWith(keyword)),
+            remaining,
+            ct);
+        var customerNameCandidates = await LoadBoundedAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.CustomerName.StartsWith(keyword)),
+            remaining,
+            ct);
+        var currentCustomerNameCandidates = await LoadBoundedAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.CurrentCustomerName.StartsWith(keyword)),
+            remaining,
+            ct);
+        var itemCategoryCandidates = await LoadBoundedAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.ItemCategoryName.StartsWith(keyword)),
+            remaining,
+            ct);
+        var itemNameCandidates = await LoadBoundedAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.ItemName.StartsWith(keyword)),
+            remaining,
+            ct);
+        var machineNumberCandidates = await LoadBoundedAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.MachineNumber.StartsWith(keyword)),
+            remaining,
+            ct);
+        var installLocationCandidates = await LoadBoundedAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.InstallLocation.StartsWith(keyword)),
+            remaining,
+            ct);
+        var installSiteNameCandidates = await LoadBoundedAssetSearchCandidatesAsync(
+            baseQuery.Where(asset => asset.InstallSiteName.StartsWith(keyword)),
+            remaining,
+            ct);
+
+        assets.AddRange(MergeAssetSearchCandidates(
+            remaining,
+            CompareRentalAssetsForListDisplay,
+            managementNumberCandidates,
+            customerNameCandidates,
+            currentCustomerNameCandidates,
+            itemCategoryCandidates,
+            itemNameCandidates,
+            machineNumberCandidates,
+            installLocationCandidates,
+            installSiteNameCandidates));
+    }
+
+    private static async Task<List<LocalRentalAsset>> LoadBoundedAssetSearchCandidatesAsync(
         IQueryable<LocalRentalAsset> query,
-        string keyword)
-        => query.Where(asset =>
-            asset.ManagementNumber.StartsWith(keyword) ||
-            asset.CustomerName.StartsWith(keyword) ||
-            asset.CurrentCustomerName.StartsWith(keyword) ||
-            asset.ItemCategoryName.StartsWith(keyword) ||
-            asset.ItemName.StartsWith(keyword) ||
-            asset.MachineNumber.StartsWith(keyword) ||
-            asset.InstallLocation.StartsWith(keyword));
+        int maxResults,
+        CancellationToken ct)
+    {
+        if (maxResults <= 0)
+            return new List<LocalRentalAsset>();
+
+        return await ApplyAssetListOrdering(SelectAssetListProjection(query), pinnedAssetId: null)
+            .ThenBy(asset => asset.Id)
+            .Take(maxResults)
+            .ToListAsync(ct);
+    }
+
+    private static List<LocalRentalAsset> MergeAssetSearchCandidates(
+        int maxResults,
+        Comparison<LocalRentalAsset> comparer,
+        params IReadOnlyList<LocalRentalAsset>[] candidateGroups)
+    {
+        if (maxResults <= 0 || candidateGroups.Length == 0)
+            return new List<LocalRentalAsset>();
+
+        var candidatesById = new Dictionary<Guid, LocalRentalAsset>();
+        foreach (var group in candidateGroups)
+        {
+            foreach (var candidate in group)
+            {
+                if (candidate.Id != Guid.Empty)
+                    candidatesById.TryAdd(candidate.Id, candidate);
+            }
+        }
+
+        if (candidatesById.Count == 0)
+            return new List<LocalRentalAsset>();
+
+        var candidates = candidatesById.Values.ToList();
+        candidates.Sort(comparer);
+        if (candidates.Count > maxResults)
+            candidates.RemoveRange(maxResults, candidates.Count - maxResults);
+
+        return candidates;
+    }
+
+    private static int CompareUnlinkedBillingAssetsForListDisplay(
+        LocalRentalAsset left,
+        LocalRentalAsset right)
+    {
+        var customerCompare = StringComparer.CurrentCultureIgnoreCase.Compare(left.CustomerName, right.CustomerName);
+        if (customerCompare != 0)
+            return customerCompare;
+
+        var currentCustomerCompare = StringComparer.CurrentCultureIgnoreCase.Compare(left.CurrentCustomerName, right.CurrentCustomerName);
+        if (currentCustomerCompare != 0)
+            return currentCustomerCompare;
+
+        var managementCompare = StringComparer.CurrentCultureIgnoreCase.Compare(left.ManagementNumber, right.ManagementNumber);
+        return managementCompare != 0 ? managementCompare : left.Id.CompareTo(right.Id);
+    }
+
+    private static int CompareRentalAssetsForListDisplay(
+        LocalRentalAsset left,
+        LocalRentalAsset right)
+    {
+        var customerCompare = StringComparer.CurrentCultureIgnoreCase.Compare(left.CustomerName, right.CustomerName);
+        if (customerCompare != 0)
+            return customerCompare;
+
+        var managementCompare = StringComparer.CurrentCultureIgnoreCase.Compare(left.ManagementNumber, right.ManagementNumber);
+        return managementCompare != 0 ? managementCompare : left.Id.CompareTo(right.Id);
+    }
+
+    private static List<Guid> BuildExistingAssetIds(IReadOnlyList<LocalRentalAsset> assets)
+    {
+        var ids = new List<Guid>(assets.Count);
+        foreach (var asset in assets)
+            ids.Add(asset.Id);
+
+        return ids;
+    }
 
     private static IQueryable<LocalRentalAsset> ApplyAssetSearchContainsFilter(
         IQueryable<LocalRentalAsset> query,
@@ -3171,7 +3988,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             asset.ItemCategoryName.Contains(keyword) ||
             asset.ItemName.Contains(keyword) ||
             asset.MachineNumber.Contains(keyword) ||
-            asset.InstallLocation.Contains(keyword));
+            asset.InstallLocation.Contains(keyword) ||
+            asset.InstallSiteName.Contains(keyword));
 
     private static IQueryable<LocalRentalAsset> ApplyAssetLinkedCustomerSearchFilter(
         IQueryable<LocalRentalAsset> query,
@@ -4857,7 +5675,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (rawFetchLimit.HasValue)
             query = query.Take(rawFetchLimit.Value);
 
-        var histories = await query
+        var histories = await SelectAssignmentHistoryViewProjection(query)
             .ToListAsync(ct);
         if (histories.Count == 0)
             return [];
@@ -4868,10 +5686,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Distinct()
             .ToList();
         var profileDisplayLookup = await GetBillingProfileDisplayTextMapAsync(profileIds, ct);
-        var asset = await _db.RentalAssets
+        var asset = await SelectAssignmentHistoryFallbackAssetProjection(_db.RentalAssets
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .FirstOrDefaultAsync(current => current.Id == assetId, ct);
+            .Where(current => current.Id == assetId))
+            .FirstOrDefaultAsync(ct);
 
         IEnumerable<LocalRentalAssetAssignmentHistory> displayHistories = histories
             .GroupBy(BuildAssignmentHistoryLogicalKey)
@@ -4890,6 +5709,45 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Select(history => BuildAssignmentHistoryViewItem(history, asset, profileDisplayLookup))
             .ToList();
     }
+
+    private static IQueryable<LocalRentalAssetAssignmentHistory> SelectAssignmentHistoryViewProjection(
+        IQueryable<LocalRentalAssetAssignmentHistory> query)
+        => query.Select(history => new LocalRentalAssetAssignmentHistory
+        {
+            Id = history.Id,
+            AssetId = history.AssetId,
+            BillingProfileId = history.BillingProfileId,
+            CustomerId = history.CustomerId,
+            ResponsibleOfficeCode = history.ResponsibleOfficeCode,
+            CustomerName = history.CustomerName,
+            InstallLocation = history.InstallLocation,
+            BillingProfileDisplay = history.BillingProfileDisplay,
+            ItemName = history.ItemName,
+            MachineNumber = history.MachineNumber,
+            ManagementNumber = history.ManagementNumber,
+            MonthlyFee = history.MonthlyFee,
+            LinkedAtUtc = history.LinkedAtUtc,
+            UnlinkedAtUtc = history.UnlinkedAtUtc,
+            IsCurrent = history.IsCurrent,
+            ChangeReason = history.ChangeReason,
+            UpdatedAtUtc = history.UpdatedAtUtc
+        });
+
+    private static IQueryable<LocalRentalAsset> SelectAssignmentHistoryFallbackAssetProjection(
+        IQueryable<LocalRentalAsset> query)
+        => query.Select(asset => new LocalRentalAsset
+        {
+            Id = asset.Id,
+            ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+            CurrentCustomerName = asset.CurrentCustomerName,
+            CustomerName = asset.CustomerName,
+            InstallLocation = asset.InstallLocation,
+            InstallSiteName = asset.InstallSiteName,
+            ItemName = asset.ItemName,
+            MachineNumber = asset.MachineNumber,
+            ManagementNumber = asset.ManagementNumber,
+            MonthlyFee = asset.MonthlyFee
+        });
 
     private async Task<Dictionary<Guid, string>> GetBillingProfileDisplayTextMapAsync(
         IEnumerable<Guid> profileIds,
@@ -5284,13 +6142,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var candidates = await ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
             .Where(asset => asset.Id != currentAssetId && !asset.IsDeleted)
             .Where(asset => !asset.BillingProfileId.HasValue && !asset.CustomerId.HasValue)
-            .Where(asset =>
-                (asset.CurrentCustomerName ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim() == string.Empty &&
-                (asset.CustomerName ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim() == string.Empty &&
-                (asset.InstallLocation ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim() == string.Empty &&
-                (asset.InstallSiteName ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim() == string.Empty)
-            .Where(asset => RentalEquipmentReplacementCandidateStatusValues.Contains(
-                (asset.AssetStatus ?? string.Empty).Replace("\t", string.Empty).Replace("\r", string.Empty).Replace("\n", string.Empty).Trim()))
             .ToListAsync(ct);
 
         return candidates
@@ -7619,7 +8470,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
         IReadOnlyDictionary<string, string> officeMap,
         DateOnly referenceDate)
     {
-        NormalizeBillingSchedule(profile, referenceDate);
         var nextBillingDate = GetNextBillingDate(profile, referenceDate);
         if (!nextBillingDate.HasValue)
             return null;
@@ -8797,10 +9647,30 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (rows.Count <= 1)
             return rows;
 
-        return rows
-            .OrderBy(row => row.DaysRemaining ?? int.MaxValue)
-            .ThenBy(row => row.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
+        rows.Sort(CompareBillingRowsForDisplay);
+        return rows;
+    }
+
+    private static int CompareBillingRowsForDisplay(
+        RentalBillingViewRow? left,
+        RentalBillingViewRow? right)
+    {
+        if (ReferenceEquals(left, right))
+            return 0;
+        if (left is null)
+            return -1;
+        if (right is null)
+            return 1;
+
+        var daysCompare = (left.DaysRemaining ?? int.MaxValue).CompareTo(right.DaysRemaining ?? int.MaxValue);
+        if (daysCompare != 0)
+            return daysCompare;
+
+        var customerCompare = StringComparer.CurrentCultureIgnoreCase.Compare(left.CustomerDisplayName, right.CustomerDisplayName);
+        if (customerCompare != 0)
+            return customerCompare;
+
+        return left.SelectionId.CompareTo(right.SelectionId);
     }
 
     private static bool HasBillingAssetMonthlyFeeMismatch(
@@ -8813,10 +9683,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         Dictionary<Guid, decimal>? assetMonthlyFeeById = null;
         foreach (var templateItem in templateItems)
         {
-            var includedAssetIds = (templateItem.IncludedAssetIds ?? new List<Guid>())
-                .Where(id => id != Guid.Empty)
-                .Distinct()
-                .ToList();
+            var includedAssetIds = BuildDistinctIncludedAssetIds(templateItem.IncludedAssetIds);
             if (includedAssetIds.Count == 0)
                 continue;
 
@@ -8824,12 +9691,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             if (templateMonthlyAmount <= 0m)
                 continue;
 
-            assetMonthlyFeeById ??= assets
-                .Where(asset => asset.Id != Guid.Empty && !RentalAssetStatusRules.IsNonOperating(asset.AssetStatus))
-                .GroupBy(asset => asset.Id)
-                .ToDictionary(
-                    group => group.Key,
-                    group => Math.Max(0m, group.First().MonthlyFee));
+            assetMonthlyFeeById ??= BuildAssetMonthlyFeeById(assets);
             if (assetMonthlyFeeById.Count == 0)
                 return false;
 
@@ -8849,6 +9711,40 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         return false;
+    }
+
+    private static List<Guid> BuildDistinctIncludedAssetIds(IReadOnlyList<Guid>? includedAssetIds)
+    {
+        if (includedAssetIds is null || includedAssetIds.Count == 0)
+            return new List<Guid>();
+
+        var ids = new List<Guid>(includedAssetIds.Count);
+        var seenIds = new HashSet<Guid>();
+        foreach (var id in includedAssetIds)
+        {
+            if (id != Guid.Empty && seenIds.Add(id))
+                ids.Add(id);
+        }
+
+        return ids;
+    }
+
+    private static Dictionary<Guid, decimal> BuildAssetMonthlyFeeById(IReadOnlyList<LocalRentalAsset> assets)
+    {
+        var assetMonthlyFeeById = new Dictionary<Guid, decimal>();
+        foreach (var asset in assets)
+        {
+            if (asset.Id == Guid.Empty ||
+                RentalAssetStatusRules.IsNonOperating(asset.AssetStatus) ||
+                assetMonthlyFeeById.ContainsKey(asset.Id))
+            {
+                continue;
+            }
+
+            assetMonthlyFeeById[asset.Id] = Math.Max(0m, asset.MonthlyFee);
+        }
+
+        return assetMonthlyFeeById;
     }
 
     private List<string> BuildUnlinkedBillingDataIssues(LocalRentalAsset asset)

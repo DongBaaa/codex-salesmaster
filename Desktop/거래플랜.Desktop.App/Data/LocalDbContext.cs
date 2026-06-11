@@ -168,11 +168,29 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalCustomer>()
             .HasIndex(customer => customer.ResponsibleOfficeCode);
         model.Entity<LocalCustomer>()
+            .HasIndex(customer => new { customer.OfficeCode, customer.IsDeleted })
+            .HasDatabaseName("IX_Customers_IntegrityOfficeActive");
+        model.Entity<LocalCustomer>()
+            .HasIndex(customer => new { customer.ResponsibleOfficeCode, customer.IsDeleted })
+            .HasDatabaseName("IX_Customers_IntegrityResponsibleActive");
+        model.Entity<LocalCustomer>()
             .HasIndex(customer => customer.NameOriginal);
         model.Entity<LocalCustomer>()
             .HasIndex(customer => customer.NameMatchKey);
+        model.Entity<LocalCustomer>()
+            .HasIndex(customer => new { customer.IsDeleted, customer.BusinessNumber })
+            .HasDatabaseName("IX_Customers_Search_BusinessNumber");
+        model.Entity<LocalCustomer>()
+            .HasIndex(customer => new { customer.IsDeleted, customer.NameOriginal })
+            .HasDatabaseName("IX_Customers_Search_NameOriginal");
+        model.Entity<LocalCustomer>()
+            .HasIndex(customer => new { customer.IsDeleted, customer.NameMatchKey })
+            .HasDatabaseName("IX_Customers_Search_NameMatchKey");
         model.Entity<LocalItem>()
             .HasIndex(item => new { item.TenantCode, item.OfficeCode });
+        model.Entity<LocalItem>()
+            .HasIndex(item => new { item.OfficeCode, item.IsDeleted })
+            .HasDatabaseName("IX_Items_IntegrityOfficeActive");
 
         model.Entity<LocalOffice>()
             .HasIndex(o => o.Code)
@@ -182,6 +200,9 @@ public sealed class LocalDbContext : DbContext
             .IsUnique();
         model.Entity<LocalWarehouse>()
             .HasIndex(w => w.OfficeCode);
+        model.Entity<LocalWarehouse>()
+            .HasIndex(w => new { w.OfficeCode, w.IsDeleted, w.IsActive })
+            .HasDatabaseName("IX_Warehouses_IntegrityOfficeActive");
 
         model.Entity<LocalInvoice>()
             .HasIndex(i => i.VersionGroupId);
@@ -192,6 +213,12 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalInvoice>()
             .HasIndex(i => i.LinkedRentalBillingRunId);
         model.Entity<LocalInvoice>()
+            .HasIndex(i => new { i.IsDeleted, i.LinkedRentalBillingRunId })
+            .HasDatabaseName("IX_Invoices_RentalRunReference");
+        model.Entity<LocalInvoice>()
+            .HasIndex(i => new { i.IsDeleted, i.LinkedRentalBillingProfileId, i.LinkedRentalBillingRunId })
+            .HasDatabaseName("IX_Invoices_RentalProfileReference");
+        model.Entity<LocalInvoice>()
             .HasIndex(i => i.SourceWarehouseCode);
         model.Entity<LocalInvoice>()
             .HasIndex(i => i.PurchaseReceivingStatus);
@@ -200,11 +227,20 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalInvoice>()
             .HasIndex(i => i.OfficeCode);
         model.Entity<LocalInvoice>()
+            .HasIndex(i => new { i.ResponsibleOfficeCode, i.IsDeleted, i.IsLatestVersion })
+            .HasDatabaseName("IX_Invoices_IntegrityResponsibleLatest");
+        model.Entity<LocalInvoice>()
             .HasIndex(i => new { i.TenantCode, i.ResponsibleOfficeCode, i.IsLatestVersion, i.InvoiceDate });
         model.Entity<LocalInvoice>()
             .HasIndex(i => new { i.CustomerId, i.IsLatestVersion, i.InvoiceDate });
         model.Entity<LocalInvoice>()
             .HasIndex(i => new { i.VoucherType, i.IsLatestVersion, i.InvoiceDate });
+        model.Entity<LocalInvoiceLine>()
+            .HasIndex(line => new { line.InvoiceId, line.IsDeleted })
+            .HasDatabaseName("IX_InvoiceLines_InvoiceActiveAggregate");
+        model.Entity<LocalPayment>()
+            .HasIndex(payment => new { payment.InvoiceId, payment.IsDeleted })
+            .HasDatabaseName("IX_Payments_InvoiceActiveAggregate");
         model.Entity<LocalInvoice>()
             .Property(i => i.VatMode)
             .HasMaxLength(20)
@@ -217,6 +253,9 @@ public sealed class LocalDbContext : DbContext
 
         model.Entity<LocalInventoryMovement>()
             .HasIndex(m => new { m.ItemId, m.WarehouseCode, m.OccurredDate });
+        model.Entity<LocalInventoryMovement>()
+            .HasIndex(m => new { m.ItemId, m.IsActive, m.WarehouseCode })
+            .HasDatabaseName("IX_InventoryMovements_ItemActiveWarehouse");
         model.Entity<LocalInventoryMovement>()
             .HasIndex(m => m.InvoiceId);
 
@@ -241,6 +280,15 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalRentalBillingProfile>()
             .HasIndex(profile => profile.ResponsibleOfficeCode);
         model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => new { profile.OfficeCode, profile.IsDeleted, profile.IsActive })
+            .HasDatabaseName("IX_RentalBillingProfiles_IntegrityOfficeActive");
+        model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => new { profile.ResponsibleOfficeCode, profile.IsDeleted, profile.IsActive })
+            .HasDatabaseName("IX_RentalBillingProfiles_IntegrityResponsibleActive");
+        model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => new { profile.ManagementCompanyCode, profile.IsDeleted, profile.IsActive })
+            .HasDatabaseName("IX_RentalBillingProfiles_IntegrityManagementActive");
+        model.Entity<LocalRentalBillingProfile>()
             .HasIndex(profile => new { profile.TenantCode, profile.ResponsibleOfficeCode, profile.IsDeleted, profile.IsActive });
         model.Entity<LocalRentalBillingProfile>()
             .HasIndex(profile => new { profile.TenantCode, profile.ManagementCompanyCode, profile.IsDeleted, profile.IsActive });
@@ -249,11 +297,29 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalRentalBillingProfile>()
             .HasIndex(profile => new { profile.BillingStatus, profile.IsDeleted });
         model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => new { profile.IsDeleted, profile.CustomerName, profile.ItemName })
+            .HasDatabaseName("IX_RentalBillingProfiles_ListSort");
+        model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => new { profile.TenantCode, profile.IsDeleted, profile.CustomerName, profile.ItemName })
+            .HasDatabaseName("IX_RentalBillingProfiles_TenantListSort");
+        model.Entity<LocalRentalBillingProfile>()
             .HasIndex(profile => new { profile.TenantCode, profile.ResponsibleOfficeCode, profile.IsDeleted, profile.CustomerName, profile.ItemName })
             .HasDatabaseName("IX_RentalBillingProfiles_TenantOfficeListSort");
         model.Entity<LocalRentalBillingProfile>()
             .HasIndex(profile => new { profile.TenantCode, profile.ManagementCompanyCode, profile.IsDeleted, profile.CustomerName, profile.ItemName })
             .HasDatabaseName("IX_RentalBillingProfiles_TenantManagementListSort");
+        model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => new { profile.IsDeleted, profile.CustomerName })
+            .HasDatabaseName("IX_RentalBillingProfiles_Search_CustomerName");
+        model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => new { profile.IsDeleted, profile.BusinessNumber })
+            .HasDatabaseName("IX_RentalBillingProfiles_Search_BusinessNumber");
+        model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => new { profile.IsDeleted, profile.ItemName })
+            .HasDatabaseName("IX_RentalBillingProfiles_Search_ItemName");
+        model.Entity<LocalRentalBillingProfile>()
+            .HasIndex(profile => new { profile.IsDeleted, profile.Notes })
+            .HasDatabaseName("IX_RentalBillingProfiles_Search_Notes");
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.TenantCode, asset.AssetKey })
             .HasDatabaseName("IX_RentalAssets_AssetKey")
@@ -274,6 +340,15 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => asset.ResponsibleOfficeCode);
         model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.OfficeCode, asset.IsDeleted })
+            .HasDatabaseName("IX_RentalAssets_IntegrityOfficeActive");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.ResponsibleOfficeCode, asset.IsDeleted })
+            .HasDatabaseName("IX_RentalAssets_IntegrityResponsibleActive");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.ManagementCompanyCode, asset.IsDeleted })
+            .HasDatabaseName("IX_RentalAssets_IntegrityManagementActive");
+        model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.TenantCode, asset.ResponsibleOfficeCode, asset.IsDeleted, asset.AssetStatus });
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.TenantCode, asset.ManagementCompanyCode, asset.IsDeleted, asset.AssetStatus });
@@ -284,6 +359,9 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.IsDeleted, asset.CustomerName, asset.ManagementNumber });
         model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.TenantCode, asset.IsDeleted, asset.CustomerName, asset.ManagementNumber })
+            .HasDatabaseName("IX_RentalAssets_TenantListSort");
+        model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.BillingProfileId, asset.IsDeleted });
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.CustomerId, asset.IsDeleted });
@@ -292,13 +370,55 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.BillingEligibilityStatus, asset.IsDeleted });
         model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.ItemCategoryName, asset.CustomerName, asset.ManagementNumber })
+            .HasDatabaseName("IX_RentalAssets_Filter_ItemCategoryListSort");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.AssetStatus, asset.CustomerName, asset.ManagementNumber })
+            .HasDatabaseName("IX_RentalAssets_Filter_StatusListSort");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.BillingProfileId, asset.CustomerId, asset.AssetStatus })
+            .HasDatabaseName("IX_RentalAssets_ReplacementCandidatePrefilter");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.BillingProfileId, asset.BillingEligibilityStatus, asset.AssetStatus, asset.CustomerName, asset.CurrentCustomerName, asset.ManagementNumber })
+            .HasDatabaseName("IX_RentalAssets_UnlinkedBillingCandidates");
+        model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.TenantCode, asset.ResponsibleOfficeCode, asset.IsDeleted, asset.BillingProfileId, asset.CustomerName, asset.CurrentCustomerName, asset.ManagementNumber })
             .HasDatabaseName("IX_RentalAssets_TenantOfficeBillingProfileSort");
         model.Entity<LocalRentalAsset>()
             .HasIndex(asset => new { asset.TenantCode, asset.ManagementCompanyCode, asset.IsDeleted, asset.BillingProfileId, asset.CustomerName, asset.CurrentCustomerName, asset.ManagementNumber })
             .HasDatabaseName("IX_RentalAssets_TenantManagementBillingProfileSort");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.ManagementNumber })
+            .HasDatabaseName("IX_RentalAssets_Search_ManagementNumber");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.CustomerName })
+            .HasDatabaseName("IX_RentalAssets_Search_CustomerName");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.CurrentCustomerName })
+            .HasDatabaseName("IX_RentalAssets_Search_CurrentCustomerName");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.ItemCategoryName })
+            .HasDatabaseName("IX_RentalAssets_Search_ItemCategoryName");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.ItemName })
+            .HasDatabaseName("IX_RentalAssets_Search_ItemName");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.MachineNumber })
+            .HasDatabaseName("IX_RentalAssets_Search_MachineNumber");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.InstallLocation })
+            .HasDatabaseName("IX_RentalAssets_Search_InstallLocation");
+        model.Entity<LocalRentalAsset>()
+            .HasIndex(asset => new { asset.IsDeleted, asset.InstallSiteName })
+            .HasDatabaseName("IX_RentalAssets_Search_InstallSiteName");
         model.Entity<LocalRentalAssetAssignmentHistory>()
             .HasIndex(history => new { history.AssetId, history.IsCurrent });
+        model.Entity<LocalRentalAssetAssignmentHistory>()
+            .HasIndex(history => new { history.ResponsibleOfficeCode, history.IsDeleted })
+            .HasDatabaseName("IX_RentalAssetAssignmentHistories_IntegrityResponsibleActive");
+        model.Entity<LocalRentalAssetAssignmentHistory>()
+            .HasIndex(history => new { history.AssetId, history.IsCurrent, history.LinkedAtUtc })
+            .HasDatabaseName("IX_RentalAssetAssignmentHistories_AssetTimeline");
         model.Entity<LocalRentalAssetAssignmentHistory>()
             .HasIndex(history => history.BillingProfileId);
         model.Entity<LocalRentalAssetAssignmentHistory>()
@@ -331,7 +451,17 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalTransaction>().HasIndex(e => e.TransactionDate);
         model.Entity<LocalTransaction>().HasIndex(e => e.OfficeCode);
         model.Entity<LocalTransaction>().HasIndex(e => e.ResponsibleOfficeCode);
+        model.Entity<LocalTransaction>().HasIndex(e => e.LinkedRentalBillingProfileId);
         model.Entity<LocalTransaction>().HasIndex(e => e.LinkedRentalBillingRunId);
+        model.Entity<LocalTransaction>()
+            .HasIndex(e => new { e.IsDeleted, e.LinkedRentalBillingRunId })
+            .HasDatabaseName("IX_Transactions_RentalRunReference");
+        model.Entity<LocalTransaction>()
+            .HasIndex(e => new { e.IsDeleted, e.LinkedRentalBillingProfileId, e.LinkedRentalBillingRunId })
+            .HasDatabaseName("IX_Transactions_RentalProfileReference");
+        model.Entity<LocalTransaction>()
+            .HasIndex(e => new { e.IsDeleted, e.LinkedInvoiceId })
+            .HasDatabaseName("IX_Transactions_LinkedInvoiceReference");
         model.Entity<LocalTransactionAttachment>().HasIndex(e => e.Revision);
     }
 }

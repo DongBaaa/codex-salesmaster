@@ -33,6 +33,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private bool _suppressSelectionAutoSave;
     private bool _pendingFilterReload;
     private bool _hasInitializedOfficeFilters;
+    private bool _isDisposed;
     private int _filterReloadVersion;
     private IReadOnlyList<LocalOffice>? _officeFilterSourceCache;
     private IReadOnlyList<LocalItemCategoryOption>? _itemCategoryOptionsCache;
@@ -202,6 +203,10 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     public void CancelPendingBackgroundWork()
     {
+        if (_isDisposed)
+            return;
+
+        _isDisposed = true;
         CancelPendingFilterReload();
         CancelAssignmentHistoryLoad();
         CancelSelectedAssetDetailLoad();
@@ -210,6 +215,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private void StartInitialRowsLoad()
     {
+        if (_isDisposed)
+            return;
+
         UiTaskHelper.Forget(
             ReloadAsync(),
             "RENTAL",
@@ -355,6 +363,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [RelayCommand]
     private async Task ReloadAsync()
     {
+        if (_isDisposed)
+            return;
+
         CancelPendingFilterReload();
         using var cts = new CancellationTokenSource();
         _filterReloadCts = cts;
@@ -371,6 +382,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private async Task ReloadCoreAsync(CancellationToken ct)
     {
+        if (_isDisposed)
+            return;
+
         if (IsBusy)
         {
             _pendingFilterReload = true;
@@ -399,6 +413,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 }, _session, ct);
 
                 ct.ThrowIfCancellationRequested();
+                if (_isDisposed)
+                    return;
+
                 if (requestVersion != Volatile.Read(ref _filterReloadVersion))
                     return;
 
@@ -424,7 +441,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             }
             finally
             {
-                IsBusy = false;
+                if (!_isDisposed)
+                    IsBusy = false;
                 _activeFilterReloadSignature = string.Empty;
             }
         }
@@ -1783,7 +1801,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private void RequestFilterReload()
     {
-        if (_suppressFilterReload)
+        if (_isDisposed || _suppressFilterReload)
             return;
 
         if (!CanReloadForSearchText())
@@ -1815,10 +1833,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             ResolveFilterReloadDebounceDelay(),
             async () =>
             {
+                if (_isDisposed)
+                    return;
+
                 _pendingFilterReloadSignature = string.Empty;
                 await ReloadCoreAsync(cts.Token);
             },
-            ex => StatusMessage = $"렌탈 자산 목록을 다시 불러오지 못했습니다. {ex.Message}");
+            ex =>
+            {
+                if (!_isDisposed)
+                    StatusMessage = $"렌탈 자산 목록을 다시 불러오지 못했습니다. {ex.Message}";
+            });
     }
 
     private void CancelPendingFilterReload()

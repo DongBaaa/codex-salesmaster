@@ -15,6 +15,7 @@ public partial class DataIntegrityIssueWindow : Window
         InitializeComponent();
         _viewModel = viewModel;
         DataContext = viewModel;
+        Closed += (_, _) => _viewModel.Dispose();
     }
 
     public DataIntegrityIssueDetail? RequestedIssue { get; private set; }

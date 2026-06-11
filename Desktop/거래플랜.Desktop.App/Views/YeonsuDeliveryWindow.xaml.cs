@@ -28,6 +28,7 @@ public partial class YeonsuDeliveryWindow : Window
         _invoicePrintService = invoicePrintService;
         _session = session;
         DataContext = viewModel;
+        Closed += (_, _) => _viewModel.Dispose();
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)

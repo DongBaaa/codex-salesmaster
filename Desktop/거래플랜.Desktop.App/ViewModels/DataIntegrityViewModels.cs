@@ -26,7 +26,7 @@ public sealed partial class DataIntegrityAlertViewModel : ObservableObject
     public bool HasIssues => ScanResult.HasIssues;
 }
 
-public sealed partial class DataIntegrityIssueViewModel : ObservableObject
+public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDisposable
 {
     private const int DisplayIssueLimit = 500;
 
@@ -80,6 +80,11 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject
                 ApplyFilter();
             }
         }
+    }
+
+    public void Dispose()
+    {
+        _filterDebouncer.Dispose();
     }
 
     [RelayCommand]
