@@ -497,6 +497,21 @@ public sealed class RentalBillingSearchLimitTests
             result.Select(history => history.PeriodLabel).ToArray());
     }
 
+    [Fact]
+    public void BuildGroupedBillingTextMetrics_DeduplicatesInstallLocationsInFirstSeenOrder()
+    {
+        var metrics = InvokeBuildGroupedBillingTextMetrics(new List<RentalBillingViewRow>
+        {
+            new() { InstallLocationDisplay = " 1\uCE35 ", InstallSiteName = "\uBBF8\uC0AC\uC6A9 A" },
+            new() { InstallLocationDisplay = "1\uCE35", InstallSiteName = "\uBBF8\uC0AC\uC6A9 B" },
+            new() { InstallLocationDisplay = string.Empty, InstallSiteName = "2\uCE35" }
+        });
+
+        var locations = GetSummaryProperty<List<string>>(metrics, "DistinctInstallLocations");
+
+        Assert.Equal(new[] { "1\uCE35", "2\uCE35" }, locations);
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -677,6 +692,19 @@ public sealed class RentalBillingSearchLimitTests
 
         var result = method!.Invoke(null, new object?[] { rows });
         return Assert.IsType<List<RentalBillingHistoryRow>>(result);
+    }
+
+    private static object InvokeBuildGroupedBillingTextMetrics(
+        IReadOnlyList<RentalBillingViewRow> rows)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "BuildGroupedBillingTextMetrics",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object?[] { rows });
+        Assert.NotNull(result);
+        return result!;
     }
 
 

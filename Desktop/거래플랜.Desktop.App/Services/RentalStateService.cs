@@ -1554,6 +1554,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         List<string> DistinctPeriodLabels,
         List<string> DistinctSettlementStatuses,
         List<string> DistinctDisplayStatuses,
+        List<string> DistinctInstallLocations,
         List<string> DataIssues);
 
     private readonly record struct GroupedBillingIdentityMetrics(
@@ -1883,6 +1884,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var distinctSettlementStatusKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
         var distinctDisplayStatuses = new List<string>();
         var distinctDisplayStatusKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctInstallLocations = new List<string>();
+        var distinctInstallLocationKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
         var dataIssues = new List<string>();
         var dataIssueKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
 
@@ -1895,6 +1898,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
             AddDistinctTrimmed(distinctPeriodLabels, distinctPeriodLabelKeys, row.CurrentBillingPeriodLabel);
             AddDistinctTrimmed(distinctSettlementStatuses, distinctSettlementStatusKeys, row.SettlementStatus);
             AddDistinctTrimmed(distinctDisplayStatuses, distinctDisplayStatusKeys, row.DisplayStatus);
+            AddDistinctTrimmed(
+                distinctInstallLocations,
+                distinctInstallLocationKeys,
+                string.IsNullOrWhiteSpace(row.InstallLocationDisplay)
+                    ? row.InstallSiteName
+                    : row.InstallLocationDisplay);
             foreach (var dataIssue in ExtractBillingDataIssueTokens(row))
                 AddDistinctTrimmed(dataIssues, dataIssueKeys, dataIssue);
         }
@@ -1907,6 +1916,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             distinctPeriodLabels,
             distinctSettlementStatuses,
             distinctDisplayStatuses,
+            distinctInstallLocations,
             dataIssues);
     }
 
@@ -2562,6 +2572,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var distinctPeriodLabels = textMetrics.DistinctPeriodLabels;
         var distinctSettlementStatuses = textMetrics.DistinctSettlementStatuses;
         var distinctDisplayStatuses = textMetrics.DistinctDisplayStatuses;
+        var distinctInstallLocations = textMetrics.DistinctInstallLocations;
         var identityMetrics = BuildGroupedBillingIdentityMetrics(rows);
         var groupedSelectionIds = identityMetrics.GroupedSelectionIds;
         var groupedPersistedProfileIds = identityMetrics.GroupedPersistedProfileIds;
@@ -2570,7 +2581,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var groupedMetrics = BuildGroupedBillingRowMetrics(rows);
         var groupedUnlinkedAssetCount = groupedMetrics.GroupedUnlinkedAssetCount;
         var groupedSourceCount = groupedMetrics.GroupedSourceCount;
-        var installLocationDisplay = BuildGroupedInstallLocationDisplay(rows);
+        var installLocationDisplay = BuildGroupedInstallLocationDisplay(distinctInstallLocations);
         var aggregateSummary = BuildGroupedBillingAggregateSummary(groupedPersistedProfileCount, groupedUnlinkedAssetCount);
         var historyRows = BuildGroupedBillingHistoryRows(rows);
         var historySummary = groupedMetrics.HistorySummary;
@@ -2699,15 +2710,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return representative;
     }
 
-    private static string BuildGroupedInstallLocationDisplay(IReadOnlyList<RentalBillingViewRow> rows)
+    private static string BuildGroupedInstallLocationDisplay(IReadOnlyList<string> locations)
     {
-        var locations = rows
-            .Select(row => string.IsNullOrWhiteSpace(row.InstallLocationDisplay) ? row.InstallSiteName : row.InstallLocationDisplay)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value.Trim())
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-
         if (locations.Count == 0)
             return string.Empty;
         if (locations.Count == 1)
