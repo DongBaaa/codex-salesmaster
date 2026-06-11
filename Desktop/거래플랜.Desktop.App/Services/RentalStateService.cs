@@ -3860,50 +3860,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         var runIds = activeRuns.Select(run => run.RunId).Distinct().ToList();
-        var settlementRows = await _db.Transactions.IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(transaction =>
-                !transaction.IsDeleted &&
-                transaction.LinkedRentalBillingProfileId == profile.Id &&
-                transaction.LinkedRentalBillingRunId.HasValue &&
-                runIds.Contains(transaction.LinkedRentalBillingRunId.Value))
-            .Select(transaction => new
-            {
-                RunId = transaction.LinkedRentalBillingRunId!.Value,
-                transaction.SettlementAmount,
-                transaction.TransactionDate
-            })
-            .ToListAsync(ct);
-        var settlementByRun = settlementRows
-            .GroupBy(transaction => transaction.RunId)
-            .ToDictionary(
-                group => group.Key,
-                group => new RentalBillingRunSettlementInfo(
-                    Math.Max(0m, group.Sum(transaction => transaction.SettlementAmount)),
-                    group.OrderByDescending(transaction => transaction.TransactionDate)
-                        .Select(transaction => (DateOnly?)transaction.TransactionDate)
-                        .FirstOrDefault()));
-        var invoiceTotalsByRun = (await _db.Invoices.IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(invoice =>
-                    !invoice.IsDeleted &&
-                    invoice.LinkedRentalBillingProfileId == profile.Id &&
-                    invoice.LinkedRentalBillingRunId.HasValue &&
-                    runIds.Contains(invoice.LinkedRentalBillingRunId.Value))
-                .Select(invoice => new
-                {
-                    RunId = invoice.LinkedRentalBillingRunId!.Value,
-                    invoice.TotalAmount,
-                    invoice.UpdatedAtUtc
-                })
-                .ToListAsync(ct))
-            .GroupBy(invoice => invoice.RunId)
-            .ToDictionary(
-                group => group.Key,
-                group => group
-                    .OrderByDescending(invoice => invoice.UpdatedAtUtc)
-                    .Select(invoice => Math.Max(0m, invoice.TotalAmount))
-                    .FirstOrDefault());
+        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(runIds, ct);
+        var invoiceTotalsByRun = invoiceByRun.ToDictionary(
+            pair => pair.Key,
+            pair => Math.Max(0m, pair.Value.TotalAmount));
 
         var activeRunIds = new HashSet<Guid>(
             settlementByRun.Where(pair => pair.Value.SettledAmount > 0m).Select(pair => pair.Key)
@@ -3942,9 +3902,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Select(run => (DateOnly?)run.ScheduledDate)
             .OrderByDescending(date => date)
             .FirstOrDefault();
-        profile.LastSettledDate = settlementRows
-            .OrderByDescending(transaction => transaction.TransactionDate)
-            .Select(transaction => (DateOnly?)transaction.TransactionDate)
+        profile.LastSettledDate = settlementByRun.Values
+            .OrderByDescending(settlement => settlement.LastSettledDate)
+            .Select(settlement => settlement.LastSettledDate)
             .FirstOrDefault();
         profile.RequiresFollowUp = activeRuns.Any(run =>
         {
