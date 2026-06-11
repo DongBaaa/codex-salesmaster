@@ -831,10 +831,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         rows = ApplyBillingFinalRowFilters(rows, filter, alertWindow);
 
-        var result = rows
-            .OrderBy(row => row.DaysRemaining ?? int.MaxValue)
-            .ThenBy(row => row.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
+        var result = SortBillingRowsForDisplay(rows);
         LogRentalLoadStep("Rental billing final filter/sort", stepStopwatch, $"rows={result.Count:N0}");
         OperationTiming.LogIfSlow(
             "DATA",
@@ -8523,6 +8520,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         return filteredRows;
+    }
+
+    private static List<RentalBillingViewRow> SortBillingRowsForDisplay(
+        List<RentalBillingViewRow> rows)
+    {
+        if (rows.Count <= 1)
+            return rows;
+
+        return rows
+            .OrderBy(row => row.DaysRemaining ?? int.MaxValue)
+            .ThenBy(row => row.CustomerDisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
     }
 
     private static bool HasBillingAssetMonthlyFeeMismatch(

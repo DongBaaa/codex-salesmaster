@@ -428,6 +428,32 @@ public sealed class RentalBillingSearchLimitTests
         Assert.Equal(duePastId, row.SelectionId);
     }
 
+
+    [Fact]
+    public void SortBillingRowsForDisplay_SkipsSingleRowAndSortsMultipleRows()
+    {
+        var singleRowList = new List<RentalBillingViewRow>
+        {
+            new() { SelectionId = Guid.NewGuid(), CustomerDisplayName = "Single", DaysRemaining = 1 }
+        };
+
+        var singleResult = InvokeSortBillingRowsForDisplay(singleRowList);
+
+        Assert.Same(singleRowList, singleResult);
+
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        var thirdId = Guid.NewGuid();
+        var sortedRows = InvokeSortBillingRowsForDisplay(new List<RentalBillingViewRow>
+        {
+            new() { SelectionId = thirdId, CustomerDisplayName = "Zeta", DaysRemaining = null },
+            new() { SelectionId = secondId, CustomerDisplayName = "Beta", DaysRemaining = 1 },
+            new() { SelectionId = firstId, CustomerDisplayName = "Alpha", DaysRemaining = 1 }
+        });
+
+        Assert.Equal(new[] { firstId, secondId, thirdId }, sortedRows.Select(row => row.SelectionId).ToArray());
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -582,6 +608,19 @@ public sealed class RentalBillingSearchLimitTests
         Assert.NotNull(method);
 
         var result = method!.Invoke(null, new object?[] { rows, filter, alertWindow });
+        return Assert.IsType<List<RentalBillingViewRow>>(result);
+    }
+
+
+    private static List<RentalBillingViewRow> InvokeSortBillingRowsForDisplay(
+        List<RentalBillingViewRow> rows)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "SortBillingRowsForDisplay",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object?[] { rows });
         return Assert.IsType<List<RentalBillingViewRow>>(result);
     }
 
