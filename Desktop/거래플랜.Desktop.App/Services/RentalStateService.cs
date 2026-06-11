@@ -1544,7 +1544,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         int IncludedAssetCount,
         decimal CurrentBilledAmount,
         bool HasDataIssue,
-        RentalBillingHistorySummary HistorySummary);
+        RentalBillingHistorySummary HistorySummary,
+        List<RentalBillingHistoryRow> BillingHistoryRows);
 
     private readonly record struct GroupedBillingAccumulatorMetrics(
         List<string> DistinctCycles,
@@ -1782,6 +1783,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var pastUnresolvedAmount = 0m;
         DateOnly? oldestScheduledDate = null;
         string oldestPeriodLabel = string.Empty;
+        var historyRows = new List<RentalBillingHistoryRow>();
         foreach (var row in rows)
         {
             groupedUnlinkedAssetCount += row.GroupedUnlinkedAssetCount;
@@ -1838,8 +1840,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     oldestPeriodLabel = row.OldestPastUnresolvedPeriodLabel;
                 }
             }
+
+            if (row.BillingHistoryRows.Count > 0)
+            {
+                historyRows.EnsureCapacity(historyRows.Count + row.BillingHistoryRows.Count);
+                foreach (var history in row.BillingHistoryRows)
+                    historyRows.Add(history);
+            }
         }
 
+        historyRows = SortGroupedBillingHistoryRowsIfNeeded(historyRows);
         var historySummary = new RentalBillingHistorySummary(
             pastUnresolvedCount,
             pastUnresolvedAmount,
@@ -1862,7 +1872,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             includedAssetCount,
             currentBilledAmount,
             hasDataIssue,
-            historySummary);
+            historySummary,
+            historyRows);
     }
 
     private static GroupedBillingAccumulatorMetrics BuildGroupedBillingAccumulatorMetrics(
@@ -2570,7 +2581,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var groupedSourceCount = groupedMetrics.GroupedSourceCount;
         var installLocationDisplay = BuildGroupedInstallLocationDisplay(distinctInstallLocations);
         var aggregateSummary = BuildGroupedBillingAggregateSummary(groupedPersistedProfileCount, groupedUnlinkedAssetCount);
-        var historyRows = BuildGroupedBillingHistoryRows(rows);
+        var historyRows = groupedMetrics.BillingHistoryRows;
         var historySummary = groupedMetrics.HistorySummary;
         var dataIssues = accumulatorMetrics.DataIssues;
         if (groupedPersistedProfileCount > 1)
@@ -2656,6 +2667,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 historyRows.Add(history);
         }
 
+        return SortGroupedBillingHistoryRowsIfNeeded(historyRows);
+    }
+
+    private static List<RentalBillingHistoryRow> SortGroupedBillingHistoryRowsIfNeeded(List<RentalBillingHistoryRow> historyRows)
+    {
         if (historyRows.Count <= 1 || AreGroupedBillingHistoryRowsSorted(historyRows))
             return historyRows;
 
