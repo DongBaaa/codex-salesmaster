@@ -732,8 +732,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         stepStopwatch.Restart();
         var offices = await GetOfficeMapAsync(ct);
-        var includeUnlinkedAssets = ShouldLoadUnlinkedBillingAssets(filter);
-        var unlinkedAssetLimit = includeUnlinkedAssets ? ResolveUnlinkedBillingAssetResultLimit(filter) : 0;
+        var canLoadUnlinkedAssets = ShouldLoadUnlinkedBillingAssets(filter);
         var searchKeyword = (filter.SearchText ?? string.Empty).Trim();
         var baseFilter = string.IsNullOrWhiteSpace(searchKeyword)
             ? filter
@@ -767,6 +766,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 "Rental billing past due profile prefilter",
                 stepStopwatch,
                 $"profiles={profiles.Count:N0}/{profileCountBeforePastDuePrefilter:N0}, {BuildBillingFilterTimingDetail(filter)}");
+        }
+
+        stepStopwatch.Restart();
+        var includeUnlinkedAssets = canLoadUnlinkedAssets &&
+                                    !ShouldDeferSupplementalUnlinkedBillingAssets(filter, profileResultLimit, profiles.Count);
+        var unlinkedAssetLimit = includeUnlinkedAssets ? ResolveUnlinkedBillingAssetResultLimit(filter) : 0;
+        if (canLoadUnlinkedAssets && !includeUnlinkedAssets)
+        {
+            LogRentalLoadStep(
+                "Rental billing unlinked asset query deferred",
+                stepStopwatch,
+                $"profiles={profiles.Count:N0}, profileLimit={profileResultLimit?.ToString("N0", CultureInfo.CurrentCulture) ?? "none"}, {BuildBillingFilterTimingDetail(filter)}");
         }
 
         stepStopwatch.Restart();
@@ -1825,6 +1836,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return false;
 
         return ShouldIncludeUnlinkedBillingAssets(filter.Status);
+    }
+
+    private static bool ShouldDeferSupplementalUnlinkedBillingAssets(
+        RentalBillingFilter filter,
+        int? profileResultLimit,
+        int profileCount)
+    {
+        if (!profileResultLimit.HasValue)
+            return false;
+
+        if (profileCount < profileResultLimit.Value)
+            return false;
+
+        return !IsUnlinkedBillingStatusFilter(filter.Status);
     }
 
     private static List<LocalRentalBillingProfile> ApplyDueOnlyProfilePrefilter(
