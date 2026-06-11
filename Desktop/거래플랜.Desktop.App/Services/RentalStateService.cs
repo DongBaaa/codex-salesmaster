@@ -1454,20 +1454,29 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Where(transaction => !transaction.IsDeleted &&
                                       transaction.LinkedRentalBillingRunId.HasValue &&
                                       scopedBatchIds.Contains(transaction.LinkedRentalBillingRunId.Value))
-                .Select(transaction => new
-                {
-                    RunId = transaction.LinkedRentalBillingRunId!.Value,
+                .Select(transaction => new RentalBillingRunSettlementLookup(
+                    transaction.LinkedRentalBillingRunId!.Value,
                     transaction.SettlementAmount,
-                    transaction.TransactionDate
-                })
+                    transaction.TransactionDate))
                 .ToListAsync(ct);
-            foreach (var group in settlementRows.GroupBy(row => row.RunId))
+            foreach (var row in settlementRows)
             {
-                settlementByRun[group.Key] = new RentalBillingRunSettlementInfo(
-                    group.Sum(row => row.SettlementAmount),
-                    group.OrderByDescending(row => row.TransactionDate)
-                        .Select(row => (DateOnly?)row.TransactionDate)
-                        .FirstOrDefault());
+                if (settlementByRun.TryGetValue(row.RunId, out var existing))
+                {
+                    var lastSettledDate = existing.LastSettledDate.HasValue &&
+                                          existing.LastSettledDate.Value >= row.TransactionDate
+                        ? existing.LastSettledDate.Value
+                        : row.TransactionDate;
+                    settlementByRun[row.RunId] = new RentalBillingRunSettlementInfo(
+                        existing.SettledAmount + row.SettlementAmount,
+                        lastSettledDate);
+                }
+                else
+                {
+                    settlementByRun[row.RunId] = new RentalBillingRunSettlementInfo(
+                        row.SettlementAmount,
+                        row.TransactionDate);
+                }
             }
 
             var invoiceRows = await _db.Invoices.AsNoTracking()
@@ -1496,6 +1505,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         return (settlementByRun, invoiceByRun);
     }
+
+    private readonly record struct RentalBillingRunSettlementLookup(
+        Guid RunId,
+        decimal SettlementAmount,
+        DateOnly TransactionDate);
 
     private readonly record struct RentalBillingRunSettlementInfo(decimal SettledAmount, DateOnly? LastSettledDate);
 
