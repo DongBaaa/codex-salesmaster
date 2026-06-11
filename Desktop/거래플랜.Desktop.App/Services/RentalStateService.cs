@@ -2563,7 +2563,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private RentalBillingViewRow CreateGroupedBillingViewRow(IReadOnlyList<RentalBillingViewRow> rows)
     {
-        var representative = FindGroupedBillingRepresentative(rows);
+        var representative = rows[0];
         var textMetrics = BuildGroupedBillingTextMetrics(rows);
         var distinctCycles = textMetrics.DistinctCycles;
         var distinctBillingTypes = textMetrics.DistinctBillingTypes;
@@ -2695,19 +2695,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return scheduledDateComparison != 0
             ? scheduledDateComparison
             : StringComparer.CurrentCultureIgnoreCase.Compare(left.CustomerName, right.CustomerName);
-    }
-
-    private static RentalBillingViewRow FindGroupedBillingRepresentative(IReadOnlyList<RentalBillingViewRow> rows)
-    {
-        var representative = rows[0];
-        for (var index = 1; index < rows.Count; index++)
-        {
-            var row = rows[index];
-            if (CompareGroupedBillingRows(row, representative) < 0)
-                representative = row;
-        }
-
-        return representative;
     }
 
     private static string BuildGroupedInstallLocationDisplay(IReadOnlyList<string> locations)

@@ -489,6 +489,82 @@ function Ensure-NasRuntimeStorageDirectories {
     Invoke-SshCommand -Config $Config -Command $remoteCommand -BatchMode | Out-Null
 }
 
+function Invoke-NasRemoteDirectoryPrune {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$RemoteRoot,
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$Pattern,
+        [Parameter(Mandatory = $true)][int]$KeepCount,
+        [string]$Label = 'storage'
+    )
+
+    if ($KeepCount -lt 1 -or -not (Test-NasSshConfigComplete -Config $Config) -or [string]::IsNullOrWhiteSpace($RemoteRoot)) {
+        return @()
+    }
+
+    $normalizedRemoteRoot = ($RemoteRoot -replace '\\', '/').TrimEnd('/')
+    if ([string]::IsNullOrWhiteSpace($normalizedRemoteRoot) -or -not $normalizedRemoteRoot.StartsWith('/')) {
+        return @()
+    }
+
+    $remoteDirectory = Join-RemoteUnixPath -BasePath $normalizedRemoteRoot -ChildPath $RelativePath
+    $safeRemoteRoot = Convert-ToPosixSingleQuotedLiteral $normalizedRemoteRoot
+    $safeRemoteDirectory = Convert-ToPosixSingleQuotedLiteral $remoteDirectory
+    $safePattern = Convert-ToPosixSingleQuotedLiteral $Pattern
+    $remoteNameFilter = if ($Pattern -eq '*') { '' } else { "-name $safePattern" }
+
+    $remoteCommand = @"
+set -eu
+base=$safeRemoteRoot
+root=$safeRemoteDirectory
+keep=$KeepCount
+case "`$root" in
+  "`$base"/releases|"`$base"/app/backups) ;;
+  *) echo "refuse_root=`$root" >&2; exit 90 ;;
+esac
+if [ ! -d "`$root" ]; then
+  echo "pruned label=$Label root=`$root total=0 keep=`$keep removed=0"
+  exit 0
+fi
+tmp="`$(mktemp)"
+trap 'rm -f "`$tmp"' EXIT
+find "`$root" -maxdepth 1 -mindepth 1 -type d $remoteNameFilter -printf '%T@ %p\n' | sort -rn > "`$tmp"
+total="`$(wc -l < "`$tmp" | tr -d ' ')"
+removed=0
+if [ "`$total" -gt "`$keep" ]; then
+  removed=`$((total - keep))
+  tail -n "`$removed" "`$tmp" | cut -d ' ' -f2- | while IFS= read -r path; do
+    case "`$path" in
+      "`$root"/*) ;;
+      *) echo "refuse_target=`$path" >&2; exit 91 ;;
+    esac
+    echo "removed=`$path"
+    rm -rf -- "`$path"
+  done
+fi
+echo "pruned label=$Label root=`$root total=`$total keep=`$keep removed=`$removed"
+"@
+
+    $result = Invoke-SshCommand -Config $Config -Command $remoteCommand -BatchMode
+    $removed = New-Object System.Collections.Generic.List[string]
+    foreach ($line in ($result.StdOut -split "`r?`n")) {
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) {
+            continue
+        }
+
+        if ($trimmed -like 'removed=*') {
+            $removed.Add($trimmed.Substring(8)) | Out-Null
+        }
+        elseif ($trimmed -like 'pruned *') {
+            Write-Host "nas_remote_prune $trimmed"
+        }
+    }
+
+    return $removed.ToArray()
+}
+
 function Resolve-NasScheduledStatePaths {
     param(
         [Parameter(Mandatory = $true)][hashtable]$NasEnv,
@@ -914,7 +990,30 @@ if (Test-Path -LiteralPath $NasRoot) {
     Invoke-RobocopyMirror -Source $tempPublishRoot -Destination $releaseRoot
 }
 elseif (Test-NasSshConfigComplete -Config $sshConfig) {
-    $remoteReleaseRoot = "{0}/releases/{1}" -f (($sshConfig.RemoteOpsPath -replace '/ops/?$', '').TrimEnd('/')), $ReleaseId
+    $remoteBaseRoot = (($sshConfig.RemoteOpsPath -replace '/ops/?$', '').TrimEnd('/'))
+    $removedRemoteBackupsBeforeUpload = Invoke-NasRemoteDirectoryPrune `
+        -Config $sshConfig `
+        -RemoteRoot $remoteBaseRoot `
+        -RelativePath 'app/backups' `
+        -Pattern 'live-*' `
+        -KeepCount $KeepNasReleaseCount `
+        -Label 'live-backups'
+    if ($removedRemoteBackupsBeforeUpload.Count -gt 0) {
+        Write-Host "nas_remote_live_backups_pruned_before_upload=$($removedRemoteBackupsBeforeUpload.Count)"
+    }
+
+    $removedRemoteReleasesBeforeUpload = Invoke-NasRemoteDirectoryPrune `
+        -Config $sshConfig `
+        -RemoteRoot $remoteBaseRoot `
+        -RelativePath 'releases' `
+        -Pattern '*' `
+        -KeepCount $KeepNasReleaseCount `
+        -Label 'releases'
+    if ($removedRemoteReleasesBeforeUpload.Count -gt 0) {
+        Write-Host "nas_remote_releases_pruned_before_upload=$($removedRemoteReleasesBeforeUpload.Count)"
+    }
+
+    $remoteReleaseRoot = "{0}/releases/{1}" -f $remoteBaseRoot, $ReleaseId
     Write-Warning "NAS UNC path is unavailable. Falling back to SSH upload: $remoteReleaseRoot"
     Invoke-SshTarUpload -SourceDirectory $tempPublishRoot -RemoteDirectory $remoteReleaseRoot -Config $sshConfig
 }
@@ -992,6 +1091,30 @@ if ($MirrorToLive -and (Test-Path -LiteralPath $NasRoot)) {
     $removedNasReleases = Remove-OldNasReleaseDirectories -ReleasesRoot (Join-Path $NasRoot 'releases') -CurrentReleaseId $ReleaseId -KeepReleaseCount $KeepNasReleaseCount
     if ($removedNasReleases.Count -gt 0) {
         Write-Host "nas_releases_pruned=$($removedNasReleases.Count)"
+    }
+}
+elseif ($MirrorToLive -and (Test-NasSshConfigComplete -Config $sshConfig)) {
+    $remoteBaseRoot = (($sshConfig.RemoteOpsPath -replace '/ops/?$', '').TrimEnd('/'))
+    $removedRemoteReleases = Invoke-NasRemoteDirectoryPrune `
+        -Config $sshConfig `
+        -RemoteRoot $remoteBaseRoot `
+        -RelativePath 'releases' `
+        -Pattern '*' `
+        -KeepCount $KeepNasReleaseCount `
+        -Label 'releases'
+    if ($removedRemoteReleases.Count -gt 0) {
+        Write-Host "nas_remote_releases_pruned=$($removedRemoteReleases.Count)"
+    }
+
+    $removedRemoteBackups = Invoke-NasRemoteDirectoryPrune `
+        -Config $sshConfig `
+        -RemoteRoot $remoteBaseRoot `
+        -RelativePath 'app/backups' `
+        -Pattern 'live-*' `
+        -KeepCount $KeepNasReleaseCount `
+        -Label 'live-backups'
+    if ($removedRemoteBackups.Count -gt 0) {
+        Write-Host "nas_remote_live_backups_pruned=$($removedRemoteBackups.Count)"
     }
 }
 
