@@ -264,6 +264,47 @@ public sealed class RentalAssetSearchLimitTests
         }
     }
 
+
+    [Fact]
+    public async Task GetAssetRowsAsync_SearchPrioritizesDirectAssetMatchesBeforeLinkedCustomerFallback()
+    {
+        PrepareAppRoot("georaeplan-rental-asset-search-direct-before-linked");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var limit = RentalStateService.AssetSearchResultLimit;
+            for (var index = 0; index < limit; index++)
+                db.RentalAssets.Add(CreateRentalAsset(index, $"Direct Search Customer {index:D4}"));
+
+            var linkedCustomerId = Guid.NewGuid();
+            var linkedAssetId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(linkedCustomerId, "Direct Search Linked Customer"));
+            db.RentalAssets.Add(CreateLinkedCustomerAsset(linkedAssetId, linkedCustomerId));
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var rows = await service.GetAssetRowsAsync(
+                new RentalAssetFilter
+                {
+                    SearchText = "Direct Search",
+                    MaxResults = limit
+                },
+                CreateAdminSession());
+
+            Assert.Equal(limit, rows.Count);
+            Assert.DoesNotContain(rows, row => row.Source.Id == linkedAssetId);
+            Assert.All(rows, row => Assert.Contains("Direct Search", row.CurrentCustomerName));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
