@@ -3721,33 +3721,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Id)
             .ToList();
 
-        var linkedTransactionsQuery = _db.Transactions.IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(transaction =>
-                !transaction.IsDeleted &&
-                transaction.LinkedRentalBillingProfileId == billingProfileId &&
-                transaction.LinkedRentalBillingRunId == billingRunId);
-        if (linkedInvoiceIds.Count > 0)
-        {
-            linkedTransactionsQuery = _db.Transactions.IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(transaction =>
-                    !transaction.IsDeleted &&
-                    ((transaction.LinkedRentalBillingProfileId == billingProfileId &&
-                      transaction.LinkedRentalBillingRunId == billingRunId) ||
-                     (transaction.LinkedInvoiceId.HasValue &&
-                      linkedInvoiceIds.Contains(transaction.LinkedInvoiceId.Value))));
-        }
-
-        var linkedTransactions = await linkedTransactionsQuery
-            .OrderBy(transaction => transaction.TransactionDate)
-            .ThenBy(transaction => transaction.Id)
-            .Select(transaction => new
-            {
-                transaction.Id,
-                transaction.Revision
-            })
-            .ToListAsync(ct);
+        var linkedTransactions = await LoadBillingHistoryDeleteTransactionsAsync(
+            billingProfileId,
+            billingRunId,
+            linkedInvoiceIds,
+            ct);
 
         if ((linkedTransactions.Count > 0 || invoiceDeleteTargetIds.Count > 0) && _local is null)
             return LocalMutationResult.Denied("연결된 판매전표/입금 내역 삭제 서비스를 사용할 수 없습니다.");
@@ -3756,11 +3734,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (linkedTransactions.Count > 0 && !session.HasAdministrativePrivileges)
         {
             var transactionIds = linkedTransactions.Select(transaction => transaction.Id).ToList();
-            var attachmentStatuses = await _db.TransactionAttachments.IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(attachment => !attachment.IsDeleted && transactionIds.Contains(attachment.TransactionId))
-                .Select(attachment => attachment.VerificationStatus)
-                .ToListAsync(ct);
+            var attachmentStatuses = await LoadBillingHistoryDeleteAttachmentStatusesAsync(transactionIds, ct);
             if (attachmentStatuses.Any(status => string.Equals(status, "확인완료", StringComparison.OrdinalIgnoreCase)))
                 return LocalMutationResult.Denied("확인완료된 증빙이 있는 입금 내역은 관리자만 삭제할 수 있습니다.");
         }
@@ -3820,6 +3794,87 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var deletedSummary = deletedParts.Count == 0 ? "선택 내역" : string.Join(", ", deletedParts);
         return LocalMutationResult.Ok(billingProfileId, $"{deletedSummary}을 삭제했습니다.");
     }
+
+    private async Task<List<RentalBillingHistoryDeleteTransactionLookup>> LoadBillingHistoryDeleteTransactionsAsync(
+        Guid billingProfileId,
+        Guid billingRunId,
+        IReadOnlyCollection<Guid> linkedInvoiceIds,
+        CancellationToken ct)
+    {
+        var transactionsById = new Dictionary<Guid, RentalBillingHistoryDeleteTransactionLookup>();
+        var directTransactions = await _db.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(transaction =>
+                !transaction.IsDeleted &&
+                transaction.LinkedRentalBillingProfileId == billingProfileId &&
+                transaction.LinkedRentalBillingRunId == billingRunId)
+            .Select(transaction => new RentalBillingHistoryDeleteTransactionLookup(
+                transaction.Id,
+                transaction.Revision,
+                transaction.TransactionDate))
+            .ToListAsync(ct);
+        foreach (var transaction in directTransactions)
+            transactionsById[transaction.Id] = transaction;
+
+        var invoiceIds = linkedInvoiceIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        foreach (var batchIds in invoiceIds.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            var invoiceLinkedTransactions = await _db.Transactions.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(transaction =>
+                    !transaction.IsDeleted &&
+                    transaction.LinkedInvoiceId.HasValue &&
+                    scopedBatchIds.Contains(transaction.LinkedInvoiceId.Value))
+                .Select(transaction => new RentalBillingHistoryDeleteTransactionLookup(
+                    transaction.Id,
+                    transaction.Revision,
+                    transaction.TransactionDate))
+                .ToListAsync(ct);
+            foreach (var transaction in invoiceLinkedTransactions)
+                transactionsById[transaction.Id] = transaction;
+        }
+
+        return transactionsById.Values
+            .OrderBy(transaction => transaction.TransactionDate)
+            .ThenBy(transaction => transaction.Id)
+            .ToList();
+    }
+
+    private async Task<List<string>> LoadBillingHistoryDeleteAttachmentStatusesAsync(
+        IReadOnlyCollection<Guid> transactionIds,
+        CancellationToken ct)
+    {
+        var ids = transactionIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return new List<string>();
+
+        var statuses = new List<string>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            statuses.AddRange(await _db.TransactionAttachments.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(attachment => !attachment.IsDeleted && scopedBatchIds.Contains(attachment.TransactionId))
+                .Select(attachment => attachment.VerificationStatus)
+                .ToListAsync(ct));
+        }
+
+        return statuses;
+    }
+
+    private readonly record struct RentalBillingHistoryDeleteTransactionLookup(
+        Guid Id,
+        long Revision,
+        DateOnly TransactionDate);
 
     private static bool CanDeleteRentalBillingTransactions(SessionState? session)
         => session is not null &&
