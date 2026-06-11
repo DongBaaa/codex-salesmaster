@@ -809,18 +809,19 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (includeUnlinkedAssets)
         {
             stepStopwatch.Restart();
-            var unlinkedCustomerIds = unlinkedAssets
-                .Where(asset => asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
-                .Select(asset => asset.CustomerId!.Value)
-                .Distinct()
-                .ToList();
+            var unlinkedCustomerIds = CollectUnlinkedBillingCustomerIds(unlinkedAssets);
             var unlinkedCustomersById = await GetRentalBillingCustomerLookupMapAsync(unlinkedCustomerIds, ct);
 
-            rows.AddRange(unlinkedAssets.Select(asset => CreateUnlinkedBillingViewRow(
-                asset,
-                unlinkedCustomersById,
-                offices,
-                filter.ReferenceDate)));
+            if (unlinkedAssets.Count > 0)
+                rows.EnsureCapacity(rows.Count + unlinkedAssets.Count);
+            foreach (var asset in unlinkedAssets)
+            {
+                rows.Add(CreateUnlinkedBillingViewRow(
+                    asset,
+                    unlinkedCustomersById,
+                    offices,
+                    filter.ReferenceDate));
+            }
             LogRentalLoadStep("Rental billing unlinked row build", stepStopwatch, $"rows={rows.Count:N0}, customers={unlinkedCustomersById.Count:N0}");
         }
 
@@ -8492,6 +8493,22 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         return includedAssetIds?.Count ?? 0;
+    }
+
+    private static List<Guid> CollectUnlinkedBillingCustomerIds(
+        IReadOnlyList<LocalRentalAsset> unlinkedAssets)
+    {
+        HashSet<Guid>? customerIds = null;
+        foreach (var asset in unlinkedAssets)
+        {
+            if (!asset.CustomerId.HasValue || asset.CustomerId.Value == Guid.Empty)
+                continue;
+
+            customerIds ??= new HashSet<Guid>();
+            customerIds.Add(asset.CustomerId.Value);
+        }
+
+        return customerIds?.ToList() ?? new List<Guid>();
     }
 
     private static bool HasBillingAssetMonthlyFeeMismatch(

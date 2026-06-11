@@ -373,6 +373,35 @@ public sealed class RentalBillingSearchLimitTests
         Assert.Equal(2, count);
     }
 
+
+    [Fact]
+    public void CollectUnlinkedBillingCustomerIds_DeduplicatesAndSkipsEmptyIds()
+    {
+        var customerId = Guid.NewGuid();
+        var otherCustomerId = Guid.NewGuid();
+        var firstAsset = CreateUnlinkedBillingAsset(Guid.NewGuid(), "Customer Id A");
+        firstAsset.CustomerId = customerId;
+        var duplicateCustomerAsset = CreateUnlinkedBillingAsset(Guid.NewGuid(), "Customer Id A Duplicate");
+        duplicateCustomerAsset.CustomerId = customerId;
+        var otherCustomerAsset = CreateUnlinkedBillingAsset(Guid.NewGuid(), "Customer Id B");
+        otherCustomerAsset.CustomerId = otherCustomerId;
+        var emptyCustomerAsset = CreateUnlinkedBillingAsset(Guid.NewGuid(), "Customer Id Empty");
+        emptyCustomerAsset.CustomerId = Guid.Empty;
+        var missingCustomerAsset = CreateUnlinkedBillingAsset(Guid.NewGuid(), "Customer Id Missing");
+        missingCustomerAsset.CustomerId = null;
+
+        var customerIds = InvokeCollectUnlinkedBillingCustomerIds(new[]
+        {
+            firstAsset,
+            duplicateCustomerAsset,
+            otherCustomerAsset,
+            emptyCustomerAsset,
+            missingCustomerAsset
+        });
+
+        Assert.Equal(new[] { customerId, otherCustomerId }.OrderBy(id => id), customerIds.OrderBy(id => id));
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -500,6 +529,19 @@ public sealed class RentalBillingSearchLimitTests
 
         var result = method!.Invoke(null, new object?[] { templateItems });
         return Assert.IsType<int>(result);
+    }
+
+
+    private static List<Guid> InvokeCollectUnlinkedBillingCustomerIds(
+        IReadOnlyList<LocalRentalAsset> unlinkedAssets)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "CollectUnlinkedBillingCustomerIds",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object?[] { unlinkedAssets });
+        return Assert.IsType<List<Guid>>(result);
     }
 
 
