@@ -309,6 +309,40 @@ public sealed class RentalBillingSearchLimitTests
         Assert.False(hasMismatch);
     }
 
+
+    [Fact]
+    public void BuildBillingTemplateIssueSummary_CombinesTemplateIssueChecks()
+    {
+        var linkedAssetId = Guid.NewGuid();
+        var templateItems = new List<RentalBillingTemplateItemModel>
+        {
+            new()
+            {
+                DisplayItemName = "\uC5F0\uACB0 \uD488\uBAA9",
+                BillingLineMode = "\uBB36\uC74C",
+                Quantity = 1m,
+                UnitPrice = 100_000m,
+                Amount = 100_000m,
+                IncludedAssetIds = new List<Guid> { linkedAssetId }
+            },
+            new()
+            {
+                DisplayItemName = "\uBBF8\uC5F0\uACB0 \uD488\uBAA9",
+                BillingLineMode = string.Empty,
+                Quantity = 1m,
+                UnitPrice = 50_000m,
+                Amount = 50_000m,
+                IncludedAssetIds = new List<Guid>()
+            }
+        };
+
+        var summary = InvokeBuildBillingTemplateIssueSummary(templateItems, "\uBB36\uC74C");
+
+        Assert.Equal(2, GetSummaryProperty<int>(summary, "TemplateItemCount"));
+        Assert.True(GetSummaryProperty<bool>(summary, "HasUnlinkedTemplateItem"));
+        Assert.False(GetSummaryProperty<bool>(summary, "HasMissingBillingLineMode"));
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -423,6 +457,29 @@ public sealed class RentalBillingSearchLimitTests
 
         var result = method!.Invoke(null, new object?[] { assets, templateItems });
         return Assert.IsType<bool>(result);
+    }
+
+
+    private static object InvokeBuildBillingTemplateIssueSummary(
+        IReadOnlyList<RentalBillingTemplateItemModel> templateItems,
+        string profileBillingType)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "BuildBillingTemplateIssueSummary",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object?[] { templateItems, profileBillingType });
+        Assert.NotNull(result);
+        return result!;
+    }
+
+
+    private static T GetSummaryProperty<T>(object summary, string propertyName)
+    {
+        var property = summary.GetType().GetProperty(propertyName);
+        Assert.NotNull(property);
+        return Assert.IsType<T>(property!.GetValue(summary));
     }
 
 

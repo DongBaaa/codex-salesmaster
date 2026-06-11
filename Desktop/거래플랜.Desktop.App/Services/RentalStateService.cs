@@ -1540,6 +1540,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         bool HasMissingMonthlyFee,
         bool HasEligibilityReviewRequired);
 
+    private readonly record struct RentalBillingTemplateIssueSummary(
+        int TemplateItemCount,
+        bool HasUnlinkedTemplateItem,
+        bool HasMissingBillingLineMode);
+
     private static List<RentalBillingHistoryRow> BuildBillingHistoryRows(
         LocalRentalBillingProfile profile,
         string customerDisplayName,
@@ -8425,25 +8430,51 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var issues = new List<string>();
         var profileBillingType = NormalizeBillingType(profile.BillingType);
-        if (templateItems.Count == 0)
+        var templateIssueSummary = BuildBillingTemplateIssueSummary(templateItems, profileBillingType);
+        if (templateIssueSummary.TemplateItemCount == 0)
             issues.Add("표시품목 없음");
         if (assetSummary.AssetCount == 0)
             issues.Add("연결장비 없음");
         if (string.IsNullOrWhiteSpace(profile.InstallSiteName))
             issues.Add("설치위치 미설정");
-        if (templateItems.Any(item => item.IncludedAssetIds.Count == 0))
+        if (templateIssueSummary.HasUnlinkedTemplateItem)
             issues.Add("장비 미연결 품목");
         if (assetSummary.HasMissingMonthlyFee)
             issues.Add("장비 월요금 없음");
         if (HasBillingAssetMonthlyFeeMismatch(assets, templateItems))
             issues.Add("자산/청구 월요금 불일치");
-        if (templateItems.Any(item => string.IsNullOrWhiteSpace(ResolveTemplateBillingLineMode(item.BillingLineMode, profileBillingType))))
+        if (templateIssueSummary.HasMissingBillingLineMode)
         {
             issues.Add("청구 유형 미지정");
         }
         if (assetSummary.HasEligibilityReviewRequired)
             issues.Add("청구대상 검토 필요");
         return issues.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static RentalBillingTemplateIssueSummary BuildBillingTemplateIssueSummary(
+        IReadOnlyList<RentalBillingTemplateItemModel> templateItems,
+        string profileBillingType)
+    {
+        var hasUnlinkedTemplateItem = false;
+        var hasMissingBillingLineMode = false;
+
+        foreach (var item in templateItems)
+        {
+            if (item.IncludedAssetIds.Count == 0)
+                hasUnlinkedTemplateItem = true;
+
+            if (string.IsNullOrWhiteSpace(ResolveTemplateBillingLineMode(item.BillingLineMode, profileBillingType)))
+                hasMissingBillingLineMode = true;
+
+            if (hasUnlinkedTemplateItem && hasMissingBillingLineMode)
+                break;
+        }
+
+        return new RentalBillingTemplateIssueSummary(
+            templateItems.Count,
+            hasUnlinkedTemplateItem,
+            hasMissingBillingLineMode);
     }
 
     private static bool HasBillingAssetMonthlyFeeMismatch(
