@@ -9925,33 +9925,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (candidateIds.Count == 0)
             return;
 
-        var referencedItemIds = new HashSet<Guid>(
-            await _db.RentalAssets.IgnoreQueryFilters()
-                .Where(asset => !asset.IsDeleted && asset.ItemId.HasValue && candidateIds.Contains(asset.ItemId.Value))
-                .Select(asset => asset.ItemId!.Value)
-                .Distinct()
-                .ToListAsync(ct));
-        foreach (var invoiceItemId in await _db.InvoiceLines.IgnoreQueryFilters()
-                     .Where(line => !line.IsDeleted && line.ItemId.HasValue && candidateIds.Contains(line.ItemId.Value))
-                     .Select(line => line.ItemId!.Value)
-                     .Distinct()
-                     .ToListAsync(ct))
-        {
-            referencedItemIds.Add(invoiceItemId);
-        }
-
-        foreach (var stockItemId in await _db.ItemWarehouseStocks
-                     .Where(stock => candidateIds.Contains(stock.ItemId))
-                     .Select(stock => stock.ItemId)
-                     .Distinct()
-                     .ToListAsync(ct))
-        {
-            referencedItemIds.Add(stockItemId);
-        }
-
-        foreach (var item in await _db.Items.IgnoreQueryFilters()
-                     .Where(current => candidateIds.Contains(current.Id) && !current.IsDeleted)
-                     .ToListAsync(ct))
+        var referencedItemIds = await LoadReferencedRentalItemIdsAsync(candidateIds, ct);
+        var candidateItems = await LoadActiveItemsByIdsAsync(candidateIds, ct);
+        foreach (var item in candidateItems)
         {
             if (referencedItemIds.Contains(item.Id))
                 continue;
@@ -9963,6 +9939,84 @@ WHERE ""AssignedUsername"" <> '';", ct);
             item.CurrentStock = 0m;
             item.UpdatedAtUtc = DateTime.UtcNow;
         }
+    }
+
+    private async Task<HashSet<Guid>> LoadReferencedRentalItemIdsAsync(
+        IReadOnlyCollection<Guid> itemIds,
+        CancellationToken ct)
+    {
+        var ids = itemIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        var referencedItemIds = new HashSet<Guid>();
+        if (ids.Count == 0)
+            return referencedItemIds;
+
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+
+            foreach (var assetItemId in await _db.RentalAssets.IgnoreQueryFilters()
+                         .Where(asset => !asset.IsDeleted &&
+                                         asset.ItemId.HasValue &&
+                                         scopedBatchIds.Contains(asset.ItemId.Value))
+                         .Select(asset => asset.ItemId!.Value)
+                         .Distinct()
+                         .ToListAsync(ct))
+            {
+                referencedItemIds.Add(assetItemId);
+            }
+
+            foreach (var invoiceItemId in await _db.InvoiceLines.IgnoreQueryFilters()
+                         .Where(line => !line.IsDeleted &&
+                                        line.ItemId.HasValue &&
+                                        scopedBatchIds.Contains(line.ItemId.Value))
+                         .Select(line => line.ItemId!.Value)
+                         .Distinct()
+                         .ToListAsync(ct))
+            {
+                referencedItemIds.Add(invoiceItemId);
+            }
+
+            foreach (var stockItemId in await _db.ItemWarehouseStocks
+                         .Where(stock => scopedBatchIds.Contains(stock.ItemId))
+                         .Select(stock => stock.ItemId)
+                         .Distinct()
+                         .ToListAsync(ct))
+            {
+                referencedItemIds.Add(stockItemId);
+            }
+        }
+
+        return referencedItemIds;
+    }
+
+    private async Task<List<LocalItem>> LoadActiveItemsByIdsAsync(
+        IReadOnlyCollection<Guid> itemIds,
+        CancellationToken ct)
+    {
+        var ids = itemIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var itemsById = new Dictionary<Guid, LocalItem>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            var batchItems = await _db.Items.IgnoreQueryFilters()
+                .Where(current => !current.IsDeleted && scopedBatchIds.Contains(current.Id))
+                .ToListAsync(ct);
+            foreach (var item in batchItems)
+                itemsById[item.Id] = item;
+        }
+
+        return itemsById.Values.ToList();
     }
 
     private async Task<List<LocalItem>> GetNameMatchedItemsAsync(string? itemName, CancellationToken ct, IReadOnlyList<LocalItem>? activeItems = null)

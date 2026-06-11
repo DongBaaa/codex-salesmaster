@@ -948,6 +948,77 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task RentalStateService_RepairRentalCatalogLinks_BatchesOrphanedAutoCreatedItemRetirement()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-item-orphan-batch-retire-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var orphanItemIds = new List<Guid>();
+            for (var index = 0; index < 650; index++)
+            {
+                var itemId = Guid.NewGuid();
+                orphanItemIds.Add(itemId);
+                var itemName = $"Orphan Rental Item {index:D4}";
+                db.Items.Add(new LocalItem
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = itemName,
+                    NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(itemName),
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = $"OR-{index:D4}",
+                    SerialNumber = $"ORSN-{index:D4}",
+                    SimpleMemo = RentalStateService.AutoCreatedRentalItemMemo,
+                    IsRental = true,
+                    IsDirty = false,
+                    IsDeleted = false
+                });
+            }
+
+            var normalItemId = Guid.NewGuid();
+            db.Items.Add(new LocalItem
+            {
+                Id = normalItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "정상 재고 품목",
+                NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("정상 재고 품목"),
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                IsRental = false,
+                IsDirty = false,
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new RentalStateService(db).RepairRentalCatalogLinksAsync();
+
+            Assert.Equal(0, result.ScannedAssetCount);
+            Assert.Equal(
+                orphanItemIds.Count,
+                await db.Items
+                    .IgnoreQueryFilters()
+                    .CountAsync(item => orphanItemIds.Contains(item.Id) && item.IsDeleted));
+            var normalItem = await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == normalItemId);
+            Assert.False(normalItem.IsDeleted);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RentalStateService_SaveAsset_AdminCanSaveItworldAssetScope()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-asset-itworld-{Guid.NewGuid():N}");
