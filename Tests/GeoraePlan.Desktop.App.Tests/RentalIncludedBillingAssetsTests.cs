@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
@@ -46,6 +47,84 @@ public sealed class RentalIncludedBillingAssetsTests
 
             Assert.Contains(rows, asset => asset.Id == explicitAsset.Id);
             Assert.Equal(301, rows.Count);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SaveBillingProfileAsync_BatchesManyIncludedAssetReferencesForLinkSync()
+    {
+        PrepareAppRoot("georaeplan-rental-included-assets-save-batch");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var includedAssetIds = new List<Guid>();
+            for (var index = 0; index < 650; index++)
+            {
+                var asset = CreateRentalAsset(
+                    $"Batch Sync Customer {index:D4}",
+                    $"B-{index:D4}",
+                    billingProfileId: null);
+                includedAssetIds.Add(asset.Id);
+                db.RentalAssets.Add(asset);
+            }
+
+            await db.SaveChangesAsync();
+
+            var profileId = Guid.Parse("f2300000-1111-4444-8888-000000000001");
+            var profile = new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Batch Sync Customer",
+                ItemName = "Rental Copier Bundle",
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        DisplayItemName = "Rental Copier Bundle",
+                        BillingLineMode = "묶음",
+                        Quantity = 1m,
+                        UnitPrice = 100_000m,
+                        Amount = 100_000m,
+                        IncludedAssetIds = includedAssetIds
+                    }
+                })
+            };
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(profile, CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+
+            var linkedAssetIds = await db.RentalAssets
+                .IgnoreQueryFilters()
+                .Where(asset => asset.BillingProfileId == profileId)
+                .Select(asset => asset.Id)
+                .ToListAsync();
+            Assert.Equal(includedAssetIds.Count, linkedAssetIds.Count);
+            Assert.Equal(includedAssetIds.OrderBy(id => id), linkedAssetIds.OrderBy(id => id));
+
+            var persistedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .SingleAsync(current => current.Id == profileId);
+            var persistedItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(
+                persistedProfile.BillingTemplateJson) ?? [];
+            Assert.Equal(includedAssetIds.Count, persistedItems.Single().IncludedAssetIds.Count);
         }
         finally
         {

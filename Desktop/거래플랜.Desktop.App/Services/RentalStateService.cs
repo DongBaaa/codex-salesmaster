@@ -3140,23 +3140,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var templateItems = GetBillingTemplateItems(profile, Array.Empty<LocalRentalAsset>());
         profile.BillingType = ResolveProfileBillingTypeFromTemplateItems(templateItems, profile.BillingType);
-        var outOfScopeLinkedAssets = await GetOutOfScopeBillingProfileAssetsAsync(
-            templateItems,
-            assetLinkEdits,
-            profile.TenantCode,
-            officeCode,
-            ct);
-        if (outOfScopeLinkedAssets.Count > 0)
-        {
-            var examples = string.Join(", ",
-                outOfScopeLinkedAssets
-                    .Take(3)
-                    .Select(asset => string.IsNullOrWhiteSpace(asset.ManagementNumber)
-                        ? asset.Id.ToString("D")
-                        : asset.ManagementNumber.Trim()));
-            return LocalMutationResult.Denied(
-                $"청구 프로필과 다른 업체/담당지점의 자산은 연결할 수 없습니다. 대상 {outOfScopeLinkedAssets.Count}건: {examples}");
-        }
+        // 렌탈 자산은 설치/소유 기준으로 전 업체가 공유 조회될 수 있고,
+        // 청구 프로필은 외부 자산을 "원본 자산 변경 없는 참조"로 포함할 수 있다.
+        // 저장 시 범위 검사용 자산 일괄 조회를 하지 않아 대량 장비 포함 저장 지연을 막는다.
 
         profile.BillingTemplateJson = SerializeBillingTemplateItems(templateItems);
         profile.MonthlyAmount = templateItems.Count == 0
@@ -8416,69 +8402,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return BillingEligibilityUnconfirmed;
     }
 
-    private async Task<List<LocalRentalAsset>> GetOutOfScopeBillingProfileAssetsAsync(
-        IReadOnlyList<RentalBillingTemplateItemModel> templateItems,
-        IReadOnlyList<RentalBillingAssetLinkEdit>? assetLinkEdits,
-        string? profileTenantCode,
-        string? profileResponsibleOfficeCode,
-        CancellationToken ct)
-    {
-        var templateAssetIds = templateItems
-            .SelectMany(item => item.IncludedAssetIds ?? Enumerable.Empty<Guid>())
-            .Where(id => id != Guid.Empty)
-            .Distinct()
-            .ToHashSet();
-        var explicitLinkAssetIds = (assetLinkEdits ?? Array.Empty<RentalBillingAssetLinkEdit>())
-            .Where(edit => edit is not null && edit.AssetId != Guid.Empty)
-            .Select(edit => edit.AssetId)
-            .Distinct()
-            .ToHashSet();
-        var assetIds = templateAssetIds
-            .Concat(explicitLinkAssetIds)
-            .Distinct()
-            .ToList();
-        if (assetIds.Count == 0)
-            return [];
-
-        var assets = await _db.RentalAssets
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(asset => assetIds.Contains(asset.Id) && !asset.IsDeleted)
-            .ToListAsync(ct);
-
-        // 렌탈 자산은 설치/소유 기준으로 전 업체가 공유 조회될 수 있고,
-        // 청구 프로필은 외부 자산을 "원본 자산 변경 없는 참조"로 포함할 수 있다.
-        // 따라서 거래처/품목/전표 소유 범위와 달리 자산 연결 자체는 프로필 범위와
-        // 다르다는 이유만으로 차단하지 않는다.
-        _ = assets;
-        return [];
-    }
-
-    private static bool RentalAssetMatchesBillingProfileScope(
-        LocalRentalAsset asset,
-        string? profileTenantCode,
-        string? profileResponsibleOfficeCode)
-    {
-        var normalizedProfileResponsibleOfficeCode = ResolveCustomerRentalOfficeCode(profileResponsibleOfficeCode);
-        var normalizedProfileTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
-            profileTenantCode,
-            normalizedProfileResponsibleOfficeCode,
-            profileTenantCode,
-            normalizedProfileResponsibleOfficeCode);
-        var assetResponsibleOfficeCode = ResolveCustomerRentalOfficeCode(
-            string.IsNullOrWhiteSpace(asset.ResponsibleOfficeCode)
-                ? asset.ManagementCompanyCode
-                : asset.ResponsibleOfficeCode);
-        var assetTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
-            asset.TenantCode,
-            asset.OfficeCode,
-            asset.TenantCode,
-            assetResponsibleOfficeCode);
-
-        return string.Equals(assetTenantCode, normalizedProfileTenantCode, StringComparison.OrdinalIgnoreCase) &&
-               string.Equals(assetResponsibleOfficeCode, normalizedProfileResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase);
-    }
-
     private static bool RentalAssetCanTransferToBillingProfileScope(
         LocalRentalAsset asset,
         string? profileTenantCode)
@@ -8752,11 +8675,27 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.TenantCode,
             normalizedOfficeCode);
 
-        var linkedAssets = await _db.RentalAssets
+        var linkedAssetsById = new Dictionary<Guid, LocalRentalAsset>();
+        var profileLinkedAssets = await _db.RentalAssets
             .IgnoreQueryFilters()
-            .Where(asset => asset.BillingProfileId == profile.Id ||
-                            includedAssetIds.Contains(asset.Id))
+            .Where(asset => asset.BillingProfileId == profile.Id)
             .ToListAsync(ct);
+        foreach (var asset in profileLinkedAssets)
+            linkedAssetsById[asset.Id] = asset;
+
+        foreach (var batchIds in includedAssetIds.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            var includedAssets = await _db.RentalAssets
+                .IgnoreQueryFilters()
+                .Where(asset => scopedBatchIds.Contains(asset.Id))
+                .ToListAsync(ct);
+            foreach (var asset in includedAssets)
+                linkedAssetsById[asset.Id] = asset;
+        }
+
+        var linkedAssets = linkedAssetsById.Values.ToList();
 
         if (linkedAssets.Count == 0)
             return;
