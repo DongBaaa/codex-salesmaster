@@ -245,6 +245,46 @@ public sealed class RentalBillingSearchLimitTests
         }
     }
 
+
+    [Fact]
+    public void GetBillingTemplateItems_StoredTemplateWithIncludedAssetIds_DoesNotEnumerateLegacyAssets()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-template-lazy-legacy-assets");
+
+        try
+        {
+            using var db = new LocalDbContext();
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var profile = CreateBillingProfile(2, "Template Lazy Customer");
+            profile.Id = profileId;
+            profile.BillingType = "\uBB36\uC74C";
+            profile.BillingTemplateJson = System.Text.Json.JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "\uB80C\uD0C8\uB8CC",
+                    BillingLineMode = "\uBB36\uC74C",
+                    Quantity = 1m,
+                    UnitPrice = 100_000m,
+                    Amount = 100_000m,
+                    RepresentativeAssetId = assetId,
+                    IncludedAssetIds = new List<Guid> { assetId }
+                }
+            });
+
+            var items = new RentalStateService(db).GetBillingTemplateItems(profile, new ThrowingRentalAssetList());
+
+            var item = Assert.Single(items);
+            Assert.Equal(new[] { assetId }, item.IncludedAssetIds);
+            Assert.Equal(assetId, item.RepresentativeAssetId);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -345,6 +385,20 @@ public sealed class RentalBillingSearchLimitTests
         var result = method!.Invoke(null, new object?[] { query });
         Assert.NotNull(result);
         return Assert.IsAssignableFrom<IQueryable<LocalRentalAsset>>(result);
+    }
+
+
+    private sealed class ThrowingRentalAssetList : IReadOnlyList<LocalRentalAsset>
+    {
+        public int Count => throw new InvalidOperationException("Legacy asset fallback should not enumerate assets.");
+
+        public LocalRentalAsset this[int index] => throw new InvalidOperationException("Legacy asset fallback should not enumerate assets.");
+
+        public IEnumerator<LocalRentalAsset> GetEnumerator()
+            => throw new InvalidOperationException("Legacy asset fallback should not enumerate assets.");
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
     }
 
     private static List<RentalBillingRunModel> InvokeResolveBillingRunsForRowBuild(

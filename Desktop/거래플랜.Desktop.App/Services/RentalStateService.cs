@@ -7431,12 +7431,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
         ArgumentNullException.ThrowIfNull(profile);
         assets ??= Array.Empty<LocalRentalAsset>();
         var profileBillingType = NormalizeBillingType(profile.BillingType);
-        var legacyIncludedAssetIds = assets
-            .Where(asset => asset.BillingProfileId == profile.Id)
-            .Select(asset => asset.Id)
-            .Where(id => id != Guid.Empty)
-            .Distinct()
-            .ToList();
+        List<Guid>? legacyIncludedAssetIds = null;
+        List<Guid> ResolveLegacyIncludedAssetIds()
+        {
+            legacyIncludedAssetIds ??= assets
+                .Where(asset => asset.BillingProfileId == profile.Id)
+                .Select(asset => asset.Id)
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+            return legacyIncludedAssetIds;
+        }
 
         List<RentalBillingTemplateItemModel>? parsed = null;
         if (!string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
@@ -7453,8 +7458,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         if (parsed is null || parsed.Count == 0)
         {
+            var fallbackIncludedAssetIds = ResolveLegacyIncludedAssetIds();
             var representativeAssetId = profileBillingType == "묶음"
-                ? legacyIncludedAssetIds.FirstOrDefault(id => id != Guid.Empty)
+                ? fallbackIncludedAssetIds.FirstOrDefault(id => id != Guid.Empty)
                 : Guid.Empty;
             parsed =
             [
@@ -7466,7 +7472,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     Quantity = 1m,
                     UnitPrice = Math.Max(0m, profile.MonthlyAmount),
                     Amount = Math.Max(0m, profile.MonthlyAmount),
-                    IncludedAssetIds = legacyIncludedAssetIds
+                    IncludedAssetIds = fallbackIncludedAssetIds
                 }
             ];
         }
@@ -7509,25 +7515,29 @@ WHERE ""AssignedUsername"" <> '';", ct);
             });
         }
 
-        if (legacyIncludedAssetIds.Count > 0 &&
-            normalized.Count == 1 &&
+        if (normalized.Count == 1 &&
             normalized.All(item => item.IncludedAssetIds.Count == 0))
         {
-            normalized[0].IncludedAssetIds = legacyIncludedAssetIds;
-            var currentRepresentativeAssetId = normalized[0].RepresentativeAssetId;
-            if (string.Equals(normalized[0].BillingLineMode, "묶음", StringComparison.OrdinalIgnoreCase) &&
-                (!currentRepresentativeAssetId.HasValue ||
-                 !legacyIncludedAssetIds.Contains(currentRepresentativeAssetId.GetValueOrDefault())))
+            var fallbackIncludedAssetIds = ResolveLegacyIncludedAssetIds();
+            if (fallbackIncludedAssetIds.Count > 0)
             {
-                var representativeAssetId = legacyIncludedAssetIds.FirstOrDefault(id => id != Guid.Empty);
-                normalized[0].RepresentativeAssetId = representativeAssetId == Guid.Empty ? null : representativeAssetId;
+                normalized[0].IncludedAssetIds = fallbackIncludedAssetIds;
+                var currentRepresentativeAssetId = normalized[0].RepresentativeAssetId;
+                if (string.Equals(normalized[0].BillingLineMode, "묶음", StringComparison.OrdinalIgnoreCase) &&
+                    (!currentRepresentativeAssetId.HasValue ||
+                     !fallbackIncludedAssetIds.Contains(currentRepresentativeAssetId.GetValueOrDefault())))
+                {
+                    var representativeAssetId = fallbackIncludedAssetIds.FirstOrDefault(id => id != Guid.Empty);
+                    normalized[0].RepresentativeAssetId = representativeAssetId == Guid.Empty ? null : representativeAssetId;
+                }
             }
         }
 
         if (normalized.Count == 0)
         {
+            var fallbackIncludedAssetIds = ResolveLegacyIncludedAssetIds();
             var representativeAssetId = profileBillingType == "묶음"
-                ? legacyIncludedAssetIds.FirstOrDefault(id => id != Guid.Empty)
+                ? fallbackIncludedAssetIds.FirstOrDefault(id => id != Guid.Empty)
                 : Guid.Empty;
             normalized.Add(new RentalBillingTemplateItemModel
             {
@@ -7537,7 +7547,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 Quantity = 1m,
                 UnitPrice = Math.Max(0m, profile.MonthlyAmount),
                 Amount = Math.Max(0m, profile.MonthlyAmount),
-                IncludedAssetIds = legacyIncludedAssetIds
+                IncludedAssetIds = fallbackIncludedAssetIds
             });
         }
 
