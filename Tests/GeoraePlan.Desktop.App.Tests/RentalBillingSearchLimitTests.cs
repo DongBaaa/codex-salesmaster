@@ -454,6 +454,49 @@ public sealed class RentalBillingSearchLimitTests
         Assert.Equal(new[] { firstId, secondId, thirdId }, sortedRows.Select(row => row.SelectionId).ToArray());
     }
 
+    [Fact]
+    public void BuildGroupedBillingHistoryRows_SortsOnlyWhenNeededAndKeepsStableTies()
+    {
+        var older = new RentalBillingHistoryRow
+        {
+            BillingRunId = Guid.NewGuid(),
+            CustomerName = "Zeta",
+            ScheduledDate = new DateOnly(2026, 4, 1),
+            PeriodLabel = "older"
+        };
+        var sameFirst = new RentalBillingHistoryRow
+        {
+            BillingRunId = Guid.NewGuid(),
+            CustomerName = "Alpha",
+            ScheduledDate = new DateOnly(2026, 6, 1),
+            PeriodLabel = "same-first"
+        };
+        var sameSecond = new RentalBillingHistoryRow
+        {
+            BillingRunId = Guid.NewGuid(),
+            CustomerName = "alpha",
+            ScheduledDate = new DateOnly(2026, 6, 1),
+            PeriodLabel = "same-second"
+        };
+        var middle = new RentalBillingHistoryRow
+        {
+            BillingRunId = Guid.NewGuid(),
+            CustomerName = "Beta",
+            ScheduledDate = new DateOnly(2026, 5, 1),
+            PeriodLabel = "middle"
+        };
+
+        var result = InvokeBuildGroupedBillingHistoryRows(new List<RentalBillingViewRow>
+        {
+            new() { BillingHistoryRows = [older, sameFirst] },
+            new() { BillingHistoryRows = [sameSecond, middle] }
+        });
+
+        Assert.Equal(
+            new[] { "same-first", "same-second", "middle", "older" },
+            result.Select(history => history.PeriodLabel).ToArray());
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -622,6 +665,18 @@ public sealed class RentalBillingSearchLimitTests
 
         var result = method!.Invoke(null, new object?[] { rows });
         return Assert.IsType<List<RentalBillingViewRow>>(result);
+    }
+
+    private static List<RentalBillingHistoryRow> InvokeBuildGroupedBillingHistoryRows(
+        IReadOnlyList<RentalBillingViewRow> rows)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "BuildGroupedBillingHistoryRows",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object?[] { rows });
+        return Assert.IsType<List<RentalBillingHistoryRow>>(result);
     }
 
 

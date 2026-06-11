@@ -2572,11 +2572,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var groupedSourceCount = groupedMetrics.GroupedSourceCount;
         var installLocationDisplay = BuildGroupedInstallLocationDisplay(rows);
         var aggregateSummary = BuildGroupedBillingAggregateSummary(groupedPersistedProfileCount, groupedUnlinkedAssetCount);
-        var historyRows = rows
-            .SelectMany(row => row.BillingHistoryRows)
-            .OrderByDescending(history => history.ScheduledDate)
-            .ThenBy(history => history.CustomerName, StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
+        var historyRows = BuildGroupedBillingHistoryRows(rows);
         var historySummary = groupedMetrics.HistorySummary;
         var dataIssues = textMetrics.DataIssues;
         if (groupedPersistedProfileCount > 1)
@@ -2646,6 +2642,48 @@ WHERE ""AssignedUsername"" <> '';", ct);
             HasDataIssue = groupedMetrics.HasDataIssue || groupedSourceCount > 1,
             DataIssueSummary = dataIssues.Count == 0 ? aggregateSummary : string.Join(" / ", dataIssues)
         };
+    }
+
+    private static List<RentalBillingHistoryRow> BuildGroupedBillingHistoryRows(
+        IReadOnlyList<RentalBillingViewRow> rows)
+    {
+        var historyRows = new List<RentalBillingHistoryRow>();
+        foreach (var row in rows)
+        {
+            if (row.BillingHistoryRows.Count == 0)
+                continue;
+
+            historyRows.EnsureCapacity(historyRows.Count + row.BillingHistoryRows.Count);
+            foreach (var history in row.BillingHistoryRows)
+                historyRows.Add(history);
+        }
+
+        if (historyRows.Count <= 1 || AreGroupedBillingHistoryRowsSorted(historyRows))
+            return historyRows;
+
+        return historyRows
+            .OrderByDescending(history => history.ScheduledDate)
+            .ThenBy(history => history.CustomerName, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+    }
+
+    private static bool AreGroupedBillingHistoryRowsSorted(IReadOnlyList<RentalBillingHistoryRow> historyRows)
+    {
+        for (var index = 1; index < historyRows.Count; index++)
+        {
+            if (CompareGroupedBillingHistoryRows(historyRows[index - 1], historyRows[index]) > 0)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static int CompareGroupedBillingHistoryRows(RentalBillingHistoryRow left, RentalBillingHistoryRow right)
+    {
+        var scheduledDateComparison = right.ScheduledDate.CompareTo(left.ScheduledDate);
+        return scheduledDateComparison != 0
+            ? scheduledDateComparison
+            : StringComparer.CurrentCultureIgnoreCase.Compare(left.CustomerName, right.CustomerName);
     }
 
     private static RentalBillingViewRow FindGroupedBillingRepresentative(IReadOnlyList<RentalBillingViewRow> rows)
