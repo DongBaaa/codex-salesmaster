@@ -1527,6 +1527,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
         DateOnly? OldestPastUnresolvedScheduledDate,
         string OldestPastUnresolvedPeriodLabel);
 
+    private readonly record struct GroupedBillingRowMetrics(
+        int GroupedUnlinkedAssetCount,
+        int GroupedSourceCount,
+        DateOnly? NextBillingDate,
+        DateOnly? DocumentIssueDate,
+        DateOnly? AlertDate,
+        DateOnly? LastSettledDate,
+        int? DaysRemaining,
+        bool AllRowsCompleted,
+        decimal SettledAmount,
+        decimal OutstandingAmount,
+        bool RequiresFollowUp,
+        int AssetCount,
+        int TemplateItemCount,
+        int IncludedAssetCount,
+        decimal CurrentBilledAmount,
+        bool HasDataIssue,
+        RentalBillingHistorySummary HistorySummary);
+
     private readonly record struct RentalBillingAssetRowSummary(
         int AssetCount,
         string InstallLocationDisplay,
@@ -1726,33 +1745,110 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 group => group.Select(entry => entry.Run).ToList());
     }
 
-    private static RentalBillingHistorySummary BuildGroupedBillingHistorySummary(
+    private static GroupedBillingRowMetrics BuildGroupedBillingRowMetrics(
         IReadOnlyList<RentalBillingViewRow> rows)
     {
-        var count = 0;
-        var amount = 0m;
+        var groupedUnlinkedAssetCount = 0;
+        var groupedSourceCount = 0;
+        DateOnly? nextBillingDate = null;
+        DateOnly? documentIssueDate = null;
+        DateOnly? alertDate = null;
+        DateOnly? lastSettledDate = null;
+        int? daysRemaining = null;
+        var allRowsCompleted = true;
+        var settledAmount = 0m;
+        var outstandingAmount = 0m;
+        var requiresFollowUp = false;
+        var assetCount = 0;
+        var templateItemCount = 0;
+        var includedAssetCount = 0;
+        var currentBilledAmount = 0m;
+        var hasDataIssue = false;
+        var pastUnresolvedCount = 0;
+        var pastUnresolvedAmount = 0m;
         DateOnly? oldestScheduledDate = null;
         string oldestPeriodLabel = string.Empty;
         foreach (var row in rows)
         {
-            count += row.PastUnresolvedCount;
-            amount += row.PastUnresolvedAmount;
-            if (!row.OldestPastUnresolvedScheduledDate.HasValue)
-                continue;
-
-            var scheduledDate = row.OldestPastUnresolvedScheduledDate.Value;
-            if (!oldestScheduledDate.HasValue || scheduledDate < oldestScheduledDate.Value)
+            groupedUnlinkedAssetCount += row.GroupedUnlinkedAssetCount;
+            groupedSourceCount += Math.Max(1, row.GroupedSourceCount);
+            if (row.NextBillingDate.HasValue &&
+                (!nextBillingDate.HasValue || row.NextBillingDate.Value < nextBillingDate.Value))
             {
-                oldestScheduledDate = scheduledDate;
-                oldestPeriodLabel = row.OldestPastUnresolvedPeriodLabel;
+                nextBillingDate = row.NextBillingDate.Value;
+            }
+
+            if (row.DocumentIssueDate.HasValue &&
+                (!documentIssueDate.HasValue || row.DocumentIssueDate.Value < documentIssueDate.Value))
+            {
+                documentIssueDate = row.DocumentIssueDate.Value;
+            }
+
+            if (row.AlertDate.HasValue &&
+                (!alertDate.HasValue || row.AlertDate.Value < alertDate.Value))
+            {
+                alertDate = row.AlertDate.Value;
+            }
+
+            if (row.LastSettledDate.HasValue &&
+                (!lastSettledDate.HasValue || row.LastSettledDate.Value > lastSettledDate.Value))
+            {
+                lastSettledDate = row.LastSettledDate.Value;
+            }
+
+            if (row.DaysRemaining.HasValue &&
+                (!daysRemaining.HasValue || row.DaysRemaining.Value < daysRemaining.Value))
+            {
+                daysRemaining = row.DaysRemaining.Value;
+            }
+
+            if (!string.Equals(row.CompletionStatus, PaymentFlowConstants.CompletionDone, StringComparison.OrdinalIgnoreCase))
+                allRowsCompleted = false;
+            settledAmount += row.SettledAmount;
+            outstandingAmount += row.OutstandingAmount;
+            requiresFollowUp |= row.RequiresFollowUp;
+            assetCount += row.AssetCount;
+            templateItemCount += row.TemplateItemCount;
+            includedAssetCount += row.IncludedAssetCount;
+            currentBilledAmount += row.CurrentBilledAmount;
+            hasDataIssue |= row.HasDataIssue;
+
+            pastUnresolvedCount += row.PastUnresolvedCount;
+            pastUnresolvedAmount += row.PastUnresolvedAmount;
+            if (row.OldestPastUnresolvedScheduledDate.HasValue)
+            {
+                var scheduledDate = row.OldestPastUnresolvedScheduledDate.Value;
+                if (!oldestScheduledDate.HasValue || scheduledDate < oldestScheduledDate.Value)
+                {
+                    oldestScheduledDate = scheduledDate;
+                    oldestPeriodLabel = row.OldestPastUnresolvedPeriodLabel;
+                }
             }
         }
 
-        return new RentalBillingHistorySummary(
-            count,
-            amount,
+        var historySummary = new RentalBillingHistorySummary(
+            pastUnresolvedCount,
+            pastUnresolvedAmount,
             oldestScheduledDate,
             oldestPeriodLabel);
+        return new GroupedBillingRowMetrics(
+            groupedUnlinkedAssetCount,
+            groupedSourceCount,
+            nextBillingDate,
+            documentIssueDate,
+            alertDate,
+            lastSettledDate,
+            daysRemaining,
+            allRowsCompleted,
+            settledAmount,
+            outstandingAmount,
+            requiresFollowUp,
+            assetCount,
+            templateItemCount,
+            includedAssetCount,
+            currentBilledAmount,
+            hasDataIssue,
+            historySummary);
     }
 
     private static string ResolveBillingHistoryStatus(
@@ -2352,41 +2448,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .GroupBy(pair => pair.Key)
             .ToDictionary(group => group.Key, group => group.Max(pair => pair.Value));
         var groupedPersistedProfileCount = groupedPersistedProfileIds.Count;
-        var groupedUnlinkedAssetCount = rows.Sum(row => row.GroupedUnlinkedAssetCount);
-        var groupedSourceCount = rows.Sum(row => Math.Max(1, row.GroupedSourceCount));
+        var groupedMetrics = BuildGroupedBillingRowMetrics(rows);
+        var groupedUnlinkedAssetCount = groupedMetrics.GroupedUnlinkedAssetCount;
+        var groupedSourceCount = groupedMetrics.GroupedSourceCount;
         var installLocationDisplay = BuildGroupedInstallLocationDisplay(rows);
-        var nextBillingDate = rows
-            .Where(row => row.NextBillingDate.HasValue)
-            .Select(row => (DateOnly?)row.NextBillingDate!.Value)
-            .OrderBy(date => date)
-            .FirstOrDefault();
-        var documentIssueDate = rows
-            .Where(row => row.DocumentIssueDate.HasValue)
-            .Select(row => (DateOnly?)row.DocumentIssueDate!.Value)
-            .OrderBy(date => date)
-            .FirstOrDefault();
-        var alertDate = rows
-            .Where(row => row.AlertDate.HasValue)
-            .Select(row => (DateOnly?)row.AlertDate!.Value)
-            .OrderBy(date => date)
-            .FirstOrDefault();
-        var lastSettledDate = rows
-            .Where(row => row.LastSettledDate.HasValue)
-            .Select(row => (DateOnly?)row.LastSettledDate!.Value)
-            .OrderByDescending(date => date)
-            .FirstOrDefault();
-        var daysRemaining = rows
-            .Where(row => row.DaysRemaining.HasValue)
-            .Select(row => (int?)row.DaysRemaining!.Value)
-            .OrderBy(value => value)
-            .FirstOrDefault();
         var aggregateSummary = BuildGroupedBillingAggregateSummary(groupedPersistedProfileCount, groupedUnlinkedAssetCount);
         var historyRows = rows
             .SelectMany(row => row.BillingHistoryRows)
             .OrderByDescending(history => history.ScheduledDate)
             .ThenBy(history => history.CustomerName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
-        var historySummary = BuildGroupedBillingHistorySummary(rows);
+        var historySummary = groupedMetrics.HistorySummary;
         var dataIssues = rows
             .SelectMany(ExtractBillingDataIssueTokens)
             .Where(value => !string.IsNullOrWhiteSpace(value))
@@ -2417,20 +2489,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
             CustomerDisplayName = representative.CustomerDisplayName,
             BillingCycleDisplay = distinctCycles.Count <= 1 ? distinctCycles.FirstOrDefault() ?? string.Empty : $"다중({distinctCycles.Count:N0})",
             ResponsibleOfficeName = representative.ResponsibleOfficeName,
-            NextBillingDate = nextBillingDate,
-            DaysRemaining = daysRemaining,
+            NextBillingDate = groupedMetrics.NextBillingDate,
+            DaysRemaining = groupedMetrics.DaysRemaining,
             DisplayStatus = BuildGroupedBillingDisplayStatus(distinctDisplayStatuses, groupedPersistedProfileCount, groupedUnlinkedAssetCount),
             SettlementStatus = BuildGroupedSettlementStatus(distinctSettlementStatuses, groupedPersistedProfileCount, groupedUnlinkedAssetCount),
-            CompletionStatus = rows.All(row => string.Equals(row.CompletionStatus, PaymentFlowConstants.CompletionDone, StringComparison.OrdinalIgnoreCase))
+            CompletionStatus = groupedMetrics.AllRowsCompleted
                 ? PaymentFlowConstants.CompletionDone
                 : PaymentFlowConstants.CompletionPending,
-            SettledAmount = rows.Sum(row => row.SettledAmount),
-            OutstandingAmount = rows.Sum(row => row.OutstandingAmount),
-            RequiresFollowUp = rows.Any(row => row.RequiresFollowUp),
-            LastSettledDate = lastSettledDate,
-            AssetCount = rows.Sum(row => row.AssetCount),
-            TemplateItemCount = rows.Sum(row => row.TemplateItemCount),
-            IncludedAssetCount = rows.Sum(row => row.IncludedAssetCount),
+            SettledAmount = groupedMetrics.SettledAmount,
+            OutstandingAmount = groupedMetrics.OutstandingAmount,
+            RequiresFollowUp = groupedMetrics.RequiresFollowUp,
+            LastSettledDate = groupedMetrics.LastSettledDate,
+            AssetCount = groupedMetrics.AssetCount,
+            TemplateItemCount = groupedMetrics.TemplateItemCount,
+            IncludedAssetCount = groupedMetrics.IncludedAssetCount,
             BillingType = distinctBillingTypes.Count <= 1 ? distinctBillingTypes.FirstOrDefault() ?? representative.BillingType : "혼합",
             InstallSiteName = representative.InstallSiteName,
             InstallLocationDisplay = installLocationDisplay,
@@ -2439,8 +2511,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             BillingAnchorMonth = representative.BillingAnchorMonth,
             DocumentIssueMode = representative.DocumentIssueMode,
             DocumentLeadDays = representative.DocumentLeadDays,
-            DocumentIssueDate = documentIssueDate,
-            AlertDate = alertDate,
+            DocumentIssueDate = groupedMetrics.DocumentIssueDate,
+            AlertDate = groupedMetrics.AlertDate,
             AlertReason = groupedPersistedProfileCount > 1
                 ? "복수 청구 프로필 묶음"
                 : groupedUnlinkedAssetCount > 0
@@ -2453,13 +2525,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
             CurrentBillingRunStatus = distinctRunStatuses.Count <= 1
                 ? distinctRunStatuses.FirstOrDefault() ?? representative.CurrentBillingRunStatus
                 : "요약",
-            CurrentBilledAmount = rows.Sum(row => row.CurrentBilledAmount),
+            CurrentBilledAmount = groupedMetrics.CurrentBilledAmount,
             BillingHistoryRows = historyRows,
             PastUnresolvedCount = historySummary.PastUnresolvedCount,
             PastUnresolvedAmount = historySummary.PastUnresolvedAmount,
             OldestPastUnresolvedScheduledDate = historySummary.OldestPastUnresolvedScheduledDate,
             OldestPastUnresolvedPeriodLabel = historySummary.OldestPastUnresolvedPeriodLabel,
-            HasDataIssue = rows.Any(row => row.HasDataIssue) || groupedSourceCount > 1,
+            HasDataIssue = groupedMetrics.HasDataIssue || groupedSourceCount > 1,
             DataIssueSummary = dataIssues.Count == 0 ? aggregateSummary : string.Join(" / ", dataIssues)
         };
     }
