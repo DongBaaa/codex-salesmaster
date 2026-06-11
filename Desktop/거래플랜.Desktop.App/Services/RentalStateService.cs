@@ -1546,6 +1546,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
         bool HasDataIssue,
         RentalBillingHistorySummary HistorySummary);
 
+    private readonly record struct GroupedBillingTextMetrics(
+        List<string> DistinctCycles,
+        List<string> DistinctBillingTypes,
+        List<string> DistinctAdvanceModes,
+        List<string> DistinctRunStatuses,
+        List<string> DistinctPeriodLabels,
+        List<string> DistinctSettlementStatuses,
+        List<string> DistinctDisplayStatuses,
+        List<string> DataIssues);
+
     private readonly record struct RentalBillingAssetRowSummary(
         int AssetCount,
         string InstallLocationDisplay,
@@ -1849,6 +1859,75 @@ WHERE ""AssignedUsername"" <> '';", ct);
             currentBilledAmount,
             hasDataIssue,
             historySummary);
+    }
+
+    private static GroupedBillingTextMetrics BuildGroupedBillingTextMetrics(
+        IReadOnlyList<RentalBillingViewRow> rows)
+    {
+        var distinctCycles = new List<string>();
+        var distinctCycleKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctBillingTypes = new List<string>();
+        var distinctBillingTypeKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctAdvanceModes = new List<string>();
+        var distinctAdvanceModeKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctRunStatuses = new List<string>();
+        var distinctRunStatusKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctPeriodLabels = new List<string>();
+        var distinctPeriodLabelKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctSettlementStatuses = new List<string>();
+        var distinctSettlementStatusKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var distinctDisplayStatuses = new List<string>();
+        var distinctDisplayStatusKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+        var dataIssues = new List<string>();
+        var dataIssueKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+
+        foreach (var row in rows)
+        {
+            AddDistinctTrimmed(distinctCycles, distinctCycleKeys, row.BillingCycleDisplay);
+            AddDistinctTrimmed(distinctBillingTypes, distinctBillingTypeKeys, row.BillingType);
+            AddDistinctTrimmed(distinctAdvanceModes, distinctAdvanceModeKeys, row.BillingAdvanceMode);
+            AddDistinctTrimmed(distinctRunStatuses, distinctRunStatusKeys, row.CurrentBillingRunStatus);
+            AddDistinctTrimmed(distinctPeriodLabels, distinctPeriodLabelKeys, row.CurrentBillingPeriodLabel);
+            AddDistinctTrimmed(distinctSettlementStatuses, distinctSettlementStatusKeys, row.SettlementStatus);
+            AddDistinctTrimmed(distinctDisplayStatuses, distinctDisplayStatusKeys, row.DisplayStatus);
+            foreach (var dataIssue in ExtractBillingDataIssueTokens(row))
+                AddDistinctTrimmed(dataIssues, dataIssueKeys, dataIssue);
+        }
+
+        return new GroupedBillingTextMetrics(
+            distinctCycles,
+            distinctBillingTypes,
+            distinctAdvanceModes,
+            distinctRunStatuses,
+            distinctPeriodLabels,
+            distinctSettlementStatuses,
+            distinctDisplayStatuses,
+            dataIssues);
+    }
+
+    private static void AddDistinctTrimmed(
+        List<string> values,
+        HashSet<string> keys,
+        string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+
+        var trimmed = value.Trim();
+        if (trimmed.Length > 0 && keys.Add(trimmed))
+            values.Add(trimmed);
+    }
+
+    private static void AddDistinctTrimmed(
+        List<string> values,
+        string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+
+        var trimmed = value.Trim();
+        if (trimmed.Length > 0 && !values.Contains(trimmed, StringComparer.CurrentCultureIgnoreCase))
+            values.Add(trimmed);
     }
 
     private static string ResolveBillingHistoryStatus(
@@ -2392,41 +2471,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .OrderByDescending(row => row.HasPersistedProfile)
             .ThenBy(row => row.SelectionId)
             .First();
-        var distinctCycles = rows
-            .Select(row => row.BillingCycleDisplay?.Trim() ?? string.Empty)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-        var distinctBillingTypes = rows
-            .Select(row => row.BillingType?.Trim() ?? string.Empty)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-        var distinctAdvanceModes = rows
-            .Select(row => row.BillingAdvanceMode?.Trim() ?? string.Empty)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-        var distinctRunStatuses = rows
-            .Select(row => row.CurrentBillingRunStatus?.Trim() ?? string.Empty)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-        var distinctPeriodLabels = rows
-            .Select(row => row.CurrentBillingPeriodLabel?.Trim() ?? string.Empty)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-        var distinctSettlementStatuses = rows
-            .Select(row => row.SettlementStatus?.Trim() ?? string.Empty)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-        var distinctDisplayStatuses = rows
-            .Select(row => row.DisplayStatus?.Trim() ?? string.Empty)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
+        var textMetrics = BuildGroupedBillingTextMetrics(rows);
+        var distinctCycles = textMetrics.DistinctCycles;
+        var distinctBillingTypes = textMetrics.DistinctBillingTypes;
+        var distinctAdvanceModes = textMetrics.DistinctAdvanceModes;
+        var distinctRunStatuses = textMetrics.DistinctRunStatuses;
+        var distinctPeriodLabels = textMetrics.DistinctPeriodLabels;
+        var distinctSettlementStatuses = textMetrics.DistinctSettlementStatuses;
+        var distinctDisplayStatuses = textMetrics.DistinctDisplayStatuses;
         var groupedSelectionIds = rows
             .SelectMany(row => row.GroupedSelectionIds.Count == 0
                 ? (IEnumerable<Guid>)new[] { row.SelectionId }
@@ -2459,20 +2511,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ThenBy(history => history.CustomerName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
         var historySummary = groupedMetrics.HistorySummary;
-        var dataIssues = rows
-            .SelectMany(ExtractBillingDataIssueTokens)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
+        var dataIssues = textMetrics.DataIssues;
         if (groupedPersistedProfileCount > 1)
-            dataIssues.Add($"청구프로필 {groupedPersistedProfileCount:N0}건 묶음 표시");
+            AddDistinctTrimmed(dataIssues, $"청구프로필 {groupedPersistedProfileCount:N0}건 묶음 표시");
         if (groupedUnlinkedAssetCount > 0)
-            dataIssues.Add($"청구설정 필요 장비 {groupedUnlinkedAssetCount:N0}대 포함");
+            AddDistinctTrimmed(dataIssues, $"청구설정 필요 장비 {groupedUnlinkedAssetCount:N0}대 포함");
         if (distinctCycles.Count > 1)
-            dataIssues.Add("청구주기 상이");
-        dataIssues = dataIssues
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
+            AddDistinctTrimmed(dataIssues, "청구주기 상이");
 
         return new RentalBillingViewRow
         {
