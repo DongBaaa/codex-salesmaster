@@ -1556,6 +1556,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         List<string> DistinctDisplayStatuses,
         List<string> DataIssues);
 
+    private readonly record struct GroupedBillingIdentityMetrics(
+        List<Guid> GroupedSelectionIds,
+        List<Guid> GroupedPersistedProfileIds,
+        Dictionary<Guid, long> GroupedProfileRevisions);
+
     private readonly record struct RentalBillingAssetRowSummary(
         int AssetCount,
         string InstallLocationDisplay,
@@ -1903,6 +1908,68 @@ WHERE ""AssignedUsername"" <> '';", ct);
             distinctSettlementStatuses,
             distinctDisplayStatuses,
             dataIssues);
+    }
+
+    private static GroupedBillingIdentityMetrics BuildGroupedBillingIdentityMetrics(
+        IReadOnlyList<RentalBillingViewRow> rows)
+    {
+        var groupedSelectionIds = new List<Guid>();
+        var groupedSelectionIdSet = new HashSet<Guid>();
+        var groupedPersistedProfileIds = new List<Guid>();
+        var groupedPersistedProfileIdSet = new HashSet<Guid>();
+        var groupedProfileRevisions = new Dictionary<Guid, long>();
+
+        foreach (var row in rows)
+        {
+            if (row.GroupedSelectionIds.Count == 0)
+            {
+                AddDistinctGuid(groupedSelectionIds, groupedSelectionIdSet, row.SelectionId);
+            }
+            else
+            {
+                foreach (var id in row.GroupedSelectionIds)
+                    AddDistinctGuid(groupedSelectionIds, groupedSelectionIdSet, id);
+            }
+
+            foreach (var id in row.GroupedPersistedProfileIds)
+                AddDistinctGuid(groupedPersistedProfileIds, groupedPersistedProfileIdSet, id);
+
+            if (row.GroupedProfileRevisions.Count > 0)
+            {
+                foreach (var pair in row.GroupedProfileRevisions)
+                    AddMaxRevision(groupedProfileRevisions, pair.Key, pair.Value);
+            }
+            else if (row.HasPersistedProfile && row.Source.Id != Guid.Empty)
+            {
+                AddMaxRevision(groupedProfileRevisions, row.Source.Id, row.Source.Revision);
+            }
+        }
+
+        return new GroupedBillingIdentityMetrics(
+            groupedSelectionIds,
+            groupedPersistedProfileIds,
+            groupedProfileRevisions);
+    }
+
+    private static void AddDistinctGuid(
+        List<Guid> values,
+        HashSet<Guid> keys,
+        Guid value)
+    {
+        if (value != Guid.Empty && keys.Add(value))
+            values.Add(value);
+    }
+
+    private static void AddMaxRevision(
+        Dictionary<Guid, long> revisions,
+        Guid id,
+        long revision)
+    {
+        if (id == Guid.Empty)
+            return;
+
+        if (!revisions.TryGetValue(id, out var existing) || revision > existing)
+            revisions[id] = revision;
     }
 
     private static void AddDistinctTrimmed(
@@ -2479,26 +2546,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var distinctPeriodLabels = textMetrics.DistinctPeriodLabels;
         var distinctSettlementStatuses = textMetrics.DistinctSettlementStatuses;
         var distinctDisplayStatuses = textMetrics.DistinctDisplayStatuses;
-        var groupedSelectionIds = rows
-            .SelectMany(row => row.GroupedSelectionIds.Count == 0
-                ? (IEnumerable<Guid>)new[] { row.SelectionId }
-                : row.GroupedSelectionIds)
-            .Where(id => id != Guid.Empty)
-            .Distinct()
-            .ToList();
-        var groupedPersistedProfileIds = rows
-            .SelectMany(row => row.GroupedPersistedProfileIds)
-            .Where(id => id != Guid.Empty)
-            .Distinct()
-            .ToList();
-        var groupedProfileRevisions = rows
-            .SelectMany(row => row.GroupedProfileRevisions.Count > 0
-                ? row.GroupedProfileRevisions.AsEnumerable()
-                : row.HasPersistedProfile && row.Source.Id != Guid.Empty
-                    ? new[] { new KeyValuePair<Guid, long>(row.Source.Id, row.Source.Revision) }
-                    : Array.Empty<KeyValuePair<Guid, long>>())
-            .GroupBy(pair => pair.Key)
-            .ToDictionary(group => group.Key, group => group.Max(pair => pair.Value));
+        var identityMetrics = BuildGroupedBillingIdentityMetrics(rows);
+        var groupedSelectionIds = identityMetrics.GroupedSelectionIds;
+        var groupedPersistedProfileIds = identityMetrics.GroupedPersistedProfileIds;
+        var groupedProfileRevisions = identityMetrics.GroupedProfileRevisions;
         var groupedPersistedProfileCount = groupedPersistedProfileIds.Count;
         var groupedMetrics = BuildGroupedBillingRowMetrics(rows);
         var groupedUnlinkedAssetCount = groupedMetrics.GroupedUnlinkedAssetCount;
