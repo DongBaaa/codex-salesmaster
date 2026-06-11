@@ -829,19 +829,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!filter.ExpandCustomerSummaryRows)
             rows = GroupBillingRowsByCustomer(rows);
 
-        if (filter.DueOnly)
-        {
-            rows = rows
-                .Where(row => row.DaysRemaining.HasValue && row.DaysRemaining.Value <= alertWindow)
-                .ToList();
-        }
-
-        if (filter.PastDueOnly)
-        {
-            rows = rows
-                .Where(row => row.HasPastUnresolved)
-                .ToList();
-        }
+        rows = ApplyBillingFinalRowFilters(rows, filter, alertWindow);
 
         var result = rows
             .OrderBy(row => row.DaysRemaining ?? int.MaxValue)
@@ -8509,6 +8497,32 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         return customerIds?.ToList() ?? new List<Guid>();
+    }
+
+    private static List<RentalBillingViewRow> ApplyBillingFinalRowFilters(
+        List<RentalBillingViewRow> rows,
+        RentalBillingFilter filter,
+        int alertWindow)
+    {
+        if (rows.Count == 0 || (!filter.DueOnly && !filter.PastDueOnly))
+            return rows;
+
+        var filteredRows = new List<RentalBillingViewRow>(rows.Count);
+        foreach (var row in rows)
+        {
+            if (filter.DueOnly &&
+                (!row.DaysRemaining.HasValue || row.DaysRemaining.Value > alertWindow))
+            {
+                continue;
+            }
+
+            if (filter.PastDueOnly && !row.HasPastUnresolved)
+                continue;
+
+            filteredRows.Add(row);
+        }
+
+        return filteredRows;
     }
 
     private static bool HasBillingAssetMonthlyFeeMismatch(

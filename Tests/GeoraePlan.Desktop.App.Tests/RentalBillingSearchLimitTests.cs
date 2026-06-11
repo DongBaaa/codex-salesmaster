@@ -402,6 +402,32 @@ public sealed class RentalBillingSearchLimitTests
         Assert.Equal(new[] { customerId, otherCustomerId }.OrderBy(id => id), customerIds.OrderBy(id => id));
     }
 
+
+    [Fact]
+    public void ApplyBillingFinalRowFilters_CombinesDueAndPastFiltersInOnePass()
+    {
+        var duePastId = Guid.NewGuid();
+        var rows = new List<RentalBillingViewRow>
+        {
+            new() { SelectionId = duePastId, DaysRemaining = 3, PastUnresolvedCount = 1 },
+            new() { SelectionId = Guid.NewGuid(), DaysRemaining = 10, PastUnresolvedCount = 1 },
+            new() { SelectionId = Guid.NewGuid(), DaysRemaining = 2, PastUnresolvedCount = 0 },
+            new() { SelectionId = Guid.NewGuid(), DaysRemaining = null, PastUnresolvedCount = 1 }
+        };
+
+        var filteredRows = InvokeApplyBillingFinalRowFilters(
+            rows,
+            new RentalBillingFilter
+            {
+                DueOnly = true,
+                PastDueOnly = true
+            },
+            alertWindow: 7);
+
+        var row = Assert.Single(filteredRows);
+        Assert.Equal(duePastId, row.SelectionId);
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -542,6 +568,21 @@ public sealed class RentalBillingSearchLimitTests
 
         var result = method!.Invoke(null, new object?[] { unlinkedAssets });
         return Assert.IsType<List<Guid>>(result);
+    }
+
+
+    private static List<RentalBillingViewRow> InvokeApplyBillingFinalRowFilters(
+        List<RentalBillingViewRow> rows,
+        RentalBillingFilter filter,
+        int alertWindow)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "ApplyBillingFinalRowFilters",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object?[] { rows, filter, alertWindow });
+        return Assert.IsType<List<RentalBillingViewRow>>(result);
     }
 
 
