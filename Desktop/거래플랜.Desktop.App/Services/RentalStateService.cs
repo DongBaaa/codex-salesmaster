@@ -8450,10 +8450,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         IReadOnlyList<LocalRentalAsset> assets,
         IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
     {
-        if (assets.Count == 0 || templateItems.Count == 0)
+        if (templateItems.Count == 0)
             return false;
 
-        var linkedTemplateItems = new List<(List<Guid> IncludedAssetIds, decimal TemplateMonthlyAmount)>();
+        Dictionary<Guid, decimal>? assetMonthlyFeeById = null;
         foreach (var templateItem in templateItems)
         {
             var includedAssetIds = (templateItem.IncludedAssetIds ?? new List<Guid>())
@@ -8467,31 +8467,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
             if (templateMonthlyAmount <= 0m)
                 continue;
 
-            linkedTemplateItems.Add((includedAssetIds, templateMonthlyAmount));
-        }
+            assetMonthlyFeeById ??= assets
+                .Where(asset => asset.Id != Guid.Empty && !RentalAssetStatusRules.IsNonOperating(asset.AssetStatus))
+                .GroupBy(asset => asset.Id)
+                .ToDictionary(
+                    group => group.Key,
+                    group => Math.Max(0m, group.First().MonthlyFee));
+            if (assetMonthlyFeeById.Count == 0)
+                return false;
 
-        if (linkedTemplateItems.Count == 0)
-            return false;
-
-        var assetsById = assets
-            .Where(asset => asset.Id != Guid.Empty && !RentalAssetStatusRules.IsNonOperating(asset.AssetStatus))
-            .GroupBy(asset => asset.Id)
-            .ToDictionary(group => group.Key, group => group.First());
-        if (assetsById.Count == 0)
-            return false;
-
-        foreach (var (includedAssetIds, templateMonthlyAmount) in linkedTemplateItems)
-        {
-            var linkedAssets = includedAssetIds
-                .Where(assetsById.ContainsKey)
-                .Select(id => assetsById[id])
-                .ToList();
-            if (linkedAssets.Count == 0)
+            var assetMonthlyTotal = 0m;
+            foreach (var assetId in includedAssetIds)
+            {
+                if (assetMonthlyFeeById.TryGetValue(assetId, out var assetMonthlyFee))
+                    assetMonthlyTotal += assetMonthlyFee;
+            }
+            if (assetMonthlyTotal <= 0m)
                 continue;
 
-            var assetMonthlyTotal = linkedAssets.Sum(asset => Math.Max(0m, asset.MonthlyFee));
-            if (assetMonthlyTotal > 0m &&
-                assetMonthlyTotal != templateMonthlyAmount)
+            if (assetMonthlyTotal != templateMonthlyAmount)
             {
                 return true;
             }

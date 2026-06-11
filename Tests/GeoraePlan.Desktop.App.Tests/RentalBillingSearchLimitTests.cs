@@ -285,6 +285,30 @@ public sealed class RentalBillingSearchLimitTests
         }
     }
 
+
+    [Fact]
+    public void HasBillingAssetMonthlyFeeMismatch_TemplateWithoutIncludedAssets_DoesNotEnumerateAssets()
+    {
+        var templateItems = new List<RentalBillingTemplateItemModel>
+        {
+            new()
+            {
+                DisplayItemName = "\uB80C\uD0C8\uB8CC",
+                BillingLineMode = "\uBB36\uC74C",
+                Quantity = 1m,
+                UnitPrice = 100_000m,
+                Amount = 100_000m,
+                IncludedAssetIds = new List<Guid>()
+            }
+        };
+
+        var hasMismatch = InvokeHasBillingAssetMonthlyFeeMismatch(
+            new ThrowingRentalAssetList(),
+            templateItems);
+
+        Assert.False(hasMismatch);
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -385,6 +409,20 @@ public sealed class RentalBillingSearchLimitTests
         var result = method!.Invoke(null, new object?[] { query });
         Assert.NotNull(result);
         return Assert.IsAssignableFrom<IQueryable<LocalRentalAsset>>(result);
+    }
+
+
+    private static bool InvokeHasBillingAssetMonthlyFeeMismatch(
+        IReadOnlyList<LocalRentalAsset> assets,
+        IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "HasBillingAssetMonthlyFeeMismatch",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object?[] { assets, templateItems });
+        return Assert.IsType<bool>(result);
     }
 
 
