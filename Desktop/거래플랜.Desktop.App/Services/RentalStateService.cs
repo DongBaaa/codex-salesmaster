@@ -1607,17 +1607,29 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (historyRows.Count == 0)
             return default;
 
-        var pastUnresolvedRows = historyRows
-            .Where(history => history.IsPastUnresolved)
-            .ToList();
-        var oldest = pastUnresolvedRows
-            .OrderBy(history => history.ScheduledDate)
-            .FirstOrDefault();
+        var count = 0;
+        var amount = 0m;
+        DateOnly? oldestScheduledDate = null;
+        string oldestPeriodLabel = string.Empty;
+        foreach (var history in historyRows)
+        {
+            if (!history.IsPastUnresolved)
+                continue;
+
+            count++;
+            amount += history.OutstandingAmount;
+            if (!oldestScheduledDate.HasValue || history.ScheduledDate < oldestScheduledDate.Value)
+            {
+                oldestScheduledDate = history.ScheduledDate;
+                oldestPeriodLabel = history.PeriodLabel;
+            }
+        }
+
         return new RentalBillingHistorySummary(
-            pastUnresolvedRows.Count,
-            pastUnresolvedRows.Sum(history => history.OutstandingAmount),
-            oldest?.ScheduledDate,
-            oldest?.PeriodLabel ?? string.Empty);
+            count,
+            amount,
+            oldestScheduledDate,
+            oldestPeriodLabel);
     }
 
     private static RentalBillingHistorySummary BuildBillingHistorySummary(
@@ -1717,16 +1729,30 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private static RentalBillingHistorySummary BuildGroupedBillingHistorySummary(
         IReadOnlyList<RentalBillingViewRow> rows)
     {
-        var oldestRow = rows
-            .Where(row => row.OldestPastUnresolvedScheduledDate.HasValue)
-            .OrderBy(row => row.OldestPastUnresolvedScheduledDate!.Value)
-            .FirstOrDefault();
+        var count = 0;
+        var amount = 0m;
+        DateOnly? oldestScheduledDate = null;
+        string oldestPeriodLabel = string.Empty;
+        foreach (var row in rows)
+        {
+            count += row.PastUnresolvedCount;
+            amount += row.PastUnresolvedAmount;
+            if (!row.OldestPastUnresolvedScheduledDate.HasValue)
+                continue;
+
+            var scheduledDate = row.OldestPastUnresolvedScheduledDate.Value;
+            if (!oldestScheduledDate.HasValue || scheduledDate < oldestScheduledDate.Value)
+            {
+                oldestScheduledDate = scheduledDate;
+                oldestPeriodLabel = row.OldestPastUnresolvedPeriodLabel;
+            }
+        }
 
         return new RentalBillingHistorySummary(
-            rows.Sum(row => row.PastUnresolvedCount),
-            rows.Sum(row => row.PastUnresolvedAmount),
-            oldestRow?.OldestPastUnresolvedScheduledDate,
-            oldestRow?.OldestPastUnresolvedPeriodLabel ?? string.Empty);
+            count,
+            amount,
+            oldestScheduledDate,
+            oldestPeriodLabel);
     }
 
     private static string ResolveBillingHistoryStatus(
