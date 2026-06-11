@@ -1064,12 +1064,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LogRentalLoadStep("Rental billing linked asset query", stepStopwatch, $"assets={billingAssets.Count:N0}, profiles={profiles.Count:N0}");
 
         stepStopwatch.Restart();
-        await NormalizeAssetCustomerDisplayNamesAsync(billingAssets, ct);
-        ct.ThrowIfCancellationRequested();
         var assetsByProfile = billingAssets
             .GroupBy(asset => asset.BillingProfileId!.Value)
             .ToDictionary(group => group.Key, group => group.ToList());
-        LogRentalLoadStep("Rental billing linked asset normalize", stepStopwatch, $"assetGroups={assetsByProfile.Count:N0}");
+        LogRentalLoadStep("Rental billing linked asset grouping", stepStopwatch, $"assetGroups={assetsByProfile.Count:N0}");
 
         stepStopwatch.Restart();
         var customerNameMap = await GetBillingProfileCustomerNameMapAsync(profiles, ct);
@@ -1148,7 +1146,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         {
             ct.ThrowIfCancellationRequested();
             var scopedBatchIds = batchIds;
-            var batchAssets = await SelectBillingAssetListProjection(ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+            var batchAssets = await SelectBillingLinkedAssetRowProjection(ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
                     .Where(asset => !asset.IsDeleted &&
                                     asset.BillingProfileId.HasValue &&
                                     scopedBatchIds.Contains(asset.BillingProfileId.Value)))
@@ -1158,6 +1156,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         return assets;
     }
+
+    private static IQueryable<LocalRentalAsset> SelectBillingLinkedAssetRowProjection(IQueryable<LocalRentalAsset> query)
+        => query.Select(asset => new LocalRentalAsset
+        {
+            Id = asset.Id,
+            BillingProfileId = asset.BillingProfileId,
+            InstallSiteName = asset.InstallSiteName,
+            BillingEligibilityStatus = asset.BillingEligibilityStatus,
+            InstallLocation = asset.InstallLocation,
+            MonthlyFee = asset.MonthlyFee,
+            AssetStatus = asset.AssetStatus
+        });
 
     private static IQueryable<LocalRentalAsset> SelectBillingAssetListProjection(IQueryable<LocalRentalAsset> query)
         => query.Select(asset => new LocalRentalAsset

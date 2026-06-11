@@ -192,6 +192,59 @@ public sealed class RentalBillingSearchLimitTests
         }
     }
 
+
+    [Fact]
+    public async Task SelectBillingLinkedAssetRowProjection_LoadsOnlyRowSummaryFields()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-linked-asset-light-projection");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var asset = CreateLinkedBillingAsset(
+                assetId,
+                profileId,
+                "Projection Customer",
+                "3\uCE35",
+                123_000m,
+                "\uCCAD\uAD6C\uB300\uC0C1");
+            asset.CustomerId = Guid.NewGuid();
+            asset.CustomerName = "Projection Customer";
+            asset.CurrentCustomerName = "Projection Current Customer";
+            asset.MachineNumber = "PROJECTION-SN-001";
+            asset.ContractDate = new DateOnly(2026, 1, 1);
+            asset.Notes = "projection-notes";
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+
+            var projected = await InvokeSelectBillingLinkedAssetRowProjection(db.RentalAssets.AsNoTracking())
+                .SingleAsync();
+
+            Assert.Equal(assetId, projected.Id);
+            Assert.Equal(profileId, projected.BillingProfileId);
+            Assert.Equal("3\uCE35", projected.InstallLocation);
+            Assert.Equal("3\uCE35", projected.InstallSiteName);
+            Assert.Equal(123_000m, projected.MonthlyFee);
+            Assert.Equal("\uCCAD\uAD6C\uB300\uC0C1", projected.BillingEligibilityStatus);
+            Assert.Equal("\uC784\uB300\uC911", projected.AssetStatus);
+            Assert.Null(projected.CustomerId);
+            Assert.Equal(string.Empty, projected.CustomerName);
+            Assert.Equal(string.Empty, projected.CurrentCustomerName);
+            Assert.Equal(string.Empty, projected.MachineNumber);
+            Assert.Null(projected.ContractDate);
+            Assert.Equal(string.Empty, projected.Notes);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -280,6 +333,19 @@ public sealed class RentalBillingSearchLimitTests
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow
         };
+
+
+    private static IQueryable<LocalRentalAsset> InvokeSelectBillingLinkedAssetRowProjection(IQueryable<LocalRentalAsset> query)
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "SelectBillingLinkedAssetRowProjection",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object?[] { query });
+        Assert.NotNull(result);
+        return Assert.IsAssignableFrom<IQueryable<LocalRentalAsset>>(result);
+    }
 
     private static List<RentalBillingRunModel> InvokeResolveBillingRunsForRowBuild(
         IEnumerable<RentalBillingRunModel> runs,
