@@ -101,7 +101,7 @@ public sealed class HomeViewModel : ObservableObject
         }
 
         StatusMessage = string.IsNullOrWhiteSpace(sync.LastError)
-            ? "NAS 서버와 자동 동기화 준비됨 · 재고이동/렌탈은 모바일 조회 전용"
+            ? "운영 서버와 자동 동기화 준비됨 · 재고이동/렌탈은 모바일 조회 전용"
             : $"최근 동기화 주의: {sync.LastError}";
     }
 }

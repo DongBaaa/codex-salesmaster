@@ -91,7 +91,7 @@ public sealed class LoginPage : ContentPage
                     },
                     new Label
                     {
-                        Text = "거래플랜 공용 NAS에 연결됩니다.",
+                        Text = "거래플랜 운영 서버에 연결됩니다.",
                         TextColor = GeoraePlanTheme.TextSecondary,
                         HorizontalTextAlignment = TextAlignment.Center
                     },

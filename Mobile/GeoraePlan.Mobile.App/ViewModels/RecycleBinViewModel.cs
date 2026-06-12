@@ -10,7 +10,7 @@ public sealed class RecycleBinViewModel : ObservableObject
 
     private string _searchText = string.Empty;
     private string _selectedKind = string.Empty;
-    private string _statusMessage = "NAS 휴지통을 조회하세요.";
+    private string _statusMessage = "운영 서버 휴지통을 조회하세요.";
     private bool _isBusy;
 
     public RecycleBinViewModel(GeoraePlanApiClient api)

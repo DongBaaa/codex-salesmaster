@@ -244,15 +244,22 @@ function Get-NasEnvMapViaSsh {
         return @{}
     }
 
-    return ($result.StdOut -split "`r?`n") |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-        Where-Object { $_ -notmatch '^\s*#' } |
-        Where-Object { $_ -match '=' } |
-        ForEach-Object {
-            $parts = $_ -split '=', 2
-            [pscustomobject]@{ Key = $parts[0].Trim(); Value = $parts[1].Trim() }
-        } |
-        Group-Object -Property Key -AsHashTable -AsString
+    $map = @{}
+    foreach ($line in ($result.StdOut -split "`r?`n")) {
+        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#' -or $line -notmatch '=') {
+            continue
+        }
+
+        $parts = $line -split '=', 2
+        $key = $parts[0].Trim()
+        if ([string]::IsNullOrWhiteSpace($key)) {
+            continue
+        }
+
+        $map[$key] = $parts[1].Trim()
+    }
+
+    return $map
 }
 
 function Invoke-SshTarUpload {

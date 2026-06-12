@@ -146,7 +146,7 @@ public sealed class HomePage : ContentPage
                     GeoraePlanTheme.CreateCard(
                         GeoraePlanTheme.CreateSectionTitle("빠른 안내"),
                         GeoraePlanTheme.CreateBodyText("모바일에서 판매·구매·수금/지급은 입력 가능하며, 재고이동·렌탈은 조회 전용입니다. 생성·수정·확정은 PC에서 처리하세요."),
-                        GeoraePlanTheme.CreateBodyText("거래처, 품목, 전표, 수금/지급, 재고이동, 렌탈 화면은 같은 NAS 서버 sync 데이터를 기준으로 동작합니다."),
+                        GeoraePlanTheme.CreateBodyText("거래처, 품목, 전표, 수금/지급, 재고이동, 렌탈 화면은 같은 거래플랜 운영 서버 sync 데이터를 기준으로 동작합니다."),
                         quickActionGrid,
                         refreshButton,
                         statusLabel)

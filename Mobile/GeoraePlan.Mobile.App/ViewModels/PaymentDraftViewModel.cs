@@ -303,7 +303,8 @@ public sealed class PaymentDraftViewModel : ObservableObject
             return;
         }
 
-        if (SelectedPaymentMethod is null)
+        var selectedPaymentMethod = SelectedPaymentMethod;
+        if (selectedPaymentMethod is null)
         {
             StatusMessage = $"{PaymentMethodLabelText}을 선택하세요.";
             return;
@@ -315,41 +316,52 @@ public sealed class PaymentDraftViewModel : ObservableObject
             return;
         }
 
-        var outstandingAmount = CalculateOutstandingAmount(SelectedInvoice);
-        if (amount > outstandingAmount)
-        {
-            StatusMessage = $"입력 금액이 현재 잔액보다 {(amount - outstandingAmount):N0}원 많습니다. 최신 전표를 다시 조회한 뒤 금액을 확인하세요.";
-            return;
-        }
-
-        var now = DateTime.UtcNow;
-        var paymentId = Guid.NewGuid();
-        var paymentNote = BuildPaymentNote(SelectedPaymentMethod, Note);
-        var payment = new PaymentDto
-        {
-            Id = paymentId,
-            InvoiceId = SelectedInvoice.Id,
-            PaymentDate = DateOnly.FromDateTime(PaymentDate),
-            Amount = amount,
-            Note = paymentNote,
-            CreatedAtUtc = now,
-            UpdatedAtUtc = now,
-            Revision = 0,
-            IsDeleted = false
-        };
-        var linkedTransaction = BuildLinkedTransaction(
-            paymentId,
-            SelectedInvoice,
-            SelectedPaymentMethod,
-            amount,
-            DateOnly.FromDateTime(PaymentDate),
-            paymentNote,
-            now);
-
         try
         {
             IsBusy = true;
-            StatusMessage = $"{PaymentActionText} 정보를 {SelectedPaymentMethod.DisplayName}으로 저장하고 있습니다.";
+            StatusMessage = "최신 전표 잔액을 확인하고 있습니다.";
+
+            var latestInvoice = await RefreshSelectedInvoiceForSaveAsync(SelectedInvoice);
+            if (latestInvoice is null)
+            {
+                StatusMessage = "선택한 전표가 최신 데이터에서 확인되지 않습니다. 전표 목록을 다시 조회한 뒤 시도하세요.";
+                _refreshCoordinator.MarkInvoicesChanged();
+                return;
+            }
+
+            var outstandingAmount = CalculateOutstandingAmount(latestInvoice);
+            if (amount > outstandingAmount)
+            {
+                StatusMessage = $"입력 금액이 최신 잔액보다 {(amount - outstandingAmount):N0}원 많습니다. 금액을 다시 확인하세요.";
+                _refreshCoordinator.MarkInvoicesChanged();
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            var paymentId = Guid.NewGuid();
+            var paymentNote = BuildPaymentNote(selectedPaymentMethod, Note);
+            var payment = new PaymentDto
+            {
+                Id = paymentId,
+                InvoiceId = latestInvoice.Id,
+                PaymentDate = DateOnly.FromDateTime(PaymentDate),
+                Amount = amount,
+                Note = paymentNote,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                Revision = 0,
+                IsDeleted = false
+            };
+            var linkedTransaction = BuildLinkedTransaction(
+                paymentId,
+                latestInvoice,
+                selectedPaymentMethod,
+                amount,
+                DateOnly.FromDateTime(PaymentDate),
+                paymentNote,
+                now);
+
+            StatusMessage = $"{PaymentActionText} 정보를 {selectedPaymentMethod.DisplayName}으로 저장하고 있습니다.";
 
             foreach (var attachment in Attachments)
                 attachment.PaymentId = payment.Id;
@@ -387,6 +399,32 @@ public sealed class PaymentDraftViewModel : ObservableObject
         {
             IsBusy = false;
         }
+    }
+
+    private async Task<InvoiceDto?> RefreshSelectedInvoiceForSaveAsync(InvoiceDto invoice)
+    {
+        var latest = await _api.GetInvoiceByIdAsync(invoice.Id);
+        if (latest is null || latest.IsDeleted)
+            return null;
+
+        ReplaceInvoiceSnapshot(latest);
+        return latest;
+    }
+
+    private void ReplaceInvoiceSnapshot(InvoiceDto latest)
+    {
+        for (var index = 0; index < Invoices.Count; index++)
+        {
+            if (Invoices[index].Id != latest.Id)
+                continue;
+
+            Invoices[index] = latest;
+            SelectedInvoice = latest;
+            return;
+        }
+
+        Invoices.Insert(0, latest);
+        SelectedInvoice = latest;
     }
 
     private static decimal CalculateOutstandingAmount(InvoiceDto? invoice)

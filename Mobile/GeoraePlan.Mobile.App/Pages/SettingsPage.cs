@@ -52,7 +52,7 @@ public sealed class SettingsPage : ContentPage
                 {
                     GeoraePlanTheme.CreateCard(
                         GeoraePlanTheme.CreateSectionTitle("앱 설정"),
-                        GeoraePlanTheme.CreateBodyText("모바일 앱은 거래플랜 NAS 서버에 고정 연결됩니다."),
+                        GeoraePlanTheme.CreateBodyText("모바일 앱은 거래플랜 운영 서버에 고정 연결됩니다."),
                         GeoraePlanTheme.CreateBodyText("연결 정보는 사용자 화면에 표시하지 않습니다."),
                         recycleBinButton,
                         logoutButton,

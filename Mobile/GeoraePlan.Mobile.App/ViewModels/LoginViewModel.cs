@@ -92,7 +92,7 @@ public sealed class LoginViewModel : ObservableObject
         RememberPassword = _settings.GetRememberPassword();
         Username = RememberUsername ? _settings.GetLastUsername() : string.Empty;
         Password = RememberPassword ? await _settings.GetSavedPasswordAsync() : string.Empty;
-        StatusMessage = "거래플랜 NAS에 연결해 로그인합니다.";
+        StatusMessage = "거래플랜 운영 서버에 연결해 로그인합니다.";
     }
 
     public async Task LoginAsync()

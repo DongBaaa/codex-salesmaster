@@ -11,7 +11,7 @@ public sealed class SettingsViewModel : ObservableObject
     private AppUpdatePackageDto? _pendingAndroidUpdate;
 
     private string _baseUrl = string.Empty;
-    private string _statusMessage = "모바일 앱은 거래플랜 NAS에 고정 연결됩니다.";
+    private string _statusMessage = "모바일 앱은 거래플랜 운영 서버에 고정 연결됩니다.";
     private string _currentVersion = string.Empty;
     private string _latestVersion = "-";
     private string _updateNotes = "새 버전 확인 대기";

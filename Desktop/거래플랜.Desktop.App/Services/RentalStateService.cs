@@ -171,6 +171,11 @@ public sealed partial class RentalStateService
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
     }
 
+    private async Task<LocalRentalBillingProfile?> ReloadRentalBillingProfileForMutationAsync(
+        LocalRentalBillingProfile? profile,
+        CancellationToken ct)
+        => await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, profile, ct);
+
     public async Task<IReadOnlyList<LocalRentalManagementCompany>> GetManagementCompaniesAsync(CancellationToken ct = default)
         => await _db.RentalManagementCompanies
             .AsNoTracking()
@@ -4219,6 +4224,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var existing = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == profile.Id, ct);
+        existing = await ReloadRentalBillingProfileForMutationAsync(existing, ct);
         if (existing is not null && !CanEditRental(
                 RentalScopeNormalizer.ResolveResponsibleOfficeCode(
                     existing.TenantCode,
@@ -4382,13 +4388,32 @@ WHERE ""AssignedUsername"" <> '';", ct);
                  (canUseLegacyProfileKeyLookup && current.ProfileKey == legacyProfileKey)), ct);
         if (existing is null && duplicate is not null)
         {
-            existing = duplicate;
+            existing = await ReloadRentalBillingProfileForMutationAsync(duplicate, ct);
             profile.Id = duplicate.Id;
+            if (existing is not null && !CanEditRental(
+                    RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+                        existing.TenantCode,
+                        existing.OfficeCode,
+                        existing.ManagementCompanyCode,
+                        existing.ResponsibleOfficeCode,
+                        session.OfficeCode),
+                    session))
+                return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 수정할 수 없습니다.");
         }
         else if (existing is not null && duplicate is not null && duplicate.Id != existing.Id)
             return LocalMutationResult.Denied("같은 청구 프로필이 이미 존재합니다.");
 
         var now = DateTime.UtcNow;
+        existing = await ReloadRentalBillingProfileForMutationAsync(existing, ct);
+        if (existing is not null && !CanEditRental(
+                RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+                    existing.TenantCode,
+                    existing.OfficeCode,
+                    existing.ManagementCompanyCode,
+                    existing.ResponsibleOfficeCode,
+                    session.OfficeCode),
+                session))
+            return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 수정할 수 없습니다.");
         await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, profile, existing, ct);
         if (!LocalEntityConcurrencyGuard.TryPrepareForSave(profile, existing, "렌탈 청구", now, out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
@@ -4431,6 +4456,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == profileId, ct);
+        profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
         if (!CanEditRental(
@@ -4507,6 +4533,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+        profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
         if (!CanEditRental(
@@ -4731,6 +4758,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+        profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
         if (!CanEditRental(
@@ -4772,6 +4800,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+        profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
         if (!CanEditRental(
@@ -4878,6 +4907,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+        profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
         if (!CanEditRental(
@@ -5984,6 +6014,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         {
             var existing = await _db.RentalAssets.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id == asset.Id, ct);
+            existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
             if (existing is not null && !CanEditAssetScope(
                     RentalScopeNormalizer.ResolveResponsibleOfficeCode(
                         existing.TenantCode,
@@ -6106,6 +6137,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 return LocalMutationResult.Denied("같은 렌탈 자산이 이미 존재합니다.");
 
             var now = DateTime.UtcNow;
+            existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
+            if (existing is not null && !CanEditAssetScope(
+                    RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+                        existing.TenantCode,
+                        existing.OfficeCode,
+                        existing.ManagementCompanyCode,
+                        existing.ResponsibleOfficeCode,
+                        session.OfficeCode),
+                    session))
+                return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 수정할 수 없습니다.");
             await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, asset, existing, ct);
             if (!LocalEntityConcurrencyGuard.TryPrepareForSave(asset, existing, "렌탈 자산", now, out var conflictMessage))
                 return LocalMutationResult.Conflict(conflictMessage);
@@ -6173,12 +6214,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var original = await _db.RentalAssets
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(asset => asset.Id == request.OriginalAssetId && !asset.IsDeleted, ct);
+            original = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, original, ct);
             if (original is null)
                 return LocalMutationResult.Missing("기존 렌탈 장비를 찾을 수 없습니다.");
 
             var replacement = await _db.RentalAssets
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(asset => asset.Id == request.ReplacementAssetId && !asset.IsDeleted, ct);
+            replacement = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, replacement, ct);
             if (replacement is null)
                 return LocalMutationResult.Missing("새로 연결할 렌탈 장비를 찾을 수 없습니다.");
 
@@ -7050,6 +7093,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var asset = await _db.RentalAssets.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == assetId, ct);
+        asset = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, asset, ct);
         if (asset is null)
             return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
         if (!CanEditAssetScope(asset.ResponsibleOfficeCode, session))
@@ -7192,6 +7236,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+        profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
         if (!CanEditRental(

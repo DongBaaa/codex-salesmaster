@@ -113,6 +113,75 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task DeleteBillingHistory_ReloadsTrackedProfileBeforeRevisionCheck()
+    {
+        PrepareAppRoot("georaeplan-rental-delete-history-reloads-tracked-profile");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var runId = Guid.NewGuid();
+            var customerName = "Tracked revision customer";
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.Revision = 100;
+            profile.BillingRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel>
+            {
+                new()
+                {
+                    RunId = runId,
+                    RunKey = "2026-05",
+                    ScheduledDate = new DateOnly(2026, 5, 25),
+                    PeriodStartDate = new DateOnly(2026, 5, 1),
+                    PeriodEndDate = new DateOnly(2026, 5, 31),
+                    PeriodLabel = "2026-05",
+                    Status = PaymentFlowConstants.BillingStatusInProgress,
+                    BilledAmount = 100_000m,
+                    SettledAmount = 0m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusPending
+                }
+            });
+            db.RentalBillingProfiles.Add(profile);
+            await db.SaveChangesAsync();
+
+            var trackedProfile = await db.RentalBillingProfiles.SingleAsync(current => current.Id == profileId);
+            Assert.Equal(100, trackedProfile.Revision);
+
+            await using (var updateDb = new LocalDbContext())
+            {
+                var storedProfile = await updateDb.RentalBillingProfiles.SingleAsync(current => current.Id == profileId);
+                storedProfile.Revision = 200;
+                storedProfile.UpdatedAtUtc = DateTime.UtcNow;
+                await updateDb.SaveChangesAsync();
+            }
+
+            var service = new RentalStateService(db);
+            var result = await service.DeleteBillingHistoryAsync(
+                profileId,
+                runId,
+                CreateAdminSession(),
+                expectedRevision: 200);
+
+            Assert.True(result.Success, result.Message);
+            var refreshed = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            var remainingRuns = JsonSerializer.Deserialize<List<RentalBillingRunModel>>(refreshed.BillingRunsJson)
+                                ?? new List<RentalBillingRunModel>();
+            Assert.DoesNotContain(remainingRuns, run => run.RunId == runId);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task StartBilling_AllowsNextUnbilledCycle_WhenReferenceDateIsOutsideBillingMonth()
     {
         PrepareAppRoot("georaeplan-rental-start-outside-billing-month");

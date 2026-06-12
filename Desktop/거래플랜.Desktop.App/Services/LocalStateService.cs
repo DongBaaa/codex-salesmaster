@@ -482,6 +482,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		customer.OfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(customer.OfficeCode, customer.ResponsibleOfficeCode, customer.ResponsibleOfficeCode);
 		customer.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customer.ResponsibleOfficeCode);
 		var existing = await _db.Customers.FindAsync(new object[1] { customer.Id }, ct);
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
 		string previousCustomerName = existing?.NameOriginal ?? string.Empty;
 		DateTime now = DateTime.UtcNow;
 		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, customer, existing, ct);
@@ -516,6 +517,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		string normalizedOwnerOfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(customer.OfficeCode, normalizedOfficeCode, normalizedOfficeCode);
 		string normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, normalizedOfficeCode);
 		var existing = await _db.Customers.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomer current) => current.Id == customer.Id, ct);
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
 		string previousCustomerName = existing?.NameOriginal ?? string.Empty;
 		if (existing != null)
 		{
@@ -553,6 +555,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	public async Task DeleteCustomerAsync(Guid id, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		var customer = await _db.Customers.FindAsync(new object[1] { id }, ct);
+		customer = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, customer, ct);
 		if (customer != null)
 		{
 			if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(customer, expectedRevision, "거래처", out string conflictMessage))
@@ -570,6 +573,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	public async Task<OfficeMutationResult> DeleteCustomerAsync(Guid id, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		var customer = await _db.Customers.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomer current) => current.Id == id, ct);
+		customer = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, customer, ct);
 		if (customer == null)
 		{
 			return OfficeMutationResult.Missing("거래처를 찾을 수 없습니다.");
@@ -789,6 +793,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return fileValidationResult ?? OfficeMutationResult.Missing("등록할 PDF 파일을 찾을 수 없습니다.");
 		}
 		var contract = await _db.CustomerContracts.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomerContract current) => current.Id == contractId, ct);
+		contract = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, contract, ct);
 		if (contract == null)
 		{
 			return OfficeMutationResult.Missing("PDF를 등록할 계약서 초안을 찾을 수 없습니다.");
@@ -838,6 +843,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 계약서를 수정할 수 있습니다.");
 		}
 		var contract = await _db.CustomerContracts.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomerContract current) => current.Id == contractId, ct);
+		contract = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, contract, ct);
 		if (contract == null)
 		{
 			return OfficeMutationResult.Missing("수정할 계약서를 찾을 수 없습니다.");
@@ -953,6 +959,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 계약서를 삭제할 수 있습니다.");
 		}
 		var contract = await _db.CustomerContracts.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomerContract current) => current.Id == contractId, ct);
+		contract = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, contract, ct);
 		if (contract == null)
 		{
 			return OfficeMutationResult.Missing("삭제할 계약서를 찾을 수 없습니다.");
@@ -997,6 +1004,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 기본 계약서를 변경할 수 있습니다.");
 		}
 		var contract = await _db.CustomerContracts.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomerContract current) => current.Id == contractId, ct);
+		contract = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, contract, ct);
 		if (contract == null)
 		{
 			return OfficeMutationResult.Missing("대표로 지정할 계약서를 찾을 수 없습니다.");
@@ -1716,6 +1724,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		NormalizeItemScope(item, preferredOfficeCode);
 		item.CategoryName = await EnsureItemCategoryOptionExistsAsync(item.CategoryName, ct);
 		var existing = await _db.Items.FindAsync(new object[1] { item.Id }, ct);
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
 		string previousItemName = existing?.NameOriginal ?? string.Empty;
 		string previousCategoryName = existing?.CategoryName ?? string.Empty;
 		DateTime now = DateTime.UtcNow;
@@ -1829,6 +1838,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	public async Task DeleteItemAsync(Guid id, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		var item = await _db.Items.FindAsync(new object[1] { id }, ct);
+		item = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, item, ct);
 		if (item != null)
 		{
 			if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(item, expectedRevision, "품목", out string conflictMessage))
@@ -1851,6 +1861,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("현재 계정은 품목을 삭제할 권한이 없습니다.");
 		}
 		var item = await _db.Items.IgnoreQueryFilters().FirstOrDefaultAsync((LocalItem current) => current.Id == id && !current.IsDeleted, ct);
+		item = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, item, ct);
 		if (item == null)
 		{
 			return OfficeMutationResult.Missing("삭제할 품목을 찾을 수 없습니다.");
@@ -2662,6 +2673,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("관리자 또는 god 권한 계정만 전표를 삭제할 수 있습니다.");
 		}
 		var target = await _db.Invoices.IgnoreQueryFilters().FirstOrDefaultAsync((LocalInvoice localInvoice) => localInvoice.Id == id, ct);
+		target = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, target, ct);
 		if (target == null)
 		{
 			return OfficeMutationResult.Missing("전표를 찾을 수 없습니다.");
@@ -2716,6 +2728,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	public async Task<LocalPayment> SavePaymentAsync(LocalPayment payment, CancellationToken ct = default(CancellationToken))
 	{
 		var existing = await _db.Payments.FindAsync(new object[1] { payment.Id }, ct);
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
 		DateTime now = DateTime.UtcNow;
 		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, payment, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(payment, existing, "수금/지급", now, out string conflictMessage))
@@ -2746,7 +2759,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("권한이 없어 해당 전표 수금/지급을 저장할 수 없습니다.");
 		}
 		var existing = await _db.Payments.IgnoreQueryFilters().Include((LocalPayment current) => current.Invoice).FirstOrDefaultAsync((LocalPayment current) => current.Id == payment.Id, ct);
-		if (existing?.Invoice != null && !CanWriteOfficeScope(session, existing.Invoice.ResponsibleOfficeCode))
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
+		LocalInvoice? existingInvoice = null;
+		if (existing is not null)
+		{
+			existingInvoice = existing.Invoice
+			                  ?? await _db.Invoices.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalInvoice current) => current.Id == existing.InvoiceId, ct);
+		}
+		if (existingInvoice != null && !CanWriteOfficeScope(session, existingInvoice.ResponsibleOfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 전표 수금/지급을 저장할 수 없습니다.");
 		}
@@ -2848,6 +2868,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		profile.BankAccountText = profile.BankAccountText ?? string.Empty;
 		profile.IsActive = true;
 		var existing = await _db.CompanyProfiles.FindAsync(new object[1] { profile.Id }, ct);
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
 		DateTime now = DateTime.UtcNow;
 		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, profile, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(profile, existing, "회사설정", now, out string conflictMessage))
@@ -4132,6 +4153,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	public async Task<LocalTransaction> SaveTransactionAsync(LocalTransaction transaction, CancellationToken ct = default(CancellationToken))
 	{
 		var existing = await _db.Transactions.FindAsync(new object[1] { transaction.Id }, ct);
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
 		DateTime now = DateTime.UtcNow;
 		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, transaction, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(transaction, existing, "수금/지급 내역", now, out string conflictMessage))
@@ -4178,6 +4200,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
 		}
 		var existing = await _db.Transactions.IgnoreQueryFilters().FirstOrDefaultAsync((LocalTransaction current) => current.Id == transaction.Id, ct);
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
 		if (existing != null && !CanWriteOfficeScope(session, existing.ResponsibleOfficeCode, customerOfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
@@ -4405,6 +4428,13 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				}
 			}
 		}
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
+		if (existing != null && !CanWriteOfficeScope(session, existing.ResponsibleOfficeCode, customerOfficeCode))
+		{
+			return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
+		}
+		previousLinkedRentalId = existing?.LinkedRentalBillingProfileId;
+		previousLinkedRentalRunId = existing?.LinkedRentalBillingRunId;
 		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, transaction, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(now: DateTime.UtcNow, candidate: transaction, existing: existing, entityDisplayName: "수금/지급 내역", conflictMessage: out string conflictMessage))
 		{
@@ -4465,6 +4495,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("권한이 없어 수금/지급 내역을 삭제할 수 없습니다.");
 		}
 		var transaction = await _db.Transactions.IgnoreQueryFilters().FirstOrDefaultAsync((LocalTransaction current) => current.Id == transactionId, ct);
+		transaction = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, transaction, ct);
 		if (transaction == null)
 		{
 			return OfficeMutationResult.Missing("수금/지급 내역을 찾을 수 없습니다.");
@@ -4911,6 +4942,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("권한이 없어 수금/지급 증빙을 삭제할 수 없습니다.");
 		}
 		var attachment = await _db.TransactionAttachments.IgnoreQueryFilters().FirstOrDefaultAsync((LocalTransactionAttachment current) => current.Id == attachmentId, ct);
+		attachment = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, attachment, ct);
 		if (attachment == null)
 		{
 			return OfficeMutationResult.Missing("삭제할 증빙을 찾을 수 없습니다.");
@@ -4958,6 +4990,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("증빙 확인 상태는 관리자만 변경할 수 있습니다.");
 		}
 		var attachment = await _db.TransactionAttachments.IgnoreQueryFilters().FirstOrDefaultAsync((LocalTransactionAttachment current) => current.Id == attachmentId, ct);
+		attachment = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, attachment, ct);
 		if (attachment == null)
 		{
 			return OfficeMutationResult.Missing("증빙을 찾을 수 없습니다.");
@@ -5084,6 +5117,13 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("이동 품목을 1개 이상 입력하세요.");
 		}
 		var existing = await _db.InventoryTransfers.IgnoreQueryFilters().Include((LocalInventoryTransfer current) => current.Lines).FirstOrDefaultAsync((LocalInventoryTransfer current) => current.Id == transfer.Id, ct);
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
+		if (existing != null)
+		{
+			var linesEntry = _db.Entry(existing).Collection((LocalInventoryTransfer current) => current.Lines);
+			linesEntry.IsLoaded = false;
+			await linesEntry.LoadAsync(ct);
+		}
 		if (existing != null && IsFinalTransferStatus(existing.TransferStatus))
 		{
 			return OfficeMutationResult.Denied("이미 수령확정 또는 반려된 재고이동 문서는 수정할 수 없습니다.");
@@ -5184,10 +5224,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	public async Task<OfficeMutationResult> ConfirmInventoryTransferReceiptAsync(Guid transferId, IEnumerable<LocalInventoryTransferLine> receivedLines, string? receiveMemo, SessionState session, CancellationToken ct = default(CancellationToken), long? expectedRevision = null)
 	{
 		var transfer = await _db.InventoryTransfers.IgnoreQueryFilters().Include((LocalInventoryTransfer current) => current.Lines).FirstOrDefaultAsync((LocalInventoryTransfer current) => current.Id == transferId, ct);
+		transfer = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, transfer, ct);
 		if (transfer == null)
 		{
 			return OfficeMutationResult.Missing("재고이동 문서를 찾을 수 없습니다.");
 		}
+		var transferLinesEntry = _db.Entry(transfer).Collection(current => current.Lines);
+		transferLinesEntry.IsLoaded = false;
+		await transferLinesEntry.LoadAsync(ct);
 		if (!CanReceiveInventoryTransfer(transfer, session))
 		{
 			return OfficeMutationResult.Denied("도착지 담당자 또는 관리자만 수령확정할 수 있습니다.");
@@ -5270,6 +5314,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	public async Task<OfficeMutationResult> DeleteInventoryTransferAsync(Guid transferId, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		var transfer = await _db.InventoryTransfers.IgnoreQueryFilters().FirstOrDefaultAsync((LocalInventoryTransfer current) => current.Id == transferId, ct);
+		transfer = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, transfer, ct);
 		if (transfer == null)
 		{
 			return OfficeMutationResult.Missing("재고이동 기록을 찾을 수 없습니다.");
@@ -5308,6 +5353,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	public async Task<OfficeMutationResult> RejectInventoryTransferAsync(Guid transferId, string rejectReason, SessionState session, CancellationToken ct = default(CancellationToken), long? expectedRevision = null)
 	{
 		var transfer = await _db.InventoryTransfers.IgnoreQueryFilters().FirstOrDefaultAsync((LocalInventoryTransfer current) => current.Id == transferId, ct);
+		transfer = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, transfer, ct);
 		if (transfer == null)
 		{
 			return OfficeMutationResult.Missing("재고이동 문서를 찾을 수 없습니다.");

@@ -7,6 +7,23 @@ internal static class LocalEntityConcurrencyGuard
 {
     private static readonly TimeSpan AcknowledgedMutationRebaseTolerance = TimeSpan.FromMinutes(2);
 
+    public static async Task<TEntity?> ReloadTrackedEntityAsync<TEntity>(
+        LocalDbContext db,
+        TEntity? existing,
+        CancellationToken ct = default)
+        where TEntity : class, ILocalSyncEntity
+    {
+        if (existing is null)
+            return null;
+
+        var entry = db.Entry(existing);
+        if (entry.State == EntityState.Detached)
+            return existing;
+
+        await entry.ReloadAsync(ct);
+        return entry.State == EntityState.Detached ? null : existing;
+    }
+
     public static async Task TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync<TEntity>(
         LocalDbContext db,
         TEntity candidate,
