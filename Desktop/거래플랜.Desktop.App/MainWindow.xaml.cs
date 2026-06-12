@@ -913,6 +913,19 @@ public partial class MainWindow : Window
         {
             Owner = ownerOverride ?? this
         };
+        win.FixRequested += (_, args) =>
+        {
+            UiTaskHelper.Forget(
+                OpenDataIntegrityFixTargetAsync(args.Issue, win),
+                "INTEGRITY",
+                "?댁쁺 ?먭? ?곸꽭 諛붾줈?섏젙",
+                ex => MessageBox.Show(
+                    win,
+                    $"?댁쁺 ?먭? 諛붾줈媛湲곕? ?댁? 紐삵뻽?듬땲??{Environment.NewLine}{ex.Message}",
+                    "?댁쁺 ?먭?",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning));
+        };
         if (win.ShowDialog() == true && win.RequestedIssue is not null)
             await OpenDataIntegrityFixTargetAsync(win.RequestedIssue, ownerOverride);
     }

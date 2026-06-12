@@ -2000,6 +2000,112 @@ public sealed class LocalStateServicePartialsTests
         Assert.Contains("IsChecked=\"{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}\"", xaml, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DataIntegrityAlertWindow_ShowsOnlyFixActionButtons()
+    {
+        var xamlPath = Path.Combine(
+            FindRepositoryRoot(),
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "DataIntegrityAlertWindow.xaml");
+
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.DoesNotContain("자세히 보기", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("전체 자세히 보기", xaml, StringComparison.Ordinal);
+        Assert.Contains("수정 화면 열기", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DataIntegrityIssueWindow_FixActionIsHandledWithoutClosingDetailWindow()
+    {
+        var root = FindRepositoryRoot();
+        var issueWindowCode = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "DataIntegrityIssueWindow.xaml.cs"));
+        var mainWindowCode = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "MainWindow.xaml.cs"));
+
+        Assert.Contains("FixRequested", issueWindowCode, StringComparison.Ordinal);
+        Assert.Contains("FixRequested.Invoke", issueWindowCode, StringComparison.Ordinal);
+        Assert.Contains("win.FixRequested +=", mainWindowCode, StringComparison.Ordinal);
+        Assert.Contains("OpenDataIntegrityFixTargetAsync(args.Issue, win)", mainWindowCode, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InventoryViewModel_LoadAndSelectItemAsync_FillsSearchTextForTargetItem()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-inventory-select-search-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var targetItemId = Guid.Parse("b5100000-0000-0000-0000-000000000001");
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = targetItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "중복 테스트 토너",
+                    NameMatchKey = "중복테스트토너",
+                    SpecificationOriginal = "A4",
+                    SpecificationMatchKey = "A4",
+                    CategoryName = "소모품",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    IsDeleted = false,
+                    IsDirty = false
+                },
+                new LocalItem
+                {
+                    Id = Guid.Parse("b5100000-0000-0000-0000-000000000002"),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "다른 테스트 용지",
+                    NameMatchKey = "다른테스트용지",
+                    SpecificationOriginal = "B5",
+                    SpecificationMatchKey = "B5",
+                    CategoryName = "소모품",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    IsDeleted = false,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var viewModel = new InventoryViewModel(local, session);
+
+            await viewModel.LoadAndSelectItemAsync(targetItemId);
+
+            Assert.Equal("중복 테스트 토너", viewModel.SearchText);
+            Assert.NotNull(viewModel.SelectedItem);
+            Assert.Equal(targetItemId, viewModel.SelectedItem.Id);
+            Assert.All(viewModel.FilteredItems, row => Assert.Contains("중복 테스트 토너", row.NameOriginal, StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static bool IsFinancialSummaryInvoice(
         VoucherType voucherType,
         bool isLatestVersion,

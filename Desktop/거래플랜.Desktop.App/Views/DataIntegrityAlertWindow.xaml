@@ -84,10 +84,7 @@
                                             <TextBlock Text="{Binding SuggestedAction}" TextWrapping="Wrap" Foreground="#7FD0FF" Margin="0,6,0,0"/>
                                         </StackPanel>
                                         <TextBlock Grid.Column="2" Text="{Binding CountText}" FontSize="20" FontWeight="Bold" Foreground="#FFD56B" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="10,0,12,0"/>
-                                        <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="4,0,0,0">
-                                            <Button Content="자세히 보기" Click="DetailsButton_Click" Background="#1976A8" MinWidth="96"/>
-                                            <Button Content="수정 화면 열기" Click="FixButton_Click" Background="#00897B" MinWidth="132"/>
-                                        </StackPanel>
+                                        <Button Grid.Column="3" Content="수정 화면 열기" Click="FixButton_Click" Background="#00897B" MinWidth="132" VerticalAlignment="Center" Margin="4,0,0,0"/>
                                     </Grid>
                                 </Border>
                             </DataTemplate>
@@ -104,7 +101,6 @@
             </Grid.ColumnDefinitions>
             <TextBlock Text="알림은 데이터를 자동으로 고치지 않습니다. 각 바로가기에서 원본 화면을 열어 확인 후 저장하세요." Foreground="#93A8BE" VerticalAlignment="Center"/>
             <StackPanel Grid.Column="1" Orientation="Horizontal">
-                <Button Content="전체 자세히 보기" Click="AllDetailsButton_Click" Background="#394F66"/>
                 <Button Content="닫기(F12)" Click="CloseButton_Click" Background="#455A64"/>
             </StackPanel>
         </Grid>

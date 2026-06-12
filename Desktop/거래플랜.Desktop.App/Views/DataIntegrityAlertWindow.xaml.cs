@@ -24,9 +24,6 @@ public partial class DataIntegrityAlertWindow : Window
     public DataIntegrityAlertAction RequestedAction { get; private set; }
     public DataIntegrityIssueSummary? RequestedSummary { get; private set; }
 
-    private void DetailsButton_Click(object sender, RoutedEventArgs e)
-        => Complete(DataIntegrityAlertAction.Details, (sender as FrameworkElement)?.DataContext as DataIntegrityIssueSummary);
-
     private void FixButton_Click(object sender, RoutedEventArgs e)
     {
         var summary = (sender as FrameworkElement)?.DataContext as DataIntegrityIssueSummary;
@@ -37,9 +34,6 @@ public partial class DataIntegrityAlertWindow : Window
         else
             NonClosingActionRequested.Invoke(this, new DataIntegrityAlertActionRequestedEventArgs(DataIntegrityAlertAction.Fix, summary));
     }
-
-    private void AllDetailsButton_Click(object sender, RoutedEventArgs e)
-        => Complete(DataIntegrityAlertAction.Details, null);
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
         => DialogWindowCloseHelper.Close(this);

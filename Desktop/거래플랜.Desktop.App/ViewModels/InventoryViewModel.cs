@@ -148,6 +148,14 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     {
         await LoadAsync();
 
+        var targetItem = _allItems.FirstOrDefault(item => item.Id == itemId);
+        if (targetItem is not null)
+        {
+            SelectedTrackingTypeFilter = "전체";
+            SearchText = targetItem.NameOriginal ?? string.Empty;
+            ApplyFilter();
+        }
+
         if (!FilteredItems.Any(row => row.Id == itemId))
         {
             SearchText = string.Empty;

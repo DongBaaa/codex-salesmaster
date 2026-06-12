@@ -19,6 +19,7 @@ public partial class DataIntegrityIssueWindow : Window
     }
 
     public DataIntegrityIssueDetail? RequestedIssue { get; private set; }
+    public event EventHandler<DataIntegrityIssueFixRequestedEventArgs>? FixRequested;
 
     private void FixSelectedButton_Click(object sender, RoutedEventArgs e)
     {
@@ -35,7 +36,10 @@ public partial class DataIntegrityIssueWindow : Window
         }
 
         RequestedIssue = _viewModel.SelectedIssue;
-        DialogResult = true;
+        if (FixRequested is null)
+            DialogResult = true;
+        else
+            FixRequested.Invoke(this, new DataIntegrityIssueFixRequestedEventArgs(RequestedIssue));
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
@@ -56,4 +60,14 @@ public partial class DataIntegrityIssueWindow : Window
             e.Handled = true;
         }
     }
+}
+
+public sealed class DataIntegrityIssueFixRequestedEventArgs : EventArgs
+{
+    public DataIntegrityIssueFixRequestedEventArgs(DataIntegrityIssueDetail issue)
+    {
+        Issue = issue;
+    }
+
+    public DataIntegrityIssueDetail Issue { get; }
 }
