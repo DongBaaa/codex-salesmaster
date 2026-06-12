@@ -53,6 +53,8 @@
             <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
             <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/>
             <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Auto"/>
+            <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto"/>
         </Style>
         <Style TargetType="DataGridColumnHeader">
             <Setter Property="Background" Value="#20344F"/>
@@ -125,7 +127,13 @@
                 <ColumnDefinition Width="0.95*"/>
             </Grid.ColumnDefinitions>
             <Border Grid.Column="0" Style="{StaticResource PanelBorder}">
-                <DataGrid ItemsSource="{Binding Issues}" SelectedItem="{Binding SelectedIssue, Mode=TwoWay}" EnableRowVirtualization="True" EnableColumnVirtualization="True">
+                <DataGrid ItemsSource="{Binding Issues}"
+                          SelectedItem="{Binding SelectedIssue, Mode=TwoWay}"
+                          EnableRowVirtualization="True"
+                          EnableColumnVirtualization="True"
+                          ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                          ScrollViewer.VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Auto">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="등급" Binding="{Binding SeverityDisplay}" Width="70"/>
                         <DataGridTextColumn Header="유형" Binding="{Binding Title}" Width="190"/>
@@ -133,9 +141,10 @@
                         <DataGridTextColumn Header="품목" Binding="{Binding ItemName}" Width="170"/>
                         <DataGridTextColumn Header="자산" Binding="{Binding AssetDisplayName}" Width="220"/>
                         <DataGridTextColumn Header="지점" Binding="{Binding OfficeCode}" Width="90"/>
-                        <DataGridTextColumn Header="현재값" Binding="{Binding CurrentValue}" Width="150"/>
-                        <DataGridTextColumn Header="기준값" Binding="{Binding ExpectedValue}" Width="150"/>
-                        <DataGridTextColumn Header="내용" Binding="{Binding Message}" Width="*"/>
+                        <DataGridTextColumn Header="현재값" Binding="{Binding CurrentValue}" Width="220"/>
+                        <DataGridTextColumn Header="기준값" Binding="{Binding ExpectedValue}" Width="220"/>
+                        <DataGridTextColumn Header="판단/참조" Binding="{Binding ReviewInfoDisplay}" Width="380"/>
+                        <DataGridTextColumn Header="내용" Binding="{Binding Message}" Width="420"/>
                     </DataGrid.Columns>
                 </DataGrid>
             </Border>
@@ -156,6 +165,12 @@
                             <TextBlock Text="수정 방향" Foreground="#8FB6D8"/>
                             <TextBlock Text="{Binding SuggestedAction}" Foreground="#7FD0FF" TextWrapping="Wrap" Margin="0,4,0,16"/>
 
+                            <TextBlock Text="삭제/병합 판단 정보" Foreground="#8FB6D8"/>
+                            <TextBlock Text="{Binding ReviewInfoDisplay}" Foreground="#FFD56B" TextWrapping="Wrap" Margin="0,4,0,16"/>
+
+                            <TextBlock Text="관련 후보 ID" Foreground="#8FB6D8"/>
+                            <TextBlock Text="{Binding RelatedEntityIdText}" Foreground="#B8C7D8" TextWrapping="Wrap" Margin="0,4,0,16"/>
+
                             <TextBlock Text="거래처" Foreground="#8FB6D8"/>
                             <TextBlock Text="{Binding CustomerName}" Foreground="#EAF4FF" Margin="0,4,0,12"/>
                             <TextBlock Text="품목" Foreground="#8FB6D8"/>
@@ -169,6 +184,10 @@
                         </StackPanel>
                     </ScrollViewer>
                     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+                        <Button Content="{Binding SelectedIssue.MergeActionText, FallbackValue=중복 병합}"
+                                Click="MergeSelectedButton_Click"
+                                IsEnabled="{Binding SelectedIssue.CanMergeDuplicates}"
+                                Background="#7B5E00"/>
                         <Button Content="바로 수정" Click="FixSelectedButton_Click" Background="#00897B"/>
                         <Button Content="닫기" Click="CloseButton_Click" Background="#455A64"/>
                     </StackPanel>

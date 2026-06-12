@@ -101,9 +101,34 @@ public sealed class DataIntegrityIssueDetail
     public string Message { get; init; } = string.Empty;
     public string SuggestedAction { get; init; } = string.Empty;
     public DataIntegrityDirectActionKind DirectActionKind { get; init; }
+    public IReadOnlyList<Guid> RelatedEntityIds { get; init; } = Array.Empty<Guid>();
+    public string ReviewInfo { get; init; } = string.Empty;
 
     public bool HasDirectAction => DirectActionKind != DataIntegrityDirectActionKind.None;
+    public bool CanMergeDuplicates => RelatedEntityIds.Count > 1 &&
+                                      (string.Equals(Code, DataIntegrityIssueCodes.CustomerDuplicateCandidate, StringComparison.OrdinalIgnoreCase) ||
+                                       string.Equals(Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase));
     public string SeverityDisplay => string.Equals(Severity, "Error", StringComparison.OrdinalIgnoreCase) ? "오류" : "주의";
+    public string RelatedEntityIdText => RelatedEntityIds.Count == 0
+        ? string.Empty
+        : string.Join(" / ", RelatedEntityIds.Select(id => id.ToString("N")));
+    public string ReviewInfoDisplay
+    {
+        get
+        {
+            var review = (ReviewInfo ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(review))
+                return review;
+
+            var target = EntityId.HasValue
+                ? $"{NormalizeDetailText(EntityType, "대상")} {EntityId.Value:N}"
+                : NormalizeDetailText(EntityType, string.Empty);
+            return string.IsNullOrWhiteSpace(target)
+                ? SuggestedAction
+                : $"{target} · {SuggestedAction}";
+        }
+    }
+    public string MergeActionText => CanMergeDuplicates ? "중복 병합" : "병합 대상 아님";
     public string DirectActionText => DirectActionKind switch
     {
         DataIntegrityDirectActionKind.OpenRentalAsset => "자산 바로가기",
@@ -116,6 +141,12 @@ public sealed class DataIntegrityIssueDetail
         DataIntegrityDirectActionKind.OpenEnvironmentSettings => "환경설정 바로가기",
         _ => "수동 확인"
     };
+
+    private static string NormalizeDetailText(string? value, string fallback)
+    {
+        var trimmed = (value ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(trimmed) ? fallback : trimmed;
+    }
 }
 
 public sealed class DataIntegrityIssueFilterOption
@@ -321,10 +352,12 @@ public sealed class DataIntegrityIssueService
     };
 
     private readonly LocalDbContext _db;
+    private readonly SyncRequestDispatcher? _syncRequestDispatcher;
 
-    public DataIntegrityIssueService(LocalDbContext db)
+    public DataIntegrityIssueService(LocalDbContext db, SyncRequestDispatcher? syncRequestDispatcher = null)
     {
         _db = db;
+        _syncRequestDispatcher = syncRequestDispatcher;
     }
 
     public async Task<DataIntegrityScanResult> ScanAsync(SessionState session, CancellationToken ct = default)
@@ -447,16 +480,26 @@ public sealed class DataIntegrityIssueService
             $"profiles={scopedProfiles.Count:N0}, assets={scopedAssets.Count:N0}, histories={scopedAssignmentHistories.Count:N0}, customers={scopedCustomers.Count:N0}, items={scopedItems.Count:N0}, invoices={scopedInvoices.Count:N0}");
 
         stepStopwatch.Restart();
+        var duplicateCustomerCandidateIds = BuildDuplicateCustomerCandidateIds(scopedCustomers);
         var scopedItemIds = scopedItems
             .Select(item => item.Id)
             .Distinct()
             .ToList();
+        var duplicateItemCandidateIds = BuildDuplicateItemCandidateIds(scopedItems);
         var itemWarehouseStocks = await LoadItemWarehouseStocksForItemsAsync(scopedItemIds, ct);
         var inventoryMovements = await LoadInventoryMovementsForItemsAsync(scopedItemIds, ct);
         LogIntegrityScanStep(
             "Integrity scan inventory source load",
             stepStopwatch,
             $"stocks={itemWarehouseStocks.Count:N0}, movements={inventoryMovements.Count:N0}, scopedItems={scopedItemIds.Count:N0}");
+
+        stepStopwatch.Restart();
+        var customerDuplicateUsages = await LoadCustomerDuplicateUsagesAsync(duplicateCustomerCandidateIds, ct);
+        var itemDuplicateUsages = await LoadItemDuplicateUsagesAsync(duplicateItemCandidateIds, ct);
+        LogIntegrityScanStep(
+            "Integrity scan duplicate usage load",
+            stepStopwatch,
+            $"duplicateCustomers={duplicateCustomerCandidateIds.Count:N0}, duplicateItems={duplicateItemCandidateIds.Count:N0}");
 
         stepStopwatch.Restart();
         var scopedInvoiceIds = scopedInvoices
@@ -479,6 +522,8 @@ public sealed class DataIntegrityIssueService
             scopedInvoices,
             invoiceLineTotalsByInvoiceId,
             invoicePaymentTotalsByInvoiceId,
+            customerDuplicateUsages,
+            itemDuplicateUsages,
             itemWarehouseStocks,
             inventoryMovements,
             session);
@@ -815,6 +860,379 @@ public sealed class DataIntegrityIssueService
         return result;
     }
 
+    public async Task<OfficeMutationResult> MergeDuplicateIssueAsync(
+        DataIntegrityIssueDetail issue,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (issue.RelatedEntityIds.Count <= 1)
+            return OfficeMutationResult.Missing("병합할 중복 후보가 2건 이상 필요합니다. 운영점검을 새로고침한 뒤 다시 시도하세요.");
+
+        if (string.Equals(issue.Code, DataIntegrityIssueCodes.CustomerDuplicateCandidate, StringComparison.OrdinalIgnoreCase))
+            return await MergeDuplicateCustomersAsync(issue.RelatedEntityIds, session, ct);
+
+        if (string.Equals(issue.Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase))
+            return await MergeDuplicateItemsAsync(issue.RelatedEntityIds, session, ct);
+
+        return OfficeMutationResult.Denied("현재 항목은 자동 병합 대상이 아닙니다. 원본 화면에서 확인 후 수동 정리하세요.");
+    }
+
+    private async Task<OfficeMutationResult> MergeDuplicateCustomersAsync(
+        IReadOnlyCollection<Guid> relatedEntityIds,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (!CanEditCustomersForIntegrity(session))
+            return OfficeMutationResult.Denied("권한이 없어 거래처 중복 후보를 병합할 수 없습니다.");
+
+        var ids = relatedEntityIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count <= 1)
+            return OfficeMutationResult.Missing("병합할 거래처 후보가 부족합니다.");
+
+        var customers = await _db.Customers.IgnoreQueryFilters()
+            .Where(customer => ids.Contains(customer.Id))
+            .ToListAsync(ct);
+        var activeCustomers = customers
+            .Where(customer => !customer.IsDeleted)
+            .ToList();
+        if (activeCustomers.Count <= 1)
+            return OfficeMutationResult.Missing("활성 거래처 중복 후보가 2건 이상 남아 있지 않습니다. 운영점검을 새로고침하세요.");
+
+        foreach (var customer in activeCustomers)
+        {
+            if (!CanWriteCustomerScopeForIntegrity(session, ResolveCustomerOfficeCode(customer), customer.TenantCode))
+                return OfficeMutationResult.Denied($"권한이 없어 {NormalizeDisplay(customer.NameOriginal, customer.Id.ToString("N"))} 거래처를 병합할 수 없습니다.");
+        }
+
+        var usageById = await LoadCustomerDuplicateUsagesAsync(activeCustomers.Select(customer => customer.Id).ToList(), ct);
+        var canonical = activeCustomers
+            .OrderByDescending(customer => usageById.TryGetValue(customer.Id, out var usage) ? usage.TotalCount : 0)
+            .ThenByDescending(CountFilledCustomerValues)
+            .ThenBy(customer => customer.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(customer => customer.Id)
+            .First();
+        var duplicateIds = activeCustomers
+            .Where(customer => customer.Id != canonical.Id)
+            .Select(customer => customer.Id)
+            .ToList();
+        var duplicates = activeCustomers
+            .Where(customer => duplicateIds.Contains(customer.Id))
+            .ToList();
+        var now = DateTime.UtcNow;
+
+        foreach (var duplicate in duplicates)
+        {
+            MergeCustomerValues(canonical, duplicate);
+            duplicate.IsDeleted = true;
+            MarkDirty(duplicate, now);
+        }
+
+        MarkDirty(canonical, now);
+
+        var invoices = await _db.Invoices.IgnoreQueryFilters()
+            .Where(invoice => duplicateIds.Contains(invoice.CustomerId))
+            .ToListAsync(ct);
+        foreach (var invoice in invoices)
+        {
+            invoice.CustomerId = canonical.Id;
+            MarkDirty(invoice, now);
+        }
+
+        var transactions = await _db.Transactions.IgnoreQueryFilters()
+            .Where(transaction => duplicateIds.Contains(transaction.CustomerId))
+            .ToListAsync(ct);
+        foreach (var transaction in transactions)
+        {
+            transaction.CustomerId = canonical.Id;
+            MarkDirty(transaction, now);
+        }
+
+        var contracts = await _db.CustomerContracts.IgnoreQueryFilters()
+            .Where(contract => duplicateIds.Contains(contract.CustomerId))
+            .ToListAsync(ct);
+        foreach (var contract in contracts)
+        {
+            contract.CustomerId = canonical.Id;
+            MarkDirty(contract, now);
+        }
+
+        var profiles = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .Where(profile => profile.CustomerId.HasValue && duplicateIds.Contains(profile.CustomerId.Value))
+            .ToListAsync(ct);
+        foreach (var profile in profiles)
+        {
+            var previousCustomerName = profile.CustomerName;
+            profile.CustomerId = canonical.Id;
+            if (ShouldReplaceDisplayName(previousCustomerName, duplicates.Select(duplicate => duplicate.NameOriginal)))
+                profile.CustomerName = canonical.NameOriginal;
+            MarkDirty(profile, now);
+        }
+
+        var assets = await _db.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.CustomerId.HasValue && duplicateIds.Contains(asset.CustomerId.Value))
+            .ToListAsync(ct);
+        foreach (var asset in assets)
+        {
+            var previousCustomerName = asset.CustomerName;
+            var previousCurrentCustomerName = asset.CurrentCustomerName;
+            asset.CustomerId = canonical.Id;
+            if (ShouldReplaceDisplayName(previousCustomerName, duplicates.Select(duplicate => duplicate.NameOriginal)))
+                asset.CustomerName = canonical.NameOriginal;
+            if (ShouldReplaceDisplayName(previousCurrentCustomerName, duplicates.Select(duplicate => duplicate.NameOriginal)))
+                asset.CurrentCustomerName = canonical.NameOriginal;
+            MarkDirty(asset, now);
+        }
+
+        var histories = await _db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+            .Where(history => history.CustomerId.HasValue && duplicateIds.Contains(history.CustomerId.Value))
+            .ToListAsync(ct);
+        foreach (var history in histories)
+        {
+            var previousCustomerName = history.CustomerName;
+            history.CustomerId = canonical.Id;
+            if (ShouldReplaceDisplayName(previousCustomerName, duplicates.Select(duplicate => duplicate.NameOriginal)))
+                history.CustomerName = canonical.NameOriginal;
+            MarkDirty(history, now);
+        }
+
+        AddDuplicateMergeAudit(
+            "Customer",
+            canonical.Id,
+            session,
+            now,
+            new
+            {
+                CanonicalId = canonical.Id,
+                DuplicateIds = duplicateIds,
+                CanonicalName = canonical.NameOriginal
+            },
+            new
+            {
+                MovedInvoices = invoices.Count,
+                MovedTransactions = transactions.Count,
+                MovedContracts = contracts.Count,
+                MovedRentalProfiles = profiles.Count,
+                MovedRentalAssets = assets.Count,
+                MovedRentalHistories = histories.Count
+            });
+
+        await _db.SaveChangesAsync(ct);
+        _syncRequestDispatcher?.RequestFlushSync();
+        return OfficeMutationResult.Ok(
+            canonical.Id,
+            $"거래처 중복 후보 {activeCustomers.Count:N0}건 중 {duplicates.Count:N0}건을 '{NormalizeDisplay(canonical.NameOriginal, "대표 거래처")}'로 병합했습니다.");
+    }
+
+    private async Task<OfficeMutationResult> MergeDuplicateItemsAsync(
+        IReadOnlyCollection<Guid> relatedEntityIds,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (!CanEditItemsForIntegrity(session))
+            return OfficeMutationResult.Denied("권한이 없어 품목 중복 후보를 병합할 수 없습니다.");
+
+        var ids = relatedEntityIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count <= 1)
+            return OfficeMutationResult.Missing("병합할 품목 후보가 부족합니다.");
+
+        var items = await _db.Items.IgnoreQueryFilters()
+            .Where(item => ids.Contains(item.Id))
+            .ToListAsync(ct);
+        var activeItems = items
+            .Where(item => !item.IsDeleted)
+            .ToList();
+        if (activeItems.Count <= 1)
+            return OfficeMutationResult.Missing("활성 품목 중복 후보가 2건 이상 남아 있지 않습니다. 운영점검을 새로고침하세요.");
+
+        foreach (var item in activeItems)
+        {
+            if (!CanWriteItemScopeForIntegrity(session, item))
+                return OfficeMutationResult.Denied($"권한이 없어 {NormalizeDisplay(item.NameOriginal, item.Id.ToString("N"))} 품목을 병합할 수 없습니다.");
+        }
+
+        var usageById = await LoadItemDuplicateUsagesAsync(activeItems.Select(item => item.Id).ToList(), ct);
+        var canonical = activeItems
+            .OrderByDescending(item => usageById.TryGetValue(item.Id, out var usage) ? usage.TotalCount : 0)
+            .ThenByDescending(item => Math.Abs(item.CurrentStock))
+            .ThenByDescending(CountFilledItemValues)
+            .ThenBy(item => item.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(item => item.Id)
+            .First();
+        var duplicateIds = activeItems
+            .Where(item => item.Id != canonical.Id)
+            .Select(item => item.Id)
+            .ToList();
+        var duplicates = activeItems
+            .Where(item => duplicateIds.Contains(item.Id))
+            .ToList();
+        var now = DateTime.UtcNow;
+
+        foreach (var duplicate in duplicates)
+        {
+            MergeItemValues(canonical, duplicate);
+            duplicate.IsDeleted = true;
+            MarkDirty(duplicate, now);
+        }
+
+        MarkDirty(canonical, now);
+
+        var duplicateNames = duplicates.Select(duplicate => duplicate.NameOriginal).ToList();
+        var duplicateSpecs = duplicates.Select(duplicate => duplicate.SpecificationOriginal).ToList();
+
+        var invoiceLines = await _db.InvoiceLines.IgnoreQueryFilters()
+            .Where(line => line.ItemId.HasValue && duplicateIds.Contains(line.ItemId.Value))
+            .ToListAsync(ct);
+        foreach (var line in invoiceLines)
+        {
+            line.ItemId = canonical.Id;
+            if (ShouldReplaceDisplayName(line.ItemNameOriginal, duplicateNames))
+                line.ItemNameOriginal = canonical.NameOriginal;
+            if (ShouldReplaceDisplayName(line.SpecificationOriginal, duplicateSpecs))
+                line.SpecificationOriginal = canonical.SpecificationOriginal;
+        }
+
+        var invoiceIdsToMark = invoiceLines
+            .Select(line => line.InvoiceId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (invoiceIdsToMark.Count > 0)
+        {
+            var invoices = await _db.Invoices.IgnoreQueryFilters()
+                .Where(invoice => invoiceIdsToMark.Contains(invoice.Id))
+                .ToListAsync(ct);
+            foreach (var invoice in invoices)
+                MarkDirty(invoice, now);
+        }
+
+        var invoiceLineSerials = await _db.InvoiceLineSerials
+            .Where(serial => serial.ItemId.HasValue && duplicateIds.Contains(serial.ItemId.Value))
+            .ToListAsync(ct);
+        foreach (var serial in invoiceLineSerials)
+            serial.ItemId = canonical.Id;
+
+        var rentalAssets = await _db.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.ItemId.HasValue && duplicateIds.Contains(asset.ItemId.Value))
+            .ToListAsync(ct);
+        foreach (var asset in rentalAssets)
+        {
+            asset.ItemId = canonical.Id;
+            if (ShouldReplaceDisplayName(asset.ItemName, duplicateNames))
+                asset.ItemName = canonical.NameOriginal;
+            if (string.IsNullOrWhiteSpace(asset.ItemCategoryName) && !string.IsNullOrWhiteSpace(canonical.CategoryName))
+                asset.ItemCategoryName = canonical.CategoryName;
+            MarkDirty(asset, now);
+        }
+
+        var rentalAssetIds = rentalAssets
+            .Select(asset => asset.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        var histories = rentalAssetIds.Count == 0
+            ? new List<LocalRentalAssetAssignmentHistory>()
+            : await _db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                .Where(history => rentalAssetIds.Contains(history.AssetId))
+                .ToListAsync(ct);
+        foreach (var history in histories)
+        {
+            if (ShouldReplaceDisplayName(history.ItemName, duplicateNames))
+            {
+                history.ItemName = canonical.NameOriginal;
+                MarkDirty(history, now);
+            }
+        }
+
+        var serialLedgers = await _db.SerialLedgers
+            .Where(ledger => ledger.ItemId.HasValue && duplicateIds.Contains(ledger.ItemId.Value))
+            .ToListAsync(ct);
+        foreach (var ledger in serialLedgers)
+        {
+            ledger.ItemId = canonical.Id;
+            ledger.UpdatedAtUtc = now;
+        }
+
+        var inventoryTransferLines = await _db.InventoryTransferLines.IgnoreQueryFilters()
+            .Where(line => line.ItemId.HasValue && duplicateIds.Contains(line.ItemId.Value))
+            .ToListAsync(ct);
+        foreach (var line in inventoryTransferLines)
+        {
+            line.ItemId = canonical.Id;
+            if (ShouldReplaceDisplayName(line.ItemNameOriginal, duplicateNames))
+                line.ItemNameOriginal = canonical.NameOriginal;
+            if (ShouldReplaceDisplayName(line.SpecificationOriginal, duplicateSpecs))
+                line.SpecificationOriginal = canonical.SpecificationOriginal;
+        }
+
+        var transferIdsToMark = inventoryTransferLines
+            .Select(line => line.TransferId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (transferIdsToMark.Count > 0)
+        {
+            var transfers = await _db.InventoryTransfers.IgnoreQueryFilters()
+                .Where(transfer => transferIdsToMark.Contains(transfer.Id))
+                .ToListAsync(ct);
+            foreach (var transfer in transfers)
+                MarkDirty(transfer, now);
+        }
+
+        var inventoryMovements = await _db.InventoryMovements
+            .Where(movement => movement.ItemId.HasValue && duplicateIds.Contains(movement.ItemId.Value))
+            .ToListAsync(ct);
+        foreach (var movement in inventoryMovements)
+            movement.ItemId = canonical.Id;
+
+        var stockLayers = await _db.StockLayers
+            .Where(layer => layer.ItemId.HasValue && duplicateIds.Contains(layer.ItemId.Value))
+            .ToListAsync(ct);
+        foreach (var layer in stockLayers)
+            layer.ItemId = canonical.Id;
+
+        var canonicalStockTotal = await RemapItemWarehouseStocksAsync(canonical.Id, duplicateIds, now, ct);
+        canonical.CurrentStock = canonicalStockTotal.HasValue
+            ? canonicalStockTotal.Value
+            : activeItems.Sum(item => item.CurrentStock);
+        MarkDirty(canonical, now);
+
+        AddDuplicateMergeAudit(
+            "Item",
+            canonical.Id,
+            session,
+            now,
+            new
+            {
+                CanonicalId = canonical.Id,
+                DuplicateIds = duplicateIds,
+                CanonicalName = canonical.NameOriginal,
+                CanonicalSpecification = canonical.SpecificationOriginal
+            },
+            new
+            {
+                MovedInvoiceLines = invoiceLines.Count,
+                MovedInvoiceLineSerials = invoiceLineSerials.Count,
+                MovedRentalAssets = rentalAssets.Count,
+                MovedTransferLines = inventoryTransferLines.Count,
+                MovedInventoryMovements = inventoryMovements.Count,
+                MovedStockLayers = stockLayers.Count,
+                MovedSerialLedgers = serialLedgers.Count,
+                CanonicalStock = canonical.CurrentStock
+            });
+
+        await _db.SaveChangesAsync(ct);
+        _syncRequestDispatcher?.RequestFlushSync();
+        return OfficeMutationResult.Ok(
+            canonical.Id,
+            $"품목 중복 후보 {activeItems.Count:N0}건 중 {duplicates.Count:N0}건을 '{NormalizeDisplay(canonical.NameOriginal, "대표 품목")}'로 병합했습니다.");
+    }
+
     private static void LogIntegrityScanStep(string operation, Stopwatch stopwatch, string? detail = null)
     {
         stopwatch.Stop();
@@ -1089,6 +1507,210 @@ public sealed class DataIntegrityIssueService
         return rows;
     }
 
+    private async Task<Dictionary<Guid, CustomerDuplicateUsage>> LoadCustomerDuplicateUsagesAsync(
+        IReadOnlyCollection<Guid> customerIds,
+        CancellationToken ct)
+    {
+        var ids = customerIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var usages = ids.ToDictionary(id => id, _ => new CustomerDuplicateUsage());
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds.ToList();
+
+            foreach (var row in await _db.Invoices.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(invoice => !invoice.IsDeleted && scopedBatchIds.Contains(invoice.CustomerId))
+                         .GroupBy(invoice => invoice.CustomerId)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.InvoiceCount = row.Count;
+            }
+
+            foreach (var row in await _db.Transactions.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(transaction => !transaction.IsDeleted && scopedBatchIds.Contains(transaction.CustomerId))
+                         .GroupBy(transaction => transaction.CustomerId)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.TransactionCount = row.Count;
+            }
+
+            foreach (var row in await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(profile => !profile.IsDeleted && profile.CustomerId.HasValue && scopedBatchIds.Contains(profile.CustomerId.Value))
+                         .GroupBy(profile => profile.CustomerId!.Value)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.RentalBillingProfileCount = row.Count;
+            }
+
+            foreach (var row in await _db.RentalAssets.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(asset => !asset.IsDeleted && asset.CustomerId.HasValue && scopedBatchIds.Contains(asset.CustomerId.Value))
+                         .GroupBy(asset => asset.CustomerId!.Value)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.RentalAssetCount = row.Count;
+            }
+
+            foreach (var row in await _db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(history => !history.IsDeleted && history.CustomerId.HasValue && scopedBatchIds.Contains(history.CustomerId.Value))
+                         .GroupBy(history => history.CustomerId!.Value)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.RentalAssignmentHistoryCount = row.Count;
+            }
+
+            foreach (var row in await _db.CustomerContracts.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(contract => !contract.IsDeleted && scopedBatchIds.Contains(contract.CustomerId))
+                         .GroupBy(contract => contract.CustomerId)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.CustomerContractCount = row.Count;
+            }
+        }
+
+        return usages;
+    }
+
+    private async Task<Dictionary<Guid, ItemDuplicateUsage>> LoadItemDuplicateUsagesAsync(
+        IReadOnlyCollection<Guid> itemIds,
+        CancellationToken ct)
+    {
+        var ids = itemIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var usages = ids.ToDictionary(id => id, _ => new ItemDuplicateUsage());
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds.ToList();
+
+            foreach (var row in await _db.InvoiceLines.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(line => !line.IsDeleted && line.ItemId.HasValue && scopedBatchIds.Contains(line.ItemId.Value))
+                         .GroupBy(line => line.ItemId!.Value)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.InvoiceLineCount = row.Count;
+            }
+
+            foreach (var row in await _db.InvoiceLineSerials
+                         .AsNoTracking()
+                         .Where(serial => serial.ItemId.HasValue && scopedBatchIds.Contains(serial.ItemId.Value))
+                         .GroupBy(serial => serial.ItemId!.Value)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.InvoiceLineSerialCount = row.Count;
+            }
+
+            foreach (var row in await _db.RentalAssets.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(asset => !asset.IsDeleted && asset.ItemId.HasValue && scopedBatchIds.Contains(asset.ItemId.Value))
+                         .GroupBy(asset => asset.ItemId!.Value)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.RentalAssetCount = row.Count;
+            }
+
+            foreach (var row in await _db.InventoryTransferLines.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(line => !line.IsDeleted && line.ItemId.HasValue && scopedBatchIds.Contains(line.ItemId.Value))
+                         .GroupBy(line => line.ItemId!.Value)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.InventoryTransferLineCount = row.Count;
+            }
+
+            foreach (var row in await _db.InventoryMovements
+                         .AsNoTracking()
+                         .Where(movement => movement.IsActive && movement.ItemId.HasValue && scopedBatchIds.Contains(movement.ItemId.Value))
+                         .GroupBy(movement => movement.ItemId!.Value)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.InventoryMovementCount = row.Count;
+            }
+
+            foreach (var row in await _db.StockLayers
+                         .AsNoTracking()
+                         .Where(layer => layer.ItemId.HasValue && scopedBatchIds.Contains(layer.ItemId.Value))
+                         .GroupBy(layer => layer.ItemId!.Value)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.StockLayerCount = row.Count;
+            }
+
+            foreach (var row in await _db.SerialLedgers
+                         .AsNoTracking()
+                         .Where(ledger => ledger.ItemId.HasValue && scopedBatchIds.Contains(ledger.ItemId.Value))
+                         .GroupBy(ledger => ledger.ItemId!.Value)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.SerialLedgerCount = row.Count;
+            }
+
+            var stockRows = await _db.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock => scopedBatchIds.Contains(stock.ItemId))
+                .Select(stock => new ItemStockRow
+                {
+                    EntityId = stock.ItemId,
+                    Quantity = stock.Quantity
+                })
+                .ToListAsync(ct);
+
+            foreach (var group in stockRows.GroupBy(row => row.EntityId))
+            {
+                if (!usages.TryGetValue(group.Key, out var usage))
+                    continue;
+
+                usage.ItemWarehouseStockRowCount = group.Count();
+                usage.ItemWarehouseStockQuantity = group.Sum(row => row.Quantity);
+            }
+        }
+
+        return usages;
+    }
+
     public static DataIntegrityIssueDefinition GetDefinition(string code)
         => Definitions.TryGetValue(code, out var definition)
             ? definition
@@ -1102,6 +1724,8 @@ public sealed class DataIntegrityIssueService
         IReadOnlyCollection<IntegrityInvoiceSnapshot> invoices,
         IReadOnlyDictionary<Guid, decimal> invoiceLineTotalsByInvoiceId,
         IReadOnlyDictionary<Guid, decimal> invoicePaymentTotalsByInvoiceId,
+        IReadOnlyDictionary<Guid, CustomerDuplicateUsage> customerDuplicateUsages,
+        IReadOnlyDictionary<Guid, ItemDuplicateUsage> itemDuplicateUsages,
         IReadOnlyCollection<LocalItemWarehouseStock> itemWarehouseStocks,
         IReadOnlyCollection<LocalInventoryMovement> inventoryMovements,
         SessionState session)
@@ -1119,6 +1743,7 @@ public sealed class DataIntegrityIssueService
                      .Where(group => group.Count() > 1))
         {
             var rows = group.Select(entry => entry.Customer).OrderBy(customer => customer.NameOriginal).ToList();
+            var relatedIds = rows.Select(row => row.Id).Distinct().ToList();
             AddGeneralIssue(issues, DataIntegrityIssueCodes.CustomerDuplicateCandidate,
                 entityType: "거래처",
                 entityId: rows[0].Id,
@@ -1127,7 +1752,9 @@ public sealed class DataIntegrityIssueService
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal}({row.Id:N})")),
                 expectedValue: "같은 거래처이면 1건으로 정리",
                 message: $"거래처명 '{rows[0].NameOriginal}' 기준 중복 후보 {rows.Count:N0}건이 있습니다.",
-                directActionKind: DataIntegrityDirectActionKind.OpenCustomer);
+                directActionKind: DataIntegrityDirectActionKind.OpenCustomer,
+                relatedEntityIds: relatedIds,
+                reviewInfo: BuildCustomerDuplicateReviewInfo(rows, customerDuplicateUsages));
         }
 
         foreach (var group in customers
@@ -1143,6 +1770,7 @@ public sealed class DataIntegrityIssueService
                      .Where(group => group.Count() > 1))
         {
             var rows = group.Select(entry => entry.Customer).OrderBy(customer => customer.NameOriginal).ToList();
+            var relatedIds = rows.Select(row => row.Id).Distinct().ToList();
             AddGeneralIssue(issues, DataIntegrityIssueCodes.CustomerDuplicateCandidate,
                 entityType: "거래처",
                 entityId: rows[0].Id,
@@ -1151,7 +1779,9 @@ public sealed class DataIntegrityIssueService
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal} / {row.BusinessNumber}({row.Id:N})")),
                 expectedValue: "같은 사업자이면 1건으로 정리",
                 message: $"사업자번호 '{rows[0].BusinessNumber}' 기준 거래처 중복 후보 {rows.Count:N0}건이 있습니다.",
-                directActionKind: DataIntegrityDirectActionKind.OpenCustomer);
+                directActionKind: DataIntegrityDirectActionKind.OpenCustomer,
+                relatedEntityIds: relatedIds,
+                reviewInfo: BuildCustomerDuplicateReviewInfo(rows, customerDuplicateUsages));
         }
 
         foreach (var group in items
@@ -1168,6 +1798,7 @@ public sealed class DataIntegrityIssueService
                      .Where(group => group.Count() > 1))
         {
             var rows = group.Select(entry => entry.Item).OrderBy(item => item.NameOriginal).ThenBy(item => item.SpecificationOriginal).ToList();
+            var relatedIds = rows.Select(row => row.Id).Distinct().ToList();
             AddGeneralIssue(issues, DataIntegrityIssueCodes.ItemDuplicateCandidate,
                 entityType: "품목",
                 entityId: rows[0].Id,
@@ -1176,7 +1807,9 @@ public sealed class DataIntegrityIssueService
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal} / {row.SpecificationOriginal}({row.Id:N})")),
                 expectedValue: "같은 품목이면 1건으로 정리",
                 message: $"품목 '{rows[0].NameOriginal}' / 규격 '{rows[0].SpecificationOriginal}' 중복 후보 {rows.Count:N0}건이 있습니다.",
-                directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem);
+                directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem,
+                relatedEntityIds: relatedIds,
+                reviewInfo: BuildItemDuplicateReviewInfo(rows, itemDuplicateUsages));
         }
 
         foreach (var group in warehouses
@@ -1197,6 +1830,7 @@ public sealed class DataIntegrityIssueService
                      .Where(group => group.Select(entry => entry.Warehouse.Id).Distinct().Count() > 1))
         {
             var rows = group.Select(entry => entry.Warehouse).GroupBy(warehouse => warehouse.Id).Select(grouping => grouping.First()).OrderBy(warehouse => warehouse.Name).ToList();
+            var relatedIds = rows.Select(row => row.Id).Distinct().ToList();
             AddGeneralIssue(issues, DataIntegrityIssueCodes.WarehouseDuplicateCandidate,
                 entityType: "창고",
                 entityId: rows[0].Id,
@@ -1204,7 +1838,9 @@ public sealed class DataIntegrityIssueService
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.Code} / {row.Name}({row.Id:N})")),
                 expectedValue: "같은 창고이면 1건으로 정리",
                 message: $"담당지점 {rows[0].OfficeCode} 창고 중복 후보 {rows.Count:N0}건이 있습니다.",
-                directActionKind: DataIntegrityDirectActionKind.OpenEnvironmentSettings);
+                directActionKind: DataIntegrityDirectActionKind.OpenEnvironmentSettings,
+                relatedEntityIds: relatedIds,
+                reviewInfo: BuildWarehouseDuplicateReviewInfo(rows, itemWarehouseStocks, inventoryMovements, session));
         }
 
         foreach (var invoice in invoices)
@@ -1301,6 +1937,137 @@ public sealed class DataIntegrityIssueService
         }
     }
 
+    private static List<Guid> BuildDuplicateCustomerCandidateIds(IReadOnlyCollection<LocalCustomer> customers)
+    {
+        var ids = new HashSet<Guid>();
+        foreach (var group in customers
+                     .Select(customer => new
+                     {
+                         Customer = customer,
+                         Key = RentalCatalogValueNormalizer.NormalizeLooseKey(customer.NameOriginal),
+                         OfficeCode = ResolveCustomerOfficeCode(customer),
+                         TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, ResolveCustomerOfficeCode(customer))
+                     })
+                     .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
+                     .GroupBy(entry => $"{entry.TenantCode}|{entry.OfficeCode}|NAME|{entry.Key}", StringComparer.OrdinalIgnoreCase)
+                     .Where(group => group.Count() > 1))
+        {
+            foreach (var entry in group)
+                ids.Add(entry.Customer.Id);
+        }
+
+        foreach (var group in customers
+                     .Select(customer => new
+                     {
+                         Customer = customer,
+                         Key = NormalizeBusinessNumber(customer.BusinessNumber),
+                         OfficeCode = ResolveCustomerOfficeCode(customer),
+                         TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, ResolveCustomerOfficeCode(customer))
+                     })
+                     .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
+                     .GroupBy(entry => $"{entry.TenantCode}|{entry.OfficeCode}|BIZ|{entry.Key}", StringComparer.OrdinalIgnoreCase)
+                     .Where(group => group.Count() > 1))
+        {
+            foreach (var entry in group)
+                ids.Add(entry.Customer.Id);
+        }
+
+        return ids.ToList();
+    }
+
+    private static List<Guid> BuildDuplicateItemCandidateIds(IReadOnlyCollection<LocalItem> items)
+    {
+        var ids = new HashSet<Guid>();
+        foreach (var group in items
+                     .Select(item => new
+                     {
+                         Item = item,
+                         NameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal),
+                         SpecKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.SpecificationOriginal),
+                         OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared),
+                         TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(item.TenantCode, item.OfficeCode)
+                     })
+                     .Where(entry => !string.IsNullOrWhiteSpace(entry.NameKey))
+                     .GroupBy(entry => $"{entry.TenantCode}|{entry.OfficeCode}|{entry.NameKey}|{entry.SpecKey}", StringComparer.OrdinalIgnoreCase)
+                     .Where(group => group.Count() > 1))
+        {
+            foreach (var entry in group)
+                ids.Add(entry.Item.Id);
+        }
+
+        return ids.ToList();
+    }
+
+    private static string BuildCustomerDuplicateReviewInfo(
+        IReadOnlyList<LocalCustomer> rows,
+        IReadOnlyDictionary<Guid, CustomerDuplicateUsage> usageById)
+    {
+        var ranked = rows
+            .Select(row => new
+            {
+                Customer = row,
+                Usage = usageById.TryGetValue(row.Id, out var usage) ? usage : CustomerDuplicateUsage.Empty
+            })
+            .OrderByDescending(entry => entry.Usage.TotalCount)
+            .ThenByDescending(entry => CountFilledCustomerValues(entry.Customer))
+            .ThenBy(entry => entry.Customer.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var representative = ranked.First();
+        var totalReferences = ranked.Sum(entry => entry.Usage.TotalCount);
+        var candidates = string.Join(" / ", ranked.Take(6).Select(entry =>
+            $"{NormalizeDisplay(entry.Customer.NameOriginal, "거래처")}({ShortId(entry.Customer.Id)}) 참조 {entry.Usage.TotalCount:N0}건"));
+
+        return $"후보 {rows.Count:N0}건, 참조 합계 {totalReferences:N0}건. 대표 추천: {NormalizeDisplay(representative.Customer.NameOriginal, "거래처")}({ShortId(representative.Customer.Id)}). 후보별: {candidates}. 병합 시 전표·수금/지급·렌탈 청구/자산·계약서·임대이력 참조를 대표 거래처로 옮기고 나머지 거래처를 삭제 처리합니다.";
+    }
+
+    private static string BuildItemDuplicateReviewInfo(
+        IReadOnlyList<LocalItem> rows,
+        IReadOnlyDictionary<Guid, ItemDuplicateUsage> usageById)
+    {
+        var ranked = rows
+            .Select(row => new
+            {
+                Item = row,
+                Usage = usageById.TryGetValue(row.Id, out var usage) ? usage : ItemDuplicateUsage.Empty
+            })
+            .OrderByDescending(entry => entry.Usage.TotalCount)
+            .ThenByDescending(entry => Math.Abs(entry.Item.CurrentStock))
+            .ThenByDescending(entry => CountFilledItemValues(entry.Item))
+            .ThenBy(entry => entry.Item.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var representative = ranked.First();
+        var totalReferences = ranked.Sum(entry => entry.Usage.TotalCount);
+        var stockQuantity = ranked.Sum(entry => entry.Usage.ItemWarehouseStockQuantity);
+        var currentStock = rows.Sum(row => row.CurrentStock);
+        var candidates = string.Join(" / ", ranked.Take(6).Select(entry =>
+            $"{NormalizeDisplay(entry.Item.NameOriginal, "품목")}({ShortId(entry.Item.Id)}) 참조 {entry.Usage.TotalCount:N0}건, 재고 {entry.Item.CurrentStock:N2}"));
+
+        return $"후보 {rows.Count:N0}건, 참조 합계 {totalReferences:N0}건, 품목 현재재고 합계 {currentStock:N2}, 창고별 재고 합계 {stockQuantity:N2}. 대표 추천: {NormalizeDisplay(representative.Item.NameOriginal, "품목")}({ShortId(representative.Item.Id)}). 후보별: {candidates}. 병합 시 전표 라인·렌탈 자산·배송/재고 이동·시리얼·창고별 재고를 대표 품목으로 옮기고 나머지 품목을 삭제 처리합니다.";
+    }
+
+    private static string BuildWarehouseDuplicateReviewInfo(
+        IReadOnlyList<LocalWarehouse> rows,
+        IReadOnlyCollection<LocalItemWarehouseStock> itemWarehouseStocks,
+        IReadOnlyCollection<LocalInventoryMovement> inventoryMovements,
+        SessionState session)
+    {
+        var warehouseCodes = rows
+            .Select(row => OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(row.Code, row.OfficeCode, session.OfficeCode))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var stockRows = itemWarehouseStocks
+            .Where(stock => warehouseCodes.Contains(OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(stock.WarehouseCode, session.OfficeCode)))
+            .ToList();
+        var movementRows = inventoryMovements
+            .Where(movement => warehouseCodes.Contains(OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(movement.WarehouseCode, session.OfficeCode)))
+            .ToList();
+        var candidates = string.Join(" / ", rows.Take(6).Select(row =>
+            $"{NormalizeDisplay(row.Code, "코드없음")}·{NormalizeDisplay(row.Name, "창고")}({ShortId(row.Id)})"));
+
+        return $"후보 {rows.Count:N0}건. 후보별: {candidates}. 연결 재고 행 {stockRows.Count:N0}건, 재고수량 합계 {stockRows.Sum(stock => stock.Quantity):N2}, 이동 이력 {movementRows.Count:N0}건. 창고는 재고/이동 경로 충돌 위험이 있어 자동 병합 대신 환경설정에서 코드·이름·창고별 재고를 확인한 뒤 같은 창고만 수동 정리하세요.";
+    }
+
     private static void AddIssue(
         ICollection<DataIntegrityIssueDetail> issues,
         string code,
@@ -1388,7 +2155,9 @@ public sealed class DataIntegrityIssueService
         string currentValue = "",
         string expectedValue = "",
         string message = "",
-        DataIntegrityDirectActionKind directActionKind = DataIntegrityDirectActionKind.None)
+        DataIntegrityDirectActionKind directActionKind = DataIntegrityDirectActionKind.None,
+        IReadOnlyCollection<Guid>? relatedEntityIds = null,
+        string reviewInfo = "")
     {
         var definition = GetDefinition(code);
         issues.Add(new DataIntegrityIssueDetail
@@ -1407,8 +2176,223 @@ public sealed class DataIntegrityIssueService
             ExpectedValue = expectedValue,
             Message = message,
             SuggestedAction = definition.SuggestedAction,
-            DirectActionKind = directActionKind
+            DirectActionKind = directActionKind,
+            RelatedEntityIds = relatedEntityIds?.Where(id => id != Guid.Empty).Distinct().ToArray() ?? Array.Empty<Guid>(),
+            ReviewInfo = reviewInfo
         });
+    }
+
+    private async Task<decimal?> RemapItemWarehouseStocksAsync(
+        Guid canonicalItemId,
+        IReadOnlyCollection<Guid> duplicateItemIds,
+        DateTime now,
+        CancellationToken ct)
+    {
+        var duplicateIds = duplicateItemIds
+            .Where(id => id != Guid.Empty && id != canonicalItemId)
+            .Distinct()
+            .ToList();
+        if (duplicateIds.Count == 0)
+            return null;
+
+        var warehouseStocks = await _db.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == canonicalItemId || duplicateIds.Contains(stock.ItemId))
+            .ToListAsync(ct);
+        if (warehouseStocks.Count == 0)
+            return null;
+
+        var canonicalStockLookup = warehouseStocks
+            .Where(stock => stock.ItemId == canonicalItemId)
+            .GroupBy(stock => BuildItemWarehouseStockKey(stock.ItemId, stock.WarehouseCode), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var stock in warehouseStocks.Where(stock => duplicateIds.Contains(stock.ItemId)).ToList())
+        {
+            var stockKey = BuildItemWarehouseStockKey(canonicalItemId, stock.WarehouseCode);
+            if (canonicalStockLookup.TryGetValue(stockKey, out var canonicalStock))
+            {
+                canonicalStock.Quantity += stock.Quantity;
+                canonicalStock.UpdatedAtUtc = now;
+                _db.ItemWarehouseStocks.Remove(stock);
+                continue;
+            }
+
+            var migratedStock = new LocalItemWarehouseStock
+            {
+                ItemId = canonicalItemId,
+                WarehouseCode = stock.WarehouseCode,
+                Quantity = stock.Quantity,
+                UpdatedAtUtc = now
+            };
+            canonicalStockLookup[stockKey] = migratedStock;
+            _db.ItemWarehouseStocks.Add(migratedStock);
+            _db.ItemWarehouseStocks.Remove(stock);
+        }
+
+        return canonicalStockLookup.Values.Sum(stock => stock.Quantity);
+    }
+
+    private static string BuildItemWarehouseStockKey(Guid itemId, string? warehouseCode)
+        => $"{itemId:D}|{(warehouseCode ?? string.Empty).Trim().ToUpperInvariant()}";
+
+    private static bool ShouldReplaceDisplayName(string? currentValue, IEnumerable<string> duplicateValues)
+    {
+        var currentKey = RentalCatalogValueNormalizer.NormalizeLooseKey(currentValue);
+        if (string.IsNullOrWhiteSpace(currentKey))
+            return true;
+
+        return duplicateValues
+            .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Any(value => string.Equals(value, currentKey, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void MergeCustomerValues(LocalCustomer canonical, LocalCustomer duplicate)
+    {
+        FillIfBlank(value => canonical.BusinessNumber = value, canonical.BusinessNumber, duplicate.BusinessNumber);
+        FillIfBlank(value => canonical.Department = value, canonical.Department, duplicate.Department);
+        FillIfBlank(value => canonical.ContactPerson = value, canonical.ContactPerson, duplicate.ContactPerson);
+        FillIfBlank(value => canonical.Address = value, canonical.Address, duplicate.Address);
+        FillIfBlank(value => canonical.DetailAddress = value, canonical.DetailAddress, duplicate.DetailAddress);
+        FillIfBlank(value => canonical.Phone = value, canonical.Phone, duplicate.Phone);
+        FillIfBlank(value => canonical.MobilePhone = value, canonical.MobilePhone, duplicate.MobilePhone);
+        FillIfBlank(value => canonical.FaxNumber = value, canonical.FaxNumber, duplicate.FaxNumber);
+        FillIfBlank(value => canonical.Email = value, canonical.Email, duplicate.Email);
+        FillIfBlank(value => canonical.HomePage = value, canonical.HomePage, duplicate.HomePage);
+        FillIfBlank(value => canonical.Representative = value, canonical.Representative, duplicate.Representative);
+        FillIfBlank(value => canonical.BusinessType = value, canonical.BusinessType, duplicate.BusinessType);
+        FillIfBlank(value => canonical.BusinessItem = value, canonical.BusinessItem, duplicate.BusinessItem);
+        FillIfBlank(value => canonical.Recipient = value, canonical.Recipient, duplicate.Recipient);
+        FillIfBlank(value => canonical.PriceGrade = value, canonical.PriceGrade, duplicate.PriceGrade);
+        FillIfBlank(value => canonical.Notes = value, canonical.Notes, duplicate.Notes);
+        canonical.CategoryId ??= duplicate.CategoryId;
+        canonical.CustomerMasterId ??= duplicate.CustomerMasterId;
+    }
+
+    private static void MergeItemValues(LocalItem canonical, LocalItem duplicate)
+    {
+        FillIfBlank(value => canonical.SpecificationOriginal = value, canonical.SpecificationOriginal, duplicate.SpecificationOriginal);
+        FillIfBlank(value => canonical.CategoryName = value, canonical.CategoryName, duplicate.CategoryName);
+        FillIfBlank(value => canonical.ItemKind = value, canonical.ItemKind, duplicate.ItemKind);
+        FillIfBlank(value => canonical.TrackingType = value, canonical.TrackingType, duplicate.TrackingType);
+        FillIfBlank(value => canonical.Unit = value, canonical.Unit, duplicate.Unit);
+        FillIfBlank(value => canonical.StorageLocation = value, canonical.StorageLocation, duplicate.StorageLocation);
+        FillIfBlank(value => canonical.SimpleMemo = value, canonical.SimpleMemo, duplicate.SimpleMemo);
+        FillIfBlank(value => canonical.SerialNumber = value, canonical.SerialNumber, duplicate.SerialNumber);
+        FillIfBlank(value => canonical.MaterialNumber = value, canonical.MaterialNumber, duplicate.MaterialNumber);
+        FillIfBlank(value => canonical.InstallLocation = value, canonical.InstallLocation, duplicate.InstallLocation);
+        FillIfBlank(value => canonical.Notes = value, canonical.Notes, duplicate.Notes);
+        canonical.BoxQuantity = canonical.BoxQuantity == 0m ? duplicate.BoxQuantity : canonical.BoxQuantity;
+        canonical.SafetyStock = canonical.SafetyStock == 0m ? duplicate.SafetyStock : canonical.SafetyStock;
+        canonical.PurchasePrice = canonical.PurchasePrice == 0m ? duplicate.PurchasePrice : canonical.PurchasePrice;
+        canonical.SalePrice = canonical.SalePrice == 0m ? duplicate.SalePrice : canonical.SalePrice;
+        canonical.RetailPrice = canonical.RetailPrice == 0m ? duplicate.RetailPrice : canonical.RetailPrice;
+        canonical.PriceGradeA = canonical.PriceGradeA == 0m ? duplicate.PriceGradeA : canonical.PriceGradeA;
+        canonical.PriceGradeB = canonical.PriceGradeB == 0m ? duplicate.PriceGradeB : canonical.PriceGradeB;
+        canonical.PriceGradeC = canonical.PriceGradeC == 0m ? duplicate.PriceGradeC : canonical.PriceGradeC;
+        canonical.LastPurchaseDate ??= duplicate.LastPurchaseDate;
+        canonical.LastSaleDate ??= duplicate.LastSaleDate;
+        canonical.RentalStartDate ??= duplicate.RentalStartDate;
+        canonical.RentalEndDate ??= duplicate.RentalEndDate;
+        canonical.IsRental |= duplicate.IsRental;
+        canonical.IsSale |= duplicate.IsSale;
+    }
+
+    private static void FillIfBlank(Action<string> setTarget, string? currentValue, string? sourceValue)
+    {
+        if (!string.IsNullOrWhiteSpace(currentValue) || string.IsNullOrWhiteSpace(sourceValue))
+            return;
+
+        setTarget(sourceValue.Trim());
+    }
+
+    private static void MarkDirty(ILocalSyncEntity entity, DateTime now)
+    {
+        entity.IsDirty = true;
+        entity.UpdatedAtUtc = now;
+    }
+
+    private void AddDuplicateMergeAudit(
+        string entityName,
+        Guid canonicalId,
+        SessionState session,
+        DateTime now,
+        object before,
+        object after)
+    {
+        _db.AuditLogs.Add(new LocalAuditLog
+        {
+            EntityName = entityName,
+            EntityId = canonicalId.ToString("D"),
+            Action = "DataIntegrityDuplicateMerge",
+            Username = session.User?.Username ?? string.Empty,
+            Role = session.User?.Role ?? string.Empty,
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, DomainConstants.OfficeUsenet),
+            BeforeJson = JsonSerializer.Serialize(before, JsonOptions),
+            AfterJson = JsonSerializer.Serialize(after, JsonOptions),
+            CreatedAtUtc = now
+        });
+    }
+
+    private static bool CanEditCustomersForIntegrity(SessionState? session)
+        => session is not null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.CustomerEdit));
+
+    private static bool CanEditItemsForIntegrity(SessionState? session)
+        => session is not null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.ItemEdit));
+
+    private static bool CanWriteCustomerScopeForIntegrity(SessionState? session, string? officeCode, string? tenantCode = null)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return false;
+
+        if (session.HasGlobalDataScope)
+            return true;
+
+        var normalizedOffice = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, DomainConstants.OfficeUsenet);
+        var targetTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, normalizedOffice);
+        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
+        if (!string.Equals(targetTenant, sessionTenant, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return CanWriteOfficeScopeForIntegrity(session, normalizedOffice);
+    }
+
+    private static bool CanWriteItemScopeForIntegrity(SessionState? session, LocalItem item)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return false;
+
+        if (session.HasGlobalDataScope)
+            return true;
+
+        var targetTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(item.TenantCode, item.OfficeCode, session.TenantCode, session.OfficeCode);
+        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
+        if (!string.Equals(targetTenant, sessionTenant, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var targetOffice = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared);
+        return CanWriteOfficeScopeForIntegrity(session, targetOffice);
+    }
+
+    private static bool CanWriteOfficeScopeForIntegrity(SessionState session, string? officeCode)
+    {
+        if (session.HasGlobalDataScope)
+            return true;
+
+        var normalizedOffice = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, string.Empty);
+        if (string.IsNullOrWhiteSpace(normalizedOffice))
+            return false;
+
+        if (string.Equals(normalizedOffice, OfficeCodeCatalog.Shared, StringComparison.OrdinalIgnoreCase))
+            return string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase);
+
+        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
+        var writableOffices = TenantScopeCatalog.ResolveScopedOfficeCodes(
+            session.OfficeCode,
+            sessionTenant,
+            session.ScopeType,
+            session.HasGlobalDataScope);
+        return writableOffices.Contains(normalizedOffice);
     }
 
     private static string ResolveCustomerOfficeCode(LocalCustomer customer)
@@ -1441,6 +2425,50 @@ public sealed class DataIntegrityIssueService
             .Take(6)
             .ToList();
         return string.Join(" / ", rows);
+    }
+
+    private static string ShortId(Guid id)
+        => id.ToString("N")[..8];
+
+    private static int CountFilledCustomerValues(LocalCustomer customer)
+    {
+        var values = new[]
+        {
+            customer.NameOriginal,
+            customer.BusinessNumber,
+            customer.Department,
+            customer.ContactPerson,
+            customer.Address,
+            customer.DetailAddress,
+            customer.Phone,
+            customer.MobilePhone,
+            customer.Email,
+            customer.Representative,
+            customer.BusinessType,
+            customer.BusinessItem,
+            customer.Notes
+        };
+        return values.Count(value => !string.IsNullOrWhiteSpace(value)) + (customer.CategoryId.HasValue ? 1 : 0);
+    }
+
+    private static int CountFilledItemValues(LocalItem item)
+    {
+        var values = new[]
+        {
+            item.NameOriginal,
+            item.SpecificationOriginal,
+            item.CategoryName,
+            item.ItemKind,
+            item.TrackingType,
+            item.Unit,
+            item.StorageLocation,
+            item.SimpleMemo,
+            item.SerialNumber,
+            item.MaterialNumber,
+            item.InstallLocation,
+            item.Notes
+        };
+        return values.Count(value => !string.IsNullOrWhiteSpace(value));
     }
 
     private static string FormatVoucherType(VoucherType voucherType)
@@ -1875,6 +2903,59 @@ public sealed class DataIntegrityIssueService
     private sealed record ParsedTemplateItems(bool Success, List<RentalBillingTemplateItemModel> Items);
 
     private sealed record AssetTemplateReference(Guid ProfileId, string ProfileDisplayName, string ItemName);
+
+    private sealed class CustomerDuplicateUsage
+    {
+        public static CustomerDuplicateUsage Empty { get; } = new();
+
+        public int InvoiceCount { get; set; }
+        public int TransactionCount { get; set; }
+        public int RentalBillingProfileCount { get; set; }
+        public int RentalAssetCount { get; set; }
+        public int RentalAssignmentHistoryCount { get; set; }
+        public int CustomerContractCount { get; set; }
+        public int TotalCount => InvoiceCount +
+                                 TransactionCount +
+                                 RentalBillingProfileCount +
+                                 RentalAssetCount +
+                                 RentalAssignmentHistoryCount +
+                                 CustomerContractCount;
+    }
+
+    private sealed class ItemDuplicateUsage
+    {
+        public static ItemDuplicateUsage Empty { get; } = new();
+
+        public int InvoiceLineCount { get; set; }
+        public int InvoiceLineSerialCount { get; set; }
+        public int RentalAssetCount { get; set; }
+        public int InventoryTransferLineCount { get; set; }
+        public int InventoryMovementCount { get; set; }
+        public int StockLayerCount { get; set; }
+        public int SerialLedgerCount { get; set; }
+        public int ItemWarehouseStockRowCount { get; set; }
+        public decimal ItemWarehouseStockQuantity { get; set; }
+        public int TotalCount => InvoiceLineCount +
+                                 InvoiceLineSerialCount +
+                                 RentalAssetCount +
+                                 InventoryTransferLineCount +
+                                 InventoryMovementCount +
+                                 StockLayerCount +
+                                 SerialLedgerCount +
+                                 ItemWarehouseStockRowCount;
+    }
+
+    private sealed class ReferenceCountRow
+    {
+        public Guid EntityId { get; init; }
+        public int Count { get; init; }
+    }
+
+    private sealed class ItemStockRow
+    {
+        public Guid EntityId { get; init; }
+        public decimal Quantity { get; init; }
+    }
 
     private sealed class IntegrityInvoiceSnapshot
     {

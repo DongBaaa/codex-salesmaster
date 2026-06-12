@@ -169,8 +169,11 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
             "담당지점",
             "현재값",
             "기준값",
+            "판단/참조",
+            "관련 후보 ID",
             "내용",
             "권장 조치",
+            "병합 가능",
             "바로가기"
         };
 
@@ -191,9 +194,12 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
             detailSheet.Cell(detailRow, 9).Value = issue.OfficeCode;
             detailSheet.Cell(detailRow, 10).Value = issue.CurrentValue;
             detailSheet.Cell(detailRow, 11).Value = issue.ExpectedValue;
-            detailSheet.Cell(detailRow, 12).Value = issue.Message;
-            detailSheet.Cell(detailRow, 13).Value = issue.SuggestedAction;
-            detailSheet.Cell(detailRow, 14).Value = issue.DirectActionText;
+            detailSheet.Cell(detailRow, 12).Value = issue.ReviewInfoDisplay;
+            detailSheet.Cell(detailRow, 13).Value = issue.RelatedEntityIdText;
+            detailSheet.Cell(detailRow, 14).Value = issue.Message;
+            detailSheet.Cell(detailRow, 15).Value = issue.SuggestedAction;
+            detailSheet.Cell(detailRow, 16).Value = issue.CanMergeDuplicates ? "가능" : "불가";
+            detailSheet.Cell(detailRow, 17).Value = issue.DirectActionText;
             detailRow++;
         }
 
@@ -248,6 +254,8 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
                 Contains(issue.ItemName, query) ||
                 Contains(issue.AssetDisplayName, query) ||
                 Contains(issue.OfficeCode, query) ||
+                Contains(issue.ReviewInfoDisplay, query) ||
+                Contains(issue.RelatedEntityIdText, query) ||
                 Contains(issue.Message, query));
         }
 
