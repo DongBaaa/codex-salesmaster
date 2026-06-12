@@ -101,6 +101,45 @@ public sealed class DataIntegrityDuplicateMergeTests
     }
 
     [Fact]
+    public async Task ScanAsync_DuplicateCustomerCandidateRequiresExactSameName_NotSameBusinessNumberOnly()
+    {
+        PrepareAppRoot("georaeplan-integrity-customer-exact-name");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.Customers.AddRange(
+                CreateCustomer("61111111-1111-1111-1111-111111111111", "미추홀구 경제지원과", "121-83-00724"),
+                CreateCustomer("62222222-2222-2222-2222-222222222222", "미추홀구 도시정비과", "121-83-00724"),
+                CreateCustomer("63333333-3333-3333-3333-333333333333", "미추홀구 노인장애인복지과", "121-83-00724"),
+                CreateCustomer("64444444-4444-4444-4444-444444444444", "중복거래처", "111-11-11111"),
+                CreateCustomer("65555555-5555-5555-5555-555555555555", "중복거래처", "222-22-22222"));
+            await db.SaveChangesAsync();
+
+            var service = new DataIntegrityIssueService(db, new SyncRequestDispatcher());
+            var scan = await service.ScanAsync(CreateAdminSession());
+
+            var customerIssues = scan.Issues
+                .Where(issue => issue.Code == DataIntegrityIssueCodes.CustomerDuplicateCandidate)
+                .ToList();
+            var issue = Assert.Single(customerIssues);
+            Assert.Equal("중복거래처", issue.CustomerName);
+            Assert.DoesNotContain(customerIssues, current => current.RelatedEntityIds.Any(id =>
+                id == Guid.Parse("61111111-1111-1111-1111-111111111111") ||
+                id == Guid.Parse("62222222-2222-2222-2222-222222222222") ||
+                id == Guid.Parse("63333333-3333-3333-3333-333333333333")));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task MergeDuplicateIssueAsync_ItemMergeMovesReferencesAndAggregatesWarehouseStock()
     {
         PrepareAppRoot("georaeplan-integrity-item-merge");
@@ -220,6 +259,45 @@ public sealed class DataIntegrityDuplicateMergeTests
     }
 
     [Fact]
+    public async Task ScanAsync_ItemDuplicateCandidateRequiresExactSameNameAndSpecification()
+    {
+        PrepareAppRoot("georaeplan-integrity-item-exact-name-spec");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.Items.AddRange(
+                CreateItem("71111111-1111-1111-1111-111111111111", "복합기", "A4", currentStock: 0m),
+                CreateItem("72222222-2222-2222-2222-222222222222", "복합기", "A3", currentStock: 0m),
+                CreateItem("73333333-3333-3333-3333-333333333333", "복 합기", "A4", currentStock: 0m),
+                CreateItem("74444444-4444-4444-4444-444444444444", "중복품목", "동일규격", currentStock: 0m),
+                CreateItem("75555555-5555-5555-5555-555555555555", "중복품목", "동일규격", currentStock: 0m));
+            await db.SaveChangesAsync();
+
+            var service = new DataIntegrityIssueService(db, new SyncRequestDispatcher());
+            var scan = await service.ScanAsync(CreateAdminSession());
+
+            var itemIssues = scan.Issues
+                .Where(issue => issue.Code == DataIntegrityIssueCodes.ItemDuplicateCandidate)
+                .ToList();
+            var issue = Assert.Single(itemIssues);
+            Assert.Equal("중복품목", issue.ItemName);
+            Assert.DoesNotContain(itemIssues, current => current.RelatedEntityIds.Any(id =>
+                id == Guid.Parse("71111111-1111-1111-1111-111111111111") ||
+                id == Guid.Parse("72222222-2222-2222-2222-222222222222") ||
+                id == Guid.Parse("73333333-3333-3333-3333-333333333333")));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public void DataIntegrityIssueWindow_ProvidesHorizontalScrollDecisionInfoAndMergeAction()
     {
         var xaml = File.ReadAllText(Path.Combine(
@@ -251,7 +329,7 @@ public sealed class DataIntegrityDuplicateMergeTests
         Assert.Contains("OpenDataIntegrityFixTargetAsync(args.Issue, window)", source, StringComparison.Ordinal);
     }
 
-    private static LocalCustomer CreateCustomer(string id, string name)
+    private static LocalCustomer CreateCustomer(string id, string name, string businessNumber = "")
         => new()
         {
             Id = Guid.Parse(id),
@@ -260,6 +338,7 @@ public sealed class DataIntegrityDuplicateMergeTests
             ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
             NameOriginal = name,
             NameMatchKey = name,
+            BusinessNumber = businessNumber,
             IsDirty = false
         };
 

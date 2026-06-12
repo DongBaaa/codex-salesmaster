@@ -305,8 +305,8 @@ public sealed class DataIntegrityIssueService
             "거래처 중복 후보",
             "Warning",
             "거래처",
-            "같은 테넌트/담당지점 안에 이름 또는 사업자번호가 같은 거래처가 여러 개 있습니다.",
-            "목록을 확인한 뒤 실제 같은 거래처인 항목만 수동 병합 또는 정리하세요."),
+            "같은 테넌트/담당지점 안에 거래처명이 완전히 동일한 거래처가 여러 개 있습니다.",
+            "목록을 확인한 뒤 실제 같은 거래처인 항목만 병합하거나 사용하지 않는 거래처를 정리하세요."),
         [DataIntegrityIssueCodes.ItemDuplicateCandidate] = new(
             DataIntegrityIssueCodes.ItemDuplicateCandidate,
             "품목 중복 후보",
@@ -901,6 +901,9 @@ public sealed class DataIntegrityIssueService
         if (activeCustomers.Count <= 1)
             return OfficeMutationResult.Missing("활성 거래처 중복 후보가 2건 이상 남아 있지 않습니다. 운영점검을 새로고침하세요.");
 
+        if (!BelongsToSingleExactCustomerDuplicateGroup(activeCustomers))
+            return OfficeMutationResult.Denied("거래처명이 완전히 동일한 후보만 병합할 수 있습니다. 사업자번호만 같거나 이름이 다른 거래처는 병합 대상이 아닙니다.");
+
         foreach (var customer in activeCustomers)
         {
             if (!CanWriteCustomerScopeForIntegrity(session, ResolveCustomerOfficeCode(customer), customer.TenantCode))
@@ -1049,6 +1052,9 @@ public sealed class DataIntegrityIssueService
             .ToList();
         if (activeItems.Count <= 1)
             return OfficeMutationResult.Missing("활성 품목 중복 후보가 2건 이상 남아 있지 않습니다. 운영점검을 새로고침하세요.");
+
+        if (!BelongsToSingleExactItemDuplicateGroup(activeItems))
+            return OfficeMutationResult.Denied("품목명과 규격이 모두 완전히 동일한 후보만 병합할 수 있습니다. 품목명만 같거나 규격이 다른 품목은 병합 대상이 아닙니다.");
 
         foreach (var item in activeItems)
         {
@@ -1734,12 +1740,10 @@ public sealed class DataIntegrityIssueService
                      .Select(customer => new
                      {
                          Customer = customer,
-                         Key = RentalCatalogValueNormalizer.NormalizeLooseKey(customer.NameOriginal),
-                         OfficeCode = ResolveCustomerOfficeCode(customer),
-                         TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, ResolveCustomerOfficeCode(customer))
+                         Key = BuildCustomerExactDuplicateKey(customer)
                      })
                      .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
-                     .GroupBy(entry => $"{entry.TenantCode}|{entry.OfficeCode}|NAME|{entry.Key}", StringComparer.OrdinalIgnoreCase)
+                     .GroupBy(entry => entry.Key, StringComparer.Ordinal)
                      .Where(group => group.Count() > 1))
         {
             var rows = group.Select(entry => entry.Customer).OrderBy(customer => customer.NameOriginal).ToList();
@@ -1750,35 +1754,8 @@ public sealed class DataIntegrityIssueService
                 customerName: rows[0].NameOriginal,
                 officeCode: ResolveCustomerOfficeCode(rows[0]),
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal}({row.Id:N})")),
-                expectedValue: "같은 거래처이면 1건으로 정리",
-                message: $"거래처명 '{rows[0].NameOriginal}' 기준 중복 후보 {rows.Count:N0}건이 있습니다.",
-                directActionKind: DataIntegrityDirectActionKind.OpenCustomer,
-                relatedEntityIds: relatedIds,
-                reviewInfo: BuildCustomerDuplicateReviewInfo(rows, customerDuplicateUsages));
-        }
-
-        foreach (var group in customers
-                     .Select(customer => new
-                     {
-                         Customer = customer,
-                         Key = NormalizeBusinessNumber(customer.BusinessNumber),
-                         OfficeCode = ResolveCustomerOfficeCode(customer),
-                         TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, ResolveCustomerOfficeCode(customer))
-                     })
-                     .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
-                     .GroupBy(entry => $"{entry.TenantCode}|{entry.OfficeCode}|BIZ|{entry.Key}", StringComparer.OrdinalIgnoreCase)
-                     .Where(group => group.Count() > 1))
-        {
-            var rows = group.Select(entry => entry.Customer).OrderBy(customer => customer.NameOriginal).ToList();
-            var relatedIds = rows.Select(row => row.Id).Distinct().ToList();
-            AddGeneralIssue(issues, DataIntegrityIssueCodes.CustomerDuplicateCandidate,
-                entityType: "거래처",
-                entityId: rows[0].Id,
-                customerName: rows[0].NameOriginal,
-                officeCode: ResolveCustomerOfficeCode(rows[0]),
-                currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal} / {row.BusinessNumber}({row.Id:N})")),
-                expectedValue: "같은 사업자이면 1건으로 정리",
-                message: $"사업자번호 '{rows[0].BusinessNumber}' 기준 거래처 중복 후보 {rows.Count:N0}건이 있습니다.",
+                expectedValue: "거래처명이 완전히 같은 경우만 1건으로 정리",
+                message: $"거래처명 '{rows[0].NameOriginal}' 완전 동일 중복 후보 {rows.Count:N0}건이 있습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenCustomer,
                 relatedEntityIds: relatedIds,
                 reviewInfo: BuildCustomerDuplicateReviewInfo(rows, customerDuplicateUsages));
@@ -1788,13 +1765,10 @@ public sealed class DataIntegrityIssueService
                      .Select(item => new
                      {
                          Item = item,
-                         NameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal),
-                         SpecKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.SpecificationOriginal),
-                         OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared),
-                         TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(item.TenantCode, item.OfficeCode)
+                         Key = BuildItemExactDuplicateKey(item)
                      })
-                     .Where(entry => !string.IsNullOrWhiteSpace(entry.NameKey))
-                     .GroupBy(entry => $"{entry.TenantCode}|{entry.OfficeCode}|{entry.NameKey}|{entry.SpecKey}", StringComparer.OrdinalIgnoreCase)
+                     .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
+                     .GroupBy(entry => entry.Key, StringComparer.Ordinal)
                      .Where(group => group.Count() > 1))
         {
             var rows = group.Select(entry => entry.Item).OrderBy(item => item.NameOriginal).ThenBy(item => item.SpecificationOriginal).ToList();
@@ -1805,8 +1779,8 @@ public sealed class DataIntegrityIssueService
                 itemName: rows[0].NameOriginal,
                 officeCode: OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(rows[0].OfficeCode, OfficeCodeCatalog.Shared),
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal} / {row.SpecificationOriginal}({row.Id:N})")),
-                expectedValue: "같은 품목이면 1건으로 정리",
-                message: $"품목 '{rows[0].NameOriginal}' / 규격 '{rows[0].SpecificationOriginal}' 중복 후보 {rows.Count:N0}건이 있습니다.",
+                expectedValue: "품목명과 규격이 모두 완전히 같은 경우만 1건으로 정리",
+                message: $"품목명 '{rows[0].NameOriginal}' / 규격 '{rows[0].SpecificationOriginal}' 완전 동일 중복 후보 {rows.Count:N0}건이 있습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem,
                 relatedEntityIds: relatedIds,
                 reviewInfo: BuildItemDuplicateReviewInfo(rows, itemDuplicateUsages));
@@ -1944,28 +1918,10 @@ public sealed class DataIntegrityIssueService
                      .Select(customer => new
                      {
                          Customer = customer,
-                         Key = RentalCatalogValueNormalizer.NormalizeLooseKey(customer.NameOriginal),
-                         OfficeCode = ResolveCustomerOfficeCode(customer),
-                         TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, ResolveCustomerOfficeCode(customer))
+                         Key = BuildCustomerExactDuplicateKey(customer)
                      })
                      .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
-                     .GroupBy(entry => $"{entry.TenantCode}|{entry.OfficeCode}|NAME|{entry.Key}", StringComparer.OrdinalIgnoreCase)
-                     .Where(group => group.Count() > 1))
-        {
-            foreach (var entry in group)
-                ids.Add(entry.Customer.Id);
-        }
-
-        foreach (var group in customers
-                     .Select(customer => new
-                     {
-                         Customer = customer,
-                         Key = NormalizeBusinessNumber(customer.BusinessNumber),
-                         OfficeCode = ResolveCustomerOfficeCode(customer),
-                         TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, ResolveCustomerOfficeCode(customer))
-                     })
-                     .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
-                     .GroupBy(entry => $"{entry.TenantCode}|{entry.OfficeCode}|BIZ|{entry.Key}", StringComparer.OrdinalIgnoreCase)
+                     .GroupBy(entry => entry.Key, StringComparer.Ordinal)
                      .Where(group => group.Count() > 1))
         {
             foreach (var entry in group)
@@ -1982,13 +1938,10 @@ public sealed class DataIntegrityIssueService
                      .Select(item => new
                      {
                          Item = item,
-                         NameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal),
-                         SpecKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.SpecificationOriginal),
-                         OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared),
-                         TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(item.TenantCode, item.OfficeCode)
+                         Key = BuildItemExactDuplicateKey(item)
                      })
-                     .Where(entry => !string.IsNullOrWhiteSpace(entry.NameKey))
-                     .GroupBy(entry => $"{entry.TenantCode}|{entry.OfficeCode}|{entry.NameKey}|{entry.SpecKey}", StringComparer.OrdinalIgnoreCase)
+                     .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
+                     .GroupBy(entry => entry.Key, StringComparer.Ordinal)
                      .Where(group => group.Count() > 1))
         {
             foreach (var entry in group)
@@ -1996,6 +1949,53 @@ public sealed class DataIntegrityIssueService
         }
 
         return ids.ToList();
+    }
+
+    private static bool BelongsToSingleExactCustomerDuplicateGroup(IReadOnlyCollection<LocalCustomer> customers)
+    {
+        var groups = customers
+            .Select(BuildCustomerExactDuplicateKey)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return groups.Count == 1;
+    }
+
+    private static bool BelongsToSingleExactItemDuplicateGroup(IReadOnlyCollection<LocalItem> items)
+    {
+        var groups = items
+            .Select(BuildItemExactDuplicateKey)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return groups.Count == 1;
+    }
+
+    private static string BuildCustomerExactDuplicateKey(LocalCustomer customer)
+    {
+        var customerName = NormalizeExactDuplicateText(customer.NameOriginal);
+        if (string.IsNullOrWhiteSpace(customerName))
+            return string.Empty;
+
+        var officeCode = ResolveCustomerOfficeCode(customer);
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, officeCode);
+        return string.Join('|',
+            tenantCode,
+            officeCode,
+            customerName);
+    }
+
+    private static string BuildItemExactDuplicateKey(LocalItem item)
+    {
+        var itemName = NormalizeExactDuplicateText(item.NameOriginal);
+        if (string.IsNullOrWhiteSpace(itemName))
+            return string.Empty;
+
+        return string.Join('|',
+            TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(item.TenantCode, item.OfficeCode),
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared),
+            itemName,
+            NormalizeExactDuplicateText(item.SpecificationOriginal));
     }
 
     private static string BuildCustomerDuplicateReviewInfo(
@@ -2411,10 +2411,8 @@ public sealed class DataIntegrityIssueService
         };
     }
 
-    private static string NormalizeBusinessNumber(string? value)
-        => string.IsNullOrWhiteSpace(value)
-            ? string.Empty
-            : new string(value.Where(char.IsDigit).ToArray());
+    private static string NormalizeExactDuplicateText(string? value)
+        => (value ?? string.Empty).Trim();
 
     private static string BuildDuplicateDisplay(IEnumerable<string> values)
     {
