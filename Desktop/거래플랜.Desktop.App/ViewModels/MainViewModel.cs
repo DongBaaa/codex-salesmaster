@@ -872,6 +872,7 @@ public sealed partial class MainViewModel : ObservableObject
         _invoiceListLoadCts = loadCts;
         var ct = loadCts.Token;
         var gateEntered = false;
+        var previouslySelectedInvoiceId = SelectedInvoiceRow?.Id;
 
         try
         {
@@ -938,6 +939,7 @@ public sealed partial class MainViewModel : ObservableObject
                 return InvoiceListRow.From(inv, custName, showCustomerName);
             }).ToList();
             InvoiceRows.ReplaceWith(rows);
+            RestoreSelectedInvoiceAfterListReload(previouslySelectedInvoiceId);
 
             await RefreshDashboardMetricsAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct);
             await LoadInvoiceFavoritesAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct);
@@ -955,6 +957,27 @@ public sealed partial class MainViewModel : ObservableObject
                 _invoiceListLoadCts = null;
             loadCts.Dispose();
         }
+    }
+
+    private void RestoreSelectedInvoiceAfterListReload(Guid? previouslySelectedInvoiceId)
+    {
+        if (!previouslySelectedInvoiceId.HasValue)
+        {
+            if (SelectedInvoiceRow is not null && !InvoiceRows.Any(row => row.Id == SelectedInvoiceRow.Id))
+                SelectedInvoiceRow = null;
+            return;
+        }
+
+        var refreshedSelection = InvoiceRows.FirstOrDefault(row => row.Id == previouslySelectedInvoiceId.Value);
+        if (refreshedSelection is not null)
+        {
+            if (!ReferenceEquals(SelectedInvoiceRow, refreshedSelection))
+                SelectedInvoiceRow = refreshedSelection;
+            return;
+        }
+
+        if (SelectedInvoiceRow is not null)
+            SelectedInvoiceRow = null;
     }
 
     private async Task<Dictionary<Guid, string>> BuildInvoiceCustomerNameMapAsync(IEnumerable<LocalInvoiceListSummary> invoices, CancellationToken ct)

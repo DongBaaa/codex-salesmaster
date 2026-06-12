@@ -314,6 +314,119 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task MainViewModel_LoadInvoiceListAsync_KeepsSelectedInvoiceAfterListRefresh()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-main-selection-probe-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var officeAccess = new OfficeAccessService();
+            var dispatcher = new SyncRequestDispatcher();
+            var diagnostics = new SyncDiagnosticsService(session);
+            var localState = new LocalStateService(db, officeAccess, dispatcher, session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+            var viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
+
+            var customerId = Guid.Parse("92333333-3333-3333-3333-333333333333");
+            var selectedInvoiceId = Guid.Parse("92444444-4444-4444-4444-444444444444");
+            var newInvoiceId = Guid.Parse("92555555-5555-5555-5555-555555555555");
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "선택 유지 검증 거래처",
+                NameMatchKey = "SELECTIONSTABLECUSTOMER",
+                IsDeleted = false
+            });
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = selectedInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-1)),
+                InvoiceNumber = "KEEP-SELECTION-001",
+                TotalAmount = 110_000m,
+                SupplyAmount = 100_000m,
+                VatAmount = 10_000m,
+                IsLatestVersion = true,
+                IsConfirmed = true,
+                IsDeleted = false,
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemNameOriginal = "선택 유지 기존 품목",
+                        Quantity = 1m,
+                        UnitPrice = 110_000m,
+                        LineAmount = 110_000m,
+                        IsDeleted = false
+                    }
+                }
+            });
+            await db.SaveChangesAsync();
+
+            await viewModel.LoadAsync();
+            var selectedBeforeRefresh = Assert.Single(viewModel.InvoiceRows);
+            viewModel.SelectedInvoiceRow = selectedBeforeRefresh;
+
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = newInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = DateOnly.FromDateTime(DateTime.Today),
+                InvoiceNumber = "KEEP-SELECTION-002",
+                TotalAmount = 220_000m,
+                SupplyAmount = 200_000m,
+                VatAmount = 20_000m,
+                IsLatestVersion = true,
+                IsConfirmed = true,
+                IsDeleted = false,
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemNameOriginal = "동기화 신규 품목",
+                        Quantity = 1m,
+                        UnitPrice = 220_000m,
+                        LineAmount = 220_000m,
+                        IsDeleted = false
+                    }
+                }
+            });
+            await db.SaveChangesAsync();
+
+            await viewModel.LoadInvoiceListCommand.ExecuteAsync(null);
+
+            Assert.Equal(2, viewModel.InvoiceRows.Count);
+            Assert.NotNull(viewModel.SelectedInvoiceRow);
+            Assert.Equal(selectedInvoiceId, viewModel.SelectedInvoiceRow.Id);
+            Assert.NotSame(selectedBeforeRefresh, viewModel.SelectedInvoiceRow);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task MainViewModel_PostLoginSyncSkip_ChecksServerRevisionBeforeSkippingRecentSync()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-post-login-revision-probe-" + Guid.NewGuid().ToString("N"));
