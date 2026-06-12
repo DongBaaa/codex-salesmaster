@@ -645,12 +645,109 @@ public sealed partial class EnvironmentSettingsViewModel
         if (owner is not null)
             window.Owner = owner;
 
+        window.FixRequested += (_, args) =>
+        {
+            _ = OpenDataIntegrityFixTargetAsync(args.Issue, window)
+                .ContinueWith(task =>
+                {
+                    if (task.Exception is null)
+                        return;
+
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        MessageBox.Show(
+                            window,
+                            $"운영점검 수정 화면을 열지 못했습니다.{Environment.NewLine}{task.Exception.GetBaseException().Message}",
+                            "운영 점검",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    });
+                }, TaskScheduler.Default);
+        };
+
+        window.MergeRequested += (_, args) =>
+        {
+            _ = MergeDataIntegrityDuplicateAsync(args.Issue, viewModel, window)
+                .ContinueWith(task =>
+                {
+                    if (task.Exception is null)
+                        return;
+
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        MessageBox.Show(
+                            window,
+                            $"운영점검 중복 병합을 실행하지 못했습니다.{Environment.NewLine}{task.Exception.GetBaseException().Message}",
+                            "운영 점검",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    });
+                }, TaskScheduler.Default);
+        };
+
         if (window.ShowDialog() == true && window.RequestedIssue is not null)
             await OpenDataIntegrityFixTargetAsync(window.RequestedIssue, ownerOverride);
         else
             StatusMessage = string.IsNullOrWhiteSpace(initialCode)
                 ? "운영 점검 상세 창을 열었습니다."
                 : "선택한 운영 점검 유형 상세를 열었습니다.";
+    }
+
+    private async Task MergeDataIntegrityDuplicateAsync(
+        DataIntegrityIssueDetail issue,
+        DataIntegrityIssueViewModel viewModel,
+        Window owner)
+    {
+        if (!issue.CanMergeDuplicates)
+        {
+            MessageBox.Show(
+                owner,
+                "선택 항목은 자동 병합 대상이 아닙니다. 판단 정보를 확인한 뒤 원본 화면에서 수동 정리하세요.",
+                "운영 점검",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var response = MessageBox.Show(
+            owner,
+            $"선택한 중복 후보를 대표 항목 1건으로 병합합니다.{Environment.NewLine}{Environment.NewLine}" +
+            $"{issue.ReviewInfoDisplay}{Environment.NewLine}{Environment.NewLine}" +
+            "병합 후 참조 전표/렌탈/재고 내역은 대표 항목으로 이동하고 나머지 후보는 삭제 처리됩니다. 계속할까요?",
+            "운영 점검 중복 병합",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (response != MessageBoxResult.Yes)
+            return;
+
+        viewModel.StatusMessage = "중복 후보를 병합하는 중입니다.";
+        var result = await _dataIntegrity.MergeDuplicateIssueAsync(issue, _session);
+        if (!result.Success)
+        {
+            viewModel.StatusMessage = result.Message;
+            MessageBox.Show(
+                owner,
+                result.Message,
+                "운영 점검 중복 병합",
+                MessageBoxButton.OK,
+                result.PermissionDenied ? MessageBoxImage.Warning : MessageBoxImage.Information);
+            return;
+        }
+
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+        var message = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
+        viewModel.StatusMessage = message;
+        StatusMessage = message;
+        await viewModel.RefreshAsync();
+        if (!string.IsNullOrWhiteSpace(message))
+            viewModel.StatusMessage = message;
+
+        MessageBox.Show(
+            owner,
+            message,
+            "운영 점검 중복 병합",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private async Task OpenDataIntegrityFixTargetAsync(DataIntegrityIssueDetail issue, Window? ownerOverride = null)

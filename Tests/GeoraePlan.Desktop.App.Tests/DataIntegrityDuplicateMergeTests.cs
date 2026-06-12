@@ -235,6 +235,22 @@ public sealed class DataIntegrityDuplicateMergeTests
         Assert.Contains("MergeSelectedButton_Click", xaml, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void EnvironmentSettingsDataIntegrityWindow_WiresFixAndMergeHandlers()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "ViewModels",
+            "EnvironmentSettingsViewModel.Sync.cs"));
+
+        Assert.Contains("window.FixRequested +=", source, StringComparison.Ordinal);
+        Assert.Contains("window.MergeRequested +=", source, StringComparison.Ordinal);
+        Assert.Contains("MergeDataIntegrityDuplicateAsync(args.Issue, viewModel, window)", source, StringComparison.Ordinal);
+        Assert.Contains("OpenDataIntegrityFixTargetAsync(args.Issue, window)", source, StringComparison.Ordinal);
+    }
+
     private static LocalCustomer CreateCustomer(string id, string name)
         => new()
         {
