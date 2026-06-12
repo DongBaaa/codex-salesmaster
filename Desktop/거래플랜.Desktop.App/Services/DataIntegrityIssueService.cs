@@ -776,6 +776,12 @@ public sealed class DataIntegrityIssueService
 
         LogIntegrityScanStep("Integrity scan rental issues", stepStopwatch, $"issues={details.Count:N0}");
 
+        stepStopwatch.Restart();
+        details = details
+            .Where(issue => IsIssueInSessionScope(issue, session))
+            .ToList();
+        LogIntegrityScanStep("Integrity scan final account scope filter", stepStopwatch, $"issues={details.Count:N0}");
+
         var summaries = details
             .GroupBy(issue => issue.Code, StringComparer.OrdinalIgnoreCase)
             .Select(group =>
@@ -1648,6 +1654,9 @@ public sealed class DataIntegrityIssueService
         return offices.Contains(normalizedOffice);
     }
 
+    private static bool IsIssueInSessionScope(DataIntegrityIssueDetail issue, SessionState session)
+        => IsInSessionScope(null, issue.OfficeCode, session);
+
     private static HashSet<string> ResolveOperationalAlertOfficeCodes(SessionState session, string? normalizedTenantCode = null)
     {
         var sessionOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, DomainConstants.OfficeUsenet);
@@ -1672,8 +1681,7 @@ public sealed class DataIntegrityIssueService
 
         return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            OfficeCodeCatalog.Usenet,
-            OfficeCodeCatalog.Yeonsu
+            OfficeCodeCatalog.Usenet
         };
     }
 

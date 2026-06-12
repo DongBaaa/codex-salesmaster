@@ -1938,6 +1938,53 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task LocalStateService_BuildIntegrityReport_UsenetLoginExcludesYeonsuOnlyRentalOrphans()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-integrity-usenet-office-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = Guid.Parse("92911111-1111-1111-1111-111111111111"),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                AssetKey = "YEONSU|ORPHAN|ASSET",
+                CustomerId = Guid.Parse("92922222-2222-2222-2222-222222222222"),
+                ItemId = Guid.Parse("92933333-3333-3333-3333-333333333333"),
+                CustomerName = "YEONSU Only Customer",
+                CurrentCustomerName = "YEONSU Only Customer",
+                ItemName = "YEONSU Only Item",
+                MachineNumber = "YEONSU-ORPHAN",
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), CreateAdminSession());
+            var usenetReport = await service.BuildIntegrityReportAsync(CreateAdminSession());
+            var yeonsuReport = await service.BuildIntegrityReportAsync(CreateYeonsuAdminSession());
+
+            Assert.DoesNotContain(usenetReport.Issues, issue => issue.Code == "orphan_rental_asset_customer_refs");
+            Assert.DoesNotContain(usenetReport.Issues, issue => issue.Code == "orphan_rental_asset_item_refs");
+            Assert.Contains(yeonsuReport.Issues, issue => issue.Code == "orphan_rental_asset_customer_refs" && issue.Count == 1);
+            Assert.Contains(yeonsuReport.Issues, issue => issue.Code == "orphan_rental_asset_item_refs" && issue.Count == 1);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public void RentalAssetLinkDialog_SelectionCheckbox_UpdatesSourceImmediately()
     {
         var xamlPath = Path.Combine(
@@ -4720,6 +4767,32 @@ public sealed class LocalStateServicePartialsTests
             MonthlyFee = monthlyFee
         };
 
+    private static LocalRentalAsset CreateZeroFeeRentalAsset(
+        Guid assetId,
+        string officeCode,
+        string tenantCode,
+        string label)
+        => new()
+        {
+            Id = assetId,
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            ManagementCompanyCode = officeCode,
+            AssetKey = $"{officeCode}|ZERO-FEE|{assetId:N}",
+            CustomerName = $"{label} Customer",
+            CurrentCustomerName = $"{label} Customer",
+            InstallSiteName = $"{label} Site",
+            InstallLocation = $"{label} Site",
+            ItemName = $"{label} Printer",
+            ManagementNumber = $"{label}-ZERO",
+            MachineNumber = $"{label}-ZERO-SN",
+            AssetStatus = "임대",
+            BillingEligibilityStatus = "청구대상",
+            MonthlyFee = 0m,
+            IsDirty = false
+        };
+
     [Fact]
     public async Task LocalDbInitializer_RepairRentalCustomerLinkage_NormalizesItworldScope_AndKeepsYeonsuScope()
     {
@@ -5309,6 +5382,50 @@ public sealed class LocalStateServicePartialsTests
                 issue.Code == DataIntegrityIssueCodes.RentalBillableAssetWithoutMonthlyFee &&
                 issue.AssetId == yeonsuAssetId);
             Assert.Equal(OfficeCodeCatalog.Yeonsu, yeonsuIssue.OfficeCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task DataIntegrityIssueService_ScanAsync_UsenetSessionShowsOnlyUsenetAlerts()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-data-integrity-usenet-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetAssetId = Guid.Parse("83311111-1111-1111-1111-111111111111");
+            var yeonsuAssetId = Guid.Parse("83322222-2222-2222-2222-222222222222");
+            var itworldAssetId = Guid.Parse("83333333-3333-3333-3333-333333333333");
+
+            db.RentalAssets.AddRange(
+                CreateZeroFeeRentalAsset(usenetAssetId, OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup, "USENET"),
+                CreateZeroFeeRentalAsset(yeonsuAssetId, OfficeCodeCatalog.Yeonsu, TenantScopeCatalog.UsenetGroup, "YEONSU"),
+                CreateZeroFeeRentalAsset(itworldAssetId, OfficeCodeCatalog.Itworld, TenantScopeCatalog.Itworld, "ITWORLD"));
+            await db.SaveChangesAsync();
+
+            var service = new DataIntegrityIssueService(db);
+            var result = await service.ScanAsync(CreateAdminSession());
+
+            var zeroFeeIssues = result.Issues
+                .Where(issue => issue.Code == DataIntegrityIssueCodes.RentalBillableAssetWithoutMonthlyFee)
+                .ToList();
+            var issue = Assert.Single(zeroFeeIssues);
+            Assert.Equal(usenetAssetId, issue.AssetId);
+            Assert.Equal(OfficeCodeCatalog.Usenet, issue.OfficeCode);
+            Assert.DoesNotContain(result.Issues, issue => issue.AssetId == yeonsuAssetId || issue.AssetId == itworldAssetId);
+            Assert.DoesNotContain(result.Issues, issue =>
+                string.Equals(issue.OfficeCode, OfficeCodeCatalog.Yeonsu, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(issue.OfficeCode, OfficeCodeCatalog.Itworld, StringComparison.OrdinalIgnoreCase));
         }
         finally
         {

@@ -677,7 +677,7 @@ public sealed partial class LocalStateService
             return [OfficeCodeCatalog.Yeonsu];
         }
 
-        return [OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Yeonsu];
+        return [OfficeCodeCatalog.Usenet];
     }
 
     private static List<string> ResolveIntegrityWarehouseCodes(IReadOnlyCollection<string> officeCodes)
