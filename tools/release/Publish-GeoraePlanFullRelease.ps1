@@ -101,6 +101,11 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = Resolve-ProjectRoot -ScriptPath $MyInvocation.MyCommand.Path
 }
 
+$tempInitializer = Join-Path $ProjectRoot 'tools\common\Initialize-GeoraePlanTemp.ps1'
+if (Test-Path -LiteralPath $tempInitializer) {
+    . $tempInitializer -ProjectRoot $ProjectRoot
+}
+
 if ([string]::IsNullOrWhiteSpace($SigningConfigPath)) {
     $SigningConfigPath = Join-Path $ProjectRoot 'Mobile\GeoraePlan.Mobile.App\android-signing.local.json'
 }

@@ -287,6 +287,11 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = (Resolve-Path (Join-Path $scriptRoot '..\..')).Path
 }
 
+$tempInitializer = Join-Path $ProjectRoot 'tools\common\Initialize-GeoraePlanTemp.ps1'
+if (Test-Path -LiteralPath $tempInitializer) {
+    . $tempInitializer -ProjectRoot $ProjectRoot
+}
+
 $dotnetExe = Resolve-DotnetCommand -ProjectRoot $ProjectRoot
 $env:DOTNET_EXE = $dotnetExe
 

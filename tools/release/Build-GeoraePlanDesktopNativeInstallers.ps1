@@ -569,11 +569,12 @@ internal static class Program
     private const string InstallFolderName = "tradeplan";
     private const string AppExeName = "거래플랜.exe";
     private const string AppShortcutName = "거래플랜";
+    private const string TempRootOverrideEnvironmentKey = "GEORAEPLAN_TEMP_ROOT";
 
     [STAThread]
     private static int Main(string[] args)
     {
-        var tempRoot = Path.Combine(Path.GetTempPath(), "TradePlanInstaller");
+        var tempRoot = Path.Combine(ResolveWorkTempRoot(), "TradePlanInstaller");
         Directory.CreateDirectory(tempRoot);
         var packagePath = Path.Combine(tempRoot, "tradeplan-installer.msi");
 
@@ -702,6 +703,53 @@ internal static class Program
         shortcut.IconLocation = exePath;
         shortcut.Save();
     }
+
+    private static string ResolveWorkTempRoot()
+    {
+        var candidates = new[]
+        {
+            Environment.GetEnvironmentVariable(TempRootOverrideEnvironmentKey),
+            Path.Combine("D:\\", "거래플랜", "temp"),
+            Path.GetTempPath()
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (TryPrepareWritableDirectory(candidate, out var resolvedPath))
+            {
+                Environment.SetEnvironmentVariable(TempRootOverrideEnvironmentKey, resolvedPath);
+                Environment.SetEnvironmentVariable("TEMP", resolvedPath);
+                Environment.SetEnvironmentVariable("TMP", resolvedPath);
+                return resolvedPath;
+            }
+        }
+
+        return Path.GetTempPath();
+    }
+
+    private static bool TryPrepareWritableDirectory(string? path, out string resolvedPath)
+    {
+        resolvedPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            resolvedPath = Path.GetFullPath(path);
+            Directory.CreateDirectory(resolvedPath);
+            var probePath = Path.Combine(resolvedPath, $".write-test-{Environment.ProcessId}-{Guid.NewGuid():N}.tmp");
+            File.WriteAllText(probePath, string.Empty);
+            File.Delete(probePath);
+            return true;
+        }
+        catch
+        {
+            resolvedPath = string.Empty;
+            return false;
+        }
+    }
 }
 '@
 
@@ -793,6 +841,11 @@ function Remove-OldVersionedInstallerArchives {
 
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = (Resolve-Path (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\..')).Path
+}
+
+$tempInitializer = Join-Path $ProjectRoot 'tools\common\Initialize-GeoraePlanTemp.ps1'
+if (Test-Path -LiteralPath $tempInitializer) {
+    . $tempInitializer -ProjectRoot $ProjectRoot
 }
 
 if ([string]::IsNullOrWhiteSpace($AppDisplayName)) {

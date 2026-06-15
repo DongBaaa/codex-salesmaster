@@ -463,7 +463,7 @@ public sealed class DesktopAppUpdateService
     {
         var directoryPath = Path.GetDirectoryName(targetPath);
         if (string.IsNullOrWhiteSpace(directoryPath))
-            directoryPath = Path.GetTempPath();
+            directoryPath = AppPaths.TempDir;
 
         return Path.Combine(
             directoryPath,
@@ -504,8 +504,7 @@ public sealed class DesktopAppUpdateService
             shaPrefix = "unknown";
 
         return Path.Combine(
-            Path.GetTempPath(),
-            "GeoraePlan",
+            GetUpdateArtifactRoot(),
             "prepared-updates",
             $"{version}-{SanitizePathSegment(shaPrefix)}");
     }
@@ -582,7 +581,7 @@ public sealed class DesktopAppUpdateService
         if (string.IsNullOrWhiteSpace(updaterDirectory) || !Directory.Exists(updaterDirectory))
             return updaterPath;
 
-        var stagingRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan", "updater-run", DateTime.Now.ToString("yyyyMMdd_HHmmss_fff"));
+        var stagingRoot = Path.Combine(GetUpdateArtifactRoot(), "updater-run", DateTime.Now.ToString("yyyyMMdd_HHmmss_fff"));
         Directory.CreateDirectory(stagingRoot);
 
         foreach (var file in Directory.EnumerateFiles(updaterDirectory))
@@ -727,7 +726,7 @@ public sealed class DesktopAppUpdateService
         if (packageBytes <= 0)
             return;
 
-        var tempRoot = Path.GetTempPath();
+        var tempRoot = AppPaths.TempDir;
         var tempDrive = GetDriveInfo(tempRoot);
         var installDrive = GetDriveInfo(installRoot);
 
@@ -776,10 +775,17 @@ public sealed class DesktopAppUpdateService
 
     public static void TryCleanupStaleUpdateArtifacts()
     {
-        var georaePlanTempRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan");
+        var georaePlanTempRoot = GetUpdateArtifactRoot();
         TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "prepared-updates"));
         TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "updates"));
         TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "updater-run"));
+    }
+
+    private static string GetUpdateArtifactRoot()
+    {
+        var root = Path.Combine(AppPaths.TempDir, "GeoraePlan");
+        Directory.CreateDirectory(root);
+        return root;
     }
 
     private static void TryCleanupChildDirectories(string rootPath)

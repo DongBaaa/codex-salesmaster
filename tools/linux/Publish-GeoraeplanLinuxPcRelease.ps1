@@ -479,6 +479,10 @@ function Update-PublishedAppSettings {
 
 Assert-SafeReleaseId -Value $ReleaseId
 $ProjectRoot = Resolve-ProjectRoot -ExplicitProjectRoot $ProjectRoot
+$tempInitializer = Join-Path $ProjectRoot 'tools\common\Initialize-GeoraePlanTemp.ps1'
+if (Test-Path -LiteralPath $tempInitializer) {
+    . $tempInitializer -ProjectRoot $ProjectRoot
+}
 $dotnetExe = Resolve-DotnetCommand -Root $ProjectRoot
 $env:DOTNET_EXE = $dotnetExe
 $linuxConfig = New-LinuxSshConfig `

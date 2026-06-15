@@ -14,6 +14,7 @@ internal static class Program
 {
     private const long MinimumUpdaterWorkBytes = 512L * 1024 * 1024;
     private const long InstallBufferBytes = 256L * 1024 * 1024;
+    private const string TempRootOverrideEnvironmentKey = "GEORAEPLAN_TEMP_ROOT";
     private static readonly TimeSpan UpdateArtifactRetention = TimeSpan.FromDays(3);
     private static readonly TimeSpan ProcessExitGracePeriod = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan ProcessCloseWindowGracePeriod = TimeSpan.FromSeconds(15);
@@ -65,7 +66,7 @@ internal static class Program
     {
         TryCleanupStaleUpdateArtifacts();
 
-        var workRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan", "updates", DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        var workRoot = Path.Combine(GetUpdateArtifactRoot(), "updates", DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         Directory.CreateDirectory(workRoot);
         _sessionLogPath = Path.Combine(workRoot, "update.log");
         TryLog($"START version={options.Version} package={options.PackageUrl} preparedPackage={options.PackagePath}");
@@ -487,10 +488,63 @@ internal static class Program
 
     private static void TryCleanupStaleUpdateArtifacts()
     {
-        var georaePlanTempRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan");
+        var georaePlanTempRoot = GetUpdateArtifactRoot();
         TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "prepared-updates"));
         TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "updates"));
         TryCleanupChildDirectories(Path.Combine(georaePlanTempRoot, "updater-run"));
+    }
+
+    private static string GetUpdateArtifactRoot()
+    {
+        var root = Path.Combine(ResolveWorkTempRoot(), "GeoraePlan");
+        Directory.CreateDirectory(root);
+        return root;
+    }
+
+    private static string ResolveWorkTempRoot()
+    {
+        var candidates = new[]
+        {
+            Environment.GetEnvironmentVariable(TempRootOverrideEnvironmentKey),
+            Path.Combine("D:\\", "거래플랜", "temp"),
+            Path.GetTempPath()
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (TryPrepareWritableDirectory(candidate, out var resolvedPath))
+            {
+                Environment.SetEnvironmentVariable(TempRootOverrideEnvironmentKey, resolvedPath);
+                Environment.SetEnvironmentVariable("TEMP", resolvedPath);
+                Environment.SetEnvironmentVariable("TMP", resolvedPath);
+                return resolvedPath;
+            }
+        }
+
+        return Path.GetTempPath();
+    }
+
+    private static bool TryPrepareWritableDirectory(string? path, out string resolvedPath)
+    {
+        resolvedPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        try
+        {
+            resolvedPath = Path.GetFullPath(path);
+            Directory.CreateDirectory(resolvedPath);
+
+            var probePath = Path.Combine(resolvedPath, $".write-test-{Environment.ProcessId}-{Guid.NewGuid():N}.tmp");
+            File.WriteAllText(probePath, string.Empty);
+            File.Delete(probePath);
+            return true;
+        }
+        catch
+        {
+            resolvedPath = string.Empty;
+            return false;
+        }
     }
 
     private static void TryCleanupChildDirectories(string rootPath)
@@ -530,7 +584,7 @@ internal static class Program
         if (parentDirectory is null || !string.Equals(parentDirectory.Name, "updater-run", StringComparison.OrdinalIgnoreCase))
             return null;
 
-        var expectedRoot = Path.Combine(Path.GetTempPath(), "GeoraePlan").TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var expectedRoot = GetUpdateArtifactRoot().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var actualRoot = parentDirectory.Parent?.FullName?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         if (!string.Equals(actualRoot, expectedRoot, StringComparison.OrdinalIgnoreCase))
             return null;
