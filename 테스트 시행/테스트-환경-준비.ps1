@@ -219,7 +219,7 @@ function Build-ChangedFilesMarkdown {
     [void]$builder.AppendLine('## 확인 메모')
     [void]$builder.AppendLine()
     [void]$builder.AppendLine('- 위 파일이 이번 테스트 대상입니다.')
-    [void]$builder.AppendLine('- 테스트 완료 전에는 NAS/Git 반영을 진행하지 않습니다.')
+    [void]$builder.AppendLine('- 테스트 완료 전에는 Linux PC/Git 반영을 진행하지 않습니다.')
     return $builder.ToString().TrimEnd()
 }
 

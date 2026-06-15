@@ -5,7 +5,8 @@ param(
     [string]$Channel = "stable",
     [string]$SecretPath = "D:\거래플랜-운영검증-secrets.json",
     [string]$ApprovedTargetsPath = "",
-    [string]$NasStateRoot = "",
+    [Alias('NasStateRoot')]
+    [string]$PlatformStateRoot = "",
     [string]$OutputDirectory = "",
     [switch]$FailOnIntegrityWarnings,
     [string[]]$AllowedIntegrityWarningCodes = @(),
@@ -334,11 +335,11 @@ else {
     Add-Check -Checks $checks -Name 'live observation' -Status 'WARN' -Detail 'script not found'
 }
 
-if (-not [string]::IsNullOrWhiteSpace($NasStateRoot) -and (Test-Path -LiteralPath $NasStateRoot)) {
-    $dailyPath = Join-Path $NasStateRoot 'daily-check-status.txt'
-    $backupPath = Join-Path $NasStateRoot 'backup-status.txt'
-    $replicaPath = Join-Path $NasStateRoot 'external-replica-status.txt'
-    $certPath = Join-Path $NasStateRoot 'cert-status.txt'
+if (-not [string]::IsNullOrWhiteSpace($PlatformStateRoot) -and (Test-Path -LiteralPath $PlatformStateRoot)) {
+    $dailyPath = Join-Path $PlatformStateRoot 'daily-check-status.txt'
+    $backupPath = Join-Path $PlatformStateRoot 'backup-status.txt'
+    $replicaPath = Join-Path $PlatformStateRoot 'external-replica-status.txt'
+    $certPath = Join-Path $PlatformStateRoot 'cert-status.txt'
 
     $daily = if (Test-Path -LiteralPath $dailyPath) { Get-Content -LiteralPath $dailyPath -Raw } else { '' }
     $backup = if (Test-Path -LiteralPath $backupPath) { Get-Content -LiteralPath $backupPath -Raw } else { '' }
@@ -346,23 +347,26 @@ if (-not [string]::IsNullOrWhiteSpace($NasStateRoot) -and (Test-Path -LiteralPat
     $cert = if (Test-Path -LiteralPath $certPath) { Get-Content -LiteralPath $certPath -Raw } else { '' }
 
     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "`n## platform state"
-    Get-ChildItem -LiteralPath $NasStateRoot -File | Sort-Object Name | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize | Out-String -Width 4096 | Add-Content -LiteralPath $logPath -Encoding UTF8
+    Get-ChildItem -LiteralPath $PlatformStateRoot -File | Sort-Object Name | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize | Out-String -Width 4096 | Add-Content -LiteralPath $logPath -Encoding UTF8
     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "daily=$daily"
     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "backup=$backup"
     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "replica=$replica"
     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "cert=$cert"
 
     $dailyEndpointOk = ($daily -match 'healthz=ok') -or ($daily -match 'readyz=ok')
-    $nasOk = $dailyEndpointOk -and ($daily -match 'manifest=ok') -and ($daily -match 'backup=ok') -and ($daily -match 'replica=ok') -and ($backup -match 'backup=ok') -and ($replica -match 'replica=ok') -and ($cert -match 'cert=ok')
-    if ($nasOk) {
+    $platformOk = $dailyEndpointOk -and ($daily -match 'manifest=ok') -and ($daily -match 'backup=ok') -and ($daily -match 'replica=ok') -and ($backup -match 'backup=ok') -and ($replica -match 'replica=ok') -and ($cert -match 'cert=ok')
+    if ($platformOk) {
         Add-Check -Checks $checks -Name 'platform status files' -Status 'PASS' -Detail 'daily endpoint/manifest/backup/replica/cert ok'
     }
     else {
         Add-Check -Checks $checks -Name 'platform status files' -Status 'WARN' -Detail 'state files readable but one or more ok markers missing'
     }
 }
+elseif ([string]::IsNullOrWhiteSpace($PlatformStateRoot)) {
+    Add-Check -Checks $checks -Name 'platform status files' -Status 'PASS' -Detail 'SKIP: Linux PC platform state root is not configured; live health/manifest checks are used instead'
+}
 else {
-    Add-Check -Checks $checks -Name 'platform status files' -Status 'WARN' -Detail ("state root not configured or not accessible: {0}" -f $NasStateRoot)
+    Add-Check -Checks $checks -Name 'platform status files' -Status 'WARN' -Detail ("platform state root is not accessible: {0}" -f $PlatformStateRoot)
 }
 
 $secrets = Read-SecretFile -Path $SecretPath

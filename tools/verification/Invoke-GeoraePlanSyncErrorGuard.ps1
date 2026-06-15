@@ -148,7 +148,7 @@ function Invoke-NasSyncErrorLogScan {
     $text | Set-Content -LiteralPath $rawPath -Encoding UTF8
 
     if (-not [string]::IsNullOrWhiteSpace($text)) {
-        throw "NAS live 로그에서 동기화 오류 후보가 발견되었습니다. raw=$rawPath"
+        throw "Linux PC live 로그에서 동기화 오류 후보가 발견되었습니다. raw=$rawPath"
     }
 
     [pscustomobject]@{

@@ -1,6 +1,6 @@
 ﻿# 거래플랜 live 반영 체크리스트
 
-- 용도: NAS live/stable 반영 전 최종 확인
+- 용도: Linux PC live/stable 반영 전 최종 확인
 - 작성 원칙: 체크 후 반영, 문제 발견 시 즉시 반영 보류
 
 ## 1. 기본 준비
@@ -27,9 +27,9 @@
 - [ ] 재고/렌탈 연동 수정이 포함되면 무결성 리포트에 재고 스냅샷 불일치가 남지 않는지 확인했다.
 
 ## 5. 반영 결정
-- [x] 문제 없음 → NAS 반영 가능
+- [x] 문제 없음 → Linux PC 반영 가능
 - [x] 문제 없음 → Git 반영 가능
-- [ ] 이슈 있음 → NAS/Git 반영 보류
+- [ ] 이슈 있음 → Linux PC/Git 반영 보류
 - [x] 반영 직후 `Invoke-LiveObservationCheck.ps1` 로 live 서버 healthz/manifest/package 응답을 관찰했다.
 
 ## 메모

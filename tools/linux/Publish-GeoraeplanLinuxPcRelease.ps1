@@ -165,6 +165,8 @@ $nasArgs = @(
     '-NasSshKeyPath', $LinuxSshKeyPath,
     '-NasRemoteOpsPath', $LinuxRemoteOpsPath,
     '-KeepNasReleaseCount', $KeepReleaseCount.ToString(),
+    '-DeploymentTargetName', 'Linux PC',
+    '-LogPrefix', 'linux_pc',
     '-SkipConfigSync'
 )
 

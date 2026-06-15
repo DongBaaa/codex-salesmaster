@@ -619,7 +619,7 @@ public sealed partial class EnvironmentSettingsViewModel
                 catch (Exception ex)
                 {
                     mirrorResult.Failures.Add(
-                        $"NAS 서버 {action} 반영 실패({FormatRecycleBinMutationDatabaseLabel(businessDatabaseName)}): {ex.Message}" +
+                        $"Linux PC 서버 {action} 반영 실패({FormatRecycleBinMutationDatabaseLabel(businessDatabaseName)}): {ex.Message}" +
                         (groupTargets.Count > batch.Length
                             ? " 일부 남은 항목 처리는 중단했습니다."
                             : string.Empty));
@@ -655,7 +655,7 @@ public sealed partial class EnvironmentSettingsViewModel
     {
         if (result is null)
         {
-            mirrorResult.Failures.Add($"NAS 서버 {action} 반영 결과를 확인하지 못했습니다.");
+            mirrorResult.Failures.Add($"Linux PC 서버 {action} 반영 결과를 확인하지 못했습니다.");
             return;
         }
 
@@ -665,7 +665,7 @@ public sealed partial class EnvironmentSettingsViewModel
                 mirrorResult.SucceededEntries.AddRange(batchTargets.Values.Select(current => current.Entry));
             else
                 mirrorResult.Failures.Add(result.Messages.FirstOrDefault()
-                                          ?? $"NAS 서버 {action} 반영 중 실패한 항목이 있습니다.");
+                                          ?? $"Linux PC 서버 {action} 반영 중 실패한 항목이 있습니다.");
             return;
         }
 
@@ -690,7 +690,7 @@ public sealed partial class EnvironmentSettingsViewModel
         foreach (var key in batchTargets.Keys.Where(key => !reported.Contains(key)))
         {
             var target = batchTargets[key];
-            mirrorResult.Failures.Add($"{target.Entry.KindText} · {target.Entry.Title}: NAS 서버 {action} 결과를 확인하지 못했습니다.");
+            mirrorResult.Failures.Add($"{target.Entry.KindText} · {target.Entry.Title}: Linux PC 서버 {action} 결과를 확인하지 못했습니다.");
         }
     }
 
@@ -771,4 +771,3 @@ public sealed partial class EnvironmentSettingsViewModel
         return $"휴지통 {action} 완료: 성공 {succeededCount:N0}건 / 실패 {failedCount:N0}건. {failures[0]}";
     }
 }
-

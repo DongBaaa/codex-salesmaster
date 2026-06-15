@@ -1479,7 +1479,7 @@
 
                                 <StackPanel Grid.Column="0">
                                     <TextBlock Text="버전 / 업데이트" Foreground="#4FC3F7" FontWeight="Bold" FontSize="18"/>
-                                    <TextBlock Text="현재 설치 버전과 NAS 배포본을 비교해 내부 업데이트를 진행합니다." Foreground="#9FB3C8" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                                    <TextBlock Text="현재 설치 버전과 Linux PC 배포본을 비교해 내부 업데이트를 진행합니다." Foreground="#9FB3C8" Margin="0,8,0,0" TextWrapping="Wrap"/>
                                 </StackPanel>
 
                                 <WrapPanel Grid.Column="1" VerticalAlignment="Top">
@@ -1574,4 +1574,3 @@
         </Border>
     </Grid>
 </Window>
-

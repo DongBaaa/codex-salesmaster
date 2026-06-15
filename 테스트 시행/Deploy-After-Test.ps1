@@ -7,17 +7,24 @@ param(
     [string]$CommitMessage,
     [string]$Remote = 'origin',
     [string[]]$IncludeUntrackedPaths = @(),
+    [Alias('SkipLinuxPc')]
     [switch]$SkipNas,
     [switch]$SkipGit,
     [switch]$SkipPush,
     [switch]$DryRun,
     [switch]$AllowLegacyLiveMirror,
     [switch]$AllowScheduledApplyTrigger,
+    [Alias('LinuxSshHost')]
     [string]$NasSshHost = '192.168.0.199',
+    [Alias('LinuxSshUser')]
     [string]$NasSshUser = 'itw',
+    [Alias('LinuxSshPort')]
     [int]$NasSshPort = 2222,
+    [Alias('LinuxSshKeyPath')]
     [string]$NasSshKeyPath = (Join-Path $env:USERPROFILE '.ssh\itwserver_codex_ed25519'),
+    [Alias('LinuxRemoteOpsPath')]
     [string]$NasRemoteOpsPath = '/srv/georaeplan/ops',
+    [Alias('PlatformStateRoot')]
     [string]$NasStateRoot = '',
     [switch]$SkipPreDeployOperationalGate,
     [string]$PreDeployBaseUrl = '',
@@ -146,7 +153,7 @@ function Invoke-PreDeployOperationalGate {
         '-SkipWriteSafetyChecks'
     )
     if (-not [string]::IsNullOrWhiteSpace($NasStateRoot)) {
-        $arguments += @('-NasStateRoot', $NasStateRoot)
+        $arguments += @('-PlatformStateRoot', $NasStateRoot)
     }
     if (-not [string]::IsNullOrWhiteSpace($SecretPath)) {
         $arguments += @('-SecretPath', $SecretPath)
@@ -351,12 +358,12 @@ if (-not $SkipNas) {
 }
 
 $checklistContent = Get-Content -LiteralPath $ChecklistPath -Raw
-if ((Test-ChecklistChecked -Content $checklistContent -Label '이슈 있음 → NAS/Git 반영 보류') -or
+if ((Test-ChecklistChecked -Content $checklistContent -Label '이슈 있음 → Linux PC/Git 반영 보류') -or
     (Test-ChecklistChecked -Content $checklistContent -Label '이슈 있음 → live/Git 반영 보류')) {
     throw '체크리스트에 이슈 있음 항목이 체크되어 있어 반영을 진행할 수 없습니다.'
 }
 if (-not $SkipNas -and
-    -not (Test-ChecklistChecked -Content $checklistContent -Label '문제 없음 → NAS 반영 가능') -and
+    -not (Test-ChecklistChecked -Content $checklistContent -Label '문제 없음 → Linux PC 반영 가능') -and
     -not (Test-ChecklistChecked -Content $checklistContent -Label '문제 없음 → live 반영 가능')) {
     throw '체크리스트에서 "문제 없음 → live 반영 가능" 항목이 체크되지 않았습니다.'
 }
@@ -400,7 +407,7 @@ $summaryBuilder = New-Object System.Text.StringBuilder
 [void]$summaryBuilder.AppendLine("- 브랜치: $branch")
 [void]$summaryBuilder.AppendLine("- 반영 전 커밋: $beforeCommit")
 [void]$summaryBuilder.AppendLine("- DryRun: $DryRun")
-[void]$summaryBuilder.AppendLine("- SkipNas: $SkipNas")
+[void]$summaryBuilder.AppendLine("- SkipLinuxPc: $SkipNas")
 [void]$summaryBuilder.AppendLine("- SkipGit: $SkipGit")
 [void]$summaryBuilder.AppendLine("- SkipPush: $SkipPush")
 [void]$summaryBuilder.AppendLine()
@@ -449,7 +456,7 @@ if (-not $SkipNas) {
             -BaseUrl $resolvedPreDeployBaseUrl `
             -OutputDirectory $preDeployOperationalGateDirectory `
             -SecretPath $PreDeploySecretPath `
-            -NasStateRoot $NasStateRoot `
+            -PlatformStateRoot $NasStateRoot `
             -AllowedIntegrityWarningCodes $PreDeployAllowedIntegrityWarningCodes
     }
     else {

@@ -1548,16 +1548,16 @@ $lines.Add("- sync error guard 포함: $([bool]$IncludeSyncErrorGuard)") | Out-N
 $lines.Add("- print document smoke 포함: $([bool]$IncludePrintDocumentSmoke)") | Out-Null
 $lines.Add("- mobile build 포함: $([bool]$IncludeMobileBuild)") | Out-Null
 $lines.Add("- mobile E2E 포함: $([bool]$IncludeMobileE2E)") | Out-Null
-$lines.Add("- NAS live drift 확인: $(-not [bool]$SkipNasLiveDriftCheck)") | Out-Null
-$lines.Add("- NAS update manifest 확인: $(-not [bool]$SkipNasUpdateManifestCheck)") | Out-Null
+$lines.Add("- Linux PC live drift 확인: $(-not [bool]$SkipNasLiveDriftCheck)") | Out-Null
+$lines.Add("- Linux PC update manifest 확인: $(-not [bool]$SkipNasUpdateManifestCheck)") | Out-Null
 $lines.Add("- 업데이트 HTTP route 확인: $(-not [bool]$SkipUpdateHttpRouteCheck)") | Out-Null
 $lines.Add("- 업데이트 채널: $UpdateChannel") | Out-Null
 if (-not [string]::IsNullOrWhiteSpace($UpdateHttpBaseUrl)) {
     $lines.Add("- 업데이트 HTTP BaseUrl: $UpdateHttpBaseUrl") | Out-Null
 }
 if (-not [string]::IsNullOrWhiteSpace($NasRoot)) {
-    $lines.Add("- NAS root: $NasRoot") | Out-Null
-    $lines.Add("- NAS release 보관 기대 개수: $ExpectedNasReleaseCount") | Out-Null
+    $lines.Add("- Linux PC 배포 root: $NasRoot") | Out-Null
+    $lines.Add("- Linux PC release 보관 기대 개수: $ExpectedNasReleaseCount") | Out-Null
 }
 $lines.Add('') | Out-Null
 $lines.Add('| 결과 | 단계 | 상세 | 리포트 |') | Out-Null

@@ -20,7 +20,7 @@ var builder = WebApplication.CreateBuilder(args);
 // The default host can include the Windows EventLog provider. On non-admin test
 // workstations that provider may throw "access denied" while logging startup
 // warnings, preventing the local test server from becoming ready. Keep logging to
-// console/debug/event-source so NAS/container logs and local test logs continue
+// console/debug/event-source so Linux PC/container logs and local test logs continue
 // to work without requiring Windows Event Log permissions.
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
@@ -551,7 +551,7 @@ static void LogSecurityWarnings(
 
     if (useSqlite)
     {
-        app.Logger.LogWarning("Production startup is using SQLite fallback. NAS 운영 시 PostgreSQL 고정을 권장합니다.");
+        app.Logger.LogWarning("Production startup is using SQLite fallback. Linux PC 운영 시 PostgreSQL 고정을 권장합니다.");
     }
 
     if (string.IsNullOrWhiteSpace(jwtOptions.SigningKey) ||
@@ -577,7 +577,7 @@ static void LogSecurityWarnings(
 
     if (!securityOptions.RequireHttpsForwardedProto)
     {
-        app.Logger.LogWarning("RequireHttpsForwardedProto=false 입니다. NAS reverse proxy 운영 시 true 를 권장합니다.");
+        app.Logger.LogWarning("RequireHttpsForwardedProto=false 입니다. Linux PC reverse proxy 운영 시 true 를 권장합니다.");
     }
 
     foreach (var pair in dedicatedBusinessConnections)

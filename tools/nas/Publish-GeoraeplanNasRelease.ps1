@@ -14,6 +14,8 @@ param(
     [string]$NasSshKeyPath,
     [string]$NasRemoteOpsPath,
     [int]$KeepNasReleaseCount = 2,
+    [string]$DeploymentTargetName = 'NAS',
+    [string]$LogPrefix = 'nas',
     [switch]$AllowScheduledApplyTrigger,
     [switch]$SkipPreDeployOperationalGate,
     [switch]$SkipPostDeployOperationalGate,
@@ -55,7 +57,7 @@ function Resolve-DotnetCommand {
         }
     }
 
-    throw "Unable to locate a working dotnet executable for NAS publish under $ProjectRoot."
+    throw "Unable to locate a working dotnet executable for $DeploymentTargetName publish under $ProjectRoot."
 }
 
 function Invoke-RobocopyMirror {
@@ -115,7 +117,7 @@ function Remove-OldNasReleaseDirectories {
         }
 
         if (-not $resolvedDirectory.StartsWith($resolvedReleasesRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "NAS release prune target is outside releases root: $resolvedDirectory"
+            throw "$DeploymentTargetName release prune target is outside releases root: $resolvedDirectory"
         }
 
         Remove-Item -LiteralPath $resolvedDirectory -Recurse -Force -ErrorAction Stop
@@ -186,7 +188,7 @@ function New-SshArgumentList {
 
     if (-not [string]::IsNullOrWhiteSpace($Config.KeyPath)) {
         if (-not (Test-Path -LiteralPath $Config.KeyPath)) {
-            throw "NAS_SSH_KEY_PATH not found: $($Config.KeyPath)"
+            throw "$DeploymentTargetName SSH key path not found: $($Config.KeyPath)"
         }
 
         $args += @('-i', $Config.KeyPath)
@@ -565,7 +567,7 @@ echo "pruned label=$Label root=`$root total=`$total keep=`$keep removed=`$remove
             $removed.Add($trimmed.Substring(8)) | Out-Null
         }
         elseif ($trimmed -like 'pruned *') {
-            Write-Host "nas_remote_prune $trimmed"
+            Write-Host "${LogPrefix}_remote_prune $trimmed"
         }
     }
 
@@ -760,7 +762,7 @@ function Invoke-NasApplyRelease {
 
     if (-not [string]::IsNullOrWhiteSpace($Config.KeyPath)) {
         if (-not (Test-Path -LiteralPath $Config.KeyPath)) {
-            throw "NAS_SSH_KEY_PATH not found: $($Config.KeyPath)"
+            throw "$DeploymentTargetName SSH key path not found: $($Config.KeyPath)"
         }
 
         $sshArgs += @('-i', $Config.KeyPath)
@@ -772,7 +774,7 @@ function Invoke-NasApplyRelease {
 
     & $sshExe @sshArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "NAS apply-release.sh execution failed with exit code $LASTEXITCODE."
+        throw "$DeploymentTargetName apply-release.sh execution failed with exit code $LASTEXITCODE."
     }
 }
 
@@ -797,13 +799,28 @@ function Resolve-OperationalGateBaseUrl {
     )
 }
 
+function Resolve-OperationalGatePlatformStateRoot {
+    param([Parameter(Mandatory = $true)][string]$Root)
+
+    if ([string]::IsNullOrWhiteSpace($Root)) {
+        return ''
+    }
+
+    $stateRoot = Join-Path $Root 'ops\state'
+    if (Test-Path -LiteralPath $stateRoot) {
+        return $stateRoot
+    }
+
+    return ''
+}
+
 function Invoke-ReleaseOperationalGate {
     param(
         [Parameter(Mandatory = $true)][string]$Phase,
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
         [Parameter(Mandatory = $true)][string]$BaseUrl,
         [string]$SecretPath = '',
-        [string]$NasStateRoot = '',
+        [string]$PlatformStateRoot = '',
         [string]$OutputDirectory = '',
         [string[]]$AllowedIntegrityWarningCodes = @(),
         [string]$ReleaseId = ''
@@ -840,8 +857,8 @@ function Invoke-ReleaseOperationalGate {
     if (-not [string]::IsNullOrWhiteSpace($SecretPath)) {
         $gateArgs += @('-SecretPath', $SecretPath)
     }
-    if (-not [string]::IsNullOrWhiteSpace($NasStateRoot)) {
-        $gateArgs += @('-NasStateRoot', $NasStateRoot)
+    if (-not [string]::IsNullOrWhiteSpace($PlatformStateRoot)) {
+        $gateArgs += @('-PlatformStateRoot', $PlatformStateRoot)
     }
     if ($AllowedIntegrityWarningCodes.Count -gt 0) {
         $gateArgs += '-AllowedIntegrityWarningCodes'
@@ -899,7 +916,7 @@ if ($MirrorToLive -and -not $SkipPreDeployOperationalGate.IsPresent) {
         -ProjectRoot $ProjectRoot `
         -BaseUrl $resolvedPreDeployBaseUrl `
         -SecretPath (Get-FirstConfiguredValue @($PreDeploySecretPath, $PostDeploySecretPath)) `
-        -NasStateRoot (Join-Path $NasRoot 'ops\state') `
+        -PlatformStateRoot (Resolve-OperationalGatePlatformStateRoot -Root $NasRoot) `
         -OutputDirectory $PreDeployOutputDirectory `
         -AllowedIntegrityWarningCodes $PreDeployAllowedIntegrityWarningCodes `
         -ReleaseId $ReleaseId
@@ -989,7 +1006,7 @@ if (-not $SkipConfigSync) {
         -NasRemoteOpsPath $sshConfig.RemoteOpsPath `
         -UseSshFallback
     if (-not $?) {
-        throw 'NAS config sync failed.'
+        throw "$DeploymentTargetName config sync failed."
     }
 }
 
@@ -1006,7 +1023,7 @@ elseif (Test-NasSshConfigComplete -Config $sshConfig) {
         -KeepCount $KeepNasReleaseCount `
         -Label 'live-backups'
     if ($removedRemoteBackupsBeforeUpload.Count -gt 0) {
-        Write-Host "nas_remote_live_backups_pruned_before_upload=$($removedRemoteBackupsBeforeUpload.Count)"
+        Write-Host "${LogPrefix}_remote_live_backups_pruned_before_upload=$($removedRemoteBackupsBeforeUpload.Count)"
     }
 
     $removedRemoteReleasesBeforeUpload = Invoke-NasRemoteDirectoryPrune `
@@ -1017,15 +1034,15 @@ elseif (Test-NasSshConfigComplete -Config $sshConfig) {
         -KeepCount $KeepNasReleaseCount `
         -Label 'releases'
     if ($removedRemoteReleasesBeforeUpload.Count -gt 0) {
-        Write-Host "nas_remote_releases_pruned_before_upload=$($removedRemoteReleasesBeforeUpload.Count)"
+        Write-Host "${LogPrefix}_remote_releases_pruned_before_upload=$($removedRemoteReleasesBeforeUpload.Count)"
     }
 
     $remoteReleaseRoot = "{0}/releases/{1}" -f $remoteBaseRoot, $ReleaseId
-    Write-Warning "NAS UNC path is unavailable. Falling back to SSH upload: $remoteReleaseRoot"
+    Write-Warning "$DeploymentTargetName local mirror path is unavailable. Falling back to SSH upload: $remoteReleaseRoot"
     Invoke-SshTarUpload -SourceDirectory $tempPublishRoot -RemoteDirectory $remoteReleaseRoot -Config $sshConfig
 }
 else {
-    throw "NAS release upload failed: UNC path '$NasRoot' is unavailable and SSH configuration is incomplete."
+    throw "$DeploymentTargetName release upload failed: local mirror path '$NasRoot' is unavailable and SSH configuration is incomplete."
 }
 
 Ensure-NasRuntimeStorageDirectories -NasRoot $NasRoot -Config $sshConfig
@@ -1035,18 +1052,18 @@ $queuedForNasApply = $false
 $queuedTriggerPath = ''
 if ($MirrorToLive) {
     if (Test-NasSshConfigComplete -Config $sshConfig) {
-        Write-Host "nas_apply_release_mode=ssh host=$($sshConfig.Host) user=$($sshConfig.User) port=$($sshConfig.Port)"
+        Write-Host "${LogPrefix}_apply_release_mode=ssh host=$($sshConfig.Host) user=$($sshConfig.User) port=$($sshConfig.Port)"
         try {
             Invoke-NasApplyRelease -ReleaseId $ReleaseId -Config $sshConfig
             $appliedRemotely = $true
         }
         catch {
             if ($AllowScheduledApplyTrigger -or $scheduledApplyEnabled) {
-                Write-Warning "SSH apply-release failed and the script will fall back to the NAS scheduled trigger. Reason: $($_.Exception.Message)"
+                Write-Warning "SSH apply-release failed and the script will fall back to the $DeploymentTargetName scheduled trigger. Reason: $($_.Exception.Message)"
                 $queuedTriggerPath = Queue-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv -Config $sshConfig
-                Write-Host "nas_apply_release_mode=scheduled-trigger pending_path=$queuedTriggerPath"
+                Write-Host "${LogPrefix}_apply_release_mode=scheduled-trigger pending_path=$queuedTriggerPath"
                 if (-not (Wait-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv -Config $sshConfig)) {
-                    throw "NAS scheduled apply trigger was queued after SSH fallback, but release '$ReleaseId' was not applied within the timeout. Confirm the NAS scheduled task runs auto-apply-release.sh and check ops/state/auto-apply.log."
+                    throw "$DeploymentTargetName scheduled apply trigger was queued after SSH fallback, but release '$ReleaseId' was not applied within the timeout. Confirm the scheduled task runs auto-apply-release.sh and check ops/state/auto-apply.log."
                 }
                 $queuedForNasApply = $true
             }
@@ -1057,19 +1074,19 @@ if ($MirrorToLive) {
     }
     elseif ($AllowScheduledApplyTrigger -or $scheduledApplyEnabled) {
         $queuedTriggerPath = Queue-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv -Config $sshConfig
-        Write-Host "nas_apply_release_mode=scheduled-trigger pending_path=$queuedTriggerPath"
+        Write-Host "${LogPrefix}_apply_release_mode=scheduled-trigger pending_path=$queuedTriggerPath"
         if (-not (Wait-NasScheduledApply -NasRoot $NasRoot -ReleaseId $ReleaseId -NasEnv $nasEnv -Config $sshConfig)) {
-            throw "NAS scheduled apply trigger was queued but release '$ReleaseId' was not applied within the timeout. Confirm the NAS scheduled task runs auto-apply-release.sh and check ops/state/auto-apply.log."
+            throw "$DeploymentTargetName scheduled apply trigger was queued but release '$ReleaseId' was not applied within the timeout. Confirm the scheduled task runs auto-apply-release.sh and check ops/state/auto-apply.log."
         }
         $queuedForNasApply = $true
     }
     elseif ($AllowLegacyLiveMirror) {
-        Write-Warning 'NAS SSH settings are missing. Because AllowLegacyLiveMirror was specified, the script will only copy the release and mirror app\\live directly.'
-        Write-Warning 'Recommended: configure NAS_SSH_USER/HOST/PORT/KEY_PATH/REMOTE_OPS_PATH for SSH apply, or enable NAS_SCHEDULED_APPLY_ENABLED with auto-apply-release.sh so the NAS can run apply-release.sh locally after the release is copied.'
+        Write-Warning "$DeploymentTargetName SSH settings are missing. Because AllowLegacyLiveMirror was specified, the script will only copy the release and mirror app\\live directly."
+        Write-Warning "Recommended: configure SSH user/host/port/key/remote ops path for SSH apply, or enable scheduled apply with auto-apply-release.sh so $DeploymentTargetName can run apply-release.sh locally after the release is copied."
         Invoke-RobocopyMirror -Source $tempPublishRoot -Destination $liveRoot
     }
     else {
-        throw 'MirrorToLive was requested, but NAS SSH settings are incomplete and NAS scheduled apply is disabled. Configure NAS_SSH_USER/HOST/PORT/KEY_PATH/REMOTE_OPS_PATH, set NAS_SCHEDULED_APPLY_ENABLED=true with auto-apply-release.sh configured on the NAS, or use -AllowLegacyLiveMirror only as a temporary fallback.'
+        throw "MirrorToLive was requested, but $DeploymentTargetName SSH settings are incomplete and scheduled apply is disabled. Configure SSH user/host/port/key/remote ops path, enable scheduled apply with auto-apply-release.sh, or use -AllowLegacyLiveMirror only as a temporary fallback."
     }
 }
 
@@ -1084,7 +1101,7 @@ if ($MirrorToLive -and -not $SkipPostDeployOperationalGate.IsPresent) {
         -ProjectRoot $ProjectRoot `
         -BaseUrl $resolvedPostDeployBaseUrl `
         -SecretPath $PostDeploySecretPath `
-        -NasStateRoot (Join-Path $NasRoot 'ops\state') `
+        -PlatformStateRoot (Resolve-OperationalGatePlatformStateRoot -Root $NasRoot) `
         -OutputDirectory $PostDeployOutputDirectory `
         -AllowedIntegrityWarningCodes $PostDeployAllowedIntegrityWarningCodes `
         -ReleaseId $ReleaseId
@@ -1097,7 +1114,7 @@ if ($MirrorToLive -and $SkipPostDeployOperationalGate.IsPresent) {
 if ($MirrorToLive -and (Test-Path -LiteralPath $NasRoot)) {
     $removedNasReleases = Remove-OldNasReleaseDirectories -ReleasesRoot (Join-Path $NasRoot 'releases') -CurrentReleaseId $ReleaseId -KeepReleaseCount $KeepNasReleaseCount
     if ($removedNasReleases.Count -gt 0) {
-        Write-Host "nas_releases_pruned=$($removedNasReleases.Count)"
+        Write-Host "${LogPrefix}_releases_pruned=$($removedNasReleases.Count)"
     }
 }
 elseif ($MirrorToLive -and (Test-NasSshConfigComplete -Config $sshConfig)) {
@@ -1110,7 +1127,7 @@ elseif ($MirrorToLive -and (Test-NasSshConfigComplete -Config $sshConfig)) {
         -KeepCount $KeepNasReleaseCount `
         -Label 'releases'
     if ($removedRemoteReleases.Count -gt 0) {
-        Write-Host "nas_remote_releases_pruned=$($removedRemoteReleases.Count)"
+        Write-Host "${LogPrefix}_remote_releases_pruned=$($removedRemoteReleases.Count)"
     }
 
     $removedRemoteBackups = Invoke-NasRemoteDirectoryPrune `
@@ -1121,19 +1138,23 @@ elseif ($MirrorToLive -and (Test-NasSshConfigComplete -Config $sshConfig)) {
         -KeepCount $KeepNasReleaseCount `
         -Label 'live-backups'
     if ($removedRemoteBackups.Count -gt 0) {
-        Write-Host "nas_remote_live_backups_pruned=$($removedRemoteBackups.Count)"
+        Write-Host "${LogPrefix}_remote_live_backups_pruned=$($removedRemoteBackups.Count)"
     }
 }
 
 Remove-Item $tempPublishRoot -Recurse -Force -ErrorAction SilentlyContinue
 
-Write-Host "publish_done release_id=$ReleaseId release_path=$releaseRoot"
+$displayReleasePath = $releaseRoot
+if (-not (Test-Path -LiteralPath $NasRoot) -and (Test-NasSshConfigComplete -Config $sshConfig)) {
+    $displayReleasePath = (($sshConfig.RemoteOpsPath -replace '/ops/?$', '').TrimEnd('/') + "/releases/$ReleaseId")
+}
+Write-Host "publish_done release_id=$ReleaseId release_path=$displayReleasePath"
 if ($MirrorToLive) {
     if ($appliedRemotely) {
-        Write-Host "nas_apply_release_done release_id=$ReleaseId host=$($sshConfig.Host) user=$($sshConfig.User)"
+        Write-Host "${LogPrefix}_apply_release_done release_id=$ReleaseId host=$($sshConfig.Host) user=$($sshConfig.User)"
     }
     elseif ($queuedForNasApply) {
-        Write-Host "nas_apply_release_done release_id=$ReleaseId mode=scheduled-trigger pending_path=$queuedTriggerPath"
+        Write-Host "${LogPrefix}_apply_release_done release_id=$ReleaseId mode=scheduled-trigger pending_path=$queuedTriggerPath"
     }
     elseif ($AllowLegacyLiveMirror) {
         Write-Host "live_mirror_done live_path=$liveRoot"

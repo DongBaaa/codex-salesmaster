@@ -681,7 +681,7 @@ if ($failedSamples.Count -eq 0 -and $localCacheResult.Success) {
 }
 else {
     $lines.Add("- 일부 샘플에서 실패가 확인되었습니다.") | Out-Null
-    $lines.Add("- NAS 반영 후 실제 사용자 안내 전에 서버/manifest/package/거래처/거래내역 경로를 다시 점검하세요.") | Out-Null
+    $lines.Add("- Linux PC live 반영 후 실제 사용자 안내 전에 서버/manifest/package/거래처/거래내역 경로를 다시 점검하세요.") | Out-Null
 }
 
 [System.IO.File]::WriteAllText(
