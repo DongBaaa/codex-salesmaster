@@ -75,6 +75,28 @@
         <Style TargetType="{x:Type CalendarItem}">
             <Setter Property="MinWidth" Value="320"/>
             <Setter Property="MinHeight" Value="260"/>
+            <Setter Property="Resources">
+                <Setter.Value>
+                    <ResourceDictionary>
+                        <!--
+                            DatePicker 본문에는 드롭다운 버튼 폭을 30px로 고정하는 Button 스타일을 넣어 사용한다.
+                            이 스타일이 달력 팝업 내부의 월/년도 헤더 버튼까지 전파되면 "2026년 6월"이
+                            "2026"처럼 잘리므로, CalendarItem 내부에서는 버튼 폭 제한을 다시 해제한다.
+                        -->
+                        <Style TargetType="{x:Type Button}">
+                            <Setter Property="FontFamily" Value="Malgun Gothic"/>
+                            <Setter Property="MinWidth" Value="0"/>
+                            <Setter Property="MinHeight" Value="0"/>
+                            <Setter Property="Padding" Value="0"/>
+                            <Setter Property="Margin" Value="0"/>
+                            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                            <Setter Property="VerticalAlignment" Value="Stretch"/>
+                            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                            <Setter Property="VerticalContentAlignment" Value="Center"/>
+                        </Style>
+                    </ResourceDictionary>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="UnifiedDatePickerButtonStyle" TargetType="{x:Type Button}">
             <Setter Property="MinHeight" Value="30"/>
