@@ -427,6 +427,253 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task MainViewModel_LoadInvoiceListAsync_PromotesSelectedInvoiceToLatestVersionAfterListRefresh()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-main-latest-selection-probe-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var officeAccess = new OfficeAccessService();
+            var dispatcher = new SyncRequestDispatcher();
+            var diagnostics = new SyncDiagnosticsService(session);
+            var localState = new LocalStateService(db, officeAccess, dispatcher, session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+            var viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
+
+            var customerId = Guid.Parse("92666666-6666-6666-6666-666666666666");
+            var versionGroupId = Guid.Parse("92777777-7777-7777-7777-777777777777");
+            var oldInvoiceId = Guid.Parse("92888888-8888-8888-8888-888888888888");
+            var latestInvoiceId = Guid.Parse("92999999-9999-9999-9999-999999999999");
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "최신 전표 승격 검증 거래처",
+                NameMatchKey = "LATESTSELECTIONCUSTOMER",
+                IsDeleted = false
+            });
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = oldInvoiceId,
+                VersionGroupId = versionGroupId,
+                VersionNumber = 1,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Purchase,
+                InvoiceDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-3)),
+                InvoiceNumber = "LATEST-SELECTION-001",
+                TotalAmount = 110_000m,
+                SupplyAmount = 100_000m,
+                VatAmount = 10_000m,
+                IsLatestVersion = true,
+                IsConfirmed = true,
+                IsDeleted = false,
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemNameOriginal = "최신 승격 기존 품목",
+                        Quantity = 1m,
+                        UnitPrice = 110_000m,
+                        LineAmount = 110_000m,
+                        IsDeleted = false
+                    }
+                }
+            });
+            await db.SaveChangesAsync();
+
+            await viewModel.LoadAsync();
+            var selectedBeforeRefresh = Assert.Single(viewModel.InvoiceRows);
+            Assert.Equal(oldInvoiceId, selectedBeforeRefresh.Id);
+            Assert.Equal(versionGroupId, selectedBeforeRefresh.EffectiveVersionGroupId);
+            viewModel.SelectedInvoiceRow = selectedBeforeRefresh;
+
+            var oldInvoice = await db.Invoices.SingleAsync(invoice => invoice.Id == oldInvoiceId);
+            oldInvoice.IsLatestVersion = false;
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = latestInvoiceId,
+                VersionGroupId = versionGroupId,
+                VersionNumber = 2,
+                PreviousVersionId = oldInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Purchase,
+                InvoiceDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-2)),
+                InvoiceNumber = "LATEST-SELECTION-001",
+                TotalAmount = 220_000m,
+                SupplyAmount = 200_000m,
+                VatAmount = 20_000m,
+                IsLatestVersion = true,
+                IsConfirmed = true,
+                IsDeleted = false,
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemNameOriginal = "최신 승격 신규 품목",
+                        Quantity = 1m,
+                        UnitPrice = 220_000m,
+                        LineAmount = 220_000m,
+                        IsDeleted = false
+                    }
+                }
+            });
+            await db.SaveChangesAsync();
+
+            await viewModel.LoadInvoiceListCommand.ExecuteAsync(null);
+
+            var selectedAfterRefresh = viewModel.SelectedInvoiceRow;
+            Assert.NotNull(selectedAfterRefresh);
+            Assert.Equal(latestInvoiceId, selectedAfterRefresh!.Id);
+            Assert.Equal(versionGroupId, selectedAfterRefresh.EffectiveVersionGroupId);
+            Assert.Single(viewModel.InvoiceRows);
+            Assert.DoesNotContain(viewModel.InvoiceRows, row => row.Id == oldInvoiceId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task MainViewModel_GetLatestSelectedInvoiceAsync_ReturnsLatestInvoiceAndPromotesSelection()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-main-latest-open-probe-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var officeAccess = new OfficeAccessService();
+            var dispatcher = new SyncRequestDispatcher();
+            var diagnostics = new SyncDiagnosticsService(session);
+            var localState = new LocalStateService(db, officeAccess, dispatcher, session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+            var viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
+
+            var customerId = Guid.Parse("92AAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA");
+            var versionGroupId = Guid.Parse("92BBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB");
+            var oldInvoiceId = Guid.Parse("92CCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC");
+            var latestInvoiceId = Guid.Parse("92DDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD");
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "최신 전표 열기 검증 거래처",
+                NameMatchKey = "LATESTOPENCUSTOMER",
+                IsDeleted = false
+            });
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = oldInvoiceId,
+                VersionGroupId = versionGroupId,
+                VersionNumber = 1,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-3)),
+                InvoiceNumber = "LATEST-OPEN-001",
+                TotalAmount = 55_000m,
+                SupplyAmount = 50_000m,
+                VatAmount = 5_000m,
+                IsLatestVersion = true,
+                IsConfirmed = true,
+                IsDeleted = false,
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemNameOriginal = "최신 열기 기존 품목",
+                        Quantity = 1m,
+                        UnitPrice = 55_000m,
+                        LineAmount = 55_000m,
+                        IsDeleted = false
+                    }
+                }
+            });
+            await db.SaveChangesAsync();
+
+            await viewModel.LoadAsync();
+            var selectedBeforeLatestVersion = Assert.Single(viewModel.InvoiceRows);
+            viewModel.SelectedInvoiceRow = selectedBeforeLatestVersion;
+
+            var oldInvoice = await db.Invoices.SingleAsync(invoice => invoice.Id == oldInvoiceId);
+            oldInvoice.IsLatestVersion = false;
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = latestInvoiceId,
+                VersionGroupId = versionGroupId,
+                VersionNumber = 2,
+                PreviousVersionId = oldInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-2)),
+                InvoiceNumber = "LATEST-OPEN-001",
+                TotalAmount = 77_000m,
+                SupplyAmount = 70_000m,
+                VatAmount = 7_000m,
+                IsLatestVersion = true,
+                IsConfirmed = true,
+                IsDeleted = false,
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemNameOriginal = "최신 열기 신규 품목",
+                        Quantity = 1m,
+                        UnitPrice = 77_000m,
+                        LineAmount = 77_000m,
+                        IsDeleted = false
+                    }
+                }
+            });
+            await db.SaveChangesAsync();
+
+            var latestInvoice = await viewModel.GetLatestSelectedInvoiceAsync();
+
+            Assert.NotNull(latestInvoice);
+            Assert.Equal(latestInvoiceId, latestInvoice.Id);
+            Assert.NotNull(viewModel.SelectedInvoiceRow);
+            Assert.Equal(latestInvoiceId, viewModel.SelectedInvoiceRow.Id);
+            Assert.Equal(versionGroupId, viewModel.SelectedInvoiceRow.EffectiveVersionGroupId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task MainViewModel_PostLoginSyncSkip_ChecksServerRevisionBeforeSkippingRecentSync()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-post-login-revision-probe-" + Guid.NewGuid().ToString("N"));

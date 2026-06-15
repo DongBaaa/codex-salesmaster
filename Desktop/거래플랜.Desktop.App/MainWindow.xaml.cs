@@ -1172,7 +1172,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var inv = await _local.GetInvoiceAsync(_vm.SelectedInvoiceRow.Id, _session);
+        var inv = await _vm.GetLatestSelectedInvoiceAsync();
         if (inv is null) return;
 
         await OpenInvoiceWindowAsync(inv);
@@ -1467,7 +1467,7 @@ public partial class MainWindow : Window
 
     private async Task OpenInvoiceWindowAsync(Guid invoiceId, Window? ownerOverride = null)
     {
-        var invoice = await _local.GetInvoiceAsync(invoiceId, _session);
+        var invoice = await _local.GetLatestInvoiceVersionAsync(invoiceId, _session);
         if (invoice is null)
         {
             MessageBox.Show(
@@ -1485,7 +1485,8 @@ public partial class MainWindow : Window
     private async Task OpenInvoiceWindowAsync(Data.LocalInvoice invoice, Window? ownerOverride = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
-        var entryType = invoice.VoucherType switch
+        var latestInvoice = await _local.GetLatestInvoiceVersionAsync(invoice.Id, _session) ?? invoice;
+        var entryType = latestInvoice.VoucherType switch
         {
             VoucherType.Purchase => VoucherType.Purchase,
             VoucherType.Procurement => VoucherType.Procurement,
@@ -1501,7 +1502,7 @@ public partial class MainWindow : Window
         await OperationTiming.MeasureAsync(
             "UI",
             $"{entryType} 전표 상세 로드",
-            () => vm.LoadInvoiceAsync(invoice),
+            () => vm.LoadInvoiceAsync(latestInvoice),
             warningThreshold: TimeSpan.FromSeconds(2));
 
         var win = new SalesWindow(vm) { Owner = ownerOverride ?? this };
@@ -1569,7 +1570,7 @@ public partial class MainWindow : Window
         Data.LocalCustomer? preselect = _vm.SelectedCustomerFilter;
         if (targetInvoiceId.HasValue)
         {
-            targetInvoice = await _local.GetInvoiceAsync(targetInvoiceId.Value, _session);
+            targetInvoice = await _local.GetLatestInvoiceVersionAsync(targetInvoiceId.Value, _session);
             if (targetInvoice is null)
             {
                 MessageBox.Show(
@@ -1585,7 +1586,7 @@ public partial class MainWindow : Window
         }
         else if (preselect is null && _vm.SelectedInvoiceRow is not null)
         {
-            var invoice = await _local.GetInvoiceAsync(_vm.SelectedInvoiceRow.Id, _session);
+            var invoice = await _vm.GetLatestSelectedInvoiceAsync();
             if (invoice is not null)
                 preselect = await _local.GetCustomerAsync(invoice.CustomerId, _session);
         }
@@ -1769,7 +1770,7 @@ public partial class MainWindow : Window
 
         if (vm.InvoiceToOpenAfterClose.HasValue)
         {
-            var invoice = await _local.GetInvoiceAsync(vm.InvoiceToOpenAfterClose.Value);
+            var invoice = await _local.GetLatestInvoiceVersionAsync(vm.InvoiceToOpenAfterClose.Value, _session);
             if (invoice is not null)
                 await OpenInvoiceWindowAsync(invoice);
         }

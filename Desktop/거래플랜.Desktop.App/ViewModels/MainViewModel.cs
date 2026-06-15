@@ -805,7 +805,7 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        var inv = await _local.GetInvoiceAsync(row.Id, _session);
+        var inv = await _local.GetLatestInvoiceVersionAsync(row.Id, _session);
         if (!IsCurrentInvoicePreview(version))
             return;
 
@@ -873,6 +873,7 @@ public sealed partial class MainViewModel : ObservableObject
         var ct = loadCts.Token;
         var gateEntered = false;
         var previouslySelectedInvoiceId = SelectedInvoiceRow?.Id;
+        var previouslySelectedVersionGroupId = SelectedInvoiceRow?.EffectiveVersionGroupId;
 
         try
         {
@@ -939,7 +940,7 @@ public sealed partial class MainViewModel : ObservableObject
                 return InvoiceListRow.From(inv, custName, showCustomerName);
             }).ToList();
             InvoiceRows.ReplaceWith(rows);
-            RestoreSelectedInvoiceAfterListReload(previouslySelectedInvoiceId);
+            RestoreSelectedInvoiceAfterListReload(previouslySelectedInvoiceId, previouslySelectedVersionGroupId);
 
             await RefreshDashboardMetricsAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct);
             await LoadInvoiceFavoritesAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct);
@@ -959,7 +960,7 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
-    private void RestoreSelectedInvoiceAfterListReload(Guid? previouslySelectedInvoiceId)
+    private void RestoreSelectedInvoiceAfterListReload(Guid? previouslySelectedInvoiceId, Guid? previouslySelectedVersionGroupId)
     {
         if (!previouslySelectedInvoiceId.HasValue)
         {
@@ -976,9 +977,46 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
+        if (previouslySelectedVersionGroupId.HasValue && previouslySelectedVersionGroupId.Value != Guid.Empty)
+        {
+            var latestVersionSelection = InvoiceRows.FirstOrDefault(row =>
+                row.EffectiveVersionGroupId == previouslySelectedVersionGroupId.Value);
+            if (latestVersionSelection is not null)
+            {
+                if (!ReferenceEquals(SelectedInvoiceRow, latestVersionSelection))
+                    SelectedInvoiceRow = latestVersionSelection;
+                return;
+            }
+        }
+
         if (SelectedInvoiceRow is not null)
             SelectedInvoiceRow = null;
     }
+
+    public async Task<LocalInvoice?> GetLatestSelectedInvoiceAsync(CancellationToken ct = default)
+    {
+        var selected = SelectedInvoiceRow;
+        if (selected is null)
+            return null;
+
+        var latest = await _local.GetLatestInvoiceVersionAsync(selected.Id, _session, ct);
+        if (latest is null)
+            return null;
+
+        if (latest.Id != selected.Id)
+        {
+            await LoadInvoiceListAsync();
+            var latestRow = InvoiceRows.FirstOrDefault(row => row.Id == latest.Id)
+                ?? InvoiceRows.FirstOrDefault(row => row.EffectiveVersionGroupId == ResolveEffectiveVersionGroupId(latest));
+            if (latestRow is not null)
+                SelectedInvoiceRow = latestRow;
+        }
+
+        return latest;
+    }
+
+    private static Guid ResolveEffectiveVersionGroupId(LocalInvoice invoice)
+        => invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
 
     private async Task<Dictionary<Guid, string>> BuildInvoiceCustomerNameMapAsync(IEnumerable<LocalInvoiceListSummary> invoices, CancellationToken ct)
     {
@@ -1282,7 +1320,7 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task EditInvoiceAsync()
     {
         if (SelectedInvoiceRow is null) return;
-        var inv = await _local.GetInvoiceAsync(SelectedInvoiceRow.Id, _session);
+        var inv = await GetLatestSelectedInvoiceAsync();
         if (inv is null) return;
 
         EditInvoiceId = inv.Id;
@@ -1475,10 +1513,10 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task LoadPaymentsAsync()
     {
         if (SelectedInvoiceRow is null) return;
-        PaymentInvoice = SelectedInvoiceRow;
 
-        var inv = await _local.GetInvoiceAsync(SelectedInvoiceRow.Id, _session);
+        var inv = await GetLatestSelectedInvoiceAsync();
         if (inv is null) return;
+        PaymentInvoice = ResolveInvoiceListRowForInvoice(inv);
 
         PaymentRows.Clear();
         foreach (var p in inv.Payments.Where(p => !p.IsDeleted))
@@ -1506,9 +1544,23 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        var targetInvoice = await _local.GetInvoiceAsync(PaymentInvoice.Id, _session);
+        var targetInvoice = await _local.GetLatestInvoiceVersionAsync(PaymentInvoice.Id, _session);
         if (targetInvoice is null)
             return;
+        if (targetInvoice.Id != PaymentInvoice.Id)
+        {
+            PaymentInvoice = ResolveInvoiceListRowForInvoice(targetInvoice);
+            PaymentRows.Clear();
+            foreach (var payment in targetInvoice.Payments.Where(payment => !payment.IsDeleted))
+                PaymentRows.Add(PaymentRowModel.FromLocal(payment));
+            RecalcPaymentTotals(targetInvoice);
+            System.Windows.MessageBox.Show(
+                "최신 전표 버전이 이미 저장되어 수금/지급 내역을 다시 불러왔습니다. 확인 후 다시 저장하세요.",
+                "최신 전표 재조회",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Information);
+            return;
+        }
 
         var inputTotal = PaymentRows.Sum(row => row.Amount);
         if (inputTotal > targetInvoice.TotalAmount)
@@ -1557,7 +1609,7 @@ public sealed partial class MainViewModel : ObservableObject
             savedRowCount++;
         }
 
-        var inv = await _local.GetInvoiceAsync(PaymentInvoice.Id, _session);
+        var inv = await _local.GetLatestInvoiceVersionAsync(PaymentInvoice.Id, _session);
         if (inv is not null) RecalcPaymentTotals(inv);
         await LoadInvoiceListAsync();
         var paymentServerWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
@@ -1573,6 +1625,19 @@ public sealed partial class MainViewModel : ObservableObject
         PaymentBalance = inv.TotalAmount - PaymentTotalPaid;
     }
 
+    private InvoiceListRow ResolveInvoiceListRowForInvoice(LocalInvoice invoice)
+    {
+        var existingRow = InvoiceRows.FirstOrDefault(row => row.Id == invoice.Id)
+            ?? InvoiceRows.FirstOrDefault(row => row.EffectiveVersionGroupId == ResolveEffectiveVersionGroupId(invoice));
+        if (existingRow is not null)
+            return existingRow;
+
+        var customerName = _customerNameById.TryGetValue(invoice.CustomerId, out var name)
+            ? name
+            : "(미지정)";
+        return InvoiceListRow.From(invoice, customerName, SelectedCustomerFilter is null);
+    }
+
     // Statement Print (F9)
     [RelayCommand]
     private async Task PrintStatementAsync()
@@ -1586,7 +1651,7 @@ public sealed partial class MainViewModel : ObservableObject
                 return;
             }
 
-            var inv = await _local.GetInvoiceAsync(target.Id, _session);
+            var inv = await _local.GetLatestInvoiceVersionAsync(target.Id, _session);
             var company = await _local.GetCompanyProfileAsync(_session);
 
             if (inv is null || company is null)

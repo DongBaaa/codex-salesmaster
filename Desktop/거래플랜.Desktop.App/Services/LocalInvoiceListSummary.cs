@@ -5,6 +5,7 @@ namespace 거래플랜.Desktop.App.Services;
 public sealed class LocalInvoiceListSummary
 {
     public Guid Id { get; set; }
+    public Guid VersionGroupId { get; set; }
     public Guid CustomerId { get; set; }
     public string ResponsibleOfficeCode { get; set; } = string.Empty;
     public Guid? LinkedRentalBillingProfileId { get; set; }

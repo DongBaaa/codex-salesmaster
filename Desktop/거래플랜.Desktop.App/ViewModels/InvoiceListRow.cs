@@ -10,6 +10,7 @@ namespace 거래플랜.Desktop.App.ViewModels;
 public sealed class InvoiceListRow
 {
     public Guid Id { get; init; }
+    public Guid VersionGroupId { get; init; }
     public Guid CustomerId { get; init; }
     public string InvoiceNumber { get; init; } = string.Empty;
     public string LocalTempNumber { get; init; } = string.Empty;
@@ -33,6 +34,7 @@ public sealed class InvoiceListRow
     public long Revision { get; init; }
 
     public string DisplayNumber => string.IsNullOrEmpty(InvoiceNumber) ? LocalTempNumber : InvoiceNumber;
+    public Guid EffectiveVersionGroupId => VersionGroupId == Guid.Empty ? Id : VersionGroupId;
     public string InvoiceDateDisplay => InvoiceDate.ToString("yyyy/MM/dd");
     public string TaxInvoiceDisplay => TaxInvoiceIssued ? "V" : string.Empty;
     public string PurchaseReceivingDisplay => VoucherType == VoucherType.Purchase
@@ -56,6 +58,7 @@ public sealed class InvoiceListRow
         return new InvoiceListRow
         {
             Id = inv.Id,
+            VersionGroupId = inv.VersionGroupId,
             CustomerId = inv.CustomerId,
             InvoiceNumber = inv.InvoiceNumber,
             LocalTempNumber = inv.LocalTempNumber,
@@ -96,6 +99,7 @@ public sealed class InvoiceListRow
         return new InvoiceListRow
         {
             Id = summary.Id,
+            VersionGroupId = summary.VersionGroupId,
             CustomerId = summary.CustomerId,
             InvoiceNumber = summary.InvoiceNumber,
             LocalTempNumber = summary.LocalTempNumber,

@@ -2159,6 +2159,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			select new LocalInvoiceListSummary
 			{
 				Id = invoice.Id,
+				VersionGroupId = invoice.VersionGroupId,
 				CustomerId = invoice.CustomerId,
 				ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
 				LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId,
@@ -2404,6 +2405,39 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	{
 		var invoice = await GetInvoiceAsync(id, ct);
 		return (invoice != null && CanAccessInvoice(invoice, session)) ? invoice : null;
+	}
+
+	public async Task<LocalInvoice?> GetLatestInvoiceVersionAsync(Guid invoiceIdOrVersionGroupId, SessionState session, CancellationToken ct = default(CancellationToken))
+	{
+		if (invoiceIdOrVersionGroupId == Guid.Empty)
+		{
+			return null;
+		}
+
+		var seed = await _db.Invoices.AsNoTracking()
+			.FirstOrDefaultAsync(invoice => invoice.Id == invoiceIdOrVersionGroupId, ct);
+		var versionGroupId = seed is null
+			? invoiceIdOrVersionGroupId
+			: seed.VersionGroupId == Guid.Empty
+				? seed.Id
+				: seed.VersionGroupId;
+
+		var latest = await _db.Invoices
+			.Include(invoice => invoice.Lines.Where(line => !line.IsDeleted))
+			.Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
+			.AsSplitQuery()
+			.AsNoTracking()
+			.Where(invoice =>
+				!invoice.IsDeleted &&
+				(invoice.VersionGroupId == versionGroupId ||
+				 (invoice.VersionGroupId == Guid.Empty && invoice.Id == versionGroupId) ||
+				 invoice.Id == invoiceIdOrVersionGroupId))
+			.OrderByDescending(invoice => invoice.IsLatestVersion)
+			.ThenByDescending(invoice => invoice.VersionNumber)
+			.ThenByDescending(invoice => invoice.UpdatedAtUtc)
+			.FirstOrDefaultAsync(ct);
+
+		return (latest != null && CanAccessInvoice(latest, session)) ? latest : null;
 	}
 
 	public async Task<LocalInvoice?> GetSalesInvoiceForRentalBillingAsync(Guid billingProfileId, Guid? billingRunId, SessionState session, CancellationToken ct = default(CancellationToken))
