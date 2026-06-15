@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$ProjectRoot,
     [ValidateSet('Pre','Post')][string]$Mode = 'Pre',
@@ -170,7 +170,7 @@ if ($Mode -eq 'Pre') {
     $requiredScripts = @(
         (Join-Path $ProjectRoot 'tools\release\Build-GeoraePlanDesktopInstaller.ps1'),
         (Join-Path $ProjectRoot 'tools\release\Publish-GeoraePlanUpdateAssets.ps1'),
-        (Join-Path $ProjectRoot 'tools\nas\Publish-GeoraeplanNasRelease.ps1'),
+        (Join-Path $ProjectRoot 'tools\linux\Publish-GeoraeplanLinuxPcRelease.ps1'),
         (Join-Path $scriptRoot 'Deploy-After-Test.ps1')
     )
 
@@ -187,7 +187,7 @@ if ($Mode -eq 'Pre') {
         $canCompare = -not [string]::IsNullOrWhiteSpace($desktopVersion) -and -not [string]::IsNullOrWhiteSpace($manifestDesktopVersion)
         $versionComparison = if ($canCompare) { Compare-Version $desktopVersion $manifestDesktopVersion } else { -999 }
         $isVersionReady = $canCompare -and $versionComparison -ge 0
-        Add-Check '소스 버전이 현재 local manifest보다 낮지 않음' $isVersionReady $(if (-not $canCompare) { 'manifest 또는 소스 버전 정보를 비교할 수 없습니다.' } elseif ($versionComparison -eq 0) { "소스 $desktopVersion / manifest $manifestDesktopVersion (동일 버전: 실제 live 업데이트 알림이 필요하면 NAS 기준 버전 확인 또는 버전 상향이 필요할 수 있습니다.)" } else { "소스 $desktopVersion / manifest $manifestDesktopVersion" })
+        Add-Check '소스 버전이 현재 local manifest보다 낮지 않음' $isVersionReady $(if (-not $canCompare) { 'manifest 또는 소스 버전 정보를 비교할 수 없습니다.' } elseif ($versionComparison -eq 0) { "소스 $desktopVersion / manifest $manifestDesktopVersion (동일 버전: 실제 live 업데이트 알림이 필요하면 Linux PC 기준 버전 확인 또는 버전 상향이 필요할 수 있습니다.)" } else { "소스 $desktopVersion / manifest $manifestDesktopVersion" })
     }
     else {
         Add-Check '기존 manifest 존재 여부' $true '기존 manifest가 없어도 최초 반영은 가능합니다.'

@@ -1,4 +1,4 @@
-# 거래플랜 Codex 작업 규칙
+﻿# 거래플랜 Codex 작업 규칙
 
 ## 세션 공통 사전점검 규칙
 - 모든 비단순 작업은 수정 전에 반드시 **사전 영향도 점검**부터 한다.
@@ -50,7 +50,7 @@
 
 - 앞으로 거래플랜, 워크플랜, itw 홈페이지는 한 번에 하나의 서비스만 작업한다.
 - 거래플랜 작업 중에는 워크플랜/itw 홈페이지 배포, 재시작, 정리 작업을 함께 진행하지 않는다.
-- 현재 거래플랜 서버 본체는 NAS가 아니라 Linux PC `itw@192.168.0.199:2222`의 `/srv/georaeplan` 기준으로 운영한다.
+- 현재 거래플랜 서버 본체는 Linux PC `itw@192.168.0.199:2222`의 `/srv/georaeplan` 기준으로 운영한다.
 - Docker 전체 재시작/정리 명령은 금지한다.
   - 금지: `docker compose down`, `docker system prune`, `docker container prune`, `docker image prune`, `docker volume prune`, `docker stop $(docker ps -q)`, `docker restart $(docker ps -q)`, `sudo reboot`, `sudo systemctl restart docker`.
   - 허용: Linux PC의 `/srv/georaeplan` 거래플랜 compose project 안에서 명시 서비스만 대상으로 하는 `compose up -d postgres`, `compose up -d --force-recreate api`.
@@ -59,4 +59,4 @@
 - 공통 인프라 영향 가능성이 있으면 `work.2884.kr`, `itw.2884.kr` 상태도 함께 확인한다.
 - live 반영 후에도 `trade.2884.kr`와 Linux PC 로그에서 502, timeout, Docker daemon, PostgreSQL 연결 오류 여부를 확인한다.
 - 장애가 발생하면 추가 배포를 중단하고 서비스별 원인 분리 결과를 먼저 보고한다.
-- `tools\nas`와 legacy NAS 런북은 과거 호환/참고용이며, 새 운영 작업은 `tools\linux`와 Linux PC 기준 절차를 우선한다.
+- 새 운영 작업은 `tools\\linux`와 Linux PC 기준 절차만 사용한다.

@@ -1,9 +1,8 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$ProjectRoot,
     [string]$SigningConfigPath,
     [string]$Channel = 'stable',
-    [switch]$DeployToNas,
     [switch]$DeployToLinuxPc,
     [switch]$NoRestore,
     [string]$DesktopMinimumSupportedVersion,
@@ -12,11 +11,6 @@ param(
     [switch]$MandatoryAndroid,
     [switch]$AllowLegacyLiveMirror,
     [switch]$AllowScheduledApplyTrigger,
-    [string]$NasSshHost,
-    [string]$NasSshUser,
-    [int]$NasSshPort = 0,
-    [string]$NasSshKeyPath,
-    [string]$NasRemoteOpsPath,
     [string]$LinuxSshHost = '192.168.0.199',
     [string]$LinuxSshUser = 'itw',
     [int]$LinuxSshPort = 2222,
@@ -103,10 +97,6 @@ function Resolve-ProjectFile {
 
 $ErrorActionPreference = 'Stop'
 
-if ($DeployToNas -and $DeployToLinuxPc) {
-    throw 'DeployToNas와 DeployToLinuxPc는 동시에 사용할 수 없습니다. 현재 운영 기준은 DeployToLinuxPc입니다.'
-}
-
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = Resolve-ProjectRoot -ScriptPath $MyInvocation.MyCommand.Path
 }
@@ -181,76 +171,6 @@ if ($MandatoryAndroid) {
 & powershell @updateArgs
 if ($LASTEXITCODE -ne 0) {
     throw 'update assets publish failed.'
-}
-
-if ($DeployToNas) {
-    $nasScript = Join-Path $ProjectRoot 'tools\nas\Publish-GeoraeplanNasRelease.ps1'
-    $nasArgs = @(
-        '-NoProfile'
-        '-ExecutionPolicy', 'Bypass'
-        '-File', $nasScript
-        '-ProjectRoot', $ProjectRoot
-        '-MirrorToLive'
-    )
-
-    if ($AllowLegacyLiveMirror) {
-        $nasArgs += '-AllowLegacyLiveMirror'
-    }
-    if ($AllowScheduledApplyTrigger) {
-        $nasArgs += '-AllowScheduledApplyTrigger'
-    }
-    if (-not [string]::IsNullOrWhiteSpace($NasSshHost)) {
-        $nasArgs += @('-NasSshHost', $NasSshHost)
-    }
-    if (-not [string]::IsNullOrWhiteSpace($NasSshUser)) {
-        $nasArgs += @('-NasSshUser', $NasSshUser)
-    }
-    if ($NasSshPort -gt 0) {
-        $nasArgs += @('-NasSshPort', $NasSshPort.ToString())
-    }
-    if (-not [string]::IsNullOrWhiteSpace($NasSshKeyPath)) {
-        $nasArgs += @('-NasSshKeyPath', $NasSshKeyPath)
-    }
-    if (-not [string]::IsNullOrWhiteSpace($NasRemoteOpsPath)) {
-        $nasArgs += @('-NasRemoteOpsPath', $NasRemoteOpsPath)
-    }
-    if ($SkipPreDeployOperationalGate) {
-        $nasArgs += '-SkipPreDeployOperationalGate'
-    }
-    if ($SkipPostDeployOperationalGate) {
-        $nasArgs += '-SkipPostDeployOperationalGate'
-    }
-    if (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) {
-        $nasArgs += @('-PreDeployBaseUrl', $PreDeployBaseUrl)
-    }
-    if (-not [string]::IsNullOrWhiteSpace($PreDeploySecretPath)) {
-        $nasArgs += @('-PreDeploySecretPath', $PreDeploySecretPath)
-    }
-    if (-not [string]::IsNullOrWhiteSpace($PreDeployOutputDirectory)) {
-        $nasArgs += @('-PreDeployOutputDirectory', $PreDeployOutputDirectory)
-    }
-    if ($PreDeployAllowedIntegrityWarningCodes.Count -gt 0) {
-        $nasArgs += '-PreDeployAllowedIntegrityWarningCodes'
-        $nasArgs += $PreDeployAllowedIntegrityWarningCodes
-    }
-    if (-not [string]::IsNullOrWhiteSpace($PostDeployBaseUrl)) {
-        $nasArgs += @('-PostDeployBaseUrl', $PostDeployBaseUrl)
-    }
-    if (-not [string]::IsNullOrWhiteSpace($PostDeploySecretPath)) {
-        $nasArgs += @('-PostDeploySecretPath', $PostDeploySecretPath)
-    }
-    if (-not [string]::IsNullOrWhiteSpace($PostDeployOutputDirectory)) {
-        $nasArgs += @('-PostDeployOutputDirectory', $PostDeployOutputDirectory)
-    }
-    if ($PostDeployAllowedIntegrityWarningCodes.Count -gt 0) {
-        $nasArgs += '-PostDeployAllowedIntegrityWarningCodes'
-        $nasArgs += $PostDeployAllowedIntegrityWarningCodes
-    }
-
-    & powershell @nasArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw 'NAS deployment failed.'
-    }
 }
 
 if ($DeployToLinuxPc) {

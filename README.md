@@ -1,4 +1,4 @@
-# 거래플랜
+﻿# 거래플랜
 
 - 문서 기준시점: 2026-03-12
 - 반영 범위: 커밋 이력 + HEAD(`42a0d21`) 기준 구현 상태
@@ -78,7 +78,7 @@ dotnet test "거래플랜.sln" -c Release --no-build
 - 참고: 현재는 `Tests\GeoraePlan.Server.Api.Tests` 중심의 서버 자동 테스트와 task 기반 스모크 검증이 포함되어 있어 `dotnet test` 는 최소 서버 회귀 검증까지 수행합니다.
 
 ## Linux PC 주기 점검 / 백업 / 인증서 갱신
-- 현재 거래플랜 서버 본체는 NAS가 아니라 Linux PC `itw@192.168.0.199:2222`의 `/srv/georaeplan` 기준으로 운영합니다.
+- 현재 거래플랜 서버 본체는 Linux PC `itw@192.168.0.199:2222`의 `/srv/georaeplan` 기준으로 운영합니다.
 - 운영 공개 URL:
   - https://trade.2884.kr/healthz
   - https://trade.2884.kr/updates/manifest?channel=stable
@@ -120,8 +120,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux
 사전 조건:
 - Windows 배포 PC에 `C:\Users\beene\.ssh\itwserver_codex_ed25519` 키가 있어야 합니다.
 - Linux PC의 `/srv/georaeplan/ops/apply-release.sh`가 존재하고 `bash -n` 검사를 통과해야 합니다.
-- 새 작업에서는 `tools\linux` 스크립트를 우선 사용하고, `tools\nas`는 과거 NAS 운영 호환/참고 목적 외에는 사용하지 않습니다.
-- Linux PC 전용 래퍼는 `-SkipConfigSync`를 기본 적용해 legacy NAS 설정이 `/srv/georaeplan/ops`에 덮어써지는 일을 방지합니다.
+- 새 작업에서는 `tools\\linux` 스크립트만 사용합니다.
 
 ## 인쇄 기본 동작
 - `[완료]` 판매(매출) 창에서 `출력물 편집` 후 데이터 저장
@@ -152,7 +151,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux
 - Linux PC 운영 런북: `D:\거래플랜\infra\LinuxPC-운영-런북.md`
 - Linux PC 설정 예시: `D:\거래플랜\infra\linux\.env.example`
 - Linux PC compose 예시: `D:\거래플랜\infra\linux\docker-compose.yml`
-- 참고용 legacy NAS 운영 런북(현 운영 기준 아님): `D:\거래플랜\infra\NAS-운영-런북.md`
 - 안드로이드 MVP 기능명세: `D:\거래플랜\tasks\안드로이드_MVP_기능명세_2026-03-19.md`
 - 안드로이드 MAUI 스캐폴드: `D:\거래플랜\Mobile\GeoraePlan.Mobile.App\README.md`
 - 안드로이드 빌드/서명/직접설치 가이드: `D:\거래플랜\Mobile\안드로이드_빌드_서명_설치_가이드_2026-03-19.md`

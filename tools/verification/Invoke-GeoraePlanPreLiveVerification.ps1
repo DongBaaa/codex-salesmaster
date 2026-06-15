@@ -25,18 +25,18 @@
     [string]$MobileApkPath = '',
     [string]$MobileAndroidSdkDirectory = '',
     [string]$MobileJavaSdkDirectory = '',
-    [string]$NasRoot = '',
+    [string]$LinuxPcRoot = '',
     [string]$UpdateChannel = 'stable',
     [string]$UpdateHttpBaseUrl = '',
-    [int]$ExpectedNasReleaseCount = 2,
+    [int]$ExpectedLinuxPcReleaseCount = 2,
     [int]$MinVisibleCustomers = 1,
     [int]$MinVisibleItems = 1,
     [int]$MinVisibleInvoices = 1,
     [switch]$FailOnIntegrityWarnings,
     [string[]]$AllowedIntegrityWarningCodes = @(),
     [switch]$SkipPreValidationSync,
-    [switch]$SkipNasLiveDriftCheck,
-    [switch]$SkipNasUpdateManifestCheck,
+    [switch]$SkipLinuxPcLiveDriftCheck,
+    [switch]$SkipLinuxPcUpdateManifestCheck,
     [switch]$SkipUpdateHttpRouteCheck
 )
 
@@ -423,22 +423,22 @@ function Convert-ReleaseInfoToMap {
     return $map
 }
 
-function Invoke-NasLiveDriftCheck {
+function Invoke-LinuxPcLiveDriftCheck {
     param(
         [string]$ProjectRoot,
-        [string]$NasRoot,
+        [string]$LinuxPcRoot,
         [int]$ExpectedReleaseCount
     )
 
-    if ([string]::IsNullOrWhiteSpace($NasRoot)) {
-        return 'SKIP - NAS root not configured'
+    if ([string]::IsNullOrWhiteSpace($LinuxPcRoot)) {
+        return 'SKIP - Linux PC root not configured'
     }
 
-    if (-not (Test-Path -LiteralPath $NasRoot)) {
-        return "SKIP - NAS root unavailable: $NasRoot"
+    if (-not (Test-Path -LiteralPath $LinuxPcRoot)) {
+        return "SKIP - Linux PC root unavailable: $LinuxPcRoot"
     }
 
-    $liveInfoPath = Join-Path $NasRoot 'app\live\release-info.txt'
+    $liveInfoPath = Join-Path $LinuxPcRoot 'app\live\release-info.txt'
     if (-not (Test-Path -LiteralPath $liveInfoPath)) {
         return "SKIP - live release-info not found: $liveInfoPath"
     }
@@ -462,7 +462,7 @@ function Invoke-NasLiveDriftCheck {
         ($headCommit.StartsWith($liveCommit, [System.StringComparison]::OrdinalIgnoreCase) -or
          $liveCommit.StartsWith($headCommit, [System.StringComparison]::OrdinalIgnoreCase))
 
-    $releasesRoot = Join-Path $NasRoot 'releases'
+    $releasesRoot = Join-Path $LinuxPcRoot 'releases'
     $releaseCount = if (Test-Path -LiteralPath $releasesRoot) {
         @(Get-ChildItem -LiteralPath $releasesRoot -Directory -ErrorAction SilentlyContinue).Count
     }
@@ -479,7 +479,7 @@ function Invoke-NasLiveDriftCheck {
         'ok'
     }
 
-    $detail = "live_release_id=$releaseId; live_built_at=$builtAt; head_commit=$headCommit; live_commit=$liveCommit; live_matches_head=$isSameCommit; nas_release_count=$releaseCount; nas_release_count_status=$releaseCountStatus"
+    $detail = "live_release_id=$releaseId; live_built_at=$builtAt; head_commit=$headCommit; live_commit=$liveCommit; live_matches_head=$isSameCommit; linux_pc_release_count=$releaseCount; linux_pc_release_count_status=$releaseCountStatus"
     if ($releaseCountStatus -like 'exceeds_expected_*') {
         throw $detail
     }
@@ -505,7 +505,7 @@ function Get-ObjectPropertyValue {
     return $property.Value
 }
 
-function Test-NasUpdatePackage {
+function Test-LinuxPcUpdatePackage {
     param(
         [Parameter(Mandatory = $true)][object]$Manifest,
         [Parameter(Mandatory = $true)][string]$Platform,
@@ -593,29 +593,29 @@ function Test-NasUpdatePackage {
     return "$Platform=$safeFileName version=$version size=$($file.Length) sha256=ok"
 }
 
-function Invoke-NasUpdateManifestCheck {
+function Invoke-LinuxPcUpdateManifestCheck {
     param(
-        [string]$NasRoot,
+        [string]$LinuxPcRoot,
         [string]$Channel
     )
 
-    if ([string]::IsNullOrWhiteSpace($NasRoot)) {
-        return 'SKIP - NAS root not configured'
+    if ([string]::IsNullOrWhiteSpace($LinuxPcRoot)) {
+        return 'SKIP - Linux PC root not configured'
     }
 
-    if (-not (Test-Path -LiteralPath $NasRoot)) {
-        return "SKIP - NAS root unavailable: $NasRoot"
+    if (-not (Test-Path -LiteralPath $LinuxPcRoot)) {
+        return "SKIP - Linux PC root unavailable: $LinuxPcRoot"
     }
 
-    $storageRoot = Join-Path $NasRoot 'app\live\updates'
+    $storageRoot = Join-Path $LinuxPcRoot 'app\live\updates'
     $manifestPath = Join-Path (Join-Path $storageRoot 'manifest') (($Channel.Trim().ToLowerInvariant()) + '.json')
     if (-not (Test-Path -LiteralPath $manifestPath)) {
         throw "update manifest is missing: $manifestPath"
     }
 
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    $desktopDetail = Test-NasUpdatePackage -Manifest $manifest -Platform 'desktop' -StorageRoot $storageRoot
-    $androidDetail = Test-NasUpdatePackage -Manifest $manifest -Platform 'android' -StorageRoot $storageRoot
+    $desktopDetail = Test-LinuxPcUpdatePackage -Manifest $manifest -Platform 'desktop' -StorageRoot $storageRoot
+    $androidDetail = Test-LinuxPcUpdatePackage -Manifest $manifest -Platform 'android' -StorageRoot $storageRoot
     $generatedAtUtc = [string](Get-ObjectPropertyValue -Object $manifest -Name 'generatedAtUtc')
 
     return "channel=$Channel; generatedAtUtc=$generatedAtUtc; $desktopDetail; $androidDetail"
@@ -1012,7 +1012,7 @@ function Invoke-SyncErrorGuard {
         [string]$BaseUrl,
         [string]$Username,
         [string]$Password,
-        [string]$NasRoot,
+        [string]$LinuxPcRoot,
         [string]$EvidenceDirectory
     )
 
@@ -1030,8 +1030,8 @@ function Invoke-SyncErrorGuard {
         -Username $Username `
         -Password $Password `
         -EvidenceDirectory $guardEvidence `
-        -NasRoot $NasRoot `
-        -ScanNasDockerLogs 2>&1
+        -LinuxPcRoot $LinuxPcRoot `
+        -ScanLinuxPcDockerLogs 2>&1
     $text = Convert-OutputText $output
     $rawPath = Join-Path $guardEvidence ('sync-error-guard-wrapper-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.txt')
     $text | Set-Content -LiteralPath $rawPath -Encoding UTF8
@@ -1364,7 +1364,7 @@ else {
 
 if ($IncludeSyncErrorGuard) {
     Invoke-StepWithReport -Name 'sync-error-guard' -Script {
-        Invoke-SyncErrorGuard -ProjectRoot $ProjectRoot -BaseUrl $BaseUrl -Username $Username -Password $Password -NasRoot $NasRoot -EvidenceDirectory $EvidenceDirectory
+        Invoke-SyncErrorGuard -ProjectRoot $ProjectRoot -BaseUrl $BaseUrl -Username $Username -Password $Password -LinuxPcRoot $LinuxPcRoot -EvidenceDirectory $EvidenceDirectory
     }
 }
 else {
@@ -1433,18 +1433,18 @@ else {
     Add-StepResult -Name 'local-dirty-check' -Passed $true -Detail 'SKIP'
 }
 
-if (-not $SkipNasLiveDriftCheck) {
+if (-not $SkipLinuxPcLiveDriftCheck) {
     Invoke-Step -Name 'nas-live-drift-check' -Script {
-        Invoke-NasLiveDriftCheck -ProjectRoot $ProjectRoot -NasRoot $NasRoot -ExpectedReleaseCount $ExpectedNasReleaseCount
+        Invoke-LinuxPcLiveDriftCheck -ProjectRoot $ProjectRoot -LinuxPcRoot $LinuxPcRoot -ExpectedReleaseCount $ExpectedLinuxPcReleaseCount
     }
 }
 else {
     Add-StepResult -Name 'nas-live-drift-check' -Passed $true -Detail 'SKIP'
 }
 
-if (-not $SkipNasUpdateManifestCheck) {
+if (-not $SkipLinuxPcUpdateManifestCheck) {
     Invoke-Step -Name 'nas-update-manifest-check' -Script {
-        Invoke-NasUpdateManifestCheck -NasRoot $NasRoot -Channel $UpdateChannel
+        Invoke-LinuxPcUpdateManifestCheck -LinuxPcRoot $LinuxPcRoot -Channel $UpdateChannel
     }
 }
 else {
@@ -1515,12 +1515,12 @@ $report = [pscustomobject]@{
     IncludePrintDocumentSmoke = [bool]$IncludePrintDocumentSmoke
     IncludeMobileBuild = [bool]$IncludeMobileBuild
     IncludeMobileE2E = [bool]$IncludeMobileE2E
-    NasRoot = $NasRoot
+    LinuxPcRoot = $LinuxPcRoot
     UpdateChannel = $UpdateChannel
     UpdateHttpBaseUrl = $UpdateHttpBaseUrl
-    ExpectedNasReleaseCount = $ExpectedNasReleaseCount
-    SkipNasLiveDriftCheck = [bool]$SkipNasLiveDriftCheck
-    SkipNasUpdateManifestCheck = [bool]$SkipNasUpdateManifestCheck
+    ExpectedLinuxPcReleaseCount = $ExpectedLinuxPcReleaseCount
+    SkipLinuxPcLiveDriftCheck = [bool]$SkipLinuxPcLiveDriftCheck
+    SkipLinuxPcUpdateManifestCheck = [bool]$SkipLinuxPcUpdateManifestCheck
     SkipUpdateHttpRouteCheck = [bool]$SkipUpdateHttpRouteCheck
     Overall = $overall
     Results = @($Results.ToArray())
@@ -1548,16 +1548,16 @@ $lines.Add("- sync error guard 포함: $([bool]$IncludeSyncErrorGuard)") | Out-N
 $lines.Add("- print document smoke 포함: $([bool]$IncludePrintDocumentSmoke)") | Out-Null
 $lines.Add("- mobile build 포함: $([bool]$IncludeMobileBuild)") | Out-Null
 $lines.Add("- mobile E2E 포함: $([bool]$IncludeMobileE2E)") | Out-Null
-$lines.Add("- Linux PC live drift 확인: $(-not [bool]$SkipNasLiveDriftCheck)") | Out-Null
-$lines.Add("- Linux PC update manifest 확인: $(-not [bool]$SkipNasUpdateManifestCheck)") | Out-Null
+$lines.Add("- Linux PC live drift 확인: $(-not [bool]$SkipLinuxPcLiveDriftCheck)") | Out-Null
+$lines.Add("- Linux PC update manifest 확인: $(-not [bool]$SkipLinuxPcUpdateManifestCheck)") | Out-Null
 $lines.Add("- 업데이트 HTTP route 확인: $(-not [bool]$SkipUpdateHttpRouteCheck)") | Out-Null
 $lines.Add("- 업데이트 채널: $UpdateChannel") | Out-Null
 if (-not [string]::IsNullOrWhiteSpace($UpdateHttpBaseUrl)) {
     $lines.Add("- 업데이트 HTTP BaseUrl: $UpdateHttpBaseUrl") | Out-Null
 }
-if (-not [string]::IsNullOrWhiteSpace($NasRoot)) {
-    $lines.Add("- Linux PC 배포 root: $NasRoot") | Out-Null
-    $lines.Add("- Linux PC release 보관 기대 개수: $ExpectedNasReleaseCount") | Out-Null
+if (-not [string]::IsNullOrWhiteSpace($LinuxPcRoot)) {
+    $lines.Add("- Linux PC 배포 root: $LinuxPcRoot") | Out-Null
+    $lines.Add("- Linux PC release 보관 기대 개수: $ExpectedLinuxPcReleaseCount") | Out-Null
 }
 $lines.Add('') | Out-Null
 $lines.Add('| 결과 | 단계 | 상세 | 리포트 |') | Out-Null

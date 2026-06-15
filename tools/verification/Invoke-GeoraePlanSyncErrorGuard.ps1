@@ -4,9 +4,9 @@
     [string]$Username = 'usenet',
     [string]$Password = '1234',
     [string]$EvidenceDirectory = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'output\sync-error-guard'),
-    [string]$NasRoot = '',
+    [string]$LinuxPcRoot = '',
     [datetime]$SinceUtc = [DateTime]::UtcNow,
-    [switch]$ScanNasDockerLogs,
+    [switch]$ScanLinuxPcDockerLogs,
     [switch]$SkipRepeatedSaveSmoke,
     [switch]$SkipSameAccountConcurrencySmoke,
     [switch]$SkipRealtimeRevisionSmoke,
@@ -97,12 +97,12 @@ function Invoke-SmokeScript {
     }
 }
 
-function Get-NasEnvMap {
-    param([string]$NasRoot)
+function Get-LinuxPcEnvMap {
+    param([string]$LinuxPcRoot)
 
-    $envPath = Join-Path $NasRoot 'ops\.env'
+    $envPath = Join-Path $LinuxPcRoot 'ops\.env'
     if (-not (Test-Path -LiteralPath $envPath)) {
-        throw "NAS 환경 파일을 찾지 못했습니다: $envPath"
+        throw "Linux PC 환경 파일을 찾지 못했습니다: $envPath"
     }
 
     $map = @{}
@@ -115,34 +115,34 @@ function Get-NasEnvMap {
     return $map
 }
 
-function Invoke-NasSyncErrorLogScan {
+function Invoke-LinuxPcSyncErrorLogScan {
     param(
-        [string]$NasRoot,
+        [string]$LinuxPcRoot,
         [datetime]$SinceUtc,
         [string]$EvidenceDirectory
     )
 
-    $nasEnv = Get-NasEnvMap -NasRoot $NasRoot
+    $linuxPcEnv = Get-LinuxPcEnvMap -LinuxPcRoot $LinuxPcRoot
     $ssh = 'C:\Windows\System32\OpenSSH\ssh.exe'
     if (-not (Test-Path -LiteralPath $ssh)) {
         $ssh = 'ssh'
     }
 
-    $hostName = [string]$nasEnv['NAS_SSH_HOST']
-    $userName = [string]$nasEnv['NAS_SSH_USER']
-    $port = [string]$nasEnv['NAS_SSH_PORT']
-    $keyPath = [string]$nasEnv['NAS_SSH_KEY_PATH']
+    $hostName = [string]$linuxPcEnv['LINUX_PC_SSH_HOST']
+    $userName = [string]$linuxPcEnv['LINUX_PC_SSH_USER']
+    $port = [string]$linuxPcEnv['LINUX_PC_SSH_PORT']
+    $keyPath = [string]$linuxPcEnv['LINUX_PC_SSH_KEY_PATH']
     if ([string]::IsNullOrWhiteSpace($hostName) -or
         [string]::IsNullOrWhiteSpace($userName) -or
         [string]::IsNullOrWhiteSpace($port) -or
         [string]::IsNullOrWhiteSpace($keyPath)) {
-        throw 'NAS SSH 설정이 부족합니다. ops\.env의 NAS_SSH_HOST/USER/PORT/KEY_PATH를 확인하세요.'
+        throw 'Linux PC SSH 설정이 부족합니다. ops\.env의 LINUX_PC_SSH_HOST/USER/PORT/KEY_PATH를 확인하세요.'
     }
 
     $sinceText = $SinceUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $pattern = '(^fail:|^error:|Unhandled exception|A second operation|DbUpdateConcurrencyException|동기화 오류|동기화 실패|sync/push failed|Timeout during reading attempt)'
     $remoteCommand = "/usr/local/bin/docker logs --since '$sinceText' georaeplan-api-1 2>&1 | grep -i -E '$pattern' | tail -200 || true"
-    $rawPath = Join-Path $EvidenceDirectory 'nas-sync-error-log-scan.txt'
+    $rawPath = Join-Path $EvidenceDirectory 'linuxpc-sync-error-log-scan.txt'
     $output = & $ssh -p $port -i $keyPath -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$userName@$hostName" $remoteCommand 2>&1
     $text = Convert-OutputText $output
     $text | Set-Content -LiteralPath $rawPath -Encoding UTF8
@@ -232,17 +232,17 @@ else {
     Add-Step -Name 'realtime-revision' -Result 'SKIP' -Detail 'Skipped by option'
 }
 
-if ($ScanNasDockerLogs) {
+if ($ScanLinuxPcDockerLogs) {
     try {
-        $result = Invoke-NasSyncErrorLogScan -NasRoot $NasRoot -SinceUtc $effectiveSinceUtc -EvidenceDirectory $EvidenceDirectory
-        Add-Step -Name 'nas-sync-error-log-scan' -Result 'PASS' -Detail $result.Detail -RawOutputPath $result.RawOutputPath
+        $result = Invoke-LinuxPcSyncErrorLogScan -LinuxPcRoot $LinuxPcRoot -SinceUtc $effectiveSinceUtc -EvidenceDirectory $EvidenceDirectory
+        Add-Step -Name 'linuxpc-sync-error-log-scan' -Result 'PASS' -Detail $result.Detail -RawOutputPath $result.RawOutputPath
     }
     catch {
-        Add-Step -Name 'nas-sync-error-log-scan' -Result 'FAIL' -Detail $_.Exception.Message
+        Add-Step -Name 'linuxpc-sync-error-log-scan' -Result 'FAIL' -Detail $_.Exception.Message
     }
 }
 else {
-    Add-Step -Name 'nas-sync-error-log-scan' -Result 'SKIP' -Detail 'Skipped by option'
+    Add-Step -Name 'linuxpc-sync-error-log-scan' -Result 'SKIP' -Detail 'Skipped by option'
 }
 
 $failed = @($script:Steps | Where-Object { $_.Result -eq 'FAIL' })

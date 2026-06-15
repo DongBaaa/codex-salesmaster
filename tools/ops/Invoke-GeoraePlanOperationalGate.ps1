@@ -5,7 +5,6 @@ param(
     [string]$Channel = "stable",
     [string]$SecretPath = "D:\거래플랜-운영검증-secrets.json",
     [string]$ApprovedTargetsPath = "",
-    [Alias('NasStateRoot')]
     [string]$PlatformStateRoot = "",
     [string]$OutputDirectory = "",
     [switch]$FailOnIntegrityWarnings,

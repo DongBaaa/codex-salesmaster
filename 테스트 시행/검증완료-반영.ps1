@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$ProjectRoot,
     [string]$ChecklistPath,
@@ -7,17 +7,17 @@ param(
     [string]$CommitMessage,
     [string]$Remote = 'origin',
     [string[]]$IncludeUntrackedPaths = @(),
-    [switch]$SkipNas,
+    [switch]$SkipLinuxPc,
     [switch]$SkipGit,
     [switch]$SkipPush,
     [switch]$DryRun,
     [switch]$AllowLegacyLiveMirror,
     [switch]$AllowScheduledApplyTrigger,
-    [string]$NasSshHost,
-    [string]$NasSshUser,
-    [int]$NasSshPort = 0,
-    [string]$NasSshKeyPath,
-    [string]$NasRemoteOpsPath
+    [string]$LinuxSshHost,
+    [string]$LinuxSshUser,
+    [int]$LinuxSshPort = 0,
+    [string]$LinuxSshKeyPath,
+    [string]$LinuxRemoteOpsPath
 )
 
 $scriptPath = Join-Path $PSScriptRoot 'Deploy-After-Test.ps1'

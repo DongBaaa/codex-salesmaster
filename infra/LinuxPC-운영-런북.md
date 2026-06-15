@@ -1,4 +1,4 @@
-# 거래플랜 Linux PC 운영 런북
+﻿# 거래플랜 Linux PC 운영 런북
 
 ## 1. 현재 운영 기준
 
@@ -8,7 +8,7 @@
 - live 앱 경로: `/srv/georaeplan/app/live`
 - release 보관 경로: `/srv/georaeplan/releases`
 - 공개 주소: `https://trade.2884.kr`
-- NAS는 서버 본체가 아니라 필요 시 reverse proxy/네트워크 중계 역할만 담당합니다.
+- 필요한 reverse proxy/네트워크 중계도 Linux PC 운영 기준으로 확인합니다.
 
 ## 2. 배포 원칙
 
@@ -61,10 +61,10 @@ ssh -i "$env:USERPROFILE\.ssh\itwserver_codex_ed25519" -p 2222 itw@192.168.0.199
 
 현재 운영 중인 `/srv/georaeplan/ops/.env`와 compose 파일은 실제 운영값을 포함할 수 있으므로, 저장소의 예시 파일로 무조건 덮어쓰지 않습니다.
 
-## 6. 구 NAS 문서 처리
+## 6. 구 운영 문서 처리
 
-- `D:\거래플랜\infra\NAS-*.md`
+- 구 운영 문서
 - `D:\거래플랜\infra\nas\*`
-- `D:\거래플랜\tools\nas\*`
+- 구 운영 스크립트
 
 위 파일들은 legacy 또는 기존 호환용입니다. 새 작업에서는 Linux PC 런북과 `tools\linux` 스크립트를 우선 사용합니다.
