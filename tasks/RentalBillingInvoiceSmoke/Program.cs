@@ -280,8 +280,8 @@ internal static class Program
 
         var arrearsMonths = BuildMonthLabels(quarterEndRun!);
         Ensure(
-            arrearsMonths.SequenceEqual(new[] { 1, 2, 3 }),
-            $"후불 분기말 3개월 청구는 1월, 2월, 3월이어야 합니다. 실제: {string.Join(", ", arrearsMonths)}");
+            arrearsMonths.SequenceEqual(new[] { 3, 4, 5 }),
+            $"시작월 3월인 후불 3개월 청구는 3월, 4월, 5월이어야 합니다. 실제: {string.Join(", ", arrearsMonths)}");
 
         var explicitAnchorCustomerId = SeedCustomer(local, adminSession, "ZZZ-연도경계 후불 검증 거래처", "999-99-91002");
         var explicitAnchorProfileId = Guid.NewGuid();
@@ -321,8 +321,8 @@ internal static class Program
 
         var explicitAnchorMonths = BuildMonthLabels(explicitAnchorRun!);
         Ensure(
-            explicitAnchorMonths.SequenceEqual(new[] { 11, 12, 1 }),
-            $"기준월 1월인 후불 1월 3개월 청구는 11월, 12월, 1월이어야 합니다. 실제: {string.Join(", ", explicitAnchorMonths)}");
+            explicitAnchorMonths.SequenceEqual(new[] { 1, 2, 3 }),
+            $"시작월 1월인 후불 1월 3개월 청구는 1월, 2월, 3월이어야 합니다. 실제: {string.Join(", ", explicitAnchorMonths)}");
 
         var advanceCustomerId = SeedCustomer(local, adminSession, "ZZZ-연도경계 선불 검증 거래처", "999-99-91003");
         var advanceProfileId = Guid.NewGuid();

@@ -3998,8 +3998,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             : $"매월 {RentalBillingScheduleRules.NormalizeBillingDay(EditBillingDay)}일";
         var anchorText = cycleMonths == 1
             ? "매월"
-            : $"{anchorMonth}월 기준";
-        return $"청구 대상 기간: {period.StartDate:yyyy-MM} ~ {period.EndDate:yyyy-MM} / 청구일 규칙: {dayModeText} / 기준월: {anchorText} / 예상 결제일: {dueDate:yyyy-MM-dd}";
+            : $"{anchorMonth}월 시작";
+        return $"청구 대상 기간: {period.StartDate:yyyy-MM} ~ {period.EndDate:yyyy-MM} / 청구일 규칙: {dayModeText} / 시작월: {anchorText} / 예상 결제일: {dueDate:yyyy-MM-dd}";
     }
 
     private string BuildDocumentIssuePreview()

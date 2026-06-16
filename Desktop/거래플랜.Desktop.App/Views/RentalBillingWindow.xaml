@@ -634,7 +634,7 @@
 
                             <TextBlock Grid.Row="5" Grid.Column="0" Text="청구 주기(개월)"/>
                             <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding EditBillingCycleMonths, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
-                            <TextBlock Grid.Row="5" Grid.Column="3" Text="청구 기준월"/>
+                            <TextBlock Grid.Row="5" Grid.Column="3" Text="청구 시작월"/>
                             <ComboBox Grid.Row="5" Grid.Column="4" Style="{StaticResource BillingAnchorMonthComboBoxStyle}" ItemsSource="{Binding BillingAnchorMonthOptions}" SelectedItem="{Binding EditBillingAnchorMonth}" Margin="0,0,0,6">
                                 <ComboBox.Resources>
                                     <Style TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}">

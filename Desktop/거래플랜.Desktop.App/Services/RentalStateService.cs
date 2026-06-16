@@ -9539,7 +9539,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var nextDateText = nextBillingDate.HasValue
             ? $"다음 결제예정일은 {nextBillingDate.Value:yyyy-MM-dd}입니다."
             : "다음 결제예정일을 계산할 수 없습니다.";
-        return $"이 렌탈은 {RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths)}개월 {NormalizeBillingAdvanceMode(profile.BillingAdvanceMode)} / {dayModeText} / 기준월 {profile.BillingAnchorMonth}월로 계산되어 {NormalizeReferenceDate(referenceDate):yyyy-MM-dd}에는 청구할 수 없습니다. {nextDateText}";
+        return $"이 렌탈은 {RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths)}개월 {NormalizeBillingAdvanceMode(profile.BillingAdvanceMode)} / {dayModeText} / 시작월 {profile.BillingAnchorMonth}월로 계산되어 {NormalizeReferenceDate(referenceDate):yyyy-MM-dd}에는 청구할 수 없습니다. {nextDateText}";
     }
 
     private static (DateOnly StartDate, DateOnly EndDate) ResolveBillingPeriod(LocalRentalBillingProfile profile, DateOnly scheduledDate, int cycleMonths)

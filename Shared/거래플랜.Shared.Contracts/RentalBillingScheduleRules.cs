@@ -124,25 +124,11 @@ public static class RentalBillingScheduleRules
         DateOnly scheduledDate)
     {
         cycleMonths = NormalizeCycleMonths(cycleMonths);
-        var isAdvance = string.Equals((billingAdvanceMode ?? string.Empty).Trim(), "선불", StringComparison.Ordinal);
         var monthStart = new DateOnly(scheduledDate.Year, scheduledDate.Month, 1);
-        var monthEnd = new DateOnly(scheduledDate.Year, scheduledDate.Month, DateTime.DaysInMonth(scheduledDate.Year, scheduledDate.Month));
+        var endMonth = monthStart.AddMonths(cycleMonths - 1);
+        var end = new DateOnly(endMonth.Year, endMonth.Month, DateTime.DaysInMonth(endMonth.Year, endMonth.Month));
 
-        if (cycleMonths == 1)
-            return (monthStart, monthEnd);
-
-        if (isAdvance)
-        {
-            var start = monthStart;
-            var endMonth = monthStart.AddMonths(cycleMonths - 1);
-            var end = new DateOnly(endMonth.Year, endMonth.Month, DateTime.DaysInMonth(endMonth.Year, endMonth.Month));
-            return (start, end);
-        }
-
-        var endDate = monthEnd;
-        var startMonth = monthStart.AddMonths(-(cycleMonths - 1));
-        var startDate = new DateOnly(startMonth.Year, startMonth.Month, 1);
-        return (startDate, endDate);
+        return (monthStart, end);
     }
 
     public static DateOnly? CalculateDocumentIssueDate(

@@ -948,13 +948,13 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         var billingDayText = string.Equals(BillingDayMode, RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal)
             ? "말일"
             : $"매월 {BillingDay}일";
-        var anchorText = cycleMonths == 1 ? "매월" : $"{BillingAnchorMonth}월 기준";
+        var anchorText = cycleMonths == 1 ? "매월" : $"{BillingAnchorMonth}월 시작";
 
         BillingPreviewPeriod = period.StartDate == period.EndDate || (period.StartDate.Year == period.EndDate.Year && period.StartDate.Month == period.EndDate.Month)
             ? $"{period.StartDate:yyyy-MM}"
             : $"{period.StartDate:yyyy-MM} ~ {period.EndDate:yyyy-MM}";
         ExpectedBillingAmountText = $"{TemplateItems.Sum(item => item.EffectiveAmount) * cycleMonths:N0}원";
-        BillingSchedulePreviewText = $"청구일 규칙: {billingDayText} / 기준월: {anchorText} / 예상 결제일: {dueDate:yyyy-MM-dd}";
+        BillingSchedulePreviewText = $"청구일 규칙: {billingDayText} / 시작월: {anchorText} / 예상 결제일: {dueDate:yyyy-MM-dd}";
         DocumentIssuePreviewText = issueDate.HasValue
             ? $"서류 발송 규칙: {BuildDocumentIssueModeText()} / 예상 발송일: {issueDate.Value:yyyy-MM-dd}"
             : "서류 발송일을 계산할 수 없습니다.";
