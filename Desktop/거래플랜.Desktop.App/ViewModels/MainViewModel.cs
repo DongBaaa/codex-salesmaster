@@ -1382,6 +1382,7 @@ public sealed partial class MainViewModel : ObservableObject
             Role = _session.User?.Role ?? DomainConstants.RoleUser,
             OfficeCode = _session.OfficeCode,
             ForceOverride = false,
+            AutoRebaseWhenLatestSavedBySameUser = true,
             ExpectedConcurrencyStamp = string.IsNullOrWhiteSpace(_editConcurrencyStamp)
                 ? null
                 : _editConcurrencyStamp

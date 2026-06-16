@@ -2540,7 +2540,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		if (latest != null && !context.ForceOverride && !string.IsNullOrWhiteSpace(context.ExpectedConcurrencyStamp) && !string.Equals(context.ExpectedConcurrencyStamp, latest.ConcurrencyStamp, StringComparison.OrdinalIgnoreCase))
 		{
-			return InvoiceSaveResult.Conflict("다른 사용자가 먼저 저장했습니다. 최신 전표를 다시 불러온 뒤 다시 시도하세요.");
+			if (!CanAutoRebaseInvoiceOnLatestSameUserSave(context, latest))
+			{
+				return InvoiceSaveResult.Conflict("다른 사용자가 먼저 저장했습니다. 최신 전표를 다시 불러온 뒤 다시 시도하세요.");
+			}
+
+			AppLogger.Info(
+				"INVOICE",
+				$"전표 동시수정 충돌을 같은 사용자 최신 저장분 기준으로 자동 재기반 처리합니다. invoice={latest.Id}, user={context.Username}, expectedStamp={context.ExpectedConcurrencyStamp}, latestStamp={latest.ConcurrencyStamp}");
 		}
 		Guid versionGroupId = ResolveVersionGroupId(invoice, latest);
 		if (latest != null && latest.VersionGroupId == Guid.Empty)
@@ -2655,6 +2662,24 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		await _db.SaveChangesAsync(ct);
 		await RebuildInventorySnapshotsAsync(context, ct);
 		return InvoiceSaveResult.Ok(newInvoice.Id, newInvoice.ConcurrencyStamp, (latest == null) ? "전표를 저장했습니다." : $"전표 {newInvoice.VersionNumber}차 버전으로 저장했습니다.");
+	}
+
+	private static bool CanAutoRebaseInvoiceOnLatestSameUserSave(InvoiceSaveContext context, LocalInvoice latest)
+	{
+		if (!context.AutoRebaseWhenLatestSavedBySameUser)
+		{
+			return false;
+		}
+
+		if (string.IsNullOrWhiteSpace(context.Username) || string.IsNullOrWhiteSpace(latest.LastSavedByUsername))
+		{
+			return false;
+		}
+
+		return string.Equals(
+			context.Username.Trim(),
+			latest.LastSavedByUsername.Trim(),
+			StringComparison.OrdinalIgnoreCase);
 	}
 
 	public async Task DeleteInvoiceAsync(Guid id, CancellationToken ct = default(CancellationToken))
@@ -5692,6 +5717,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			Role = (string.IsNullOrWhiteSpace(context?.Role) ? "user" : context.Role.Trim()),
 			OfficeCode = NormalizeOfficeCode(context?.OfficeCode, DomainConstants.OfficeUsenet),
 			ForceOverride = (context?.ForceOverride ?? false),
+			AutoRebaseWhenLatestSavedBySameUser = context?.AutoRebaseWhenLatestSavedBySameUser ?? false,
 			ExpectedConcurrencyStamp = context?.ExpectedConcurrencyStamp
 		};
 	}

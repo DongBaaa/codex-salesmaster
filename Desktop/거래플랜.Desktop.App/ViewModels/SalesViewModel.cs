@@ -1536,6 +1536,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             Role = _session.User?.Role ?? DomainConstants.RoleUser,
             OfficeCode = _session.OfficeCode,
             ForceOverride = forceOverride,
+            AutoRebaseWhenLatestSavedBySameUser = true,
             ExpectedConcurrencyStamp = string.IsNullOrWhiteSpace(CurrentConcurrencyStamp)
                 ? null
                 : CurrentConcurrencyStamp
