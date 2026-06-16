@@ -2056,6 +2056,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 : new RentalBillingRunSettlementInfo(Math.Max(0m, run.SettledAmount), run.SettledDate);
             var settledAmount = Math.Max(0m, settlementInfo.SettledAmount);
             var hasInvoice = invoiceByRun.TryGetValue(run.RunId, out var invoice);
+            if (ShouldIgnorePreFirstBillingRun(profile, run, referenceDate, hasInvoice, settledAmount))
+                continue;
+
             var hasBillingEvidence = HasBillingRunFinancialEvidence(
                 run,
                 hasInvoice,
@@ -2112,6 +2115,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         return string.Equals(status, PaymentFlowConstants.BillingStatusInProgress, StringComparison.OrdinalIgnoreCase) ||
                string.Equals(status, PaymentFlowConstants.BillingStatusCompleted, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldIgnorePreFirstBillingRun(
+        LocalRentalBillingProfile profile,
+        RentalBillingRunModel run,
+        DateOnly referenceDate,
+        bool hasInvoice,
+        decimal settledAmount)
+    {
+        if (hasInvoice || settledAmount > 0m)
+            return false;
+
+        var firstBillingDate = ResolveFirstBillingDate(profile, referenceDate);
+        return firstBillingDate.HasValue && run.ScheduledDate.DayNumber < firstBillingDate.Value.DayNumber;
     }
 
     private static bool ShouldReplaceBillingHistoryRun(
@@ -2201,6 +2218,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 : new RentalBillingRunSettlementInfo(Math.Max(0m, run.SettledAmount), run.SettledDate);
             var settledAmount = Math.Max(0m, settlementInfo.SettledAmount);
             var hasInvoice = invoiceByRun.ContainsKey(run.RunId);
+            if (ShouldIgnorePreFirstBillingRun(profile, run, referenceDate, hasInvoice, settledAmount))
+                continue;
+
             var hasBillingEvidence = HasBillingRunFinancialEvidence(
                 run,
                 hasInvoice,
@@ -8918,14 +8938,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private static string ResolveTemplateBillingLineMode(string? itemBillingLineMode, string? defaultBillingType)
     {
-        var normalizedItemMode = NormalizeBillingLineMode(itemBillingLineMode);
-        if (!string.IsNullOrWhiteSpace(normalizedItemMode))
-            return normalizedItemMode;
-
         var normalizedDefault = NormalizeBillingType(defaultBillingType);
-        return string.Equals(normalizedDefault, "혼합", StringComparison.OrdinalIgnoreCase)
-            ? "묶음"
-            : normalizedDefault;
+        if (string.Equals(normalizedDefault, "개별", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalizedDefault, "묶음", StringComparison.OrdinalIgnoreCase))
+        {
+            return normalizedDefault;
+        }
+
+        var normalizedItemMode = NormalizeBillingLineMode(itemBillingLineMode);
+        return string.IsNullOrWhiteSpace(normalizedItemMode) ? "묶음" : normalizedItemMode;
     }
 
     private static string ResolveProfileBillingTypeFromTemplateItems(
@@ -9578,27 +9599,34 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var normalizedReference = NormalizeReferenceDate(referenceDate);
         var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
         var anchorMonth = Math.Clamp(profile.BillingAnchorMonth, 1, 12);
+        DateOnly? firstBillingDate = null;
+        if (cycleMonths > 1 && normalizedReference.Month < anchorMonth)
+        {
+            firstBillingDate = RentalBillingScheduleRules.BuildBillingDate(
+                normalizedReference.Year,
+                anchorMonth,
+                profile.BillingDay,
+                profile.BillingDayMode);
+        }
+
         var explicitStartDate = profile.BillingAnchorDate
                                 ?? profile.BillingStartDate
                                 ?? profile.ContractStartDate
                                 ?? profile.ContractDate;
         if (explicitStartDate.HasValue)
         {
-            return RentalBillingScheduleRules.BuildBillingDate(
+            var explicitBillingDate = RentalBillingScheduleRules.BuildBillingDate(
                 explicitStartDate.Value.Year,
                 explicitStartDate.Value.Month,
                 profile.BillingDay,
                 profile.BillingDayMode);
+
+            return firstBillingDate.HasValue && firstBillingDate.Value > explicitBillingDate
+                ? firstBillingDate.Value
+                : explicitBillingDate;
         }
 
-        if (cycleMonths <= 1 || normalizedReference.Month >= anchorMonth)
-            return null;
-
-        return RentalBillingScheduleRules.BuildBillingDate(
-            normalizedReference.Year,
-            anchorMonth,
-            profile.BillingDay,
-            profile.BillingDayMode);
+        return firstBillingDate;
     }
 
     private static string BuildBillingMonthDeniedMessage(

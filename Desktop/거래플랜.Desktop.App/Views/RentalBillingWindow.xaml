@@ -697,6 +697,8 @@
                             <Button Content="새 장비연결" Background="#6A1B9A" BorderBrush="#6A1B9A" Click="OpenAssetLinkDialogButton_Click" IsEnabled="{Binding CanOpenAssetLinkDialog}"/>
                         </WrapPanel>
                         <TextBlock Text="{Binding ApplySelectedAssetsHint}" Foreground="#90CAF9" Margin="0,0,0,8" TextWrapping="Wrap"/>
+                        <TextBlock Text="청구유형이 묶음/개별이면 표시품목 라인유형이 자동으로 같은 값으로 고정됩니다. 품목별로 섞어 쓰려면 청구유형을 혼합으로 선택하세요."
+                                   Foreground="#90CAF9" Margin="0,0,0,8" TextWrapping="Wrap"/>
 
                         <TextBlock Text="청구서 표시 품목" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,6"/>
                         <DataGrid ItemsSource="{Binding TemplateItems}" SelectedItem="{Binding SelectedTemplateItem}" Height="210" Margin="0,0,0,10" IsReadOnly="{Binding IsCustomerGroupSelection}">
@@ -705,7 +707,8 @@
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
                                             <ComboBox ItemsSource="{Binding DataContext.BillingLineModeOptions, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                      SelectedItem="{Binding BillingLineMode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                                      SelectedItem="{Binding BillingLineMode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                      IsEnabled="{Binding DataContext.CanEditTemplateLineMode, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                         </DataTemplate>
                                     </DataGridTemplateColumn.CellTemplate>
                                 </DataGridTemplateColumn>

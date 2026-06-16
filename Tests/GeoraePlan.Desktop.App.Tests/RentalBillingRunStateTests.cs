@@ -110,6 +110,122 @@ public sealed class RentalBillingRunStateTests
         }
     }
 
+    [Theory]
+    [InlineData("개별", "묶음", "개별")]
+    [InlineData("묶음", "개별", "묶음")]
+    public async Task SaveBillingProfile_ProfileBillingTypeOverridesStoredTemplateLineMode(
+        string requestedBillingType,
+        string storedLineMode,
+        string expectedLineMode)
+    {
+        PrepareAppRoot("georaeplan-rental-billing-type-line-mode");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Billing type line mode customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            await db.SaveChangesAsync();
+
+            var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.BillingType = requestedBillingType;
+            profile.BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "Rental Copier Fee",
+                    BillingLineMode = storedLineMode,
+                    RepresentativeAssetId = assetId,
+                    Quantity = 1m,
+                    UnitPrice = 100_000m,
+                    Amount = 100_000m,
+                    IncludedAssetIds = [assetId]
+                }
+            });
+
+            var service = new RentalStateService(db);
+            var result = await service.SaveBillingProfileAsync(profile, CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            var persisted = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(requestedBillingType, persisted.BillingType);
+            var templateItem = Assert.Single(DeserializeTemplateItems(persisted.BillingTemplateJson));
+            Assert.Equal(expectedLineMode, templateItem.BillingLineMode);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task StartBilling_ProfileIndividualTypeOverridesStoredBundleLineModeForInvoiceLines()
+    {
+        PrepareAppRoot("georaeplan-rental-individual-type-invoice-lines");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Individual billing type customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var assetIds = new[] { Guid.NewGuid(), Guid.NewGuid() };
+            foreach (var assetId in assetIds)
+                db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+
+            var profile = CreateBillingProfile(profileId, assetIds, customerName, customerId);
+            profile.BillingType = "개별";
+            profile.BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "Rental Copier Fee",
+                    BillingLineMode = "묶음",
+                    RepresentativeAssetId = assetIds[0],
+                    Quantity = 1m,
+                    UnitPrice = 100_000m,
+                    Amount = 100_000m,
+                    IncludedAssetIds = assetIds.ToList()
+                }
+            });
+            db.RentalBillingProfiles.Add(profile);
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var result = await service.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+
+            Assert.True(result.Success, result.Message);
+            var invoice = await db.Invoices
+                .Include(current => current.Lines)
+                .AsNoTracking()
+                .SingleAsync(current => current.LinkedRentalBillingProfileId == profileId);
+            Assert.Equal(2, invoice.Lines.Count(line => !line.IsDeleted));
+
+            var persisted = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            var run = Assert.Single(DeserializeRuns(persisted.BillingRunsJson));
+            var runItem = Assert.Single(run.Items);
+            Assert.Equal("개별", runItem.BillingLineMode);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     [Fact]
     public async Task GetBillingRows_StartMonthSevenBeforeFirstRun_ShowsJulyPeriodWithoutOutstandingPreview()
     {
@@ -159,6 +275,185 @@ public sealed class RentalBillingRunStateTests
             Assert.False(row.HasPastUnresolved);
             Assert.Equal(0, row.PastUnresolvedCount);
             Assert.Equal(0m, row.PastUnresolvedAmount);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetBillingRows_StartMonthSevenWithJanuaryContract_UsesSelectedStartMonth()
+    {
+        PrepareAppRoot("georaeplan-rental-start-month-seven-contract");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Start month with contract customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.BillingCycleMonths = 6;
+            profile.BillingAnchorMonth = 7;
+            profile.BillingAnchorDate = null;
+            profile.BillingStartDate = new DateOnly(2026, 1, 25);
+            profile.ContractDate = new DateOnly(2026, 1, 25);
+            profile.ContractStartDate = null;
+            profile.LastBilledDate = null;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var rows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    ReferenceDate = new DateOnly(2026, 6, 16),
+                    ExpandCustomerSummaryRows = true
+                },
+                session);
+
+            var row = Assert.Single(rows, current => current.Source.Id == profileId);
+            Assert.Equal(new DateOnly(2026, 7, 25), row.NextBillingDate);
+            Assert.Equal("2026-07 ~ 2026-12", row.CurrentBillingPeriodLabel);
+            Assert.Equal(0m, row.OutstandingAmount);
+            Assert.False(row.HasPastUnresolved);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetBillingRows_StartMonthSevenIgnoresOldPreviewRunBeforeFirstBillingDate()
+    {
+        PrepareAppRoot("georaeplan-rental-start-month-seven-old-run");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Old preview run customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.BillingCycleMonths = 6;
+            profile.BillingAnchorMonth = 7;
+            profile.BillingStartDate = new DateOnly(2026, 1, 25);
+            profile.ContractDate = new DateOnly(2026, 1, 25);
+            profile.LastBilledDate = null;
+            profile.BillingRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel>
+            {
+                new()
+                {
+                    RunId = Guid.NewGuid(),
+                    RunKey = "20260101-20260630",
+                    ScheduledDate = new DateOnly(2026, 1, 25),
+                    PeriodStartDate = new DateOnly(2026, 1, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    CycleMonths = 6,
+                    PeriodLabel = "2026-01 ~ 2026-06",
+                    Status = PaymentFlowConstants.BillingStatusPlanned,
+                    BilledAmount = 600_000m,
+                    SettledAmount = 0m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusUnpaid
+                }
+            });
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var rows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    ReferenceDate = new DateOnly(2026, 6, 16),
+                    ExpandCustomerSummaryRows = true
+                },
+                session);
+
+            var row = Assert.Single(rows, current => current.Source.Id == profileId);
+            Assert.Equal(new DateOnly(2026, 7, 25), row.NextBillingDate);
+            Assert.Equal("2026-07 ~ 2026-12", row.CurrentBillingPeriodLabel);
+            Assert.Equal(0m, row.PastUnresolvedAmount);
+            Assert.Equal(0, row.PastUnresolvedCount);
+            Assert.False(row.HasPastUnresolved);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task StartBilling_StartMonthSevenBeforeFirstRun_CreatesJulyToDecemberInvoice()
+    {
+        PrepareAppRoot("georaeplan-rental-start-month-seven-invoice");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Start month invoice customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.BillingCycleMonths = 6;
+            profile.BillingAnchorMonth = 7;
+            profile.BillingStartDate = new DateOnly(2026, 1, 25);
+            profile.ContractDate = new DateOnly(2026, 1, 25);
+            profile.LastBilledDate = null;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var result = await service.StartBillingAsync(profileId, new DateOnly(2026, 6, 16), session);
+
+            Assert.True(result.Success, result.Message);
+            var invoice = await db.Invoices
+                .Include(current => current.Lines)
+                .AsNoTracking()
+                .SingleAsync(current => current.LinkedRentalBillingProfileId == profileId);
+            Assert.Equal(new DateOnly(2026, 7, 25), invoice.InvoiceDate);
+            Assert.Equal(6, invoice.Lines.Count(line => !line.IsDeleted));
+            var orderedLineNames = invoice.Lines
+                .Where(line => !line.IsDeleted)
+                .OrderBy(line => line.OrderIndex)
+                .Select(line => line.ItemNameOriginal)
+                .ToList();
+            Assert.Equal("사무기기 렌탈대금[7월]", orderedLineNames.First());
+            Assert.Equal("사무기기 렌탈대금[12월]", orderedLineNames.Last());
+
+            var persistedProfile = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            var currentRun = Assert.Single(DeserializeRuns(persistedProfile.BillingRunsJson));
+            Assert.Equal(new DateOnly(2026, 7, 25), currentRun.ScheduledDate);
+            Assert.Equal(new DateOnly(2026, 7, 1), currentRun.PeriodStartDate);
+            Assert.Equal(new DateOnly(2026, 12, 31), currentRun.PeriodEndDate);
         }
         finally
         {
@@ -370,6 +665,11 @@ public sealed class RentalBillingRunStateTests
         => string.IsNullOrWhiteSpace(json)
             ? []
             : JsonSerializer.Deserialize<List<RentalBillingRunModel>>(json) ?? [];
+
+    private static List<RentalBillingTemplateItemModel> DeserializeTemplateItems(string? json)
+        => string.IsNullOrWhiteSpace(json)
+            ? []
+            : JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(json) ?? [];
 
     private static string ShortCode(string prefix, Guid id)
         => $"{prefix}-{id:N}"[..12];

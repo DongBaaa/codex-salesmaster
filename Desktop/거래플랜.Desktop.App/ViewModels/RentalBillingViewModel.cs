@@ -146,6 +146,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public bool CanOpenAssetLinkDialog => CanEditBillingProfileDetails &&
                                           CanEditCurrentSelection &&
                                           !string.IsNullOrWhiteSpace(EditCustomerName);
+    public bool CanEditTemplateLineMode => CanEditBillingProfileDetails &&
+                                           string.Equals((EditBillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal);
     public bool CanExpandSelectedSummary => SelectedRow?.IsAggregateRow == true && !ShowIndividualProfiles;
     public bool CanStartBillingSelected => SelectedRow is not null &&
                                            CanEditCurrentSelection &&
@@ -380,9 +382,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     }
     partial void OnEditBillingTypeChanged(string value)
     {
+        ApplyBillingTypeToTemplateLineModes(value);
         SyncIndividualTemplateItemsFromIncludedAssets();
         NormalizeTemplateRepresentativeAssets();
         UpdateTemplateDerivedValues();
+        OnPropertyChanged(nameof(CanEditTemplateLineMode));
     }
     partial void OnSelectedTemplateItemChanged(RentalBillingTemplateEditorItem? value)
     {
@@ -1688,6 +1692,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         OnPropertyChanged(nameof(CanRemoveIncludedAsset));
         OnPropertyChanged(nameof(CanSetRepresentativeAsset));
         OnPropertyChanged(nameof(CanApplySelectedAssets));
+        OnPropertyChanged(nameof(CanEditTemplateLineMode));
         ExpandSelectedSummaryCommand.NotifyCanExecuteChanged();
         RemoveIncludedAssetCommand.NotifyCanExecuteChanged();
         SetRepresentativeAssetCommand.NotifyCanExecuteChanged();
@@ -2852,6 +2857,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         TemplateItems.ReplaceWith(editorItems);
         SelectedTemplateItem = TemplateItems.FirstOrDefault();
+        ApplyBillingTypeToTemplateLineModes(EditBillingType);
+        SyncIndividualTemplateItemsFromIncludedAssets();
         NormalizeTemplateRepresentativeAssets();
         UpdateTemplateDerivedValues();
         _selectedRowBaselineSignature = BuildCurrentEditorSignature();
@@ -3288,6 +3295,43 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         return collectionChanged || valueChanged;
+    }
+
+    private bool ApplyBillingTypeToTemplateLineModes(string? billingType)
+    {
+        var normalizedBillingType = NormalizeBillingProfileTypeValue(billingType);
+        if (string.Equals(normalizedBillingType, "혼합", StringComparison.Ordinal) ||
+            TemplateItems.Count == 0)
+        {
+            return false;
+        }
+
+        var changed = false;
+        _suppressTemplateItemChangeHandling = true;
+        try
+        {
+            foreach (var item in TemplateItems)
+            {
+                if (!string.Equals(item.BillingLineMode, normalizedBillingType, StringComparison.Ordinal))
+                {
+                    item.BillingLineMode = normalizedBillingType;
+                    changed = true;
+                }
+
+                if (string.Equals(normalizedBillingType, "개별", StringComparison.Ordinal) &&
+                    item.RepresentativeAssetId.HasValue)
+                {
+                    item.RepresentativeAssetId = null;
+                    changed = true;
+                }
+            }
+        }
+        finally
+        {
+            _suppressTemplateItemChangeHandling = false;
+        }
+
+        return changed;
     }
 
     private bool ConfigureIndividualTemplateItemFromAsset(
@@ -3936,7 +3980,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             NormalizeText(EditBusinessNumber),
             NormalizeText(EditInstallLocation),
             NormalizeText(EditItemName),
-            NormalizeBillingLineModeValue(EditBillingType),
+            NormalizeBillingProfileTypeValue(EditBillingType),
             NormalizeBillingAdvanceModeValue(EditBillingAdvanceMode),
             NormalizeText(EditOfficeCode),
             NormalizeText(EditBillingMethod),
@@ -4144,15 +4188,22 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private static string ResolveDefaultTemplateBillingLineMode(string? defaultBillingType)
     {
-        var normalizedDefault = NormalizeBillingLineModeValue(defaultBillingType);
-        return string.IsNullOrWhiteSpace(normalizedDefault) ? "묶음" : normalizedDefault;
+        var normalizedDefault = NormalizeBillingProfileTypeValue(defaultBillingType);
+        return string.Equals(normalizedDefault, "개별", StringComparison.Ordinal) ? "개별" : "묶음";
     }
 
     private static string ResolveTemplateBillingLineMode(string? itemBillingLineMode, string? defaultBillingType)
     {
+        var normalizedDefault = NormalizeBillingProfileTypeValue(defaultBillingType);
+        if (string.Equals(normalizedDefault, "개별", StringComparison.Ordinal) ||
+            string.Equals(normalizedDefault, "묶음", StringComparison.Ordinal))
+        {
+            return normalizedDefault;
+        }
+
         var normalizedItemMode = NormalizeBillingLineModeValue(itemBillingLineMode);
         return string.IsNullOrWhiteSpace(normalizedItemMode)
-            ? ResolveDefaultTemplateBillingLineMode(defaultBillingType)
+            ? "묶음"
             : normalizedItemMode;
     }
 
@@ -4182,6 +4233,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             : string.Equals(trimmed, "묶음", StringComparison.Ordinal)
                 ? "묶음"
                 : string.Empty;
+    }
+
+    private static string NormalizeBillingProfileTypeValue(string? value)
+    {
+        var trimmed = (value ?? string.Empty).Trim();
+        return trimmed switch
+        {
+            "개별" => "개별",
+            "혼합" => "혼합",
+            _ => "묶음"
+        };
     }
 
     private static string NormalizeBillingAdvanceModeValue(string? value)
