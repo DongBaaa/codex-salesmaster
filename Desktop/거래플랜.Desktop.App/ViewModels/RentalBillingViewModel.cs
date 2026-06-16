@@ -3991,15 +3991,24 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             cycleMonths,
             anchorMonth,
             referenceDate,
-            ToDateOnly(EditLastBilledDate));
+            ToDateOnly(EditLastBilledDate),
+            ResolvePreviewFirstBillingDate(
+                EditBillingDay,
+                EditBillingDayMode,
+                anchorMonth,
+                referenceDate,
+                ToDateOnly(EditBillingAnchorDate),
+                ToDateOnly(EditBillingStartDate),
+                ToDateOnly(EditContractStartDate),
+                ToDateOnly(EditContractDate)));
         var period = RentalBillingScheduleRules.ResolveBillingPeriod(cycleMonths, EditBillingAdvanceMode, dueDate);
         var dayModeText = string.Equals(EditBillingDayMode, RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal)
             ? "말일"
             : $"매월 {RentalBillingScheduleRules.NormalizeBillingDay(EditBillingDay)}일";
         var anchorText = cycleMonths == 1
             ? "매월"
-            : $"{anchorMonth}월 시작";
-        return $"청구 대상 기간: {period.StartDate:yyyy-MM} ~ {period.EndDate:yyyy-MM} / 청구일 규칙: {dayModeText} / 시작월: {anchorText} / 예상 결제일: {dueDate:yyyy-MM-dd}";
+            : $"{anchorMonth}월부터 반복";
+        return $"청구 대상 기간: {period.StartDate:yyyy-MM} ~ {period.EndDate:yyyy-MM} / 청구일 규칙: {dayModeText} / 청구기간 시작월: {anchorText} / 예상 결제일: {dueDate:yyyy-MM-dd}";
     }
 
     private string BuildDocumentIssuePreview()
@@ -4024,7 +4033,16 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             cycleMonths,
             anchorMonth,
             referenceDate,
-            ToDateOnly(EditLastBilledDate));
+            ToDateOnly(EditLastBilledDate),
+            ResolvePreviewFirstBillingDate(
+                EditBillingDay,
+                EditBillingDayMode,
+                anchorMonth,
+                referenceDate,
+                ToDateOnly(EditBillingAnchorDate),
+                ToDateOnly(EditBillingStartDate),
+                ToDateOnly(EditContractStartDate),
+                ToDateOnly(EditContractDate)));
         var issueDate = RentalBillingScheduleRules.CalculateDocumentIssueDate(dueDate, EditDocumentIssueMode, EditDocumentLeadDays);
         if (!issueDate.HasValue)
             return "서류 발송일을 계산할 수 없습니다.";
@@ -4038,6 +4056,30 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         };
 
         return $"서류 발송 규칙: {modeText} / 예상 발송일: {issueDate.Value:yyyy-MM-dd}";
+    }
+
+    private static DateOnly ResolvePreviewFirstBillingDate(
+        int billingDay,
+        string? billingDayMode,
+        int anchorMonth,
+        DateOnly referenceDate,
+        DateOnly? billingAnchorDate,
+        DateOnly? billingStartDate,
+        DateOnly? contractStartDate,
+        DateOnly? contractDate)
+    {
+        var explicitStartDate = billingAnchorDate
+                                ?? billingStartDate
+                                ?? contractStartDate
+                                ?? contractDate;
+        var startMonth = explicitStartDate.HasValue
+            ? new DateOnly(explicitStartDate.Value.Year, explicitStartDate.Value.Month, 1)
+            : new DateOnly(referenceDate.Year, Math.Clamp(anchorMonth, 1, 12), 1);
+        return RentalBillingScheduleRules.BuildBillingDate(
+            startMonth.Year,
+            startMonth.Month,
+            billingDay,
+            billingDayMode);
     }
 
     private string BuildApplySelectedAssetsHint(int linkedAssetCount)

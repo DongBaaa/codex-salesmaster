@@ -50,4 +50,19 @@ public sealed class RentalBillingScheduleRulesTests
         Assert.Equal(new DateOnly(2026, 7, 1), period.StartDate);
         Assert.Equal(new DateOnly(2026, 12, 31), period.EndDate);
     }
+
+    [Fact]
+    public void ResolveApplicableBillingDate_DoesNotBackfillBeforeFirstBillingDate()
+    {
+        var scheduledDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+            billingDay: 25,
+            billingDayMode: RentalBillingScheduleRules.BillingDayModeFixedDay,
+            cycleMonths: 6,
+            anchorMonth: 7,
+            referenceDate: new DateOnly(2026, 6, 16),
+            lastBilledDate: null,
+            firstBillingDate: new DateOnly(2026, 7, 25));
+
+        Assert.Equal(new DateOnly(2026, 7, 25), scheduledDate);
+    }
 }

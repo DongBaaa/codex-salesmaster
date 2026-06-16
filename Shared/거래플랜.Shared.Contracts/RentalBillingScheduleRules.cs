@@ -99,12 +99,38 @@ public static class RentalBillingScheduleRules
         int anchorMonth,
         DateOnly referenceDate,
         DateOnly? lastBilledDate)
+        => ResolveApplicableBillingDate(
+            billingDay,
+            billingDayMode,
+            cycleMonths,
+            anchorMonth,
+            referenceDate,
+            lastBilledDate,
+            firstBillingDate: null);
+
+    public static DateOnly ResolveApplicableBillingDate(
+        int billingDay,
+        string? billingDayMode,
+        int cycleMonths,
+        int anchorMonth,
+        DateOnly referenceDate,
+        DateOnly? lastBilledDate,
+        DateOnly? firstBillingDate)
     {
         cycleMonths = NormalizeCycleMonths(cycleMonths);
         anchorMonth = Math.Clamp(anchorMonth, 1, 12);
         var lag = cycleMonths == 1 ? 0 : GetBillingLagMonths(referenceDate.Month, anchorMonth, cycleMonths);
         var applicableMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1).AddMonths(-lag);
         var candidate = BuildBillingDate(applicableMonth.Year, applicableMonth.Month, billingDay, billingDayMode);
+
+        if (firstBillingDate.HasValue)
+        {
+            while (candidate < firstBillingDate.Value)
+            {
+                applicableMonth = applicableMonth.AddMonths(cycleMonths);
+                candidate = BuildBillingDate(applicableMonth.Year, applicableMonth.Month, billingDay, billingDayMode);
+            }
+        }
 
         if (lastBilledDate.HasValue)
         {
@@ -176,4 +202,3 @@ public static class RentalBillingScheduleRules
         return candidate;
     }
 }
-

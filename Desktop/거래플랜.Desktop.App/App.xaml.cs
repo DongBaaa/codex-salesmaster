@@ -183,6 +183,7 @@ public partial class App : Application
         TaskScheduler.UnobservedTaskException += HandleTaskSchedulerUnhandledException;
 
         DataGridAutoColumnWidthService.RegisterGlobal();
+        WindowActivationStackService.RegisterGlobal();
 
 
 

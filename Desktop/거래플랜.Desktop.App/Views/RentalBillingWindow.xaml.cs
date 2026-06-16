@@ -82,7 +82,7 @@ public partial class RentalBillingWindow : Window
             {
                 var confirm = MessageBox.Show(
                     this,
-                    $"{viewModel.SelectedRow.CustomerDisplayName} 거래처에 이전 청구월 미처리 내역 {viewModel.SelectedRow.PastUnresolvedCount:N0}건 / 미수 {viewModel.SelectedRow.PastUnresolvedAmount:N0}원이 있습니다.{Environment.NewLine}{Environment.NewLine}그래도 선택한 청구월 청구서를 만들까요?",
+                    $"{viewModel.SelectedRow.CustomerDisplayName} 거래처에 이전 청구 미처리 내역 {viewModel.SelectedRow.PastUnresolvedCount:N0}건 / 미수 {viewModel.SelectedRow.PastUnresolvedAmount:N0}원이 있습니다.{Environment.NewLine}{Environment.NewLine}그래도 조회/작성 기준일의 청구서를 만들까요?",
                     "과거 미처리 확인",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Warning);
@@ -102,7 +102,7 @@ public partial class RentalBillingWindow : Window
                     : string.Empty;
                 var confirm = MessageBox.Show(
                     this,
-                    $"{row.CustomerDisplayName} 거래처 그룹의 개별 청구 프로필 {profileCount:N0}건을 선택한 청구월 기준으로 청구 시작하시겠습니까?{excludedUnlinkedText}{Environment.NewLine}{Environment.NewLine}일부 프로필에서 실패하면 성공/실패 건수가 나뉘어 표시됩니다.",
+                    $"{row.CustomerDisplayName} 거래처 그룹의 개별 청구 프로필 {profileCount:N0}건을 조회/작성 기준일로 청구 시작하시겠습니까?{excludedUnlinkedText}{Environment.NewLine}{Environment.NewLine}일부 프로필에서 실패하면 성공/실패 건수가 나뉘어 표시됩니다.",
                     "거래처 그룹 청구 확인",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Warning);
@@ -196,7 +196,7 @@ public partial class RentalBillingWindow : Window
         {
             if (!history.CanRegisterSettlement)
             {
-                MessageBox.Show("선택한 청구월은 남은 미수금이 없어 입금 등록할 금액이 없습니다.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("선택한 조회/작성 기준일의 청구는 남은 미수금이 없어 입금 등록할 금액이 없습니다.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 

@@ -1444,9 +1444,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profileAssets ??= new List<LocalRentalAsset>();
             var templateItems = GetBillingTemplateItems(profile, profileAssets);
             var runs = GetBillingRuns(profile);
+            var persistedRuns = runs.ToList();
             var previewRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: false, templateItems, runs);
             var billingRuns = ResolveBillingRunsForRowBuild(
-                runs,
+                persistedRuns,
                 referenceDate,
                 includeHistoryRows);
             preparedProfiles.Add(new RentalBillingPreparedProfile(
@@ -1760,20 +1761,27 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 ? nextBillingDate.Value.DayNumber - referenceDate.DayNumber
                 : (int?)null;
         var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
+        var hasCurrentInvoice = currentRun is not null && invoiceByRun.ContainsKey(currentRun.RunId);
         var settledAmount = currentRun is not null
             ? settlementByRun.TryGetValue(currentRun.RunId, out var runSettlementInfo)
                 ? runSettlementInfo.SettledAmount
                 : Math.Max(0m, currentRun.SettledAmount)
             : Math.Max(0m, profile.SettledAmount);
-        var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
+        var hasCurrentBillingEvidence = currentRun is not null &&
+                                        HasBillingRunFinancialEvidence(currentRun, hasCurrentInvoice, settledAmount);
+        var outstandingAmount = hasCurrentBillingEvidence
+            ? Math.Max(0m, billedAmount - settledAmount)
+            : 0m;
         var currentRunStatus = currentRun?.Status ?? string.Empty;
         if (string.IsNullOrWhiteSpace(currentRunStatus) || string.Equals(currentRunStatus, PaymentFlowConstants.BillingStatusPlanned, StringComparison.OrdinalIgnoreCase))
         {
-            currentRunStatus = outstandingAmount <= 0m && billedAmount > 0m
-                ? PaymentFlowConstants.BillingStatusCompleted
-                : settledAmount > 0m
-                    ? PaymentFlowConstants.BillingStatusInProgress
-                    : PaymentFlowConstants.BillingStatusPlanned;
+            currentRunStatus = !hasCurrentBillingEvidence
+                ? PaymentFlowConstants.BillingStatusPlanned
+                : outstandingAmount <= 0m && billedAmount > 0m
+                    ? PaymentFlowConstants.BillingStatusCompleted
+                    : settledAmount > 0m
+                        ? PaymentFlowConstants.BillingStatusInProgress
+                        : PaymentFlowConstants.BillingStatusPlanned;
         }
 
         var dataIssues = BuildBillingDataIssues(profile, assetSummary, profileAssets, templateItems);
@@ -2047,11 +2055,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 ? foundSettlement
                 : new RentalBillingRunSettlementInfo(Math.Max(0m, run.SettledAmount), run.SettledDate);
             var settledAmount = Math.Max(0m, settlementInfo.SettledAmount);
-            var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
-            var runMonth = new DateOnly(run.ScheduledDate.Year, run.ScheduledDate.Month, 1);
-            var isPastUnresolved = runMonth < referenceMonth && billedAmount > 0m && outstandingAmount > 0m;
-            var settlementStatus = ResolveBillingHistorySettlementStatus(profile, run, settledAmount, billedAmount, outstandingAmount);
             var hasInvoice = invoiceByRun.TryGetValue(run.RunId, out var invoice);
+            var hasBillingEvidence = HasBillingRunFinancialEvidence(
+                run,
+                hasInvoice,
+                settledAmount,
+                includePlannedWithoutInvoice: true);
+            var outstandingAmount = hasBillingEvidence
+                ? Math.Max(0m, billedAmount - settledAmount)
+                : 0m;
+            var runMonth = new DateOnly(run.ScheduledDate.Year, run.ScheduledDate.Month, 1);
+            var isPastUnresolved = hasBillingEvidence && runMonth < referenceMonth && billedAmount > 0m && outstandingAmount > 0m;
+            var settlementStatus = ResolveBillingHistorySettlementStatus(profile, run, settledAmount, billedAmount, outstandingAmount);
 
             rows.Add(new RentalBillingHistoryRow
             {
@@ -2078,6 +2093,26 @@ WHERE ""AssignedUsername"" <> '';", ct);
     }
 
     private readonly record struct BillingRunHistoryEntry(RentalBillingRunModel Run, int SourceIndex);
+
+    private static bool HasBillingRunFinancialEvidence(
+        RentalBillingRunModel run,
+        bool hasInvoice,
+        decimal settledAmount,
+        bool includePlannedWithoutInvoice = false)
+    {
+        if (hasInvoice || settledAmount > 0m)
+            return true;
+
+        if (includePlannedWithoutInvoice && run.BilledAmount > 0m)
+            return true;
+
+        var status = (run.Status ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(status))
+            return run.BilledAmount > 0m;
+
+        return string.Equals(status, PaymentFlowConstants.BillingStatusInProgress, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(status, PaymentFlowConstants.BillingStatusCompleted, StringComparison.OrdinalIgnoreCase);
+    }
 
     private static bool ShouldReplaceBillingHistoryRun(
         RentalBillingRunModel existing,
@@ -2165,9 +2200,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 ? foundSettlement
                 : new RentalBillingRunSettlementInfo(Math.Max(0m, run.SettledAmount), run.SettledDate);
             var settledAmount = Math.Max(0m, settlementInfo.SettledAmount);
-            var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
+            var hasInvoice = invoiceByRun.ContainsKey(run.RunId);
+            var hasBillingEvidence = HasBillingRunFinancialEvidence(
+                run,
+                hasInvoice,
+                settledAmount,
+                includePlannedWithoutInvoice: true);
+            var outstandingAmount = hasBillingEvidence
+                ? Math.Max(0m, billedAmount - settledAmount)
+                : 0m;
             var runMonth = new DateOnly(run.ScheduledDate.Year, run.ScheduledDate.Month, 1);
-            if (runMonth.DayNumber >= referenceMonth.DayNumber || billedAmount <= 0m || outstandingAmount <= 0m)
+            if (!hasBillingEvidence ||
+                runMonth.DayNumber >= referenceMonth.DayNumber ||
+                billedAmount <= 0m ||
+                outstandingAmount <= 0m)
                 continue;
 
             pastUnresolvedCount++;
@@ -2825,13 +2871,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return null;
 
         NormalizeBillingSchedule(profile, referenceDate);
+        var normalizedReference = NormalizeReferenceDate(referenceDate);
         return RentalBillingScheduleRules.ResolveApplicableBillingDate(
             profile.BillingDay,
             profile.BillingDayMode,
             profile.BillingCycleMonths,
             profile.BillingAnchorMonth,
-            NormalizeReferenceDate(referenceDate),
-            profile.LastBilledDate);
+            normalizedReference,
+            profile.LastBilledDate,
+            ResolveFirstBillingDate(profile, normalizedReference));
     }
 
     private static List<LocalRentalBillingProfile> FilterBillingProfilesByIds(
@@ -4547,11 +4595,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (_local is null)
             return LocalMutationResult.Denied("렌탈 청구 전표 저장 서비스를 사용할 수 없습니다.");
         NormalizeBillingSchedule(profile, referenceDate);
-        // 실제 작업일이 청구 예정 월/일과 달라도 사용자가 선택한 청구월 전표를 만들 수 있어야 합니다.
-        // GetOrCreateBillingRun이 referenceDate와 LastBilledDate 기준으로 이번/다음 미청구월 예정일을 계산합니다.
+        // 실제 작업일이 청구 예정 월/일과 달라도 사용자가 선택한 조회/작성 기준일의 전표를 만들 수 있어야 합니다.
+        // GetOrCreateBillingRun이 referenceDate와 LastBilledDate 기준으로 이번/다음 미청구 예정일을 계산합니다.
         var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
         if (currentRun is null)
-            return LocalMutationResult.Denied("선택한 청구월 정보를 만들 수 없습니다.");
+            return LocalMutationResult.Denied("선택한 조회/작성 기준일의 청구 정보를 만들 수 없습니다.");
 
         var templateItems = GetBillingTemplateItems(profile);
         var linkedInvoice = await GetActiveBillingInvoiceAsync(currentRun.RunId, ct);
@@ -4815,7 +4863,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         NormalizeBillingSchedule(profile, referenceDate);
         var currentRun = FindBillingRunById(profile, billingRunId);
         if (billingRunId.HasValue && billingRunId.Value != Guid.Empty && currentRun is null)
-            return LocalMutationResult.Denied("선택한 청구월 정보를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
+            return LocalMutationResult.Denied("선택한 조회/작성 기준일의 청구 정보를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
 
         currentRun ??= GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
         var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
@@ -4921,7 +4969,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var run = FindBillingRunById(profile, billingRunId);
         if (run is null)
-            return LocalMutationResult.Missing("선택한 청구월 정보를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
+            return LocalMutationResult.Missing("선택한 조회/작성 기준일의 청구 정보를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
 
         var linkedInvoices = await _db.Invoices.IgnoreQueryFilters()
             .AsNoTracking()
@@ -7253,7 +7301,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var normalizedStatus = string.IsNullOrWhiteSpace(status) ? "완료" : status.Trim();
         var currentRun = FindBillingRunById(profile, billingRunId);
         if (billingRunId.HasValue && billingRunId.Value != Guid.Empty && currentRun is null)
-            return LocalMutationResult.Denied("선택한 청구월 정보를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
+            return LocalMutationResult.Denied("선택한 조회/작성 기준일의 청구 정보를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
 
         currentRun ??= GetOrCreateBillingRun(profile, referenceDate, persistChanges: false);
         var scheduledDate = currentRun?.ScheduledDate
@@ -9523,6 +9571,36 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile.DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(profile.DocumentLeadDays);
     }
 
+    private static DateOnly? ResolveFirstBillingDate(LocalRentalBillingProfile profile, DateOnly referenceDate)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+
+        var normalizedReference = NormalizeReferenceDate(referenceDate);
+        var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
+        var anchorMonth = Math.Clamp(profile.BillingAnchorMonth, 1, 12);
+        var explicitStartDate = profile.BillingAnchorDate
+                                ?? profile.BillingStartDate
+                                ?? profile.ContractStartDate
+                                ?? profile.ContractDate;
+        if (explicitStartDate.HasValue)
+        {
+            return RentalBillingScheduleRules.BuildBillingDate(
+                explicitStartDate.Value.Year,
+                explicitStartDate.Value.Month,
+                profile.BillingDay,
+                profile.BillingDayMode);
+        }
+
+        if (cycleMonths <= 1 || normalizedReference.Month >= anchorMonth)
+            return null;
+
+        return RentalBillingScheduleRules.BuildBillingDate(
+            normalizedReference.Year,
+            anchorMonth,
+            profile.BillingDay,
+            profile.BillingDayMode);
+    }
+
     private static string BuildBillingMonthDeniedMessage(
         LocalRentalBillingProfile profile,
         DateOnly referenceDate,
@@ -9539,7 +9617,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var nextDateText = nextBillingDate.HasValue
             ? $"다음 결제예정일은 {nextBillingDate.Value:yyyy-MM-dd}입니다."
             : "다음 결제예정일을 계산할 수 없습니다.";
-        return $"이 렌탈은 {RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths)}개월 {NormalizeBillingAdvanceMode(profile.BillingAdvanceMode)} / {dayModeText} / 시작월 {profile.BillingAnchorMonth}월로 계산되어 {NormalizeReferenceDate(referenceDate):yyyy-MM-dd}에는 청구할 수 없습니다. {nextDateText}";
+        return $"이 렌탈은 {RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths)}개월 {NormalizeBillingAdvanceMode(profile.BillingAdvanceMode)} / {dayModeText} / 청구기간 시작월 {profile.BillingAnchorMonth}월로 계산되어 {NormalizeReferenceDate(referenceDate):yyyy-MM-dd}에는 청구할 수 없습니다. {nextDateText}";
     }
 
     private static (DateOnly StartDate, DateOnly EndDate) ResolveBillingPeriod(LocalRentalBillingProfile profile, DateOnly scheduledDate, int cycleMonths)
@@ -10496,13 +10574,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return null;
 
         NormalizeBillingSchedule(profile, referenceDate);
+        var normalizedReference = NormalizeReferenceDate(referenceDate);
         return RentalBillingScheduleRules.ResolveApplicableBillingDate(
             profile.BillingDay,
             profile.BillingDayMode,
             profile.BillingCycleMonths,
             profile.BillingAnchorMonth,
-            NormalizeReferenceDate(referenceDate),
-            profile.LastBilledDate);
+            normalizedReference,
+            profile.LastBilledDate,
+            ResolveFirstBillingDate(profile, normalizedReference));
     }
 
     public bool IsBillingMonth(LocalRentalBillingProfile profile, DateOnly referenceDate)

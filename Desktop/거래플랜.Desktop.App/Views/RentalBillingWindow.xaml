@@ -1,4 +1,4 @@
-<Window x:Class="거래플랜.Desktop.App.Views.RentalBillingWindow"
+﻿<Window x:Class="거래플랜.Desktop.App.Views.RentalBillingWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="렌탈 청구관리"
@@ -128,11 +128,9 @@
             </Style.Triggers>
         </Style>
         <Style x:Key="RentalDatePickerButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}">
-            <Setter Property="Width" Value="30"/>
             <Setter Property="MinWidth" Value="30"/>
             <Setter Property="Height" Value="30"/>
             <Setter Property="Padding" Value="0"/>
-            <Setter Property="MaxWidth" Value="30"/>
             <Setter Property="MinHeight" Value="30"/>
             <Setter Property="Margin" Value="0"/>
             <Setter Property="BorderThickness" Value="0"/>
@@ -250,7 +248,7 @@
                     <Button Content="신규 설정" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,6,6" Command="{Binding NewProfileCommand}"/>
                     <Button Content="저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,6,6" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}" ToolTip="청구설정 필요 장비를 선택한 뒤 저장하면 청구 프로필이 생성됩니다."/>
                     <Button Content="선택 월 청구서 만들기" Background="#2E7D32" BorderBrush="#2E7D32" Margin="0,0,6,6" Click="StartBillingButton_Click" IsEnabled="{Binding CanStartBillingSelected}"
-                            ToolTip="청구일 전후와 관계없이 선택한 청구월의 전표를 생성하거나 기존 청구서를 엽니다."/>
+                            ToolTip="청구일 전후와 관계없이 조회/작성 기준일에 해당하는 전표를 생성하거나 기존 청구서를 엽니다."/>
                     <Button Content="선택 청구 보류" Background="#F9A825" BorderBrush="#F9A825" Margin="0,0,6,6" Command="{Binding HoldBillingCommand}" IsEnabled="{Binding CanHoldSelected}"/>
                     <Button Content="입금 등록" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,6" Click="RegisterSettlementButton_Click" IsEnabled="{Binding CanRegisterSettlementSelected}"/>
                     <Button Content="완납 처리" Background="#00695C" BorderBrush="#00695C" Margin="0,0,6,6" Command="{Binding MarkCompletedCommand}" IsEnabled="{Binding CanMarkCompletedSelected}"/>
@@ -348,7 +346,7 @@
                 <CheckBox Content="알림대상만" IsChecked="{Binding DueOnly}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0"/>
                 <CheckBox Content="과거 미처리만 보기" IsChecked="{Binding PastDueOnly}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0"/>
                 <CheckBox Content="개별 청구건 보기" IsChecked="{Binding ShowIndividualProfiles}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0" ToolTip="거래처별 묶음 대신 개별 청구 프로필을 모두 표시합니다."/>
-                <TextBlock Text="청구할 월" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBlock Text="조회/작성 기준일" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <DatePicker Width="180" SelectedDate="{Binding ReferenceDate, Converter={StaticResource DateOnlyConverter}}" SelectedDateFormat="Short">
                     <DatePicker.Resources>
                         <Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/>
@@ -634,7 +632,7 @@
 
                             <TextBlock Grid.Row="5" Grid.Column="0" Text="청구 주기(개월)"/>
                             <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding EditBillingCycleMonths, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
-                            <TextBlock Grid.Row="5" Grid.Column="3" Text="청구 시작월"/>
+                            <TextBlock Grid.Row="5" Grid.Column="3" Text="청구기간 시작월"/>
                             <ComboBox Grid.Row="5" Grid.Column="4" Style="{StaticResource BillingAnchorMonthComboBoxStyle}" ItemsSource="{Binding BillingAnchorMonthOptions}" SelectedItem="{Binding EditBillingAnchorMonth}" Margin="0,0,0,6">
                                 <ComboBox.Resources>
                                     <Style TargetType="{x:Type TextBlock}" BasedOn="{StaticResource {x:Type TextBlock}}">

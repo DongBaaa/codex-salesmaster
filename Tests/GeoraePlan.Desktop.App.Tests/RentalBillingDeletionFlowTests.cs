@@ -380,7 +380,8 @@ public sealed class RentalBillingDeletionFlowTests
             var row = Assert.Single(rows, current => current.Source.Id == profileId);
             Assert.Equal(new DateOnly(2026, 11, 25), row.NextBillingDate);
             Assert.Equal(0m, row.SettledAmount);
-            Assert.Equal(row.CurrentBilledAmount, row.OutstandingAmount);
+            Assert.Equal(300_000m, row.CurrentBilledAmount);
+            Assert.Equal(0m, row.OutstandingAmount);
         }
         finally
         {

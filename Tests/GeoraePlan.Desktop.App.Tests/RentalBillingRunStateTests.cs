@@ -111,6 +111,62 @@ public sealed class RentalBillingRunStateTests
     }
 
     [Fact]
+    public async Task GetBillingRows_StartMonthSevenBeforeFirstRun_ShowsJulyPeriodWithoutOutstandingPreview()
+    {
+        PrepareAppRoot("georaeplan-rental-start-month-seven-preview");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Start month customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.BillingCycleMonths = 6;
+            profile.BillingAnchorMonth = 7;
+            profile.BillingAnchorDate = null;
+            profile.BillingStartDate = null;
+            profile.ContractDate = null;
+            profile.ContractStartDate = null;
+            profile.LastBilledDate = null;
+            profile.CreatedAtUtc = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var rows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    ReferenceDate = new DateOnly(2026, 6, 16),
+                    ExpandCustomerSummaryRows = true
+                },
+                session);
+
+            var row = Assert.Single(rows, current => current.Source.Id == profileId);
+            Assert.Equal(new DateOnly(2026, 7, 25), row.NextBillingDate);
+            Assert.Equal("2026-07 ~ 2026-12", row.CurrentBillingPeriodLabel);
+            Assert.Equal(600_000m, row.CurrentBilledAmount);
+            Assert.Equal(0m, row.OutstandingAmount);
+            Assert.False(row.HasPastUnresolved);
+            Assert.Equal(0, row.PastUnresolvedCount);
+            Assert.Equal(0m, row.PastUnresolvedAmount);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task StartBilling_DoesNotCarryPreviousRunSettlementIntoNextRun()
     {
         PrepareAppRoot("georaeplan-rental-start-no-settlement-carryover");
