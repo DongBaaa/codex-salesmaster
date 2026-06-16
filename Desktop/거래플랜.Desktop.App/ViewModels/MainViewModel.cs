@@ -1802,9 +1802,23 @@ public sealed partial class MainViewModel : ObservableObject
             StampImage = CompanyStampImage
         };
 
-        await _local.SaveCompanyProfileAsync(profile);
-        await LoadCompanyProfileAsync();
-        System.Windows.MessageBox.Show("회사 정보가 저장되었습니다.", "알림", System.Windows.MessageBoxButton.OK);
+        try
+        {
+            await _local.SaveCompanyProfileAsync(profile);
+            await LoadCompanyProfileAsync();
+            System.Windows.MessageBox.Show("회사 정보가 저장되었습니다.", "알림", System.Windows.MessageBoxButton.OK);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(
+                ex.Message,
+                ex.Message.Contains("최신", StringComparison.CurrentCultureIgnoreCase) ||
+                ex.Message.Contains("동시", StringComparison.CurrentCultureIgnoreCase)
+                    ? "동시 수정 충돌"
+                    : "저장 실패",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Warning);
+        }
     }
 
     [RelayCommand]

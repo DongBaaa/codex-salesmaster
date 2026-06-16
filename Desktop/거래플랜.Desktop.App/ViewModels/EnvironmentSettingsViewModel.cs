@@ -185,13 +185,20 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             IsActive = source?.IsActive ?? true
         };
 
-        await _local.SaveCompanyProfileAsync(profile);
-        await ReloadCompanyProfilesAsync();
-        SelectedCompanyProfile = CompanyProfiles.FirstOrDefault(current => current.Id == profile.Id);
-        var profileIdText = profile.Id.ToString("D");
-        if (string.Equals(CurrentUserCompanyProfileId, profileIdText, StringComparison.OrdinalIgnoreCase))
-            await PersistCurrentUserCompanyProfileSelectionAsync(profileIdText);
-        StatusMessage = "회사 정보를 저장했습니다.";
+        try
+        {
+            await _local.SaveCompanyProfileAsync(profile);
+            await ReloadCompanyProfilesAsync();
+            SelectedCompanyProfile = CompanyProfiles.FirstOrDefault(current => current.Id == profile.Id);
+            var profileIdText = profile.Id.ToString("D");
+            if (string.Equals(CurrentUserCompanyProfileId, profileIdText, StringComparison.OrdinalIgnoreCase))
+                await PersistCurrentUserCompanyProfileSelectionAsync(profileIdText);
+            StatusMessage = "회사 정보를 저장했습니다.";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"회사 정보 저장 실패: {ex.Message}";
+        }
     }
 
     [RelayCommand]
@@ -240,7 +247,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             return;
         }
 
-        var result = await _local.DeleteCompanyProfileAsync(SelectedCompanyProfile.Id);
+        var result = await _local.DeleteCompanyProfileAsync(SelectedCompanyProfile.Id, SelectedCompanyProfile.Revision);
         StatusMessage = result.Message;
         if (!result.Success)
             return;

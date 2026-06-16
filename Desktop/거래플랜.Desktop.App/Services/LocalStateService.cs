@@ -2931,13 +2931,18 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		await _db.SaveChangesAsync(ct);
 	}
 
-	public async Task<LocalMutationResult> DeleteCompanyProfileAsync(Guid profileId, CancellationToken ct = default(CancellationToken))
+	public async Task<LocalMutationResult> DeleteCompanyProfileAsync(Guid profileId, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		await EnsureCompanyProfileDefaultsAsync(ct);
 		var profile = await _db.CompanyProfiles.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCompanyProfile current) => current.Id == profileId, ct);
+		profile = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, profile, ct);
 		if (profile == null)
 		{
 			return LocalMutationResult.Missing("회사설정을 찾을 수 없습니다.");
+		}
+		if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(profile, expectedRevision, "회사설정", out string conflictMessage))
+		{
+			return LocalMutationResult.Conflict(conflictMessage);
 		}
 		List<string> assignedUsers = (await (from setting in _db.Settings.AsNoTracking()
 			where setting.Key.StartsWith("CompanyProfile.Assigned.") && setting.Value == ((Guid)profileId).ToString("D")
@@ -3255,7 +3260,17 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			select option).ToListAsync(ct);
 	}
 
-	public async Task<LocalMutationResult> SaveCustomerCategoryAsync(LocalCustomerCategory category, CancellationToken ct = default(CancellationToken))
+	private static long? ResolveSelectionOptionExpectedRevision(long? expectedRevision, long candidateRevision)
+	{
+		if (expectedRevision is > 0)
+		{
+			return expectedRevision;
+		}
+
+		return candidateRevision > 0 ? candidateRevision : null;
+	}
+
+	public async Task<LocalMutationResult> SaveCustomerCategoryAsync(LocalCustomerCategory category, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		if (category == null)
 		{
@@ -3274,6 +3289,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		DateTime now = DateTime.UtcNow;
 		var existing = categories.FirstOrDefault((LocalCustomerCategory current) => current.Id == category.Id);
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
+		var expected = ResolveSelectionOptionExpectedRevision(expectedRevision, category.Revision);
+		if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(existing, expected, "고객분류", out string conflictMessage))
+		{
+			return LocalMutationResult.Conflict(conflictMessage);
+		}
 		if (existing == null)
 		{
 			LocalCustomerCategory created = new LocalCustomerCategory
@@ -3299,13 +3320,18 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return LocalMutationResult.Ok(existing.Id, "고객분류를 수정했습니다.");
 	}
 
-	public async Task<LocalMutationResult> DeleteCustomerCategoryAsync(Guid categoryId, CancellationToken ct = default(CancellationToken))
+	public async Task<LocalMutationResult> DeleteCustomerCategoryAsync(Guid categoryId, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		await EnsureCustomerCategoryIntegrityAsync(ct);
 		var category = await _db.CustomerCategories.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomerCategory current) => current.Id == categoryId, ct);
+		category = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, category, ct);
 		if (category == null)
 		{
 			return LocalMutationResult.Missing("고객분류를 찾을 수 없습니다.");
+		}
+		if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(category, expectedRevision, "고객분류", out string conflictMessage))
+		{
+			return LocalMutationResult.Conflict(conflictMessage);
 		}
 		bool flag = await _db.Customers.IgnoreQueryFilters().AnyAsync((LocalCustomer customer) => customer.CategoryId == categoryId, ct);
 		if (!flag)
@@ -3323,7 +3349,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return LocalMutationResult.Ok(category.Id, "고객분류를 삭제했습니다.");
 	}
 
-	public async Task<LocalMutationResult> SavePriceGradeOptionAsync(LocalPriceGradeOption option, string? previousName = null, CancellationToken ct = default(CancellationToken))
+	public async Task<LocalMutationResult> SavePriceGradeOptionAsync(LocalPriceGradeOption option, string? previousName = null, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		if (option == null)
 		{
@@ -3342,6 +3368,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		DateTime now = DateTime.UtcNow;
 		var existing = options.FirstOrDefault((LocalPriceGradeOption current) => current.Id == option.Id);
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
+		var expected = ResolveSelectionOptionExpectedRevision(expectedRevision, option.Revision);
+		if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(existing, expected, "가격등급", out string conflictMessage))
+		{
+			return LocalMutationResult.Conflict(conflictMessage);
+		}
 		string oldName = (previousName ?? existing?.Name ?? string.Empty).Trim();
 		if (existing == null)
 		{
@@ -3385,12 +3417,17 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return LocalMutationResult.Ok(existing.Id, "가격등급을 수정했습니다.");
 	}
 
-	public async Task<LocalMutationResult> DeletePriceGradeOptionAsync(Guid optionId, CancellationToken ct = default(CancellationToken))
+	public async Task<LocalMutationResult> DeletePriceGradeOptionAsync(Guid optionId, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		var option = await _db.PriceGradeOptions.IgnoreQueryFilters().FirstOrDefaultAsync((LocalPriceGradeOption current) => current.Id == optionId, ct);
+		option = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, option, ct);
 		if (option == null)
 		{
 			return LocalMutationResult.Missing("가격등급을 찾을 수 없습니다.");
+		}
+		if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(option, expectedRevision, "가격등급", out string conflictMessage))
+		{
+			return LocalMutationResult.Conflict(conflictMessage);
 		}
 		if (await _db.Customers.IgnoreQueryFilters().AnyAsync((LocalCustomer customer) => customer.PriceGrade == option.Name, ct))
 		{
@@ -3404,7 +3441,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return LocalMutationResult.Ok(option.Id, "가격등급을 삭제했습니다.");
 	}
 
-	public async Task<LocalMutationResult> SaveTradeTypeOptionAsync(LocalTradeTypeOption option, string? previousName = null, CancellationToken ct = default(CancellationToken))
+	public async Task<LocalMutationResult> SaveTradeTypeOptionAsync(LocalTradeTypeOption option, string? previousName = null, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		if (option == null)
 		{
@@ -3427,6 +3464,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		DateTime now = DateTime.UtcNow;
 		var existing = options.FirstOrDefault((LocalTradeTypeOption current) => current.Id == option.Id);
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
+		var expected = ResolveSelectionOptionExpectedRevision(expectedRevision, option.Revision);
+		if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(existing, expected, "거래구분", out string conflictMessage))
+		{
+			return LocalMutationResult.Conflict(conflictMessage);
+		}
 		string oldName = CustomerTradeTypes.Normalize(previousName ?? existing?.Name);
 		if (existing == null)
 		{
@@ -3472,13 +3515,18 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return LocalMutationResult.Ok(existing.Id, "거래구분을 수정했습니다.");
 	}
 
-	public async Task<LocalMutationResult> DeleteTradeTypeOptionAsync(Guid optionId, CancellationToken ct = default(CancellationToken))
+	public async Task<LocalMutationResult> DeleteTradeTypeOptionAsync(Guid optionId, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		await EnsureTradeTypeOptionIntegrityAsync(ct);
 		var option = await _db.TradeTypeOptions.IgnoreQueryFilters().FirstOrDefaultAsync((LocalTradeTypeOption current) => current.Id == optionId, ct);
+		option = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, option, ct);
 		if (option == null)
 		{
 			return LocalMutationResult.Missing("거래구분을 찾을 수 없습니다.");
+		}
+		if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(option, expectedRevision, "거래구분", out string conflictMessage))
+		{
+			return LocalMutationResult.Conflict(conflictMessage);
 		}
 		if (CustomerClassificationNormalizer.TradeTypeDefinition.Find(option.Name) is not null)
 		{
@@ -3614,7 +3662,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return flag;
 	}
 
-	public async Task<LocalMutationResult> SaveItemCategoryOptionAsync(LocalItemCategoryOption option, string? previousName = null, CancellationToken ct = default(CancellationToken))
+	public async Task<LocalMutationResult> SaveItemCategoryOptionAsync(LocalItemCategoryOption option, string? previousName = null, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		if (option == null)
 		{
@@ -3635,6 +3683,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		DateTime now = DateTime.UtcNow;
 		var existing = options.FirstOrDefault((LocalItemCategoryOption current) => current.Id == option.Id);
+		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
+		var expected = ResolveSelectionOptionExpectedRevision(expectedRevision, option.Revision);
+		if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(existing, expected, "품목분류", out string conflictMessage))
+		{
+			return LocalMutationResult.Conflict(conflictMessage);
+		}
 		string oldName = SelectionOptionDefaults.NormalizeItemCategoryName(previousName ?? existing?.Name);
 		if (existing == null)
 		{
@@ -3683,12 +3737,17 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return LocalMutationResult.Ok(existing.Id, "품목분류를 수정했습니다.");
 	}
 
-	public async Task<LocalMutationResult> DeleteItemCategoryOptionAsync(Guid optionId, CancellationToken ct = default(CancellationToken))
+	public async Task<LocalMutationResult> DeleteItemCategoryOptionAsync(Guid optionId, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		var option = await _db.ItemCategoryOptions.IgnoreQueryFilters().FirstOrDefaultAsync((LocalItemCategoryOption current) => current.Id == optionId, ct);
+		option = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, option, ct);
 		if (option == null)
 		{
 			return LocalMutationResult.Missing("품목분류를 찾을 수 없습니다.");
+		}
+		if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(option, expectedRevision, "품목분류", out string conflictMessage))
+		{
+			return LocalMutationResult.Conflict(conflictMessage);
 		}
 		string optionKey = RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name);
 		bool itemInUse = (await _db.Items.IgnoreQueryFilters().ToListAsync(ct)).Any((LocalItem item) => string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(item.CategoryName), optionKey, StringComparison.OrdinalIgnoreCase));

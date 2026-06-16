@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+﻿﻿using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Data;
@@ -234,8 +234,9 @@ public sealed partial class EnvironmentSettingsViewModel
         {
             Id = IsNewCategoryOption ? Guid.NewGuid() : SelectedCategoryOption?.Id ?? Guid.NewGuid(),
             Name = CategoryOptionName,
+            Revision = SelectedCategoryOption?.Revision ?? 0,
             IsSystemDefault = CategoryOptionIsSystemDefault
-        });
+        }, expectedRevision: SelectedCategoryOption?.Revision);
 
         if (!result.Success)
         {
@@ -258,7 +259,7 @@ public sealed partial class EnvironmentSettingsViewModel
             return;
         }
 
-        var result = await _local.DeleteCustomerCategoryAsync(SelectedCategoryOption.Id);
+        var result = await _local.DeleteCustomerCategoryAsync(SelectedCategoryOption.Id, SelectedCategoryOption.Revision);
         if (!result.Success)
         {
             StatusMessage = result.Message;
@@ -291,9 +292,11 @@ public sealed partial class EnvironmentSettingsViewModel
                 Name = PriceGradeOptionName,
                 PriceSource = PriceGradePriceSource,
                 SortOrder = IsNewPriceGradeOption ? PriceGradeOptions.Count * 10 : SelectedPriceGradeOption?.SortOrder ?? 0,
+                Revision = SelectedPriceGradeOption?.Revision ?? 0,
                 IsSystemDefault = PriceGradeOptionIsSystemDefault
             },
-            SelectedPriceGradeOption?.Name);
+            SelectedPriceGradeOption?.Name,
+            expectedRevision: SelectedPriceGradeOption?.Revision);
 
         if (!result.Success)
         {
@@ -316,7 +319,7 @@ public sealed partial class EnvironmentSettingsViewModel
             return;
         }
 
-        var result = await _local.DeletePriceGradeOptionAsync(SelectedPriceGradeOption.Id);
+        var result = await _local.DeletePriceGradeOptionAsync(SelectedPriceGradeOption.Id, SelectedPriceGradeOption.Revision);
         if (!result.Success)
         {
             StatusMessage = result.Message;
@@ -351,9 +354,11 @@ public sealed partial class EnvironmentSettingsViewModel
                 AllowsSales = TradeTypeAllowsSales,
                 AllowsPurchase = TradeTypeAllowsPurchase,
                 SortOrder = IsNewTradeTypeOption ? TradeTypeOptions.Count * 10 : SelectedTradeTypeOption?.SortOrder ?? 0,
+                Revision = SelectedTradeTypeOption?.Revision ?? 0,
                 IsSystemDefault = TradeTypeOptionIsSystemDefault
             },
-            SelectedTradeTypeOption?.Name);
+            SelectedTradeTypeOption?.Name,
+            expectedRevision: SelectedTradeTypeOption?.Revision);
 
         if (!result.Success)
         {
@@ -376,7 +381,7 @@ public sealed partial class EnvironmentSettingsViewModel
             return;
         }
 
-        var result = await _local.DeleteTradeTypeOptionAsync(SelectedTradeTypeOption.Id);
+        var result = await _local.DeleteTradeTypeOptionAsync(SelectedTradeTypeOption.Id, SelectedTradeTypeOption.Revision);
         if (!result.Success)
         {
             StatusMessage = result.Message;
@@ -407,9 +412,11 @@ public sealed partial class EnvironmentSettingsViewModel
                 Id = IsNewItemCategoryOption ? Guid.NewGuid() : SelectedItemCategoryOption?.Id ?? Guid.NewGuid(),
                 Name = ItemCategoryOptionName,
                 SortOrder = IsNewItemCategoryOption ? ItemCategoryOptions.Count * 10 : SelectedItemCategoryOption?.SortOrder ?? 0,
+                Revision = SelectedItemCategoryOption?.Revision ?? 0,
                 IsSystemDefault = ItemCategoryOptionIsSystemDefault
             },
-            SelectedItemCategoryOption?.Name);
+            SelectedItemCategoryOption?.Name,
+            expectedRevision: SelectedItemCategoryOption?.Revision);
 
         if (!result.Success)
         {
@@ -432,7 +439,7 @@ public sealed partial class EnvironmentSettingsViewModel
             return;
         }
 
-        var result = await _local.DeleteItemCategoryOptionAsync(SelectedItemCategoryOption.Id);
+        var result = await _local.DeleteItemCategoryOptionAsync(SelectedItemCategoryOption.Id, SelectedItemCategoryOption.Revision);
         if (!result.Success)
         {
             StatusMessage = result.Message;
