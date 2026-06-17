@@ -105,6 +105,59 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureItemCategoryOptionsForExistingReferencesAsync_CreatesOrReactivatesReferencedCategories()
+    {
+        _dbContext.Items.Add(new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Referenced item category",
+            NameMatchKey = "REFERENCEDITEMCATEGORY",
+            CategoryName = "A3 Copier",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        });
+        _dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "ASSET-CCTV-001",
+            ManagementNumber = "ASSET-CCTV-001",
+            ItemCategoryName = "CCTV Recorder",
+            ItemName = "CCTV Recorder",
+            AssetStatus = "ACTIVE"
+        });
+        _dbContext.ItemCategoryOptions.Add(new ItemCategoryOption
+        {
+            Id = Guid.NewGuid(),
+            Name = "CCTV Recorder",
+            IsActive = false,
+            IsDeleted = true
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureItemCategoryOptionsForExistingReferencesAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
+
+        var options = await _dbContext.ItemCategoryOptions.IgnoreQueryFilters().ToDictionaryAsync(option => option.Name);
+        Assert.True(options["A3 Copier"].IsActive);
+        Assert.False(options["A3 Copier"].IsDeleted);
+        Assert.True(options["CCTV Recorder"].IsActive);
+        Assert.False(options["CCTV Recorder"].IsDeleted);
+    }
+
+    [Fact]
     public async Task VerifyRequiredOperationalSchemaAsync_Throws_WhenCriticalSchemaColumnMissing()
     {
         await _dbContext.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS \"ItemWarehouseStocks\";");

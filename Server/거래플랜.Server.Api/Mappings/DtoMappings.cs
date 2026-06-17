@@ -414,7 +414,7 @@ public static class DtoMappings
         entity.NameMatchKey = string.IsNullOrWhiteSpace(dto.NameMatchKey) ? MatchKeyNormalizer.Normalize(dto.NameOriginal) : dto.NameMatchKey;
         entity.SpecificationOriginal = dto.SpecificationOriginal;
         entity.SpecificationMatchKey = string.IsNullOrWhiteSpace(dto.SpecificationMatchKey) ? MatchKeyNormalizer.Normalize(dto.SpecificationOriginal) : dto.SpecificationMatchKey;
-        entity.CategoryName = dto.CategoryName;
+        entity.CategoryName = RentalCatalogValueNormalizer.NormalizeCategoryDisplayName(dto.CategoryName);
         entity.ItemKind = ItemOperationalPolicy.NormalizeItemKind(dto.ItemKind, dto.TrackingType, dto.CategoryName, dto.IsRental);
         entity.TrackingType = ItemOperationalPolicy.NormalizeTrackingType(dto.TrackingType, dto.ItemKind, dto.CategoryName, dto.IsRental);
         entity.Unit = UnitCatalogNormalizer.Normalize(dto.Unit);

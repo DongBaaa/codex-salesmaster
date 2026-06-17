@@ -13,6 +13,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using System.Text.RegularExpressions;
+using 거래플랜.Server.Api.Utilities;
 
 namespace 거래플랜.Server.Api.Data;
 
@@ -521,7 +522,27 @@ public static partial class DbInitializer
             option.IsActive = false;
         }
 
+        await EnsureItemCategoryOptionsForExistingReferencesAsync(dbContext, cancellationToken);
         await EnsureDefaultCompanyProfilesAsync(dbContext, cancellationToken);
+    }
+
+    private static async Task EnsureItemCategoryOptionsForExistingReferencesAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var itemCategoryNames = await dbContext.Items.IgnoreQueryFilters()
+            .Where(item => !item.IsDeleted)
+            .Select(item => item.CategoryName)
+            .ToListAsync(cancellationToken);
+        var rentalAssetCategoryNames = await dbContext.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => !asset.IsDeleted)
+            .Select(asset => asset.ItemCategoryName)
+            .ToListAsync(cancellationToken);
+
+        await ItemCategoryOptionGuard.EnsureActiveOptionsAsync(
+            dbContext,
+            itemCategoryNames.Concat(rentalAssetCategoryNames),
+            cancellationToken);
     }
 
     private static async Task EnsureDefaultCompanyProfilesAsync(

@@ -328,6 +328,7 @@ public sealed class SyncController : ControllerBase
                 (e, d) => e.Apply(d), d => new CustomerContract { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
             await PersistCustomerContractsToStorageAsync(validCustomerContracts, cancellationToken);
             var scopedItems = await PrepareScopedItemsAsync(request.Items ?? [], result, cancellationToken);
+            await EnsureItemCategoryOptionsForItemsAsync(scopedItems, cancellationToken);
             await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
                 (e, d) => e.Apply(d), d => new Item { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
             if (scopedItems.Count > 0)
@@ -1157,6 +1158,25 @@ public sealed class SyncController : ControllerBase
         }
 
         return scoped.Values.ToList();
+    }
+
+    private async Task EnsureItemCategoryOptionsForItemsAsync(
+        IReadOnlyCollection<ItemDto> payload,
+        CancellationToken cancellationToken)
+    {
+        var ensuredOptions = await ItemCategoryOptionGuard.EnsureActiveOptionsAsync(
+            _dbContext,
+            payload.Where(item => !item.IsDeleted).Select(item => item.CategoryName),
+            cancellationToken);
+
+        foreach (var dto in payload.Where(item => !item.IsDeleted))
+        {
+            var normalizedKey = RentalCatalogValueNormalizer.NormalizeLooseKey(
+                RentalCatalogValueNormalizer.NormalizeCategoryDisplayName(dto.CategoryName));
+            dto.CategoryName = string.IsNullOrWhiteSpace(normalizedKey) || !ensuredOptions.TryGetValue(normalizedKey, out var canonicalName)
+                ? string.Empty
+                : canonicalName;
+        }
     }
 
     private async Task<Item?> FindExistingItemByNaturalKeyAsync(

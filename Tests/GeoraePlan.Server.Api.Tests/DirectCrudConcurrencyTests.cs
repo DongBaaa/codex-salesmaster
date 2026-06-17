@@ -160,6 +160,35 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task ItemsController_Create_EnsuresActiveItemCategoryOption()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var controller = new ItemsController(dbContext, new OfficeScopeService(currentUser, dbContext));
+        var response = await controller.Create(new ItemDto
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Server direct item category",
+            NameMatchKey = "SERVERDIRECTITEMCATEGORY",
+            CategoryName = " A3 Copier ",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA"
+        }, CancellationToken.None);
+
+        var item = AssertOk<ItemDto>(response);
+
+        Assert.Equal("A3 Copier", item.CategoryName);
+        var option = await dbContext.ItemCategoryOptions.IgnoreQueryFilters().SingleAsync();
+        Assert.Equal("A3 Copier", option.Name);
+        Assert.True(option.IsActive);
+        Assert.False(option.IsDeleted);
+    }
+
+    [Fact]
     public async Task DbInitializer_RepairItemCurrentStockSnapshots_RecalculatesFromWarehouseTotals()
     {
         var currentUser = CreateAdminUser();

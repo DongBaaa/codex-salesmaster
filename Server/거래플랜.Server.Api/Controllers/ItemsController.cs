@@ -195,6 +195,7 @@ public sealed class ItemsController : ControllerBase
         var entity = new Item { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode);
+        dto.CategoryName = await ItemCategoryOptionGuard.EnsureActiveOptionAsync(_dbContext, dto.CategoryName, cancellationToken);
         entity.Apply(dto);
         _dbContext.Items.Add(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -217,6 +218,7 @@ public sealed class ItemsController : ControllerBase
 
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, entity.TenantCode, entity.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, entity.OfficeCode);
+        dto.CategoryName = await ItemCategoryOptionGuard.EnsureActiveOptionAsync(_dbContext, dto.CategoryName, cancellationToken);
         entity.Apply(dto);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
@@ -247,5 +249,4 @@ public sealed class ItemsController : ControllerBase
         return NoContent();
     }
 }
-
 

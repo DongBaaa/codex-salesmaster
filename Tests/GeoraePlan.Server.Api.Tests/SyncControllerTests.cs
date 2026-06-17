@@ -1438,6 +1438,44 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_EnsuresActiveItemCategoryOptionForAcceptedItem()
+    {
+        var itemId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-item-category-option-ensure",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "Synced category item",
+                    NameMatchKey = "SYNCEDCATEGORYITEM",
+                    CategoryName = " A3 Copier ",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    CreatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        var item = await _dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == itemId);
+        Assert.Equal("A3 Copier", item.CategoryName);
+        var option = await _dbContext.ItemCategoryOptions.IgnoreQueryFilters().SingleAsync();
+        Assert.Equal("A3 Copier", option.Name);
+        Assert.True(option.IsActive);
+        Assert.False(option.IsDeleted);
+    }
+
+    [Fact]
     public async Task Push_ReusesExistingItem_WhenDescriptorMatchesSingleServerItemWithoutIdentifiers()
     {
         var existing = new Item
