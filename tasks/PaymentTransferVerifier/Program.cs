@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App;
 using 거래플랜.Desktop.App.Data;
@@ -115,6 +116,21 @@ internal static class Program
         var purchaseButtons = CollectButtons(purchaseWindow);
         var transferButtons = CollectButtons(transferWindow);
         var transferGrid = FindDataGrids(transferWindow).LastOrDefault();
+        var evidenceDirectory = PrepareEvidenceDirectory();
+        var screenshots = new[]
+        {
+            CaptureWindow(paymentAdvanceWindow, evidenceDirectory, "payment-advance"),
+            CaptureWindow(paymentInvoiceWindow, evidenceDirectory, "payment-invoice"),
+            CaptureWindow(salesWindow, evidenceDirectory, "sales-document"),
+            CaptureWindow(purchaseWindow, evidenceDirectory, "purchase-document"),
+            CaptureWindow(transferWindow, evidenceDirectory, "inventory-transfer")
+        };
+        var datePickerMetrics = new List<DatePickerRuntimeMetric>();
+        datePickerMetrics.AddRange(CollectDatePickerMetrics(paymentAdvanceWindow, "payment-advance"));
+        datePickerMetrics.AddRange(CollectDatePickerMetrics(paymentInvoiceWindow, "payment-invoice"));
+        datePickerMetrics.AddRange(CollectDatePickerMetrics(salesWindow, "sales-document"));
+        datePickerMetrics.AddRange(CollectDatePickerMetrics(purchaseWindow, "purchase-document"));
+        ValidateDatePickerMetrics(datePickerMetrics);
 
         var report = new
         {
@@ -208,6 +224,12 @@ internal static class Program
                 LineColumns = transferGrid?.Columns.Count ?? 0,
                 Width = transferWindow.Width,
                 Height = transferWindow.Height
+            },
+            RuntimeUi = new
+            {
+                EvidenceDirectory = evidenceDirectory,
+                Screenshots = screenshots,
+                DatePickers = datePickerMetrics
             }
         };
 
@@ -395,6 +417,78 @@ internal static class Program
         window.UpdateLayout();
     }
 
+    private static string PrepareEvidenceDirectory()
+    {
+        var directory = Path.Combine(AppContext.BaseDirectory, "runtime", "payment-transfer-verifier-evidence");
+        if (Directory.Exists(directory))
+            Directory.Delete(directory, recursive: true);
+
+        Directory.CreateDirectory(directory);
+        return directory;
+    }
+
+    private static WindowScreenshot CaptureWindow(Window window, string evidenceDirectory, string slug)
+    {
+        window.UpdateLayout();
+        var width = Math.Max(1, (int)Math.Ceiling(window.ActualWidth > 0 ? window.ActualWidth : window.Width));
+        var height = Math.Max(1, (int)Math.Ceiling(window.ActualHeight > 0 ? window.ActualHeight : window.Height));
+        var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(window);
+
+        var path = Path.Combine(evidenceDirectory, slug + ".png");
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using (var stream = File.Create(path))
+            encoder.Save(stream);
+
+        var file = new FileInfo(path);
+        if (file.Length <= 0)
+            throw new InvalidOperationException($"UI 캡처 파일이 비어 있습니다: {path}");
+
+        return new WindowScreenshot(slug, path, width, height, file.Length);
+    }
+
+    private static List<DatePickerRuntimeMetric> CollectDatePickerMetrics(Window window, string windowKey)
+    {
+        var result = new List<DatePickerRuntimeMetric>();
+        var index = 0;
+        foreach (var datePicker in FindVisualChildren<DatePicker>(window).Where(current => current.IsVisible))
+        {
+            index++;
+            result.Add(new DatePickerRuntimeMetric(
+                windowKey,
+                datePicker.Name,
+                index,
+                Math.Round(datePicker.ActualWidth, 2),
+                Math.Round(datePicker.ActualHeight, 2),
+                Math.Round(datePicker.MinWidth, 2),
+                Math.Round(datePicker.MinHeight, 2),
+                datePicker.IsEnabled,
+                datePicker.Text));
+        }
+
+        return result;
+    }
+
+    private static void ValidateDatePickerMetrics(IReadOnlyCollection<DatePickerRuntimeMetric> metrics)
+    {
+        var requiredWindows = new[] { "payment-advance", "payment-invoice", "sales-document", "purchase-document" };
+        foreach (var windowKey in requiredWindows)
+        {
+            if (!metrics.Any(metric => metric.Window == windowKey))
+                throw new InvalidOperationException($"DatePicker 런타임 측정값이 없습니다: {windowKey}");
+        }
+
+        foreach (var metric in metrics)
+        {
+            if (metric.ActualWidth < 120 || metric.ActualHeight < 28)
+            {
+                throw new InvalidOperationException(
+                    $"DatePicker 크기가 너무 작습니다: {metric.Window}#{metric.Index} {metric.ActualWidth}x{metric.ActualHeight}");
+            }
+        }
+    }
+
     private static HashSet<string> CollectButtons(DependencyObject root)
     {
         var result = new HashSet<string>(StringComparer.Ordinal);
@@ -426,6 +520,21 @@ internal static class Program
             var count = VisualTreeHelper.GetChildrenCount(node);
             for (var i = 0; i < count; i++)
                 Visit(VisualTreeHelper.GetChild(node, i), bucket);
+        }
+    }
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject root)
+        where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T match)
+                yield return match;
+
+            foreach (var descendant in FindVisualChildren<T>(child))
+                yield return descendant;
         }
     }
 
@@ -482,4 +591,22 @@ internal static class Program
         LocalItem PurchaseItem,
         LocalInvoice SalesInvoice,
         LocalInvoice PurchaseInvoice);
+
+    private sealed record WindowScreenshot(
+        string Window,
+        string Path,
+        int Width,
+        int Height,
+        long SizeBytes);
+
+    private sealed record DatePickerRuntimeMetric(
+        string Window,
+        string Name,
+        int Index,
+        double ActualWidth,
+        double ActualHeight,
+        double MinWidth,
+        double MinHeight,
+        bool IsEnabled,
+        string Text);
 }

@@ -115,6 +115,25 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("DialogWindowCloseHelper.Close(this)", code, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void PaymentTransferVerifier_CapturesRuntimeWindowScreenshotsAndDatePickerMetrics()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            root,
+            "tasks",
+            "PaymentTransferVerifier",
+            "Program.cs"));
+
+        Assert.Contains("RenderTargetBitmap", source, StringComparison.Ordinal);
+        Assert.Contains("PngBitmapEncoder", source, StringComparison.Ordinal);
+        Assert.Contains("CaptureWindow(paymentAdvanceWindow", source, StringComparison.Ordinal);
+        Assert.Contains("CollectDatePickerMetrics(paymentAdvanceWindow", source, StringComparison.Ordinal);
+        Assert.Contains("ValidateDatePickerMetrics(datePickerMetrics)", source, StringComparison.Ordinal);
+        Assert.Contains("DatePickerRuntimeMetric", source, StringComparison.Ordinal);
+        Assert.Contains("WindowScreenshot", source, StringComparison.Ordinal);
+    }
+
     private static bool TryReadSetterInt(string styleBlock, string propertyName, out int value)
     {
         var match = Regex.Match(
