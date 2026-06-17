@@ -1668,6 +1668,20 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            var normalizedStatus = InventoryTransferStatusNormalizer.Normalize(
+                dto.TransferStatus,
+                dto.ReceivedByUsername,
+                dto.ReceivedAtUtc,
+                dto.RejectedByUsername,
+                dto.RejectedAtUtc);
+            if (normalizedStatus is InventoryTransferStatusNormalizer.Received or InventoryTransferStatusNormalizer.Rejected &&
+                !_officeScopeService.CanWriteOfficeForDeliveries(dto.TargetOfficeCode, dto.TenantCode))
+            {
+                AddClientConflict(dto, nameof(InventoryTransfer),
+                    $"Inventory transfer target office is outside the writable delivery scope: {dto.TargetOfficeCode}.", result);
+                continue;
+            }
+
             var lines = dto.Lines ?? [];
             var lineConflict = false;
             foreach (var line in lines.Where(line => line.ItemId.HasValue && line.ItemId.Value != Guid.Empty))

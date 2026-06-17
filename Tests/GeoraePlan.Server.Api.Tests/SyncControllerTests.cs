@@ -750,6 +750,127 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsFinalInventoryTransferStatus_WhenTargetOfficeIsNotWritable()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "delivery-source-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.DeliveryEdit]
+        };
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "Target guarded transfer item",
+            NameMatchKey = "TARGETGUARDEDTRANSFERITEM",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        await _dbContext.SaveChangesAsync();
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var receivedTransferId = Guid.NewGuid();
+        var rejectedTransferId = Guid.NewGuid();
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-transfer-final-status-target-scope",
+            InventoryTransfers =
+            [
+                new InventoryTransferDto
+                {
+                    Id = receivedTransferId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                    TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    TransferNumber = "TR-TARGET-SCOPE-RECEIVED",
+                    TransferDate = new DateOnly(2026, 6, 17),
+                    FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                    TransferStatus = InventoryTransferStatusNormalizer.Received,
+                    ReceivedByUsername = currentUser.Username,
+                    ReceivedAtUtc = DateTime.UtcNow,
+                    MutationId = $"device-transfer-final-status-target-scope:InventoryTransfer:{receivedTransferId:N}:1",
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    Lines =
+                    [
+                        new InventoryTransferLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            TransferId = receivedTransferId,
+                            ItemId = itemId,
+                            ItemNameOriginal = "Target guarded transfer item",
+                            SpecificationOriginal = string.Empty,
+                            Unit = "EA",
+                            Quantity = 2m,
+                            ReceivedQuantity = 2m
+                        }
+                    ]
+                },
+                new InventoryTransferDto
+                {
+                    Id = rejectedTransferId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                    TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    TransferNumber = "TR-TARGET-SCOPE-REJECTED",
+                    TransferDate = new DateOnly(2026, 6, 17),
+                    FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                    TransferStatus = InventoryTransferStatusNormalizer.Rejected,
+                    RejectedByUsername = currentUser.Username,
+                    RejectedAtUtc = DateTime.UtcNow,
+                    RejectReason = "source office cannot reject for target",
+                    MutationId = $"device-transfer-final-status-target-scope:InventoryTransfer:{rejectedTransferId:N}:1",
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    Lines =
+                    [
+                        new InventoryTransferLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            TransferId = rejectedTransferId,
+                            ItemId = itemId,
+                            ItemNameOriginal = "Target guarded transfer item",
+                            SpecificationOriginal = string.Empty,
+                            Unit = "EA",
+                            Quantity = 1m,
+                            ReceivedQuantity = 0m
+                        }
+                    ]
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(2, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(InventoryTransfer), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("target office is outside the writable delivery scope", StringComparison.OrdinalIgnoreCase));
+        scopedDb.ChangeTracker.Clear();
+        Assert.False(await scopedDb.InventoryTransfers.IgnoreQueryFilters().AnyAsync(x => x.Id == receivedTransferId));
+        Assert.False(await scopedDb.InventoryTransfers.IgnoreQueryFilters().AnyAsync(x => x.Id == rejectedTransferId));
+        Assert.False(await scopedDb.InventoryLedgerEntries.AnyAsync(entry =>
+            entry.SourceDocumentId == receivedTransferId || entry.SourceDocumentId == rejectedTransferId));
+    }
+
+    [Fact]
     public async Task Push_RollsBackEarlierChanges_WhenLaterContractStorageWriteFails()
     {
         var customerId = Guid.NewGuid();
