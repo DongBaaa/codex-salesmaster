@@ -134,6 +134,35 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("WindowScreenshot", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void WpfDatePickerRuntimeAudit_CapturesRemainingDatePickerWindows()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            root,
+            "tasks",
+            "WpfDatePickerRuntimeAudit",
+            "Program.cs"));
+
+        Assert.Contains("RequiredWindowDatePickerCounts", source, StringComparison.Ordinal);
+        Assert.Contains("[\"customer-edit\"] = 3", source, StringComparison.Ordinal);
+        Assert.Contains("[\"inventory-transfer\"] = 1", source, StringComparison.Ordinal);
+        Assert.Contains("[\"period-ledger\"] = 2", source, StringComparison.Ordinal);
+        Assert.Contains("[\"print-edit\"] = 1", source, StringComparison.Ordinal);
+        Assert.Contains("[\"rental-asset-link\"] = 1", source, StringComparison.Ordinal);
+        Assert.Contains("[\"rental-asset\"] = 5", source, StringComparison.Ordinal);
+        Assert.Contains("[\"rental-assignment-history-edit\"] = 2", source, StringComparison.Ordinal);
+        Assert.Contains("[\"rental-billing\"] = 2", source, StringComparison.Ordinal);
+        Assert.Contains("[\"rental-contract-editor\"] = 3", source, StringComparison.Ordinal);
+        Assert.Contains("[\"rental-customer-onboarding\"] = 1", source, StringComparison.Ordinal);
+        Assert.Contains("[\"rental-equipment-replacement\"] = 1", source, StringComparison.Ordinal);
+        Assert.Contains("[\"yeonsu-delivery\"] = 2", source, StringComparison.Ordinal);
+        Assert.Contains("RenderTargetBitmap", source, StringComparison.Ordinal);
+        Assert.Contains("PngBitmapEncoder", source, StringComparison.Ordinal);
+        Assert.Contains("ValidateDatePickerMetrics(datePickerMetrics)", source, StringComparison.Ordinal);
+        Assert.Contains("ComplementsExistingPaymentTransferVerifier = true", source, StringComparison.Ordinal);
+    }
+
     private static bool TryReadSetterInt(string styleBlock, string propertyName, out int value)
     {
         var match = Regex.Match(
