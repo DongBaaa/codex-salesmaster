@@ -336,11 +336,11 @@ public sealed class SyncController : ControllerBase
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 await RemoveSupersededPurgeRecordsAsync("item", scopedItems, cancellationToken);
             }
-            var itemWarehouseStockItemIds = await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], result, cancellationToken);
-            if (itemWarehouseStockItemIds.Count > 0)
+            var itemWarehouseStockResult = await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], result, cancellationToken);
+            if (itemWarehouseStockResult.AffectedItemIds.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
-                await RecalculateItemCurrentStocksFromWarehousesAsync(itemWarehouseStockItemIds, cancellationToken);
+                await RecalculateItemCurrentStocksFromWarehousesAsync(itemWarehouseStockResult.AffectedItemIds, cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
             var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
@@ -362,7 +362,7 @@ public sealed class SyncController : ControllerBase
             await PersistTransactionAttachmentsToStorageAsync(validTransactionAttachments, cancellationToken);
             var scopedInventoryTransfers = await PrepareScopedInventoryTransfersAsync(request.InventoryTransfers ?? [], result, cancellationToken);
             var validInventoryTransfers = await FilterValidInventoryTransfersAsync(scopedInventoryTransfers, result, cancellationToken);
-            await UpsertInventoryTransfersAsync(validInventoryTransfers, result, deviceId, cancellationToken);
+            await UpsertInventoryTransfersAsync(validInventoryTransfers, result, deviceId, itemWarehouseStockResult.AcceptedStockKeys, cancellationToken);
             if (validInventoryTransfers.Count > 0)
                 requiresInventoryLedgerRebuild = true;
             var scopedRentalCompanies = await PrepareScopedRentalManagementCompaniesAsync(request.RentalManagementCompanies ?? [], result, cancellationToken);
@@ -1718,6 +1718,7 @@ public sealed class SyncController : ControllerBase
         IEnumerable<InventoryTransferDto> payload,
         SyncPushResult result,
         string deviceId,
+        IReadOnlySet<string> itemWarehouseStockKeysHandledByClient,
         CancellationToken cancellationToken)
     {
         foreach (var dto in payload)
@@ -1745,6 +1746,11 @@ public sealed class SyncController : ControllerBase
                     continue;
                 }
 
+                await ApplyInventoryTransferStockSnapshotDeltaAsync(
+                    new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
+                    currentStockDeltas,
+                    itemWarehouseStockKeysHandledByClient,
+                    cancellationToken);
                 _dbContext.InventoryTransfers.Add(entity);
                 RegisterProcessedMutation(dto, nameof(InventoryTransfer), deviceId);
                 await ResolveHistoricalConflictsAsync(nameof(InventoryTransfer), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
@@ -1788,6 +1794,11 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            await ApplyInventoryTransferStockSnapshotDeltaAsync(
+                previousStockDeltas,
+                updatedStockDeltas,
+                itemWarehouseStockKeysHandledByClient,
+                cancellationToken);
             entity.Apply(dto);
             _dbContext.InventoryTransferLines.RemoveRange(entity.Lines);
             entity.Lines.Clear();
@@ -1796,6 +1807,39 @@ public sealed class SyncController : ControllerBase
             await ResolveHistoricalConflictsAsync(nameof(InventoryTransfer), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
             result.AcceptedCount++;
         }
+    }
+
+    private async Task ApplyInventoryTransferStockSnapshotDeltaAsync(
+        IReadOnlyDictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal> previousStockDeltas,
+        IReadOnlyDictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal> currentStockDeltas,
+        IReadOnlySet<string> itemWarehouseStockKeysHandledByClient,
+        CancellationToken cancellationToken)
+    {
+        var previousToApply = ExcludeClientHandledStockDeltas(previousStockDeltas, itemWarehouseStockKeysHandledByClient);
+        var currentToApply = ExcludeClientHandledStockDeltas(currentStockDeltas, itemWarehouseStockKeysHandledByClient);
+        await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
+            previousToApply,
+            currentToApply,
+            cancellationToken);
+    }
+
+    private static IReadOnlyDictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal> ExcludeClientHandledStockDeltas(
+        IReadOnlyDictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal> stockDeltas,
+        IReadOnlySet<string> itemWarehouseStockKeysHandledByClient)
+    {
+        if (stockDeltas.Count == 0 || itemWarehouseStockKeysHandledByClient.Count == 0)
+            return stockDeltas;
+
+        var filtered = new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>();
+        foreach (var (key, quantity) in stockDeltas)
+        {
+            if (itemWarehouseStockKeysHandledByClient.Contains(BuildItemWarehouseStockSnapshotKey(key.ItemId, key.WarehouseCode)))
+                continue;
+
+            filtered[key] = quantity;
+        }
+
+        return filtered;
     }
 
     private async Task<List<RentalManagementCompanyDto>> PrepareScopedRentalManagementCompaniesAsync(
@@ -3998,7 +4042,7 @@ public sealed class SyncController : ControllerBase
         return valid;
     }
 
-    private async Task<HashSet<Guid>> UpsertItemWarehouseStocksAsync(
+    private async Task<ItemWarehouseStockUpsertResult> UpsertItemWarehouseStocksAsync(
         IEnumerable<ItemWarehouseStockDto> payload,
         SyncPushResult result,
         CancellationToken cancellationToken)
@@ -4008,6 +4052,7 @@ public sealed class SyncController : ControllerBase
         var outOfScopeItemCount = 0;
         var outOfScopeWarehouseCount = 0;
         var affectedItemIds = new HashSet<Guid>();
+        var acceptedStockKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var incomingRows = payload
             .Where(dto => dto.ItemId != Guid.Empty && !string.IsNullOrWhiteSpace(dto.WarehouseCode))
@@ -4111,6 +4156,7 @@ public sealed class SyncController : ControllerBase
                     Revision = _revisionClock.NextRevision()
                 });
                 affectedItemIds.Add(dto.ItemId);
+                acceptedStockKeys.Add(BuildItemWarehouseStockSnapshotKey(dto.ItemId, dto.WarehouseCode));
                 continue;
             }
 
@@ -4137,6 +4183,7 @@ public sealed class SyncController : ControllerBase
             entity.UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc);
             entity.Revision = _revisionClock.NextRevision();
             affectedItemIds.Add(dto.ItemId);
+            acceptedStockKeys.Add(BuildItemWarehouseStockSnapshotKey(dto.ItemId, dto.WarehouseCode));
         }
 
         if (missingItemCount > 0)
@@ -4178,8 +4225,15 @@ public sealed class SyncController : ControllerBase
                 "item-warehouse-stock-skip-out-of-scope-warehouse",
                 $"재고 수량 {outOfScopeWarehouseCount:N0}건은 현재 계정이 수정할 수 없는 창고 범위라 서버 반영에서 제외했습니다.");
         }
-        return affectedItemIds;
+        return new ItemWarehouseStockUpsertResult(affectedItemIds, acceptedStockKeys);
     }
+
+    private static string BuildItemWarehouseStockSnapshotKey(Guid itemId, string? warehouseCode)
+        => $"{itemId:N}|{OfficeCodeCatalog.NormalizeWarehouseCodeLoose(warehouseCode)}";
+
+    private sealed record ItemWarehouseStockUpsertResult(
+        HashSet<Guid> AffectedItemIds,
+        HashSet<string> AcceptedStockKeys);
 
     private async Task RecalculateItemCurrentStocksFromWarehousesAsync(
         IReadOnlyCollection<Guid> itemIds,

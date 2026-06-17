@@ -594,6 +594,263 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_AppliesInventoryTransferStockSnapshots_WhenWarehouseStocksAreNotInPayload()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "이동 스냅샷 품목",
+            NameMatchKey = "이동스냅샷품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var transferId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-transfer-stock-snapshot",
+            InventoryTransfers =
+            [
+                new InventoryTransferDto
+                {
+                    Id = transferId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                    TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    TransferNumber = "TR-SNAPSHOT-001",
+                    TransferDate = new DateOnly(2026, 6, 17),
+                    FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                    TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                    MutationId = $"device-transfer-stock-snapshot:InventoryTransfer:{transferId:N}:1",
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    Lines =
+                    [
+                        new InventoryTransferLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            TransferId = transferId,
+                            ItemId = itemId,
+                            ItemNameOriginal = "이동 스냅샷 품목",
+                            SpecificationOriginal = string.Empty,
+                            Unit = "개",
+                            Quantity = 2m
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(8m, await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(8m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+        Assert.True(await _dbContext.InventoryLedgerEntries.AnyAsync(entry => entry.SourceDocumentId == transferId));
+    }
+
+    [Fact]
+    public async Task Push_AppliesReceivedInventoryTransferTargetStock_WhenWarehouseStocksAreNotInPayload()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "수령 이동 스냅샷 품목",
+            NameMatchKey = "수령이동스냅샷품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var transferId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-transfer-received-stock-snapshot",
+            InventoryTransfers =
+            [
+                new InventoryTransferDto
+                {
+                    Id = transferId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                    TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    TransferNumber = "TR-SNAPSHOT-RECEIVED-001",
+                    TransferDate = new DateOnly(2026, 6, 17),
+                    FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                    TransferStatus = InventoryTransferStatusNormalizer.Received,
+                    ReceivedByUsername = "admin",
+                    ReceivedAtUtc = DateTime.UtcNow,
+                    MutationId = $"device-transfer-received-stock-snapshot:InventoryTransfer:{transferId:N}:1",
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    Lines =
+                    [
+                        new InventoryTransferLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            TransferId = transferId,
+                            ItemId = itemId,
+                            ItemNameOriginal = "수령 이동 스냅샷 품목",
+                            SpecificationOriginal = string.Empty,
+                            Unit = "개",
+                            Quantity = 2m,
+                            ReceivedQuantity = 2m
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(8m, await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(2m, await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(10m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+        Assert.True(await _dbContext.InventoryLedgerEntries.AnyAsync(entry => entry.SourceDocumentId == transferId));
+    }
+
+    [Fact]
+    public async Task Push_DoesNotDoubleApplyInventoryTransferStockSnapshots_WhenWarehouseStocksAreInPayload()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "이동 스냅샷 중복 방지 품목",
+            NameMatchKey = "이동스냅샷중복방지품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var transferId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-transfer-stock-snapshot-with-client-stock",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 8m,
+                    Revision = 10,
+                    ExpectedRevision = 10,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ],
+            InventoryTransfers =
+            [
+                new InventoryTransferDto
+                {
+                    Id = transferId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                    TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    TransferNumber = "TR-SNAPSHOT-CLIENT-STOCK-001",
+                    TransferDate = new DateOnly(2026, 6, 17),
+                    FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                    TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                    MutationId = $"device-transfer-stock-snapshot-with-client-stock:InventoryTransfer:{transferId:N}:1",
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    Lines =
+                    [
+                        new InventoryTransferLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            TransferId = transferId,
+                            ItemId = itemId,
+                            ItemNameOriginal = "이동 스냅샷 중복 방지 품목",
+                            SpecificationOriginal = string.Empty,
+                            Unit = "개",
+                            Quantity = 2m
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(8m, await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(8m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Push_RejectsInventoryTransferLineWithOutOfScopeItem()
     {
         var currentUser = new TestCurrentUserContext
