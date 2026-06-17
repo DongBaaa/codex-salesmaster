@@ -7444,16 +7444,18 @@ public sealed class SyncService : IDisposable
         IReadOnlyList<TransactionAttachmentDto> dtos,
         CancellationToken ct)
     {
+        var filesToWriteAfterSave = new List<TransactionAttachmentFileWrite>();
+        var filesToDeleteAfterSave = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var dto in dtos)
         {
             var existing = await _db.TransactionAttachments.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id == dto.Id, ct);
-            if (dto.IsDeleted && existing is not null && !string.IsNullOrWhiteSpace(existing.StoredPath) && File.Exists(existing.StoredPath))
-            {
-                try { File.Delete(existing.StoredPath); } catch { /* ignore local cleanup failure */ }
-            }
+            if (existing?.IsDirty == true)
+                continue;
 
-            var attachmentPath = PersistTransactionAttachment(dto, existing?.StoredPath);
+            var existingPath = existing?.StoredPath;
+            var attachmentPath = PrepareTransactionAttachmentFile(dto, filesToWriteAfterSave);
             var local = LocalMappings.ToLocal(dto, storedFileName: Path.GetFileName(attachmentPath), storedPath: attachmentPath);
             local.IsDirty = false;
 
@@ -7461,13 +7463,41 @@ public sealed class SyncService : IDisposable
             {
                 _db.TransactionAttachments.Add(local);
             }
-            else if (!existing.IsDirty)
+            else
             {
                 _db.Entry(existing).CurrentValues.SetValues(local);
+                if (dto.IsDeleted)
+                {
+                    QueueTransactionAttachmentFileDelete(filesToDeleteAfterSave, existingPath);
+                }
+                else if (!string.Equals(existingPath, attachmentPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    QueueTransactionAttachmentFileDelete(filesToDeleteAfterSave, existingPath);
+                }
             }
         }
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            DeleteTemporaryTransactionAttachmentFiles(filesToWriteAfterSave);
+            throw;
+        }
+
+        try
+        {
+            CommitTransactionAttachmentFileWrites(filesToWriteAfterSave);
+        }
+        catch
+        {
+            DeleteTemporaryTransactionAttachmentFiles(filesToWriteAfterSave);
+            throw;
+        }
+
+        DeleteTransactionAttachmentFiles(filesToDeleteAfterSave);
     }
 
     private async Task UpsertPulledInventoryTransfersAsync(
@@ -8188,27 +8218,85 @@ public sealed class SyncService : IDisposable
         }
     }
 
-    private static string PersistTransactionAttachment(TransactionAttachmentDto dto, string? existingPath = null)
+    private sealed record TransactionAttachmentFileWrite(string TemporaryPath, string StoredPath);
+
+    private static string PrepareTransactionAttachmentFile(
+        TransactionAttachmentDto dto,
+        ICollection<TransactionAttachmentFileWrite> filesToWriteAfterSave)
     {
         if (dto.IsDeleted)
             return string.Empty;
 
         var attachmentDir = Path.Combine(AppPaths.TransactionAttachmentsDir, dto.TransactionId.ToString("N"));
-        Directory.CreateDirectory(attachmentDir);
-
         var fileName = SanitizeAttachmentFileName(dto.FileName, dto.Id);
         var storedPath = Path.Combine(attachmentDir, fileName);
         var content = dto.FileContent ?? [];
-        File.WriteAllBytes(storedPath, content);
 
-        if (!string.IsNullOrWhiteSpace(existingPath) &&
-            !string.Equals(existingPath, storedPath, StringComparison.OrdinalIgnoreCase) &&
-            File.Exists(existingPath))
-        {
-            try { File.Delete(existingPath); } catch { /* ignore rename cleanup failure */ }
-        }
+        var tempDir = Path.Combine(AppPaths.TempDir, "transaction-attachments-sync", dto.TransactionId.ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var temporaryPath = Path.Combine(tempDir, $"{dto.Id:N}-{Guid.NewGuid():N}.tmp");
+        File.WriteAllBytes(temporaryPath, content);
+        filesToWriteAfterSave.Add(new TransactionAttachmentFileWrite(temporaryPath, storedPath));
 
         return storedPath;
+    }
+
+    private static void CommitTransactionAttachmentFileWrites(IEnumerable<TransactionAttachmentFileWrite> filesToWrite)
+    {
+        foreach (var fileToWrite in filesToWrite)
+        {
+            var directory = Path.GetDirectoryName(fileToWrite.StoredPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            File.Copy(fileToWrite.TemporaryPath, fileToWrite.StoredPath, overwrite: true);
+            TryDeleteTransactionAttachmentFile(fileToWrite.TemporaryPath, deleteEmptyDirectory: true);
+        }
+    }
+
+    private static void DeleteTemporaryTransactionAttachmentFiles(IEnumerable<TransactionAttachmentFileWrite> filesToWrite)
+    {
+        foreach (var fileToWrite in filesToWrite)
+            TryDeleteTransactionAttachmentFile(fileToWrite.TemporaryPath, deleteEmptyDirectory: true);
+    }
+
+    private static void DeleteTransactionAttachmentFiles(IEnumerable<string> paths)
+    {
+        foreach (var path in paths)
+            TryDeleteTransactionAttachmentFile(path, deleteEmptyDirectory: true);
+    }
+
+    private static void QueueTransactionAttachmentFileDelete(ISet<string> paths, string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(path))
+            paths.Add(path);
+    }
+
+    private static void TryDeleteTransactionAttachmentFile(string? path, bool deleteEmptyDirectory)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+
+            if (File.Exists(path))
+                File.Delete(path);
+
+            if (!deleteEmptyDirectory)
+                return;
+
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory) &&
+                Directory.Exists(directory) &&
+                !Directory.EnumerateFileSystemEntries(directory).Any())
+            {
+                Directory.Delete(directory, recursive: false);
+            }
+        }
+        catch
+        {
+            // 파일 정리 실패는 DB 동기화 결과를 되돌리지 않는다.
+        }
     }
 
     private static string SanitizeAttachmentFileName(string? fileName, Guid attachmentId)

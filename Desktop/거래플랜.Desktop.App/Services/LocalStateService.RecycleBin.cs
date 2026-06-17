@@ -1275,8 +1275,6 @@ public sealed partial class LocalStateService
             .IgnoreQueryFilters()
             .Where(current => current.TransactionId == transactionId)
             .ToListAsync(ct);
-        foreach (var attachment in attachments)
-            TryDeleteAttachmentFile(attachment);
 
         var linkedPayment = await _db.Payments
             .IgnoreQueryFilters()
@@ -1290,6 +1288,9 @@ public sealed partial class LocalStateService
 
         if (transaction.LinkedRentalBillingProfileId.HasValue && transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
             await RecalculateRentalSettlementAsync(transaction.LinkedRentalBillingProfileId.Value, transaction.LinkedRentalBillingRunId, ct);
+
+        foreach (var attachment in attachments)
+            TryDeleteAttachmentFile(attachment);
 
         return OfficeMutationResult.Ok(transactionId, "거래내역 서버 영구삭제를 로컬에 반영했습니다.");
     }
