@@ -681,6 +681,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-TX-PURGE-ACTIVE-PAYMENT");
         var transactionId = Guid.NewGuid();
         var transaction = CreateDeletedTransaction(transactionId, customer.Id, OfficeCodeCatalog.Usenet, invoice.Id);
+        var transactionAttachmentPath = "storage/blocked-active-transaction-evidence.bin";
         var activePayment = new Payment
         {
             Id = transactionId,
@@ -693,9 +694,18 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         dbContext.Invoices.Add(invoice);
         dbContext.Transactions.Add(transaction);
         dbContext.Payments.Add(activePayment);
+        dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = Guid.NewGuid(),
+            TransactionId = transactionId,
+            FileName = "blocked-active-transaction-evidence.bin",
+            StoragePath = transactionAttachmentPath,
+            IsDeleted = true
+        });
         await dbContext.SaveChangesAsync();
 
-        var controller = CreateController(dbContext, currentUser);
+        var storage = new StubCentralFileStorage();
+        var controller = CreateController(dbContext, currentUser, storage);
         var response = await controller.Purge(
             new RecycleBinMutationRequest
             {
@@ -716,10 +726,12 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         Assert.False(item.Success);
         Assert.Contains("활성", item.Message);
         Assert.Equal(0, payload.SucceededCount);
+        Assert.DoesNotContain(transactionAttachmentPath, storage.DeletedPaths);
 
         dbContext.ChangeTracker.Clear();
         Assert.True(await dbContext.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == transactionId));
         Assert.True(await dbContext.Payments.IgnoreQueryFilters().AnyAsync(current => current.Id == transactionId && !current.IsDeleted));
+        Assert.True(await dbContext.TransactionAttachments.IgnoreQueryFilters().AnyAsync(current => current.TransactionId == transactionId));
     }
 
     [Fact]
@@ -733,6 +745,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var hiddenInvoice = CreateScopedInvoice(hiddenCustomer.Id, OfficeCodeCatalog.Yeonsu, "INV-TX-PURGE-HIDDEN-PAYMENT");
         var transactionId = Guid.NewGuid();
         var transaction = CreateDeletedTransaction(transactionId, transactionCustomer.Id, OfficeCodeCatalog.Usenet, hiddenInvoice.Id);
+        var transactionAttachmentPath = "storage/blocked-hidden-payment-transaction-evidence.bin";
         var hiddenPayment = new Payment
         {
             Id = transactionId,
@@ -745,9 +758,18 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         dbContext.Invoices.Add(hiddenInvoice);
         dbContext.Transactions.Add(transaction);
         dbContext.Payments.Add(hiddenPayment);
+        dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = Guid.NewGuid(),
+            TransactionId = transactionId,
+            FileName = "blocked-hidden-payment-transaction-evidence.bin",
+            StoragePath = transactionAttachmentPath,
+            IsDeleted = true
+        });
         await dbContext.SaveChangesAsync();
 
-        var controller = CreateController(dbContext, currentUser);
+        var storage = new StubCentralFileStorage();
+        var controller = CreateController(dbContext, currentUser, storage);
         var response = await controller.Purge(
             new RecycleBinMutationRequest
             {
@@ -768,10 +790,12 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         Assert.False(item.Success);
         Assert.Contains("연동 수금/지급", item.Message);
         Assert.Equal(0, payload.SucceededCount);
+        Assert.DoesNotContain(transactionAttachmentPath, storage.DeletedPaths);
 
         dbContext.ChangeTracker.Clear();
         Assert.True(await dbContext.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == transactionId));
         Assert.True(await dbContext.Payments.IgnoreQueryFilters().AnyAsync(current => current.Id == transactionId));
+        Assert.True(await dbContext.TransactionAttachments.IgnoreQueryFilters().AnyAsync(current => current.TransactionId == transactionId));
     }
 
     [Fact]

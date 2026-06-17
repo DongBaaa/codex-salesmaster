@@ -1738,7 +1738,7 @@ public sealed partial class LocalStateService
         var invoice = await _db.Invoices
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
-        if (invoice is not null && !CanAccessInvoice(invoice, session))
+        if (invoice is null || !CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 기록을 영구삭제할 수 없습니다.");
 
         var now = DateTime.UtcNow;
@@ -1849,15 +1849,13 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("영구삭제할 거래내역을 찾을 수 없습니다.");
         if (!transaction.IsDeleted)
             return OfficeMutationResult.Denied("활성 상태 거래내역은 휴지통에서 영구삭제할 수 없습니다.");
-        if (!CanAccessTransaction(transaction, session))
+        if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 거래내역을 영구삭제할 수 없습니다.");
 
         var attachments = await _db.TransactionAttachments
             .IgnoreQueryFilters()
             .Where(current => current.TransactionId == transactionId)
             .ToListAsync(ct);
-        foreach (var attachment in attachments)
-            TryDeleteAttachmentFile(attachment);
 
         var linkedPayment = await _db.Payments
             .IgnoreQueryFilters()
@@ -1870,7 +1868,7 @@ public sealed partial class LocalStateService
             var linkedPaymentInvoice = await _db.Invoices
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id == linkedPayment.InvoiceId, ct);
-            if (linkedPaymentInvoice is null || !CanAccessInvoice(linkedPaymentInvoice, session))
+            if (linkedPaymentInvoice is null || !CanWriteOfficeScope(session, linkedPaymentInvoice.ResponsibleOfficeCode))
                 return OfficeMutationResult.Denied("권한이 없어 연동 수금/지급 기록을 영구삭제할 수 없습니다.");
         }
 
@@ -1900,6 +1898,9 @@ public sealed partial class LocalStateService
 
         if (transaction.LinkedRentalBillingProfileId.HasValue && transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
             await RecalculateRentalSettlementAsync(transaction.LinkedRentalBillingProfileId.Value, transaction.LinkedRentalBillingRunId, ct);
+
+        foreach (var attachment in attachments)
+            TryDeleteAttachmentFile(attachment);
 
         return OfficeMutationResult.Ok(transaction.Id, "거래내역을 휴지통에서 영구삭제했습니다.");
     }

@@ -1748,8 +1748,9 @@ public sealed class RecycleBinController : ControllerBase
             .IgnoreQueryFilters()
             .Where(current => current.TransactionId == transactionId)
             .ToListAsync(cancellationToken);
-        foreach (var attachment in attachments)
-            _fileStorage.DeleteIfExists(attachment.StoragePath);
+        var attachmentPaths = attachments
+            .Select(current => current.StoragePath)
+            .ToList();
 
         var linkedPayment = await _dbContext.Payments
             .IgnoreQueryFilters()
@@ -1774,8 +1775,7 @@ public sealed class RecycleBinController : ControllerBase
                 .IgnoreQueryFilters()
                 .Where(current => current.PaymentId == linkedPayment.Id)
                 .ToListAsync(cancellationToken);
-            foreach (var attachment in linkedPaymentAttachments)
-                _fileStorage.DeleteIfExists(attachment.StoragePath);
+            attachmentPaths.AddRange(linkedPaymentAttachments.Select(current => current.StoragePath));
 
             purgeRecords.Add(CreatePurgeRecord("payment", linkedPayment.Id, linkedPaymentInvoice.TenantCode, linkedPaymentInvoice.ResponsibleOfficeCode));
             _dbContext.PaymentAttachments.RemoveRange(linkedPaymentAttachments);
@@ -1786,6 +1786,10 @@ public sealed class RecycleBinController : ControllerBase
         _dbContext.TransactionAttachments.RemoveRange(attachments);
         _dbContext.Transactions.Remove(transaction);
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        foreach (var attachmentPath in attachmentPaths)
+            _fileStorage.DeleteIfExists(attachmentPath);
+
         return (true, "거래내역을 영구삭제했습니다.");
     }
 

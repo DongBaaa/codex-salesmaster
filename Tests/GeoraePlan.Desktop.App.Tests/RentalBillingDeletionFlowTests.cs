@@ -1340,6 +1340,8 @@ public sealed class RentalBillingDeletionFlowTests
             var customerId = Guid.NewGuid();
             var invoiceId = Guid.NewGuid();
             var transactionId = Guid.NewGuid();
+            var attachmentFile = Path.Combine(Path.GetTempPath(), $"georaeplan-blocked-purge-{Guid.NewGuid():N}.bin");
+            await File.WriteAllTextAsync(attachmentFile, "blocked purge evidence");
             db.Customers.Add(CreateCustomer(customerId, "Active linked payment customer"));
             db.Invoices.Add(new LocalInvoice
             {
@@ -1377,6 +1379,15 @@ public sealed class RentalBillingDeletionFlowTests
                 Amount = 1000m,
                 IsDeleted = false
             });
+            db.TransactionAttachments.Add(new LocalTransactionAttachment
+            {
+                Id = Guid.NewGuid(),
+                TransactionId = transactionId,
+                FileName = Path.GetFileName(attachmentFile),
+                StoredFileName = Path.GetFileName(attachmentFile),
+                StoredPath = attachmentFile,
+                IsDeleted = true
+            });
             await db.SaveChangesAsync();
 
             var session = CreateAdminSession();
@@ -1390,6 +1401,146 @@ public sealed class RentalBillingDeletionFlowTests
             Assert.Contains("활성", purge.Message);
             Assert.True(await db.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == transactionId));
             Assert.True(await db.Payments.IgnoreQueryFilters().AnyAsync(current => current.Id == transactionId && !current.IsDeleted));
+            Assert.True(await db.TransactionAttachments.IgnoreQueryFilters().AnyAsync(current => current.TransactionId == transactionId));
+            Assert.True(File.Exists(attachmentFile));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task PermanentlyDeletePayment_RejectsTemporaryAccessOutsideWritableOffice()
+    {
+        PrepareAppRoot("georaeplan-payment-purge-temp-access-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var hiddenCustomerId = Guid.NewGuid();
+            var hiddenInvoiceId = Guid.NewGuid();
+            var hiddenPaymentId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(hiddenCustomerId, "Hidden payment purge customer", OfficeCodeCatalog.Yeonsu));
+            db.Invoices.Add(CreateInvoice(
+                hiddenInvoiceId,
+                hiddenCustomerId,
+                OfficeCodeCatalog.Yeonsu,
+                "LOCAL-PAYMENT-PURGE-TEMP-HIDDEN",
+                hiddenInvoiceId,
+                versionNumber: 1,
+                isDeleted: false,
+                isLatestVersion: true));
+            db.Payments.Add(new LocalPayment
+            {
+                Id = hiddenPaymentId,
+                InvoiceId = hiddenInvoiceId,
+                PaymentDate = new DateOnly(2026, 6, 18),
+                Amount = 1000m,
+                IsDeleted = true
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeOnlySession(OfficeCodeCatalog.Usenet);
+            var officeAccess = new OfficeAccessService();
+            officeAccess.GrantTemporaryCustomerAccess(session, hiddenCustomerId);
+            var local = new LocalStateService(db, officeAccess, new SyncRequestDispatcher(), session);
+
+            var purge = await local.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.Payment,
+                hiddenPaymentId,
+                session);
+
+            Assert.False(purge.Success);
+            Assert.Contains("권한", purge.Message);
+            Assert.True(await db.Payments.IgnoreQueryFilters().AnyAsync(current => current.Id == hiddenPaymentId));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task PermanentlyDeleteTransaction_RejectsLinkedPaymentInvoiceTemporaryAccessOutsideWritableOffice()
+    {
+        PrepareAppRoot("georaeplan-transaction-purge-temp-linked-payment-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var transactionCustomerId = Guid.NewGuid();
+            var hiddenCustomerId = Guid.NewGuid();
+            var hiddenInvoiceId = Guid.NewGuid();
+            var transactionId = Guid.NewGuid();
+            var attachmentFile = Path.Combine(Path.GetTempPath(), $"georaeplan-hidden-linked-purge-{Guid.NewGuid():N}.bin");
+            await File.WriteAllTextAsync(attachmentFile, "hidden linked payment purge evidence");
+            db.Customers.Add(CreateCustomer(transactionCustomerId, "Visible transaction purge customer", OfficeCodeCatalog.Usenet));
+            db.Customers.Add(CreateCustomer(hiddenCustomerId, "Hidden linked payment purge customer", OfficeCodeCatalog.Yeonsu));
+            db.Invoices.Add(CreateInvoice(
+                hiddenInvoiceId,
+                hiddenCustomerId,
+                OfficeCodeCatalog.Yeonsu,
+                "LOCAL-TX-PURGE-TEMP-HIDDEN",
+                hiddenInvoiceId,
+                versionNumber: 1,
+                isDeleted: false,
+                isLatestVersion: true));
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = transactionCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 18),
+                TransactionKind = PaymentFlowConstants.TransactionKindInvoiceReceipt,
+                LinkedInvoiceId = hiddenInvoiceId,
+                ReceiptTotal = 1000m,
+                SettlementAmount = 1000m,
+                IsDeleted = true
+            });
+            db.Payments.Add(new LocalPayment
+            {
+                Id = transactionId,
+                InvoiceId = hiddenInvoiceId,
+                PaymentDate = new DateOnly(2026, 6, 18),
+                Amount = 1000m,
+                IsDeleted = true
+            });
+            db.TransactionAttachments.Add(new LocalTransactionAttachment
+            {
+                Id = Guid.NewGuid(),
+                TransactionId = transactionId,
+                FileName = Path.GetFileName(attachmentFile),
+                StoredFileName = Path.GetFileName(attachmentFile),
+                StoredPath = attachmentFile,
+                IsDeleted = true
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeOnlySession(OfficeCodeCatalog.Usenet);
+            var officeAccess = new OfficeAccessService();
+            officeAccess.GrantTemporaryCustomerAccess(session, hiddenCustomerId);
+            var local = new LocalStateService(db, officeAccess, new SyncRequestDispatcher(), session);
+
+            var purge = await local.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.Transaction,
+                transactionId,
+                session);
+
+            Assert.False(purge.Success);
+            Assert.Contains("연동 수금/지급", purge.Message);
+            Assert.True(await db.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == transactionId));
+            Assert.True(await db.Payments.IgnoreQueryFilters().AnyAsync(current => current.Id == transactionId));
+            Assert.True(await db.TransactionAttachments.IgnoreQueryFilters().AnyAsync(current => current.TransactionId == transactionId));
+            Assert.True(File.Exists(attachmentFile));
         }
         finally
         {
