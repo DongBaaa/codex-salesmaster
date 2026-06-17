@@ -25,7 +25,9 @@ param(
     [string]$PostDeployBaseUrl = '',
     [string]$PostDeploySecretPath = '',
     [string]$PostDeployOutputDirectory = '',
-    [string[]]$PostDeployAllowedIntegrityWarningCodes = @()
+    [string[]]$PostDeployAllowedIntegrityWarningCodes = @(),
+    [string]$DesktopNotes = '',
+    [string]$AndroidNotes = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -561,7 +563,18 @@ try {
 
     $updateAssetScript = Join-Path $ProjectRoot 'tools\release\Publish-GeoraePlanUpdateAssets.ps1'
     if (Test-Path -LiteralPath $updateAssetScript) {
-        & $updateAssetScript -ProjectRoot $ProjectRoot -OutputRoot (Join-Path $tempPublishRoot 'updates')
+        $updateAssetArgs = @{
+            ProjectRoot = $ProjectRoot
+            OutputRoot = (Join-Path $tempPublishRoot 'updates')
+        }
+        if (-not [string]::IsNullOrWhiteSpace($DesktopNotes)) {
+            $updateAssetArgs.DesktopNotes = $DesktopNotes
+        }
+        if (-not [string]::IsNullOrWhiteSpace($AndroidNotes)) {
+            $updateAssetArgs.AndroidNotes = $AndroidNotes
+        }
+
+        & $updateAssetScript @updateAssetArgs
         if ($LASTEXITCODE -ne 0) {
             throw 'Update asset publish failed.'
         }

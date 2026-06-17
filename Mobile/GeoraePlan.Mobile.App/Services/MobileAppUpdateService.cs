@@ -75,6 +75,8 @@ public sealed class MobileAppUpdateService
         var packageUrl = _api.ResolveAbsoluteUrl(package.PackageUrl);
         if (string.IsNullOrWhiteSpace(packageUrl))
             throw new InvalidOperationException("APK 다운로드 주소를 절대 경로로 해석하지 못했습니다.");
+        if (string.IsNullOrWhiteSpace(package.Sha256))
+            throw new InvalidOperationException("APK SHA256 정보가 비어 있습니다.");
 
         var packageUri = ValidatePackageUri(packageUrl, _api.GetBaseUri());
 
@@ -84,7 +86,7 @@ public sealed class MobileAppUpdateService
         var fileName = string.IsNullOrWhiteSpace(package.FileName)
             ? $"georaeplan-{NormalizeVersionText(package.Version)}.apk"
             : Path.GetFileName(package.FileName) ?? string.Empty;
-        var targetPath = await DownloadPackageAsync(packageUri.ToString(), downloadRoot, fileName, ct);
+        var targetPath = await DownloadPackageAsync(packageUri.ToString(), downloadRoot, fileName, package.Sha256, ct);
 
         if (!await HasMatchingFileAsync(targetPath, package.Sha256, ct))
             throw new InvalidOperationException("다운로드한 APK의 무결성 검증에 실패했습니다.");
@@ -96,7 +98,7 @@ public sealed class MobileAppUpdateService
         return targetPath;
     }
 
-    private async Task<string> DownloadPackageAsync(string packageUrl, string downloadRoot, string fileName, CancellationToken ct)
+    private async Task<string> DownloadPackageAsync(string packageUrl, string downloadRoot, string fileName, string expectedSha256, CancellationToken ct)
     {
         var safeFileName = Path.GetFileName(fileName);
         if (string.IsNullOrWhiteSpace(safeFileName))
@@ -109,17 +111,55 @@ public sealed class MobileAppUpdateService
         if (!targetPath.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("업데이트 파일 저장 경로가 안전하지 않습니다.");
 
-        if (await HasMatchingFileAsync(targetPath, string.Empty, ct))
+        if (await HasMatchingFileAsync(targetPath, expectedSha256, ct))
             return targetPath;
 
-        using var response = await _http.GetAsync(packageUrl, HttpCompletionOption.ResponseHeadersRead, ct);
-        response.EnsureSuccessStatusCode();
+        var temporaryPath = Path.Combine(
+            safeRoot,
+            $"{safeFileName}.{System.Environment.ProcessId}.{Guid.NewGuid():N}.download");
 
-        await using var source = await response.Content.ReadAsStreamAsync(ct);
-        await using var destination = System.IO.File.Create(targetPath);
-        await source.CopyToAsync(destination, ct);
-        await destination.FlushAsync(ct);
+        try
+        {
+            using var response = await _http.GetAsync(packageUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            response.EnsureSuccessStatusCode();
+
+            await using var source = await response.Content.ReadAsStreamAsync(ct);
+            await using (var destination = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 81920,
+                useAsync: true))
+            {
+                await source.CopyToAsync(destination, ct);
+                await destination.FlushAsync(ct);
+            }
+
+            if (!await HasMatchingFileAsync(temporaryPath, expectedSha256, ct))
+                throw new InvalidOperationException("다운로드한 APK의 무결성 검증에 실패했습니다.");
+
+            System.IO.File.Move(temporaryPath, targetPath, overwrite: true);
+        }
+        finally
+        {
+            TryDeleteFile(temporaryPath);
+        }
+
         return targetPath;
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (System.IO.File.Exists(path))
+                System.IO.File.Delete(path);
+        }
+        catch
+        {
+            // 다음 업데이트 시 다시 정리합니다.
+        }
     }
 
     private static async Task<bool> HasMatchingFileAsync(string path, string expectedSha256, CancellationToken ct)
