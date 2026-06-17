@@ -987,6 +987,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanManageCustomerContracts(session))
+            return OfficeMutationResult.Denied("현재 계정은 거래처를 복원할 권한이 없습니다.");
+
         var customer = await _db.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == customerId, ct);
@@ -1173,6 +1176,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanManageCustomerContracts(session))
+            return OfficeMutationResult.Denied("현재 계정은 거래처를 영구삭제할 권한이 없습니다.");
+
         var customer = await _db.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == customerId, ct);
@@ -1234,6 +1240,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanManageCustomerContracts(session))
+            return OfficeMutationResult.Denied("현재 계정은 거래처 계약서를 복원할 권한이 없습니다.");
+
         var contract = await _db.CustomerContracts
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == contractId, ct);
@@ -1292,6 +1301,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanManageCustomerContracts(session))
+            return OfficeMutationResult.Denied("현재 계정은 거래처 계약서를 영구삭제할 권한이 없습니다.");
+
         var contract = await _db.CustomerContracts
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == contractId, ct);
@@ -1326,6 +1338,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanEditItems(session))
+            return OfficeMutationResult.Denied("현재 계정은 품목을 복원할 권한이 없습니다.");
+
         var item = await _db.Items
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == itemId, ct);
@@ -1346,6 +1361,16 @@ public sealed partial class LocalStateService
         }, session, now);
 
         await _db.SaveChangesAsync(ct);
+
+        await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+        {
+            Username = session.User?.Username ?? "local-user",
+            Role = session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = session.OfficeCode,
+            ForceOverride = false
+        }, ct);
+
+        RaiseInventoryStateChanged();
         return OfficeMutationResult.Ok(item.Id, "품목을 휴지통에서 복원했습니다.");
     }
 
@@ -1354,6 +1379,9 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        if (!CanEditItems(session))
+            return OfficeMutationResult.Denied("현재 계정은 품목을 영구삭제할 권한이 없습니다.");
+
         var item = await _db.Items
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == itemId, ct);

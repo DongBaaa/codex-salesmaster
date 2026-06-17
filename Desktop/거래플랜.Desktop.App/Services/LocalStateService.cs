@@ -512,6 +512,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			throw new ArgumentNullException("customer");
 		}
+		if (!CanManageCustomerContracts(session))
+		{
+			return OfficeMutationResult.Denied("현재 계정은 거래처를 저장할 권한이 없습니다.");
+		}
 		NormalizeCustomerClassification(customer);
 		string normalizedOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
 		string normalizedOwnerOfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(customer.OfficeCode, normalizedOfficeCode, normalizedOfficeCode);
@@ -572,6 +576,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<OfficeMutationResult> DeleteCustomerAsync(Guid id, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanManageCustomerContracts(session))
+		{
+			return OfficeMutationResult.Denied("현재 계정은 거래처를 삭제할 권한이 없습니다.");
+		}
 		var customer = await _db.Customers.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomer current) => current.Id == id, ct);
 		customer = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, customer, ct);
 		if (customer == null)
@@ -1847,6 +1855,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			}
 			item.IsDeleted = true;
 			item.IsDirty = true;
+			item.CurrentStock = 0m;
 			item.UpdatedAtUtc = DateTime.UtcNow;
 			await SyncItemWarehouseStocksAsync(id, 0m, null, removeStocks: true, ct);
 			await _db.SaveChangesAsync(ct);
@@ -1876,6 +1885,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		item.IsDeleted = true;
 		item.IsDirty = true;
+		item.CurrentStock = 0m;
 		item.UpdatedAtUtc = DateTime.UtcNow;
 		await SyncItemWarehouseStocksAsync(id, 0m, null, removeStocks: true, ct);
 		await _db.SaveChangesAsync(ct);
