@@ -248,10 +248,22 @@ public sealed partial class LoginViewModel : ObservableObject
 
     private static bool IsConnectionError(Exception ex)
     {
-        if (ex is HttpRequestException) return true;
+        if (ex is AggregateException aggregate)
+            return aggregate.InnerExceptions.Any(IsConnectionError);
+
+        if (ex is HttpRequestException httpRequestException)
+        {
+            if (httpRequestException.StatusCode is not null)
+                return false;
+
+            return httpRequestException.InnerException is null ||
+                   IsConnectionError(httpRequestException.InnerException);
+        }
+
         if (ex is TaskCanceledException) return true;
+        if (ex is System.Net.Sockets.SocketException) return true;
         if (ex.InnerException is System.Net.Sockets.SocketException) return true;
-        return false;
+        return ex.InnerException is not null && IsConnectionError(ex.InnerException);
     }
 
     private static string ResolveOfficeCode(UserSessionDto user)
