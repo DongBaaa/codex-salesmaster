@@ -5633,7 +5633,7 @@ public sealed class SyncService : IDisposable
         _db.ChangeTracker.Clear();
         await UpsertPulledInvoicesAsync(pull.Invoices, ct);
         _db.ChangeTracker.Clear();
-        await UpsertPulledAsync(pull.Payments, _db.Payments, LocalMappings.ToLocal, ct);
+        await UpsertPulledPaymentsAsync(pull.Payments, ct);
         _db.ChangeTracker.Clear();
         await ApplyPulledPurgeRecordsAsync(pull.PurgeRecords, ct);
         _db.ChangeTracker.Clear();
@@ -5771,6 +5771,17 @@ public sealed class SyncService : IDisposable
             }
         }
         await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task UpsertPulledPaymentsAsync(IReadOnlyList<PaymentDto> dtos, CancellationToken ct)
+    {
+        if (dtos.Count == 0)
+            return;
+
+        await UpsertPulledAsync(dtos, _db.Payments, LocalMappings.ToLocal, ct);
+        await _local.RecalculateRentalSettlementForInvoicePaymentsAsync(
+            dtos.Select((PaymentDto dto) => dto.InvoiceId),
+            ct);
     }
 
     private async Task UpsertPulledItemsAsync(

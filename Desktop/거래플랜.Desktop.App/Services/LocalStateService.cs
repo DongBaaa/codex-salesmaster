@@ -2879,6 +2879,34 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 	}
 
+	public async Task RecalculateRentalSettlementForInvoicePaymentsAsync(IEnumerable<Guid> invoiceIds, CancellationToken ct = default(CancellationToken))
+	{
+		List<Guid> targetInvoiceIds = (invoiceIds ?? Enumerable.Empty<Guid>())
+			.Where((Guid id) => id != Guid.Empty)
+			.Distinct()
+			.ToList();
+		if (targetInvoiceIds.Count == 0)
+		{
+			return;
+		}
+
+		var linkedRuns = await (from invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+			where targetInvoiceIds.Contains(invoice.Id) &&
+			      invoice.LinkedRentalBillingProfileId.HasValue &&
+			      invoice.LinkedRentalBillingProfileId.Value != Guid.Empty
+			select new
+			{
+				ProfileId = invoice.LinkedRentalBillingProfileId!.Value,
+				RunId = invoice.LinkedRentalBillingRunId
+			}).ToListAsync(ct);
+
+		foreach (var linkedRun in linkedRuns
+			         .DistinctBy(current => new { current.ProfileId, current.RunId }))
+		{
+			await RecalculateRentalSettlementAsync(linkedRun.ProfileId, linkedRun.RunId, ct, markDirty: false);
+		}
+	}
+
 	public Task<LocalCompanyProfile?> GetCompanyProfileAsync(CancellationToken ct = default(CancellationToken))
 	{
 		return GetCompanyProfileAsync(null, null, ct);
@@ -4948,12 +4976,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 	}
 
-	private async Task RecalculateRentalSettlementAsync(Guid billingProfileId, CancellationToken ct)
+	private async Task RecalculateRentalSettlementAsync(Guid billingProfileId, CancellationToken ct, bool markDirty = true)
 	{
-		await RecalculateRentalSettlementAsync(billingProfileId, null, ct);
+		await RecalculateRentalSettlementAsync(billingProfileId, null, ct, markDirty);
 	}
 
-	private async Task RecalculateRentalSettlementAsync(Guid billingProfileId, Guid? billingRunId, CancellationToken ct)
+	private async Task RecalculateRentalSettlementAsync(Guid billingProfileId, Guid? billingRunId, CancellationToken ct, bool markDirty = true)
 	{
 		var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters().FirstOrDefaultAsync((LocalRentalBillingProfile current) => current.Id == billingProfileId, ct);
 		if (profile == null)
@@ -5003,8 +5031,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				: null;
 			localRentalBillingProfile2.LastSettledDate = lastSettledDate;
 		}
-		profile.IsDirty = true;
-		profile.UpdatedAtUtc = DateTime.UtcNow;
+		if (markDirty)
+		{
+			profile.IsDirty = true;
+			profile.UpdatedAtUtc = DateTime.UtcNow;
+		}
 		await _db.SaveChangesAsync(ct);
 	}
 
