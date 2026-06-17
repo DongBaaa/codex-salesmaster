@@ -799,6 +799,210 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeContract_DeletesStorageOnlyAfterDbCommit()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("계약서 파일 삭제 순서 거래처", OfficeCodeCatalog.Usenet);
+        var contract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "삭제 순서 계약서",
+            StoragePath = "storage/contract-delete-order.bin",
+            FileName = "contract-delete-order.bin",
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.CustomerContracts.Add(contract);
+        await dbContext.SaveChangesAsync();
+
+        var deletedBeforeCommit = false;
+        var storage = new StubCentralFileStorage
+        {
+            OnDelete = _ =>
+            {
+                deletedBeforeCommit = dbContext.CustomerContracts
+                    .IgnoreQueryFilters()
+                    .Any(current => current.Id == contract.Id);
+            }
+        };
+        var controller = CreateController(dbContext, currentUser, storage);
+
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = contract.Id,
+                        Kind = "contract"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+        Assert.False(deletedBeforeCommit);
+        Assert.Contains(contract.StoragePath, storage.DeletedPaths);
+        Assert.False(await dbContext.CustomerContracts.IgnoreQueryFilters().AnyAsync(current => current.Id == contract.Id));
+    }
+
+    [Fact]
+    public async Task PurgePayment_DeletesAttachmentStorageOnlyAfterDbCommit()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("수금 파일 삭제 순서 거래처", OfficeCodeCatalog.Usenet);
+        var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-PAYMENT-PURGE-DELETE-ORDER");
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 18),
+            Amount = 1000m,
+            IsDeleted = true
+        };
+        var paymentAttachmentPath = "storage/payment-delete-order.bin";
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Payments.Add(payment);
+        dbContext.PaymentAttachments.Add(new PaymentAttachment
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = payment.Id,
+            FileName = "payment-delete-order.bin",
+            StoragePath = paymentAttachmentPath,
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var deletedBeforeCommit = false;
+        var storage = new StubCentralFileStorage
+        {
+            OnDelete = _ =>
+            {
+                deletedBeforeCommit = dbContext.Payments
+                    .IgnoreQueryFilters()
+                    .Any(current => current.Id == payment.Id);
+            }
+        };
+        var controller = CreateController(dbContext, currentUser, storage);
+
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = payment.Id,
+                        Kind = "payment"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+        Assert.False(deletedBeforeCommit);
+        Assert.Contains(paymentAttachmentPath, storage.DeletedPaths);
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters().AnyAsync(current => current.Id == payment.Id));
+    }
+
+    [Fact]
+    public async Task PurgeInventoryTransfer_DeletesEvidenceStorageOnlyAfterDbCommit()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var itemId = Guid.NewGuid();
+        dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "재고이동 삭제 순서 품목",
+            NameMatchKey = "재고이동삭제순서품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 0m
+        });
+        var transferId = Guid.NewGuid();
+        var evidencePath = "storage/inventory-transfer-delete-order.bin";
+        dbContext.InventoryTransfers.Add(new InventoryTransfer
+        {
+            Id = transferId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            TransferNumber = "TR-PURGE-DELETE-ORDER",
+            TransferDate = new DateOnly(2026, 6, 18),
+            TransferStatus = InventoryTransferStatusNormalizer.Received,
+            ReceiveEvidencePath = evidencePath,
+            IsDeleted = true,
+            Lines =
+            [
+                new InventoryTransferLine
+                {
+                    Id = Guid.NewGuid(),
+                    TransferId = transferId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "재고이동 삭제 순서 품목",
+                    Unit = "개",
+                    Quantity = 1m
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+
+        var deletedBeforeCommit = false;
+        var storage = new StubCentralFileStorage
+        {
+            OnDelete = _ =>
+            {
+                deletedBeforeCommit = dbContext.InventoryTransfers
+                    .IgnoreQueryFilters()
+                    .Any(current => current.Id == transferId);
+            }
+        };
+        var controller = CreateController(dbContext, currentUser, storage);
+
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transferId,
+                        Kind = "inventory-transfer"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+        Assert.False(deletedBeforeCommit);
+        Assert.Contains(evidencePath, storage.DeletedPaths);
+        Assert.False(await dbContext.InventoryTransfers.IgnoreQueryFilters().AnyAsync(current => current.Id == transferId));
+    }
+
+    [Fact]
     public async Task PurgeTransaction_DeletesLinkedPaymentAttachmentStorage()
     {
         var currentUser = CreateOfficeOnlyUser();
@@ -1606,6 +1810,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     private sealed class StubCentralFileStorage : ICentralFileStorage
     {
         public List<string> DeletedPaths { get; } = new();
+        public Action<string?>? OnDelete { get; init; }
 
         public string RootPath => Path.GetTempPath();
 
@@ -1618,7 +1823,10 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         public void DeleteIfExists(string? storedPath)
         {
             if (!string.IsNullOrWhiteSpace(storedPath))
+            {
+                OnDelete?.Invoke(storedPath);
                 DeletedPaths.Add(storedPath);
+            }
         }
     }
 }

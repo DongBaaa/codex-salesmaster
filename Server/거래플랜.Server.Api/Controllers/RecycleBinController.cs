@@ -1453,9 +1453,12 @@ public sealed class RecycleBinController : ControllerBase
         [
             CreatePurgeRecord("contract", contract.Id, contractCustomer.TenantCode, contractCustomer.ResponsibleOfficeCode)
         ], cancellationToken);
-        _fileStorage.DeleteIfExists(contract.StoragePath);
+        var storagePath = contract.StoragePath;
         _dbContext.CustomerContracts.Remove(contract);
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        _fileStorage.DeleteIfExists(storagePath);
+
         return (true, "계약서를 영구삭제했습니다.");
     }
 
@@ -1715,8 +1718,9 @@ public sealed class RecycleBinController : ControllerBase
             .IgnoreQueryFilters()
             .Where(current => current.PaymentId == paymentId)
             .ToListAsync(cancellationToken);
-        foreach (var attachment in attachments)
-            _fileStorage.DeleteIfExists(attachment.StoragePath);
+        var attachmentPaths = attachments
+            .Select(current => current.StoragePath)
+            .ToList();
 
         await TouchPurgeRecordsAsync(
         [
@@ -1724,6 +1728,10 @@ public sealed class RecycleBinController : ControllerBase
         ], cancellationToken);
         _dbContext.Payments.Remove(payment);
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        foreach (var attachmentPath in attachmentPaths)
+            _fileStorage.DeleteIfExists(attachmentPath);
+
         return (true, "수금/지급 기록을 영구삭제했습니다.");
     }
 
@@ -1944,10 +1952,13 @@ public sealed class RecycleBinController : ControllerBase
         [
             CreatePurgeRecord("inventory-transfer", transfer.Id, transfer.TenantCode, transfer.SourceOfficeCode)
         ], cancellationToken);
-        _fileStorage.DeleteIfExists(transfer.ReceiveEvidencePath);
+        var receiveEvidencePath = transfer.ReceiveEvidencePath;
         _dbContext.InventoryTransferLines.RemoveRange(transfer.Lines);
         _dbContext.InventoryTransfers.Remove(transfer);
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        _fileStorage.DeleteIfExists(receiveEvidencePath);
+
         return (true, "재고이동을 영구삭제했습니다.");
     }
 
