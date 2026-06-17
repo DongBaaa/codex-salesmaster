@@ -1029,6 +1029,87 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task SyncPush_RejectsTransactionWithReadSharedInvoiceLink()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "payment-sync-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = new[] { PermissionNames.PaymentEdit }
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Allowed sync invoice payment customer",
+            NameMatchKey = "ALLOWEDSYNCINVOICEPAYMENTCUSTOMER",
+            TradeType = "Sales"
+        };
+        var readSharedInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 17),
+            TotalAmount = 100m,
+            SupplyAmount = 91m,
+            VatAmount = 9m
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(readSharedInvoice);
+        dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Usenet,
+            ShareInvoices = true,
+            AllowTargetWrite = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var transactionId = Guid.NewGuid();
+        var result = AssertSyncOk(await CreateSyncController(dbContext, currentUser)
+            .Push(new SyncPushRequest
+            {
+                DeviceId = "transaction-read-shared-invoice-link-device",
+                Transactions =
+                [
+                    new TransactionDto
+                    {
+                        Id = transactionId,
+                        CustomerId = customer.Id,
+                        TenantCode = TenantScopeCatalog.UsenetGroup,
+                        OfficeCode = OfficeCodeCatalog.Usenet,
+                        ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                        TransactionDate = new DateOnly(2026, 6, 17),
+                        TransactionKind = "전표수금",
+                        LinkedInvoiceId = readSharedInvoice.Id,
+                        LinkedInvoiceNumber = "READ-SHARED-INV-001",
+                        CashReceipt = 100m,
+                        ReceiptTotal = 100m,
+                        SettlementAmount = 100m
+                    }
+                ]
+            }, CancellationToken.None));
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(TransactionRecord), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("Referenced invoice is outside the writable payment office scope", StringComparison.Ordinal));
+        Assert.False(await dbContext.Transactions.IgnoreQueryFilters().AnyAsync(row => row.Id == transactionId));
+    }
+
+    [Fact]
     public async Task InvoicesController_SalesCreateUpdateDelete_AdjustsWarehouseStockSnapshots()
     {
         var currentUser = CreateAdminUser();

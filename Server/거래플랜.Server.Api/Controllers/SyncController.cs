@@ -1375,10 +1375,10 @@ public sealed class SyncController : ControllerBase
                         "transaction-invoice-link-cleared",
                         $"수금/지급 '{dto.Id:D}'은(는) 연결 전표를 찾지 못해 전표 연결을 해제하고 일반 처리 기준으로 보정했습니다.");
                 }
-                else if (!_officeScopeService.CanReadOfficeForInvoices(invoice.ResponsibleOfficeCode, invoice.TenantCode))
+                else if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode))
                 {
                     AddClientConflict(dto, nameof(TransactionRecord),
-                        $"Referenced invoice is outside the readable office scope: {dto.LinkedInvoiceId}.", result);
+                        $"Referenced invoice is outside the writable payment office scope: {dto.LinkedInvoiceId}.", result);
                     continue;
                 }
             }
