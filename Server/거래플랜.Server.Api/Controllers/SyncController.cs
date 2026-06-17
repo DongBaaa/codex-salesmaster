@@ -4649,6 +4649,8 @@ public sealed class SyncController : ControllerBase
             "item" => HasActiveEntityNewerThanPurgeAsync(_dbContext.Items.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
             "company-profile" => HasActiveEntityNewerThanPurgeAsync(_dbContext.CompanyProfiles.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
             "companyprofile" => HasActiveEntityNewerThanPurgeAsync(_dbContext.CompanyProfiles.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "customer-category" => HasActiveEntityNewerThanPurgeAsync(_dbContext.CustomerCategories.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
+            "customercategory" => HasActiveEntityNewerThanPurgeAsync(_dbContext.CustomerCategories.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
             "price-grade-option" => HasActiveEntityNewerThanPurgeAsync(_dbContext.PriceGradeOptions.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
             "pricegradeoption" => HasActiveEntityNewerThanPurgeAsync(_dbContext.PriceGradeOptions.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),
             "trade-type-option" => HasActiveEntityNewerThanPurgeAsync(_dbContext.TradeTypeOptions.IgnoreQueryFilters(), record.EntityId, record.Revision, cancellationToken),

@@ -89,6 +89,24 @@ public sealed partial class LocalStateService
                 Revision = profile.Revision
             }));
 
+            var deletedCustomerCategories = await _db.CustomerCategories
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(category => category.IsDeleted)
+                .OrderByDescending(category => category.UpdatedAtUtc)
+                .ToListAsync(ct);
+
+            entries.AddRange(deletedCustomerCategories.Select(category => new RecycleBinEntry
+            {
+                EntityId = category.Id,
+                Kind = RecycleBinEntityKind.CustomerCategory,
+                Title = category.Name,
+                Subtitle = category.IsSystemDefault ? "기본 고객분류" : "사용자 고객분류",
+                Detail = string.Empty,
+                DeletedAtUtc = category.UpdatedAtUtc,
+                Revision = category.Revision
+            }));
+
             var deletedPriceGradeOptions = await _db.PriceGradeOptions
                 .IgnoreQueryFilters()
                 .AsNoTracking()
@@ -545,6 +563,7 @@ public sealed partial class LocalStateService
             RecycleBinEntityKind.CustomerContract => RestoreCustomerContractAsync(entityId, session, ct),
             RecycleBinEntityKind.Item => RestoreItemAsync(entityId, session, ct),
             RecycleBinEntityKind.CompanyProfile => RestoreCompanyProfileAsync(entityId, session, ct),
+            RecycleBinEntityKind.CustomerCategory => RestoreCustomerCategoryAsync(entityId, session, ct),
             RecycleBinEntityKind.PriceGradeOption => RestorePriceGradeOptionAsync(entityId, session, ct),
             RecycleBinEntityKind.TradeTypeOption => RestoreTradeTypeOptionAsync(entityId, session, ct),
             RecycleBinEntityKind.ItemCategoryOption => RestoreItemCategoryOptionAsync(entityId, session, ct),
@@ -572,6 +591,7 @@ public sealed partial class LocalStateService
             RecycleBinEntityKind.CustomerContract => PermanentlyDeleteCustomerContractAsync(entityId, session, ct),
             RecycleBinEntityKind.Item => PermanentlyDeleteItemAsync(entityId, session, ct),
             RecycleBinEntityKind.CompanyProfile => PermanentlyDeleteCompanyProfileAsync(entityId, session, ct),
+            RecycleBinEntityKind.CustomerCategory => PermanentlyDeleteCustomerCategoryAsync(entityId, session, ct),
             RecycleBinEntityKind.PriceGradeOption => PermanentlyDeletePriceGradeOptionAsync(entityId, session, ct),
             RecycleBinEntityKind.TradeTypeOption => PermanentlyDeleteTradeTypeOptionAsync(entityId, session, ct),
             RecycleBinEntityKind.ItemCategoryOption => PermanentlyDeleteItemCategoryOptionAsync(entityId, session, ct),
@@ -598,6 +618,7 @@ public sealed partial class LocalStateService
             RecycleBinEntityKind.CustomerContract => ApplyServerPurgedCustomerContractAsync(entityId, ct),
             RecycleBinEntityKind.Item => ApplyServerPurgedItemAsync(entityId, ct),
             RecycleBinEntityKind.CompanyProfile => ApplyServerPurgedCompanyProfileAsync(entityId, ct),
+            RecycleBinEntityKind.CustomerCategory => ApplyServerPurgedCustomerCategoryAsync(entityId, ct),
             RecycleBinEntityKind.PriceGradeOption => ApplyServerPurgedPriceGradeOptionAsync(entityId, ct),
             RecycleBinEntityKind.TradeTypeOption => ApplyServerPurgedTradeTypeOptionAsync(entityId, ct),
             RecycleBinEntityKind.ItemCategoryOption => ApplyServerPurgedItemCategoryOptionAsync(entityId, ct),
@@ -640,6 +661,9 @@ public sealed partial class LocalStateService
                 break;
             case RecycleBinEntityKind.CompanyProfile:
                 MarkServerMirroredClean(await FindSyncEntityAsync(_db.CompanyProfiles, entityId, ct));
+                break;
+            case RecycleBinEntityKind.CustomerCategory:
+                MarkServerMirroredClean(await FindSyncEntityAsync(_db.CustomerCategories, entityId, ct));
                 break;
             case RecycleBinEntityKind.PriceGradeOption:
                 MarkServerMirroredClean(await FindSyncEntityAsync(_db.PriceGradeOptions, entityId, ct));
@@ -799,6 +823,44 @@ public sealed partial class LocalStateService
         return OfficeMutationResult.Ok(profile.Id, "회사설정을 휴지통에서 복원했습니다.");
     }
 
+    private async Task<OfficeMutationResult> RestoreCustomerCategoryAsync(
+        Guid categoryId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (!CanManageSharedRecycleBin(session))
+            return OfficeMutationResult.Denied("권한이 없어 해당 고객분류를 복원할 수 없습니다.");
+
+        var category = await _db.CustomerCategories
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == categoryId, ct);
+        if (category is null)
+            return OfficeMutationResult.Missing("복원할 고객분류를 찾을 수 없습니다.");
+        if (!category.IsDeleted)
+            return OfficeMutationResult.Ok(category.Id, "이미 활성 상태인 고객분류입니다.");
+
+        var normalizedName = DefaultCustomerCategories.NormalizeName(category.Name);
+        var customerCategories = await _db.CustomerCategories
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id != category.Id && !current.IsDeleted)
+            .ToListAsync(ct);
+        var hasActiveDuplicate = customerCategories.Any(current =>
+            string.Equals(DefaultCustomerCategories.NormalizeName(current.Name), normalizedName, StringComparison.CurrentCultureIgnoreCase));
+        if (hasActiveDuplicate)
+            return OfficeMutationResult.Denied("같은 이름의 고객분류가 이미 있어 복원할 수 없습니다.");
+
+        var now = DateTime.UtcNow;
+        RestoreEntity(category, now);
+        AddRestoreAudit(nameof(LocalCustomerCategory), category.Id, new
+        {
+            category.Name,
+            category.IsSystemDefault
+        }, session, now);
+        await _db.SaveChangesAsync(ct);
+        return OfficeMutationResult.Ok(category.Id, "고객분류를 휴지통에서 복원했습니다.");
+    }
+
     private async Task<OfficeMutationResult> RestorePriceGradeOptionAsync(
         Guid optionId,
         SessionState session,
@@ -934,6 +996,21 @@ public sealed partial class LocalStateService
         _db.CompanyProfiles.Remove(profile);
         await _db.SaveChangesAsync(ct);
         return OfficeMutationResult.Ok(profileId, "회사설정 서버 영구삭제를 로컬에 반영했습니다.");
+    }
+
+    private async Task<OfficeMutationResult> ApplyServerPurgedCustomerCategoryAsync(
+        Guid categoryId,
+        CancellationToken ct)
+    {
+        var category = await _db.CustomerCategories
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == categoryId, ct);
+        if (category is null)
+            return OfficeMutationResult.Ok(categoryId, "고객분류 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
+
+        _db.CustomerCategories.Remove(category);
+        await _db.SaveChangesAsync(ct);
+        return OfficeMutationResult.Ok(categoryId, "고객분류 서버 영구삭제를 로컬에 반영했습니다.");
     }
 
     private async Task<OfficeMutationResult> ApplyServerPurgedPriceGradeOptionAsync(
@@ -2410,6 +2487,49 @@ public sealed partial class LocalStateService
             }, session, now);
             await _db.SaveChangesAsync(ct);
             return LocalMutationResult.Ok(profile.Id, "회사설정을 영구삭제했습니다.");
+        });
+    }
+
+    private async Task<OfficeMutationResult> PermanentlyDeleteCustomerCategoryAsync(
+        Guid categoryId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (!CanManageSharedRecycleBin(session))
+            return OfficeMutationResult.Denied("권한이 없어 해당 고객분류를 영구삭제할 수 없습니다.");
+
+        return await NormalizeLocalMutationResultAsync(async () =>
+        {
+            var category = await _db.CustomerCategories
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == categoryId, ct);
+            if (category is null)
+                return LocalMutationResult.Missing("영구삭제할 고객분류를 찾을 수 없습니다.");
+            if (!category.IsDeleted)
+                return LocalMutationResult.Denied("활성 상태 고객분류는 휴지통에서 영구삭제할 수 없습니다.");
+
+            var inUse = await _db.Customers
+                .IgnoreQueryFilters()
+                .AnyAsync(customer => customer.CategoryId == categoryId, ct);
+            if (!inUse)
+            {
+                inUse = await _db.CustomerMasters
+                    .IgnoreQueryFilters()
+                    .AnyAsync(customer => customer.CategoryId == categoryId, ct);
+            }
+
+            if (inUse)
+                return LocalMutationResult.Denied("연결된 거래처가 남아 있어 고객분류를 영구삭제할 수 없습니다.");
+
+            var now = DateTime.UtcNow;
+            _db.CustomerCategories.Remove(category);
+            AddPurgeAudit(nameof(LocalCustomerCategory), category.Id, new
+            {
+                category.Name,
+                category.IsSystemDefault
+            }, session, now);
+            await _db.SaveChangesAsync(ct);
+            return LocalMutationResult.Ok(category.Id, "고객분류를 영구삭제했습니다.");
         });
     }
 

@@ -1,4 +1,4 @@
-using 거래플랜.Server.Api.Controllers;
+﻿using 거래플랜.Server.Api.Controllers;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Services;
@@ -224,6 +224,352 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var payload = Assert.IsType<List<RecycleBinEntryDto>>(ok.Value);
         var deletedEntry = Assert.Single(payload);
         Assert.Equal(stored.Revision, deletedEntry.Revision);
+    }
+
+    [Fact]
+    public async Task GetAll_IncludesDeletedCustomerCategoryForAdmin()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var category = new CustomerCategory
+        {
+            Id = Guid.NewGuid(),
+            Name = "삭제 고객분류",
+            IsDeleted = true
+        };
+        dbContext.CustomerCategories.Add(category);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.CustomerCategories.IgnoreQueryFilters().FirstAsync(current => current.Id == category.Id);
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetAll("customer-category", null, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<List<RecycleBinEntryDto>>(ok.Value);
+        var entry = Assert.Single(payload);
+        Assert.Equal(stored.Id, entry.EntityId);
+        Assert.Equal("customer-category", entry.Kind);
+        Assert.Equal("고객분류", entry.KindText);
+        Assert.Equal(stored.Revision, entry.Revision);
+    }
+
+    [Fact]
+    public async Task RestoreCustomerCategory_RejectsActiveDuplicateAndKeepsDeletedRow()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var activeId = Guid.NewGuid();
+        var deletedId = Guid.NewGuid();
+        dbContext.CustomerCategories.AddRange(
+            new CustomerCategory
+            {
+                Id = activeId,
+                Name = "공공기관",
+                IsDeleted = false
+            },
+            new CustomerCategory
+            {
+                Id = deletedId,
+                Name = " 공공기관 ",
+                IsDeleted = true
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = deletedId,
+                        Kind = "customer-category"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+
+        dbContext.ChangeTracker.Clear();
+        var rows = await dbContext.CustomerCategories.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(row => row.Id);
+        Assert.False(rows[activeId].IsDeleted);
+        Assert.True(rows[deletedId].IsDeleted);
+        Assert.Equal(0, payload.SucceededCount);
+    }
+
+    [Fact]
+    public async Task PurgeCustomerCategory_RejectsReferencedCategory()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var categoryId = Guid.NewGuid();
+        dbContext.CustomerCategories.Add(new CustomerCategory
+        {
+            Id = categoryId,
+            Name = "참조 고객분류",
+            IsDeleted = true
+        });
+        dbContext.Customers.Add(new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "참조 거래처",
+            NameMatchKey = "참조거래처",
+            CategoryId = categoryId,
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = categoryId,
+                        Kind = "customer-category"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("연결된 거래처", item.Message);
+        Assert.True(await dbContext.CustomerCategories.IgnoreQueryFilters().AnyAsync(current => current.Id == categoryId));
+    }
+
+    [Fact]
+    public async Task RestorePriceGradeOption_RejectsActiveDuplicateAndKeepsDeletedRow()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var activeId = Guid.NewGuid();
+        var deletedId = Guid.NewGuid();
+        dbContext.PriceGradeOptions.AddRange(
+            new PriceGradeOption
+            {
+                Id = activeId,
+                Name = "VIP",
+                PriceSource = "Sales",
+                IsActive = true,
+                IsDeleted = false
+            },
+            new PriceGradeOption
+            {
+                Id = deletedId,
+                Name = " VIP ",
+                PriceSource = "A",
+                IsActive = false,
+                IsDeleted = true
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = deletedId,
+                        Kind = "price-grade-option"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+
+        dbContext.ChangeTracker.Clear();
+        var rows = await dbContext.PriceGradeOptions.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(row => row.Id);
+        Assert.False(rows[activeId].IsDeleted);
+        Assert.True(rows[activeId].IsActive);
+        Assert.True(rows[deletedId].IsDeleted);
+        Assert.False(rows[deletedId].IsActive);
+    }
+
+    [Fact]
+    public async Task RestoreTradeTypeOption_RejectsNonCanonicalAliasAndKeepsDeletedRow()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var activeId = Guid.NewGuid();
+        var deletedId = Guid.NewGuid();
+        dbContext.TradeTypeOptions.AddRange(
+            new TradeTypeOption
+            {
+                Id = activeId,
+                Name = CustomerClassificationNormalizer.Sales,
+                AllowsSales = true,
+                AllowsPurchase = false,
+                IsActive = true,
+                IsDeleted = false
+            },
+            new TradeTypeOption
+            {
+                Id = deletedId,
+                Name = "판매",
+                AllowsSales = true,
+                AllowsPurchase = false,
+                IsActive = false,
+                IsDeleted = true
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = deletedId,
+                        Kind = "trade-type-option"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+
+        dbContext.ChangeTracker.Clear();
+        var rows = await dbContext.TradeTypeOptions.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(row => row.Id);
+        Assert.False(rows[activeId].IsDeleted);
+        Assert.True(rows[activeId].IsActive);
+        Assert.True(rows[deletedId].IsDeleted);
+        Assert.False(rows[deletedId].IsActive);
+    }
+
+    [Fact]
+    public async Task RestoreItemCategoryOption_RejectsLooseKeyDuplicateAndKeepsDeletedRow()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var activeId = Guid.NewGuid();
+        var deletedId = Guid.NewGuid();
+        dbContext.ItemCategoryOptions.AddRange(
+            new ItemCategoryOption
+            {
+                Id = activeId,
+                Name = "A3 Copier",
+                IsActive = true,
+                IsDeleted = false
+            },
+            new ItemCategoryOption
+            {
+                Id = deletedId,
+                Name = "A3Copier",
+                IsActive = false,
+                IsDeleted = true
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = deletedId,
+                        Kind = "item-category-option"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+
+        dbContext.ChangeTracker.Clear();
+        var rows = await dbContext.ItemCategoryOptions.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(row => row.Id);
+        Assert.False(rows[activeId].IsDeleted);
+        Assert.True(rows[activeId].IsActive);
+        Assert.True(rows[deletedId].IsDeleted);
+        Assert.False(rows[deletedId].IsActive);
+    }
+
+    [Fact]
+    public async Task PurgePriceGradeOption_RejectsCustomerReference()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var optionId = Guid.NewGuid();
+        dbContext.PriceGradeOptions.Add(new PriceGradeOption
+        {
+            Id = optionId,
+            Name = "VIP",
+            PriceSource = "Sales",
+            IsActive = false,
+            IsDeleted = true
+        });
+        dbContext.Customers.Add(new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "VIP 거래처",
+            NameMatchKey = "VIP거래처",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            PriceGrade = "VIP",
+            IsDeleted = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = optionId,
+                        Kind = "price-grade-option"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("연결된 거래처", item.Message);
+        Assert.True(await dbContext.PriceGradeOptions.IgnoreQueryFilters().AnyAsync(current => current.Id == optionId));
     }
 
     [Fact]

@@ -151,6 +151,28 @@ public sealed class RecycleBinController : ControllerBase
             }));
         }
 
+        if (canManageSharedSettings && ShouldIncludeKind(normalizedKind, "customer-category"))
+        {
+            var deletedCustomerCategories = await _dbContext.CustomerCategories
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(category => category.IsDeleted)
+                .OrderByDescending(category => category.UpdatedAtUtc)
+                .ToListAsync(cancellationToken);
+
+            entries.AddRange(deletedCustomerCategories.Select(category => new RecycleBinEntryDto
+            {
+                EntityId = category.Id,
+                Kind = "customer-category",
+                KindText = "고객분류",
+                Title = category.Name,
+                Subtitle = category.IsSystemDefault ? "기본 고객분류" : "사용자 고객분류",
+                Detail = string.Empty,
+                DeletedAtUtc = category.UpdatedAtUtc,
+                Revision = category.Revision
+            }));
+        }
+
         if (canManageSharedSettings && ShouldIncludeKind(normalizedKind, "price-grade-option"))
         {
             var deletedPriceGradeOptions = await _dbContext.PriceGradeOptions
@@ -599,6 +621,7 @@ public sealed class RecycleBinController : ControllerBase
             "contract" => await RestoreContractAsync(target, cancellationToken),
             "item" => await RestoreItemAsync(target, cancellationToken),
             "company-profile" => await RestoreCompanyProfileAsync(target, cancellationToken),
+            "customer-category" => await RestoreCustomerCategoryAsync(target, cancellationToken),
             "price-grade-option" => await RestorePriceGradeOptionAsync(target, cancellationToken),
             "trade-type-option" => await RestoreTradeTypeOptionAsync(target, cancellationToken),
             "item-category-option" => await RestoreItemCategoryOptionAsync(target, cancellationToken),
@@ -624,6 +647,7 @@ public sealed class RecycleBinController : ControllerBase
             "contract" => await PurgeContractAsync(target, cancellationToken),
             "item" => await PurgeItemAsync(target, cancellationToken),
             "company-profile" => await PurgeCompanyProfileAsync(target, cancellationToken),
+            "customer-category" => await PurgeCustomerCategoryAsync(target, cancellationToken),
             "price-grade-option" => await PurgePriceGradeOptionAsync(target, cancellationToken),
             "trade-type-option" => await PurgeTradeTypeOptionAsync(target, cancellationToken),
             "item-category-option" => await PurgeItemCategoryOptionAsync(target, cancellationToken),
@@ -750,6 +774,40 @@ public sealed class RecycleBinController : ControllerBase
         return (true, "회사설정을 복원했습니다.");
     }
 
+    private async Task<(bool Success, string Message)> RestoreCustomerCategoryAsync(RecycleBinMutationTargetDto target, CancellationToken cancellationToken)
+    {
+        var categoryId = target.EntityId;
+        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+            return (false, "현재 계정으로 복원할 수 없는 고객분류입니다.");
+
+        var category = await _dbContext.CustomerCategories
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == categoryId, cancellationToken);
+        if (category is null)
+            return (false, "복원할 고객분류를 찾을 수 없습니다.");
+        if (!category.IsDeleted)
+            return (true, "이미 활성 상태인 고객분류입니다.");
+
+        var revisionCheck = EnsureRecycleBinMutationRevision(category, target);
+        if (!revisionCheck.Success)
+            return revisionCheck;
+
+        var normalizedName = DefaultCustomerCategories.NormalizeName(category.Name);
+        var customerCategories = await _dbContext.CustomerCategories
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id != category.Id && !current.IsDeleted)
+            .ToListAsync(cancellationToken);
+        var hasActiveDuplicate = customerCategories.Any(current =>
+            string.Equals(DefaultCustomerCategories.NormalizeName(current.Name), normalizedName, StringComparison.CurrentCultureIgnoreCase));
+        if (hasActiveDuplicate)
+            return (false, "같은 이름의 고객분류가 이미 있어 복원할 수 없습니다.");
+
+        category.IsDeleted = false;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return (true, "고객분류를 복원했습니다.");
+    }
+
     private async Task<(bool Success, string Message)> RestorePriceGradeOptionAsync(RecycleBinMutationTargetDto target, CancellationToken cancellationToken)
     {
         var optionId = target.EntityId;
@@ -767,6 +825,17 @@ public sealed class RecycleBinController : ControllerBase
         var revisionCheck = EnsureRecycleBinMutationRevision(option, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        var normalizedName = (option.Name ?? string.Empty).Trim();
+        var priceGradeOptions = await _dbContext.PriceGradeOptions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id != option.Id && !current.IsDeleted)
+            .ToListAsync(cancellationToken);
+        var hasActiveDuplicate = priceGradeOptions.Any(current =>
+            string.Equals((current.Name ?? string.Empty).Trim(), normalizedName, StringComparison.CurrentCultureIgnoreCase));
+        if (hasActiveDuplicate)
+            return (false, "같은 이름의 가격등급이 이미 있어 복원할 수 없습니다.");
 
         option.IsDeleted = false;
         option.IsActive = true;
@@ -792,6 +861,19 @@ public sealed class RecycleBinController : ControllerBase
         if (!revisionCheck.Success)
             return revisionCheck;
 
+        if (CustomerClassificationNormalizer.TradeTypeDefinition.Find(option.Name) is null)
+            return (false, "거래구분 기준값이 아니어서 복원할 수 없습니다.");
+
+        var tradeTypeOptions = await _dbContext.TradeTypeOptions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id != option.Id && !current.IsDeleted)
+            .ToListAsync(cancellationToken);
+        var hasActiveDuplicate = tradeTypeOptions.Any(current =>
+            string.Equals(current.Name, option.Name, StringComparison.CurrentCultureIgnoreCase));
+        if (hasActiveDuplicate)
+            return (false, "같은 이름의 거래구분이 이미 있어 복원할 수 없습니다.");
+
         option.IsDeleted = false;
         option.IsActive = true;
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -815,6 +897,17 @@ public sealed class RecycleBinController : ControllerBase
         var revisionCheck = EnsureRecycleBinMutationRevision(option, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        var normalizedNameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name);
+        var itemCategoryOptions = await _dbContext.ItemCategoryOptions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id != option.Id && !current.IsDeleted)
+            .ToListAsync(cancellationToken);
+        var hasActiveDuplicate = itemCategoryOptions.Any(current =>
+            string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(current.Name), normalizedNameKey, StringComparison.OrdinalIgnoreCase));
+        if (hasActiveDuplicate)
+            return (false, "같은 이름의 품목분류가 이미 있어 복원할 수 없습니다.");
 
         option.IsDeleted = false;
         option.IsActive = true;
@@ -1326,6 +1419,46 @@ public sealed class RecycleBinController : ControllerBase
         return (true, "회사설정을 영구삭제했습니다.");
     }
 
+    private async Task<(bool Success, string Message)> PurgeCustomerCategoryAsync(RecycleBinMutationTargetDto target, CancellationToken cancellationToken)
+    {
+        var categoryId = target.EntityId;
+        if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
+            return (false, "현재 계정으로 영구삭제할 수 없는 고객분류입니다.");
+
+        var category = await _dbContext.CustomerCategories
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == categoryId, cancellationToken);
+        if (category is null)
+            return (false, "영구삭제할 고객분류를 찾을 수 없습니다.");
+        if (!category.IsDeleted)
+            return (false, "활성 상태 고객분류는 휴지통에서 영구삭제할 수 없습니다.");
+
+        var revisionCheck = EnsureRecycleBinMutationRevision(category, target);
+        if (!revisionCheck.Success)
+            return revisionCheck;
+
+        var inUse = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .AnyAsync(customer => customer.CategoryId == categoryId, cancellationToken);
+        if (!inUse)
+        {
+            inUse = await _dbContext.CustomerMasters
+                .IgnoreQueryFilters()
+                .AnyAsync(customer => customer.CategoryId == categoryId, cancellationToken);
+        }
+
+        if (inUse)
+            return (false, "연결된 거래처가 남아 있어 고객분류를 영구삭제할 수 없습니다.");
+
+        await TouchPurgeRecordsAsync(
+        [
+            CreatePurgeRecord("customer-category", category.Id, null, null)
+        ], cancellationToken);
+        _dbContext.CustomerCategories.Remove(category);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return (true, "고객분류를 영구삭제했습니다.");
+    }
+
     private async Task<(bool Success, string Message)> PurgePriceGradeOptionAsync(RecycleBinMutationTargetDto target, CancellationToken cancellationToken)
     {
         var optionId = target.EntityId;
@@ -1343,6 +1476,8 @@ public sealed class RecycleBinController : ControllerBase
         var revisionCheck = EnsureRecycleBinMutationRevision(option, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+        if (await _dbContext.Customers.IgnoreQueryFilters().AnyAsync(customer => customer.PriceGrade == option.Name, cancellationToken))
+            return (false, "연결된 거래처가 남아 있어 가격등급을 영구삭제할 수 없습니다.");
 
         await TouchPurgeRecordsAsync(
         [
@@ -1795,6 +1930,7 @@ public sealed class RecycleBinController : ControllerBase
             "contract" => "계약서",
             "item" => "품목",
             "company-profile" => "회사설정",
+            "customer-category" => "고객분류",
             "price-grade-option" => "가격등급",
             "trade-type-option" => "거래구분",
             "item-category-option" => "품목분류",
@@ -1818,6 +1954,7 @@ public sealed class RecycleBinController : ControllerBase
             "contract" or "contracts" or "customercontract" or "계약서" => "contract",
             "item" or "items" or "품목" => "item",
             "company-profile" or "companyprofile" or "companyprofiles" or "회사설정" => "company-profile",
+            "customer-category" or "customercategory" or "customercategories" or "고객분류" => "customer-category",
             "price-grade-option" or "pricegradeoption" or "pricegradeoptions" or "가격등급" => "price-grade-option",
             "trade-type-option" or "tradetypeoption" or "tradetypeoptions" or "거래구분" => "trade-type-option",
             "item-category-option" or "itemcategoryoption" or "itemcategoryoptions" or "품목분류" => "item-category-option",
@@ -1848,13 +1985,14 @@ public sealed class RecycleBinController : ControllerBase
             "invoice" => 5,
             "rental-asset" => 6,
             "item" => 7,
-            "item-category-option" => 8,
-            "price-grade-option" => 9,
-            "trade-type-option" => 10,
-            "rental-management-company" => 11,
-            "rental-billing-profile" => 12,
-            "company-profile" => 13,
-            "customer" => 14,
+            "customer-category" => 8,
+            "item-category-option" => 9,
+            "price-grade-option" => 10,
+            "trade-type-option" => 11,
+            "rental-management-company" => 12,
+            "rental-billing-profile" => 13,
+            "company-profile" => 14,
+            "customer" => 15,
             _ => 99
         };
     }

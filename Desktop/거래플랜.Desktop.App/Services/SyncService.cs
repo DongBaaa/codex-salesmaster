@@ -8320,6 +8320,7 @@ public sealed class SyncService : IDisposable
             RecycleBinEntityKind.CustomerContract => HasActiveLocalEntityNewerThanPurgeAsync(_db.CustomerContracts, entityId, purgeRevision, ct),
             RecycleBinEntityKind.Item => HasActiveLocalEntityNewerThanPurgeAsync(_db.Items, entityId, purgeRevision, ct),
             RecycleBinEntityKind.CompanyProfile => HasActiveLocalEntityNewerThanPurgeAsync(_db.CompanyProfiles, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.CustomerCategory => HasActiveLocalEntityNewerThanPurgeAsync(_db.CustomerCategories, entityId, purgeRevision, ct),
             RecycleBinEntityKind.PriceGradeOption => HasActiveLocalEntityNewerThanPurgeAsync(_db.PriceGradeOptions, entityId, purgeRevision, ct),
             RecycleBinEntityKind.TradeTypeOption => HasActiveLocalEntityNewerThanPurgeAsync(_db.TradeTypeOptions, entityId, purgeRevision, ct),
             RecycleBinEntityKind.ItemCategoryOption => HasActiveLocalEntityNewerThanPurgeAsync(_db.ItemCategoryOptions, entityId, purgeRevision, ct),
@@ -8370,6 +8371,8 @@ public sealed class SyncService : IDisposable
             "customer" => 8,
             "company-profile" => 9,
             "companyprofile" => 9,
+            "customer-category" => 10,
+            "customercategory" => 10,
             "price-grade-option" => 10,
             "pricegradeoption" => 10,
             "trade-type-option" => 10,
@@ -8395,6 +8398,10 @@ public sealed class SyncService : IDisposable
             case "companyprofile":
             case "company-profile":
                 kind = RecycleBinEntityKind.CompanyProfile;
+                return true;
+            case "customercategory":
+            case "customer-category":
+                kind = RecycleBinEntityKind.CustomerCategory;
                 return true;
             case "pricegradeoption":
             case "price-grade-option":

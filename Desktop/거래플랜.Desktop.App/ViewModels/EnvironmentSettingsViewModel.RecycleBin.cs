@@ -28,6 +28,7 @@ public sealed partial class EnvironmentSettingsViewModel
     [ObservableProperty] private int _recycleBinContractCount;
     [ObservableProperty] private int _recycleBinItemCount;
     [ObservableProperty] private int _recycleBinCompanyProfileCount;
+    [ObservableProperty] private int _recycleBinCustomerCategoryCount;
     [ObservableProperty] private int _recycleBinPriceGradeOptionCount;
     [ObservableProperty] private int _recycleBinTradeTypeOptionCount;
     [ObservableProperty] private int _recycleBinItemCategoryOptionCount;
@@ -81,6 +82,7 @@ public sealed partial class EnvironmentSettingsViewModel
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.CustomerContract.ToString(), DisplayName = "계약서" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.Item.ToString(), DisplayName = "품목" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.CompanyProfile.ToString(), DisplayName = "회사설정" });
+        RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.CustomerCategory.ToString(), DisplayName = "고객분류" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.PriceGradeOption.ToString(), DisplayName = "가격등급" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.TradeTypeOption.ToString(), DisplayName = "거래구분" });
         RecycleBinTypeOptions.Add(new DisplayOption { Value = RecycleBinEntityKind.ItemCategoryOption.ToString(), DisplayName = "품목분류" });
@@ -447,6 +449,7 @@ public sealed partial class EnvironmentSettingsViewModel
         RecycleBinContractCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.CustomerContract);
         RecycleBinItemCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.Item);
         RecycleBinCompanyProfileCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.CompanyProfile);
+        RecycleBinCustomerCategoryCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.CustomerCategory);
         RecycleBinPriceGradeOptionCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.PriceGradeOption);
         RecycleBinTradeTypeOptionCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.TradeTypeOption);
         RecycleBinItemCategoryOptionCount = _allRecycleBinEntries.Count(entry => entry.Kind == RecycleBinEntityKind.ItemCategoryOption);
@@ -461,7 +464,7 @@ public sealed partial class EnvironmentSettingsViewModel
 
         RecycleBinSummary = RecycleBinTotalCount == 0
             ? "삭제된 항목이 없습니다."
-            : $"거래처 {RecycleBinCustomerCount:N0} · 계약서 {RecycleBinContractCount:N0} · 품목 {RecycleBinItemCount:N0} · 회사설정 {RecycleBinCompanyProfileCount:N0} · 가격등급 {RecycleBinPriceGradeOptionCount:N0} · 거래구분 {RecycleBinTradeTypeOptionCount:N0} · 품목분류 {RecycleBinItemCategoryOptionCount:N0} · 전표 {RecycleBinInvoiceCount:N0} · 수금/지급 {RecycleBinPaymentCount:N0} · 거래내역 {RecycleBinTransactionCount:N0} · 재고이동 {RecycleBinInventoryTransferCount:N0} · 렌탈 관리업체 {RecycleBinRentalManagementCompanyCount:N0} · 렌탈청구 {RecycleBinRentalBillingProfileCount:N0} · 렌탈자산 {RecycleBinRentalAssetCount:N0} · 렌탈로그 {RecycleBinRentalBillingLogCount:N0}";
+            : $"거래처 {RecycleBinCustomerCount:N0} · 계약서 {RecycleBinContractCount:N0} · 품목 {RecycleBinItemCount:N0} · 회사설정 {RecycleBinCompanyProfileCount:N0} · 고객분류 {RecycleBinCustomerCategoryCount:N0} · 가격등급 {RecycleBinPriceGradeOptionCount:N0} · 거래구분 {RecycleBinTradeTypeOptionCount:N0} · 품목분류 {RecycleBinItemCategoryOptionCount:N0} · 전표 {RecycleBinInvoiceCount:N0} · 수금/지급 {RecycleBinPaymentCount:N0} · 거래내역 {RecycleBinTransactionCount:N0} · 재고이동 {RecycleBinInventoryTransferCount:N0} · 렌탈 관리업체 {RecycleBinRentalManagementCompanyCount:N0} · 렌탈청구 {RecycleBinRentalBillingProfileCount:N0} · 렌탈자산 {RecycleBinRentalAssetCount:N0} · 렌탈로그 {RecycleBinRentalBillingLogCount:N0}";
     }
 
     private void RefreshMarkedRecycleBinCount()
@@ -500,13 +503,14 @@ public sealed partial class EnvironmentSettingsViewModel
             RecycleBinEntityKind.RentalAsset => 5,
             RecycleBinEntityKind.Item => 6,
             RecycleBinEntityKind.InventoryTransfer => 7,
-            RecycleBinEntityKind.PriceGradeOption => 8,
-            RecycleBinEntityKind.TradeTypeOption => 9,
-            RecycleBinEntityKind.ItemCategoryOption => 10,
-            RecycleBinEntityKind.CompanyProfile => 11,
-            RecycleBinEntityKind.RentalManagementCompany => 12,
-            RecycleBinEntityKind.RentalBillingProfile => 13,
-            RecycleBinEntityKind.Customer => 14,
+            RecycleBinEntityKind.CustomerCategory => 8,
+            RecycleBinEntityKind.PriceGradeOption => 9,
+            RecycleBinEntityKind.TradeTypeOption => 10,
+            RecycleBinEntityKind.ItemCategoryOption => 11,
+            RecycleBinEntityKind.CompanyProfile => 12,
+            RecycleBinEntityKind.RentalManagementCompany => 13,
+            RecycleBinEntityKind.RentalBillingProfile => 14,
+            RecycleBinEntityKind.Customer => 15,
             _ => 99
         };
     }
@@ -702,6 +706,7 @@ public sealed partial class EnvironmentSettingsViewModel
             RecycleBinEntityKind.CustomerContract => "contract",
             RecycleBinEntityKind.Item => "item",
             RecycleBinEntityKind.CompanyProfile => "company-profile",
+            RecycleBinEntityKind.CustomerCategory => "customer-category",
             RecycleBinEntityKind.PriceGradeOption => "price-grade-option",
             RecycleBinEntityKind.TradeTypeOption => "trade-type-option",
             RecycleBinEntityKind.ItemCategoryOption => "item-category-option",
@@ -734,6 +739,8 @@ public sealed partial class EnvironmentSettingsViewModel
             "item" => "item",
             "companyprofile" => "company-profile",
             "company-profile" => "company-profile",
+            "customercategory" => "customer-category",
+            "customer-category" => "customer-category",
             "pricegradeoption" => "price-grade-option",
             "price-grade-option" => "price-grade-option",
             "tradetypeoption" => "trade-type-option",

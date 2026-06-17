@@ -202,6 +202,184 @@ public sealed class SelectionOptionIntegrityTests
 
 
     [Fact]
+    public async Task RecycleBin_IncludesDeletedCustomerCategoryForAdmin()
+    {
+        PrepareAppRoot("georaeplan-customer-category-recycle-list");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var categoryId = Guid.NewGuid();
+            db.CustomerCategories.Add(new LocalCustomerCategory
+            {
+                Id = categoryId,
+                Name = "휴지통분류",
+                IsDeleted = true,
+                IsDirty = false,
+                UpdatedAtUtc = new DateTime(2026, 6, 17, 9, 0, 0, DateTimeKind.Utc)
+            });
+            await db.SaveChangesAsync();
+
+            var local = CreateLocalStateService(db);
+            var entries = await local.GetRecycleBinEntriesAsync(CreateAdminSession());
+
+            var entry = Assert.Single(entries, current => current.EntityId == categoryId);
+            Assert.Equal(RecycleBinEntityKind.CustomerCategory, entry.Kind);
+            Assert.Equal("고객분류", entry.KindText);
+            Assert.Equal("휴지통분류", entry.Title);
+            Assert.False((await db.CustomerCategories.IgnoreQueryFilters().AsNoTracking().SingleAsync(row => row.Id == categoryId)).IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RestoreCustomerCategory_RejectsDuplicateActiveNameAndKeepsDeletedRowClean()
+    {
+        PrepareAppRoot("georaeplan-customer-category-restore-duplicate");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var activeId = Guid.NewGuid();
+            var deletedId = Guid.NewGuid();
+            db.CustomerCategories.AddRange(
+                new LocalCustomerCategory
+                {
+                    Id = activeId,
+                    Name = "공공기관",
+                    IsDeleted = false,
+                    IsDirty = false
+                },
+                new LocalCustomerCategory
+                {
+                    Id = deletedId,
+                    Name = " 공공기관 ",
+                    IsDeleted = true,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var local = CreateLocalStateService(db);
+            var result = await local.RestoreRecycleBinEntryAsync(
+                RecycleBinEntityKind.CustomerCategory,
+                deletedId,
+                CreateAdminSession());
+
+            Assert.False(result.Success);
+            var rows = await db.CustomerCategories.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(row => row.Id);
+            Assert.False(rows[activeId].IsDeleted);
+            Assert.False(rows[activeId].IsDirty);
+            Assert.True(rows[deletedId].IsDeleted);
+            Assert.False(rows[deletedId].IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RestoreCustomerCategory_RestoresDeletedRowAsDirty()
+    {
+        PrepareAppRoot("georaeplan-customer-category-restore-success");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var categoryId = Guid.NewGuid();
+            db.CustomerCategories.Add(new LocalCustomerCategory
+            {
+                Id = categoryId,
+                Name = "복원분류",
+                IsDeleted = true,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var local = CreateLocalStateService(db);
+            var result = await local.RestoreRecycleBinEntryAsync(
+                RecycleBinEntityKind.CustomerCategory,
+                categoryId,
+                CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            var row = await db.CustomerCategories.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == categoryId);
+            Assert.False(row.IsDeleted);
+            Assert.True(row.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task PermanentlyDeleteCustomerCategory_RejectsReferencedCategoryAndKeepsRow()
+    {
+        PrepareAppRoot("georaeplan-customer-category-purge-in-use");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var categoryId = Guid.NewGuid();
+            db.CustomerCategories.Add(new LocalCustomerCategory
+            {
+                Id = categoryId,
+                Name = "참조분류",
+                IsDeleted = true,
+                IsDirty = false
+            });
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "참조 거래처",
+                NameMatchKey = "참조거래처",
+                CategoryId = categoryId,
+                TradeType = CustomerTradeTypes.Sales,
+                IsDeleted = true,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var local = CreateLocalStateService(db);
+            var result = await local.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.CustomerCategory,
+                categoryId,
+                CreateAdminSession());
+
+            Assert.False(result.Success);
+            Assert.True(await db.CustomerCategories.IgnoreQueryFilters().AnyAsync(current => current.Id == categoryId));
+            Assert.False((await db.CustomerCategories.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == categoryId)).IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RestorePriceGradeOption_RejectsDuplicateActiveNameAndKeepsDeletedRowClean()
     {
         PrepareAppRoot("georaeplan-price-grade-restore-duplicate");

@@ -21,6 +21,7 @@ public sealed partial class LocalStateService
             RecycleBinEntityKind.CustomerContract => await GetContractRecycleBinDependencyInfoAsync(entityId, session, ct),
             RecycleBinEntityKind.Item => await GetItemRecycleBinDependencyInfoAsync(entityId, session, ct),
             RecycleBinEntityKind.CompanyProfile => await GetCompanyProfileRecycleBinDependencyInfoAsync(entityId, ct),
+            RecycleBinEntityKind.CustomerCategory => await GetCustomerCategoryRecycleBinDependencyInfoAsync(entityId, ct),
             RecycleBinEntityKind.PriceGradeOption => await GetPriceGradeOptionRecycleBinDependencyInfoAsync(entityId, ct),
             RecycleBinEntityKind.TradeTypeOption => await GetTradeTypeOptionRecycleBinDependencyInfoAsync(entityId, ct),
             RecycleBinEntityKind.ItemCategoryOption => await GetItemCategoryOptionRecycleBinDependencyInfoAsync(entityId, ct),
@@ -414,6 +415,28 @@ public sealed partial class LocalStateService
             CanPurge = customerCount == 0,
             Summary = customerCount == 0
                 ? "이 가격등급은 현재 영구삭제 가능합니다."
+                : "연결 거래처가 남아 있어 영구삭제할 수 없습니다.",
+            Dependencies = dependencies
+        };
+    }
+
+    private async Task<RecycleBinDependencyInfo> GetCustomerCategoryRecycleBinDependencyInfoAsync(Guid categoryId, CancellationToken ct)
+    {
+        var category = await _db.CustomerCategories.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(current => current.Id == categoryId, ct);
+        if (category is null)
+            return new RecycleBinDependencyInfo { CanPurge = false, Summary = "삭제 차단 사유를 확인할 고객분류를 찾을 수 없습니다." };
+
+        var customerCount = await _db.Customers.IgnoreQueryFilters().CountAsync(current => current.CategoryId == categoryId, ct);
+        var masterCount = await _db.CustomerMasters.IgnoreQueryFilters().CountAsync(current => current.CategoryId == categoryId, ct);
+        var dependencies = new List<RecycleBinDependencyItem>();
+        AppendDependency(dependencies, "연결 거래처", customerCount, "이 고객분류를 사용하는 거래처가 있으면 영구삭제할 수 없습니다.");
+        AppendDependency(dependencies, "연결 거래처 마스터", masterCount, "이 고객분류를 사용하는 거래처 마스터가 있으면 영구삭제할 수 없습니다.");
+
+        return new RecycleBinDependencyInfo
+        {
+            CanPurge = customerCount + masterCount == 0,
+            Summary = customerCount + masterCount == 0
+                ? "이 고객분류는 현재 영구삭제 가능합니다."
                 : "연결 거래처가 남아 있어 영구삭제할 수 없습니다.",
             Dependencies = dependencies
         };

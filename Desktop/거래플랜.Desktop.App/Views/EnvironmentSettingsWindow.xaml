@@ -11,7 +11,7 @@
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
-        
+
             <Style.Triggers>
                 <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=DataGridCell}, Path=IsSelected}" Value="True">
                     <Setter Property="Foreground" Value="Black"/>
@@ -1277,7 +1277,7 @@
                     <Border Grid.Row="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14">
                         <StackPanel>
                             <TextBlock Text="삭제 백업 / 복원" Foreground="#4FC3F7" FontWeight="Bold" FontSize="18"/>
-                            <TextBlock Text="거래처, 계약서, 품목, 전표, 수금/지급, 거래내역 삭제 시 바로 영구 제거하지 않고 휴지통에 보관합니다."
+                            <TextBlock Text="거래처, 계약서, 품목, 설정 선택값, 전표, 수금/지급, 거래내역 삭제 시 바로 영구 제거하지 않고 휴지통에 보관합니다."
                                        Foreground="#9FB3C8"
                                        Margin="0,8,0,0"
                                        TextWrapping="Wrap"/>
