@@ -2367,7 +2367,7 @@ public sealed class SyncController : ControllerBase
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id == dto.AssetId, cancellationToken);
 
-            if (asset is null && existing is null)
+            if ((asset is null || asset.IsDeleted) && existing is null)
             {
                 AddNotice(
                     result,
@@ -2377,6 +2377,26 @@ public sealed class SyncController : ControllerBase
                     "Referenced rental asset was not found. The stale assignment history was skipped.");
                 continue;
             }
+
+            if (asset is not null && !asset.IsDeleted &&
+                !_officeScopeService.CanWriteOfficeForRentals(asset.ResponsibleOfficeCode, asset.TenantCode))
+            {
+                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
+                    $"Referenced rental asset is outside the writable office scope: {dto.AssetId}.", result);
+                continue;
+            }
+
+            if ((asset is null || asset.IsDeleted) &&
+                existing is not null &&
+                existing.AssetId != dto.AssetId)
+            {
+                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
+                    $"Referenced rental asset was not found: {dto.AssetId}.", result);
+                continue;
+            }
+
+            if (!await ValidateRentalAssignmentHistoryReferencesAsync(dto, result, cancellationToken))
+                continue;
 
             var responsibleOfficeCode = existing?.ResponsibleOfficeCode
                                         ?? asset?.ResponsibleOfficeCode
@@ -2431,6 +2451,46 @@ public sealed class SyncController : ControllerBase
         }
 
         return scoped;
+    }
+
+    private async Task<bool> ValidateRentalAssignmentHistoryReferencesAsync(
+        RentalAssetAssignmentHistoryDto dto,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        if (dto.BillingProfileId.HasValue && dto.BillingProfileId.Value != Guid.Empty)
+        {
+            var billingProfile = await _dbContext.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(profile => profile.Id == dto.BillingProfileId.Value, cancellationToken);
+            if (billingProfile is not null &&
+                !billingProfile.IsDeleted &&
+                !_officeScopeService.CanReadOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
+            {
+                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
+                    $"Referenced rental billing profile is outside the readable office scope: {dto.BillingProfileId.Value}.", result);
+                return false;
+            }
+        }
+
+        if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
+        {
+            var customer = await _dbContext.Customers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(current => current.Id == dto.CustomerId.Value, cancellationToken);
+            if (customer is not null &&
+                !customer.IsDeleted &&
+                !CanReadCustomerForRentalReference(customer))
+            {
+                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
+                    $"Referenced customer is outside the readable office scope: {dto.CustomerId.Value}.", result);
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private async Task<RentalAsset?> FindExistingRentalAssetByNaturalKeyAsync(

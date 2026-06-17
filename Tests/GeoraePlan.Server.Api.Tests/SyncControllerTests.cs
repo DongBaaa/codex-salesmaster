@@ -1204,6 +1204,101 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsRentalAssignmentHistoryRelinkToOutOfScopeAsset()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "rental-history-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalAssetEdit]
+        };
+
+        var allowedAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "RENTAL-HISTORY-ALLOWED-ASSET",
+            ManagementNumber = "RH-ALLOWED",
+            ItemName = "Allowed copier",
+            MachineNumber = "ALLOWED-001",
+            MonthlyFee = 100m
+        };
+        var outOfScopeAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            AssetKey = "RENTAL-HISTORY-HIDDEN-ASSET",
+            ManagementNumber = "RH-HIDDEN",
+            ItemName = "Hidden copier",
+            MachineNumber = "HIDDEN-001",
+            MonthlyFee = 200m
+        };
+        var history = new RentalAssetAssignmentHistory
+        {
+            Id = Guid.NewGuid(),
+            AssetId = allowedAsset.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ItemName = allowedAsset.ItemName,
+            MachineNumber = allowedAsset.MachineNumber,
+            ManagementNumber = allowedAsset.ManagementNumber,
+            MonthlyFee = allowedAsset.MonthlyFee,
+            IsCurrent = true,
+            LinkedAtUtc = DateTime.UtcNow.AddDays(-1)
+        };
+        _dbContext.RentalAssets.AddRange(allowedAsset, outOfScopeAsset);
+        _dbContext.RentalAssetAssignmentHistories.Add(history);
+        await _dbContext.SaveChangesAsync();
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "rental-history-out-of-scope-asset-device",
+            RentalAssetAssignmentHistories =
+            [
+                new RentalAssetAssignmentHistoryDto
+                {
+                    Id = history.Id,
+                    AssetId = outOfScopeAsset.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ItemName = "Client tries to relink",
+                    MachineNumber = "CLIENT-RELINK",
+                    ManagementNumber = "CLIENT-RELINK",
+                    MonthlyFee = 300m,
+                    IsCurrent = true,
+                    LinkedAtUtc = DateTime.UtcNow,
+                    Revision = history.Revision,
+                    ExpectedRevision = history.Revision
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(RentalAssetAssignmentHistory), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("Referenced rental asset is outside the writable office scope", StringComparison.Ordinal));
+        scopedDb.ChangeTracker.Clear();
+        var stored = await scopedDb.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+            .SingleAsync(row => row.Id == history.Id);
+        Assert.Equal(allowedAsset.Id, stored.AssetId);
+        Assert.Equal(allowedAsset.ManagementNumber, stored.ManagementNumber);
+        Assert.Equal(allowedAsset.MonthlyFee, stored.MonthlyFee);
+    }
+
+    [Fact]
     public async Task Push_ResolvesRentalAssetCustomerReference_ByReadableCustomerName()
     {
         var customer = new Customer
