@@ -2719,6 +2719,80 @@ public sealed class SyncControllerTests : IDisposable
         Assert.DoesNotContain(result.RentalBillingLogs, log => log.BillingYearMonth == "2026-06");
     }
 
+    [Fact]
+    public async Task Push_RejectsRentalBillingLog_WhenProfileIsReadSharedButNotWritable()
+    {
+        var sharedReadOnlyProfileId = Guid.NewGuid();
+        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Usenet,
+            ShareRentals = true,
+            AllowTargetWrite = false,
+            Note = "read-only rental share for billing log scope test"
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = sharedReadOnlyProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = "READ-ONLY-RENTAL-PROFILE",
+            CustomerName = "Read Only Rental Customer",
+            BillingDay = 10,
+            MonthlyAmount = 30000m,
+            CreatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-rental-profile-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalProfileEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var logId = Guid.NewGuid();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-billing-log-read-shared",
+            RentalBillingLogs =
+            [
+                new RentalBillingLogDto
+                {
+                    Id = logId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    BillingProfileId = sharedReadOnlyProfileId,
+                    BillingYearMonth = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 10),
+                    Status = "예정",
+                    BilledAmount = 30000m,
+                    Note = "attempted read-shared write",
+                    CreatedAtUtc = new DateTime(2026, 6, 17, 0, 1, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingLog) &&
+            conflict.Reason.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await scopedDb.RentalBillingLogs.IgnoreQueryFilters().AnyAsync(log => log.Id == logId));
+    }
+
 
     [Fact]
     public async Task Pull_AdminRentalUser_KeepsCustomerMirrorScoped_ButStillReceivesCrossTenantRentalAssets()

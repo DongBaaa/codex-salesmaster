@@ -3451,10 +3451,10 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (!_officeScopeService.CanReadOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
+            if (!_officeScopeService.CanWriteOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
             {
                 AddClientConflict(dto, nameof(RentalBillingLog),
-                    $"Referenced rental billing profile is outside the readable office scope: {dto.BillingProfileId}.", result);
+                    $"Referenced rental billing profile is outside the writable office scope: {dto.BillingProfileId}.", result);
                 continue;
             }
 
