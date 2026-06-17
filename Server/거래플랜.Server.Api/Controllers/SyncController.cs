@@ -1405,10 +1405,10 @@ public sealed class SyncController : ControllerBase
                         "transaction-rental-link-cleared",
                         $"수금/지급 '{dto.Id:D}'은(는) 연결 렌탈 청구 대상을 찾지 못해 렌탈 연결을 해제하고 일반 수금으로 보정했습니다.");
                 }
-                else if (!_officeScopeService.CanReadOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode))
+                else if (!_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode))
                 {
                     AddClientConflict(dto, nameof(TransactionRecord),
-                        $"Referenced rental billing profile is outside the readable office scope: {dto.LinkedRentalBillingProfileId}.", result);
+                        $"Referenced rental billing profile is outside the writable office scope: {dto.LinkedRentalBillingProfileId}.", result);
                     continue;
                 }
             }
