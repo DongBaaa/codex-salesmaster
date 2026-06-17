@@ -1073,6 +1073,246 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task SyncPull_RentalReceiptTransaction_CreatesDerivedPaymentAndUpdatesSettlement()
+    {
+        PrepareAppRoot("georaeplan-rental-pull-transaction-settlement");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Pulled rental receipt transaction customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "\uCCAD\uAD6C\uB300\uC0C1"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var local = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db, local);
+            var start = await rental.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(start.Success, start.Message);
+
+            var invoice = await db.Invoices.AsNoTracking().SingleAsync(current => current.Id == start.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+            var trackedProfile = await db.RentalBillingProfiles.SingleAsync(current => current.Id == profileId);
+            trackedProfile.IsDirty = false;
+            var trackedInvoice = await db.Invoices.SingleAsync(current => current.Id == invoice.Id);
+            trackedInvoice.IsDirty = false;
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var diagnostics = new SyncDiagnosticsService(session);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            using var sync = new SyncService(db, local, rental, api, session, dispatcher, diagnostics);
+            var transactionId = Guid.NewGuid();
+            var now = DateTime.UtcNow;
+
+            await InvokePrivateInstanceTaskAsync(
+                sync,
+                "ApplyPullAsync",
+                new SyncPullResponse
+                {
+                    CurrentServerRevision = 910,
+                    Transactions =
+                    {
+                        new TransactionDto
+                        {
+                            Id = transactionId,
+                            CustomerId = customerId,
+                            TenantCode = TenantScopeCatalog.UsenetGroup,
+                            OfficeCode = OfficeCodeCatalog.Usenet,
+                            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                            TransactionDate = new DateOnly(2026, 5, 27),
+                            TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                            LinkedInvoiceId = invoice.Id,
+                            LinkedInvoiceNumber = invoice.InvoiceNumber,
+                            LinkedRentalBillingProfileId = profileId,
+                            LinkedRentalBillingRunId = runId,
+                            BankReceipt = invoice.TotalAmount,
+                            ReceiptTotal = invoice.TotalAmount,
+                            SettlementAmount = invoice.TotalAmount,
+                            Note = "pulled rental receipt transaction",
+                            CreatedAtUtc = now,
+                            UpdatedAtUtc = now,
+                            Revision = 910,
+                            IsDeleted = false
+                        }
+                    }
+                },
+                0L,
+                CancellationToken.None,
+                false);
+
+            var pulledTransaction = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
+            Assert.False(pulledTransaction.IsDeleted);
+            Assert.False(pulledTransaction.IsDirty);
+            Assert.Equal(profileId, pulledTransaction.LinkedRentalBillingProfileId);
+            Assert.Equal(runId, pulledTransaction.LinkedRentalBillingRunId);
+
+            var derivedPayment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
+            Assert.False(derivedPayment.IsDeleted);
+            Assert.False(derivedPayment.IsDirty);
+            Assert.Equal(invoice.Id, derivedPayment.InvoiceId);
+            Assert.Equal(invoice.TotalAmount, derivedPayment.Amount);
+
+            var updatedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(invoice.TotalAmount, updatedProfile.SettledAmount);
+            Assert.Equal(0m, updatedProfile.OutstandingAmount);
+            Assert.Equal(PaymentFlowConstants.CompletionDone, updatedProfile.CompletionStatus);
+            Assert.False(updatedProfile.IsDirty);
+
+            var updatedRun = DeserializeRuns(updatedProfile).Single(current => current.RunId == runId);
+            Assert.Equal(invoice.TotalAmount, updatedRun.SettledAmount);
+            Assert.Equal(PaymentFlowConstants.BillingStatusCompleted, updatedRun.Status);
+            Assert.Equal(PaymentFlowConstants.SettlementStatusConfirmed, updatedRun.SettlementStatus);
+            Assert.Equal(new DateOnly(2026, 5, 27), updatedRun.SettledDate);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SyncPull_RentalReceiptTransactionDelete_RemovesDerivedPaymentAndRevertsSettlement()
+    {
+        PrepareAppRoot("georaeplan-rental-pull-transaction-delete-settlement");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Pulled rental receipt transaction delete customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "\uCCAD\uAD6C\uB300\uC0C1"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var local = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db, local);
+            var start = await rental.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(start.Success, start.Message);
+
+            var invoice = await db.Invoices.AsNoTracking().SingleAsync(current => current.Id == start.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+            var transactionId = Guid.NewGuid();
+            var save = await local.SaveTransactionAsync(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TransactionDate = new DateOnly(2026, 5, 27),
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedInvoiceId = invoice.Id,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = runId,
+                BankReceipt = invoice.TotalAmount,
+                ReceiptTotal = invoice.TotalAmount,
+                SettlementAmount = invoice.TotalAmount,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            }, session);
+            Assert.True(save.Success, save.Message);
+
+            var baselineProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(invoice.TotalAmount, baselineProfile.SettledAmount);
+
+            var trackedProfile = await db.RentalBillingProfiles.SingleAsync(current => current.Id == profileId);
+            trackedProfile.IsDirty = false;
+            var trackedTransaction = await db.Transactions.SingleAsync(current => current.Id == transactionId);
+            trackedTransaction.IsDirty = false;
+            trackedTransaction.Revision = 920;
+            var trackedPayment = await db.Payments.SingleAsync(current => current.Id == transactionId);
+            trackedPayment.IsDirty = false;
+            trackedPayment.Revision = 920;
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var diagnostics = new SyncDiagnosticsService(session);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            using var sync = new SyncService(db, local, rental, api, session, dispatcher, diagnostics);
+            var now = DateTime.UtcNow;
+
+            await InvokePrivateInstanceTaskAsync(
+                sync,
+                "ApplyPullAsync",
+                new SyncPullResponse
+                {
+                    CurrentServerRevision = 921,
+                    Transactions =
+                    {
+                        new TransactionDto
+                        {
+                            Id = transactionId,
+                            CustomerId = customerId,
+                            TenantCode = TenantScopeCatalog.UsenetGroup,
+                            OfficeCode = OfficeCodeCatalog.Usenet,
+                            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                            TransactionDate = new DateOnly(2026, 5, 27),
+                            TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                            LinkedInvoiceId = invoice.Id,
+                            LinkedInvoiceNumber = invoice.InvoiceNumber,
+                            LinkedRentalBillingProfileId = profileId,
+                            LinkedRentalBillingRunId = runId,
+                            BankReceipt = invoice.TotalAmount,
+                            ReceiptTotal = invoice.TotalAmount,
+                            SettlementAmount = invoice.TotalAmount,
+                            Note = "pulled rental receipt transaction delete",
+                            CreatedAtUtc = now.AddDays(-1),
+                            UpdatedAtUtc = now,
+                            Revision = 921,
+                            IsDeleted = true
+                        }
+                    }
+                },
+                0L,
+                CancellationToken.None,
+                false);
+
+            var deletedTransaction = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
+            Assert.True(deletedTransaction.IsDeleted);
+            Assert.False(deletedTransaction.IsDirty);
+
+            var deletedPayment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
+            Assert.True(deletedPayment.IsDeleted);
+            Assert.False(deletedPayment.IsDirty);
+
+            var revertedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(0m, revertedProfile.SettledAmount);
+            Assert.Equal(invoice.TotalAmount, revertedProfile.OutstandingAmount);
+            Assert.Equal(PaymentFlowConstants.CompletionPending, revertedProfile.CompletionStatus);
+            Assert.False(revertedProfile.IsDirty);
+
+            var revertedRun = DeserializeRuns(revertedProfile).Single(current => current.RunId == runId);
+            Assert.Equal(0m, revertedRun.SettledAmount);
+            Assert.NotEqual(PaymentFlowConstants.BillingStatusCompleted, revertedRun.Status);
+            Assert.NotEqual(PaymentFlowConstants.SettlementStatusConfirmed, revertedRun.SettlementStatus);
+            Assert.Null(revertedRun.SettledDate);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SyncPull_DirectRentalBillingInvoicePaymentDelete_RevertsRentalSettlement()
     {
         PrepareAppRoot("georaeplan-rental-pull-payment-delete-settlement");

@@ -2907,6 +2907,83 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 	}
 
+	public async Task RecalculateRentalSettlementsAsync(IEnumerable<(Guid ProfileId, Guid? RunId)> targets, CancellationToken ct = default(CancellationToken), bool markDirty = false)
+	{
+		List<(Guid ProfileId, Guid? RunId)> distinctTargets = (targets ?? Enumerable.Empty<(Guid ProfileId, Guid? RunId)>())
+			.Where(target => target.ProfileId != Guid.Empty)
+			.Distinct()
+			.ToList();
+		foreach (var target in distinctTargets)
+		{
+			await RecalculateRentalSettlementAsync(target.ProfileId, target.RunId, ct, markDirty);
+		}
+	}
+
+	public async Task ReconcilePulledTransactionSideEffectsAsync(IEnumerable<Guid> transactionIds, CancellationToken ct = default(CancellationToken))
+	{
+		List<Guid> targetTransactionIds = (transactionIds ?? Enumerable.Empty<Guid>())
+			.Where((Guid id) => id != Guid.Empty)
+			.Distinct()
+			.ToList();
+		if (targetTransactionIds.Count == 0)
+		{
+			return;
+		}
+
+		List<LocalTransaction> transactions = await _db.Transactions.IgnoreQueryFilters()
+			.Where((LocalTransaction transaction) => targetTransactionIds.Contains(transaction.Id))
+			.ToListAsync(ct);
+		foreach (LocalTransaction transaction in transactions)
+		{
+			if (transaction.IsDeleted)
+			{
+				await RemoveLinkedInvoicePaymentAsync(
+					transaction.Id,
+					ct,
+					markDirty: false,
+					updatedAtUtc: transaction.UpdatedAtUtc,
+					revision: transaction.Revision);
+			}
+			else
+			{
+				LocalInvoice? linkedInvoice = null;
+				if (transaction.LinkedInvoiceId.HasValue && transaction.LinkedInvoiceId.Value != Guid.Empty)
+				{
+					linkedInvoice = await _db.Invoices.IgnoreQueryFilters()
+						.FirstOrDefaultAsync((LocalInvoice invoice) => invoice.Id == transaction.LinkedInvoiceId.Value, ct);
+				}
+				if (linkedInvoice == null &&
+				    transaction.LinkedRentalBillingProfileId.HasValue &&
+				    transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
+				{
+					linkedInvoice = await FindTrackedSalesInvoiceForRentalBillingAsync(
+						transaction.LinkedRentalBillingProfileId.Value,
+						transaction.LinkedRentalBillingRunId,
+						ct);
+				}
+
+				if (linkedInvoice == null)
+				{
+					await RemoveLinkedInvoicePaymentAsync(
+						transaction.Id,
+						ct,
+						markDirty: false,
+						updatedAtUtc: transaction.UpdatedAtUtc,
+						revision: transaction.Revision);
+				}
+				else
+				{
+					await SyncInvoicePaymentFromTransactionAsync(transaction, linkedInvoice, ct, markDirty: false);
+				}
+			}
+
+			if (transaction.LinkedRentalBillingProfileId is Guid billingProfileId && billingProfileId != Guid.Empty)
+			{
+				await RecalculateRentalSettlementAsync(billingProfileId, transaction.LinkedRentalBillingRunId, ct, markDirty: false);
+			}
+		}
+	}
+
 	public Task<LocalCompanyProfile?> GetCompanyProfileAsync(CancellationToken ct = default(CancellationToken))
 	{
 		return GetCompanyProfileAsync(null, null, ct);
@@ -4879,7 +4956,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.FirstOrDefaultAsync(ct);
 	}
 
-	private async Task SyncInvoicePaymentFromTransactionAsync(LocalTransaction transaction, LocalInvoice invoice, CancellationToken ct)
+	private async Task SyncInvoicePaymentFromTransactionAsync(LocalTransaction transaction, LocalInvoice invoice, CancellationToken ct, bool markDirty = true)
 	{
 		decimal amount = Math.Max(0m, transaction.SettlementAmount);
 		var payment = await _db.Payments.IgnoreQueryFilters().FirstOrDefaultAsync((LocalPayment current) => current.Id == transaction.Id, ct);
@@ -4888,8 +4965,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			if (payment != null)
 			{
 				payment.IsDeleted = true;
-				payment.IsDirty = true;
-				payment.UpdatedAtUtc = DateTime.UtcNow;
+				payment.IsDirty = markDirty;
+				payment.UpdatedAtUtc = markDirty ? DateTime.UtcNow : transaction.UpdatedAtUtc;
+				if (!markDirty)
+				{
+					payment.Revision = Math.Max(payment.Revision, transaction.Revision);
+				}
 				await _db.SaveChangesAsync(ct);
 			}
 			return;
@@ -4905,9 +4986,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				PaymentDate = transaction.TransactionDate,
 				Amount = amount,
 				Note = note,
-				CreatedAtUtc = DateTime.UtcNow,
-				UpdatedAtUtc = DateTime.UtcNow,
-				IsDirty = true
+				CreatedAtUtc = markDirty ? DateTime.UtcNow : transaction.CreatedAtUtc,
+				UpdatedAtUtc = markDirty ? DateTime.UtcNow : transaction.UpdatedAtUtc,
+				Revision = markDirty ? 0 : transaction.Revision,
+				IsDirty = markDirty
 			});
 		}
 		else
@@ -4917,20 +4999,28 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			payment.Amount = amount;
 			payment.Note = note;
 			payment.IsDeleted = false;
-			payment.IsDirty = true;
-			payment.UpdatedAtUtc = DateTime.UtcNow;
+			payment.IsDirty = markDirty;
+			payment.UpdatedAtUtc = markDirty ? DateTime.UtcNow : transaction.UpdatedAtUtc;
+			if (!markDirty)
+			{
+				payment.Revision = Math.Max(payment.Revision, transaction.Revision);
+			}
 		}
 		await _db.SaveChangesAsync(ct);
 	}
 
-	private async Task RemoveLinkedInvoicePaymentAsync(Guid transactionId, CancellationToken ct)
+	private async Task RemoveLinkedInvoicePaymentAsync(Guid transactionId, CancellationToken ct, bool markDirty = true, DateTime? updatedAtUtc = null, long? revision = null)
 	{
 		var payment = await _db.Payments.IgnoreQueryFilters().FirstOrDefaultAsync((LocalPayment current) => current.Id == transactionId, ct);
 		if (payment != null)
 		{
 			payment.IsDeleted = true;
-			payment.IsDirty = true;
-			payment.UpdatedAtUtc = DateTime.UtcNow;
+			payment.IsDirty = markDirty;
+			payment.UpdatedAtUtc = markDirty ? DateTime.UtcNow : (updatedAtUtc ?? payment.UpdatedAtUtc);
+			if (!markDirty && revision.HasValue)
+			{
+				payment.Revision = Math.Max(payment.Revision, revision.Value);
+			}
 			await _db.SaveChangesAsync(ct);
 		}
 	}

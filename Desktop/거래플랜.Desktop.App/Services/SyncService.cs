@@ -5615,7 +5615,7 @@ public sealed class SyncService : IDisposable
         _db.ChangeTracker.Clear();
         await UpsertPulledItemWarehouseStocksAsync(pull.ItemWarehouseStocks, ct);
         _db.ChangeTracker.Clear();
-        await UpsertPulledAsync(pull.Transactions, _db.Transactions, LocalMappings.ToLocal, ct);
+        var transactionSideEffects = await UpsertPulledTransactionsAsync(pull.Transactions, ct);
         _db.ChangeTracker.Clear();
         await UpsertPulledTransactionAttachmentsAsync(pull.TransactionAttachments, ct);
         _db.ChangeTracker.Clear();
@@ -5632,6 +5632,8 @@ public sealed class SyncService : IDisposable
         await UpsertPulledAsync(pull.RentalBillingLogs, _db.RentalBillingLogs, LocalMappings.ToLocal, ct);
         _db.ChangeTracker.Clear();
         await UpsertPulledInvoicesAsync(pull.Invoices, ct);
+        _db.ChangeTracker.Clear();
+        await ApplyPulledTransactionSideEffectsAsync(transactionSideEffects, ct);
         _db.ChangeTracker.Clear();
         await UpsertPulledPaymentsAsync(pull.Payments, ct);
         _db.ChangeTracker.Clear();
@@ -5782,6 +5784,65 @@ public sealed class SyncService : IDisposable
         await _local.RecalculateRentalSettlementForInvoicePaymentsAsync(
             dtos.Select((PaymentDto dto) => dto.InvoiceId),
             ct);
+    }
+
+    private async Task<PulledTransactionSideEffectState> UpsertPulledTransactionsAsync(IReadOnlyList<TransactionDto> dtos, CancellationToken ct)
+    {
+        if (dtos.Count == 0)
+            return PulledTransactionSideEffectState.Empty;
+
+        var appliedTransactionIds = new List<Guid>();
+        var previousRentalTargets = new List<(Guid ProfileId, Guid? RunId)>();
+        foreach (var dto in dtos)
+        {
+            var local = LocalMappings.ToLocal(dto);
+            local.IsDirty = false;
+            var existing = await _db.Transactions.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(transaction => transaction.Id == local.Id, ct);
+            if (existing is null)
+            {
+                _db.Transactions.Add(local);
+                appliedTransactionIds.Add(local.Id);
+            }
+            else if (!existing.IsDirty)
+            {
+                if (existing.LinkedRentalBillingProfileId is Guid previousProfileId && previousProfileId != Guid.Empty)
+                {
+                    previousRentalTargets.Add((previousProfileId, existing.LinkedRentalBillingRunId));
+                }
+
+                _db.Entry(existing).CurrentValues.SetValues(local);
+                appliedTransactionIds.Add(local.Id);
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return new PulledTransactionSideEffectState
+        {
+            AppliedTransactionIds = appliedTransactionIds,
+            PreviousRentalTargets = previousRentalTargets
+        };
+    }
+
+    private async Task ApplyPulledTransactionSideEffectsAsync(PulledTransactionSideEffectState sideEffects, CancellationToken ct)
+    {
+        if (sideEffects.AppliedTransactionIds.Count == 0 &&
+            sideEffects.PreviousRentalTargets.Count == 0)
+        {
+            return;
+        }
+
+        await _local.ReconcilePulledTransactionSideEffectsAsync(sideEffects.AppliedTransactionIds, ct);
+        await _local.RecalculateRentalSettlementsAsync(sideEffects.PreviousRentalTargets, ct, markDirty: false);
+    }
+
+    private sealed class PulledTransactionSideEffectState
+    {
+        public static PulledTransactionSideEffectState Empty { get; } = new();
+
+        public IReadOnlyList<Guid> AppliedTransactionIds { get; init; } = Array.Empty<Guid>();
+        public IReadOnlyList<(Guid ProfileId, Guid? RunId)> PreviousRentalTargets { get; init; } =
+            Array.Empty<(Guid ProfileId, Guid? RunId)>();
     }
 
     private async Task UpsertPulledItemsAsync(
